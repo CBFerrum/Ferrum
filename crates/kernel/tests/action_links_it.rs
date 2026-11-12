@@ -69,7 +69,8 @@ fn quotation() -> NewCustomization {
             {"name": "status", "type": "select", "options": ["Open", "Accepted"], "default": "Open"},
             {"name": "accepted_by", "type": "data"},
             {"name": "rating", "type": "int"},
-            {"name": "feedback", "type": "data"}
+            {"name": "feedback", "type": "data"},
+            {"name": "cost", "type": "data", "perm_group": "internal"}
         ],
         "actions": [
             {"name": "accept", "label": "Accept the quotation", "permission": "write", "condition": "doc.status == 'Open'",
@@ -136,6 +137,7 @@ async fn scenario() {
         (json!({"actions": ["approve_all"]}), "an action the entity lacks"),
         (json!({"actions": []}), "no action"),
         (json!({"actions": ["accept"], "show": ["nothing"]}), "a field the entity lacks"),
+        (json!({"actions": ["accept"], "show": ["title", "cost"]}), "a field in a group"),
         (json!({"actions": ["accept"], "params": {"rating": 5}}), "a value no action of it asks for"),
         (json!({"actions": ["accept"], "uses": 0}), "no uses"),
         (json!({"actions": ["accept"], "expires_at": "2099-01-01T00:00:00Z"}), "beyond 90 days"),
