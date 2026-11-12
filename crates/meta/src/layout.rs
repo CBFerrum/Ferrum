@@ -156,6 +156,8 @@ pub enum ShowCurrency {
 #[serde(rename_all = "snake_case")]
 pub enum DateStyle {
     Short,
+    /// Day, a month's name and year (`29 Oct 2026`): the default.
+    Medium,
     Long,
 }
 

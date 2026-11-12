@@ -199,10 +199,12 @@ const SYSTEM: [(&str, &str, FieldType); 6] = [
     ("updated_at", "Updated", FieldType::Datetime),
     ("created_by", "Created By", FieldType::Data),
 ];
-const PRINT: [(&str, &str); 8] = [
+const PRINT: [(&str, &str); 10] = [
     ("copy", "Copy"),
     ("now", "Printed at"),
     ("time", "Printed at, the workspace's time"),
+    ("letterhead", "Wears a letter head"),
+    ("letterhead_name", "Letter head"),
     ("language", "Language"),
     ("title", "Title"),
     ("entity", "Document type"),
@@ -390,7 +392,12 @@ impl<'a> Renderer<'a> {
             }
             As::Date | As::Datetime => {
                 let v = raw();
-                let style = if fmt.date == Some(DateStyle::Long) { "long" } else { "short" };
+                // Day, the month's name and year unless the format says otherwise: never a bare numeric order nobody chose.
+                let style = match fmt.date {
+                    Some(DateStyle::Short) => "short",
+                    Some(DateStyle::Long) => "long",
+                    _ => "medium",
+                };
                 let day = crate::docfmt::date(&v, style, self.locale()).unwrap_or_else(|_| v.clone());
                 let time = (auto == As::Datetime).then(|| v.get(11..16).filter(|t| t.as_bytes().get(2) == Some(&b':'))).flatten();
                 esc(&match time {
@@ -947,6 +954,137 @@ pub fn render(l: &Layout, d: &Data<'_>) -> Rendered {
     Rendered { html, warnings: r.warnings }
 }
 
+/// How tall a letter head's part comes out on a PDF page, in millimetres, erring slightly tall: each section's tallest
+/// column of the blocks that print (their resolved values; an empty field, an image not inlined, a block whose
+/// condition fails take nothing), lines from the font sizes of `margin_page` (9 pt, line height 1.35), a value's text
+/// wrapped by its column's width at an average glyph width, images and spacers by their declared heights.
+pub fn estimate_mm(l: &Layout, d: &Data<'_>, width_mm: f64) -> f64 {
+    const PT: f64 = 25.4 / 72.0;
+    let mut r = Renderer::new(d);
+    // Lines `text` takes at `size_pt` in `col_mm` (each line break a line of its own).
+    let lines = |text: &str, size_pt: f64, bold: bool, col_mm: f64| -> f64 {
+        let glyph = size_pt * PT * if bold { 0.58 } else { 0.53 };
+        let per_line = (col_mm / glyph).max(1.0);
+        text.split('\n').map(|t| (t.chars().count() as f64 / per_line).ceil().max(1.0)).sum()
+    };
+    let plain = |html: &str| -> String {
+        let html = html.replace("<br>", "\n");
+        let mut out = String::new();
+        let mut tag = false;
+        for c in html.chars() {
+            match c {
+                '<' => tag = true,
+                '>' => tag = false,
+                c if !tag => out.push(c),
+                _ => {}
+            }
+        }
+        out.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'")
+    };
+    let (base, lh) = (9.0, 1.35);
+    let mut total = 0.0;
+    for s in &l.sections {
+        if !r.when(&s.when) {
+            continue;
+        }
+        let widths: Vec<f64> = s.widths.clone().unwrap_or_else(|| vec![1; s.columns.len()]).into_iter().map(f64::from).collect();
+        let gap = s.gap_mm.unwrap_or(6) as f64;
+        let inner = width_mm - gap * (s.columns.len().saturating_sub(1)) as f64 - if s.border { 4.0 } else { 0.0 };
+        let sum: f64 = widths.iter().sum::<f64>().max(1.0);
+        let mut tallest: f64 = 0.0;
+        for (c, w) in s.columns.iter().zip(widths.iter()) {
+            let col = inner * w / sum;
+            let mut h = 0.0;
+            for (i, b) in c.blocks.iter().enumerate() {
+                if !r.when(&b.when) {
+                    continue;
+                }
+                let top = b.margin_top_mm.unwrap_or(0) as f64;
+                let size = |sz: &Option<Size>| sz.map(|z| pt(z).parse::<f64>().unwrap_or(base)).unwrap_or(base);
+                let taken = match &b.kind {
+                    BlockKind::Field { value, label, label_position, weight, size: sz, format, hide_empty, .. } => {
+                        let got = r.first(value, None);
+                        let shown = got.and_then(|g| r.show(&g, format.as_ref())).map(|x| plain(&x.0));
+                        let text = match shown {
+                            Some(t) => t,
+                            None if hide_empty.unwrap_or(true) => continue,
+                            None => String::new(),
+                        };
+                        let label = match label {
+                            Some(Some(l)) => l.clone(),
+                            Some(None) => String::new(),
+                            None => r.label_of(value, None),
+                        };
+                        let z = size(sz);
+                        let bold = *weight == Some(Weight::Bold);
+                        if *label_position == Some(LabelPosition::Above) && !label.is_empty() {
+                            lines(&label, z * 0.85, false, col) * z * 0.85 * lh * PT + lines(&text, z, bold, col) * z * lh * PT + 0.6
+                        } else {
+                            let joined = if label.is_empty() { text } else { format!("{label}: {text}") };
+                            lines(&joined, z, bold, col) * z * lh * PT + 0.6
+                        }
+                    }
+                    BlockKind::Heading { text, level, size: sz, .. } => {
+                        if r.no_page_numbers() && TOKEN.captures_iter(text).any(|c| is_page(&c[1])) {
+                            continue;
+                        }
+                        let z = match (sz, level.unwrap_or(1)) {
+                            (Some(_), _) => size(sz),
+                            (None, 1) => 18.0,
+                            (None, 2) => 13.0,
+                            _ => 9.0,
+                        };
+                        let after = if level.unwrap_or(1) >= 3 { 1.0 } else { 0.0 };
+                        let before = if i > 0 { 3.0 } else { 0.0 };
+                        let t = plain(&r.tokens(text));
+                        before + lines(&t, z, true, col) * z * 1.2 * PT + after
+                    }
+                    BlockKind::Text { content, size: sz, .. } => {
+                        let z = size(sz);
+                        let mut h = 0.0;
+                        for p in content {
+                            if r.no_page_numbers() && p.spans.iter().flat_map(|sp| sp.v.iter().flat_map(|v| v.list())).any(|v| is_page(v)) {
+                                continue;
+                            }
+                            let mut t = String::new();
+                            for sp in &p.spans {
+                                match (&sp.t, &sp.v) {
+                                    (Some(x), _) => t.push_str(x),
+                                    (None, Some(v)) => {
+                                        let got = r.first(v, None);
+                                        // A page number is a few digits.
+                                        if v.list().iter().any(|p| is_page(p)) {
+                                            t.push_str("999");
+                                        } else if let Some(x) = got.and_then(|g| r.show(&g, sp.format.as_ref())) {
+                                            t.push_str(&plain(&x.0));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            h += lines(&t, z, false, col) * z * lh * PT + 1.5;
+                        }
+                        h
+                    }
+                    BlockKind::Image { src, height_mm, .. } => match r.image(&b.id, src) {
+                        Some(_) => height_mm.unwrap_or(20.0),
+                        None => continue,
+                    },
+                    BlockKind::Divider { thickness, .. } => 4.0 + thickness.unwrap_or(1) as f64 * 0.27,
+                    BlockKind::Spacer { height_mm } => *height_mm,
+                    _ => continue,
+                };
+                h += top + taken;
+            }
+            tallest = tallest.max(h);
+        }
+        let pad = s.padding_mm.map(f64::from).unwrap_or(if s.border { 2.0 } else { 0.0 }) * 2.0;
+        let title = if s.title.is_some() { 1.1 * base * 1.2 * PT + 2.0 } else { 0.0 };
+        total += s.margin_top_mm.unwrap_or(0) as f64 + pad + title + tallest;
+    }
+    if total <= 0.0 { 0.0 } else { (total * 1.06 + 2.0).ceil() }
+}
+
 /// A layout's own watermark, when its condition holds.
 pub fn watermark(l: &Layout, d: &Data<'_>) -> Option<String> {
     let w = l.watermark.as_ref()?;
@@ -1176,7 +1314,7 @@ pub fn catalogue(schema: &Schema, ent: &EffEntity) -> Value {
         Some(c) if links_company => (values(c, "company"), tables_of(c, "company")),
         _ => (vec![], vec![]),
     };
-    let print: Vec<Value> = PRINT.iter().take(6).map(|(n, l)| json!({"path": format!("print.{n}"), "label": l})).collect();
+    let print: Vec<Value> = PRINT.iter().take(8).map(|(n, l)| json!({"path": format!("print.{n}"), "label": l})).collect();
     let settings: Vec<Value> = schema
         .entities
         .values()
@@ -1190,7 +1328,7 @@ pub fn catalogue(schema: &Schema, ent: &EffEntity) -> Value {
         // What a value's format and a table's column may say, for the designer's pickers.
         "options": {
             "format": {"as": ["auto", "text", "multiline", "number", "amount", "percent", "date", "datetime", "words", "check"],
-                       "show": ["symbol", "code", "none"], "date": ["short", "long"], "sign": ["abs"]},
+                       "show": ["symbol", "code", "none"], "date": ["short", "medium", "long"], "sign": ["abs"]},
             "table_column": {"hide_zero": "a cell whose value is zero is left blank",
                              "secondary": "printed under the value, only when it differs from it"},
             "letter_head_pages": ["print.page", "print.pages"],
