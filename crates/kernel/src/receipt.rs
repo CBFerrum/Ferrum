@@ -132,17 +132,42 @@ impl Kernel {
         key: &str,
         digest: &str,
     ) -> Result<(Value, bool)> {
+        let def = action_def(ctx, entity, action);
         with_retry(|| async {
             let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-            if let Some(answer) = claim(&mut tx, ctx, key, digest).await? {
+            if let Some(mut answer) = claim(&mut tx, ctx, key, digest).await? {
                 tx.rollback().await?;
+                if let (Some(once), Some(o)) = (def.and_then(|d| d.answer_once().map(|a| a.told(&d.label))), answer.as_object_mut()) {
+                    o.insert("answered_once".into(), Value::String(once));
+                }
                 return Ok((answer, true));
             }
             let out = self.run_action_tx(ctx, &mut tx, entity, id, action, &params).await?;
-            keep(&mut tx, ctx, key, 200, &out).await?;
+            // What it gives once goes to this caller and is not kept for a repeat.
+            keep(&mut tx, ctx, key, 200, &def.map_or_else(|| out.clone(), |d| d.kept_result(&out))).await?;
             tx.commit().await?;
             Ok((out, false))
         })
         .await
     }
+
+    /// What a receipt's digest is taken over for action `action` of `entity`: `params` with each secret parameter
+    /// as a fingerprint keyed with the server's secret key, so that the digest cannot be used to try values.
+    pub fn digestible_params(&self, ctx: &Ctx, entity: &str, action: &str, params: &Value) -> Result<Value> {
+        let mut out = params.clone();
+        let (Some(def), Some(o)) = (action_def(ctx, entity, action), out.as_object_mut()) else { return Ok(out) };
+        for p in def.params.iter().filter(|p| p.secret) {
+            if let Some(v) = o.get_mut(&p.name).filter(|v| !v.is_null()) {
+                let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("a secret parameter needs the server's secret key".into()))?;
+                let text = v.as_str().map_or_else(|| v.to_string(), str::to_string);
+                *v = Value::String(key.fingerprint("action parameter", &format!("{}|{text}", ctx.tenant)));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Action `action` of `entity`, as `ctx`'s workspace has it.
+pub(crate) fn action_def<'a>(ctx: &'a Ctx, entity: &str, action: &str) -> Option<&'a ferrum_meta::ActionDef> {
+    ctx.schema.entity(entity)?.def.actions.iter().find(|a| a.name == action)
 }

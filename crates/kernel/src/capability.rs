@@ -65,6 +65,9 @@ pub struct Receipt {
     /// The key had been used before with the same input: this is what was done then.
     pub repeated: bool,
     pub result: Value,
+    /// A repeat of an action whose result has fields given once: that they were, and what to do.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answered_once: Option<String>,
 }
 
 fn refused(code: Code, message: impl Into<String>) -> Error {
@@ -110,6 +113,7 @@ fn param_schema(ptype: &str, to: Option<&str>, options: &[String]) -> Value {
     match ptype {
         "int" => json!({"type": "integer"}),
         "date" => json!({"type": "string", "format": "date"}),
+        "check" => json!({"type": "boolean"}),
         "select" => json!({"type": "string", "enum": options}),
         "link" => match to {
             Some(to) => json!({"type": "string", "format": "uuid", "x-ferrum-link": to, "description": format!("Id of a {to} record")}),
@@ -285,6 +289,9 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         for p in &a.params {
             let mut s = param_schema(&p.ptype, p.to.as_deref(), &p.options);
             s["description"] = json!(p.description.clone().unwrap_or_else(|| p.label.clone()));
+            if p.secret {
+                s["writeOnly"] = json!(true);
+            }
             params.insert(p.name.clone(), s);
             if p.required {
                 required.push(p.name.clone());
@@ -529,12 +536,24 @@ impl Kernel {
         cap.check_input(&inv.input)?;
         if !cap.effect.changes() {
             let result = self.carry_out(ctx, tx, &cap, &inv.input).await?;
-            return Ok(Receipt { capability: cap.id, version: cap.version, effect_key: None, repeated: false, result });
+            return Ok(Receipt { capability: cap.id, version: cap.version, effect_key: None, repeated: false, result, answered_once: None });
         }
         let Some(key) = inv.effect_key.as_deref().filter(|k| !k.trim().is_empty()) else {
             return Err(refused(Code::SchemaInvalid, format!("{} changes something, so it needs a logical effect key", cap.id)));
         };
-        let digest = cap.input_digest(&inv.input)?;
+        // An action's secret parameters are digested only keyed with the server's secret key.
+        let action = match &cap.operation {
+            Operation::Action(name) => crate::receipt::action_def(ctx, cap.entity.as_deref().unwrap_or_default(), name),
+            _ => None,
+        };
+        let digest = match (action, inv.input.get("params")) {
+            (Some(a), Some(params)) if a.params.iter().any(|p| p.secret) => {
+                let mut input = inv.input.clone();
+                input["params"] = self.digestible_params(ctx, cap.entity.as_deref().unwrap_or_default(), &a.name, params)?;
+                cap.input_digest(&input)?
+            }
+            _ => cap.input_digest(&inv.input)?,
+        };
         let claimed = sqlx::query(
             "insert into logic_effect (tenant_id, environment, capability, effect_key, input_digest, version, capability_digest, actor) \
              values ($1, $2, $3, $4, $5, $6, $7, $8) on conflict do nothing",
@@ -564,12 +583,12 @@ impl Kernel {
         .bind(&inv.environment)
         .bind(&cap.id)
         .bind(key)
-        .bind(&result)
+        .bind(action.map_or_else(|| result.clone(), |a| a.kept_result(&result)))
         .bind(record.and(cap.entity.as_deref()))
         .bind(record)
         .execute(&mut **tx)
         .await?;
-        Ok(Receipt { capability: cap.id, version: cap.version, effect_key: Some(key.to_string()), repeated: false, result })
+        Ok(Receipt { capability: cap.id, version: cap.version, effect_key: Some(key.to_string()), repeated: false, result, answered_once: None })
     }
 
     /// The key was used before: the same input gets what was done, with the caller's own view of it;
@@ -594,7 +613,20 @@ impl Kernel {
             _ if actor == Some(ctx.user) => result,
             _ => Value::Null,
         };
-        Ok(Receipt { capability: cap.id.clone(), version: cap.version.clone(), effect_key: Some(key.to_string()), repeated: true, result: shown })
+        let answered_once = match &cap.operation {
+            Operation::Action(name) => {
+                crate::receipt::action_def(ctx, cap.entity.as_deref().unwrap_or_default(), name).and_then(|a| a.answer_once().map(|o| o.told(&a.label)))
+            }
+            _ => None,
+        };
+        Ok(Receipt {
+            capability: cap.id.clone(),
+            version: cap.version.clone(),
+            effect_key: Some(key.to_string()),
+            repeated: true,
+            result: shown,
+            answered_once,
+        })
     }
 
     /// The owning app's operation, through the kernel path a person's request takes.

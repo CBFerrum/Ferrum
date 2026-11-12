@@ -1175,6 +1175,27 @@ async fn report_data(k: &Kernel, ctx: &Ctx, doc: &Doc, rt: &Runtime) -> Result<V
     Ok(data)
 }
 
+/// The saved report labelled `label`, as `ctx` may open it, found in `tx`.
+pub(crate) async fn report_labelled(k: &Kernel, tx: &mut ferrum_kernel::Tx, ctx: &Ctx, label: &str) -> Result<Doc> {
+    let found = k.find_tx(&system(ctx), tx, REPORT, &[ferrum_kernel::query::Filter::eq("label", label)], None, 2).await?;
+    match found.as_slice() {
+        [one] if visible(ctx, REPORT, one) => Ok(one.clone()),
+        [_] | [] => Err(Error::field("query", format!("there is no report {label}"))),
+        _ => Err(Error::field("query", format!("more than one report is called {label}: name one by a label of its own"))),
+    }
+}
+
+/// What a document about report `label` is checked against, in `tx` (a pack's install, which may have just made the
+/// report): its columns and entity, from its first row at most, run as `ctx` may run it.
+pub async fn report_shape(k: &Kernel, tx: &mut ferrum_kernel::Tx, ctx: &Ctx, label: &str) -> Result<Value> {
+    let doc = report_labelled(k, tx, ctx, label).await?;
+    let mut spec = Spec::parse(doc.get("spec").unwrap_or(&Value::Null))?;
+    Runtime::parse(&json!({"limit": 1}))?.apply(&mut spec)?;
+    let mut data = crate::run::run_in(tx, ctx, &spec).await?;
+    arrange(&mut data, doc.get("columns").unwrap_or(&Value::Null));
+    Ok(data)
+}
+
 /// A saved report as CSV (export permission on its entity, like list exports).
 /// Every row of a saved report (up to the export limit) for a download → its label and the result.
 pub async fn export_report(k: &Kernel, ctx: &Ctx, id: Uuid, rt: &Runtime) -> Result<(String, Value)> {

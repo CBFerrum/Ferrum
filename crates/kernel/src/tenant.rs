@@ -187,6 +187,16 @@ impl Kernel {
                         .map_err(|e| Error::Internal(format!("seeding {}/{}: {e}", name, seed.entity)))?;
                 }
             }
+            // Its automations, as defaults the workspace keeps, switches off or edits.
+            if !pkg.manifest.automations.is_empty() {
+                let mut tx = self.db.tenant_tx(tenant).await?;
+                for a in &pkg.manifest.automations {
+                    crate::automation::install_default(&ctx, &mut tx, name, a)
+                        .await
+                        .map_err(|e| Error::Internal(format!("{name}: automation {}: {e}", a.name)))?;
+                }
+                tx.commit().await?;
+            }
         }
         self.report_conflicts(tenant).await?;
         Ok(Installed { packages: closure, kept_newer })

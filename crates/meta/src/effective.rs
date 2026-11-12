@@ -418,6 +418,10 @@ pub fn replaced_value(e: &EffEntity, op: &OverlayOp) -> Option<Value> {
         OverlayOp::SetWorkflow { .. } => Some(e.workflow.as_ref().and_then(|w| serde_json::to_value(&w.def).ok()).unwrap_or(Value::Null)),
         OverlayOp::SetPrintTemplate { .. } => Some(e.print_template.clone().map_or(Value::Null, Value::String)),
         OverlayOp::SetApproval { on, .. } => Some(e.document_approvals.get(on).and_then(|a| serde_json::to_value(&a.policy).ok()).unwrap_or(Value::Null)),
+        OverlayOp::SetTransitionApproval { action, from, .. } => {
+            let t = e.workflow.as_ref()?.def.transitions.iter().find(|t| &t.action == action && &t.from == from)?;
+            Some(t.approval.as_ref().and_then(|p| serde_json::to_value(p).ok()).unwrap_or(Value::Null))
+        }
         _ => None,
     }
 }
@@ -624,6 +628,7 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
         | OverlayOp::SetWorkflow { .. }
         | OverlayOp::SetPrintTemplate { .. }
         | OverlayOp::SetApproval { .. }
+        | OverlayOp::SetTransitionApproval { .. }
         | OverlayOp::DefineModule { .. }
         | OverlayOp::RemoveModule { .. }
         | OverlayOp::PublishList { .. }
@@ -771,6 +776,7 @@ pub fn replaced_by_redefinition(op: &OverlayOp, at: usize, r: usize) -> bool {
             OverlayOp::SetWorkflow { .. }
                 | OverlayOp::SetPrintTemplate { .. }
                 | OverlayOp::SetApproval { .. }
+                | OverlayOp::SetTransitionApproval { .. }
                 | OverlayOp::DefineEntity { .. }
                 | OverlayOp::PublishList { .. }
                 | OverlayOp::UnpublishList { .. }
@@ -863,6 +869,12 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         for wf in &pkg.manifest.workflows {
             if let Some(b) = building.get_mut(&wf.entity) {
                 b.workflow = Some(wf.clone());
+            }
+        }
+        // Its approvals on its documents: defaults the workspace's `set_approval` comes over.
+        for a in &pkg.manifest.approvals {
+            if let Some(b) = building.get_mut(&a.entity) {
+                b.approvals.insert(a.on, a.policy.clone());
             }
         }
     }
@@ -1006,6 +1018,15 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                         None => b.approvals.remove(on),
                     };
                     Ok(None)
+                }
+                OverlayOp::SetTransitionApproval { action, from, approval } => {
+                    match b.workflow.as_mut().and_then(|w| w.transitions.iter_mut().find(|t| &t.action == action && &t.from == from)) {
+                        Some(t) => {
+                            t.approval = approval.clone();
+                            Ok(None)
+                        }
+                        None => Err(format!("its workflow has no transition {action} from {from}")),
+                    }
                 }
                 OverlayOp::SetPrintTemplate { template } => {
                     if template.len() > 512 * 1024 {

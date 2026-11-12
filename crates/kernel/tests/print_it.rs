@@ -796,6 +796,54 @@ async fn scenario() {
     assert!(cat["company_tables"][0]["path"] == json!("company.acc_registrations") && cat["options"]["format"]["sign"] == json!(["abs"]));
     assert!(cat["print"].as_array().unwrap().iter().any(|p| p["path"] == "print.time"));
 
+    // ── a format that prints its own company block only without a letter head; dates by name ──
+    let own = json!({"version": 1, "sections": [{"id": "s", "columns": [{"id": "c", "blocks": [
+        {"id": "co", "type": "heading", "text": "OWN COMPANY BLOCK", "when": "!print.letterhead"},
+        {"id": "lhn", "type": "field", "value": "print.letterhead_name", "label": "LH"},
+        {"id": "d1", "type": "field", "value": "doc.posting_date", "label": "On"},
+        {"id": "d2", "type": "field", "value": "doc.posting_date", "label": "Short", "format": {"as": "date", "date": "short"}},
+        {"id": "d3", "type": "field", "value": "doc.posting_date", "label": "Long", "format": {"as": "date", "date": "long"}}
+    ]}]}]});
+    let own_def = serde_json::to_value(layout_def("own", own)).unwrap();
+    let with = |lh: Option<&str>| PreviewAsk { template: own_def.clone(), record: Some(crid), letterhead: lh.map(str::to_string), ..Default::default() };
+    let (worn, _) = html_of(k.preview_print(&admin, &with(None)).await.unwrap());
+    assert!(!worn.contains("OWN COMPANY BLOCK") && worn.contains("<span class=\"pf-value\">Acme India</span>"), "a letter head worn: {worn}");
+    let (bare, _) = html_of(k.preview_print(&admin, &with(Some("none"))).await.unwrap());
+    assert!(bare.contains("OWN COMPANY BLOCK") && !bare.contains("Acme India</span>"), "none worn: {bare}");
+    assert!(
+        bare.contains(">12 Nov 2026<") && bare.contains(">11/12/2026<") && bare.contains(">November 12, 2026<"),
+        "medium by default, short and long when asked: {bare}"
+    );
+
+    // ── a letter head as tall as its blocks (no height given): the PDF's top margin follows it ──
+    let margin_top = |form: &str| -> f64 {
+        let v: f64 = form.split("name=\"marginTop\"\r\n\r\n").nth(1).and_then(|r| r.split("\r\n").next()).unwrap().parse().unwrap();
+        v * 25.4
+    };
+    let short = json!({"header": {"sections": [{"id": "s", "columns": [{"id": "c", "blocks": [{"id": "h", "type": "heading", "text": "{company.company_name}", "level": 2}]}]}]}});
+    let full = json!({"header": {"sections": [{"id": "s", "widths": [3, 9], "columns": [
+        {"id": "l", "blocks": [{"id": "logo", "type": "image", "src": {"value": "company.acc_logo"}, "height_mm": 18}]},
+        {"id": "r", "blocks": [{"id": "h", "type": "heading", "text": "{company.company_name}", "level": 2},
+            {"id": "a", "type": "field", "value": "company.acc_print_terms", "label": null},
+            {"id": "b", "type": "field", "value": "company.acc_bank_name", "label": "Bank"},
+            {"id": "n", "type": "field", "value": "company.acc_bank_account_no", "label": "Account"},
+            {"id": "empty", "type": "field", "value": "company.tax_id", "label": "Tax ID"}]}]},
+        {"id": "s2", "columns": [{"id": "c2", "blocks": [{"id": "hr", "type": "divider"}]}]}]}});
+    let mut tops = Vec::new();
+    for (name, lh) in [("short", short), ("full", full)] {
+        RENDERED.lock().unwrap().clear();
+        let ask = PreviewAsk { template: json!("shop.invoice"), record: Some(crid), letterhead_draft: Some(lh), pdf: true, ..Default::default() };
+        let Preview::Pdf(pdf) = k.preview_print(&admin, &ask).await.unwrap() else { panic!("a PDF") };
+        if let Ok(dir) = std::env::var("FERRUM_PRINT_EVIDENCE") {
+            std::fs::write(Path::new(&dir).join(format!("letterhead-auto-{name}.pdf")), &pdf).unwrap();
+        }
+        let form = RENDERED.lock().unwrap().last().cloned().unwrap();
+        tops.push((name, margin_top(&form) - 15.0));
+    }
+    println!("auto letter head heights (mm): {tops:?}");
+    assert!(tops[0].1 > 5.0 && tops[0].1 < 13.0, "one heading line: {tops:?}");
+    assert!(tops[1].1 > 26.0 && tops[1].1 < 40.0, "an 18 mm logo beside a heading and three lines, a rule below: {tops:?}");
+
     // ── the designer's canvas, the sample record, the catalogue ──
     let (canvas, _) =
         html_of(k.preview_print(&admin, &PreviewAsk { template: json!("shop.invoice"), sample: true, design: true, ..Default::default() }).await.unwrap());

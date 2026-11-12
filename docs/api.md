@@ -1279,12 +1279,15 @@ border?, background?, padding_mm?, keep_together?, break_before?, margin_top_mm?
 `divider`, `spacer`, `page_break`, each with `id`, `when` (CEL over `doc`, `links`, `company`, `settings`, `print`),
 `align`, `margin_top_mm`. Paths: `doc.<field>`, `links.<link field>.<field>`, `company.<field>` (the record's company,
 read as the workspace), `settings.<Entity>.<field>`, `row.<field>` (a table's columns), `print.copy|now|language|title|
-entity|time` (`time`: when it was printed, in the workspace's time zone; `print.page`/`print.pages` in a letter head:
+entity|time|letterhead|letterhead_name` (`time`: when it was printed, in the workspace's time zone; `letterhead`:
+whether the print wears a letter head after every choice is applied, so a format prints its own company block with
+`when: "!print.letterhead"`; `letterhead_name`: its name; `print.page`/`print.pages` in a letter head:
 filled in by the PDF service where it repeats the letter head, and a paragraph or heading that names them is left out
 elsewhere, so a footer text `[{t: "Page "}, {v: "print.page"}, {t: " of "}, {v: "print.pages"}]` prints "Page 2 of 3"
 in a PDF and nothing in the HTML). A `table` prints `doc.<table>`, `links.<link field>.<table>` (read as the person may)
 or `company.<table>` (read as the workspace); a column may say `hide_zero: true` (a zero cell is blank), and its
-`secondary` line prints only when it differs from the cell. A format may say `sign: "abs"` (a number, amount or amount in
+`secondary` line prints only when it differs from the cell. A date prints as `29 Oct 2026` (`medium`, the month's name in the print's language) unless a format says `date:
+"short"` (the language's numeric order) or `"long"`. A format may say `sign: "abs"` (a number, amount or amount in
 words without its sign: a credit note's totals print positive). Unknown keys, paths, secret fields, colours other than `#rrggbb`,
 numbers out of range and every limit (256 KB, 100 sections, 4 columns, 50 blocks a column, 500 in all, 20 table columns,
 100 conditions of ≤ 500 characters, 20 images) are refused when saved (`422`, `field: "layout.<id>"`) and again when it
@@ -1292,7 +1295,8 @@ renders. A template's error names where it is: `"en body, line 3: …"`.
 
 **Letter heads and settings** are records of the core: `LetterHead` (`letter_head_name`, `company`, `header` and
 `footer` as `{"sections": [...]}` of `field`, `text`, `heading`, `image`, `divider`, `spacer` over `company.*`,
-`settings.*`, `print.*`, their heights, `disabled`; a save checks them, errors on `header`/`footer` as `"<block id>:
+`settings.*`, `print.*`, their heights (empty: as tall as their blocks come out on each print, worked out from the
+blocks that print, their font sizes, wrapped text and declared image heights), `disabled`; a save checks them, errors on `header`/`footer` as `"<block id>:
 …"`), `PrintSettings` (paper, orientation, margins, font, `letter_head`, `repeat_header`, `repeat_footer`,
 `allow_print_draft`, `allow_print_cancelled`, `draft_watermark`, `cancelled_watermark`, `copies` one per line) and
 `Company.letter_head`. The letter head a page wears: the one asked for, else the format's, else the record's company's
