@@ -2680,7 +2680,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-crm"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#3fb60fb151ebf41343b0798f2c3e562f8ca0ddd6"
+source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#584f4ba355d80467b566ee75466bb8dde39a7da0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3155,18 +3155,21 @@ dependencies = [
 [[package]]
 name = "ferrum-app-pos"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#dff999b4a4ced97b565869b5cff4d586a7c1e27e"
+source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#2bded07601b1c2d6809bd19fad9819bbf0d73860"
 dependencies = [
  "async-trait",
  "chrono",
  "ferrum-app-erp",
  "ferrum-calc",
  "ferrum-domain",
+ "ferrum-erp-promotions",
  "ferrum-kernel",
  "ferrum-meta",
+ "hex",
  "rust_decimal",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tracing",
  "uuid",
