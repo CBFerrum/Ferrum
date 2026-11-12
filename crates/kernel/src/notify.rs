@@ -25,6 +25,7 @@ pub const KINDS: &[(&str, &str)] = &[
     ("comment", "Comments on records you follow"),
     ("watch", "Changes to records you follow"),
     ("automation", "Messages from automations"),
+    ("approval", "Approvals asked of you, and yours decided"),
     ("general", "Everything else"),
 ];
 

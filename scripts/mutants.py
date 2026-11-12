@@ -56,6 +56,7 @@ DOCTOR = ("-p", "ferrum-kernel", "--test", "doctor_it")
 CONNECT = ("-p", "ferrum-kernel", "--test", "connect_it")
 COLLAB = ("-p", "ferrum-kernel", "--test", "collab_it")
 TRANSITIONS = ("-p", "ferrum-kernel", "--test", "transitions_it")
+APPROVALS = ("-p", "ferrum-kernel", "--test", "approvals_it")
 HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
@@ -650,6 +651,15 @@ MUTANTS = [
     # Transitions that do things (docs/builder/decisions.md BD-19).
     ("transition-required-param-unasked", "crates/kernel/src/doc.rs", ".filter(|p| p.required && given.get(&p.name)", ".filter(|p| false && given.get(&p.name)", TRANSITIONS),
     ("transition-rule-runs-on-every-save", "crates/kernel/src/doc.rs", ".filter(|(rule, _)| rule.on == RuleOn::Save || rule.on == on)", ".filter(|(rule, _)| rule.on != RuleOn::Submit || on == RuleOn::Submit)", TRANSITIONS),
+    # Approvals on a transition (docs/builder/decisions.md BD-19).
+    ("approval-requester-decides", "crates/kernel/src/approvals.rs", "    if !on.policy.allow_requester {", "    if false {", APPROVALS),
+    ("approval-completes-early", "crates/kernel/src/approvals.rs", "if satisfied(&steps[i], &of, requester, policy.allow_requester) {", "if true {", APPROVALS),
+    ("approval-reset-ignored", "crates/kernel/src/approvals.rs", ".filter(|f| old.get(*f) != new.get(*f))", ".filter(|_| false)", APPROVALS),
+    ("approval-escalated-twice", "crates/kernel/src/approvals.rs", " && steps[i].escalated_at.is_none() {", " {", APPROVALS),
+    ("approval-not-rechecked", "crates/kernel/src/approvals.rs", "        if !still {", "        if false {", APPROVALS),
+    ("approval-stand-in-requester", "crates/kernel/src/approvals.rs", "if out.contains(&ctx.user) || out.contains(&person) {", "if out.contains(&person) {", APPROVALS),
+    ("approval-reject-without-reason", "crates/kernel/src/approvals.rs", "if !approve && comment.is_none() {", "if false {", APPROVALS),
+    ("approval-names-unchecked", "crates/kernel/src/customize.rs", "        crate::approvals::check_names(tx, ctx.tenant, was, &now).await?;\n", "\n", APPROVALS),
     # Service targets (docs/api.md, Service targets).
     ("target-pause-ignored", "crates/logic/src/target.rs", "        if running && said.pause {", "        if false {", LOGIC_UNIT),
     ("target-late-met-in-time", "crates/logic/src/target.rs", "(Some(m), b, _) if b.is_some() ||", "(Some(m), b, _) if false && b.is_some() ||", LOGIC_UNIT),

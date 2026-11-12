@@ -5,10 +5,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 28 |
+| Not started | 25 |
 | Partial | 2 |
 | Implemented, unverified | 1 |
-| Verified in software | 15 |
+| Verified in software | 18 |
 | **All** | **46** |
 
 ## BF0: Decisions and inventory
@@ -45,9 +45,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| BF-APPROVE-001 | Approvals on transitions | Not started | AT-BF-APPROVE-001 | 0 | Not started |
-| BF-APPROVE-002 | Independence | Not started | AT-BF-APPROVE-002 | 0 | Not started |
-| BF-APPROVE-003 | Delegation and escalation | Not started | AT-BF-APPROVE-003 | 0 | Not started |
+| BF-APPROVE-001 | Approvals on transitions | Verified in software | AT-BF-APPROVE-001 | 1 | A transition's approval policy (BD-19): steps in order or together, approvers by role, field or expression over the record and settings, N, all or any, a when per step (an amount matrix); taking it makes a request and the record stays; the last approval completes it once as the system on the requester's behalf with its effects (two deciding at once: once, no decision lost); each decision kept with who, when, step and comment, in the record's history; a change to a reset_on field voids the decisions so far; recall; rejection with a reason, to on_reject; checked when saved with the step's place; a packaged entity's workflow takes one (approvals_it; mutants approval-*). Decisions are tied to their request and step, not the record's version; an approver without read access sees the request, not the record; a packaged document's plain submit takes no policy; no screen; not walked in a browser |
+| BF-APPROVE-002 | Independence | Verified in software | AT-BF-APPROVE-002 | 1 | Per step: never the requester unless the policy allows, not those who decided an earlier step, not whoever took named transitions on the record (from its history, submit and cancel included), checked when the step opens and again at each decision (approvals_it; mutants approval-requester-decides, approval-stand-in-requester). The transition's own not_creator and not_creator_of are unchanged; only the kernel path was tested, not a process or the interface |
+| BF-APPROVE-003 | Delegation and escalation | Verified in software | AT-BF-APPROVE-003 | 1 | Stand-ins are person_away, as for process tasks: a substitute decides in their own name for the absent approver, both kept, one hop, never the requester; reminders and escalation to a role, field or expression after a step's own times, in working time on a calendar when named, acted on once each by the minute loop with two passes at once (approvals_it; mutant approval-escalated-twice). Stand-in dates are the server's day; an escalation adds deciders, it does not move the step |
 | BF-APPROVE-004 | Targets in business time | Verified in software | AT-BF-APPROVE-004 | 4 | A target is a customization of any entity saved on its own (add_target): its due moment and state word kept on the record by every save (create, update, a configured action, a workflow transition), in a calendar's open hours across a weekend and a holiday or in plain time; a pause stops the clock, a new within moves the due moment from now, a re-opened record starts the next round, and the minute loop marks a breach once with two sweeps at once, written into the record in any document status (a submitted shipment too) with an updated event an automation reacts to (old in its condition), past the record's rules; a real failure leaves the breach recorded; an app's webhook gets neither doc nor was (service_apps_it); a named calendar cannot be deleted; packs carry the calendars (targets_it, the decision table in ferrum-logic, the refusals in ferrum-meta; mutants target-*). Pausing is an expression, not a mark on workflow states; records that existed before a target start at their next save; no breach event, endpoint or screen; not walked in a browser; the help-desk app keeps its own sla.rs |
 | BF-APPROVE-005 | Proof: approvals as configuration | Not started | AT-BF-APPROVE-005 | 0 | Not started |
 

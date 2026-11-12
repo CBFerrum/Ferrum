@@ -381,6 +381,15 @@ impl Kernel {
                             false
                         }
                     };
+                // Approvals owed a reminder or an escalation (approvals.rs); a full pass looks again at once.
+                let more = more
+                    | match k.sweep_approvals_at(Utc::now()).await {
+                        Ok(n) => n as i64 >= crate::approvals::SWEEP_BATCH,
+                        Err(e) => {
+                            tracing::warn!("approvals: {e}");
+                            false
+                        }
+                    };
                 if more {
                     tokio::task::yield_now().await;
                     if *shutdown.borrow() {

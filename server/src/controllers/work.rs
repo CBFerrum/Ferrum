@@ -55,7 +55,8 @@ async fn mentions(k: &Kernel, ctx: &Ctx) -> ferrum_kernel::Result<Vec<Value>> {
 async fn work(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let k = &st.kernel;
-    let (assigned, approvals, mentioned) = tokio::join!(k.my_assignments(&ctx, None), k.my_approvals(&ctx, MOST), mentions(k, &ctx));
+    let (assigned, approvals, mentioned, requests) =
+        tokio::join!(k.my_assignments(&ctx, None), k.my_approvals(&ctx, MOST), mentions(k, &ctx), k.my_approval_requests(&ctx, MOST as i64));
     let mut partial = false;
     let mut ok = |r: Result<Vec<Value>, Error>, what: &str| {
         r.unwrap_or_else(|e| {
@@ -91,6 +92,19 @@ async fn work(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Respo
             }))
         })
         .collect();
+    // Approval requests (BD-19) awaiting the caller's decision, after the transitions they may take.
+    let requests = requests.map(|r| r["to_decide"].as_array().cloned().unwrap_or_default());
+    let approvals: Vec<Value> = approvals
+        .into_iter()
+        .chain(ok(requests, "approval requests").into_iter().filter_map(|a| {
+            let (entity, id) = (a["entity"].as_str()?, a["record"].as_str()?);
+            Some(json!({
+                "kind": "approval_request", "id": a["request"], "title": a["title"],
+                "subtitle": format!("{} · {}", a["entity_label"].as_str().unwrap_or(entity), a["action"].as_str().unwrap_or_default()),
+                "url": open(entity, id), "at": a["requested_at"],
+            }))
+        }))
+        .collect();
     let mentioned = ok(mentioned, "mentions");
     Ok(Json(json!({
         "groups": [
@@ -103,7 +117,13 @@ async fn work(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Respo
     .into_response())
 }
 
+/// `GET /api/approvals`: the caller's approvals, `to_decide` (theirs, or of whom they stand in for) and
+/// `awaiting_others` (their own requests still pending) (BD-19).
+async fn approvals(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.my_approval_requests(&ctx, MOST as i64).await?).into_response())
+}
+
 pub fn routes() -> Routes {
     use axum::routing::get;
-    Routes::new().add("/api/work", get(work))
+    Routes::new().add("/api/work", get(work)).add("/api/approvals", get(approvals))
 }
