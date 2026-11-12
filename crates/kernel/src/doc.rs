@@ -642,7 +642,7 @@ impl Kernel {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
         check_version(&doc, expected_version)?;
-        match (on, docstatus_of(&doc)) {
+        match (&on, docstatus_of(&doc)) {
             (DocumentAction::Submit, 0) => {
                 let mut probe = doc.clone();
                 self.hook_before_validate(ctx, tx, &ent, &mut probe).await?;
@@ -653,8 +653,9 @@ impl Kernel {
             (DocumentAction::Cancel, 1) => {}
             (DocumentAction::Submit, _) => return Err(Error::invalid("only draft documents can be submitted")),
             (DocumentAction::Cancel, _) => return Err(Error::invalid("only submitted documents can be cancelled")),
+            (DocumentAction::Action(_), _) => return Err(Error::internal("an action's approval is asked where the action runs")),
         }
-        let Some(asked) = self.request_approval(ctx, tx, &ent, id, &doc, (on.as_str(), "", true), &a.policy, &json!({})).await? else {
+        let Some(asked) = self.request_approval(ctx, tx, &ent, id, &doc, (on.as_str(), "", true), &a.policy, &json!({}), None).await? else {
             return Ok(None);
         };
         let mut out = self.mask(ctx, &ent, doc);
@@ -838,10 +839,13 @@ impl Kernel {
     pub async fn run_action_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, action: &str, params: &Value) -> Result<Value> {
         // A secret parameter is never shown back, in an error's text either.
         let secrets = self.entity(ctx, entity).ok().and_then(|e| e.def.actions.iter().find(|a| a.name == action).map(|a| a.secret_values(params)));
-        self.action_given(ctx, tx, entity, id, action, params).await.map_err(|e| e.redact(&secrets.unwrap_or_default()))
+        self.action_given(ctx, tx, entity, id, action, params, false).await.map_err(|e| e.redact(&secrets.unwrap_or_default()))
     }
 
-    async fn action_given(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, action: &str, params: &Value) -> Result<Value> {
+    /// Runs action `action` of record `id` as `ctx` with `params` (`approved`: an approval request on it was just
+    /// satisfied, approvals.rs, so it runs now rather than asking again). Every gate is checked as `ctx` either way.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn action_given(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, action: &str, params: &Value, approved: bool) -> Result<Value> {
         let ent = self.entity(ctx, entity)?;
         // The settings its expressions read, once for this save (BD-17).
         let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
@@ -862,6 +866,17 @@ impl Kernel {
             let links = crate::links::load(self, ctx, tx, &ent, &view, &crate::links::used([expr])).await?;
             if !expr.eval_bool_with(&Scope { doc: &view, old: None, parent: None, user: &user }, &[("links", &links)]).map_err(Error::invalid)? {
                 return Err(Error::invalid(format!("'{}' is not available for this document", def.label)));
+            }
+        }
+        // Who must agree first: the action waits for them, its parameters kept (secret ones sealed; approvals.rs).
+        if !approved
+            && let Some(a) = ent.document_approvals.get(&DocumentAction::Action(def.name.clone()))
+            && !(ctx.is_system && a.policy.system_bypass)
+        {
+            crate::actions::refuse_if(self, ctx, tx, &ent, def, &doc, params).await?;
+            let state = doc.get("workflow_state").and_then(Value::as_str).unwrap_or_default().to_string();
+            if let Some(asked) = self.request_approval(ctx, tx, &ent, id, &doc, (action, &state, false), &a.policy, params, Some(def)).await? {
+                return Ok(json!({"_approval": asked}));
             }
         }
         // Set up by configuration: its effects say what it does (actions.rs).
@@ -971,7 +986,7 @@ impl Kernel {
         self.transition_rules(ctx, tx, &ent, &next, &doc, &moving).await?;
         // Who must agree first: the record stays, awaiting them (approvals.rs).
         if let (Some(policy), None) = (&t.approval, approved)
-            && let Some(asked) = self.request_approval(ctx, tx, &ent, id, &doc, (&t.action, &t.from, false), policy, &params).await?
+            && let Some(asked) = self.request_approval(ctx, tx, &ent, id, &doc, (&t.action, &t.from, false), policy, &params, None).await?
         {
             let mut out = self.mask(ctx, &ent, doc);
             out.insert("_approval".into(), asked);

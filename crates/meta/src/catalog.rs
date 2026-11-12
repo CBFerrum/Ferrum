@@ -196,9 +196,13 @@ impl Catalog {
             }
         }
         for a in &p.manifest.approvals {
-            let what = format!("{}: approval on {}", a.entity, a.on.as_str());
+            let what = format!("{}: approval on {}", a.entity, a.on.key());
             let Some(e) = ours(&a.entity) else { return invalid(format!("{name}: {what}: {} is not this package's entity", a.entity)) };
-            if !e.submittable || p.manifest.workflows.iter().any(|w| w.entity == a.entity) {
+            if let DocumentAction::Action(action) = &a.on {
+                if let Some(m) = crate::effective::action_approval_problem(e, action) {
+                    return invalid(format!("{name}: {what}: {m}"));
+                }
+            } else if !e.submittable || p.manifest.workflows.iter().any(|w| w.entity == a.entity) {
                 return invalid(format!("{name}: {what}: only a submittable entity without a workflow asks approval on submit or cancel"));
             }
             validate_approval(e, &format!("{name}: {what}"), None, &a.policy).map_err(MetaError::Invalid)?;
