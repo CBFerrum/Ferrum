@@ -24,6 +24,19 @@ const SECRET: &str = "sk-Zq81-connection-secret";
 const SIGNING: &str = "whsec-Pm42-signing-secret";
 const INBOUND: &str = "whsec-In77-inbound-secret";
 const TOKEN: &str = "tok-Qq19-shared-inbound";
+const CLIENT: &str = "cs-Kk55-oauth-client-secret";
+const REFRESH: &str = "RT-1-Zz8-refresh";
+
+/// The stand-in provider's state: whether the refresh token was revoked, how many access tokens it gave, the one it
+/// takes now.
+static PROVIDER: Mutex<(bool, usize, String)> = Mutex::new((false, 0, String::new()));
+
+fn issue() -> String {
+    let mut p = PROVIDER.lock().unwrap();
+    p.1 += 1;
+    p.2 = format!("AT-{}-Xy9-access", p.1);
+    p.2.clone()
+}
 
 const PACKAGE: &str = "package: depot\nversion: 0.1.0\ndepends: [core]\n";
 const ENTITIES: &str = r#"
@@ -107,6 +120,42 @@ async fn service(seen: Seen) -> u16 {
                         Some("c2") => (200, String::new(), json!({"data": [{"id": "O-3", "title": "Third"}], "next": null}).to_string()),
                         Some(_) => (400, String::new(), "{}".into()),
                     },
+                    "/v1/oauth/token" => {
+                        let form: BTreeMap<String, String> = reqwest::Url::parse(&format!("http://f/?{}", text.split("\r\n\r\n").nth(1).unwrap_or_default()))
+                            .unwrap()
+                            .query_pairs()
+                            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                            .collect();
+                        let refused = (400, String::new(), json!({"error": "invalid_grant"}).to_string());
+                        match form.get("grant_type").map(String::as_str) {
+                            Some("authorization_code") if form.get("code").map(String::as_str) == Some("CODE-1") => {
+                                use base64::Engine as _;
+                                let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json!({"email": "pia@mail.test"}).to_string());
+                                let at = issue();
+                                (
+                                    200,
+                                    String::new(),
+                                    json!({"access_token": at, "refresh_token": REFRESH, "expires_in": 3600, "id_token": format!("h.{claims}.s")}).to_string(),
+                                )
+                            }
+                            Some("refresh_token") if !PROVIDER.lock().unwrap().0 && form.get("refresh_token").map(String::as_str) == Some(REFRESH) => {
+                                (200, String::new(), json!({"access_token": issue(), "expires_in": 3600}).to_string())
+                            }
+                            _ => refused,
+                        }
+                    }
+                    "/v1/oauth/revoke" => {
+                        PROVIDER.lock().unwrap().0 = true;
+                        (200, String::new(), "{}".into())
+                    }
+                    "/v1/me" => {
+                        let now = PROVIDER.lock().unwrap().2.clone();
+                        if text.contains(&format!("authorization: Bearer {now}\r\n")) && !now.is_empty() {
+                            (200, String::new(), json!({"email": "pia@mail.test"}).to_string())
+                        } else {
+                            (401, String::new(), json!({"error": "invalid_token"}).to_string())
+                        }
+                    }
                     "/v1/since" => (200, String::new(), json!({"data": [{"id": "S-1", "title": "Since"}]}).to_string()),
                     _ => (404, String::new(), "{}".into()),
                 };
@@ -302,6 +351,122 @@ async fn pulling(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
     assert!(k.save_connection_def(admin, Some(id), &input("orders", bad, None)).await.unwrap_err().to_string().contains("a pull only reads"));
 }
 
+fn query(url: &str) -> BTreeMap<String, String> {
+    reqwest::Url::parse(url).unwrap().query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect()
+}
+
+/// A person authorises an account: PKCE, state bound to them and their session, used once; tokens sealed, refreshed
+/// ahead and when a service refuses one; a revoked sign-in marks the connection and tells its owner once; disconnecting
+/// revokes. What must never be kept: the states and verifiers it made.
+async fn signing_in(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) -> Vec<String> {
+    let tenant = admin.tenant;
+    let person = |email: &'static str| async move {
+        let id = k.create_user(admin, email, email, None, &[], false).await.unwrap();
+        let mut c = k.load_ctx(tenant, id, None, "it".into()).await.unwrap();
+        c.roles.push("Mailer".into());
+        c
+    };
+    let (pia, bo) = (person("pia@depot.test").await, person("bo@depot.test").await);
+    let provider = json!({"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/oauth/token"), "revoke_url": format!("{base}/oauth/revoke"),
+        "scopes": ["mail.read", "offline"], "client_id": "ferrum-test", "client_secret": "client", "account_at": "/id_token/email"});
+    let d =
+        json!({"base": base, "auth": {"type": "oauth", "owner": "person", "provider": provider}, "roles": ["Mailer"], "operations": {"me": {"path": "/me"}}});
+    let id = k.save_connection_def(admin, None, &input("mailbox", d, Some(json!({"client": CLIENT})))).await.unwrap();
+    let (s1, s2) = (Uuid::now_v7(), Uuid::now_v7());
+    let me = || call("mailbox", "me", json!({}), None);
+    let mut made = Vec::new();
+    let start = |who: Ctx, session: Uuid| async move {
+        let url = k.connect_start(&who, id, session).await.unwrap();
+        let q = query(&url);
+        (q["state"].clone(), q)
+    };
+    let (state, q) = start(pia.clone(), s1).await;
+    assert_eq!(q["redirect_uri"], "https://ferrum.example.test/api/connections/callback", "the platform's own address, exactly");
+    assert_eq!((q["code_challenge_method"].as_str(), q["scope"].as_str(), q["response_type"].as_str()), ("S256", "mail.read offline", "code"));
+    made.push(state.clone());
+    let refused = |r: ferrum_kernel::Result<Uuid>| matches!(r, Err(Error::Unauthorized(_)));
+    assert!(refused(k.connect_finish(&pia, s1, "a-tampered-state", Some("CODE-1"), None).await), "a state it did not make");
+    assert!(refused(k.connect_finish(&pia, s2, &state, Some("CODE-1"), None).await), "another browser session");
+    assert!(refused(k.connect_finish(&pia, s1, &state, Some("CODE-1"), None).await), "a state is used once, even by a wrong try");
+    let (state, _) = start(pia.clone(), s1).await;
+    made.push(state.clone());
+    assert!(refused(k.connect_finish(&bo, s1, &state, Some("CODE-1"), None).await), "another person");
+    let (state, q) = start(pia.clone(), s1).await;
+    made.push(state.clone());
+    assert!(k.connect_finish(&pia, s1, &state, None, Some("access_denied<script>")).await.unwrap_err().to_string().ends_with("access_deniedscript"));
+    let (state, q2) = start(pia.clone(), s1).await;
+    made.push(state.clone());
+    assert_eq!(k.connect_finish(&pia, s1, &state, Some("CODE-1"), None).await.unwrap(), id);
+    let exchanged = seen.lock().unwrap().iter().rev().find(|s| s.starts_with("POST /v1/oauth/token")).cloned().unwrap();
+    let form = query(&format!("http://f/?{}", exchanged.split("\r\n\r\n").nth(1).unwrap()));
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let verifier = form["code_verifier"].clone();
+    assert_eq!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(verifier.as_bytes())), q2["code_challenge"], "PKCE S256");
+    assert_ne!(q["code_challenge"], q2["code_challenge"]);
+    assert_eq!((form["redirect_uri"].as_str(), form["client_secret"].as_str()), ("https://ferrum.example.test/api/connections/callback", CLIENT));
+    made.push(verifier);
+    let mine = k.personal_connections(&pia).await.unwrap();
+    assert_eq!((mine[0]["status"].as_str(), mine[0]["account"].as_str()), (Some("connected"), Some("pia@mail.test")), "{mine:?}");
+
+    // Calls go with the caller's own account; another person has none.
+    assert_eq!(connections::call(k, &pia, None, &me()).await.unwrap(), json!({"email": "pia@mail.test"}));
+    assert!(connections::call(k, &bo, None, &me()).await.unwrap_err().to_string().contains("not connected"));
+    let expire = |at: &'static str| async move {
+        let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!("update conn_token set expires_at = now() + interval '{at}' where tenant_id = $1")))
+            .bind(tenant)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    };
+    // About to expire: refreshed before the call.
+    expire("-1 minute").await;
+    connections::call(k, &pia, None, &me()).await.unwrap();
+    assert_eq!(PROVIDER.lock().unwrap().1, 2);
+    // A service that refuses the token: refreshed once, the call made again.
+    PROVIDER.lock().unwrap().2 = "taken-back".into();
+    connections::call(k, &pia, None, &me()).await.unwrap();
+    assert_eq!(PROVIDER.lock().unwrap().1, 3);
+    // Ahead of its expiry, by the job.
+    expire("5 minutes").await;
+    assert_eq!(k.sweep_tokens_at(chrono::Utc::now()).await.unwrap(), 1);
+    drain(k).await;
+    assert_eq!(PROVIDER.lock().unwrap().1, 4);
+
+    // Revoked at the provider: "needs reconnecting", its owner told once.
+    PROVIDER.lock().unwrap().0 = true;
+    expire("-1 minute").await;
+    let told = "select count(*) from notification where tenant_id = $1 and title = 'Reconnect mailbox'";
+    for _ in 0..2 {
+        assert!(connections::call(k, &pia, None, &me()).await.unwrap_err().to_string().contains("needs reconnecting"));
+        assert_eq!(count(k, tenant, told).await, 1);
+    }
+    assert_eq!(k.personal_connections(&pia).await.unwrap()[0]["status"], "needs_reconnecting");
+    // Connected again, then disconnected: revoked at the provider, gone here.
+    PROVIDER.lock().unwrap().0 = false;
+    let (state, _) = start(pia.clone(), s1).await;
+    made.push(state.clone());
+    k.connect_finish(&pia, s1, &state, Some("CODE-1"), None).await.unwrap();
+    connections::call(k, &pia, None, &me()).await.unwrap();
+    assert!(k.connect_remove(&pia, id).await.unwrap(), "the provider confirmed");
+    let revoked = seen.lock().unwrap().iter().rev().find(|s| s.starts_with("POST /v1/oauth/revoke")).cloned().unwrap();
+    assert!(revoked.contains(&format!("token={REFRESH}")) && revoked.contains("token_type_hint=refresh_token"));
+    assert!(connections::call(k, &pia, None, &me()).await.unwrap_err().to_string().contains("not connected"));
+
+    // The workspace's account is an administrator's to connect.
+    let org = json!({"base": base, "auth": {"type": "oauth", "provider": {"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/oauth/token"), "client_id": "ferrum-org"}},
+                     "operations": {"me": {"path": "/me"}}});
+    let org = k.save_connection_def(admin, None, &input("org", org, None)).await.unwrap();
+    assert!(matches!(k.connect_start(&pia, org, s1).await.unwrap_err(), Error::Forbidden(_)));
+    let url = k.connect_start(admin, org, s1).await.unwrap();
+    made.push(query(&url)["state"].clone());
+    let bad = json!({"auth": {"type": "oauth", "provider": {"authorize_url": "javascript:alert(1)", "token_url": "https://x.test/t", "client_id": "c"}}, "test": true});
+    assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("authorize_url"));
+    made
+}
+
 #[test]
 fn connections_call_out_safely() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -316,7 +481,12 @@ async fn boot() -> (Arc<Kernel>, Ctx) {
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/parcel.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let depot = ferrum_meta::catalog::load_package_files(&files).expect("package");
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([9u8; 32])), connection_hosts: vec!["127.0.0.1".into()], ..Default::default() };
+    let settings = KernelSettings {
+        secret_key: Some(SecretKey::new([9u8; 32])),
+        connection_hosts: vec!["127.0.0.1".into()],
+        public_url: Some("https://ferrum.example.test".into()),
+        ..Default::default()
+    };
     let mut hooks = HookRegistry::default();
     hooks.add_inbound_handler("depot", Arc::new(Depot));
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, depot]).unwrap(), hooks, settings, None).await.expect("boot");
@@ -536,7 +706,10 @@ async fn scenario() {
 
     being_called(&k, &admin).await;
     pulling(&k, &admin, &base, &seen).await;
+    let signed_in = signing_in(&k, &admin, &base, &seen).await;
 
     // ── secrets rest nowhere: not the log, the capture, the audit trail, the jobs ──
-    assert_eq!(rests(&k, &[SECRET, SIGNING, INBOUND, TOKEN]).await, nowhere);
+    let mut never: Vec<&str> = vec![SECRET, SIGNING, INBOUND, TOKEN, CLIENT, REFRESH, "Xy9-access"];
+    never.extend(signed_in.iter().map(String::as_str));
+    assert_eq!(rests(&k, &never).await, nowhere);
 }
