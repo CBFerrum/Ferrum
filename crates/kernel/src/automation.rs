@@ -658,6 +658,28 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
     Ok(())
 }
 
+/// A refusal of a run's effect `i` (from 0), said with its place and kind: `effect 2 (set_fields): Title is required`;
+/// what an effect said of itself first (`find: …`) is not said twice. A record not found stays a record not found.
+pub(crate) fn at_effect(i: usize, a: &AutomationAction, e: Error) -> Error {
+    let kind = serde_json::to_value(a).ok().and_then(|v| v["type"].as_str().map(str::to_string)).unwrap_or_default();
+    let say = |m: String| format!("effect {} ({kind}): {}", i + 1, m.strip_prefix(&format!("{kind}: ")).unwrap_or(&m));
+    match e {
+        Error::Validation(fs) => Error::Validation(
+            fs.into_iter()
+                .map(|mut f| {
+                    f.message = say(f.message);
+                    f
+                })
+                .collect(),
+        ),
+        Error::Invalid(m) => Error::Invalid(say(m)),
+        Error::Conflict(m) => Error::Conflict(say(m)),
+        Error::Forbidden(m) => Error::Forbidden(say(m)),
+        Error::Refused { code, status, message, pointer } => Error::Refused { code, status, message: say(message), pointer },
+        other => other,
+    }
+}
+
 /// The message and document templates there are in the workspace: its packages' and its own.
 pub(crate) async fn known_templates(tx: &mut crate::db::Tx, tenant: Uuid, schema: &ferrum_meta::Schema) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
     let mut messages: BTreeSet<String> = schema.messages.iter().map(|m| m.key.clone()).collect();
@@ -959,6 +981,7 @@ async fn run_one(
         let mut results = Vec::new();
         for (i, action) in validate_actions(&a.actions)?.into_iter().enumerate() {
             let done = Value::Array(results.clone());
+            let what = action.action.clone();
             results.push(
                 run_step(
                     k,
@@ -972,7 +995,8 @@ async fn run_one(
                     &format!("{origin}{i}"),
                     action,
                 )
-                .await?,
+                .await
+                .map_err(|e| at_effect(i, &what, e))?,
             );
         }
         "done"

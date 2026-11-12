@@ -235,7 +235,10 @@ pub(crate) async fn run_effects(
         // The settings it reads, as the workspace has them now (BD-17).
         let user = crate::settings::with(k, ctx, tx, automation::settings_used(&effect)?).await?.user_value();
         let extra = [("params", params), ("results", &done), ("links", &links)];
-        let out = automation::run_step(k, &system, tx, &ent.def.name, Some(id), (&now, &view), &user, &extra, &format!("{origin}{i}"), effect).await?;
+        let what = effect.action.clone();
+        let out = automation::run_step(k, &system, tx, &ent.def.name, Some(id), (&now, &view), &user, &extra, &format!("{origin}{i}"), effect)
+            .await
+            .map_err(|e| automation::at_effect(i, &what, e))?;
         if creates && !out.is_null() {
             made.push(out.clone());
         }
