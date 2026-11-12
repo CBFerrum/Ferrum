@@ -153,6 +153,25 @@ pub enum Auth {
         owner: oauth::Owner,
         provider: oauth::Provider,
     },
+    /// A session the connection signs in to itself (BD-48): its `login` operation exchanges its secrets for a token
+    /// (at `token_at` in the answer; a refresh token at `refresh_at`, the expiry at `expires_at`: seconds from now, a
+    /// Unix time or a moment), its `refresh` operation (given `inputs.refresh_token`) renews it, else it logs in again.
+    /// The token goes in `header` (`authorization`) after `prefix` (`Bearer `). The workspace's own account, sealed and
+    /// refreshed as the broker's tokens are; a login or refresh the service refuses marks it "needs reconnecting".
+    Session {
+        login: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refresh: Option<String>,
+        token_at: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refresh_at: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -469,6 +488,12 @@ pub(crate) fn header_problem(h: &str) -> Option<String> {
 }
 
 impl Description {
+    /// Whether operation `name` is how the connection signs in (a session's login or refresh): never called as an
+    /// operation, by an app, a person, an effect, a pull or "try this", since its answer is a token.
+    pub(crate) fn signs_in_with(&self, name: &str) -> bool {
+        matches!(&self.auth, Auth::Session { login, refresh, .. } if login == name || refresh.as_deref() == Some(name))
+    }
+
     /// What is wrong with it, said plainly; `None` when it may be saved.
     pub fn problem(&self) -> Option<String> {
         if !self.test {
@@ -508,6 +533,21 @@ impl Description {
             Auth::Basic { .. } | Auth::Bearer { .. } => {}
             Auth::Oauth { provider, .. } => {
                 if let Some(p) = provider.problem() {
+                    return Some(p);
+                }
+            }
+            Auth::Session { login, refresh, token_at, refresh_at, expires_at, header, .. } => {
+                if let Some(op) = std::iter::once(login).chain(refresh.iter()).find(|o| !self.operations.contains_key(*o)) {
+                    return Some(format!("auth: there is no operation {op}"));
+                }
+                if let Some(p) = std::iter::once(token_at)
+                    .chain(refresh_at.iter())
+                    .chain(expires_at.iter())
+                    .find_map(|p| pointer_problem(p).or_else(|| p.is_empty().then(|| "auth: a pointer is not empty".to_string())))
+                {
+                    return Some(p);
+                }
+                if let Some(p) = header.as_deref().and_then(header_problem) {
                     return Some(p);
                 }
             }
@@ -820,6 +860,45 @@ fn digest(v: &Value) -> String {
 
 // ── connections as stored ──
 
+/// A connection's secrets, open, its row locked for the rest of `tx` (to change them).
+pub(crate) async fn lock_secrets(tx: &mut Tx, k: &Kernel, tenant: Uuid, id: Uuid) -> Result<BTreeMap<String, String>> {
+    let sealed: Option<Option<String>> =
+        sqlx::query_scalar("select sealed from conn where tenant_id = $1 and id = $2 for update").bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
+    match sealed.ok_or_else(|| Error::NotFound("connection".into()))? {
+        Some(s) => serde_json::from_str(&k.open_sealed(&sealed_label(tenant, id), &s)?).map_err(Error::internal),
+        None => Ok(BTreeMap::new()),
+    }
+}
+
+/// Seals `held` with `set` set and `remove` removed as the connection's secrets, in `tx` (after [`lock_secrets`]).
+pub(crate) async fn store_secrets(
+    tx: &mut Tx,
+    k: &Kernel,
+    tenant: Uuid,
+    id: Uuid,
+    mut held: BTreeMap<String, String>,
+    set: BTreeMap<String, String>,
+    remove: &[String],
+) -> Result<BTreeMap<String, String>> {
+    held.extend(set);
+    held.retain(|n, _| !remove.contains(n));
+    let key = k.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("connection secrets need the server's secret key (FERRUM_SECRET_KEY)".into()))?;
+    let sealed = key.seal(&sealed_label(tenant, id), &serde_json::to_string(&held).map_err(Error::internal)?)?;
+    sqlx::query("update conn set sealed = $3, updated_at = now() where tenant_id = $1 and id = $2")
+        .bind(tenant)
+        .bind(id)
+        .bind(sealed)
+        .execute(&mut **tx)
+        .await?;
+    Ok(held)
+}
+
+/// Whether a secret is one the platform keeps for itself ([`oauth::REGISTERED_ID`], the DPoP key): never set, listed or
+/// dropped by an administrator's save.
+fn kept_by_platform(name: &str) -> bool {
+    name.starts_with('_')
+}
+
 pub(crate) fn sealed_label(tenant: Uuid, id: Uuid) -> String {
     format!("conn:{tenant}:{id}")
 }
@@ -965,6 +1044,9 @@ impl Kernel {
         }
         may_use(ctx, app, &conn.desc)?;
         let op = conn.desc.operations.get(&c.operation).ok_or_else(|| Error::invalid(format!("{} has no operation {}", conn.name, c.operation)))?;
+        if conn.desc.signs_in_with(&c.operation) {
+            return Err(Error::invalid(format!("{} is how {} signs in: it is not called", c.operation, conn.name)));
+        }
         let inputs = match &c.inputs {
             Value::Null => Value::Object(Map::new()),
             Value::Object(o) => {
@@ -1031,6 +1113,8 @@ impl Kernel {
         keep: Option<&str>,
     ) -> Result<Outcome> {
         let op = conn.desc.operations.get(name).ok_or_else(|| Error::invalid(format!("{} has no operation {name}", conn.name)))?;
+        // Signing in: made without credentials of its own, never captured (its answer is a token), never refreshed.
+        let bare = conn.desc.signs_in_with(name);
         let started = Instant::now();
         let mut mask = conn.mask();
         let mut debug = None;
@@ -1053,10 +1137,10 @@ impl Kernel {
             let mut tries = 0;
             let got = loop {
                 tries += 1;
-                let got = match self.build_request(ctx, conn, op, inputs, key, page).await {
+                let got = match self.build_request(ctx, conn, op, inputs, key, page, bare).await {
                     Ok((req, more)) => {
                         mask.extend(more);
-                        if conn.debug {
+                        if conn.debug && !bare {
                             debug = Some(json!({"request": captured(&req, &mask)}));
                         }
                         let mut reach = conn.reach();
@@ -1064,6 +1148,9 @@ impl Kernel {
                             reach.max_bytes = cap;
                         }
                         let got = self.fetch(req, &reach).await;
+                        if let Ok(a) = &got {
+                            oauth::remember_nonce(conn.id, a);
+                        }
                         if let (Some(d), Ok(a)) = (debug.as_mut(), &got) {
                             d["answer"] = json!({"status": a.status, "body": clipped(&masked(&a.body, &mask))});
                         }
@@ -1071,10 +1158,18 @@ impl Kernel {
                     }
                     Err(e) => Err(e),
                 };
+                // A server binding tokens that asks for its nonce: the call made again with it (RFC 9449 §9).
+                if tries == 1
+                    && matches!(&conn.desc.auth, Auth::Oauth { provider, .. } if provider.dpop)
+                    && matches!(&got, Ok(a) if a.status == 401 && a.header("www-authenticate").is_some_and(|w| w.contains("use_dpop_nonce")))
+                {
+                    continue;
+                }
                 // A token the service no longer takes: refreshed once, and the call made again.
                 if tries == 1
+                    && !bare
                     && matches!(&got, Ok(a) if a.status == 401)
-                    && matches!(conn.desc.auth, Auth::Oauth { .. })
+                    && matches!(conn.desc.auth, Auth::Oauth { .. } | Auth::Session { .. })
                     && self.access_token(conn, ctx, true).await.is_ok()
                 {
                     continue;
@@ -1226,6 +1321,7 @@ impl Kernel {
         inputs: &Value,
         key: Option<&str>,
         page: Option<Page<'_>>,
+        bare: bool,
     ) -> Result<(Request, Vec<String>)> {
         let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key});
         if let Some(p) = page {
@@ -1239,7 +1335,7 @@ impl Kernel {
             for (h, v) in conn.desc.headers.iter().chain(&op.headers) {
                 headers.push((h.clone(), r(v)?));
             }
-            let more = self.authenticate(ctx, conn, &mut headers, None).await?;
+            let more = self.authenticate(ctx, conn, &mut headers, None, &reqwest::Method::GET, &url).await?;
             return Ok((Request { method: reqwest::Method::GET, url, headers, body: None }, more));
         }
         let mut url = reqwest::Url::parse(&format!("{}{}", conn.desc.base.trim_end_matches('/'), render_path(&op.path, &vars)?))
@@ -1294,19 +1390,38 @@ impl Kernel {
             }
             None => None,
         };
-        let more = self.authenticate(ctx, conn, &mut headers, body.as_ref().map(|b| b.0.as_slice())).await?;
         let method = reqwest::Method::from_bytes(op.method().as_bytes()).map_err(Error::internal)?;
+        let more = if bare { vec![] } else { self.authenticate(ctx, conn, &mut headers, body.as_ref().map(|b| b.0.as_slice()), &method, &url).await? };
         Ok((Request { method, url, headers, body }, more))
     }
 
     /// Adds what proves who calls; what more it must never show.
-    async fn authenticate(&self, ctx: &Ctx, conn: &Loaded, headers: &mut Vec<(String, String)>, body: Option<&[u8]>) -> Result<Vec<String>> {
+    async fn authenticate(
+        &self,
+        ctx: &Ctx,
+        conn: &Loaded,
+        headers: &mut Vec<(String, String)>,
+        body: Option<&[u8]>,
+        method: &reqwest::Method,
+        url: &reqwest::Url,
+    ) -> Result<Vec<String>> {
         use base64::Engine as _;
         match &conn.desc.auth {
             Auth::None => {}
-            Auth::Oauth { .. } => {
+            Auth::Oauth { provider, .. } => {
                 let token = self.access_token(conn, ctx, false).await?;
-                headers.push(("authorization".into(), format!("Bearer {token}")));
+                if provider.dpop {
+                    headers.push(("authorization".into(), format!("DPoP {token}")));
+                    headers.push(("dpop".into(), self.dpop_proof(conn, method, url, Some(&token)).await?));
+                } else {
+                    headers.push(("authorization".into(), format!("Bearer {token}")));
+                }
+                return Ok(vec![token]);
+            }
+            Auth::Session { header, prefix, .. } => {
+                let token = self.access_token(conn, ctx, false).await?;
+                let (header, prefix) = (header.as_deref().unwrap_or("authorization"), prefix.as_deref().unwrap_or("Bearer "));
+                headers.push((header.to_string(), format!("{prefix}{token}")));
                 return Ok(vec![token]);
             }
             Auth::Header { header, secret, prefix } => headers.push((header.clone(), format!("{prefix}{}", conn.secret(secret)?))),
@@ -1418,6 +1533,7 @@ impl Kernel {
         }
         let id = id.unwrap_or_else(Uuid::now_v7);
         let source = self.packaged_connections(ctx).into_iter().find(|(_, c)| c.name == input.name).map(|(p, _)| format!("package:{p}"));
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let sealed = match &input.secrets {
             Some(s) => {
                 let key = self
@@ -1425,11 +1541,25 @@ impl Kernel {
                     .secret_key
                     .as_ref()
                     .ok_or_else(|| Error::Unavailable("connection secrets need the server's secret key (FERRUM_SECRET_KEY)".into()))?;
-                Some(key.seal(&sealed_label(ctx.tenant, id), &serde_json::to_string(s).map_err(Error::internal)?)?)
+                // What the platform keeps among them (a registered client, a DPoP key) stays.
+                let held = match sqlx::query_scalar::<_, Option<String>>("select sealed from conn where tenant_id = $1 and id = $2 for update")
+                    .bind(ctx.tenant)
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .flatten()
+                {
+                    Some(old) => {
+                        serde_json::from_str::<BTreeMap<String, String>>(&self.open_sealed(&sealed_label(ctx.tenant, id), &old)?).map_err(Error::internal)?
+                    }
+                    None => BTreeMap::new(),
+                };
+                let mut all: BTreeMap<String, String> = held.into_iter().filter(|(n, _)| kept_by_platform(n)).collect();
+                all.extend(s.clone());
+                Some(key.seal(&sealed_label(ctx.tenant, id), &serde_json::to_string(&all).map_err(Error::internal)?)?)
             }
             None => None,
         };
-        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let n = sqlx::query(
             "insert into conn (tenant_id, id, name, label, description, sealed, enabled, source) values ($1, $2, $3, $4, $5, $6, $7, $8) \
              on conflict (tenant_id, id) do update set name = excluded.name, label = excluded.label, description = excluded.description, \
@@ -1453,6 +1583,10 @@ impl Kernel {
         audit::record(&mut tx, ctx, "Connection", id, "save", None, json!({"name": input.name, "enabled": input.enabled, "secrets": input.secrets.is_some()}))
             .await?;
         tx.commit().await?;
+        // A session signs in again with secrets given anew.
+        if input.secrets.is_some() && matches!(input.description.auth, Auth::Session { .. }) {
+            self.forget_session(ctx, id).await?;
+        }
         Ok(id)
     }
 
@@ -1485,6 +1619,7 @@ impl Kernel {
                 Some(s) => serde_json::from_str::<BTreeMap<String, String>>(&self.open_sealed(&sealed_label(ctx.tenant, id), &s)?)
                     .map_err(Error::internal)?
                     .into_keys()
+                    .filter(|n| !kept_by_platform(n))
                     .collect(),
                 None => vec![],
             };
@@ -1521,6 +1656,9 @@ impl Kernel {
         admin_only(ctx)?;
         let conn = self.load_connection(ctx.tenant, &id.to_string()).await?;
         let op = conn.desc.operations.get(operation).ok_or_else(|| Error::invalid(format!("{} has no operation {operation}", conn.name)))?;
+        if conn.desc.signs_in_with(operation) {
+            return Err(Error::invalid(format!("{operation} is how {} signs in: it is not tried", conn.name)));
+        }
         if op.changes() && key.is_none_or(|k| k.trim().is_empty()) {
             return Err(Error::invalid(format!("{operation} changes something at the service, so trying it needs a key")));
         }

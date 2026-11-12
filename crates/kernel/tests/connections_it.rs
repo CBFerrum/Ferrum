@@ -33,6 +33,32 @@ static PROVIDER: Mutex<(bool, usize, String)> = Mutex::new((false, 0, String::ne
 
 /// The stand-in's pull routes: how often `/shaky` was asked (it answers "later" twice), whether `/down` is down.
 static SHAKY: AtomicUsize = AtomicUsize::new(0);
+const APP_PASSWORD: &str = "app-pw-Rr61-session";
+const SESSION_REFRESH: &str = "SR-1-Ww3-refresh";
+const REGISTERED: &str = "dyn-secret-Jj27-registered";
+/// The stand-in session service: logins made, the access token it takes now, whether it refuses refreshes.
+static SESSION: Mutex<(usize, String, bool)> = Mutex::new((0, String::new(), false));
+/// The stand-in DPoP provider: registrations made, the key's `x` its tokens are bound to.
+static BOUND: Mutex<(usize, String)> = Mutex::new((0, String::new()));
+
+/// A DPoP proof in a request (its `dpop` header), checked as a server would: ES256 under the key in its header. Its
+/// claims and the key's `x`.
+fn proof(text: &str, method: &str, url: &str) -> Option<(Value, String)> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let jwt = text.lines().find_map(|l| l.strip_prefix("dpop: "))?.trim();
+    let mut parts = jwt.split('.');
+    let (h, c, sig) = (parts.next()?, parts.next()?, parts.next()?);
+    let header: Value = serde_json::from_slice(&b64.decode(h).ok()?).ok()?;
+    let claims: Value = serde_json::from_slice(&b64.decode(c).ok()?).ok()?;
+    let (x, y) = (b64.decode(header["jwk"]["x"].as_str()?).ok()?, b64.decode(header["jwk"]["y"].as_str()?).ok()?);
+    let point = [&[4u8][..], &x, &y].concat();
+    let key = ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, point);
+    key.verify(format!("{h}.{c}").as_bytes(), &b64.decode(sig).ok()?).ok()?;
+    (header["typ"] == "dpop+jwt" && claims["htm"] == method && claims["htu"] == url && claims["jti"].is_string())
+        .then(|| (claims, header["jwk"]["x"].as_str().unwrap().to_string()))
+}
+
 /// How often `/busy` was asked (it answers 429 with a Retry-After once).
 static BUSY: AtomicUsize = AtomicUsize::new(0);
 static DOWN: Mutex<bool> = Mutex::new(true);
@@ -195,6 +221,67 @@ async fn service(seen: Seen) -> u16 {
                     "/v1/files/label.pdf" => (200, "content-type: application/pdf\r\n".into(), "%PDF-1.4 label".into()),
                     "/v1/files/big.pdf" => (200, "content-type: application/pdf\r\n".into(), "x".repeat(2000)),
                     "/v1/raw" => (200, "content-type: image/png\r\n".into(), "PNGDATA".into()),
+                    "/v1/session/login" => {
+                        let mut s = SESSION.lock().unwrap();
+                        s.0 += 1;
+                        if text.contains(APP_PASSWORD) {
+                            s.1 = format!("SA-{}-Ww3-access", s.0);
+                            (200, String::new(), json!({"accessJwt": s.1, "refreshJwt": SESSION_REFRESH, "expiresIn": 3600}).to_string())
+                        } else {
+                            (401, String::new(), json!({"error": "AuthenticationRequired"}).to_string())
+                        }
+                    }
+                    "/v1/session/refresh" => {
+                        let mut s = SESSION.lock().unwrap();
+                        if !s.2 && text.contains(&format!("authorization: Bearer {SESSION_REFRESH}\r\n")) {
+                            s.1 = format!("SA-r{}-Ww3-access", s.0);
+                            (200, String::new(), json!({"accessJwt": s.1, "expiresIn": "3600"}).to_string())
+                        } else {
+                            (400, String::new(), json!({"error": "ExpiredToken"}).to_string())
+                        }
+                    }
+                    "/v1/session/me" => {
+                        let now = SESSION.lock().unwrap().1.clone();
+                        if !now.is_empty() && text.contains(&format!("authorization: Bearer {now}\r\n")) {
+                            (200, String::new(), json!({"handle": "acme-net"}).to_string())
+                        } else {
+                            (401, String::new(), json!({"error": "invalid"}).to_string())
+                        }
+                    }
+                    "/v1/dpop/register" => {
+                        BOUND.lock().unwrap().0 += 1;
+                        (201, String::new(), json!({"client_id": "dyn-1", "client_secret": REGISTERED}).to_string())
+                    }
+                    "/v1/dpop/token" => {
+                        let port = s.local_addr().unwrap().port();
+                        use base64::Engine as _;
+                        let basic = base64::engine::general_purpose::STANDARD.encode(format!("dyn-1:{REGISTERED}"));
+                        match proof(&text, "POST", &format!("http://127.0.0.1:{port}/v1/dpop/token")) {
+                            Some((c, _)) if c["nonce"] != "N-1" => (400, "dpop-nonce: N-1\r\n".into(), json!({"error": "use_dpop_nonce"}).to_string()),
+                            Some((_, x)) if text.contains(&format!("authorization: Basic {basic}\r\n")) => {
+                                BOUND.lock().unwrap().1 = x;
+                                (200, String::new(), json!({"access_token": "DP-AT-Ww9", "token_type": "DPoP", "expires_in": 3600}).to_string())
+                            }
+                            _ => (400, String::new(), json!({"error": "invalid_dpop_proof"}).to_string()),
+                        }
+                    }
+                    "/v1/dpop/me" => {
+                        use base64::Engine as _;
+                        use sha2::Digest as _;
+                        let port = s.local_addr().unwrap().port();
+                        let ath = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(b"DP-AT-Ww9"));
+                        let bound = BOUND.lock().unwrap().1.clone();
+                        match proof(&text, "GET", &format!("http://127.0.0.1:{port}/v1/dpop/me")) {
+                            Some((c, x)) if text.contains("authorization: DPoP DP-AT-Ww9\r\n") && c["ath"] == ath && x == bound => {
+                                if c["nonce"] == "R-1" {
+                                    (200, String::new(), json!({"bound": true}).to_string())
+                                } else {
+                                    (401, "www-authenticate: DPoP error=\"use_dpop_nonce\"\r\ndpop-nonce: R-1\r\n".into(), "{}".into())
+                                }
+                            }
+                            _ => (401, String::new(), json!({"error": "invalid_token"}).to_string()),
+                        }
+                    }
                     "/v1/astray" => (200, "link: <http://10.0.0.1/v1/feed?page=2>; rel=\"next\"\r\n".into(), json!({"data": []}).to_string()),
                     _ => (404, String::new(), "{}".into()),
                 };
@@ -576,6 +663,106 @@ async fn files(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
     let r = connections::call(k, admin, None, &call("media", "raw", json!({}), None)).await.unwrap();
     let image: Uuid = r["image"].as_str().unwrap().parse().unwrap();
     assert_eq!(k.read_file(admin, image).await.unwrap().1, "image/png");
+}
+
+/// Sign-in that is not the authorisation-code flow (BD-48): a session from an app password, refreshed by its own
+/// operation, refused once and not hammered, reconnected; and a provider that registers its client and binds tokens
+/// to the connection's key (DPoP), with nonces at the token address and at the service.
+async fn sessions(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) -> Vec<String> {
+    let tenant = admin.tenant;
+    let login = json!({"path": "/session/login", "method": "POST", "changes": false,
+        "body": "{\"identifier\": {{ secret.handle | json }}, \"password\": {{ secret.app_password | json }}}"});
+    let refresh = json!({"path": "/session/refresh", "method": "POST", "body": "{}", "changes": false, "headers": {"authorization": "Bearer {{ inputs.refresh_token }}"}});
+    let d = json!({"base": base, "auth": {"type": "session", "login": "login", "refresh": "refresh", "token_at": "/accessJwt", "refresh_at": "/refreshJwt", "expires_at": "/expiresIn"},
+        "operations": {"login": login, "refresh": refresh, "me": {"path": "/session/me"}}});
+    let secrets = json!({"handle": "acme.social", "app_password": APP_PASSWORD});
+    let id = k.save_connection_def(admin, None, &input("network", d.clone(), Some(secrets.clone()))).await.unwrap();
+    let me = || call("network", "me", json!({}), None);
+    let logins = || SESSION.lock().unwrap().0;
+    assert_eq!(connections::call(k, admin, None, &me()).await.unwrap(), json!({"handle": "acme-net"}), "signed in on first use");
+    connections::call(k, admin, None, &me()).await.unwrap();
+    assert_eq!(logins(), 1, "once");
+    assert_eq!(k.connection_defs(admin).await.unwrap().iter().find(|c| c["name"] == "network").unwrap()["account"]["status"], "connected");
+    // The login is never an operation anyone calls: its answer is a token.
+    for e in [
+        connections::call(k, admin, None, &call("network", "login", json!({}), None)).await.unwrap_err(),
+        k.try_connection(admin, id, "refresh", &json!({}), None).await.unwrap_err(),
+    ] {
+        assert!(e.to_string().contains("signs in"), "{e}");
+    }
+    let mut pulled = d.clone();
+    pulled["pulls"] = json!([{"name": "p", "operation": "login", "every_minutes": 15, "items_at": "/x", "cursor": "time", "map": {"entity": "Alert", "by": {"external_id": "/id"}}}]);
+    assert!(k.save_connection_def(admin, Some(id), &input("network", pulled, None)).await.unwrap_err().to_string().contains("signs in"));
+    // Expiring: its refresh operation; a 401: refreshed once and called again.
+    let expire = || async move {
+        let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+        sqlx::query("update conn_token set expires_at = now() - interval '1 minute' where tenant_id = $1 and conn_id = $2")
+            .bind(tenant)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    };
+    expire().await;
+    connections::call(k, admin, None, &me()).await.unwrap();
+    assert!(seen.lock().unwrap().iter().any(|r| r.starts_with("POST /v1/session/refresh")), "refreshed by its operation");
+    SESSION.lock().unwrap().1 = "taken-back".into();
+    let before = seen.lock().unwrap().iter().filter(|r| r.starts_with("POST /v1/session/refresh")).count();
+    connections::call(k, admin, None, &me()).await.unwrap();
+    assert_eq!(seen.lock().unwrap().iter().filter(|r| r.starts_with("POST /v1/session/refresh")).count(), before + 1);
+    assert_eq!(logins(), 1);
+    // A refresh refused: "needs reconnecting", the administrators told once, nothing tried again on each call.
+    SESSION.lock().unwrap().2 = true;
+    expire().await;
+    let told = "select count(*) from notification where tenant_id = $1 and title = 'Reconnect network'";
+    for _ in 0..2 {
+        assert!(connections::call(k, admin, None, &me()).await.unwrap_err().to_string().contains("needs reconnecting"));
+        assert_eq!(count(k, tenant, told).await, 1);
+    }
+    assert_eq!(logins(), 1);
+    // Reconnected by an administrator: signed in afresh.
+    SESSION.lock().unwrap().2 = false;
+    assert_eq!(k.connect_session(admin, id).await.unwrap()["status"], "connected");
+    connections::call(k, admin, None, &me()).await.unwrap();
+    assert_eq!(logins(), 2);
+    // A wrong password: refused once, then not tried on every call.
+    let mut wrong = secrets.clone();
+    wrong["app_password"] = json!("not-the-password");
+    k.save_connection_def(admin, Some(id), &input("network", d.clone(), Some(wrong))).await.unwrap();
+    for _ in 0..2 {
+        assert!(connections::call(k, admin, None, &me()).await.unwrap_err().to_string().contains("needs reconnecting"));
+    }
+    assert_eq!(logins(), 3, "one login with the wrong password, not one a call");
+    k.save_connection_def(admin, Some(id), &input("network", d, Some(secrets))).await.unwrap();
+    connections::call(k, admin, None, &me()).await.unwrap();
+
+    // A provider that registers its client and binds its tokens (DPoP).
+    let provider = json!({"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/dpop/token"),
+        "registration_url": format!("{base}/dpop/register"), "dpop": true, "scopes": ["atproto"]});
+    let d = json!({"base": base, "auth": {"type": "oauth", "provider": provider}, "operations": {"me": {"path": "/dpop/me"}}});
+    let bound = k.save_connection_def(admin, None, &input("bound", d, None)).await.unwrap();
+    let session = Uuid::now_v7();
+    let url = k.connect_start(admin, bound, session).await.unwrap();
+    assert_eq!(query(&url)["client_id"], "dyn-1", "the registered client");
+    let registered = seen.lock().unwrap().iter().rev().find(|r| r.starts_with("POST /v1/dpop/register")).cloned().unwrap();
+    let asked: Value = serde_json::from_str(registered.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(
+        (asked["redirect_uris"].clone(), asked["dpop_bound_access_tokens"].clone()),
+        (json!(["https://ferrum.example.test/api/connections/callback"]), json!(true))
+    );
+    let state = query(&k.connect_start(admin, bound, session).await.unwrap())["state"].clone();
+    assert_eq!(BOUND.lock().unwrap().0, 1, "registered once");
+    k.connect_finish(admin, session, &state, Some("CODE-1"), None).await.unwrap();
+    assert_eq!(seen.lock().unwrap().iter().filter(|r| r.starts_with("POST /v1/dpop/token")).count(), 2, "asked again with the nonce");
+    assert_eq!(
+        connections::call(k, admin, None, &call("bound", "me", json!({}), None)).await.unwrap(),
+        json!({"bound": true}),
+        "a proof bound to the same key"
+    );
+    let listed = k.connection_defs(admin).await.unwrap().into_iter().find(|c| c["name"] == "bound").unwrap();
+    assert_eq!(listed["secrets"], json!([]), "what the platform keeps is not listed: {listed}");
+    vec![APP_PASSWORD.into(), SESSION_REFRESH.into(), "Ww3-access".into(), REGISTERED.into(), "DP-AT-Ww9".into()]
 }
 
 fn query(url: &str) -> BTreeMap<String, String> {
@@ -1073,7 +1260,8 @@ async fn scenario() {
     answers(&k, &admin, &base, &seen).await;
     files(&k, &admin, &base, &seen).await;
     pulling(&k, &admin, &base, &seen).await;
-    let signed_in = signing_in(&k, &admin, &base, &seen).await;
+    let mut signed_in = signing_in(&k, &admin, &base, &seen).await;
+    signed_in.extend(sessions(&k, &admin, &base, &seen).await);
     erasing(&k, &admin, &seen, store).await;
 
     // ── secrets rest nowhere: not the log, the capture, the audit trail, the jobs ──

@@ -89,6 +89,12 @@ async fn pull_now(Auth(ctx): Auth, State(app): State<AppContext>, Path((id, name
     Ok((StatusCode::ACCEPTED, Json(json!({"job": app_state(&app)?.kernel.pull_now(&ctx, id, &name).await?}))).into_response())
 }
 
+/// `POST /api/admin/connections/{id}/session`: a connection that signs in with a session signs in now, afresh →
+/// `{status, account, expires_at}`.
+async fn session_now(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.connect_session(&ctx, id).await?).into_response())
+}
+
 /// `GET /api/connections`: the connections a person signs in to with their own account, and whether they have.
 async fn personal(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
     Ok(Json(json!({"connections": app_state(&app)?.kernel.personal_connections(&ctx).await?})).into_response())
@@ -167,6 +173,7 @@ pub fn routes() -> Routes {
         .add("/admin/connections/{id}/log", get(log))
         .add("/admin/connections/{id}/pulls", get(pulls))
         .add("/admin/connections/{id}/pulls/{name}", post(pull_now))
+        .add("/admin/connections/{id}/session", post(session_now))
         .add("/connections", get(personal))
         .add("/connections/callback", get(callback))
         .add("/connections/{id}/connect", post(connect).delete(disconnect))

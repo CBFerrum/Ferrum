@@ -79,6 +79,9 @@ impl Pull {
         if op.changes() {
             return at(format!("{} changes something; a pull only reads", self.operation));
         }
+        if desc.signs_in_with(&self.operation) {
+            return at(format!("{} is how the connection signs in", self.operation));
+        }
         if !op.inputs.is_empty() && !op.inputs.contains(&self.cursor_input) {
             return at(format!("{} takes no input {}", self.operation, self.cursor_input));
         }
