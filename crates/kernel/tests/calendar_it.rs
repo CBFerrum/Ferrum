@@ -108,7 +108,13 @@ async fn scenario() {
     // closes from 17:00. The same wait from Monday 17:00 then counts two hours on the holiday and six on Wednesday.
     let mut dated = body.clone();
     dated["exceptions"] = json!({"2026-11-10": {"open": true, "hours": [["10:00", "12:00"]]}, "2026-11-09": {"open": false, "hours": [["17:00", "24:00"]]}});
-    let bad = k.put_logic_calendar(&admin, "office", &json!({"zone": "Asia/Kolkata", "weekends": ["sun"], "holidays": [], "exceptions": {"2026-11-10": {"open": true, "hours": [["12:00", "10:00"]]}}})).await;
+    let bad = k
+        .put_logic_calendar(
+            &admin,
+            "office",
+            &json!({"zone": "Asia/Kolkata", "weekends": ["sun"], "holidays": [], "exceptions": {"2026-11-10": {"open": true, "hours": [["12:00", "10:00"]]}}}),
+        )
+        .await;
     assert!(matches!(&bad, Err(ferrum_kernel::Error::Validation(f)) if f[0].field == "exceptions"), "{bad:?}");
     assert_eq!(k.put_logic_calendar(&admin, "office", &dated).await.unwrap(), 3);
     let listed = k.logic_calendars(&admin).await.unwrap();
