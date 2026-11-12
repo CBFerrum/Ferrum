@@ -116,6 +116,29 @@ impl Error {
     pub fn is_retryable(&self) -> bool {
         matches!(self, Error::Retryable(_))
     }
+
+    /// The same error with each of `secrets` in its text shown as redacted (an action's secret parameters).
+    pub fn redact(self, secrets: &[String]) -> Self {
+        if secrets.is_empty() {
+            return self;
+        }
+        let r = |s: String| secrets.iter().fold(s, |s, x| s.replace(x.as_str(), ferrum_meta::REDACTED));
+        match self {
+            Error::NotFound(s) => Error::NotFound(r(s)),
+            Error::Validation(fs) => Error::Validation(fs.into_iter().map(|f| FieldError { message: r(f.message), ..f }).collect()),
+            Error::Invalid(s) => Error::Invalid(r(s)),
+            Error::Conflict(s) => Error::Conflict(r(s)),
+            Error::Forbidden(s) => Error::Forbidden(r(s)),
+            Error::Unauthorized(s) => Error::Unauthorized(r(s)),
+            Error::TooManyRequests(s) => Error::TooManyRequests(r(s)),
+            Error::Wait(s, n) => Error::Wait(r(s), n),
+            Error::Retryable(s) => Error::Retryable(r(s)),
+            Error::Unavailable(s) => Error::Unavailable(r(s)),
+            Error::Db(s) => Error::Db(r(s)),
+            Error::Internal(s) => Error::Internal(r(s)),
+            Error::Refused { code, status, message, pointer } => Error::Refused { code, status, message: r(message), pointer },
+        }
+    }
 }
 
 /// A logic refusal in Ferrum's words: the codes Ferrum already has keep their variants, so callers that

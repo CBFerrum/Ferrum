@@ -80,11 +80,10 @@ macro_rules! apps {
     ) => {
         /// Registers every compiled app's hooks, reports and endpoints: ERP's first, so the apps
         /// that build on its documents see their totals, postings and open items.
-        pub fn register(hooks: &mut HookRegistry) {
+        pub fn register(hooks: &mut HookRegistry) -> Result<(), String> {
             ferrum_app_erp::register(hooks);
-            for source in ferrum_app_erp::reports() {
-                ferrum_domain::reports::add_source(source);
-            }
+            let mut sources: Vec<(String, std::sync::Arc<dyn ferrum_domain::reports::ReportSource>)> = Vec::new();
+            sources.extend(ferrum_app_erp::reports().into_iter().map(|s| ("erp".to_string(), s)));
             $(
                 #[cfg(feature = $nfeature)]
                 {
@@ -95,29 +94,25 @@ macro_rules! apps {
                     } else {
                         hooks.scoped(&packages, |h| $nkrate::register(h));
                     }
-                    for source in $nkrate::reports() {
-                        ferrum_domain::reports::add_source(source);
-                    }
+                    sources.extend($nkrate::reports().into_iter().map(|s| ($nfeature.to_string(), s)));
                 }
             )*
             $(
                 #[cfg(feature = $lfeature)]
                 {
                     $lkrate::register(hooks);
-                    for source in $lkrate::reports() {
-                        ferrum_domain::reports::add_source(source);
-                    }
+                    sources.extend($lkrate::reports().into_iter().map(|s| ($lfeature.to_string(), s)));
                 }
             )*
             // Apps built in elsewhere, scoped to their packages as native ones are.
             for app in crate::extensions::all() {
                 let packages: Vec<String> = (app.packages)().map(|ps| ps.iter().map(|p| p.name().to_string()).collect()).unwrap_or_default();
                 hooks.scoped(&packages, |h| (app.register)(h));
-                for source in (app.reports)() {
-                    ferrum_domain::reports::add_source(source);
-                }
+                sources.extend((app.reports)().into_iter().map(|s| (app.id.to_string(), s)));
             }
             let _ = hooks;
+            // Set, not added to: the set-up runs twice in one process on `ferrum start`.
+            ferrum_domain::reports::set_sources(sources)
         }
 
         /// Every compiled app's upkeep, one job each, ERP's first (`round` runs them).
@@ -613,9 +608,22 @@ mod tests {
     fn hooks_run_only_with_their_packages() {
         let mut hooks = ferrum_kernel::HookRegistry::default();
         ferrum_domain::register(&mut hooks);
-        super::register(&mut hooks);
+        super::register(&mut hooks).unwrap();
         let everywhere: Vec<String> = hooks.scopes().into_iter().filter(|(entity, scope)| scope.is_none() && entity != "*").map(|(e, _)| e).collect();
         assert!(everywhere.is_empty(), "hooks for every workspace on {everywhere:?}");
+    }
+
+    /// Loco runs `after_context` twice on `ferrum start` (once in `cli::main`, once in `create_app`), so the apps
+    /// register twice: their reports are still listed, and run, once.
+    #[test]
+    fn reports_are_listed_once_however_often_apps_register() {
+        for _ in 0..2 {
+            super::register(&mut ferrum_kernel::HookRegistry::default()).unwrap();
+        }
+        let names: Vec<String> = ferrum_domain::reports::catalog().as_array().unwrap().iter().filter_map(|e| e["name"].as_str().map(str::to_string)).collect();
+        let distinct: std::collections::BTreeSet<&String> = names.iter().collect();
+        assert!(!names.is_empty());
+        assert_eq!(names.len(), distinct.len(), "a report listed twice");
     }
 
     /// Every piece of upkeep has its own lock key.

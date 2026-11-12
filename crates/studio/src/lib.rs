@@ -47,16 +47,14 @@ struct StudioRows;
 #[async_trait]
 impl ferrum_kernel::documents::QueryRows for StudioRows {
     async fn rows(&self, k: &Kernel, ctx: &Ctx, report: &str, params: &Value) -> Result<Value> {
-        let sys = Ctx::system(ctx.tenant, ctx.schema.clone());
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-        let found = k.find_tx(&sys, &mut tx, builder::REPORT, &[ferrum_kernel::query::Filter::eq("label", report)], None, 2).await?;
+        let id = ferrum_kernel::store::doc_id(&builder::report_labelled(k, &mut tx, ctx, report).await?)?;
         tx.commit().await?;
-        let id = match found.as_slice() {
-            [one] => ferrum_kernel::store::doc_id(one)?,
-            [] => return Err(Error::field("query", format!("there is no report {report}"))),
-            _ => return Err(Error::field("query", format!("more than one report is called {report}: name one by a label of its own"))),
-        };
         Ok(builder::run_report(k, ctx, id, &builder::Runtime::parse(params)?).await?["data"].take())
+    }
+
+    async fn shape(&self, k: &Kernel, tx: &mut ferrum_kernel::Tx, ctx: &Ctx, report: &str) -> Result<Value> {
+        builder::report_shape(k, tx, ctx, report).await
     }
 }
 

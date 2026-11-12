@@ -96,7 +96,7 @@ impl Kernel {
         files: &[Uuid],
         purpose: crate::retention::Purpose,
     ) -> Result<()> {
-        self.queue_mail_send(tx, tenant, to, subject, html, files, purpose, None).await
+        self.queue_mail_send(tx, tenant, to, subject, html, files, purpose, None, &[]).await
     }
 
     /// [`queue_mail_for`](Self::queue_mail_for), and the message send it is (messages.rs), told when it goes.
@@ -111,6 +111,7 @@ impl Kernel {
         files: &[Uuid],
         purpose: crate::retention::Purpose,
         send: Option<Uuid>,
+        mask: &[String],
     ) -> Result<()> {
         let to = to.trim();
         check_mail(to, subject)?;
@@ -142,6 +143,13 @@ impl Kernel {
             }
         }
         let mut payload = serde_json::json!({"to": to, "subject": subject.trim(), "html": html, "files": files, "purpose": purpose});
+        // Secret values wait sealed, and only a placeholder shows where they go.
+        if !mask.is_empty() {
+            let plain = serde_json::json!({"subject": subject.trim(), "html": html, "mask": mask});
+            payload["sealed"] = Value::String(self.seal_message(tenant, &plain)?);
+            payload["subject"] = crate::messages::masked(&payload["subject"], mask);
+            payload["html"] = crate::messages::masked(&payload["html"], mask);
+        }
         if let Some(send) = send {
             payload["send"] = serde_json::json!(send);
         }
@@ -630,7 +638,17 @@ impl Kernel {
                 return self.mail_settled(ev.tenant_id, send, "skipped", Some("they may no longer be contacted for it")).await;
             }
             let attachments = self.mail_attachments(ev.tenant_id, &ev.payload).await?;
-            mailer.send_with(field("to"), field("subject"), field("html"), &attachments).await?;
+            let Some(sealed) = ev.payload.get("sealed") else {
+                mailer.send_with(field("to"), field("subject"), field("html"), &attachments).await?;
+                return self.mail_settled(ev.tenant_id, send, "sent", None).await;
+            };
+            let (open, _) = self.open_message(ev.tenant_id, sealed)?;
+            let text = |k: &str| open[k].as_str().unwrap_or_default().to_string();
+            mailer.send_with(field("to"), &text("subject"), &text("html"), &attachments).await?;
+            // Handed over: what stays in the outbox is the placeholder alone.
+            let mut tx = self.db.system_tx().await?;
+            sqlx::query("update outbox set payload = payload - 'sealed' where id = $1").bind(ev.id).execute(&mut *tx).await?;
+            tx.commit().await?;
             return self.mail_settled(ev.tenant_id, send, "sent", None).await;
         }
         self.queue_deliveries(ev).await?;

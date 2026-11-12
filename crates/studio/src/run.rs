@@ -29,6 +29,11 @@ pub async fn run(k: &Kernel, ctx: &Ctx, spec: &Spec) -> Result<Value> {
     out
 }
 
+/// [`run`] in the caller's transaction (an install's, which sees what it made).
+pub(crate) async fn run_in(tx: &mut Tx, ctx: &Ctx, spec: &Spec) -> Result<Value> {
+    execute(tx, ctx, &compile(ctx, spec)?).await
+}
+
 #[derive(Debug, Clone, Default)]
 struct Row {
     cells: Map<String, Value>,
