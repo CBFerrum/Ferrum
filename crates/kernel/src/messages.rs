@@ -860,8 +860,10 @@ async fn over_limit(tx: &mut Tx, tenant: Uuid, address: &str, s: &Settings) -> R
 
 /// Who a recipient spec names, as the `message` effect writes them: `owner`, `user:<id>`, `role:<name>`, or
 /// `field:<name>`, a field of the record holding an address or a number, or a link to a record whose own address and
-/// number fields (by type) are used (a customer, a contact, an employee). An expression is the caller's to evaluate
-/// ([`Recipient::from_value`]).
+/// number fields (by type) are used (a customer, a contact, an employee); or `links:<link>.<table>.<field>`, that field
+/// of each line of a table of the record a link field names (the members of an assignment group), read as the
+/// workspace as `links` is (BD-14), at most [`crate::automation::MAX_ITEMS`] lines. An expression is the caller's to
+/// evaluate ([`Recipient::from_value`]).
 pub async fn recipients(k: &Kernel, tx: &mut Tx, ctx: &Ctx, entity: &str, doc: &Value, spec: &str) -> Result<Vec<Recipient>> {
     let users = |ids: Vec<Uuid>| ids.into_iter().map(Recipient::user).collect::<Vec<_>>();
     if spec == "owner" {
@@ -878,11 +880,73 @@ pub async fn recipients(k: &Kernel, tx: &mut Tx, ctx: &Ctx, entity: &str, doc: &
             .await?;
         return Ok(users(ids));
     }
+    let ent = ctx.schema.entity(entity).cloned().ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
+    if let Some(path) = spec.strip_prefix("links:") {
+        let (link, table, field) = lines_path(path).ok_or_else(|| Error::invalid(format!("{spec} is links:<link>.<table>.<field>")))?;
+        if let Some(m) = lines_problem(&ctx.schema, &ent, path) {
+            return Err(Error::invalid(m));
+        }
+        let names = std::collections::BTreeSet::from([link.to_string()]);
+        let linked = crate::links::load(k, ctx, tx, &ent, doc, &names).await?;
+        let rows = linked[link][table].as_array().cloned().unwrap_or_default();
+        if rows.len() > crate::automation::MAX_ITEMS {
+            return Err(Error::invalid(format!(
+                "{spec}: {} lines, more than the {} one message goes to; nothing was sent",
+                rows.len(),
+                crate::automation::MAX_ITEMS
+            )));
+        }
+        let lent = ent.field(link).and_then(|f| f.to.as_deref()).and_then(|t| ctx.schema.entity(t)).cloned();
+        let cent = lent.and_then(|l| l.field(table).and_then(|f| f.of.clone())).and_then(|c| ctx.schema.entity(&c).cloned());
+        let cent = cent.ok_or_else(|| Error::invalid(format!("{spec}: its lines are not installed")))?;
+        let mut out = Vec::new();
+        for r in &rows {
+            out.extend(of_field(k, tx, ctx, &cent, r, field).await?);
+        }
+        return Ok(out);
+    }
     let Some(field) = spec.strip_prefix("field:") else {
-        return Err(Error::invalid(format!("message.to '{spec}' is owner, user:<id>, role:<name>, field:<name> or expr:<expression>")));
+        return Err(Error::invalid(format!(
+            "message.to '{spec}' is owner, user:<id>, role:<name>, field:<name>, links:<link>.<table>.<field> or expr:<expression>"
+        )));
     };
-    let ent = ctx.schema.entity(entity).ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
-    let f = ent.field(field).ok_or_else(|| Error::invalid(format!("message.to: {entity} has no field {field}")))?;
+    of_field(k, tx, ctx, &ent, doc, field).await
+}
+
+/// `<link>.<table>.<field>`, split.
+pub(crate) fn lines_path(path: &str) -> Option<(&str, &str, &str)> {
+    let mut p = path.split('.');
+    let (Some(l), Some(t), Some(f), None) = (p.next(), p.next(), p.next(), p.next()) else { return None };
+    [l, t, f].iter().all(|s| !s.trim().is_empty()).then_some((l, t, f))
+}
+
+/// What is wrong with `<link>.<table>.<field>` on `ent` (`<link>.<table>` for a loop over the lines): a link field
+/// of it, a table of the record it names, a field of that table's lines holding an address, a number or a link.
+pub(crate) fn lines_problem(schema: &ferrum_meta::Schema, ent: &ferrum_meta::EffEntity, path: &str) -> Option<String> {
+    let parts: Vec<&str> = path.split('.').collect();
+    let (link, table, field) = match parts[..] {
+        [l, t] => (l, t, None),
+        [l, t, f] => (l, t, Some(f)),
+        _ => return Some(format!("links:{path} is links:<link>.<table>.<field>")),
+    };
+    let Some(to) = ent.field(link).filter(|f| f.ftype == FieldType::Link).and_then(|f| f.to.as_deref()) else {
+        return Some(format!("links:{path}: {link} is not a link field of {}", ent.def.label));
+    };
+    let Some(lent) = schema.entity(to) else { return Some(format!("links:{path}: {link} links to {to}, which is not installed")) };
+    let Some(cent) = lent.field(table).filter(|f| f.ftype == FieldType::Table).and_then(|f| f.of.as_deref()).and_then(|c| schema.entity(c)) else {
+        return Some(format!("links:{path}: {table} is not a table of lines of {}", lent.def.label));
+    };
+    match field.map(|f| (f, cent.field(f).map(|d| d.ftype))) {
+        None | Some((_, Some(FieldType::Email | FieldType::Phone | FieldType::Data | FieldType::Link))) => None,
+        Some((f, Some(_))) => Some(format!("links:{path}: {f} holds no address, number or link")),
+        Some((f, None)) => Some(format!("links:{path}: the lines of {table} have no field {f}")),
+    }
+}
+
+/// Who `field` of `doc` (a record or a line of `ent`) names: an address or a number it holds, or the record it links
+/// to's own address and number (by type).
+async fn of_field(k: &Kernel, tx: &mut Tx, ctx: &Ctx, ent: &ferrum_meta::EffEntity, doc: &Value, field: &str) -> Result<Vec<Recipient>> {
+    let f = ent.field(field).ok_or_else(|| Error::invalid(format!("message.to: {} has no field {field}", ent.def.name)))?;
     let Some(v) = doc.get(field).and_then(Value::as_str).filter(|v| !v.trim().is_empty()) else { return Ok(vec![]) };
     match (f.ftype, f.to.as_deref()) {
         (FieldType::Link, Some(target)) => {
@@ -901,6 +965,19 @@ pub async fn recipients(k: &Kernel, tx: &mut Tx, ctx: &Ctx, entity: &str, doc: &
         (FieldType::Phone, _) => Ok(vec![Recipient { phone: Some(v.into()), ..Default::default() }]),
         _ => Ok(vec![Recipient::address(v)]),
     }
+}
+
+/// The people of the app `to` names, each once: those of an address (a user's) among them.
+pub(crate) async fn users_of(tx: &mut Tx, tenant: Uuid, to: &[Recipient]) -> Result<Vec<Uuid>> {
+    let mut out = Vec::new();
+    for r in to {
+        if let Some(u) = complete(tx, tenant, r).await?.user
+            && !out.contains(&u)
+        {
+            out.push(u);
+        }
+    }
+    Ok(out)
 }
 
 // ── delivery ──

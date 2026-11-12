@@ -680,6 +680,9 @@ impl Kernel {
                         if template.is_some() {
                             notes.push(format!("{step}: its e-mail template is not carried over; the mail sends the body as text"));
                         }
+                        if to.starts_with("links:") {
+                            notes.push(format!("{step}: it mailed each of {to}; say whom a process mails"));
+                        }
                         action(
                             match purpose {
                                 crate::retention::Purpose::Marketing => "ferrum.mail.marketing".into(),
