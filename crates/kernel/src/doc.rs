@@ -1636,6 +1636,32 @@ impl Kernel {
         outbox::enqueue_change(tx, ctx.tenant, &format!("{}.{event}", ent.def.name), source, payload).await
     }
 
+    /// Raises `event` on record `id` (`doc`, unchanged) that is about something besides a change of the record: in its
+    /// history as `audit_action` with `about` under `key`, and in the event's payload the same way, beside `doc`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn emit_about(
+        &self,
+        ctx: &Ctx,
+        tx: &mut Tx,
+        ent: &EffEntity,
+        id: Uuid,
+        event: &str,
+        audit_action: &str,
+        doc: &Doc,
+        (key, about): (&str, Value),
+    ) -> Result<()> {
+        audit::record(tx, ctx, &ent.def.name, id, audit_action, None, json!({key: about})).await?;
+        let actor = (!ctx.user.is_nil()).then_some(ctx.user);
+        let mut payload =
+            json!({"entity": ent.def.name, "id": id, "event": event, "actor": actor, "depth": ctx.depth, "request_id": ctx.request_id, key: about});
+        let v = Value::Object(doc.clone());
+        if serde_json::to_vec(&v).map(|b| b.len()).unwrap_or(usize::MAX) <= MAX_EVENT_DOC_BYTES {
+            payload["doc"] = v;
+        }
+        let source = outbox::Source { entity: &ent.def.name, record_id: id, actor, legal_entity: uuid_of(doc.get("company")), version: None };
+        outbox::enqueue_change(tx, ctx.tenant, &format!("{}.{event}", ent.def.name), source, payload).await
+    }
+
     async fn hook_before_validate(&self, ctx: &Ctx, tx: &mut Tx, ent: &Arc<EffEntity>, doc: &mut Doc) -> Result<()> {
         for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: ent };
