@@ -103,20 +103,25 @@ impl Kernel {
     /// may change it, as its write scope admits it; reading it is not enough. Not found when they cannot read it.
     pub async fn may_attach(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<()> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        self.get_tx(ctx, &mut tx, entity, id, false).await?;
+        self.may_attach_tx(ctx, &mut tx, entity, id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// [`Kernel::may_attach`] in the caller's transaction.
+    pub async fn may_attach_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid) -> Result<()> {
+        self.get_tx(ctx, tx, entity, id, false).await?;
         let ent = self.entity(ctx, entity)?;
         // An outside person whose portal rule lets them add to a record's conversation attaches to one they read
         // (BD-22): what they upload is shared by nature.
         if ctx.outside && ctx.perms.shared(entity) == Some(true) {
-            tx.commit().await?;
             return Ok(());
         }
         let scope = row_scope(ctx, &ent, Action::Write)?;
-        let doc = self.load_marked(&mut tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
-        if !scope.admits(&mut tx, ctx.tenant, &doc).await? {
+        let doc = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::Forbidden(format!("only someone who may change this {} attaches files to it", ent.def.label.to_lowercase())));
         }
-        tx.commit().await?;
         Ok(())
     }
 
@@ -883,7 +888,11 @@ impl Kernel {
             let user = ctx.user_value();
             let links = crate::links::load(self, ctx, tx, &ent, &view, &crate::links::used([expr])).await?;
             if !expr.eval_bool_with(&Scope { doc: &view, old: None, parent: None, user: &user }, &[("links", &links)]).map_err(Error::invalid)? {
-                return Err(Error::invalid(format!("'{}' is not available for this document", def.label)));
+                // Its own words when it has them, over the record as the presser may read it (BD-44).
+                return Err(Error::invalid(match &def.condition_message {
+                    Some(m) => crate::print::message(m, || told(ctx, &ent, doc.clone(), Some(self))),
+                    None => format!("'{}' is not available for this document", def.label),
+                }));
             }
         }
         // Who must agree first: the action waits for them, its parameters kept (secret ones sealed; approvals.rs).
@@ -1228,7 +1237,8 @@ impl Kernel {
                 errors.push(FieldError::new(k, "unknown field"));
                 continue;
             };
-            if f.computed.is_some() || f.rollup.is_some() || ent.target_keeping(k).is_some() {
+            // Fields the platform keeps: a target's, and a published list's counters (BD-42).
+            if f.computed.is_some() || f.rollup.is_some() || ent.target_keeping(k).is_some() || counted(ctx, ent, k) {
                 continue;
             }
             if read_only(ent, f, stored.as_ref(), None, &user) && !ctx.is_system && !trusted {
@@ -1731,6 +1741,11 @@ fn refusal<'a>(f: &'a FieldDef, sent: &Value, stored: Option<&Value>) -> Option<
     let m = f.read_only_message.as_deref().filter(|_| !f.read_only && !matches!(f.ftype, FieldType::Table | FieldType::Secret))?;
     let stored = normalize(f, stored.unwrap_or(&Value::Null)).ok();
     (normalize(f, sent).ok() != stored).then_some(m)
+}
+
+/// Whether `field` of `ent` is a counter a published list keeps (BD-42): what is sent for it is ignored, as for a total.
+fn counted(ctx: &Ctx, ent: &EffEntity, field: &str) -> bool {
+    ctx.schema.published_lists.iter().any(|l| l.entity == ent.def.name && l.list.counters().any(|c| c == field))
 }
 
 /// A record (or with no kernel, a line) as the person told about it may read it, for a message built from it

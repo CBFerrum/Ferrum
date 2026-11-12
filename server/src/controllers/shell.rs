@@ -1372,11 +1372,28 @@ async fn version(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query
     Ok(Json(json!({"app": a.id, "version": a.version, "release": release.map(|r| r.digest.clone())})).into_response())
 }
 
+/// A POST to a page: only a published record page's count (controllers/lists.rs, BD-42); anything else is not there.
+async fn page_post(State(app): State<AppContext>, headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let Some(("public", rest)) = path.split_once('/') else { return Ok(StatusCode::NOT_FOUND.into_response()) };
+    // A host serving one workspace counts only that workspace's pages, as it shows only those.
+    let slug = rest.split('/').next().unwrap_or_default().to_lowercase();
+    let allowed = match st.shell.place(&headers).await? {
+        Place::Workspace(t) => st.kernel.tenant_by_slug(&slug).await.ok().is_some_and(|(found, _)| found == t),
+        Place::Any => true,
+        _ => false,
+    };
+    if !allowed {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    Ok(super::lists::count(&st.kernel, &st.public_limiter, &headers, rest, &body, st.shell.secure).await)
+}
+
 pub fn routes() -> Routes {
     use axum::routing::get;
     Routes::new()
         .add("/", get(home))
-        .add("/{*path}", get(page))
+        .add("/{*path}", get(page).post(page_post))
         .add("/api/shell", get(shell_info))
         .add("/api/shell/version", get(version))
         .add("/api/shell/words", get(app_words))
