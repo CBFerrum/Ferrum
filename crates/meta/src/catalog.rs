@@ -171,6 +171,75 @@ impl Catalog {
         })
     }
 
+    /// A package's approvals and automations (and its workflows' approvals) are on its own entities, and name only
+    /// roles, message and document templates and settings entities it or a package it depends on ships, and no
+    /// business calendar (a workspace's own).
+    fn validate_defaults(&self, name: &str, p: &Package, deps: &[String]) -> Result<(), MetaError> {
+        let ours = |e: &str| self.entities.get(e).filter(|(owner, _)| owner == name).map(|(_, d)| d);
+        let theirs = || deps.iter().filter_map(|d| self.packages.get(d));
+        let roles: HashSet<&str> = theirs().flat_map(|q| &q.manifest.roles).map(|r| r.name.as_str()).collect();
+        let templates: HashSet<&str> =
+            theirs().flat_map(|q| q.manifest.messages.iter().map(|m| m.key.as_str()).chain(q.manifest.documents.iter().map(|d| d.key.as_str()))).collect();
+        let settings: HashSet<&str> =
+            self.entities.iter().filter(|(_, (owner, e))| deps.contains(owner) && e.kind == EntityKind::Settings).map(|(n, _)| n.as_str()).collect();
+        let check = |what: String, v: &Value| -> Result<(), MetaError> {
+            match foreign(v, &roles, &templates, &settings) {
+                Some(m) => invalid(format!("{name}: {what} names {m}, which neither {name} nor a package it depends on ships")),
+                None => Ok(()),
+            }
+        };
+        for wf in &p.manifest.workflows {
+            for t in &wf.transitions {
+                if let Some(a) = &t.approval {
+                    check(format!("{}: transition {} from {}: approval", wf.entity, t.action, t.from), &serde_json::to_value(a).unwrap_or_default())?;
+                }
+            }
+        }
+        for a in &p.manifest.approvals {
+            let what = format!("{}: approval on {}", a.entity, a.on.as_str());
+            let Some(e) = ours(&a.entity) else { return invalid(format!("{name}: {what}: {} is not this package's entity", a.entity)) };
+            if !e.submittable || p.manifest.workflows.iter().any(|w| w.entity == a.entity) {
+                return invalid(format!("{name}: {what}: only a submittable entity without a workflow asks approval on submit or cancel"));
+            }
+            validate_approval(e, &format!("{name}: {what}"), None, &a.policy).map_err(MetaError::Invalid)?;
+            check(what, &serde_json::to_value(&a.policy).unwrap_or_default())?;
+        }
+        let mut names = HashSet::new();
+        const EVENTS: [&str; 7] = ["created", "updated", "submitted", "cancelled", "deleted", "transitioned", "scheduled"];
+        for a in &p.manifest.automations {
+            let what = format!("{}: automation {}", a.entity, a.name);
+            if !is_ident(&a.name) || !names.insert(a.name.as_str()) {
+                return invalid(format!("{name}: {what}: an automation's name is an identifier of its own"));
+            }
+            if ours(&a.entity).is_none() {
+                return invalid(format!("{name}: {what}: {} is not this package's entity", a.entity));
+            }
+            if !EVENTS.contains(&a.event.as_str()) || (a.event == "scheduled") != a.schedule.is_some() || a.actions.is_empty() {
+                return invalid(format!("{name}: {what}: it needs an event ({}), a schedule exactly when scheduled, and actions", EVENTS.join(", ")));
+            }
+            check(what, &a.definition())?;
+        }
+        Ok(())
+    }
+
+    /// The entities packages `deps` add fields to, with those fields (in dependency order, as a workspace has them).
+    fn seen_by(&self, deps: &[String]) -> HashMap<String, EntityDef> {
+        let mut out: HashMap<String, EntityDef> = HashMap::new();
+        for p in self.order.iter().filter(|n| deps.contains(n)).filter_map(|n| self.packages.get(n)) {
+            for ov in &p.manifest.overlays {
+                for op in &ov.ops {
+                    let OverlayOp::AddField { field, .. } = op else { continue };
+                    let Some((_, base)) = self.entities.get(&ov.entity) else { continue };
+                    let e = out.entry(ov.entity.clone()).or_insert_with(|| base.clone());
+                    if !e.fields.iter().any(|f| f.name == field.name) {
+                        e.fields.push(field.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn validate_packages(&self) -> Result<(), MetaError> {
         // Fields added to an entity, and by whom: two packages adding the same one would break
         // every workspace that installs both.
@@ -260,6 +329,9 @@ impl Catalog {
                     }
                 }
             }
+            // Entities as this package sees them: with the fields it and the packages it depends on add to them.
+            let seen = self.seen_by(&deps);
+            let entity = |e: &str| seen.get(e).or_else(|| self.entities.get(e).map(|(_, d)| d));
             for role in &p.manifest.roles {
                 if role.name.trim().is_empty() {
                     return invalid(format!("{name}: role without a name"));
@@ -268,11 +340,11 @@ impl Catalog {
                     if perm.entity != "*" && !self.entities.contains_key(&perm.entity) {
                         return invalid(format!("{name}: role {} references unknown entity {}", role.name, perm.entity));
                     }
-                    let def = self.entities.get(&perm.entity).map(|(_, e)| e);
+                    let def = entity(&perm.entity);
                     perm.check_condition(|f| def.and_then(|e| e.fields.iter().find(|x| x.name == f)))
                         .map_err(|m| MetaError::Invalid(format!("{name}: role {} on {}: {m}", role.name, perm.entity)))?;
                     if let Some(via) = &perm.via {
-                        crate::via::resolve(&perm.entity, via, |e| self.entities.get(e).map(|(_, d)| d))
+                        crate::via::resolve(&perm.entity, via, entity)
                             .map_err(|m| MetaError::Invalid(format!("{name}: role {} on {}: {m}", role.name, perm.entity)))?;
                     }
                     if let Some(why) = perm.unknown_action(def) {
@@ -289,8 +361,9 @@ impl Catalog {
             for wf in &p.manifest.workflows {
                 validate_workflow(wf, &self.entities).map_err(|m| MetaError::Invalid(format!("{name}: workflow {}: {m}", wf.name)))?;
             }
+            self.validate_defaults(name, p, &deps)?;
             for pd in &p.manifest.personal_data {
-                let Some((_, e)) = self.entities.get(&pd.entity) else {
+                let Some(e) = entity(&pd.entity) else {
                     return invalid(format!("{name}: personal data of unknown entity {}", pd.entity));
                 };
                 if e.kind == EntityKind::Child {
@@ -837,6 +910,9 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>, cu
             return Err(format!("action {}: invalid permission {}", a.name, a.permission));
         }
         compile(e, &format!("action {}", a.name), a.condition.as_deref(), true)?;
+        if let Some(p) = a.params.iter().find(|p| p.secret && !["data", "text"].contains(&p.ptype.as_str())) {
+            return Err(format!("action {}: secret parameter '{}' is data or text", a.name, p.name));
+        }
         if let Some(c) = &a.contract {
             validate_contract(e, a, c)?;
         }
@@ -908,6 +984,12 @@ fn validate_contract(e: &EntityDef, a: &ActionDef, c: &ActionContract) -> Result
     }
     if c.completion.as_deref().is_some_and(|t| t.trim().is_empty()) {
         return Err(format!("action {}: completion says nothing", a.name));
+    }
+    if let Some(once) = &c.answer_once {
+        let declared = c.returns.as_ref().and_then(|r| r.get("properties")).and_then(Value::as_object);
+        if once.fields.is_empty() || once.fields.iter().any(|f| !is_ident(f) || declared.is_some_and(|d| !d.contains_key(f))) {
+            return Err(format!("action {}: answer_once names fields of what it returns", a.name));
+        }
     }
     Ok(())
 }
@@ -1127,6 +1209,9 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
         if let Some(p) = t.params.iter().find(|p| p.name.trim().is_empty() || !names.insert(p.name.as_str())) {
             return Err(format!("transition {}: parameter '{}' is unnamed or named twice", t.action, p.name));
         }
+        if let Some(p) = t.params.iter().find(|p| p.secret) {
+            return Err(format!("transition {}: parameter '{}' cannot be secret: a transition keeps what it is given", t.action, p.name));
+        }
         if let Some(p) = &t.approval {
             validate_approval(e, &format!("transition {}: approval", t.action), Some((wf, &t.from)), p)?;
         }
@@ -1148,6 +1233,42 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
         }
     }
     Ok(())
+}
+
+/// The first role, message or document template, settings entity or business calendar `v` (a policy or an automation
+/// as JSON) names that is not among those given: `role X`, `template X`, `settings entity X` or `calendar X`.
+fn foreign(v: &Value, roles: &HashSet<&str>, templates: &HashSet<&str>, settings: &HashSet<&str>) -> Option<String> {
+    let text = |s: &str| -> Option<String> {
+        if let Some(r) = s.strip_prefix("role:").filter(|r| !roles.contains(r)) {
+            return Some(format!("role {r}"));
+        }
+        s.match_indices("settings.").find_map(|(i, _)| {
+            let n: String = s[i + 9..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            (n.starts_with(|c: char| c.is_ascii_uppercase()) && !settings.contains(n.as_str())).then(|| format!("settings entity {n}"))
+        })
+    };
+    match v {
+        Value::String(s) => text(s),
+        Value::Array(a) => a.iter().find_map(|x| foreign(x, roles, templates, settings)),
+        Value::Object(o) => {
+            let named = |k: &str| o.get(k).and_then(Value::as_str);
+            if let Some(r) = named("role").filter(|r| !roles.contains(r)) {
+                return Some(format!("role {r}"));
+            }
+            if let Some(c) = named("calendar") {
+                return Some(format!("calendar {c}"));
+            }
+            // A template by its key (`message` of a policy or an e-mail, `template` of a message or a document); an
+            // e-mail's own `template` is a body, never a key.
+            let key = |t: &&str| !t.contains(|c: char| c.is_whitespace() || c == '{');
+            let keyed = named("message").or(named("template")).filter(key);
+            if let Some(t) = keyed.filter(|t| !templates.contains(t)) {
+                return Some(format!("template {t}"));
+            }
+            o.values().find_map(|x| foreign(x, roles, templates, settings))
+        }
+        _ => None,
+    }
 }
 
 /// Steps one approval policy holds.
@@ -1414,6 +1535,12 @@ mod tests {
         assert!(refused("[{name: place, label: Place, contract: {compensate_with: place}}]").contains("place"), "an action cannot undo itself");
         assert!(with_actions("[{name: place, label: Place, contract: {compensate_with: release}}, {name: release, label: Release}]").is_ok());
         assert!(refused("[{name: place, label: Place, contract: {returns: 3}}]").contains("returns"));
+        // A secret parameter is text; what is given once is a field of what it returns.
+        assert!(with_actions("[{name: redeem, label: Redeem, params: [{name: pin, label: PIN, secret: true}]}]").is_ok());
+        assert!(refused("[{name: redeem, label: Redeem, params: [{name: pin, label: PIN, type: int, secret: true}]}]").contains("data or text"));
+        let once = "contract: {returns: {type: object, properties: {code: {type: string}}}, answer_once: {fields: [code]}}";
+        assert!(with_actions(&format!("[{{name: issue, label: Issue, {once}}}]")).is_ok());
+        assert!(refused(&format!("[{{name: issue, label: Issue, {}}}]", once.replace("[code]", "[pin]"))).contains("answer_once"));
         let unknown = serde_yaml::from_str::<ActionDef>("{name: place, label: Place, contract: {effect: query, sideways: true}}");
         assert!(unknown.unwrap_err().to_string().contains("sideways"), "unknown keys are refused when the package is read");
     }

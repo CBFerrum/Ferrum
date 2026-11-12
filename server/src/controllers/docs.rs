@@ -185,7 +185,8 @@ async fn action(
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let params = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
-    let (mut done, again) = match receipt(&headers, &format!("POST {entity}/{id}/actions/{action}"), &params) {
+    let digested = st.kernel.digestible_params(&ctx, &entity, &action, &params)?;
+    let (mut done, again) = match receipt(&headers, &format!("POST {entity}/{id}/actions/{action}"), &digested) {
         Some((key, digest)) => st.kernel.run_action_idempotent(&ctx, &entity, id, &action, params, key, &digest).await?,
         None => (st.kernel.run_action(&ctx, &entity, id, &action, params).await?, false),
     };

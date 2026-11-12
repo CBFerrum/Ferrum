@@ -791,10 +791,19 @@ impl Kernel {
     /// The approval policies `entity`'s packages declare, as the packages have them (the workspace's own changes
     /// left out), each marked `source: package` with its package: `{entity, package, approvals: [...]}`. For a
     /// package's entity, which has no definition to replace, this is what Customize shows of its approvals.
+    /// Each says, besides, what the workspace has in its place (`workspace`: the policy, or null when switched off) and
+    /// whether that is its own (`changed`).
     pub fn package_approvals_of(&self, ctx: &Ctx, entity: &str) -> Result<Value> {
         require_admin(ctx)?;
         let ent = ctx.schema.entity(entity).ok_or_else(|| Error::NotFound(format!("entity {entity}")))?;
-        Ok(json!({"entity": entity, "package": ent.package, "approvals": package_approvals(&self.packaged(ctx)?, entity)}))
+        let mut approvals = package_approvals(&self.packaged(ctx)?, entity);
+        let here = package_approvals(&ctx.schema, entity);
+        for a in &mut approvals {
+            let now = here.iter().find(|h| h["on"] == a["on"]).map_or(Value::Null, |h| h["policy"].clone());
+            a["changed"] = json!(now != a["policy"]);
+            a["workspace"] = now;
+        }
+        Ok(json!({"entity": entity, "package": ent.package, "approvals": approvals}))
     }
 
     /// Change-set export: every active customization in order.

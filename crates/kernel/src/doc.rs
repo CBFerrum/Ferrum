@@ -830,6 +830,12 @@ impl Kernel {
     }
 
     pub async fn run_action_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, action: &str, params: &Value) -> Result<Value> {
+        // A secret parameter is never shown back, in an error's text either.
+        let secrets = self.entity(ctx, entity).ok().and_then(|e| e.def.actions.iter().find(|a| a.name == action).map(|a| a.secret_values(params)));
+        self.action_given(ctx, tx, entity, id, action, params).await.map_err(|e| e.redact(&secrets.unwrap_or_default()))
+    }
+
+    async fn action_given(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, action: &str, params: &Value) -> Result<Value> {
         let ent = self.entity(ctx, entity)?;
         // The settings its expressions read, once for this save (BD-17).
         let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
@@ -866,7 +872,7 @@ impl Kernel {
                         let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
                         other.after_action(&mut hc, action, &now, &mut out).await?;
                     }
-                    audit::record(tx, ctx, &ent.def.name, id, &format!("action:{action}"), None, params.clone()).await?;
+                    audit::record(tx, ctx, &ent.def.name, id, &format!("action:{action}"), None, def.redacted(params)).await?;
                 }
                 return Ok(out);
             }
