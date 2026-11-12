@@ -400,7 +400,7 @@ text, opt_out, list_unsubscribe: (List-Unsubscribe, List-Unsubscribe-Post)}`, as
 recipient, nothing sent; `403 opted out` for an address that opted out (an erased one's digest included).
 `Kernel::opted_out(tx, tenant, channel, address)` asks the same. An approval step's `need` may be an expression over
 the record (`"doc.quorum"`), kept on the request when it is made, between one and the approvers found. An optional
-action parameter not given reads as null in its effects and refusals.
+action parameter not given stays absent in its effects and refusals: ask with `has(params.x)`.
 
 **Calls for apps** ([BD-43](builder/decisions.md#bd-43-calls-apps-were-missing)), each in the app's own transaction and
 asking what its route asks: `Kernel::tag_tx(ctx, tx, entity, id, add, remove)` → the record's tags;
