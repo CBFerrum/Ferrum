@@ -619,6 +619,10 @@ impl Kernel {
                 apps.push(json!({"app": app.app(), "held": held}));
             }
         }
+        // The messages sent to them (messages.rs).
+        for held in crate::messages::held_report(&mut tx, ctx.tenant, account_id, &emails, phone.as_deref()).await? {
+            apps.push(json!({"app": "messages", "held": held}));
+        }
         tx.rollback().await?;
         Ok(json!({
             "email": email, "addresses": emails, "phone": phone, "records": records, "possibly": possibly, "account": account, "held": held,
@@ -703,6 +707,11 @@ impl Kernel {
                 apps.push(json!({"app": app.app(), "erased": n}));
             }
         }
+        // The messages sent to them, by id in the journal.
+        let messages = crate::messages::erase_held(&mut tx, ctx.tenant, account, &emails, phone.as_deref()).await?;
+        if !messages.is_empty() {
+            apps.push(json!({"app": "messages", "erased": messages.len()}));
+        }
         // Their addresses in the history's payloads (who did what, as apps write it) go as well.
         if !erased.is_empty() || account.is_some() {
             events += redact_addresses(&mut tx, ctx, &emails, reason).await?;
@@ -711,7 +720,7 @@ impl Kernel {
         let exports = if erased.is_empty() && account.is_none() { 0 } else { crate::export::drop_exports(&mut tx, ctx.tenant, None).await? };
         // By id and field name only: it outlives the data, and must not hold what it erased. Kept here too,
         // for a workspace taken back to an older copy to erase again (FEO-078).
-        let entry = json!({"account": account, "records": journal, "reason": reason});
+        let entry = json!({"account": account, "records": journal, "reason": reason, "messages": messages});
         if !journal.is_empty() || account.is_some() || !apps.is_empty() {
             sqlx::query("insert into privacy_erasure (tenant_id, erasure) values ($1, $2)").bind(ctx.tenant).bind(&entry).execute(&mut *tx).await?;
         }
@@ -824,6 +833,10 @@ impl Kernel {
         if !addresses.is_empty() {
             redact_addresses(tx, ctx, &addresses, reason).await?;
         }
+        let sends: Vec<Uuid> = erasure["messages"].as_array().into_iter().flatten().filter_map(|i| i.as_str()?.parse().ok()).collect();
+        done +=
+            sqlx::query("delete from message_send where tenant_id = $1 and id = any($2)").bind(tenant).bind(&sends).execute(&mut **tx).await?.rows_affected()
+                as usize;
         // The backup's stored exports are from before the erasure; their objects went with it.
         crate::export::drop_exports(tx, tenant, None).await?;
         Ok((done, account))

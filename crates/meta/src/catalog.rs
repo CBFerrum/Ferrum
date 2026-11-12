@@ -183,6 +183,20 @@ impl Catalog {
                     return invalid(format!("{name}: event {}'s payload must be a JSON Schema object", ev.name));
                 }
             }
+            let mut messages = HashSet::new();
+            for m in &p.manifest.messages {
+                if let Some(problem) = m.problem() {
+                    return invalid(format!("{name}: {problem}"));
+                }
+                if !m.key.strip_prefix(name.as_str()).is_some_and(|r| r.starts_with('.')) || !messages.insert(m.key.as_str()) {
+                    return invalid(format!("{name}: message {} must be unique and start with '{name}.'", m.key));
+                }
+                if let Some(entity) = &m.entity
+                    && !self.entities.get(entity).is_some_and(|(owner, _)| deps.contains(owner))
+                {
+                    return invalid(format!("{name}: message {} is about {entity}, which is not this package's or a dependency's", m.key));
+                }
+            }
             for ov in &p.manifest.overlays {
                 let Some((owner, _)) = self.entities.get(&ov.entity) else {
                     return invalid(format!("{name}: overlay targets unknown entity {}", ov.entity));

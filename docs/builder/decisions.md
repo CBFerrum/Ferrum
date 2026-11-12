@@ -525,3 +525,58 @@ gates, rules or effects; an approver reading a record they may not read (see bel
 **Still not built**: approval on a document's delete or amend; `show` on lines' fields; a policy on a submit whose
 entity has a workflow (it goes on the transition, and is refused there with that said).
 
+
+## BD-20. Message templates and channels
+
+Decided 12 November 2026. Asked for by the audit of every app against its segment's leaders
+(`gaps-2026-11-12`: Bookings BK-31 to BK-36, Documents DC-24, DC-40, DC-48, POS PS-58, Builder BL-48): seven apps
+send messages to people by e-mail only, their wording fixed in Rust in English, and nothing sends a text or chat-app
+message. Built once in the platform (`crates/kernel/src/messages.rs`; the API in [api.md](../api.md#messages)).
+
+* **Every message is a template.** A package declares a default for each message it sends (`messages:` in its YAML,
+  key `{package}.{name}`); a workspace edits a copy, sees the default beside it, and resets to it. A release that
+  changes a default never writes over an edit: the edit keeps the digest of the default it started from, and the
+  listing says `default_changed` when they differ. A workspace may add templates of its own, under a key no package's
+  name starts.
+* **Bodies are the print formats' engine** (MiniJinja, escaped for an e-mail's HTML, fuel-limited), per channel
+  (e-mail subject and body, text, chat-app provider template with ordered values or free text, in-app title and text)
+  and per language; the recipient's language is used when known (a user's own), else the workspace's, else English.
+  A save renders every body against a record with every field of the entity and refuses an unknown field, a value
+  the template does not declare, or a body that fails.
+* **What a body sees of the record: the record as the workspace holds it, minus its secret fields** (and its lines'),
+  never the reader-masked view. A message goes to people outside the workspace: who caused it (an automation's
+  runner, a guest on a booking page, a portal person) is not who reads it, so their field groups say nothing about
+  what the recipient may see; the template's author, an administrator, decides that. Secret fields are never
+  rendered, whatever a template asks: they are not in what it reads, and a template naming one is refused when saved.
+* **One send function and one effect.** `messages::send` for apps, `{"type": "message"}` for buttons, transitions,
+  approvals and automations. For each recipient the channels are tried in order and the first they can be reached on
+  is used (each, with `all`). Every send is a row of `message_send`: queued, held, sent, delivered, failed, or skipped
+  with why (no address, opted out, no channel configured, a limit). Nothing is sent, and nothing recorded, unless the
+  caller's transaction commits.
+* **E-mail goes as all mail goes** (the outbox and the server's mailer); `email`, `notify`, the automation mail action
+  and approval notices work unchanged, and may name a template instead.
+* **Text and chat-app messages go to a channel connection that is configuration.** No provider is named in the kernel:
+  a connection describes the HTTP request (address, method, headers, a JSON body or a form, each a template), where the
+  provider's id and error are in its answer, and which statuses mean "later"; its secrets are sealed with the server's
+  key as connections' are. One job per send, retried while the provider says "later", failed at once when it says
+  "no". A test channel delivers into the log only. Delivery reports and replies come back on an inbound route per
+  connection, authenticated as its description says (an HMAC of the body, or a shared token), refused and counted
+  otherwise.
+* **Choice is the consent records there are.** Operational messages always go (a restriction of processing still
+  stops e-mail, as before); promotional ones respect an opt-out per address or number and channel, kept in
+  `contact_consent` with a channel column (what was recorded before is about e-mail), set by a signed link, a reply's
+  stop word or staff. Quiet hours hold promotional text and chat-app messages until they end, in the recipient's zone
+  when known; limits per workspace and recipient an hour stop a runaway automation.
+* **Numbers in international form.** A number without `+` is completed with the workspace's calling code (its trunk
+  prefix dropped when it sets one); with none set it is refused with that reason, never guessed.
+* **One-time codes** for apps: kept as a salted digest, sent through a template, verified once, expiring in ten
+  minutes, five tries, five sends a recipient an hour. The test channel's log masks the code.
+* **Personal data**: a person's sends and codes are in their report and go with their erasure, by id in its journal
+  so a restore erases them again.
+
+**Rules out**: a provider named in code; a message rendered with the reader's rights; a send outside the caller's
+transaction; marketing past an opt-out; a number's country guessed.
+
+**Not yet**: several connections of one kind with routing between them; reading a provider's template catalogue; MMS
+and attachments outside e-mail; a person choosing channels for a notification kind (BL-48 stays the notifications'
+own); scheduled reminders (an automation on a schedule sends them today).

@@ -339,6 +339,7 @@ impl Kernel {
             "assistant_monthly_tokens": settings.get("assistant_monthly_tokens").cloned().unwrap_or(Value::Null),
             "assistant_egress": settings.get("assistant_egress").cloned().unwrap_or_else(|| serde_json::json!({})),
             "offline": settings.get("offline").cloned().unwrap_or_else(|| serde_json::json!({"allowed": true, "hours": 72})),
+            "messages": settings.get("messages").cloned().unwrap_or_else(|| serde_json::json!({})),
         }))
     }
 
@@ -401,6 +402,11 @@ impl Kernel {
                     if !fits {
                         return Err(Error::field("offline", "must be {\"allowed\": true or false, \"hours\": 1 to 720}"));
                     }
+                    clean.insert(k.clone(), v.clone());
+                }
+                // Messages to people (messages.rs): a calling code for numbers written without one, quiet hours, limits.
+                "messages" => {
+                    crate::messages::check_settings(v)?;
                     clean.insert(k.clone(), v.clone());
                 }
                 other => return Err(Error::field(other, "unknown setting")),
