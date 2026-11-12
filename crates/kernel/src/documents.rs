@@ -1272,7 +1272,13 @@ async fn render_page(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, id: 
     };
     let lh = match (&ask.letterhead_draft, chosen) {
         (Some(d), _) => Some(draft_letter_head(ctx, d)?),
-        (None, Some(l)) => letter_head(k, tx, ctx, l).await?,
+        (None, Some(l)) => match letter_head(k, tx, ctx, l).await? {
+            // One asked for by its id that is not there, or not in use, is refused, not left out unsaid.
+            None if ask.letterhead.as_deref().and_then(|s| s.parse::<Uuid>().ok()) == Some(l) => {
+                return Err(Error::field("letterhead", format!("there is no letter head {l} in use")));
+            }
+            found => found,
+        },
         (None, None) => None,
     };
     if company.is_null()

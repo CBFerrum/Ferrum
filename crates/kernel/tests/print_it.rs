@@ -589,6 +589,11 @@ async fn scenario() {
     );
     let none = text(&k.print_record(&clerk, "SalesInvoice", iid, &PrintAsk { letterhead: Some("none".into()), ..Default::default() }).await.unwrap().bytes);
     assert!(!none.contains("<header class=\"pf-letterhead\""), "letterhead=none");
+    let unknown = PrintAsk { letterhead: Some(Uuid::nil().to_string()), ..Default::default() };
+    match k.print_record(&clerk, "SalesInvoice", iid, &unknown).await {
+        Err(ferrum_kernel::Error::Validation(f)) => assert_eq!(f[0].field, "letterhead", "{f:?}"),
+        other => panic!("an unknown letter head is refused, not printed without one: {:?}", other.map(|r| r.content_type)),
+    }
     RENDERED.lock().unwrap().clear();
     let pdf = k
         .print_record(&clerk, "SalesInvoice", iid, &PrintAsk { pdf: true, copies: vec!["Original".into(), "Duplicate".into()], ..Default::default() })

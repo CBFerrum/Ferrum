@@ -843,8 +843,11 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         #[allow(clippy::type_complexity)]
         let rows: Vec<(Uuid, String, String, i64, Option<Uuid>, chrono::DateTime<chrono::Utc>, Option<String>, bool)> = sqlx::query_as(
-            "select id, file_name, content_type, size_bytes, created_by, created_at, sha256, shared from file_object \
-             where tenant_id = $1 and entity = $2 and record_id = $3 and (shared or not $4 or created_by = $5) order by created_at limit 500",
+            // What an outside person uploaded is shared by nature (BD-22), whichever way it came in: the flag says so.
+            "select f.id, f.file_name, f.content_type, f.size_bytes, f.created_by, f.created_at, f.sha256, \
+               f.shared or coalesce(u.kind <> 'member', false) from file_object f \
+             left join app_user u on u.tenant_id = f.tenant_id and u.id = f.created_by \
+             where f.tenant_id = $1 and f.entity = $2 and f.record_id = $3 and (f.shared or not $4 or f.created_by = $5) order by f.created_at limit 500",
         )
         .bind(ctx.tenant)
         .bind(entity)
