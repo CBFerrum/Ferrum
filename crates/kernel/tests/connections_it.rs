@@ -435,6 +435,37 @@ async fn being_called(k: &Kernel, admin: &Ctx) {
         json!({"test": true, "apps": ["depot"], "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "token"}, "handler": "crm"}});
     let e = k.save_connection_def(admin, None, &input("crm", other_app, None)).await.unwrap_err();
     assert!(e.to_string().contains("not one of the apps"), "{e}");
+
+    // Signed without a timestamp (BD-49): the delivery id and the body are each taken once; refusals alike.
+    let verify = json!({"type": "signature", "header": "x-carrier-sig", "secret": "hook", "encoding": "base64"});
+    let map = json!({"entity": "Alert", "by": {"external_id": "/id"}, "set": {"title": "/status"}});
+    let none = json!({"test": true, "inbound": {"verify": verify, "map": map}});
+    let e = k.save_connection_def(admin, None, &input("tracking", none, None)).await.unwrap_err();
+    assert!(e.to_string().contains("delivery id"), "neither a timestamp nor a delivery id: {e}");
+    let d = json!({"test": true, "inbound": {"verify": verify, "delivery_header": "x-event-id", "map": map}});
+    let tracking = k.save_connection_def(admin, None, &input("tracking", d, Some(json!({"hook": INBOUND})))).await.unwrap();
+    let send = |event: &str, body: &str, secret: &str| {
+        use base64::Engine as _;
+        use hmac::Mac;
+        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body.as_bytes());
+        let h = headers(&[("X-Carrier-Sig", base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())), ("X-Event-Id", event.to_string())]);
+        let body = body.to_string();
+        async move { k.connection_inbound(tracking, &h, body.as_bytes()).await }
+    };
+    let first = r#"{"id": "TRK-1", "status": "in transit"}"#;
+    send("e-1", first, INBOUND).await.unwrap();
+    let refusals = [
+        send("e-2", first, INBOUND).await.unwrap_err(),
+        send("e-1", r#"{"id": "TRK-1", "status": "delivered"}"#, INBOUND).await.unwrap_err(),
+        send("e-3", r#"{"id": "TRK-1", "status": "delivered"}"#, "whsec-wrong").await.unwrap_err(),
+    ];
+    assert!(refusals.iter().all(|e| e.to_string() == alike), "the same body under a new id, an id again, a wrong signature: {refusals:?}");
+    send("e-4", r#"{"id": "TRK-1", "status": "delivered"}"#, INBOUND).await.unwrap();
+    drain(k).await;
+    assert_eq!(count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'TRK-1' and title = 'delivered'")).await, 1);
+    let refused = k.connection_defs(admin).await.unwrap().into_iter().find(|c| c["name"] == "tracking").unwrap()["refused"].clone();
+    assert_eq!(refused, json!(3));
 }
 
 /// Pulling: a cursor kept between runs, pages bounded per run, each item mapped as an inbound call is.

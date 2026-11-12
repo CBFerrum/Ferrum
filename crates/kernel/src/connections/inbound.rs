@@ -68,11 +68,14 @@ pub struct Inbound {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Verify {
     /// HMAC-SHA256 under the secret of `<timestamp>.<raw body>`, in `header` as `<prefix><hex or base64>`; the Unix time
-    /// in `timestamp_header`, within `window_secs` (300) of now.
+    /// in `timestamp_header`, within `window_secs` (300) of now. Without a timestamp, of the raw body alone: the inbound
+    /// then names the caller's delivery id (`delivery_header` or `delivery_at`), and a delivery id or a body taken once
+    /// is refused again while the call is kept.
     Signature {
         header: String,
         secret: String,
-        timestamp_header: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp_header: Option<String>,
         #[serde(default)]
         encoding: Encoding,
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -183,8 +186,11 @@ impl Inbound {
     pub(crate) fn problem(&self, apps: &[String]) -> Option<String> {
         let (header, secret) = match &self.verify {
             Verify::Signature { header, secret, timestamp_header, window_secs, .. } => {
-                if let Some(p) = super::header_problem(timestamp_header) {
+                if let Some(p) = timestamp_header.as_deref().and_then(super::header_problem) {
                     return Some(p);
+                }
+                if timestamp_header.is_none() && self.delivery_header.is_none() && self.delivery_at.is_none() {
+                    return Some("inbound: a signature without a timestamp names the caller's delivery id (delivery_header or delivery_at)".into());
                 }
                 if window_secs.is_some_and(|w| !(1..=MAX_WINDOW_SECS).contains(&w)) {
                     return Some(format!("inbound.verify.window_secs is 1 to {MAX_WINDOW_SECS}"));
@@ -237,17 +243,23 @@ fn verified(conn: &Loaded, inbound: &Inbound, header: &dyn Fn(&str) -> Option<St
     let stands_for = match &inbound.verify {
         Verify::Signature { header: h, secret: s, timestamp_header, encoding, prefix, window_secs } => {
             let secret = secret(s)?;
-            let ts = header(timestamp_header)?;
-            let when: i64 = ts.trim().parse().ok()?;
-            if (now - when).abs() > window_secs.unwrap_or(DEFAULT_WINDOW_SECS) {
-                return None;
-            }
+            let what = match timestamp_header {
+                Some(th) => {
+                    let ts = header(th)?.trim().to_string();
+                    let when: i64 = ts.parse().ok()?;
+                    if (now - when).abs() > window_secs.unwrap_or(DEFAULT_WINDOW_SECS) {
+                        return None;
+                    }
+                    [ts.as_bytes(), b".", body].concat()
+                }
+                None => body.to_vec(),
+            };
             let given = header(h)?;
             let given = given.strip_prefix(prefix.as_str()).unwrap_or(&given).to_string();
-            if !signed(&secret, &[ts.trim().as_bytes(), b".", body], &given, *encoding) {
+            if !signed(&secret, &[&what], &given, *encoding) {
                 return None;
             }
-            hex::encode(Sha256::digest([ts.trim().as_bytes(), b".", body].concat()))
+            hex::encode(Sha256::digest(&what))
         }
         Verify::Token { header: h, secret: s } => {
             let secret = secret(s)?;
@@ -295,16 +307,20 @@ impl Kernel {
             .or_else(|| at(&payload, inbound.delivery_at.as_deref()))
             .filter(|d| !d.is_empty() && d.len() <= 200)
             .unwrap_or(stands_for);
+        // Signed without a timestamp: the body is taken once too, whatever delivery id comes beside it.
+        let untimed = matches!(inbound.verify, Verify::Signature { timestamp_header: None, .. });
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
-        let fresh = sqlx::query("insert into conn_inbound (tenant_id, conn_id, delivery, payload) values ($1, $2, $3, $4) on conflict do nothing")
-            .bind(conn.tenant)
-            .bind(conn.id)
-            .bind(&delivery)
-            .bind(&payload)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected()
-            == 1;
+        let fresh =
+            sqlx::query("insert into conn_inbound (tenant_id, conn_id, delivery, payload, body_digest) values ($1, $2, $3, $4, $5) on conflict do nothing")
+                .bind(conn.tenant)
+                .bind(conn.id)
+                .bind(&delivery)
+                .bind(&payload)
+                .bind(untimed.then(|| hex::encode(Sha256::digest(body))))
+                .execute(&mut *tx)
+                .await?
+                .rows_affected()
+                == 1;
         if !fresh {
             tx.rollback().await?;
             return self.refuse_inbound(&conn).await;
@@ -483,6 +499,19 @@ mod tests {
         assert!(verified(&c, &i, &with(now, sign(now, br#"{"a":2}"#)), body, now).is_none(), "another body");
         assert!(verified(&c, &i, &with(now, sign(now - 1, body)), body, now).is_none(), "another time");
         assert!(verified(&c, &i, &|_: &str| None, body, now).is_none(), "unsigned");
+        // Without a timestamp: the body alone.
+        let (c, i) = conn(json!({"test": true, "inbound": {"verify": {"type": "signature", "header": "x-sig", "secret": "hook", "encoding": "base64"},
+                                  "delivery_header": "x-id", "map": {"entity": "X", "by": {"a": "item.a"}}}}));
+        let body_sig = |b: &[u8]| {
+            use base64::Engine as _;
+            let mut mac = hmac::Hmac::<Sha256>::new_from_slice(b"whsec-1234").unwrap();
+            mac.update(b);
+            base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+        };
+        let sig = body_sig(body);
+        assert!(verified(&c, &i, &|h: &str| (h == "x-sig").then(|| sig.clone()), body, now).is_some());
+        assert!(verified(&c, &i, &|h: &str| (h == "x-sig").then(|| sig.clone()), br#"{"a":2}"#, now).is_none(), "another body");
+        assert!(verified(&c, &i, &|h: &str| (h == "x-sig").then(|| body_sig(b"1.{\"a\":1}")), body, now).is_none(), "a timestamped signature");
         let (c, i) = conn(
             json!({"test": true, "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "hook"}, "map": {"entity": "X", "by": {"a": "item.a"}}}}),
         );
@@ -498,7 +527,10 @@ mod tests {
         assert_eq!(p(json!({"verify": token, "handler": "app"})), None);
         assert!(p(json!({"verify": token, "handler": "other"})).is_some(), "an app the connection does not list");
         assert!(p(json!({"verify": token})).is_some(), "nothing to do");
-        assert!(p(json!({"verify": {"type": "signature", "header": "x-sig", "secret": "hook"}, "handler": "app"})).is_some(), "a signature has a timestamp");
+        let untimed = json!({"type": "signature", "header": "x-sig", "secret": "hook"});
+        assert!(p(json!({"verify": untimed, "handler": "app"})).is_some_and(|e| e.contains("delivery id")), "a timestamp or a delivery id");
+        assert_eq!(p(json!({"verify": untimed, "delivery_header": "x-id", "handler": "app"})), None);
+        assert_eq!(p(json!({"verify": untimed, "delivery_at": "/id", "handler": "app"})), None);
         assert!(p(json!({"verify": token, "handler": "app", "max_bytes": 1 << 30})).is_some());
         assert!(p(json!({"verify": {"type": "none"}, "handler": "app"})).is_some(), "every call is verified");
     }
