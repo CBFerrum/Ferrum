@@ -232,7 +232,7 @@ with `params`, `effects` and a policy:
 * **Changes while pending**: a change to a field in `reset_on` cancels the decisions so far (kept, marked `void`) and
   opens the steps again; other edits leave them. Any other transition taken on the record ends the request.
 * **Rejection** needs a comment; the record stays, or moves to `on_reject` (a state of the same document status).
-* **Stand-ins**: someone away (`POST /api/app/studio/away` `{starts_on, ends_on, substitute, reason}`, as for process tasks) has their decisions go to their
+* **Stand-ins**: someone away (`POST /api/away` `{starts_on, ends_on, substitute (an id or an e-mail), reason, user?}`, also at `POST /api/app/studio/away`, as for process tasks) has their decisions go to their
   substitute, who decides in their own name on their behalf; both are kept. One hop only; a substitute who is the
   requester may not.
 * **Reminders and escalation**: `remind_after` and `escalate_after` (seconds or ISO 8601, working time on `calendar`
@@ -259,7 +259,7 @@ policies as part of the workflow; `GET /api/customize/definition/{Entity}` retur
   `reminded_at`, `escalated_at` (done, else null). Each Item of `GET /api/approvals` also carries `requester_name`
   and `step` `{index, label, opened_at}`: the open step awaiting the caller in `to_decide`, the first open one in
   `awaiting_others` (`index` into `steps`, from 0).
-* **Away**: `GET /api/away` → `[{starts_on, ends_on, current, substitute, substitute_name, reason}]`, the caller's
+* **Away**: `POST /api/away` sets one (above); `GET /api/away` → `[{starts_on, ends_on, current, substitute, substitute_name, reason}]`, the caller's
   periods today and to come; `DELETE /api/away` → `{cleared: n}` takes them back (`?starts_on=` one of them). An
   administrator adds `?user=` for anyone; anyone else gets 403 for another person.
 
