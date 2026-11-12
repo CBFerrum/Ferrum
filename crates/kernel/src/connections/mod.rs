@@ -46,6 +46,8 @@ const MAX_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_MAX_BYTES: u64 = 1 << 20;
 const MAX_BYTES: u64 = 10 << 20;
 const MAX_REDIRECTS: usize = 3;
+/// The longest a service's `Retry-After` makes a queued call or a pull wait.
+pub(crate) const MAX_RETRY_AFTER: u64 = 3600;
 /// The statuses that mean "try again later", when a description says none.
 pub(crate) const TEMPORARY: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
 /// The longest a debug capture stays on, and how much of a body it keeps.
@@ -178,8 +180,9 @@ pub struct Operation {
     pub body: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub form: BTreeMap<String, String>,
-    /// Result name → JSON pointer into the answer; none: the whole answer.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Result name → where it is in the answer: a JSON pointer, or a [`PickSpec`] written as an object (kept as
+    /// [`spec`] text); none: the whole answer.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "specs")]
     pub result: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_at: Option<String>,
@@ -211,6 +214,165 @@ impl Operation {
     pub(crate) fn changes(&self) -> bool {
         self.changes.unwrap_or(self.method() != "GET")
     }
+}
+
+/// Marks a value of an operation's `result` (and `form` and `body`) that a description writes as an object: it is kept
+/// as this character and the object's JSON, so that those fields stay strings for apps that build operations in code
+/// (`connections::spec(&json!({"header": "Location"}))`), and written back as the object.
+pub const SPEC: char = '\u{0}';
+
+/// An object for a field that takes a string or an object (see [`SPEC`]).
+pub fn spec(v: &Value) -> String {
+    format!("{SPEC}{v}")
+}
+
+/// The object a value written as one is, as `T`; `None` for a plain string.
+pub(crate) fn spec_of<T: serde::de::DeserializeOwned>(s: &str) -> Option<std::result::Result<T, String>> {
+    s.strip_prefix(SPEC).map(|j| serde_json::from_str(j).map_err(|e| e.to_string()))
+}
+
+/// Strings, or objects kept as [`spec`] text, in a map.
+mod specs {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer>(m: &BTreeMap<String, String>, s: S) -> Result<S::Ok, S::Error> {
+        m.iter().map(|(k, v)| (k, out(v))).collect::<BTreeMap<_, _>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, String>, D::Error> {
+        BTreeMap::<String, Value>::deserialize(d)?.into_iter().map(|(k, v)| Ok((k, inward::<D::Error>(v)?))).collect()
+    }
+
+    pub(super) fn out(v: &str) -> Value {
+        match v.strip_prefix(super::SPEC).and_then(|j| serde_json::from_str::<Value>(j).ok()) {
+            Some(o) => o,
+            None => Value::String(v.to_string()),
+        }
+    }
+
+    pub(super) fn inward<E: serde::de::Error>(v: Value) -> Result<String, E> {
+        match v {
+            Value::String(s) => Ok(s),
+            o @ Value::Object(_) => Ok(super::spec(&o)),
+            _ => Err(E::custom("a string or an object")),
+        }
+    }
+
+    /// The same for one optional value.
+    pub mod one {
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+        use serde_json::Value;
+
+        pub fn serialize<S: Serializer>(v: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
+            v.as_deref().map(super::out).serialize(s)
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+            Option::<Value>::deserialize(d)?.map(super::inward::<D::Error>).transpose()
+        }
+    }
+}
+
+/// Where a value is read: in an answer (an operation's `result`, a pull's `next_at`) or in an item (a mapping's
+/// values). A bare string is a JSON pointer (`/a/0/b`), whose key not there reads as null; in a mapping, a string that
+/// is not a pointer is an expression, as before.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Pick {
+    At(String),
+    Spec(PickSpec),
+}
+
+/// A [`Pick`] said in full: one of `at`, `header`, `link` or `expr`, and whether it must be there.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickSpec {
+    /// A JSON pointer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// A response header (answers only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    /// The address of the answer's `Link` header entry with this `rel` (`next`), made absolute (answers only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// An expression (the platform's): over `answer`, `headers`, `inputs` and `connection` in an answer; over
+    /// `payload`, `item` and `connection` in a mapping. `connection` is `{name, id}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<String>,
+    /// Null here fails the call (an answer) or the item (a mapping), saying which.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+}
+
+impl Pick {
+    /// An operation's `result` value: a pointer, or a spec written as an object.
+    pub(crate) fn of(s: &str) -> std::result::Result<Pick, String> {
+        match spec_of::<PickSpec>(s) {
+            Some(p) => p.map(Pick::Spec),
+            None => Ok(Pick::At(s.to_string())),
+        }
+    }
+
+    /// It said in full; a bare string is a pointer, or (`exprs`, a mapping) an expression when it is not one.
+    pub(crate) fn spec(&self, exprs: bool) -> PickSpec {
+        match self {
+            Pick::At(s) if exprs && !s.starts_with('/') => PickSpec { expr: Some(s.clone()), ..Default::default() },
+            Pick::At(s) => PickSpec { at: Some(s.clone()), ..Default::default() },
+            Pick::Spec(p) => p.clone(),
+        }
+    }
+
+    /// What is wrong with it; `answer`: it reads an answer (headers and links), else an item.
+    pub(crate) fn problem(&self, answer: bool) -> Option<String> {
+        let p = self.spec(!answer);
+        let said = [p.at.is_some(), p.header.is_some(), p.link.is_some(), p.expr.is_some()].iter().filter(|b| **b).count();
+        if said != 1 {
+            return Some("a value is read from one of at, header, link or expr".into());
+        }
+        if !answer && (p.header.is_some() || p.link.is_some()) {
+            return Some("a mapping reads the item: at or expr".into());
+        }
+        if let Some(l) = &p.link
+            && (l.is_empty() || !l.chars().all(|c| c.is_ascii_alphanumeric() || "-._".contains(c)))
+        {
+            return Some(format!("link: {l} is not a relation name"));
+        }
+        p.at.as_deref()
+            .and_then(pointer_problem)
+            .or_else(|| p.header.as_deref().and_then(header_problem))
+            .or_else(|| p.expr.as_deref().and_then(|e| ferrum_meta::Expr::compile(e).err().map(|m| format!("'{e}': {m}"))))
+    }
+}
+
+/// The target of the `Link` header entry (RFC 8288) whose `rel` holds `rel`, made absolute against `base`.
+pub(crate) fn link_target(header: &str, rel: &str, base: &reqwest::Url) -> Option<String> {
+    let mut rest = header;
+    while let Some(open) = rest.find('<') {
+        let close = open + rest[open..].find('>')?;
+        let target = &rest[open + 1..close];
+        let after = &rest[close + 1..];
+        let params = &after[..after.find('<').unwrap_or(after.len())];
+        let rels = params.split(';').filter_map(|p| p.trim().strip_prefix("rel=")).map(|v| v.trim_matches(['"', ',', ' ']));
+        if rels.flat_map(|v| v.split_whitespace()).any(|r| r.eq_ignore_ascii_case(rel)) {
+            return base.join(target).ok().map(String::from);
+        }
+        rest = after;
+    }
+    None
+}
+
+/// How long a `Retry-After` value (seconds, or an HTTP date) asks to wait, at least a second and at most
+/// [`MAX_RETRY_AFTER`].
+pub(crate) fn retry_after(v: &str, now: DateTime<Utc>) -> Option<u64> {
+    let v = v.trim();
+    let secs = match v.parse::<u64>() {
+        Ok(n) => n,
+        Err(_) => (DateTime::parse_from_rfc2822(v).ok()?.to_utc() - now).num_seconds().max(0) as u64,
+    };
+    Some(secs.clamp(1, MAX_RETRY_AFTER))
 }
 
 /// What is wrong with a template, if anything.
@@ -322,8 +484,11 @@ impl Operation {
         if let Some(p) = self.headers.keys().chain(self.idempotency_header.iter()).find_map(|h| header_problem(h)) {
             return Some(p);
         }
-        if let Some(p) = self.result.values().chain(self.error_at.iter()).find_map(|p| pointer_problem(p)) {
+        if let Some(p) = self.error_at.as_deref().and_then(pointer_problem) {
             return Some(p);
+        }
+        if let Some((n, p)) = self.result.iter().find_map(|(n, p)| Some((n, Pick::of(p).map_or_else(Some, |p| p.problem(true))?))) {
+            return Some(format!("result {n}: {p}"));
         }
         if let Some(i) = self.inputs.iter().find(|i| !is_name(i)) {
             return Some(format!("input {i}: a name is lower case letters, digits and _"));
@@ -378,6 +543,36 @@ pub(crate) struct Answer {
     pub status: u16,
     /// JSON when it was, else the text.
     pub body: Value,
+    /// Its headers, names in lower case.
+    pub headers: Vec<(String, String)>,
+    /// Where it came from, after any redirect.
+    pub url: reqwest::Url,
+}
+
+impl Answer {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(h, _)| h.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+
+    /// When the service asked to be called again, for a temporary answer.
+    fn wait(&self) -> Option<u64> {
+        retry_after(self.header("retry-after")?, Utc::now())
+    }
+
+    /// What `p` reads here, `vars` bound for an expression.
+    pub(crate) fn read(&self, p: &PickSpec, vars: &[(&str, &Value)]) -> Result<Value> {
+        Ok(if let Some(at) = &p.at {
+            self.body.pointer(at).cloned().unwrap_or(Value::Null)
+        } else if let Some(h) = &p.header {
+            self.header(h).map_or(Value::Null, |v| Value::String(v.to_string()))
+        } else if let Some(rel) = &p.link {
+            self.header("link").and_then(|l| link_target(l, rel, &self.url)).map_or(Value::Null, Value::String)
+        } else if let Some(e) = &p.expr {
+            crate::automation::eval_with(e, &Value::Null, &Value::Null, vars)?
+        } else {
+            Value::Null
+        })
+    }
 }
 
 impl Kernel {
@@ -462,7 +657,8 @@ impl Kernel {
                 }
             }
             let body = serde_json::from_slice(&buf).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&buf).into_owned()));
-            return Ok(Answer { status, body });
+            let headers = res.headers().iter().filter_map(|(h, v)| Some((h.as_str().to_string(), v.to_str().ok()?.to_string()))).collect();
+            return Ok(Answer { status, body, headers, url: req.url });
         }
         Err(Error::invalid(format!("more than {MAX_REDIRECTS} redirects")))
     }
@@ -631,11 +827,19 @@ pub struct Call {
 #[derive(Debug)]
 pub(crate) enum Outcome {
     /// The mapped result, and the whole answer.
-    Ok(Value, Value),
-    /// The service said "later", or did not answer.
-    Later(String),
+    Ok(Value, Box<Answer>),
+    /// The service said "later", or did not answer; when it said when, in seconds.
+    Later(String, Option<u64>),
     /// The service said no, or the call could not be made.
     No(String),
+}
+
+/// A page of a pull: its cursor, as the templates see it, and the address the last page's `Link` named, which is
+/// asked in place of the operation's path and query.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Page<'a> {
+    pub cursor: &'a Value,
+    pub address: Option<&'a str>,
 }
 
 /// Calls an operation of a connection and gives its mapped result: for apps (docs/api.md, "Connections"). `app` is the
@@ -656,6 +860,12 @@ pub(crate) fn may_use(ctx: &Ctx, app: Option<&str>, desc: &Description) -> Resul
 
 impl Kernel {
     pub async fn call_connection(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
+        self.call_waiting(ctx, app, c, false).await
+    }
+
+    /// [`Kernel::call_connection`]; `waits`: a "later" with the service's `Retry-After` is `RetryAfter` (a queued call's
+    /// job then comes back when it said) rather than `Unavailable`.
+    async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call, waits: bool) -> Result<Value> {
         let conn = self.load_connection(ctx.tenant, &c.connection).await?;
         if !conn.enabled {
             return Err(Error::invalid(format!("the connection {} is turned off", conn.name)));
@@ -692,7 +902,8 @@ impl Kernel {
             .await?;
         match outcome {
             Outcome::Ok(result, _) => Ok(result),
-            Outcome::Later(why) => Err(Error::Unavailable(why)),
+            Outcome::Later(why, Some(secs)) if waits => Err(Error::RetryAfter(why, secs)),
+            Outcome::Later(why, _) => Err(Error::Unavailable(why)),
             Outcome::No(why) => Err(Error::invalid(why)),
         }
     }
@@ -713,7 +924,7 @@ impl Kernel {
         Ok(row.map(|(d, r)| (d.unwrap_or_default(), r.unwrap_or(Value::Null))))
     }
 
-    /// One operation, made and logged. `extra` are more template variables (a pull's `cursor`).
+    /// One operation, made and logged. `page`: a pull's page (its `cursor` a template variable).
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn perform(
         &self,
@@ -722,7 +933,7 @@ impl Kernel {
         name: &str,
         inputs: &Value,
         key: Option<&str>,
-        extra: Option<(&str, &Value)>,
+        page: Option<Page<'_>>,
         about: Option<(&str, Uuid)>,
         keep: Option<&str>,
     ) -> Result<Outcome> {
@@ -732,12 +943,19 @@ impl Kernel {
         let mut debug = None;
         let answered = if conn.desc.test {
             let f = op.fixture.clone().unwrap_or_else(|| json!({"status": 200, "body": {}}));
-            Ok(Answer { status: f["status"].as_u64().unwrap_or(200) as u16, body: f.get("body").cloned().unwrap_or(Value::Null) })
+            let headers =
+                f["headers"].as_object().map(|h| h.iter().map(|(k, v)| (k.to_ascii_lowercase(), v.as_str().unwrap_or_default().to_string())).collect());
+            Ok(Answer {
+                status: f["status"].as_u64().unwrap_or(200) as u16,
+                body: f.get("body").cloned().unwrap_or(Value::Null),
+                headers: headers.unwrap_or_default(),
+                url: reqwest::Url::parse("https://fixture.invalid/").map_err(Error::internal)?,
+            })
         } else {
             let mut tries = 0;
             let got = loop {
                 tries += 1;
-                let got = match self.build_request(ctx, conn, op, inputs, key, extra).await {
+                let got = match self.build_request(ctx, conn, op, inputs, key, page).await {
                     Ok((req, more)) => {
                         mask.extend(more);
                         if conn.debug {
@@ -773,21 +991,19 @@ impl Kernel {
         };
         let (outcome, status, row_outcome) = match answered {
             Ok(a) if (200..300).contains(&a.status) => {
-                let result = if op.result.is_empty() {
-                    a.body.clone()
-                } else {
-                    Value::Object(op.result.iter().map(|(n, p)| (n.clone(), a.body.pointer(p).cloned().unwrap_or(Value::Null))).collect())
-                };
                 let status = a.status;
-                (Outcome::Ok(masked(&result, &mask), a.body), Some(status), "ok")
+                match self.mapped(conn, op, inputs, &a) {
+                    Ok(result) => (Outcome::Ok(masked(&result, &mask), Box::new(a)), Some(status), "ok"),
+                    Err(e) => (Outcome::No(masked_text(&format!("{status}: {e}"), &mask)), Some(status), "failed"),
+                }
             }
-            Ok(a) if temporary.contains(&a.status) => (Outcome::Later(error_of(&a)), Some(a.status), "temporary"),
+            Ok(a) if temporary.contains(&a.status) => (Outcome::Later(error_of(&a), a.wait()), Some(a.status), "temporary"),
             Ok(a) => (Outcome::No(error_of(&a)), Some(a.status), "failed"),
-            Err(Error::Unavailable(m)) => (Outcome::Later(m), None, "temporary"),
+            Err(Error::Unavailable(m)) => (Outcome::Later(m, None), None, "temporary"),
             Err(e) => (Outcome::No(e.to_string()), None, "refused"),
         };
         let error = match &outcome {
-            Outcome::Later(m) | Outcome::No(m) => Some(m.clone()),
+            Outcome::Later(m, _) | Outcome::No(m) => Some(m.clone()),
             Outcome::Ok(..) => None,
         };
         let kept = match &outcome {
@@ -820,6 +1036,27 @@ impl Kernel {
         Ok(outcome)
     }
 
+    /// The mapped result of an answer that worked: each of the operation's `result` read as its [`Pick`] says (none: the
+    /// whole answer); one `required` and not there fails the call, naming it.
+    fn mapped(&self, conn: &Loaded, op: &Operation, inputs: &Value, a: &Answer) -> Result<Value> {
+        if op.result.is_empty() {
+            return Ok(a.body.clone());
+        }
+        let headers = Value::Object(a.headers.iter().map(|(h, v)| (h.clone(), Value::String(v.clone()))).collect());
+        let connection = json!({"name": conn.name, "id": conn.id});
+        let vars = [("answer", &a.body), ("headers", &headers), ("inputs", inputs), ("connection", &connection)];
+        let mut out = Map::new();
+        for (name, pick) in &op.result {
+            let p = Pick::of(pick).map_err(Error::invalid)?.spec(false);
+            let v = a.read(&p, &vars)?;
+            if p.required && v.is_null() {
+                return Err(Error::invalid(format!("the answer has no {name}")));
+            }
+            out.insert(name.clone(), v);
+        }
+        Ok(Value::Object(out))
+    }
+
     /// The request an operation makes, and what more it must never show (a token).
     async fn build_request(
         &self,
@@ -828,13 +1065,23 @@ impl Kernel {
         op: &Operation,
         inputs: &Value,
         key: Option<&str>,
-        extra: Option<(&str, &Value)>,
+        page: Option<Page<'_>>,
     ) -> Result<(Request, Vec<String>)> {
         let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key});
-        if let Some((n, v)) = extra {
-            vars[n] = v.clone();
+        if let Some(p) = page {
+            vars["cursor"] = p.cursor.clone();
         }
         let r = |s: &str| render(s, &vars);
+        // A page the last one's `Link` named is asked at that address as it is (the guard still checks its host).
+        if let Some(address) = page.and_then(|p| p.address) {
+            let url = reqwest::Url::parse(address).map_err(|_| Error::invalid("the next page's address is not an address"))?;
+            let mut headers = Vec::new();
+            for (h, v) in conn.desc.headers.iter().chain(&op.headers) {
+                headers.push((h.clone(), r(v)?));
+            }
+            let more = self.authenticate(ctx, conn, &mut headers, None).await?;
+            return Ok((Request { method: reqwest::Method::GET, url, headers, body: None }, more));
+        }
         let mut url = reqwest::Url::parse(&format!("{}{}", conn.desc.base.trim_end_matches('/'), render_path(&op.path, &vars)?))
             .map_err(|_| Error::invalid("the operation's address is not an address"))?;
         if !op.query.is_empty() {
@@ -1075,8 +1322,8 @@ impl Kernel {
         }
         let inputs = if inputs.is_null() { json!({}) } else { inputs.clone() };
         Ok(match self.perform(ctx, &conn, operation, &inputs, key, None, None, None).await? {
-            Outcome::Ok(result, answer) => json!({"ok": true, "result": result, "answer": masked(&answer, &conn.mask())}),
-            Outcome::Later(why) => json!({"ok": false, "temporary": true, "error": why}),
+            Outcome::Ok(result, answer) => json!({"ok": true, "result": result, "answer": masked(&answer.body, &conn.mask())}),
+            Outcome::Later(why, _) => json!({"ok": false, "temporary": true, "error": why}),
             Outcome::No(why) => json!({"ok": false, "temporary": false, "error": why}),
         })
     }
@@ -1239,7 +1486,8 @@ impl JobHandler for Queued {
         if let Some(u) = job.payload["user"].as_str().and_then(|u| u.parse().ok()) {
             ctx.user = u;
         }
-        let result = k.call_connection(&ctx, None, &c).await?;
+        // A "later" with the service's own Retry-After comes back when it said, capped.
+        let result = k.call_waiting(&ctx, None, &c, true).await?;
         Ok(json!({"result": result}))
     }
 
@@ -1315,6 +1563,40 @@ mod tests {
         assert!(bad(json!({"base": "https://x.test", "auth": {"type": "header", "header": "bad header", "secret": "k"}})).is_some());
         assert!(bad(json!({"base": "https://x.test", "auth": {"type": "magic"}})).is_some());
         assert!(bad(json!({"base": "https://x.test", "operations": {"a": {"body": "{{ x", "method": "POST"}}})).is_some());
+    }
+
+    #[test]
+    fn links_and_retry_after_are_read() {
+        let base = reqwest::Url::parse("https://api.example.test/v1/feed?page=1").unwrap();
+        let h = r#"<https://api.example.test/v1/feed?page=1>; rel="prev", </v1/feed?page=3&a=1,2>; rel="next last"; title="x""#;
+        assert_eq!(link_target(h, "next", &base).as_deref(), Some("https://api.example.test/v1/feed?page=3&a=1,2"));
+        assert_eq!(link_target(h, "prev", &base).as_deref(), Some("https://api.example.test/v1/feed?page=1"));
+        assert_eq!(link_target("<x>; rel=nextish", "next", &base), None);
+        assert_eq!(link_target("no link", "next", &base), None);
+        let now = DateTime::parse_from_rfc3339("2026-11-13T10:00:00Z").unwrap().to_utc();
+        assert_eq!(retry_after("120", now), Some(120));
+        assert_eq!(retry_after("0", now), Some(1), "at least a second");
+        assert_eq!(retry_after("99999999", now), Some(MAX_RETRY_AFTER), "capped");
+        assert_eq!(retry_after("Fri, 13 Nov 2026 10:05:00 GMT", now), Some(300));
+        assert_eq!(retry_after("Fri, 13 Nov 2026 09:00:00 GMT", now), Some(1), "a moment past");
+        assert_eq!(retry_after("soon", now), None);
+    }
+
+    #[test]
+    fn picks_are_checked() {
+        let p = |v: Value, answer: bool| serde_json::from_value::<Pick>(v).unwrap().problem(answer);
+        assert_eq!(p(json!("/a/0"), true), None);
+        assert_eq!(p(json!({"header": "Location", "required": true}), true), None);
+        assert_eq!(p(json!({"link": "next"}), true), None);
+        assert_eq!(p(json!({"expr": "answer.a + 1"}), true), None);
+        assert_eq!(p(json!("item.a + 1"), false), None, "a mapping's string is an expression");
+        assert!(p(json!("id"), true).is_some(), "an answer's string is a pointer");
+        assert!(p(json!({"at": "/a", "header": "x"}), true).is_some(), "one source");
+        assert!(p(json!({"header": "x"}), false).is_some(), "a mapping reads the item");
+        assert!(p(json!({"header": "bad header"}), true).is_some());
+        assert!(p(json!({"link": "next>"}), true).is_some());
+        assert!(p(json!({"expr": "a +"}), true).is_some());
+        assert!(serde_json::from_value::<Pick>(json!({"at": "/a", "colour": 1})).is_err());
     }
 
     #[test]

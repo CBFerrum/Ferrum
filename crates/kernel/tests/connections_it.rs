@@ -33,6 +33,8 @@ static PROVIDER: Mutex<(bool, usize, String)> = Mutex::new((false, 0, String::ne
 
 /// The stand-in's pull routes: how often `/shaky` was asked (it answers "later" twice), whether `/down` is down.
 static SHAKY: AtomicUsize = AtomicUsize::new(0);
+/// How often `/busy` was asked (it answers 429 with a Retry-After once).
+static BUSY: AtomicUsize = AtomicUsize::new(0);
 static DOWN: Mutex<bool> = Mutex::new(true);
 
 fn issue() -> String {
@@ -168,6 +170,18 @@ async fn service(seen: Seen) -> u16 {
                     "/v1/down" => (200, String::new(), json!({"data": []}).to_string()),
                     "/v1/broken" => (422, String::new(), json!({"error": "no such feed"}).to_string()),
                     "/v1/since" => (200, String::new(), json!({"data": [{"id": "S-1", "title": "Since"}]}).to_string()),
+                    "/v1/posts" => (201, "location: /v1/posts/P-77\r\nx-post-id: P-77\r\n".into(), json!({"counts": {"likes": 3, "shares": 4}}).to_string()),
+                    "/v1/busy" => match BUSY.fetch_add(1, Ordering::SeqCst) {
+                        0 => (429, "retry-after: 120\r\n".into(), json!({"error": "slow down"}).to_string()),
+                        _ => (200, String::new(), "{}".into()),
+                    },
+                    "/v1/feed" if path.contains("page=2") => (200, String::new(), json!({"data": [{"id": "L-2", "title": "Two"}]}).to_string()),
+                    "/v1/feed" => (
+                        200,
+                        "link: </v1/feed?page=2>; rel=\"next\", </v1/feed?page=9>; rel=\"last\"\r\n".into(),
+                        json!({"data": [{"id": "L-1", "title": "One"}]}).to_string(),
+                    ),
+                    "/v1/astray" => (200, "link: <http://10.0.0.1/v1/feed?page=2>; rel=\"next\"\r\n".into(), json!({"data": []}).to_string()),
                     _ => (404, String::new(), "{}".into()),
                 };
                 let reply = format!(
@@ -408,6 +422,89 @@ async fn pulling(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
     k.pull_now(admin, feeds, "down").await.unwrap();
     drain(k).await;
     assert_eq!(told("down").await, 2, "a new streak");
+}
+
+/// Answers beyond a JSON body (BD-46): headers and links in a result, Retry-After for a queued call, a page asked at
+/// the address its Link named (and never off the connection's hosts), pointers that read null, required values,
+/// expressions with the connection's name.
+async fn answers(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
+    let tenant = admin.tenant;
+    let alert = admin.schema.entity("Alert").unwrap().table.clone();
+    let map = json!({"entity": "Alert", "by": {"external_id": {"at": "/id", "required": true}}, "set": {"title": "/title", "state": "'linked'"}});
+    let page = |name: &str| json!({"name": name, "operation": name, "every_minutes": 15, "items_at": "/data", "next_at": {"link": "next"}, "map": map});
+    let d = json!({"base": base, "operations": {
+        "post": {"path": "/posts", "method": "POST", "body": "{}", "result": {
+            "id": {"header": "x-post-id"}, "where": {"header": "Location"}, "total": {"expr": "answer.counts.likes + answer.counts.shares"},
+            "via": {"expr": "connection.name + ':' + inputs.ref"}, "missing": "/nope"}},
+        "post_strict": {"path": "/posts", "method": "POST", "body": "{}", "result": {"id": "/id", "must": {"at": "/nope", "required": true}}},
+        "post_secret": {"path": "/posts", "method": "POST", "body": "{}", "result": {"k": {"expr": "secret.api_key"}}},
+        "busy": {"path": "/busy", "method": "POST", "body": "{}"},
+        "feed": {"path": "/feed"}, "astray": {"path": "/astray"}},
+        "pulls": [page("feed"), page("astray")]});
+    k.save_connection_def(admin, None, &input("social", d, Some(json!({"api_key": SECRET})))).await.unwrap();
+    let r = connections::call(k, admin, None, &call("social", "post", json!({"ref": "R-1"}), Some("p-1"))).await.unwrap();
+    assert_eq!(
+        r,
+        json!({"id": "P-77", "where": "/v1/posts/P-77", "total": 7, "via": "social:R-1", "missing": null}),
+        "headers, sums and the connection's name"
+    );
+    let e = connections::call(k, admin, None, &call("social", "post_strict", json!({}), Some("p-2"))).await.unwrap_err();
+    assert!(matches!(&e, Error::Invalid(m) if m.ends_with("the answer has no must")), "{e}");
+    let e = connections::call(k, admin, None, &call("social", "post_secret", json!({}), Some("p-3"))).await.unwrap_err();
+    assert!(!e.to_string().contains(SECRET), "an answer's expression does not read the secrets: {e}");
+
+    // A 429 with Retry-After: the queued call comes back when the service said, not on the backoff.
+    let busy = json!({"name": "x_busy", "label": "Busy", "effects": [{"type": "call", "connection": "social", "operation": "busy", "queue": true}]});
+    let add: NewCustomization = serde_json::from_value(json!({"entity": "Parcel", "op": {"op": "add_action", "action": busy}})).unwrap();
+    k.batch_customizations(admin, vec![add], false).await.map_err(|e| e.1).unwrap();
+    let admin = &k.load_ctx(tenant, admin.user, None, "it".into()).await.unwrap();
+    let parcel: Uuid = k.insert(admin, "Parcel", obj(json!({"label": "B-1"}))).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    k.run_action(admin, "Parcel", parcel, "x_busy", json!({})).await.unwrap();
+    while k.run_jobs_once(4).await.unwrap() > 0 {}
+    let waits = count(
+        k,
+        tenant,
+        &format!(
+            "select extract(epoch from run_at - now())::bigint from job where tenant_id = $1 and kind = '{}' and status = 'queued'",
+            connections::CALL_KIND
+        ),
+    )
+    .await;
+    assert!((100..=120).contains(&waits), "asked again after the service's 120 s: {waits}");
+    drain(k).await;
+    assert_eq!(BUSY.load(Ordering::SeqCst), 2);
+
+    // Paging by the Link header: the next page asked at the address it named; one naming another host is refused.
+    let id: Uuid = k.connection_defs(admin).await.unwrap().iter().find(|c| c["name"] == "social").unwrap()["id"].as_str().unwrap().parse().unwrap();
+    k.pull_now(admin, id, "feed").await.unwrap();
+    drain(k).await;
+    assert!(seen.lock().unwrap().iter().any(|s| s.starts_with("GET /v1/feed?page=2 ")), "the page the link named");
+    assert_eq!(count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and state = 'linked' and external_id in ('L-1', 'L-2')")).await, 2);
+    k.pull_now(admin, id, "astray").await.unwrap();
+    drain(k).await;
+    let astray = k.connection_pulls(admin, id).await.unwrap().into_iter().find(|p| p["name"] == "astray").unwrap();
+    assert!(astray["last_error"].as_str().is_some_and(|e| e.contains("10.0.0.1 is not one of the hosts")), "{astray}");
+
+    // A mapping's pointer reads null where the key is not there; `required` fails the item, saying which.
+    let hook = json!({"test": true, "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "token"}, "map": {"entity": "Alert", "items_at": "/items",
+        "by": {"external_id": {"at": "/id", "required": true}}, "set": {"state": "/state", "title": {"expr": "connection.name + ' ' + string(item.likes + item.shares)"}}}}});
+    let hook = k.save_connection_def(admin, None, &input("posts_in", hook, Some(json!({"token": TOKEN})))).await.unwrap();
+    let h = headers(&[("X-Token", TOKEN.into())]);
+    k.connection_inbound(hook, &h, json!({"items": [{"id": "N-1", "likes": 2, "shares": 5}]}).to_string().as_bytes()).await.unwrap();
+    k.connection_inbound(hook, &h, json!({"items": [{"id": "N-2", "likes": 1, "shares": 1}, {"likes": 0, "shares": 0}]}).to_string().as_bytes()).await.unwrap();
+    drain(k).await;
+    assert_eq!(
+        count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'N-1' and title = 'posts_in 7' and state is null"))
+            .await,
+        1
+    );
+    let failed = k.connection_inbound_log(admin, hook, 10).await.unwrap().into_iter().find(|r| r["state"] == "failed").unwrap();
+    assert!(failed["error"].as_str().unwrap().contains("item 2: external_id is required"), "{failed}");
+    assert_eq!(
+        count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'N-2'")).await,
+        0,
+        "the payload is taken whole or not at all"
+    );
 }
 
 fn query(url: &str) -> BTreeMap<String, String> {
@@ -902,6 +999,7 @@ async fn scenario() {
     assert!(log.iter().all(|l| !l.to_string().contains(SECRET)));
 
     being_called(&k, &admin).await;
+    answers(&k, &admin, &base, &seen).await;
     pulling(&k, &admin, &base, &seen).await;
     let signed_in = signing_in(&k, &admin, &base, &seen).await;
     erasing(&k, &admin, &seen).await;
