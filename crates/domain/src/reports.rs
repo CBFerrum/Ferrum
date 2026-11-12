@@ -311,4 +311,29 @@ mod tests {
         assert!(one.get("entity").is_none() && one.get("scoped").is_none(), "{one}");
         assert_eq!(one["params"][0]["name"], json!("company"));
     }
+
+    struct Named(&'static str);
+
+    #[async_trait::async_trait]
+    impl ReportSource for Named {
+        fn catalog(&self) -> Vec<Value> {
+            vec![json!({"name": self.0, "label": self.0, "module": "test", "entity": "Customer", "scoped": false, "params": []})]
+        }
+        async fn run(&self, _k: &Kernel, _ctx: &Ctx, _name: &str, _params: &HashMap<String, String>) -> Result<Value> {
+            Ok(json!({}))
+        }
+    }
+
+    #[test]
+    fn two_apps_registering_one_after_the_other_both_stay() {
+        add_source(std::sync::Arc::new(Named("zz_first_app")));
+        add_source(std::sync::Arc::new(Named("zz_second_app")));
+        let listed: Vec<String> = catalog().as_array().unwrap().iter().filter_map(|e| e["name"].as_str().map(str::to_string)).collect();
+        assert!(listed.contains(&"zz_first_app".to_string()) && listed.contains(&"zz_second_app".to_string()), "{listed:?}");
+        // Only a deliberate set replaces what was registered; a name given twice in one set stops it before anything changes.
+        let e = set_sources(vec![("a".into(), std::sync::Arc::new(Named("zz_same"))), ("b".into(), std::sync::Arc::new(Named("zz_same")))]).unwrap_err();
+        assert_eq!(e, "the report zz_same is registered by both a and b");
+        let still: Vec<String> = catalog().as_array().unwrap().iter().filter_map(|e| e["name"].as_str().map(str::to_string)).collect();
+        assert!(still.contains(&"zz_first_app".to_string()), "{still:?}");
+    }
 }
