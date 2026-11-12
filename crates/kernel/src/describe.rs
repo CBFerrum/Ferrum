@@ -110,6 +110,23 @@ fn children(ctx: &Ctx, ent: &EffEntity) -> serde_json::Map<String, Value> {
         .collect()
 }
 
+/// For each of submitting and cancelling the caller may do, whether it asks for approval first and its steps' labels
+/// (`{"submit": {"asks": true, "steps": ["Manager"]}}`), so a form can say so before it is pressed. No approver is named.
+fn approvals(ctx: &Ctx, ent: &EffEntity) -> Value {
+    let mut out = Map::new();
+    if !ent.def.submittable {
+        return Value::Object(out);
+    }
+    for (on, action) in [(ferrum_meta::DocumentAction::Submit, Action::Submit), (ferrum_meta::DocumentAction::Cancel, Action::Cancel)] {
+        if !ctx.is_admin && ctx.perms.access(&ent.def.name, action) == Access::None {
+            continue;
+        }
+        let steps: Vec<&str> = ent.document_approvals.get(&on).into_iter().flat_map(|a| a.policy.steps.iter().map(|s| s.label.as_str())).collect();
+        out.insert(on.as_str().into(), json!({"asks": !steps.is_empty(), "steps": steps}));
+    }
+    Value::Object(out)
+}
+
 pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
     let children = children(ctx, ent);
     let mut v = json!({
@@ -135,6 +152,7 @@ pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
         "actions": actions(ctx, ent),
         "targets": ent.def.targets,
         "workflow": workflow(ctx, ent),
+        "approvals": approvals(ctx, ent),
         "fields": ent.def.fields.iter().map(|f| field_json(ctx, ent, f)).collect::<Vec<_>>(),
         "children": children,
         "permissions": permissions(ctx, &ent.def.name),

@@ -360,6 +360,13 @@ async fn scenario() {
     assert_eq!(post(&k, &reviewer, &format!("/tasks/{task}/decide"), json!({"approve": true, "digest": digest_of})).await["closed"], json!(true));
     assert_eq!(get(&k, &reviewer, &format!("/tasks/{task}")).await["history"][0]["by"], json!("reviewer@acme.test"), "a closed task keeps who decided");
 
+    // Away, set at the path the interface calls (FEO-034); `/api/away` reads and clears it.
+    let today = chrono::Utc::now().date_naive().to_string();
+    let away = json!({"starts_on": today, "ends_on": today, "substitute": "requester@acme.test", "reason": "leave"});
+    assert_eq!(post(&k, &reviewer, "/away", away).await, json!({}));
+    assert_eq!(k.away_of(&reviewer, reviewer.user).await.unwrap().len(), 1);
+    assert_eq!(k.clear_away(&reviewer, reviewer.user, None).await.unwrap(), 1);
+
     // Handed on by the email people know each other by, and the hand-on kept with its reason.
     let second = user(&k, &admin, "reviewer2@acme.test", &["Reviewer"], false).await;
     k.process_open_task(

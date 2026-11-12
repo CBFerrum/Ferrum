@@ -8,7 +8,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use ferrum_kernel::documents::{Preview, PreviewAsk, Rendered};
+use ferrum_kernel::documents::{Preview, PreviewAsk, QueryRun, Rendered};
 use ferrum_kernel::{Ctx, Error, Kernel};
 use ferrum_meta::{DocumentDef, DocumentOutput};
 use loco_rs::app::AppContext;
@@ -253,6 +253,22 @@ async fn labels(Auth(ctx): Auth, State(app): State<AppContext>, Path(key): Path<
     Ok(file_response(k.render_documents(&ctx, &key, &b.ids, b.copies.unwrap_or(1), b.language.as_deref(), pdf).await?))
 }
 
+/// `POST /api/documents/{key}/query {params?, values?, language?}`: template `key`, about a saved report's rows, as
+/// the caller may read them: one file, or (grouping by a link) `{files, next}`, a file kept on each record.
+pub async fn run_query(k: &Kernel, ctx: &Ctx, key: &str, body: &Value) -> ApiResult<Response> {
+    let mut body = if body.is_null() { json!({}) } else { body.clone() };
+    body["template"] = json!(key);
+    let run: QueryRun = serde_json::from_value(body).map_err(|e| ApiError(Error::field("body", e.to_string())))?;
+    if k.query_document_groups(ctx, key).await? {
+        return Ok(Json(k.generate_query_documents(ctx, &run).await?).into_response());
+    }
+    Ok(file_response(k.render_query_document(ctx, &run).await?))
+}
+
+async fn query(Auth(ctx): Auth, State(app): State<AppContext>, Path(key): Path<String>, body: Option<Json<Value>>) -> ApiResult<Response> {
+    run_query(&app_state(&app)?.kernel, &ctx, &key, &body.map(|b| b.0).unwrap_or_default()).await
+}
+
 pub fn routes() -> Routes {
     use axum::routing::{get, post, put};
     Routes::new()
@@ -269,4 +285,5 @@ pub fn routes() -> Routes {
         .add("/documents/choices/{entity}", get(choices))
         .add("/documents/{key}/render/{id}", get(render))
         .add("/documents/{key}/labels", post(labels))
+        .add("/documents/{key}/query", post(query))
 }

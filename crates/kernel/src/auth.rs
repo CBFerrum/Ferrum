@@ -364,8 +364,10 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let Some((tenant, user, token_version, locked, two_factor)) = person else {
+            // Someone outside confirming their sign-up: made a portal person now, and signed in.
+            let made = crate::portal_signup::confirm(&mut tx, tenant_slug, &email, &code).await?;
             tx.commit().await?;
-            return Err(denied());
+            return made.map(SignIn::Session).ok_or_else(denied);
         };
         if locked {
             tx.commit().await?;
