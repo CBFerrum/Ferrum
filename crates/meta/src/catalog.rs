@@ -209,7 +209,7 @@ impl Catalog {
             check(what, &serde_json::to_value(&a.policy).unwrap_or_default())?;
         }
         let mut names = HashSet::new();
-        const EVENTS: [&str; 7] = ["created", "updated", "submitted", "cancelled", "deleted", "transitioned", "scheduled"];
+        const EVENTS: [&str; 8] = ["created", "updated", "submitted", "cancelled", "deleted", "transitioned", "scheduled", "opened"];
         for a in &p.manifest.automations {
             let what = format!("{}: automation {}", a.entity, a.name);
             if !is_ident(&a.name) || !names.insert(a.name.as_str()) {

@@ -170,6 +170,10 @@ pub enum AutomationAction {
         params: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         days: Option<i64>,
+        /// When it stops working, as an expression over the record (a date: the end of that day, UTC; or a moment),
+        /// sooner than `days` when both say; never past the most a link lives. Null: as `days` says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         uses: Option<i32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,6 +182,9 @@ pub enum AutomationAction {
         recipient: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         frame_origins: Vec<String>,
+        /// The columns of each table field `show` lists.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        columns: BTreeMap<String, Vec<String>>,
     },
     /// Another app's step through the capability gate, in the run's transaction (BD-13): `capability` a catalog id,
     /// `input` its inputs as CEL expressions, `key` the effect key as an expression. Without `key`, the run's own:
@@ -321,7 +328,9 @@ fn sources(a: &AutomationAction) -> Vec<&str> {
         AutomationAction::ReportDocuments { values, params_from, .. } => values.values().chain(params_from.values()).collect(),
         AutomationAction::Invoke { input, key, .. } => input.values().chain(key.iter()).collect(),
         AutomationAction::Call { inputs, key, .. } => inputs.values().chain(key.iter()).collect(),
-        AutomationAction::Link { params, code_to, recipient, .. } => params.values().chain(code_to.iter()).chain(recipient.iter()).collect(),
+        AutomationAction::Link { params, code_to, recipient, until, .. } => {
+            params.values().chain(code_to.iter()).chain(recipient.iter()).chain(until.iter()).collect()
+        }
     };
     all.into_iter().map(String::as_str).collect()
 }
@@ -854,6 +863,26 @@ async fn runner(
     }
 }
 
+/// When a link effect's link stops working: `until`'s value (a date, through the end of that day UTC, or a moment)
+/// or `days` from now, the sooner of the two; null `until` leaves `days`; never later than the most a link lives
+/// ([`crate::action_link::MAX_DAYS`]). One already past is refused when issued, as any link would be.
+pub(crate) fn link_expiry(days: Option<i64>, until: Option<&Value>) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let now = chrono::Utc::now();
+    let by_days = days.map(|d| now + chrono::Duration::days(d));
+    let given = match until {
+        None | Some(Value::Null) => return Ok(by_days),
+        Some(Value::String(s)) if s.trim().is_empty() => return Ok(by_days),
+        Some(Value::String(s)) => match (chrono::DateTime::parse_from_rfc3339(s.trim()), chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")) {
+            (Ok(t), _) => t.with_timezone(&chrono::Utc),
+            (_, Ok(d)) => (d + chrono::Duration::days(1)).and_hms_opt(0, 0, 0).unwrap_or_default().and_utc(),
+            _ => return Err(Error::invalid(format!("link: until gave {s}, which is no date or moment"))),
+        },
+        Some(other) => return Err(Error::invalid(format!("link: until gave {other}, which is no date or moment"))),
+    };
+    let most = now + chrono::Duration::days(crate::action_link::MAX_DAYS);
+    Ok(Some(by_days.map_or(given, |d| d.min(given)).min(most)))
+}
+
 pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     let Some((entity, event)) = ev.topic.split_once('.') else { return Ok(()) };
     let depth = ev.payload.get("depth").and_then(Value::as_u64).unwrap_or(0) as u8;
@@ -1312,7 +1341,7 @@ pub(crate) async fn execute(
                 k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;
             }
         }
-        AutomationAction::Link { actions, show, params, days, uses, code_to, recipient, frame_origins } => {
+        AutomationAction::Link { actions, show, params, days, until, uses, code_to, recipient, frame_origins, columns } => {
             let id = record.ok_or_else(|| Error::invalid("link needs a record"))?;
             let text = |src: &Option<String>| -> Result<Option<String>> { src.as_deref().map(|s| eval(s).map(as_text)).transpose() };
             let mut fixed = Map::new();
@@ -1323,11 +1352,12 @@ pub(crate) async fn execute(
                 actions,
                 show,
                 params: fixed,
-                expires_at: days.map(|d| chrono::Utc::now() + chrono::Duration::days(d)),
+                expires_at: link_expiry(days, until.as_deref().map(|u| eval(u)).transpose()?.as_ref())?,
                 uses,
                 code_to: text(&code_to)?,
                 recipient: text(&recipient)?,
                 frame_origins,
+                columns,
             };
             let issued = k.issue_link(ctx, tx, entity, id, &spec).await.map_err(|e| crate::pack::about("link", e))?;
             return Ok(serde_json::json!(issued));
@@ -1691,8 +1721,8 @@ pub(crate) async fn save_in(ctx: &Ctx, tx: &mut crate::db::Tx, input: &Map<Strin
         return Err(Error::field("entity", "unknown entity"));
     }
     let event = get("event").ok_or_else(|| Error::field("event", "is required"))?;
-    if !["created", "updated", "submitted", "cancelled", "deleted", "transitioned", "scheduled"].contains(&event.as_str()) {
-        return Err(Error::field("event", "must be created, updated, submitted, cancelled, deleted, transitioned or scheduled"));
+    if !["created", "updated", "submitted", "cancelled", "deleted", "transitioned", "scheduled", "opened"].contains(&event.as_str()) {
+        return Err(Error::field("event", "must be created, updated, submitted, cancelled, deleted, transitioned, scheduled or opened"));
     }
     // A schedule in place of a record event, checked against the entity it is on (schedule.rs).
     let schedule = input.get("schedule").filter(|v| !v.is_null()).cloned();
@@ -1826,6 +1856,24 @@ pub fn package_marks(catalog: &ferrum_meta::Catalog, rows: &mut [Value]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_link_lives_until_the_record_says_never_past_the_most() {
+        let now = chrono::Utc::now();
+        let day = |d: i64| (now + chrono::Duration::days(d)).date_naive();
+        assert!(link_expiry(Some(3), None).unwrap().is_some_and(|t| (t - now).num_days() == 2 || (t - now).num_days() == 3), "days alone");
+        assert_eq!(link_expiry(None, Some(&Value::Null)).unwrap(), None, "null: as days says");
+        let through = link_expiry(None, Some(&json!(day(10).to_string()))).unwrap().unwrap();
+        assert_eq!(through, (day(11)).and_hms_opt(0, 0, 0).unwrap().and_utc(), "a date: through its end");
+        let sooner = link_expiry(Some(2), Some(&json!(day(10).to_string()))).unwrap().unwrap();
+        assert!(sooner < now + chrono::Duration::days(3), "the sooner of the two");
+        let capped = link_expiry(None, Some(&json!(day(400).to_string()))).unwrap().unwrap();
+        assert!(capped <= chrono::Utc::now() + chrono::Duration::days(crate::action_link::MAX_DAYS), "never past the most");
+        let moment = link_expiry(None, Some(&json!("2099-01-01T10:00:00+02:00"))).unwrap().unwrap();
+        assert!(moment <= chrono::Utc::now() + chrono::Duration::days(crate::action_link::MAX_DAYS));
+        assert!(link_expiry(None, Some(&json!("soon"))).is_err() && link_expiry(None, Some(&json!(5))).is_err());
+    }
     use std::sync::atomic::Ordering;
 
     #[test]

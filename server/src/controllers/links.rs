@@ -54,7 +54,8 @@ fn style(color: Option<&str>) -> String {
          input,select,textarea{{font:inherit;width:100%;box-sizing:border-box;padding:.4rem;border:1px solid #888;border-radius:4px}}\
          button{{font:inherit;margin-top:.75rem;padding:.5rem 1rem;border:0;border-radius:4px;background:{accent};color:#fff;cursor:pointer}}\
          button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{{outline:3px solid {accent};outline-offset:2px}}\
-         .error{{color:#a00;font-weight:600}}\
+         .error{{color:#a00;font-weight:600}}table{{border-collapse:collapse;width:100%;margin:1rem 0}}caption{{text-align:left;font-weight:600}}\
+         th,td{{border-bottom:1px solid #ddd;padding:.25rem .5rem;text-align:left}}\
          @media (prefers-color-scheme:dark){{body{{color:#eee;background:#161618}}header p{{color:#aaa}}form{{border-color:#333}}}}"
     )
 }
@@ -111,6 +112,16 @@ fn input(p: &ferrum_meta::ActionParam, id: &str) -> String {
 fn page_of(p: &LinkPage, error: Option<&str>, refused: bool) -> Response {
     let fields: String = p.fields.iter().map(|(l, v)| format!("<dt>{}</dt><dd>{}</dd>", esc(l), esc(v))).collect();
     let fields = if fields.is_empty() { String::new() } else { format!("<dl>{fields}</dl>") };
+    // Each table it shows, read-only: its columns' labels as headers, every value escaped.
+    let tables: String = p
+        .tables
+        .iter()
+        .map(|(label, cols, rows)| {
+            let head: String = cols.iter().map(|c| format!(r#"<th scope="col">{}</th>"#, esc(c))).collect();
+            let body: String = rows.iter().map(|r| format!("<tr>{}</tr>", r.iter().map(|v| format!("<td>{}</td>", esc(v))).collect::<String>())).collect();
+            format!("<table><caption>{}</caption><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>", esc(label))
+        })
+        .collect();
     let intro = p.intro.as_deref().map(|t| format!("<p>{}</p>", esc(t))).unwrap_or_default();
     let error = error.map(|e| format!(r#"<p class="{}" role="alert">{}</p>"#, if refused { "error" } else { "said" }, esc(e))).unwrap_or_default();
     let mut forms = String::new();
@@ -138,7 +149,7 @@ fn page_of(p: &LinkPage, error: Option<&str>, refused: bool) -> Response {
             esc(label)
         ));
     }
-    let body = format!("<header><p>{}</p><h1>{}</h1></header><main>{error}{intro}{fields}{forms}</main>", esc(&p.workspace), esc(&p.heading));
+    let body = format!("<header><p>{}</p><h1>{}</h1></header><main>{error}{intro}{fields}{tables}{forms}</main>", esc(&p.workspace), esc(&p.heading));
     html(if refused { StatusCode::UNPROCESSABLE_ENTITY } else { StatusCode::OK }, &p.language, &p.heading, p.color.as_deref(), &body, &p.frame_origins)
 }
 
@@ -146,9 +157,11 @@ async fn limited(st: &crate::state::AppState, headers: &HeaderMap, workspace: &s
     st.public_limiter.check(&format!("{}|{}", client_ip(headers), workspace.to_lowercase())).await.map_err(|e| ApiError(e).into_response())
 }
 
-async fn gone(k: &Kernel, workspace: &str) -> Response {
-    let said = k.link_wording(workspace, false).await.unwrap_or_else(|_| ("This link does not work any more".into(), None));
-    note(StatusCode::NOT_FOUND, workspace, said)
+/// A link that does not work: one answer, the same for a workspace that is not there as for an unknown link in one
+/// that is (status, body, headers; the address's own workspace name aside), so a stranger learns nothing of which
+/// workspaces exist. Its wording is the platform's `core.link_gone` as shipped, for that reason not a workspace's edit.
+pub fn gone(k: &Kernel, workspace: &str) -> Response {
+    note(StatusCode::NOT_FOUND, workspace, k.link_gone_wording())
 }
 
 /// `GET /api/public/{workspace}/links/{token}`.
@@ -162,7 +175,7 @@ async fn show(State(app): State<AppContext>, Path((workspace, token)): Path<(Str
     }
     match st.kernel.link_page(&workspace, &token).await {
         Ok(Some(p)) => page_of(&p, None, false),
-        Ok(None) => gone(&st.kernel, &workspace).await,
+        Ok(None) => gone(&st.kernel, &workspace),
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -182,10 +195,14 @@ async fn act(
         return r;
     }
     let k = &st.kernel;
+    // Its first POST-back is when it was opened: a preview fetcher or a mail scanner only reads it.
+    if let Err(e) = k.link_opened(&workspace, &token).await {
+        tracing::warn!("a link's opening was not recorded: {e}");
+    }
     if form.contains_key("_send") {
         return match k.send_link_code(&workspace, &token).await {
             Ok(true) => again(k, &workspace, &token, "We sent you a code.".into(), false).await,
-            Ok(false) => gone(k, &workspace).await,
+            Ok(false) => gone(k, &workspace),
             Err(e) => again(k, &workspace, &token, said(&e), true).await,
         };
     }
@@ -197,7 +214,7 @@ async fn act(
             let done = k.link_wording(&workspace, true).await.unwrap_or_else(|_| ("Thank you".into(), None));
             note(StatusCode::OK, &workspace, done)
         }
-        Ok(None) => gone(k, &workspace).await,
+        Ok(None) => gone(k, &workspace),
         Err(e) => again(k, &workspace, &token, said(&e), true).await,
     }
 }
@@ -206,7 +223,7 @@ async fn act(
 async fn again(k: &Kernel, workspace: &str, token: &str, error: String, refused: bool) -> Response {
     match k.link_page(workspace, token).await {
         Ok(Some(p)) => page_of(&p, Some(&error), refused),
-        Ok(None) => gone(k, workspace).await,
+        Ok(None) => gone(k, workspace),
         Err(e) => ApiError(e).into_response(),
     }
 }
@@ -272,6 +289,7 @@ mod tests {
             heading: "Quote <b>Q-1</b>".into(),
             intro: Some("Choose".into()),
             fields: vec![("Total".into(), "<img src=x onerror=alert(1)>".into())],
+            tables: vec![("Lines".into(), vec!["Item".into()], vec![vec!["<i>Bolt</i>".into()]])],
             actions: vec![(
                 "accept".into(),
                 "Accept".into(),
@@ -295,7 +313,8 @@ mod tests {
         assert_eq!(r.headers().get(header::CACHE_CONTROL).unwrap(), "no-store");
         let body = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(!html.contains("<script") && !html.contains("<img") && !html.contains("<b>"), "{html}");
+        assert!(!html.contains("<script") && !html.contains("<img") && !html.contains("<b>") && !html.contains("<i>"), "{html}");
+        assert!(html.contains(r#"<caption>Lines</caption><thead><tr><th scope="col">Item</th></tr></thead><tbody><tr><td>&lt;i&gt;Bolt"#), "{html}");
         assert!(html.contains(r#"<label for="a0p0">Your name</label><input id="a0p0" name="signed_by""#) && html.contains(r#"<label for="c0">"#), "{html}");
     }
 }
