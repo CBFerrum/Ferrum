@@ -173,6 +173,16 @@ pub struct Format {
     pub date: Option<DateStyle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+    /// `abs`: a number, amount or amount in words without its sign (a credit note's totals print positive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign: Option<Sign>,
+}
+
+/// How a number's sign prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sign {
+    Abs,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -492,6 +502,9 @@ pub struct TableColumn {
     pub format: Option<Format>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secondary: Option<Paths>,
+    /// A cell whose value is zero is left blank.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_zero: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<String>,
 }
@@ -825,8 +838,16 @@ impl Layout {
                             }
                         }
                         BlockKind::Table { value, columns, totals, totals_label, empty_text, hide_zero_rows, .. } => {
-                            if !value.starts_with("doc.") || value.matches('.').count() != 1 {
-                                bad(id, format!("a table prints one of the record's tables (doc.<table>), not {}", cut(value)));
+                            let dots = value.matches('.').count();
+                            let ok = (value.starts_with("doc.") || value.starts_with("company.")) && dots == 1 || value.starts_with("links.") && dots == 2;
+                            if !ok || !PATH.is_match(value) {
+                                bad(
+                                    id,
+                                    format!(
+                                        "a table prints a table of the record (doc.<table>), of a record it links to (links.<link>.<table>) or of the company (company.<table>), not {}",
+                                        cut(value)
+                                    ),
+                                );
                             }
                             if columns.is_empty() || columns.len() > 20 {
                                 bad(id, format!("a table has 1 to 20 columns, not {}", columns.len()));
