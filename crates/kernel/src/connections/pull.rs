@@ -25,6 +25,9 @@ const MIN_EVERY: u32 = 5;
 const MAX_EVERY: u32 = 7 * 24 * 60;
 /// Pulls queued in one look.
 const SWEEP: i64 = 100;
+/// Attempts of one run: the first, and as many more as a service answering "later" gets, with the jobs' backoff
+/// (10 s, 20 s, 40 s), each only while it would start before the next scheduled run.
+const ATTEMPTS: i32 = 4;
 
 /// What the cursor is.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,7 +140,7 @@ impl Kernel {
         for (tenant, conn, name) in &due {
             let mut job = NewJob::new(PULL_KIND, json!({"connection": conn, "pull": name}));
             job.dedupe_key = Some(format!("{conn}:{name}"));
-            job.max_attempts = 3;
+            job.max_attempts = ATTEMPTS;
             crate::jobs::enqueue(&mut tx, *tenant, None, job).await?;
         }
         tx.commit().await?;
@@ -163,7 +166,7 @@ impl Kernel {
             .await?
             .flatten();
         tx.commit().await?;
-        let (mut items, mut pages, mut error) = (0usize, 0u32, None);
+        let (mut items, mut pages, mut error, mut later) = (0usize, 0u32, None, false);
         while pages < pull.max_pages.unwrap_or(DEFAULT_PAGES) {
             pages += 1;
             let mut inputs = serde_json::Map::new();
@@ -173,7 +176,11 @@ impl Kernel {
             let given = json!(cursor);
             let answer = match self.perform(&ctx, &conn, &pull.operation, &Value::Object(inputs), None, Some(("cursor", &given)), None, None).await? {
                 Outcome::Ok(_, answer) => answer,
-                Outcome::Later(why) | Outcome::No(why) => {
+                Outcome::Later(why) => {
+                    (error, later) = (Some(why), true);
+                    break;
+                }
+                Outcome::No(why) => {
                     error = Some(why);
                     break;
                 }
@@ -208,10 +215,27 @@ impl Kernel {
                 break;
             }
         }
+        let next_run = started + chrono::Duration::minutes(pull.every_minutes as i64);
+        // "Later": tried again from the page that failed (the cursor stays where the last page committed), while
+        // attempts are left and the retry would start before the next scheduled run; the job's dedupe keeps the
+        // schedule from queueing another meanwhile.
+        let retry = later
+            && job.attempts < job.max_attempts
+            && Utc::now() + chrono::Duration::milliseconds((crate::jobs::backoff(job.attempts) * 1000.0) as i64) < next_run;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
+        let told: bool = sqlx::query_scalar("select told from conn_pull where tenant_id = $1 and conn_id = $2 and name = $3 for update")
+            .bind(tenant)
+            .bind(conn_id)
+            .bind(&name)
+            .fetch_optional(&mut *tx)
+            .await?
+            .unwrap_or(true);
+        // Told once per streak of failed runs (a run retried is not over yet); a run that works ends the streak.
+        let failed = error.is_some() && !retry;
         sqlx::query(
             "update conn_pull set last_run = $4, last_error = $5, next_run = $4 + make_interval(mins => $6), \
-               cursor = case when $7 then $8 else cursor end where tenant_id = $1 and conn_id = $2 and name = $3",
+               cursor = case when $7 then $8 else cursor end, told = case when $5 is null then false when $9 then true else told end \
+             where tenant_id = $1 and conn_id = $2 and name = $3",
         )
         .bind(tenant)
         .bind(conn_id)
@@ -221,9 +245,23 @@ impl Kernel {
         .bind(pull.every_minutes as i32)
         .bind(pull.cursor == Cursor::Time && error.is_none())
         .bind(started.to_rfc3339())
+        .bind(failed)
         .execute(&mut *tx)
         .await?;
+        if failed && !told {
+            let admins: Vec<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and is_admin and is_active and kind = 'member'")
+                .bind(tenant)
+                .fetch_all(&mut *tx)
+                .await?;
+            let title = format!("Pulling {name} from {} failed", conn.name);
+            for user in admins {
+                crate::notify::send_kind(&mut tx, tenant, user, "general", "inapp", &title, error.as_deref(), Some("Connection"), Some(conn_id)).await?;
+            }
+        }
         tx.commit().await?;
+        if retry {
+            return Err(Error::Unavailable(error.unwrap_or_default()));
+        }
         Ok(json!({"pages": pages, "items": items, "error": error}))
     }
 
@@ -244,7 +282,7 @@ impl Kernel {
         }
         let mut job = NewJob::new(PULL_KIND, json!({"connection": id, "pull": name}));
         job.dedupe_key = Some(format!("{id}:{name}"));
-        job.max_attempts = 3;
+        job.max_attempts = ATTEMPTS;
         let job = crate::jobs::enqueue(&mut tx, ctx.tenant, Some(ctx.user), job).await?;
         tx.commit().await?;
         Ok(job)
