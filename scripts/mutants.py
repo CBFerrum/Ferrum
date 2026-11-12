@@ -738,6 +738,9 @@ MUTANTS = [
     ("message-quiet-hours-ignored", "crates/kernel/src/messages.rs", "        if pending[\"promotional\"] == json!(true)", "        if false", MESSAGES),
     ("message-recipient-unlimited", "crates/kernel/src/messages.rs", "} else if theirs >= s.per_recipient_hour.unwrap_or(PER_RECIPIENT_HOUR) {", "} else if false {", MESSAGES),
     ("message-default-change-untold", "crates/kernel/src/messages.rs", "let changed = default.is_some_and(|m| base.as_deref() != Some(digest(m).as_str()));", "let changed = false;", MESSAGES),
+    # Recipients and loops over a linked record's lines (docs/api.md, Automations).
+    ("group-recipients-unbounded", "crates/kernel/src/messages.rs", "        if rows.len() > crate::automation::MAX_ITEMS {", "        if false {", EFFECTS),
+    ("group-member-told-twice", "crates/kernel/src/messages.rs", "            && !out.contains(&u)\n", "", EFFECTS),
 
 ]
 

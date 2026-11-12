@@ -64,8 +64,9 @@ pub enum AutomationAction {
     /// record's checks and rules; each value is a CEL expression over `doc` and `linked` (the record written, as it
     /// was). An empty link does nothing; a link to a record that is not there is an error.
     UpdateLinked { link: String, values: BTreeMap<String, String> },
-    /// In-app notification. `to`: `owner`, `role:<name>`, `user:<uuid>`, or `field:<name>` — the
-    /// user whose email is in that field of the record (an assignee, an employee).
+    /// In-app notification. `to`: `owner`, `role:<name>`, `user:<uuid>`, `field:<name>` — the
+    /// user whose email is in that field of the record (an assignee, an employee) — or `links:<link>.<table>.<field>`,
+    /// the users whose e-mail is in that field of each line of the record a link field names (a group's members).
     Notify {
         to: String,
         #[serde(default)]
@@ -77,7 +78,8 @@ pub enum AutomationAction {
         message: Option<String>,
     },
     /// E-mail, queued with the outbox in the run's transaction: it goes out only if the run commits,
-    /// once per event. `to`, `subject` and `body` are CEL expressions; what `body` gives is text, escaped, its line
+    /// once per event. `to`, `subject` and `body` are CEL expressions (`to` may instead be
+    /// `links:<link>.<table>.<field>`: one mail to each address there, as `notify` reads it); what `body` gives is text, escaped, its line
     /// breaks kept. A `template` (MiniJinja, the print formats' engine) makes formatted mail in its place: its own
     /// markup stays, every value it prints is escaped, and it sees the record as `doc` and the runner as `user`. Marketing (`purpose`) is not sent to someone who
     /// withdrew their consent, asked again as it goes (FEO-015); a transactional notice does not ask.
@@ -96,7 +98,7 @@ pub enum AutomationAction {
         message: Option<String>,
     },
     /// A message from a template (BD-20) to each of `to` (`owner`, `user:<id>`, `role:<name>`, `field:<name>`,
-    /// `expr:<expression>` giving an address, a number or `{email, phone, language, time_zone}`), on the first of
+    /// `links:<link>.<table>.<field>`, `expr:<expression>` giving an address, a number or `{email, phone, language, time_zone}`), on the first of
     /// `channels` (else the template's) each can be reached on, or every one with `all`. `values` are expressions the
     /// template reads as `values`. In the run's transaction: nothing goes unless it commits. Gives the sends.
     Message {
@@ -165,7 +167,8 @@ pub enum AutomationAction {
         update: Option<BTreeMap<String, String>>,
     },
     /// Runs `effects` once per item, the item as `item` in their expressions: each line of `table` (a table field of
-    /// the record), or each record of `entity` whose link field `link` names the record. `where`, over `item`, picks
+    /// the record), each line of a table of the record a link field names (`links`: `<link>.<table>`, read as the
+    /// workspace as `links` is, BD-14), or each record of `entity` whose link field `link` names the record. `where`, over `item`, picks
     /// which. At most [`MAX_ITEMS`] items; no loop within a loop. Gives each item's results, in order.
     ForEach {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,6 +177,8 @@ pub enum AutomationAction {
         entity: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         link: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        links: Option<String>,
         #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
         filter: Option<String>,
         effects: Vec<Step>,
@@ -240,8 +245,8 @@ fn sources(a: &AutomationAction) -> Vec<&str> {
         AutomationAction::SetLine { when, values, .. } => std::iter::once(when).chain(values.values()).collect(),
         AutomationAction::Notify { message: Some(_), .. } => vec![],
         AutomationAction::Notify { title, body, .. } => std::iter::once(title).chain(body.iter()).collect(),
-        AutomationAction::Email { to, message: Some(_), .. } => vec![to],
-        AutomationAction::Email { to, subject, body, .. } => vec![to, subject, body],
+        AutomationAction::Email { to, message: Some(_), .. } => std::iter::once(to).filter(|t| !t.starts_with("links:")).collect(),
+        AutomationAction::Email { to, subject, body, .. } => std::iter::once(to).filter(|t| !t.starts_with("links:")).chain([subject, body]).collect(),
         AutomationAction::Message { to, values, attachments, .. } => {
             return to
                 .iter()
@@ -297,18 +302,23 @@ pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
         let ok = to == "owner"
             || to.strip_prefix("role:").is_some_and(|r| !r.trim().is_empty())
             || to.strip_prefix("user:").is_some_and(|u| u.parse::<Uuid>().is_ok())
-            || to.strip_prefix("field:").is_some_and(|f| !f.trim().is_empty());
+            || to.strip_prefix("field:").is_some_and(|f| !f.trim().is_empty())
+            || to.strip_prefix("links:").is_some_and(|p| crate::messages::lines_path(p).is_some());
         if !ok {
-            return Err(Error::invalid("notify.to must be owner, role:<name>, user:<id> or field:<name>"));
+            return Err(Error::invalid("notify.to must be owner, role:<name>, user:<id>, field:<name> or links:<link>.<table>.<field>"));
         }
     }
     if let AutomationAction::Email { template: Some(t), .. } = a {
         mail_template(t)?;
     }
     if let AutomationAction::Message { to, channels, .. } = a {
-        let fits = |t: &String| t == "owner" || ["user:", "role:", "field:", "expr:"].iter().any(|p| t.strip_prefix(p).is_some_and(|r| !r.trim().is_empty()));
+        let fits = |t: &String| {
+            t == "owner"
+                || ["user:", "role:", "field:", "expr:"].iter().any(|p| t.strip_prefix(p).is_some_and(|r| !r.trim().is_empty()))
+                || t.strip_prefix("links:").is_some_and(|p| crate::messages::lines_path(p).is_some())
+        };
         if to.is_empty() || !to.iter().all(fits) {
-            return Err(Error::invalid("message.to is owner, user:<id>, role:<name>, field:<name> or expr:<expression>"));
+            return Err(Error::invalid("message.to is owner, user:<id>, role:<name>, field:<name>, links:<link>.<table>.<field> or expr:<expression>"));
         }
         if let Some(c) = channels.iter().find(|c| !ferrum_meta::MESSAGE_CHANNELS.contains(&c.as_str())) {
             return Err(Error::invalid(format!("message: {c} is not one of {}", ferrum_meta::MESSAGE_CHANNELS.join(", "))));
@@ -521,21 +531,34 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
                 }
                 continue;
             }
-            AutomationAction::ForEach { table, entity: over, link, effects, .. } => {
+            AutomationAction::ForEach { table, entity: over, link, links, effects, .. } => {
                 match (table, over) {
-                    (Some(t), None) if link.is_none() => {
+                    (None, None) if link.is_none() && links.is_some() => {
+                        let path = links.as_deref().unwrap_or_default();
+                        if path.split('.').count() != 2 {
+                            return Err(at(format!("for_each: links is <link>.<table>, not {path}")));
+                        }
+                        if let Some(m) = crate::messages::lines_problem(schema, ent, path) {
+                            return Err(at(format!("for_each: {m}")));
+                        }
+                    }
+                    (Some(t), None) if link.is_none() && links.is_none() => {
                         if !ent.field(t).is_some_and(|f| f.ftype == ferrum_meta::FieldType::Table) {
                             return Err(at(format!("for_each: {t} is not a table of lines of {}", ent.def.label)));
                         }
                     }
-                    (None, Some(o)) => {
+                    (None, Some(o)) if links.is_none() => {
                         let oent = schema.entity(o).ok_or_else(|| at(format!("for_each: unknown entity {o}")))?;
                         let l = link.as_deref().ok_or_else(|| at(format!("for_each: link names the field of {o} that points here")))?;
                         if linked_entity(oent, l) != Some(entity) {
                             return Err(at(format!("for_each: {l} is not a link field of {} to {}", oent.def.label, ent.def.label)));
                         }
                     }
-                    _ => return Err(at("for_each runs over a table (`table`) or the records linking here (`entity` and `link`)".into())),
+                    _ => {
+                        return Err(at(
+                            "for_each runs over a table (`table`), a linked record's table (`links`) or the records linking here (`entity` and `link`)".into(),
+                        ));
+                    }
                 }
                 check_targets(schema, entity, effects).map_err(|e| match e {
                     Error::Validation(fs) => {
@@ -583,11 +606,19 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
                 }
                 continue;
             }
-            AutomationAction::Notify { .. }
-            | AutomationAction::Email { .. }
-            | AutomationAction::Message { .. }
-            | AutomationAction::Generate { .. }
-            | AutomationAction::Invoke { .. } => continue,
+            AutomationAction::Notify { to, .. } | AutomationAction::Email { to, .. } => {
+                if let Some(m) = to.strip_prefix("links:").and_then(|p| crate::messages::lines_problem(schema, ent, p)) {
+                    return Err(at(m));
+                }
+                continue;
+            }
+            AutomationAction::Message { to, .. } => {
+                if let Some(m) = to.iter().filter_map(|t| t.strip_prefix("links:")).find_map(|p| crate::messages::lines_problem(schema, ent, p)) {
+                    return Err(at(m));
+                }
+                continue;
+            }
+            AutomationAction::Generate { .. } | AutomationAction::Invoke { .. } => continue,
         };
         // The platform's own keys are ignored when written, as they always were (a configured action refuses them).
         if let Some(f) = values.keys().find(|f| target.field(f).is_none() && !crate::store::SYSTEM_KEYS.contains(&f.as_str())) {
@@ -995,12 +1026,15 @@ pub(crate) async fn execute(
             return Ok(serde_json::json!(crate::messages::send(k, tx, ctx, &m).await?));
         }
         AutomationAction::Email { to, message: Some(template), .. } => {
-            let to = as_text(eval(&to)?);
+            let to = match to.starts_with("links:") {
+                true => Box::pin(crate::messages::recipients(k, tx, ctx, entity, doc, &to)).await?,
+                false => vec![crate::messages::Recipient::address(&as_text(eval(&to)?))],
+            };
             let m = crate::messages::Message {
                 template,
                 entity: record.map(|_| entity.to_string()),
                 record,
-                to: vec![crate::messages::Recipient::address(&to)],
+                to,
                 channels: vec!["email".into()],
                 ..Default::default()
             };
@@ -1056,6 +1090,9 @@ pub(crate) async fn execute(
                     .await?
             } else if let Some(u) = to.strip_prefix("user:") {
                 vec![u.parse().map_err(|_| Error::invalid("notify: bad user id"))?]
+            } else if to.starts_with("links:") {
+                let people = Box::pin(crate::messages::recipients(k, tx, ctx, entity, doc, &to)).await?;
+                crate::messages::users_of(tx, ctx.tenant, &people).await?
             } else if let Some(field) = to.strip_prefix("field:") {
                 match doc.get(field).and_then(Value::as_str).map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()) {
                     Some(email) => {
@@ -1068,20 +1105,33 @@ pub(crate) async fn execute(
                     None => vec![],
                 }
             } else {
-                return Err(Error::invalid("notify.to must be owner, role:<name>, user:<id> or field:<name>"));
+                return Err(Error::invalid("notify.to must be owner, role:<name>, user:<id>, field:<name> or links:<link>.<table>.<field>"));
             };
             for u in users {
                 crate::notify::send_kind(tx, ctx.tenant, u, "automation", "inapp", &title, body.as_deref(), Some(entity), record).await?;
             }
         }
         AutomationAction::Email { to, subject, body, template, purpose, message: None } => {
-            let to = as_text(eval(&to)?);
+            let to = match to.starts_with("links:") {
+                true => {
+                    let mut each: Vec<String> = Vec::new();
+                    for r in Box::pin(crate::messages::recipients(k, tx, ctx, entity, doc, &to)).await? {
+                        if let Some(e) = r.email.map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty() && !each.contains(e)) {
+                            each.push(e);
+                        }
+                    }
+                    each
+                }
+                false => vec![as_text(eval(&to)?)],
+            };
             let subject = as_text(eval(&subject)?);
             // The body is text: nothing a record holds becomes markup in a mail sent in the workspace's name. A
             // template's own markup is the administrator's; what it prints from the record is escaped.
             let body = render_mail(&body, template.as_deref(), doc, user, extra)?;
             // Never sent from here: a later action could still roll the run back (FLC-HOOK-002).
-            k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;
+            for to in to {
+                k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;
+            }
         }
         AutomationAction::Invoke { capability, input, key: named } => {
             // Checked again as it runs: the capability's app may have gone since, or its action been configured.
@@ -1121,9 +1171,20 @@ pub(crate) async fn execute(
         AutomationAction::Find { entity: target, by, create, update } => {
             return Box::pin(find(k, ctx, tx, entity, (raw, doc), user, extra, &target, by, create, update)).await.map_err(|e| crate::pack::about("find", e));
         }
-        AutomationAction::ForEach { table, entity: over, link, filter, effects } => {
+        AutomationAction::ForEach { table, entity: over, link, links, filter, effects } => {
             let id = record.ok_or_else(|| Error::invalid("for_each needs a record"))?;
             let (what, items) = match (table, over) {
+                (None, None) if links.is_some() => {
+                    let path = links.unwrap_or_default();
+                    let (l, t) = path.split_once('.').ok_or_else(|| Error::invalid(format!("for_each: links is <link>.<table>, not {path}")))?;
+                    let ent = ctx.schema.entity(entity).cloned().ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
+                    if let Some(m) = crate::messages::lines_problem(&ctx.schema, &ent, &path) {
+                        return Err(Error::invalid(format!("for_each: {m}")));
+                    }
+                    let names = std::collections::BTreeSet::from([l.to_string()]);
+                    let linked = crate::links::load(k, ctx, tx, &ent, doc, &names).await?;
+                    (format!("lines of {path}"), linked[l][t].as_array().cloned().unwrap_or_default())
+                }
                 (Some(t), _) => {
                     let ent = ctx.schema.entity(entity).cloned().ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
                     let cent = ent.field(&t).and_then(|f| f.of.as_deref()).and_then(|c| ctx.schema.entity(c)).cloned();
