@@ -40,12 +40,23 @@ fn declared(k: &Kernel, ctx: &Ctx) -> Vec<(String, BackfillDef)> {
         .collect()
 }
 
-/// The table a backfill changes, in this workspace's schema.
+/// The table a backfill changes, in this workspace's schema: the one named, an entity's own, or a child entity's
+/// lines table (the one parent field that holds it). What cannot be found never will be by trying again.
 fn table_of(ctx: &Ctx, b: &BackfillDef) -> Result<String> {
     match (&b.table, &b.entity) {
         (Some(t), _) => Ok(t.clone()),
-        (None, Some(e)) => ctx.schema.entity(e).map(|e| e.table.clone()).ok_or_else(|| Error::NotFound(format!("entity {e}"))),
-        _ => Err(Error::internal(format!("backfill {} names no table", b.name))),
+        (None, Some(e)) => {
+            let ent = ctx.schema.entity(e).ok_or_else(|| Error::NotFound(format!("backfill {}: entity {e} is not in this workspace", b.name)))?;
+            if !ent.table.is_empty() {
+                return Ok(ent.table.clone());
+            }
+            let held: Vec<&str> = ctx.schema.entities.values().flat_map(|p| p.children.values()).filter(|c| c.entity == *e).map(|c| c.table.as_str()).collect();
+            match held.as_slice() {
+                [one] if *one != ferrum_meta::effective::CUSTOM_RECORD_TABLE => Ok((*one).to_string()),
+                _ => Err(Error::Invalid(format!("backfill {}: the rows of {e} are not in one table of their own: name the table", b.name))),
+            }
+        }
+        _ => Err(Error::Invalid(format!("backfill {} names no table", b.name))),
     }
 }
 
@@ -76,6 +87,18 @@ impl Kernel {
                         .fetch_optional(&mut *tx)
                         .await?;
                 if matches!(finished, Some(Some(_))) {
+                    continue;
+                }
+                // One that ended as failed is not queued again by itself: it says why (`backfills`), and an
+                // administrator queues the failed job again once the cause is put right.
+                let failed: bool =
+                    sqlx::query_scalar("select exists (select 1 from job where tenant_id = $1 and kind = $2 and dedupe_key = $3 and status = 'failed')")
+                        .bind(tenant)
+                        .bind(KIND)
+                        .bind(format!("{package}/{}", b.name))
+                        .fetch_one(&mut *tx)
+                        .await?;
+                if failed {
                     continue;
                 }
                 sqlx::query("insert into backfill_run (tenant_id, package, name) values ($1, $2, $3) on conflict do nothing")
@@ -114,14 +137,22 @@ impl Kernel {
                     .bind(ctx.tenant)
                     .fetch_one(&mut *tx)
                     .await?;
+            let failure: Option<Option<String>> =
+                sqlx::query_scalar("select last_error from job where tenant_id = $1 and kind = $2 and dedupe_key = $3 and status = 'failed' limit 1")
+                    .bind(ctx.tenant)
+                    .bind(KIND)
+                    .bind(format!("{package}/{}", b.name))
+                    .fetch_optional(&mut *tx)
+                    .await?;
             let state = match &run {
+                _ if failure.is_some() => "failed",
                 None => "waiting",
                 Some((_, _, _, None)) => "running",
                 Some(_) => "done",
             };
             out.push(json!({"package": package, "name": b.name, "state": state, "changed": run.as_ref().map_or(0, |r| r.0),
                 "remaining": run.as_ref().and_then(|r| r.1), "started_at": run.as_ref().map(|r| r.2), "finished_at": run.as_ref().and_then(|r| r.3),
-                "needing_now": needing}));
+                "needing_now": needing, "error": failure.flatten()}));
         }
         tx.commit().await?;
         Ok(out)
