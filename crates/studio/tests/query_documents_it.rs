@@ -146,6 +146,10 @@ async fn scenario() {
         k.insert(&a, "XCharge", obj(json!({"customer": who["id"], "amount": amount}))).await.unwrap();
     }
     k.insert(&a, "XCharge", obj(json!({"amount": "99"}))).await.unwrap();
+    // Checked when saved however many rows the report has: it compiles, and the report is there to be run.
+    let mut again = statement(None, "{% for r in rows %}{{ r.amount }}|{% endfor %}");
+    again.key = "x.again".into();
+    k.save_document_template(&a, &again).await.expect("saved over a report with rows");
     let text = |file: Uuid| String::from_utf8(store.0.lock().unwrap().get(&format!("tenants/{tenant}/{file}")).cloned().unwrap()).unwrap();
 
     // ───────────── one file for the whole result; one per customer, kept on each ─────────────
