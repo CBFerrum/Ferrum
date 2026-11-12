@@ -1146,8 +1146,17 @@ portal role meant re-granting every other role, and an app could not group a fie
   (`packaged = false`), never rewritten. Rows written before this release (whose they are is unknown) take only `hide`
   from the package, while theirs is empty, since nobody could have set it. Before, package rule rows were inserted
   `on conflict do nothing`: a corrected rule never reached an earlier workspace.
+* **A packaged row follows its own package only** (corrected 13 November 2026). The row keeps the package that wrote
+  it (`role_permission.package`): a release rewrites the row only when that package wrote it. Two packages declaring a
+  rule for the same role and entity (several apps add rules to shared roles) leave the first row as it is, as before
+  this decision: as first shipped, each overwrote the other's in install order, and CRM's `Lead.convert_to_customer`
+  lost its grant on Address. A row written as packaged by the two releases before the correction carries no package:
+  its origin is unknown, so no package claims it (its grants stay; its `hide` is taken only while empty, as a row from
+  before this decision). Another package's row never takes this package's `hide`.
 
-Tests (`rule_hide_it`): refused when saved (five ways); a portal person's three projects (hidden only through the
+Tests (`packaged_rules_it`: two packages' rules for one role and entity in both install orders, the first kept and
+the second changing nothing; the first package's corrected grant and `hide` reaching the workspace; a row of unknown
+origin claimed by neither; an administrator's edit kept through both). (`rule_hide_it`): refused when saved (five ways); a portal person's three projects (hidden only through the
 client's rule, shown through the sponsor's, shown on the one both reach) through read, list, `fields=`, filter, sort,
 search, a print and writes; staff hiding it everywhere, history included, and staff also holding a showing rule; a
 package's rule following a release, a row from before taking `hide`, an administrator's edit kept.
