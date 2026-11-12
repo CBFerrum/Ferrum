@@ -21,7 +21,7 @@ is shared:
 | Webhooks | `POST /api/connect/{connection}/webhook`. The connector authenticates what arrives, repeats of an event are ignored, and the work happens in a job, so the provider gets its answer at once. |
 | Reconciliation | Compares what the provider has with what we hold, and records `differs`, `missing_here` and `missing_there` for a person. It repairs nothing by guesswork. |
 | Being a good client | A provider that says to wait (`Error::Wait`, or `TooManyRequests`) is left alone for that long. One that fails three times in a row is left alone for 30 s, doubling up to an hour. Every job of the connection waits together, and so does every connection on the same provider account (the same provider and credentials, known by a keyed fingerprint that reveals nothing of them), in any workspace: a provider's limit is the account's. Waiting costs a job no attempt; a call that failed does, so what can never succeed still ends as a dead letter. |
-| Operations | `GET /api/admin/connections`: each connection's `health`, told apart: `authentication` (`none`, `untested`, `ok`, `failing`), `freshness`, `backlog`, `dead_letters`, `drift` and `quota`. An upstream outage does not read as a healthy connection, and a green badge is not on offer. |
+| Operations | `GET /api/admin/connector-instances`: each connection's `health`, told apart: `authentication` (`none`, `untested`, `ok`, `failing`), `freshness`, `backlog`, `dead_letters`, `drift` and `quota`. An upstream outage does not read as a healthy connection, and a green badge is not on offer. |
 
 A provider's call never holds a database transaction open.
 
@@ -74,5 +74,5 @@ writing an adapter does not establish it.
 ## API
 
 Administrators only: `GET /api/admin/connectors` (what this server can connect to); `GET`/`POST
-/api/admin/connections`; `PUT`/`DELETE /api/admin/connections/{id}`; `POST .../{id}/test`, `GET .../{id}/schema`, `POST .../{id}/sync`
+/api/admin/connector-instances`; `PUT`/`DELETE /api/admin/connector-instances/{id}`; `POST .../{id}/test`, `GET .../{id}/schema`, `POST .../{id}/sync`
 `{from_start}`, `.../{id}/reconcile`; `GET .../{id}/drift`; `GET .../{id}/activity` (its latest reads, sends and comparisons with how each went, and the records each stream links); `POST /api/admin/connection-drift/{id}/resolve`. A failed run is tried again with `POST /api/jobs/{id}/retry`.
