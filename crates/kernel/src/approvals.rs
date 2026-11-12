@@ -35,6 +35,10 @@ struct Step {
     /// How many different people must approve, worked out when it opened.
     #[serde(default)]
     need: usize,
+    /// What an expression `need` gave when the request was made (BD-45): kept, so a later change of the record does not
+    /// move it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asked: Option<i64>,
     #[serde(default)]
     opened_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -380,8 +384,26 @@ fn first_states(ent: &EffEntity, ctx: &Ctx, doc: &Doc, policy: &ApprovalPolicy) 
     policy
         .steps
         .iter()
-        .map(|s| Ok(Step { state: if holds(ent, ctx, doc, s.when.as_deref())? { "waiting" } else { "skipped" }.into(), ..Default::default() }))
+        .map(|s| {
+            let asked = match &s.need {
+                ApprovalNeed::Expr(src) => Some(count(ent, ctx, doc, src)?),
+                _ => None,
+            };
+            Ok(Step { state: if holds(ent, ctx, doc, s.when.as_deref())? { "waiting" } else { "skipped" }.into(), asked, ..Default::default() })
+        })
         .collect()
+}
+
+/// The number an expression `need` gives on `doc` (BD-45): a whole number, or a refusal naming the expression.
+fn count(ent: &EffEntity, ctx: &Ctx, doc: &Doc, src: &str) -> Result<i64> {
+    let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
+    let e = Expr::compile(src).map_err(Error::invalid)?;
+    let v =
+        e.eval(&Scope { doc: &view, old: None, parent: None, user: &ctx.user_value() }).map_err(|m| Error::invalid(format!("approval need '{src}': {m}")))?;
+    v.as_i64()
+        .or_else(|| v.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64))
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        .ok_or_else(|| Error::invalid(format!("approval need '{src}' gave {v}, not a whole number")))
 }
 
 /// Opens the first stage whose steps are not all done, unless one of it is open already: its waiting steps get their
@@ -405,10 +427,12 @@ async fn open_next(k: &Kernel, ctx: &Ctx, tx: &mut Tx, on: &On<'_>, steps: &mut 
             let mut who = resolve(ctx, tx, on.ent, on.doc, &def.approvers).await?;
             let out = excluded(tx, ctx, on, i, &decided).await?;
             who.retain(|u| !out.contains(u));
-            let need = match def.need {
-                ApprovalNeed::Count(n) => n as usize,
+            let need = match &def.need {
+                ApprovalNeed::Count(n) => *n as usize,
                 ApprovalNeed::Word(NeedWord::All) => who.len(),
                 ApprovalNeed::Word(NeedWord::Any) => 1,
+                // As the request was made, between one and whoever may decide it.
+                ApprovalNeed::Expr(_) => (steps[i].asked.unwrap_or(1).max(1) as usize).min(who.len().max(1)),
             };
             if need == 0 || who.len() < need {
                 return Err(Error::Validation(vec![FieldError::new(

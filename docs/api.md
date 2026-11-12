@@ -394,6 +394,14 @@ general words.
 it may be printed in: as it is, HTML-escaped, percent-encoded, as JSON, and drawn by `qr` or `barcode` with their
 defaults.
 
+**Rendering for another transport** ([BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034)):
+`messages::render_for(k, tx, ctx, &Message, "email" | "text" | "chat")` → `{channel, address, language, subject, html,
+text, opt_out, list_unsubscribe: (List-Unsubscribe, List-Unsubscribe-Post)}`, as `send` would render it for its one
+recipient, nothing sent; `403 opted out` for an address that opted out (an erased one's digest included).
+`Kernel::opted_out(tx, tenant, channel, address)` asks the same. An approval step's `need` may be an expression over
+the record (`"doc.quorum"`), kept on the request when it is made, between one and the approvers found. An optional
+action parameter not given reads as null in its effects and refusals.
+
 **Calls for apps** ([BD-43](builder/decisions.md#bd-43-calls-apps-were-missing)), each in the app's own transaction and
 asking what its route asks: `Kernel::tag_tx(ctx, tx, entity, id, add, remove)` → the record's tags;
 `Kernel::ensure_calendar_tx(ctx, tx, &Calendar)` → whether it made the working calendar (one of the name is left as it
@@ -1623,7 +1631,8 @@ CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/s
 workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`. A package that uses any of this
 (`layout_file`, `page`, `letterhead`, `copies`, `enabled`, a LetterHead or PrintSettings record in its seed) needs
 the app API version 0.3.3: its app says `platform: ">=0.3.3, <0.4"` (an older server refuses the fields it does not
-know).
+know). The app API is 0.3.4 now: what each version carries is in
+[BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034).
 
 ### Moving an app's print layout or file to a document template
 

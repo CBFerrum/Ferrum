@@ -1813,7 +1813,8 @@ impl DocumentAction {
 pub struct ApprovalStep {
     pub label: String,
     pub approvers: Approvers,
-    /// How many different people must approve: a number, `all` or `any` (the default).
+    /// How many different people must approve: a number, `all`, `any` (the default), or an expression over `doc` and
+    /// `settings` giving a number, worked out when the request is made and kept on it (BD-45).
     #[serde(default, skip_serializing_if = "ApprovalNeed::is_any")]
     pub need: ApprovalNeed,
     /// Over `doc` and `settings`: the step is skipped when it does not hold.
@@ -1854,11 +1855,13 @@ pub struct Approvers {
     pub expr: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ApprovalNeed {
     Count(u32),
     Word(NeedWord),
+    /// An expression giving the number (`doc.quorum`), clamped to 1 and to the approvers found.
+    Expr(String),
 }
 
 impl Default for ApprovalNeed {

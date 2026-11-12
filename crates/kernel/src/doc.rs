@@ -1143,7 +1143,34 @@ impl Kernel {
             let f = ent.field(&k).ok_or_else(|| Error::Internal(format!("set_values: unknown field {k}")))?;
             normalized.insert(k.clone(), normalize(f, &v).map_err(|m| Error::Internal(format!("set_values {k}: {m}")))?);
         }
-        store::set_values(tx, &ent, ctx.tenant, id, &normalized).await
+        store::set_values(tx, &ent, ctx.tenant, id, &normalized).await?;
+        self.follow_targets(ctx, tx, &ent, id).await
+    }
+
+    /// A record's service targets after an engine's write that is not a save (BD-45): worked out on the record as it
+    /// now stands, their due and state fields written as the write was, with no new version and no event. Every write
+    /// path keeps targets: a save in the pipeline, a breach, and these.
+    async fn follow_targets(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: Uuid) -> Result<()> {
+        if ent.def.targets.is_empty() {
+            return Ok(());
+        }
+        let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(ent)).await?;
+        let ctx: &Ctx = &held;
+        let Some(old) = self.load_marked(tx, ctx, ent, id, true).await? else { return Ok(()) };
+        let mut next = old.clone();
+        crate::targets::keep(self, ctx, tx, ent, id, &mut next).await?;
+        let kept: Doc = ent
+            .def
+            .targets
+            .iter()
+            .flat_map(|t| [&t.due_field, &t.state_field])
+            .filter(|f| next.get(*f) != old.get(*f))
+            .map(|f| (f.clone(), next.get(f).cloned().unwrap_or_default()))
+            .collect();
+        if kept.is_empty() {
+            return Ok(());
+        }
+        store::set_values(tx, ent, ctx.tenant, id, &kept).await
     }
 
     /// Derived-field update on one child row (e.g. delivered/billed quantities on order lines).
@@ -1156,7 +1183,19 @@ impl Kernel {
             let f = cent.field(&k).ok_or_else(|| Error::Internal(format!("set_child_values: unknown field {k}")))?;
             normalized.insert(k.clone(), normalize(f, &v).map_err(|m| Error::Internal(format!("set_child_values {k}: {m}")))?);
         }
-        store::set_values_in(tx, &info.table, &cent, ctx.tenant, row_id, &normalized).await
+        store::set_values_in(tx, &info.table, &cent, ctx.tenant, row_id, &normalized).await?;
+        if !ent.def.targets.is_empty() {
+            let parent_id: Option<Uuid> =
+                sqlx::query_scalar(AssertSqlSafe(format!("select parent_id from {} where tenant_id = $1 and id = $2", crate::ddl::q(&info.table))))
+                    .bind(ctx.tenant)
+                    .bind(row_id)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            if let Some(p) = parent_id {
+                self.follow_targets(ctx, tx, &ent, p).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Engine-kept rows of one child table (a work order's crew taken from its appointments, say):
@@ -1182,7 +1221,8 @@ impl Kernel {
             row.insert("idx".into(), json!(i));
             out.push(Value::Object(row));
         }
-        store::set_child_rows(tx, &info.table, &cent, ctx.tenant, parent_id, out).await
+        store::set_child_rows(tx, &info.table, &cent, ctx.tenant, parent_id, out).await?;
+        self.follow_targets(ctx, tx, &ent, parent_id).await
     }
 
     /// Loads a stored record and marks which of its secret fields are set.

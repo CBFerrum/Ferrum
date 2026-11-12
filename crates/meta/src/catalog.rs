@@ -1348,6 +1348,9 @@ pub(crate) fn validate_approval(e: &EntityDef, what: &str, wf: Option<(&Workflow
         if s.need == crate::types::ApprovalNeed::Count(0) {
             return Err(format!("{at}: needs at least one approval"));
         }
+        if let crate::types::ApprovalNeed::Expr(x) = &s.need {
+            compile(e, &format!("{at} need"), Some(x), false)?;
+        }
         compile(e, &format!("{at} when"), s.when.as_deref(), false)?;
         if s.escalate_to.is_some() != s.escalate_after.is_some() {
             return Err(format!("{at}: escalate_after and escalate_to go together"));
