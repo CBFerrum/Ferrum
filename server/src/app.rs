@@ -173,7 +173,7 @@ impl Hooks for App {
         }
         let mut hooks = HookRegistry::default();
         ferrum_domain::register(&mut hooks);
-        crate::packages::register(&mut hooks);
+        crate::packages::register(&mut hooks).map_err(|e| Error::Message(format!("apps: {e}")))?;
         let plugins = ferrum_plugins::PluginHost::new(settings.webhooks_allow_private).map_err(|e| Error::Message(format!("plugins: {e}")))?;
         hooks.register("*", Arc::new(ferrum_plugins::PluginHook(plugins.clone())));
         hooks.add_event_sink(Arc::new(ferrum_plugins::PluginEvents(plugins.clone())));

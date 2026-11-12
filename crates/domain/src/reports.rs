@@ -62,6 +62,22 @@ pub fn add_source(source: std::sync::Arc<dyn ReportSource>) {
     }
 }
 
+/// Sets every app's reports at once, each with who gives it, in place of any set before: the server's set-up may run
+/// more than once in a process (loco runs `after_context` twice on `start`), and a report is still listed and run once.
+/// Two registrants giving one report name is an error naming both.
+pub fn set_sources(sources: Vec<(String, std::sync::Arc<dyn ReportSource>)>) -> std::result::Result<(), String> {
+    let mut by: HashMap<String, &str> = HashMap::new();
+    for (who, s) in &sources {
+        for name in s.catalog().iter().filter_map(|e| e["name"].as_str()) {
+            if let Some(other) = by.insert(name.to_string(), who) {
+                return Err(format!("the report {name} is registered by both {other} and {who}"));
+            }
+        }
+    }
+    *SOURCES.write().map_err(|_| "the report sources are poisoned".to_string())? = sources.into_iter().map(|(_, s)| s).collect();
+    Ok(())
+}
+
 fn sources() -> Vec<std::sync::Arc<dyn ReportSource>> {
     SOURCES.read().map(|s| s.clone()).unwrap_or_default()
 }
@@ -279,6 +295,12 @@ mod tests {
         async fn run(&self, _k: &Kernel, _ctx: &Ctx, _name: &str, _params: &HashMap<String, String>) -> Result<Value> {
             Ok(json!({}))
         }
+    }
+
+    #[test]
+    fn one_report_name_has_one_registrant() {
+        let e = set_sources(vec![("crm".into(), std::sync::Arc::new(One)), ("hr".into(), std::sync::Arc::new(One))]).unwrap_err();
+        assert_eq!(e, "the report zz_one is registered by both crm and hr");
     }
 
     #[test]
