@@ -46,6 +46,8 @@ async fn version(State(app): State<AppContext>) -> ApiResult<Response> {
         "pdf": st.kernel.pdf_enabled(),
         "mail": st.kernel.mailer.is_some(),
         "mail_attachments": st.kernel.mailer.as_ref().is_some_and(|m| m.can_attach()),
+        // `POST /api/v1/{E}/{id}/email` takes `message_html` (rich text, cleaned here).
+        "mail_html": true,
     }))
     .into_response())
 }
