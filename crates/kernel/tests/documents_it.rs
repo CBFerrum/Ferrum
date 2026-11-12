@@ -351,7 +351,7 @@ async fn scenario() {
     assert_eq!((made.content_type.as_str(), made.name.as_str(), made.size), ("application/pdf", "Offer letter Ann.pdf", 17));
     let sent = RENDERED.lock().unwrap().last().cloned().unwrap();
     assert!(sent.contains("Bonus 777"), "the workspace's view, whoever caused it");
-    assert!(!sent.contains("4321"), "never a secret");
+    assert!(!sent.contains("4321") && sent.contains("<p>Pin </p>"), "never a secret, not even sealed");
     let effects = json!([
         {"type": "generate", "template": "letters.offer", "name": "'Offer ' + doc.candidate", "replace": true},
         {"type": "message", "template": "letters.sent", "to": "field:email", "attachments": ["results[0]"]}
