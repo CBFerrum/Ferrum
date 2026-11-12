@@ -246,11 +246,23 @@ pub(crate) fn without_secrets(schema: &ferrum_meta::Schema, ent: &ferrum_meta::E
     }
 }
 
+/// The platform's keys a record has besides its fields.
+const SAMPLE_KEYS: [&str; 8] = ["id", "number", "created_at", "updated_at", "created_by", "version", "docstatus", "status"];
+
+/// One channel's bodies of a language, as written.
+fn channel_bodies(b: &MessageBodies, ch: &str) -> Value {
+    match ch {
+        "email" => json!(b.email),
+        "text" => json!(b.text),
+        "chat" => json!(b.chat),
+        _ => json!(b.inapp),
+    }
+}
+
 /// A record of `entity` with every field there, for checking a template: an unknown field is refused.
 fn sample_doc(ctx: &Ctx, entity: Option<&str>) -> Value {
     let Some(ent) = entity.and_then(|e| ctx.schema.entity(e)) else { return json!({}) };
-    let mut doc: Map<String, Value> =
-        ["id", "number", "created_at", "updated_at", "created_by", "version", "docstatus", "status"].into_iter().map(|f| (f.to_string(), json!(""))).collect();
+    let mut doc: Map<String, Value> = SAMPLE_KEYS.into_iter().map(|f| (f.to_string(), json!(""))).collect();
     for f in ent.def.fields.iter().filter(|f| f.ftype != FieldType::Secret) {
         let v = match f.ftype {
             FieldType::Table => json!([]),
@@ -306,12 +318,58 @@ async fn check_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &MessageDef) ->
     let settings = crate::settings::load(k, ctx, tx, &settings_named(def)).await?;
     let values: Map<String, Value> = def.values.iter().map(|v| (v.clone(), json!(""))).collect();
     let vars = variables(sample_doc(ctx, def.entity.as_deref()), settings, Value::Object(values), "");
+    let ent = def.entity.as_deref().and_then(|e| ctx.schema.entity(e));
+    let has = |f: &str| match SAMPLE_KEYS.contains(&f) {
+        true => Some(false),
+        false => ent.and_then(|e| e.def.fields.iter().find(|d| d.name == f)).map(|d| d.ftype == FieldType::Secret),
+    };
     for (lang, b) in &def.languages {
         for ch in ferrum_meta::MESSAGE_CHANNELS.iter().filter(|c| b.has(c)) {
-            render_channel(b, ch, &vars, true).map_err(|e| Error::field("template", format!("{lang}, {ch}: {}", plain(&e))))?;
+            render_channel(b, ch, &vars, true).map_err(|e| {
+                let text = serde_json::to_string(&channel_bodies(b, ch)).unwrap_or_default();
+                Error::field(
+                    "template",
+                    format!(
+                        "{lang}, {ch}: {}",
+                        undefined_said(plain(&e), &text, &def.values, ent.map(|e| (e.def.label.as_str(), &has as &dyn Fn(&str) -> Option<bool>)))
+                    ),
+                )
+            })?;
         }
     }
     Ok(())
+}
+
+/// What a template's check said when a body reads what is not there, in plain words where the body names it: a value
+/// the template does not declare (`values.x`), or a field the record does not have (`doc.x`). `label` is the record's
+/// entity's, `has` whether a name is one of its keys (and a secret field); anything else keeps what the engine said. The line the engine
+/// named is kept (`(line 2)`).
+pub(crate) fn undefined_said(said: String, text: &str, values: &[String], entity: Option<(&str, &dyn Fn(&str) -> Option<bool>)>) -> String {
+    if !said.contains("undefined value") {
+        return said;
+    }
+    let line = said.rsplit_once("<string>:").and_then(|(_, r)| r.split(')').next()).filter(|n| n.chars().all(|c| c.is_ascii_digit()));
+    let at = line.map(|n| format!(" (line {n})")).unwrap_or_default();
+    let names = |prefix: &str| -> Vec<String> {
+        text.match_indices(prefix)
+            .filter(|(i, _)| *i == 0 || !text[..*i].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+            .map(|(i, _)| text[i + prefix.len()..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<String>())
+            .filter(|n| !n.is_empty())
+            .collect()
+    };
+    if let Some(v) = names("values.").into_iter().find(|v| !values.contains(v)) {
+        return format!("the body reads values.{v}, which is not among the values this template says the sender passes: add {v} to its values{at}");
+    }
+    if let Some((label, has)) = entity {
+        for f in names("doc.") {
+            match has(&f) {
+                None => return format!("doc.{f} is not a field of {label}{at}"),
+                Some(true) => return format!("doc.{f} is a secret field of {label}: no template prints one{at}"),
+                Some(false) => {}
+            }
+        }
+    }
+    said
 }
 
 fn plain(e: &Error) -> String {

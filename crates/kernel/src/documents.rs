@@ -296,9 +296,19 @@ async fn check_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef) -
     {
         vars[name] = v;
     }
+    let ent = if def.query.is_none() { ctx.schema.entity(&def.entity) } else { None };
+    let has = |f: &str| match f == "_titles" || ["id", "number", "created_at", "updated_at", "created_by", "version", "docstatus", "status"].contains(&f) {
+        true => Some(false),
+        false => ent.and_then(|e| e.def.fields.iter().find(|d| d.name == f)).map(|d| d.ftype == FieldType::Secret),
+    };
     for (lang, b) in &def.languages {
         vars["language"] = json!(lang);
-        render_all(def, b, &vars, true).map_err(|e| Error::field("template", format!("{lang}: {}", plain(&e))))?;
+        render_all(def, b, &vars, true).map_err(|e| {
+            let text = [Some(&b.body), b.header.as_ref(), b.footer.as_ref()].into_iter().flatten().cloned().collect::<Vec<_>>().join("\n");
+            let said =
+                crate::messages::undefined_said(plain(&e), &text, &def.values, ent.map(|e| (e.def.label.as_str(), &has as &dyn Fn(&str) -> Option<bool>)));
+            Error::field("template", format!("{lang}: {said}"))
+        })?;
     }
     Ok(())
 }

@@ -320,6 +320,16 @@ async fn scenario() {
         d.languages.get_mut("en").unwrap().body = body.into();
         assert!(matches!(k.save_document_template(&admin, &d).await, Err(Error::Validation(_))), "{why}");
     }
+    // Said in plain words, where the body names what is not there.
+    for (body, says) in [
+        ("{{ doc.candidat }}", "en: doc.candidat is not a field of Offer"),
+        ("{{ values.nope }}", "en: the body reads values.nope, which is not among the values this template says the sender passes"),
+    ] {
+        let mut d = def.clone();
+        d.languages.get_mut("en").unwrap().body = body.into();
+        let Err(Error::Validation(f)) = k.save_document_template(&admin, &d).await else { panic!("{body}") };
+        assert!(f[0].message.starts_with(says), "{body}: {}", f[0].message);
+    }
     let mut odd = def.clone();
     odd.encoding = Some("ebcdic".into());
     assert!(k.save_document_template(&admin, &odd).await.is_err(), "an encoding there is not");

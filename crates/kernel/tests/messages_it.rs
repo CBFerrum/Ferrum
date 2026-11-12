@@ -208,16 +208,21 @@ async fn scenario() {
     let listed = k.message_templates(&admin).await.unwrap();
     let welcome = listed.iter().find(|t| t["key"] == "notes.welcome").unwrap();
     assert_eq!((welcome["source"].clone(), welcome["default_changed"].clone()), (json!("edited"), json!(true)));
-    for (bad, why) in [
-        ("{{ doc.titel }}", "unknown field"),
-        ("{{ doc.pin }}", "a secret field is never rendered"),
-        ("{{ values.nope }}", "a value the sender does not pass"),
-        ("{% if %}", "does not compile"),
+    for (bad, why, says) in [
+        ("{{ doc.titel }}", "unknown field", "en, text: doc.titel is not a field of Note (line 2)"),
+        ("{{ doc.pin }}", "a secret field is never rendered", "en, text: doc.pin is a secret field of Note: no template prints one"),
+        (
+            "{{ values.nope }}",
+            "a value the sender does not pass",
+            "en, text: the body reads values.nope, which is not among the values this template says the sender passes",
+        ),
+        ("{% if %}", "does not compile", "en, text: "),
     ] {
         let mut d = def.clone();
-        d.languages.get_mut("en").unwrap().text.as_mut().unwrap().text = bad.into();
+        d.languages.get_mut("en").unwrap().text.as_mut().unwrap().text = format!("Hi\n{bad}");
         let e = k.save_message_template(&admin, &d).await.unwrap_err();
-        assert!(matches!(e, ferrum_kernel::Error::Validation(_)), "{why}: {e}");
+        let ferrum_kernel::Error::Validation(f) = &e else { panic!("{why}: {e}") };
+        assert!(f[0].field == "template" && f[0].message.starts_with(says), "{why}: {}", f[0].message);
     }
     let mut stray = def.clone();
     stray.key = "notes.nothing".into();
