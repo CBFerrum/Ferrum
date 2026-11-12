@@ -1034,6 +1034,136 @@ and the apps' `shell.search` providers together; a provider answers `GET {endpoi
 `{results: [{title, subtitle?, url, icon?, updated_at?}]}`, each `url` a page of this site the caller
 may open.
 
+## Connections
+
+Connections to outside services: one described HTTP service a workspace calls, is called by, pulls from and signs in
+to ([BD-28 to BD-32](builder/decisions.md#bd-28-one-described-call-for-everyone)). No provider is named in the
+platform: a provider is a description.
+
+**A connection** (`POST /api/admin/connections`, administrators):
+
+```json
+{"name": "carrier", "label": "Parcel carrier", "enabled": true,
+ "secrets": {"api_key": "…"},
+ "description": {
+   "base": "https://api.carrier.example/v2",
+   "auth": {"type": "bearer", "secret": "api_key"},
+   "headers": {"x-account": "acme"},
+   "allowed_hosts": ["labels.carrier.example"],
+   "timeout_ms": 15000, "max_bytes": 1048576,
+   "roles": ["Warehouse"], "apps": ["erp"],
+   "operations": {
+     "create_label": {"method": "POST", "path": "/labels", "inputs": ["weight", "ref"],
+                      "body": "{\"weight\": {{ inputs.weight | json }}, \"reference\": {{ inputs.ref | json }}}",
+                      "result": {"tracking": "/tracking_number", "label": "/label_url"},
+                      "error_at": "/error/message", "temporary": [429, 503], "idempotency_header": "Idempotency-Key"},
+     "track": {"path": "/tracks/{{ inputs.tracking }}", "result": {"status": "/status"}}
+   }}}
+```
+
+`auth` is `{type: none}`, `{type: header, header, secret, prefix?}`, `{type: basic, username, secret}`, `{type:
+bearer, secret}`, `{type: signed, header, secret, timestamp_header?, encoding: hex | base64, prefix?}` (HMAC-SHA256 of
+`<timestamp>.<body>`, or the body) or `{type: oauth, …}` (below); each `secret` names one of `secrets`. An operation's
+`method` is GET, POST, PUT, PATCH or DELETE; its `path` starts with `/` and every value it prints is percent-encoded;
+`query`, `headers`, `body` (a template giving JSON) and `form` are templates over `inputs`, `secret` and `key`;
+`result` maps names to JSON pointers (none: the whole answer); `changes` (every method but GET unless said) means it
+needs a key. `{"test": true}` with a `fixture: {status, body}` per operation answers from that and calls nobody.
+Calls go to `https` only, to the base's host and `allowed_hosts`, never to a private, loopback, link-local or reserved
+address unless the operator names the host in `FERRUM_CONNECTION_HOSTS` (which also allows plain http to it).
+
+| Method & path | Notes |
+|---|---|
+| `GET /api/admin/connections` | `{connections: [{id, name, label, description, enabled, secrets: [names], account, source, refused, debug_until, inbound}]}`; a package's connection not yet taken up has `id: null, offered: true` |
+| `POST /api/admin/connections` | the body above → `201 {id}`; a wrong description is a 422 on `description` saying what |
+| `PUT /api/admin/connections/{id}` | the same; `secrets` left out keeps the ones there are |
+| `DELETE /api/admin/connections/{id}` | `204` |
+| `POST /api/admin/connections/{id}/try` | `{operation, inputs, key?}`: runs it deliberately → `{ok, result, answer}` or `{ok: false, temporary, error}`, masked |
+| `PUT /api/admin/connections/{id}/debug` | `{minutes}` (0 to 60): the call log keeps the requests and answers, redacted, meanwhile |
+| `GET /api/admin/connections/{id}/log?limit=` | `{calls: [{at, operation, outcome, status, duration_ms, entity, record_id, error, debug}], received: [{delivery, received_at, state, error}]}` |
+| `GET /api/admin/connections/{id}/pulls` | `{pulls: [{name, cursor, last_run, next_run, last_error}]}` |
+| `POST /api/admin/connections/{id}/pulls/{name}` | pulls now → `202 {job}` |
+| `GET /api/connections` | a person's own: `{connections: [{id, name, label, status, account}]}` |
+| `POST /api/connections/{id}/connect` | from the browser, signed in → `{url}` to send it to |
+| `DELETE /api/connections/{id}/connect` | disconnects (the workspace's: administrators) → `{revoked}` |
+| `GET /api/connections/callback` | where the provider sends the browser back; a page, no redirect |
+| `POST /api/connections/inbound/{id}` | no session: a call from outside → `{accepted: true}`, or `401 this call was not accepted` whatever the reason |
+
+**Calling** — an app: `ferrum_kernel::connections::call(&kernel, &ctx, Some("erp"), &Call { connection: "carrier".into(),
+operation: "create_label".into(), inputs: json!({"weight": 2, "ref": "P-9"}), key: Some(format!("label:{id}")),
+entity: Some("Shipment".into()), record: Some(id) })` gives the mapped result; `Unavailable` means "later", `Invalid` the
+service's "no" in its words. The effect, on buttons, transitions, approvals and automations:
+
+```json
+{"type": "call", "connection": "carrier", "operation": "create_label", "inputs": {"weight": "doc.weight", "ref": "doc.number"},
+ "key": "'label:' + string(doc.id)", "queue": false, "when": "doc.weight > 0"}
+```
+
+Inline, `results[i]` is the mapped result for later effects (`{"type": "set_fields", "values": {"tracking":
+"results[0].tracking"}}`) and a refusal refuses the run; `queue: true` calls after the run commits, retried while the
+service says "later", and gives `{queued: job}`. Without `key`, the run's own: the same press on the same record version
+calls once. Through the gate: `ferrum.call` with `{connection, operation, inputs}` and an effect key (administrators,
+and configuration).
+
+**Being called**: `inbound` on the description.
+
+```json
+"inbound": {"verify": {"type": "signature", "header": "x-signature", "prefix": "sha256=", "secret": "hook",
+                       "timestamp_header": "x-timestamp", "window_secs": 300},
+            "delivery_header": "x-delivery-id",
+            "map": {"entity": "Alert", "items_at": "/alerts", "by": {"external_id": "item.id"},
+                    "set": {"title": "item.summary", "state": "item.status"}, "create": {"source": "'monitor'"}}}
+```
+
+`verify` may instead be `{type: token, header, secret}`. `delivery_at` (a pointer) names the caller's id when it is in
+the body; without either, the digest of what was signed stands for it. `handler: "<app>"` (an app in `apps`, registered
+with `HookRegistry::add_inbound_handler`) takes the payload in place of `map`. Bodies up to `max_bytes` (256 KB, at most
+1 MB), JSON or a form.
+
+**Pulling**: `"pulls": [{"name": "orders", "operation": "list_orders", "every_minutes": 15, "items_at": "/data",
+"cursor": "token", "next_at": "/next", "cursor_input": "cursor", "max_pages": 5, "map": {…}}]` (`cursor: "time"` gives
+the moment the last run began).
+
+**Signing in to an account**: `"auth": {"type": "oauth", "owner": "workspace" | "person", "provider": {…}}`, the
+redirect address registered at the provider being `{PUBLIC_URL}/api/connections/callback`. Two worked descriptions, with
+placeholder addresses:
+
+```json
+{"authorize_url": "https://login.mailhost.example/oauth2/authorize", "token_url": "https://login.mailhost.example/oauth2/token",
+ "revoke_url": "https://login.mailhost.example/oauth2/revoke", "scopes": ["openid", "email", "mail.read", "mail.send", "offline_access"],
+ "client_id": "0f3c…", "client_secret": "client_secret", "client_auth": "body", "params": {"prompt": "consent"}, "account_at": "/id_token/email"}
+```
+
+```json
+{"authorize_url": "https://social.example/oauth/authorize", "token_url": "https://api.social.example/oauth/token",
+ "scopes": ["posts.write", "profile.read"], "client_id": "ferrum-acme", "client_secret": "client_secret", "client_auth": "basic",
+ "account_at": "/account/handle"}
+```
+
+The first is a person's mailbox (`owner: person`, `roles: ["Sales"]`): each salesperson connects their own and every call
+made as them uses theirs. The second is the organisation's page (`owner: workspace`), connected once by an administrator.
+
+**Packs and packages** carry `connections: [{name, label, description}]`, never a secret or a token; they arrive turned
+off.
+
+### Moving an app's own HTTP client onto a connection
+
+Social, ERP's carriers and the service apps each build requests themselves. To move one:
+
+1. Write what the app calls as a connection description: `base`, `auth`, one operation per call, `result` for what the
+   app reads back, `error_at`, `temporary` and `idempotency_header` where the app had its own. Ship it in the package
+   (`connections:`) so a workspace sees it offered; keep the app's settings for what is the app's.
+2. Move the app's stored API keys to the connection's secrets: an upgrade step reads the app's sealed value and saves
+   the connection with it (`save_connection_def`), then clears the app's copy. Names in templates stay `secret.<name>`.
+3. Replace the client code with `connections::call(k, ctx, Some("<app>"), &Call { … })`, the key the one the app sent as
+   its idempotency key, `entity`/`record` the record it is about. `Unavailable` is the app's "try later" (or queue it with
+   the `call` effect), `Invalid` its "the service said no".
+4. Move the app's webhook route to the connection's inbound address: a `map` when it only writes records, else
+   `handler` with the app's code as an `InboundHandler`. Keep the old route answering until every caller is pointed at
+   the new address, then delete it and its signature code.
+5. Where a person signs in (Social's networks, a mailbox), describe the provider under `auth: oauth` and drop the app's
+   token table after asking each person to connect again; the tokens are never moved by copying.
+6. Delete the app's fixtures in favour of a test connection's, and its SSRF checks: the platform's guard applies.
+
 ## Messages
 
 Messages to people outside and inside the workspace come from templates a workspace edits, on e-mail, text message,
