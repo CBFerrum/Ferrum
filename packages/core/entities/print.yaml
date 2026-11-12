@@ -1,0 +1,45 @@
+# Letter heads and print settings (docs/builder/decisions.md BD-22): what every printed page of the workspace wears,
+# and how it prints. A letter head's header and footer are layout sections ({"sections": [...]}) of the blocks a
+# letter head may hold (field, text, heading, image, divider, spacer) over company.*, settings.* and print.*.
+- name: LetterHead
+  label: Letter Head
+  label_plural: Letter Heads
+  kind: master
+  module: setup
+  title_field: letter_head_name
+  fields:
+    - {name: letter_head_name, type: data, required: true, unique: true, in_list: true, max_length: 80, label: Name}
+    - {name: company, type: link, to: Company, in_list: true, in_filter: true, description: "Whose letter head; empty: the workspace's"}
+    - {name: header, type: json, description: "Blocks (layout sections) printed at the top"}
+    - {name: footer, type: json, description: "Blocks printed at the foot"}
+    - {name: header_height_mm, type: int, default: 30, min: 0, max: 120, label: Header Height (mm)}
+    - {name: footer_height_mm, type: int, default: 15, min: 0, max: 80, label: Footer Height (mm)}
+    - {name: disabled, type: check, in_list: true}
+  list: {columns: [letter_head_name, company, disabled], sort: letter_head_name asc}
+
+- name: PrintSettings
+  label: Print Settings
+  kind: settings
+  module: setup
+  description: "How the workspace's documents print: paper, margins, letter head, drafts and cancelled records, copies."
+  fields:
+    - {name: paper, type: select, options: [A4, A5, A3, Letter, Legal], default: A4}
+    - {name: orientation, type: select, options: [portrait, landscape], default: portrait}
+    - {name: margin_top_mm, type: int, default: 15, min: 0, max: 50, label: Top Margin (mm)}
+    - {name: margin_right_mm, type: int, default: 12, min: 0, max: 50, label: Right Margin (mm)}
+    - {name: margin_bottom_mm, type: int, default: 15, min: 0, max: 50, label: Bottom Margin (mm)}
+    - {name: margin_left_mm, type: int, default: 12, min: 0, max: 50, label: Left Margin (mm)}
+    - {name: font, type: select, options: [sans, serif, mono], default: sans}
+    - {name: letter_head, type: link, to: LetterHead, description: "The workspace's default; a company's own wins"}
+    - {name: repeat_header, type: check, default: true, description: "Letter head header on every PDF page (else the first only)"}
+    - {name: repeat_footer, type: check, default: true, description: "Letter head footer on every PDF page (else the last only)"}
+    - {name: allow_print_draft, type: check, default: true, label: Allow Printing Drafts}
+    - {name: allow_print_cancelled, type: check, default: true, label: Allow Printing Cancelled Records}
+    - {name: draft_watermark, type: data, default: Draft, max_length: 40, description: "Empty: none"}
+    - {name: cancelled_watermark, type: data, default: Cancelled, max_length: 40, description: "Empty: none"}
+    - {name: copies, type: text, description: "Copy labels offered when printing, one per line (at most 5)"}
+  form:
+    - {label: Paper, fields: [paper, orientation, margin_top_mm, margin_right_mm, margin_bottom_mm, margin_left_mm, font]}
+    - {label: Letter Head, fields: [letter_head, repeat_header, repeat_footer]}
+    - {label: Drafts and Cancelled Records, fields: [allow_print_draft, allow_print_cancelled, draft_watermark, cancelled_watermark]}
+    - {label: Copies, fields: [copies]}

@@ -1198,6 +1198,87 @@ passes `results[0].file` (the stored file) and `results[0].sha256` (its digest, 
 file it was given is the one generated), with the record's entity and id, to the Sign app's capability. That
 capability's input is the Sign app's to declare; nothing here signs.
 
+### Print formats
+
+A page template is a **print format** (decision [BD-22](builder/decisions.md); the full contract is
+`tools/PRINT-FORMATS-SPEC.md` in the interface work): an administrator designs how an invoice or an order prints, a
+person printing picks a format, a letter head, a language and copies. A format is a `template` (MiniJinja bodies, as
+above) or a `layout` (sections, columns and blocks rendered by the platform's own renderer,
+`crates/kernel/src/layout.rs`; no tenant markup runs). Every field below is optional, today's behaviour the default:
+
+```yaml
+documents:
+  - key: selling.sales_invoice
+    label: Sales Invoice
+    entity: SalesInvoice
+    default: true
+    layout_file: print/sales_invoice.layout.json   # a package's only; read into `layout` as it loads
+    page: {size: A4, orientation: portrait, margin_mm: {top: 15, right: 12, bottom: 15, left: 12}}   # A3 A4 A5 Letter Legal Custom (+width_mm, height_mm)
+    letterhead: default          # default (the record's company's, else Print Settings') | none | a LetterHead's id
+    copies: [Original, Duplicate] # labels offered when printing (≤ 5); none: Print Settings'
+    enabled: true                 # a disabled format is neither offered nor printed
+    based_on: selling.sales_invoice  # set by duplicate
+```
+
+A layout is `{version: 1, style?, watermark?, sections: [{id, title?, columns: [{id, blocks: [...]}], widths?, gap_mm?,
+border?, background?, padding_mm?, keep_together?, break_before?, margin_top_mm?, when?}]}`; blocks are `field`,
+`heading`, `text`, `image`, `table`, `totals`, `signature`, `barcode` (`code128`, `ean13`, `qr`), `copy_label`,
+`divider`, `spacer`, `page_break`, each with `id`, `when` (CEL over `doc`, `links`, `company`, `settings`, `print`),
+`align`, `margin_top_mm`. Paths: `doc.<field>`, `links.<link field>.<field>`, `company.<field>` (the record's company,
+read as the workspace), `settings.<Entity>.<field>`, `row.<field>` (a table's columns), `print.copy|now|language|title|
+entity` (`print.page`/`print.pages` in a letter head). Unknown keys, paths, secret fields, colours other than `#rrggbb`,
+numbers out of range and every limit (256 KB, 100 sections, 4 columns, 50 blocks a column, 500 in all, 20 table columns,
+100 conditions of ≤ 500 characters, 20 images) are refused when saved (`422`, `field: "layout.<id>"`) and again when it
+renders. A template's error names where it is: `"en body, line 3: …"`.
+
+**Letter heads and settings** are records of the core: `LetterHead` (`letter_head_name`, `company`, `header` and
+`footer` as `{"sections": [...]}` of `field`, `text`, `heading`, `image`, `divider`, `spacer` over `company.*`,
+`settings.*`, `print.*`, their heights, `disabled`; a save checks them, errors on `header`/`footer` as `"<block id>:
+…"`), `PrintSettings` (paper, orientation, margins, font, `letter_head`, `repeat_header`, `repeat_footer`,
+`allow_print_draft`, `allow_print_cancelled`, `draft_watermark`, `cancelled_watermark`, `copies` one per line) and
+`Company.letter_head`. The letter head a page wears: the one asked for, else the format's, else the record's company's
+(its first link to Company), else Print Settings', else none; a disabled one is none. In a PDF with `repeat_header` /
+`repeat_footer` the PDF service repeats it in the page's margin (grown by its height) with page numbers; otherwise it
+is in the body, before the first section and after the last.
+
+**What it shows.** The record and its links as the person printing may read them; the company, letter head and
+settings as the workspace holds them, never a secret; a document generated for outside (`generate`) as the workspace
+holds the record, secrets left out. Images are only this workspace's stored files, inlined as `data:` URLs (the PDF
+service fetches nothing): a format's own image (`{file: "/files/<id>"}`), an attach field (`{value: "company.acc_logo"}`;
+a record's attachment read as the person may), a letter head's own attachments; png, jpeg, gif, webp or svg by their
+bytes, 1 MB each, 4 MB and 20 a page. Templates have `image(value)` (a `data:` URL or nothing), `company`, `print` and
+`letterhead.header`/`letterhead.footer` (a template naming `letterhead.` places it itself). A submittable record's
+draft prints with Print Settings' draft watermark, a cancelled one with the cancelled one; Print Settings may refuse
+printing either (`403`; an administrator's preview still renders).
+
+**People printing**: `GET /api/documents/choices/{Entity}?record=<id>` → `{templates: [{key, label, output, kind,
+languages, letterhead, copies, page: {size, orientation}}], standard: {label}, default, letterheads: [{id, name,
+company, default_for_record}], languages, copies, may_print, refusal}` (enabled formats the caller may use; `default`
+is the workspace's choice, else a workspace template flagged default, else a package's, each only when enabled and
+the caller may use it; null: the print format, offered as `standard`). `GET /api/v1/{E}/{id}/print?template=<key|
+standard>&letterhead=<none|id>&language=&copy=<label>&copy=…&format=pdf|html` → the page (HTML with the sandboxing
+policy, or `application/pdf` named `<label> <number>.pdf` on the format's paper); `403` roles or a refused draft,
+`404` an unknown format, `422` a disabled one or a bad parameter (`fields: [{field: template|letterhead|copy|language}]`).
+`POST /api/v1/{E}/{id}/email {to, subject?, message?, pdf?, template?, letterhead?, language?, copies?}` attaches
+exactly what `/print?format=pdf` makes with the same choices (the default format when none is named).
+
+**Administrators**: `GET /api/admin/documents/templates?entity=&output=` rows also carry `kind`, `is_default`,
+`enabled`, `based_on`, `updated_by`, `updated_at`; `GET …/templates/{key}` also `etag` (and the `ETag` header);
+`POST …/templates` takes `If-Match: "<etag>"` (`409` when someone saved it since; answers `204` with the new `ETag`);
+a package's layout is not edited in place (`422` on `key`: duplicate it; its paper, roles, copies and `enabled` change
+in an edited copy). `POST …/templates/{key}/duplicate {key, label}` → `201 {template}` (the workspace's own key,
+`based_on`, not the default, enabled; `409` when taken). `PUT /api/admin/documents/defaults/{Entity} {key|null}` →
+`204` (the workspace's default page format; null removes the choice). `GET …/templates/{key}/versions` → `{versions:
+[{n, saved_by, saved_at}]}` (the last 50 saves), `GET …/versions/{n}` → `{template}` (restoring is saving it).
+`GET /api/admin/documents/fields/{Entity}` → the designer's catalogue (`fields`, `system`, `tables` with `columns`,
+`links` with their `fields`, `company`, `computed`, `print`, `settings`; no secret). `POST /api/admin/documents/preview
+{template: key | a template not saved, record_id?, sample?, language?, letterhead?, copies?, mode?: print|design,
+format?: html|pdf}` → `{language, output, kind, content, header, footer, record_id, warnings, ms}` (a layout's `content`
+is the whole page; `mode: design` adds `data-b`/`data-slot` marks, placeholders and dims what a condition hides;
+`sample` renders a record of every field; `format: pdf` answers the PDF). `GET /api/print/layout.css` is the renderer's
+CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/save|reset|default`). Packs carry the
+workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`.
+
 ### Moving an app's print layout or file to a document template
 
 1. Add a `documents:` entry to the app's `package.yaml`: key `{package}.{name}`, the `entity`, `output` (`page` for a

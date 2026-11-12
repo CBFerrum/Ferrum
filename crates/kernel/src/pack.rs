@@ -89,6 +89,9 @@ pub struct Pack {
     /// The workspace's own document templates and its edited copies of packages' defaults (BD-21).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<ferrum_meta::DocumentDef>,
+    /// The workspace's default print format per entity (BD-22): entity → template key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub document_defaults: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -597,6 +600,7 @@ impl Kernel {
         let studio = self.export_studio(ctx, &mut tx).await?;
         let (messages, channels) = crate::messages::for_pack(&mut tx, ctx.tenant).await?;
         let documents = crate::documents::for_pack(&mut tx, ctx.tenant).await?;
+        let document_defaults = crate::documents::defaults_for_pack(&mut tx, ctx.tenant).await?;
         let mut records = Vec::new();
         let mut asked: Vec<&String> = Vec::new();
         for e in &o.records {
@@ -633,6 +637,7 @@ impl Kernel {
             messages,
             channels,
             documents,
+            document_defaults,
         };
         pack.requires.packages = requirements(ctx, &pack, &role_packages, &installed);
         let out = serde_json::to_value(&pack).map_err(Error::internal)?;
@@ -926,6 +931,10 @@ impl Kernel {
         for d in &pack.documents {
             let status = crate::documents::save_template(self, tx, ctx, d).await.map_err(|e| about(&format!("document {}", d.key), e))?;
             summary.entry("documents").or_default().add(d.key.clone(), status);
+        }
+        for (entity, key) in &pack.document_defaults {
+            let status = crate::documents::install_default(tx, ctx, entity, key).await.map_err(|e| about(&format!("default document of {entity}"), e))?;
+            summary.entry("document_defaults").or_default().add(entity.clone(), status);
         }
         for c in &pack.channels {
             let status = crate::messages::install_channel(self, tx, ctx, c).await.map_err(|e| about(&format!("channel {}", c.name), e))?;

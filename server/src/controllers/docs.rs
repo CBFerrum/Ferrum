@@ -6,7 +6,7 @@ use crate::state::app_state;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use ferrum_kernel::query::parse_filters;
 use ferrum_kernel::value::canonical_json;
 use ferrum_kernel::{Action, Doc, Error, ListQuery};
@@ -295,47 +295,62 @@ async fn recall(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id
     Ok(Json(app_state(&app)?.kernel.recall_approval(&ctx, &entity, id).await?).into_response())
 }
 
+/// `?a=1&b=2` as its pairs, each decoded (`+` a space), a key given more than once kept each time.
+fn query_pairs(q: Option<&str>) -> Vec<(String, String)> {
+    fn decode(s: &str) -> String {
+        let b = s.as_bytes();
+        let mut out = Vec::with_capacity(b.len());
+        let mut i = 0;
+        while i < b.len() {
+            match b[i] {
+                b'+' => out.push(b' '),
+                b'%' if i + 3 <= b.len() => match std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(v) => {
+                        out.push(v);
+                        i += 2;
+                    }
+                    None => out.push(b'%'),
+                },
+                c => out.push(c),
+            }
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+    q.unwrap_or_default()
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let (k, v) = p.split_once('=').unwrap_or((p, ""));
+            (decode(k), decode(v))
+        })
+        .collect()
+}
+
+/// `GET /api/v1/{E}/{id}/print?template=&letterhead=&language=&copy=…&format=pdf|html`: the record printed as the
+/// caller may read it, with the format, letter head, language and copies asked for (BD-22).
 async fn print(
     Auth(ctx): Auth,
     State(app): State<AppContext>,
     Path((entity, id)): Path<(String, Uuid)>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    // A document template picked (`?template=`), else the entity's default one; else the print format as it was.
-    let picked = match q.get("template") {
-        Some(key) => {
-            let offered = st.kernel.document_choices(&ctx, &entity).await?;
-            if !offered["templates"].as_array().is_some_and(|t| t.iter().any(|t| t["key"] == key.as_str())) {
-                return Err(ApiError(Error::field("template", format!("{key} is not a template you may print a {entity} with"))));
-            }
-            Some(key.clone())
-        }
-        None => st.kernel.default_document(&ctx, &entity).await?,
+    let pairs = query_pairs(raw.as_deref());
+    let one = |k: &str| pairs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
+    let pdf = match one("format").as_deref() {
+        None | Some("html") => false,
+        Some("pdf") => true,
+        Some(other) => return Err(ApiError(Error::field("format", format!("pdf or html, not {other}")))),
     };
-    if let Some(key) = picked {
-        let pdf = q.get("format").map(String::as_str) == Some("pdf");
-        let r = st.kernel.render_document(&ctx, &key, id, q.get("language").map(String::as_str), pdf).await?;
-        return Ok(super::documents::file_response(r));
-    }
-    if q.get("format").map(String::as_str) == Some("pdf") {
-        let pdf = st.kernel.print_pdf(&ctx, &entity, id).await?;
-        let mut resp = pdf.into_response();
-        let h = resp.headers_mut();
-        h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/pdf"));
-        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
-        if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{}-{}.pdf\"", entity.replace(['"', '\\'], ""), id)) {
-            h.insert(header::CONTENT_DISPOSITION, v);
-        }
-        return Ok(resp);
-    }
-    let html = st.kernel.render_print(&ctx, &entity, id).await?;
-    let mut resp = Html(html).into_response();
-    resp.headers_mut().insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; img-src data: https:; base-uri 'none'; form-action 'none'"),
-    );
-    Ok(resp)
+    let ask = ferrum_kernel::documents::PrintAsk {
+        template: one("template"),
+        letterhead: one("letterhead"),
+        language: one("language"),
+        copies: pairs.iter().filter(|(n, _)| n == "copy").map(|(_, v)| v.clone()).collect(),
+        pdf,
+    };
+    Ok(super::documents::file_response(st.kernel.print_record(&ctx, &entity, id, &ask).await?))
 }
 
 #[derive(serde::Deserialize)]
@@ -343,8 +358,14 @@ struct EmailBody {
     to: String,
     subject: Option<String>,
     message: Option<String>,
-    /// Attach the print format as a PDF (the default).
+    /// Attach the document as a PDF (the default).
     pdf: Option<bool>,
+    /// What the attachment prints as, as `/print` takes it: the format (else the entity's default), the letter head,
+    /// the language, the copies.
+    template: Option<String>,
+    letterhead: Option<String>,
+    language: Option<String>,
+    copies: Option<Vec<String>>,
 }
 
 fn esc(s: &str) -> String {
@@ -373,9 +394,17 @@ async fn email_doc(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity,
         if !k.mailer.as_ref().is_some_and(|m| m.can_attach()) {
             return Err(ApiError(Error::Unavailable("this server's mailer cannot attach files; send without the PDF".into())));
         }
-        let pdf = k.print_pdf(&ctx, &entity, id).await?;
-        let name: String = number.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' }).collect();
-        let stored = k.store_file(&ctx, Some((&entity, id)), &format!("{name}.pdf"), "application/pdf", &pdf).await?;
+        // The attachment is what `/print?format=pdf` makes with the same choices: the default format, not the print
+        // format, when none is named.
+        let ask = ferrum_kernel::documents::PrintAsk {
+            template: b.template.clone(),
+            letterhead: b.letterhead.clone(),
+            language: b.language.clone(),
+            copies: b.copies.clone().unwrap_or_default(),
+            pdf: true,
+        };
+        let printed = k.print_record(&ctx, &entity, id, &ask).await?;
+        let stored = k.store_file(&ctx, Some((&entity, id)), &printed.file_name, "application/pdf", &printed.bytes).await?;
         files.extend(stored.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()));
     }
     let message = b.message.as_deref().map(str::trim).filter(|m| !m.is_empty());
