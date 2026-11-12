@@ -448,7 +448,22 @@ impl Catalog {
                 }
                 match (&b.table, &b.entity) {
                     (Some(t), None) if ident(t) => {}
-                    (None, Some(e)) if self.entities.contains_key(e) => {}
+                    (None, Some(e)) if self.entities.contains_key(e) => {
+                        // A child's rows are in its parent's lines table: one parent field must carry it.
+                        let is_child = self.entities.get(e).is_some_and(|(_, d)| d.kind == EntityKind::Child);
+                        let parents = self
+                            .entities
+                            .values()
+                            .flat_map(|(_, d)| d.fields.iter())
+                            .filter(|f| f.ftype == FieldType::Table && f.of.as_deref() == Some(e.as_str()))
+                            .count();
+                        if is_child && parents != 1 {
+                            return invalid(format!(
+                                "{name}: backfill {}: {e} is a child entity held by {parents} lines fields here, not one: name the table instead",
+                                b.name
+                            ));
+                        }
+                    }
                     _ => return invalid(format!("{name}: backfill {}: name one table, or one entity this catalog has", b.name)),
                 }
                 if b.needs.trim().is_empty() || b.set.trim().is_empty() || b.batch.is_some_and(|n| !(1..=10_000).contains(&n)) {
