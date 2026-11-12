@@ -251,7 +251,7 @@ async fn scenario() {
     assert_eq!(open, [&c2["id"]], "every task of the first case closed, the second's left alone");
 
     // ───────────── a refusal anywhere keeps nothing ─────────────
-    refused(k.run_action(&a, "XCase", id_of(&c1), "x_party_then_fail", Value::Null).await, "title");
+    refused(k.run_action(&a, "XCase", id_of(&c1), "x_party_then_fail", Value::Null).await, "title: effect 2 (set_fields): ");
     let codes: Vec<Value> = k.list(&a, "XParty", &Default::default()).await.unwrap().rows.iter().map(|p| p["code"].clone()).collect();
     assert_eq!(codes, [json!("P-1")], "the party the first effect made went with the refusal");
 
@@ -260,7 +260,7 @@ async fn scenario() {
         k.insert(&a, "XLoose", obj(json!({"code": "DUP"}))).await.unwrap();
     }
     let dup = k.insert(&a, "XCase", case("Dup", "DUP")).await.unwrap();
-    refused(k.run_action(&a, "XCase", id_of(&dup), "x_loose", Value::Null).await, "find: more than one Loose has code DUP");
+    refused(k.run_action(&a, "XCase", id_of(&dup), "x_loose", Value::Null).await, "effect 1 (find): more than one Loose has code DUP");
     let blank = k.insert(&a, "XCase", obj(json!({"title": "Blank"}))).await.unwrap();
     refused(k.run_action(&a, "XCase", id_of(&blank), "x_loose", Value::Null).await, "code is empty");
 
@@ -283,7 +283,7 @@ async fn scenario() {
     assert!(k.get(&a, "XCase", id_of(&c3), false).await.unwrap()["party"].is_null(), "nothing kept");
     let lines: Vec<Value> = (0..=automation::MAX_ITEMS).map(|i| json!({"title": format!("L{i}")})).collect();
     let c4 = k.insert(&a, "XCase", obj(json!({"title": "Long", "checklist": lines}))).await.unwrap();
-    refused(k.run_action(&a, "XCase", id_of(&c4), "x_flag_all", Value::Null).await, "for_each: more than 100 lines of checklist");
+    refused(k.run_action(&a, "XCase", id_of(&c4), "x_flag_all", Value::Null).await, "effect 1 (for_each): more than 100 lines of checklist");
 
     // ───────────── automations alike ─────────────
     automation::save(
