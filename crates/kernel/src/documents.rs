@@ -316,7 +316,8 @@ async fn check_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef) -
 /// What a document about a query is checked against: the report's columns as one row, and a record of the entity its
 /// grouping column links to as `group`. The report is run once, as whoever saves it, to learn them.
 async fn query_sample(k: &Kernel, ctx: &Ctx, def: &DocumentDef, q: &DocumentQuery) -> Result<Value> {
-    let (columns, _) = query_rows(k, ctx, def, q, &json!({"limit": 1})).await?;
+    // Its first row at most: how many there are is no matter of the template's.
+    let (columns, _) = query_rows(k, ctx, def, q, &json!({"limit": 1}), false).await?;
     let row: Map<String, Value> = columns
         .iter()
         .filter_map(|c| {
@@ -347,8 +348,15 @@ fn group_target(ctx: &Ctx, columns: &[Value], q: &DocumentQuery) -> std::result:
 }
 
 /// The report's columns and rows for `def`, read as `ctx` may: refused when the report reads another entity than the
-/// template says, and when it has more than [`MAX_QUERY_ROWS`] rows, with the numbers.
-async fn query_rows(k: &Kernel, ctx: &Ctx, def: &DocumentDef, q: &DocumentQuery, params: &Value) -> Result<(Vec<Value>, Vec<Map<String, Value>>)> {
+/// template says, and (`bounded`, when its rows are rendered) when it has more than [`MAX_QUERY_ROWS`] rows.
+async fn query_rows(
+    k: &Kernel,
+    ctx: &Ctx,
+    def: &DocumentDef,
+    q: &DocumentQuery,
+    params: &Value,
+    bounded: bool,
+) -> Result<(Vec<Value>, Vec<Map<String, Value>>)> {
     let source = k.hooks.query_rows().ok_or_else(|| Error::invalid("documents about a query need the analytics engine, which this server does not have"))?;
     let mut params = if params.is_object() { params.clone() } else { json!({}) };
     params.as_object_mut().map(|m| m.entry("limit").or_insert(json!(MAX_QUERY_ROWS)));
@@ -357,7 +365,7 @@ async fn query_rows(k: &Kernel, ctx: &Ctx, def: &DocumentDef, q: &DocumentQuery,
         return Err(Error::field("entity", format!("report {} reads {}, not {}", q.report, out["meta"]["entity"].as_str().unwrap_or("nothing"), def.entity)));
     }
     let rows: Vec<Map<String, Value>> = out["rows"].as_array().into_iter().flatten().filter_map(|r| r.as_object().cloned()).collect();
-    if out["meta"]["truncated"] == json!(true) || rows.len() > MAX_QUERY_ROWS {
+    if bounded && (out["meta"]["truncated"] == json!(true) || rows.len() > MAX_QUERY_ROWS) {
         return Err(Error::invalid(format!(
             "report {} gives more than {MAX_QUERY_ROWS} rows, the most one document reads; narrow it with its filters or dates",
             q.report
@@ -751,7 +759,7 @@ async fn group_files(
     person: bool,
 ) -> Result<(GroupFiles, Vec<(String, Uuid, Value)>, usize)> {
     let (def, q) = query_template(tx, ctx, &run.template).await?;
-    let (columns, rows) = query_rows(k, ctx, &def, &q, &run.params).await?;
+    let (columns, rows) = query_rows(k, ctx, &def, &q, &run.params, true).await?;
     let target = group_target(ctx, &columns, &q).map_err(Error::invalid)?.ok_or_else(|| Error::invalid(format!("document {} groups by nothing", def.key)))?;
     let tent = k.entity(ctx, &target)?;
     let groups = grouped(rows, q.group_by.as_deref().unwrap_or_default());
@@ -782,7 +790,7 @@ async fn group_files(
 /// A query document's first file as the administrator previewing it reads the rows: the first group's, when grouped.
 async fn preview_query(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, run: &QueryRun) -> Result<Pages> {
     let q = def.query.clone().unwrap_or_else(|| DocumentQuery { report: String::new(), group_by: None });
-    let (columns, rows) = query_rows(k, ctx, def, &q, &json!({})).await?;
+    let (columns, rows) = query_rows(k, ctx, def, &q, &json!({}), true).await?;
     let (rows, group) = match (group_target(ctx, &columns, &q).map_err(Error::invalid)?, &q.group_by) {
         (Some(target), Some(by)) => match grouped(rows, by).into_iter().next() {
             Some((id, rows)) => (rows, Value::Object(k.get_tx(ctx, tx, &target, id, false).await?)),
@@ -992,7 +1000,7 @@ impl Kernel {
         if q.group_by.is_some() {
             return Err(Error::invalid(format!("document {} makes a file per record: generate them", def.key)));
         }
-        let (columns, rows) = query_rows(self, ctx, &def, &q, &run.params).await?;
+        let (columns, rows) = query_rows(self, ctx, &def, &q, &run.params, true).await?;
         let pages = render_rows(self, &mut tx, ctx, &def, &columns, rows, Value::Null, run, true).await?;
         let (bytes, content_type, ext) = produce(self, &def, pages, self.pdf_enabled()).await?;
         if def.output != DocumentOutput::Page {
