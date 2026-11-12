@@ -105,6 +105,12 @@ the kernel; tokens stored in plain.
   instant its start shows to the last instant its end shows, and a skipped time is the first instant
   after the gap. Targets on states, pausing states and breach rows are not built.
 
+* *12 Nov 2026, built (BD-19):* approvals on a transition, as above, with three departures. A decision is kept with
+  its request and step, not the record's version: a policy names the fields whose change cancels the decisions so
+  far (`reset_on`), so a typo fixed in a note does not send an order round again. Escalation and reminders are a
+  step's own thresholds (working time on a calendar when it names one) that the minute loop acts on once each, not a
+  scheduled automation on the request's age. A rejection may move the record (`on_reject`) besides ending the round.
+
 **Rules out**: approvals outside the record (an email reply as a decision); a breach computed only when
 someone looks.
 
@@ -458,3 +464,37 @@ already knew (G9) for want of find-or-create; checklists from a template were ty
 **Rules out**: nested loops; loops over a query of arbitrary records (only lines and records linking here); a find
 that picks the first of several; a silent cut at the bound; error paths and compensation (BL-42), approvals, and
 outbound HTTP in effects.
+
+## BD-19. Transitions that do things, and approvals on any transition
+
+Decided 12 November 2026. Carries out BD-04's approvals and extends BD-11 to workflows. Asked for by the builder
+gap report (BL-25, BL-26, BL-29, BL-30, BL-32, BL-33, BL-34): eleven apps decide approvals in Rust and thirteen
+"someone other than" rules; a same-status transition ran no rules, no effects and no automations.
+
+* **A transition may ask and do.** `params` are declared as a button's; the server refuses a required one missing or
+  one not asked for. `effects` are a configured action's (BD-11, BD-13, BD-18), run after the move as the system on
+  the taker's behalf in the transaction, checked when saved. A rule `on: transition` runs only when a transition is
+  taken, on the record in its new state, reading `transition` (`{action, from, to, params}`); a state's `required`
+  already says what entering it needs. A same-status move raises `transitioned`, which automations take, reading
+  `transition` (`{action, from, to, by}`), under the chain-depth guard as any event.
+* **An approval policy is part of the transition**, not a second engine: steps in order (a step may open with the
+  next), each naming its approvers once (a role, a field, an expression over the record and `settings`), how many
+  (N, all, any), a `when` (an amount matrix is steps with conditions), independence (never the requester unless
+  allowed; not earlier deciders; not whoever took a named transition, read from the record's history), and its
+  reminder and escalation thresholds. Taking the transition makes a request (one pending per record) holding the
+  policy as it was; when the last step is satisfied the transition completes once, as the system on the requester's
+  behalf, in that decision's transaction. The record is locked before its request on every path, so concurrent
+  decisions queue.
+* **Counting is the process approvals' own** (`ferrum_logic::approval::satisfied`): one person twice is one; a
+  requester counts only where allowed. Stand-ins are `person_away`, as for process tasks.
+* **Who may decide** is worked out when a step opens and again at the decision; a step that cannot find enough
+  people is refused with what opened it, never left unanswerable in silence.
+
+**Rules out**: deciding by e-mail reply or link; a chain of stand-ins; approvals that skip the transition's own
+gates, rules or effects; an approver reading a record they may not read (see below).
+
+**Not yet**: an approver without read access to the record sees the request (its steps, decisions and the record's
+title) but not the record; reading it through the request, as portal roles read by path, is not built. A packaged
+document's own submit and cancel take a policy only through a workflow set on it (`set_workflow`), which then refuses
+a direct submit by a person; a policy on the plain submit is not built.
+

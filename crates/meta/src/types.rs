@@ -377,6 +377,9 @@ pub enum RuleOn {
     #[default]
     Save,
     Submit,
+    /// Only when a workflow transition is taken (never on a save or a submit of its own), on the record as it would
+    /// be in its new state; the check also reads `transition`: `{action, from, to, params}` (BD-19).
+    Transition,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1096,6 +1099,108 @@ pub struct WorkflowTransition {
     /// table's links. Whoever raised an order does not approve paying it (FEO-013).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub not_creator_of: Vec<String>,
+    /// What whoever takes it is asked for, declared as a button's are; a required one missing refuses it. Its
+    /// effects read them as `params`, rules `on: transition` as `transition.params`, and the history keeps them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<ActionParam>,
+    /// What it does once taken, in its transaction, as the system on the taker's behalf: a configured action's
+    /// effects (BD-11, BD-19), checked by the kernel when the customization is saved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<Value>,
+    /// Who must agree before it completes (BD-19): taking it then asks for approval, and the record stays where it is
+    /// until the policy is satisfied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalPolicy>,
+}
+
+/// An approval policy on a transition (docs/api.md, "Approvals"): steps in order, a step marked `with_next` opening
+/// with the one after it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalPolicy {
+    pub steps: Vec<ApprovalStep>,
+    /// Whoever took the transition may approve it too (never by default).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_requester: bool,
+    /// Fields whose change while it is pending cancels the decisions so far (an amount); other edits leave them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reset_on: Vec<String>,
+    /// The state a rejection moves the record to (one of the same document status); without it the record stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_reject: Option<String>,
+}
+
+/// One step of an approval policy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalStep {
+    pub label: String,
+    pub approvers: Approvers,
+    /// How many different people must approve: a number, `all` or `any` (the default).
+    #[serde(default, skip_serializing_if = "ApprovalNeed::is_any")]
+    pub need: ApprovalNeed,
+    /// Over `doc` and `settings`: the step is skipped when it does not hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
+    /// Opens together with the next step; both must be satisfied before the steps after them open.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_next: bool,
+    /// No one who decided an earlier step decides this one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub not_earlier_deciders: bool,
+    /// Transitions (by action) whose takers on this record do not decide this step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_who_took: Vec<String>,
+    /// A business calendar: the times below count its working time; elapsed time without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<String>,
+    /// Seconds or an ISO 8601 duration after the step opens: those who have not decided are reminded, once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remind_after: Option<String>,
+    /// After this, `escalate_to` may decide the step too, and is told, once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalate_after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalate_to: Option<Approvers>,
+}
+
+/// Who decides: exactly one of a role's holders, the people a field of the record names (a user's id or e-mail, or a
+/// list of them), or those an expression over `doc` and `settings` gives the same way.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Approvers {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ApprovalNeed {
+    Count(u32),
+    Word(NeedWord),
+}
+
+impl Default for ApprovalNeed {
+    fn default() -> Self {
+        ApprovalNeed::Word(NeedWord::Any)
+    }
+}
+
+impl ApprovalNeed {
+    fn is_any(&self) -> bool {
+        *self == ApprovalNeed::Word(NeedWord::Any)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NeedWord {
+    All,
+    Any,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

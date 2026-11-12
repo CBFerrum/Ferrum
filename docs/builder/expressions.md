@@ -2,7 +2,9 @@
 
 Record expressions are CEL ([docs/api.md](../api.md), "Entities") everywhere one is accepted: rules,
 computed fields, `default_expr`, `visible_if`, `required_if`, `read_only_if`, an action's `condition` and
-`refuse_if`, effect values, automation conditions and service targets. Besides CEL's own functions
+`refuse_if`, effect values, automation conditions, service targets and approval policies (a step's `when`, its
+approvers' and escalation's `expr`). A transition's effects read what it was given as `params`; a rule `on:
+transition` and an automation on `transitioned` read `transition` (BD-19). Besides CEL's own functions
 (`size`, `contains`, `startsWith`, `endsWith`, `matches`, `int`, `string`, `timestamp`, `duration`...) they
 have the ones below (decision [BD-16](decisions.md#bd-16-expression-functions-are-additions)). The browser
 does not evaluate any function call: a form leaves a condition that uses one to the server.
@@ -71,7 +73,7 @@ addDays(doc.received, settings.SupportSettings.auto_close_days)
 
 * **Everywhere a record expression is**: rules (a line's too), computed fields, `default_expr`, `visible_if`,
   `required_if`, `read_only_if`, an action's `condition` and `refuse_if`, workflow guards, effect values,
-  automation conditions and action values, and service targets. Logic solutions keep their own parameters and do
+  automation conditions and action values, service targets and approval policies. Logic solutions keep their own parameters and do
   not read `settings` (nor do aggregate filters).
 * **Read as the workspace**: a rule over a setting holds for someone who may not open the settings. A secret
   field is never read.
