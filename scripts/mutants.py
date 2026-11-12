@@ -55,6 +55,8 @@ RETENTION = ("-p", "ferrum-kernel", "--test", "retention_it")
 DOCTOR = ("-p", "ferrum-kernel", "--test", "doctor_it")
 CONNECT = ("-p", "ferrum-kernel", "--test", "connect_it")
 COLLAB = ("-p", "ferrum-kernel", "--test", "collab_it")
+TRANSITIONS = ("-p", "ferrum-kernel", "--test", "transitions_it")
+APPROVALS = ("-p", "ferrum-kernel", "--test", "approvals_it")
 HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
@@ -643,9 +645,21 @@ MUTANTS = [
     # Another app's steps from configuration (docs/api.md, Calling another app's steps).
     ("invoke-default-key-ignores-the-version", "crates/kernel/src/actions.rs", "def.name, doc.get(\"version\").unwrap_or(&Value::Null));", "def.name, \"0\");", INVOKE),
     ("invoke-refusal-says-the-key-to-anyone", "crates/kernel/src/automation.rs", "let message = if user.get(\"is_admin\") == Some(&Value::Bool(true)) {", "let message = if true {", INVOKE),
-    ("invoke-results-not-shown", "crates/kernel/src/actions.rs", "let extra = [(\"params\", &params), (\"results\", &done), (\"links\", &links)];", "let extra = [(\"params\", &params), (\"results\", &Value::Null), (\"links\", &links)];", INVOKE),
+    ("invoke-results-not-shown", "crates/kernel/src/actions.rs", "let extra = [(\"params\", params), (\"results\", &done), (\"links\", &links)];", "let extra = [(\"params\", params), (\"results\", &Value::Null), (\"links\", &links)];", INVOKE),
     ("invoke-input-names-unchecked", "crates/kernel/src/automation.rs", "if let Some(n) = input.keys().find(", "if let Some(n) = input.keys().filter(|_| false).find(", INVOKE),
     ("invoke-not-rechecked-as-it-runs", "crates/kernel/src/automation.rs", "            check_invoke(k, ctx, &capability, &input)?;\n", "", INVOKE),
+    # Transitions that do things (docs/builder/decisions.md BD-19).
+    ("transition-required-param-unasked", "crates/kernel/src/doc.rs", ".filter(|p| p.required && given.get(&p.name)", ".filter(|p| false && given.get(&p.name)", TRANSITIONS),
+    ("transition-rule-runs-on-every-save", "crates/kernel/src/doc.rs", ".filter(|(rule, _)| rule.on == RuleOn::Save || rule.on == on)", ".filter(|(rule, _)| rule.on != RuleOn::Submit || on == RuleOn::Submit)", TRANSITIONS),
+    # Approvals on a transition (docs/builder/decisions.md BD-19).
+    ("transition-approval-requester-decides", "crates/kernel/src/approvals.rs", "    if !on.policy.allow_requester {", "    if false {", APPROVALS),
+    ("transition-approval-completes-early", "crates/kernel/src/approvals.rs", "if satisfied(&steps[i], &of, requester, policy.allow_requester) {", "if true {", APPROVALS),
+    ("transition-approval-reset-ignored", "crates/kernel/src/approvals.rs", ".filter(|f| old.get(*f) != new.get(*f))", ".filter(|_| false)", APPROVALS),
+    ("transition-approval-escalated-twice", "crates/kernel/src/approvals.rs", " && steps[i].escalated_at.is_none() {", " {", APPROVALS),
+    ("transition-approval-not-rechecked", "crates/kernel/src/approvals.rs", "        if !still {", "        if false {", APPROVALS),
+    ("transition-approval-stand-in-requester", "crates/kernel/src/approvals.rs", "if out.contains(&ctx.user) || out.contains(&person) {", "if out.contains(&person) {", APPROVALS),
+    ("transition-approval-reject-without-reason", "crates/kernel/src/approvals.rs", "if !approve && comment.is_none() {", "if false {", APPROVALS),
+    ("transition-approval-names-unchecked", "crates/kernel/src/customize.rs", "        crate::approvals::check_names(tx, ctx.tenant, was, &now).await?;\n", "\n", APPROVALS),
     # Service targets (docs/api.md, Service targets).
     ("target-pause-ignored", "crates/logic/src/target.rs", "        if running && said.pause {", "        if false {", LOGIC_UNIT),
     ("target-late-met-in-time", "crates/logic/src/target.rs", "(Some(m), b, _) if b.is_some() ||", "(Some(m), b, _) if false && b.is_some() ||", LOGIC_UNIT),

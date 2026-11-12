@@ -237,14 +237,45 @@ fn said(done: &mut Value, label: impl Fn(&str, usize) -> String) {
     }
 }
 
+/// Takes a workflow transition; the body, when there is one, is what it asks for (`{"reason": …}`, BD-19).
 async fn transition(
     Auth(ctx): Auth,
     State(app): State<AppContext>,
     Path((entity, id, action)): Path<(String, Uuid, String)>,
     headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    Ok(doc_response(st.kernel.transition(&ctx, &entity, id, &action, if_match(&headers)?).await?, StatusCode::OK))
+    let params: Value = if body.iter().all(u8::is_ascii_whitespace) { Value::Null } else { serde_json::from_slice(&body)? };
+    Ok(doc_response(st.kernel.transition_with(&ctx, &entity, id, &action, if_match(&headers)?, params).await?, StatusCode::OK))
+}
+
+/// `GET …/{id}/approval`: the record's latest approval request, its steps and decisions (null when none).
+async fn approval(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.approval_of(&ctx, &entity, id).await?).into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionBody {
+    /// `approve` or `reject`.
+    outcome: String,
+    comment: Option<String>,
+}
+
+/// `POST …/{id}/approval/decide`: approve, or reject with a reason, the step open for the caller (BD-19).
+async fn decide(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>, Json(b): Json<DecisionBody>) -> ApiResult<Response> {
+    let approve = match b.outcome.as_str() {
+        "approve" => true,
+        "reject" => false,
+        _ => return Err(ApiError(Error::field("outcome", "approve or reject"))),
+    };
+    Ok(Json(app_state(&app)?.kernel.decide_approval(&ctx, &entity, id, approve, b.comment.as_deref()).await?).into_response())
+}
+
+/// `POST …/{id}/approval/recall`: whoever asked takes the pending request back.
+async fn recall(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.recall_approval(&ctx, &entity, id).await?).into_response())
 }
 
 async fn print(
@@ -566,6 +597,9 @@ pub fn routes() -> Routes {
         .add("/{entity}/{id}/amend", post(amend))
         .add("/{entity}/{id}/actions/{action}", post(action))
         .add("/{entity}/{id}/workflow/{action}", post(transition))
+        .add("/{entity}/{id}/approval", get(approval))
+        .add("/{entity}/{id}/approval/decide", post(decide))
+        .add("/{entity}/{id}/approval/recall", post(recall))
         .add("/{entity}/{id}/print", get(print))
         .add("/{entity}/{id}/email", post(email_doc))
         .add("/{entity}/{id}/audit", get(audit_trail))

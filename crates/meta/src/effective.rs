@@ -84,6 +84,15 @@ pub struct TargetExprs {
 pub struct CompiledWorkflow {
     pub def: WorkflowDef,
     pub guards: BTreeMap<(String, String), Expr>,
+    /// What its approval policies say (`when`, approvers' and escalations' `expr`): the settings they read are loaded.
+    pub approvals: Vec<Expr>,
+}
+
+impl CompiledWorkflow {
+    /// Its guards and its approval policies' expressions.
+    pub fn exprs(&self) -> impl Iterator<Item = &Expr> {
+        self.guards.values().chain(&self.approvals)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -323,7 +332,7 @@ impl Schema {
         let mut out = BTreeSet::new();
         let mut next = vec![ent];
         while let Some(e) = next.pop() {
-            let guards = e.workflow.iter().flat_map(|w| w.guards.values());
+            let guards = e.workflow.iter().flat_map(|w| w.exprs());
             out.extend(e.exprs.all().chain(guards).flat_map(|x| x.settings().iter().map(|(n, _)| n.clone())));
             next.extend(e.children.values().filter_map(|c| self.entity(&c.entity)).map(|c| &**c));
         }
@@ -1067,12 +1076,18 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         let workflow = match b.workflow {
             Some(def) => {
                 let mut guards = BTreeMap::new();
+                let mut approvals = Vec::new();
                 for t in &def.transitions {
                     if let Some(c) = &t.condition {
                         guards.insert((t.action.clone(), t.from.clone()), Expr::compile(c).map_err(MetaError::Invalid)?);
                     }
+                    for s in t.approval.iter().flat_map(|p| &p.steps) {
+                        for x in [&s.when, &s.approvers.expr].into_iter().chain(s.escalate_to.as_ref().map(|e| &e.expr)).flatten() {
+                            approvals.push(Expr::compile(x).map_err(MetaError::Invalid)?);
+                        }
+                    }
                 }
-                Some(CompiledWorkflow { def, guards })
+                Some(CompiledWorkflow { def, guards, approvals })
             }
             None => None,
         };
@@ -1113,7 +1128,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let wrong: Vec<SchemaWarning> = schema
         .entities
         .values()
-        .flat_map(|e| e.exprs.all().chain(e.workflow.iter().flat_map(|w| w.guards.values())).map(move |x| (e, x)))
+        .flat_map(|e| e.exprs.all().chain(e.workflow.iter().flat_map(|w| w.exprs())).map(move |x| (e, x)))
         .filter_map(|(e, x)| schema.settings_problem(x).map(|m| SchemaWarning { entity: e.def.name.clone(), message: m }))
         .collect();
     schema.warnings.extend(wrong);

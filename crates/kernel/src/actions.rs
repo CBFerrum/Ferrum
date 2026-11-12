@@ -26,23 +26,26 @@ pub fn problems(k: &Kernel, tenant: Uuid, schema: &Schema) -> Vec<String> {
     let system = || system.get_or_init(|| Ctx::system(tenant, Arc::new(schema.clone())));
     let mut out = Vec::new();
     for ent in schema.entities.values() {
-        for a in ent.def.actions.iter().filter(|a| !a.effects.is_empty()) {
+        // A configured action's effects, and a workflow transition's (BD-19), are checked alike.
+        let actions = ent.def.actions.iter().map(|a| (format!("action {}", a.name), &a.effects));
+        let transitions = ent.workflow.iter().flat_map(|w| &w.def.transitions).map(|t| (format!("transition {} from {}", t.action, t.from), &t.effects));
+        for (what, effects) in actions.chain(transitions).filter(|(_, e)| !e.is_empty()) {
             let mut steps = Vec::new();
-            for (i, raw) in a.effects.iter().enumerate() {
+            for (i, raw) in effects.iter().enumerate() {
                 match serde_json::from_value::<Step>(raw.clone()) {
                     Ok(s) => match check_effect(k, &system, schema, ent, &s) {
                         Ok(()) => steps.push(s),
-                        Err(m) => out.push(format!("{}: action {}, effect {}: {m}", ent.def.name, a.name, i + 1)),
+                        Err(m) => out.push(format!("{}: {what}, effect {}: {m}", ent.def.name, i + 1)),
                     },
-                    Err(e) => out.push(format!("{}: action {}, effect {}: {e}", ent.def.name, a.name, i + 1)),
+                    Err(e) => out.push(format!("{}: {what}, effect {}: {e}", ent.def.name, i + 1)),
                 }
             }
             // What one effect reads from another (`copy_lines` from an earlier `find`) is checked across them.
-            if steps.len() == a.effects.len()
+            if steps.len() == effects.len()
                 && let Err(Error::Validation(fs)) = automation::check_targets(schema, &ent.def.name, &steps)
             {
                 for f in fs {
-                    out.push(format!("{}: action {}, effect {}: {}", ent.def.name, a.name, f.row.map_or(0, |r| r.1) + 1, f.message));
+                    out.push(format!("{}: {what}, effect {}: {}", ent.def.name, f.row.map_or(0, |r| r.1) + 1, f.message));
                 }
             }
         }
@@ -151,19 +154,50 @@ pub(crate) async fn run(
             return Err(Error::Forbidden(crate::print::message(message, || crate::doc::told(ctx, ent, doc.clone(), Some(k)))));
         }
     }
-    // The system, acting for the runner: every right, read-only fields included, while the records it writes say
-    // who ran it.
-    let system = Ctx {
+    // An `invoke` without a key of its own does its step once per action, record version (as pressed) and place.
+    let origin = format!("action:{}.{}:{id}:v{}:", ent.def.name, def.name, doc.get("version").unwrap_or(&Value::Null));
+    let made = run_effects(k, ctx, tx, ent, id, &def.effects, &params, &origin).await?;
+    crate::audit::record(tx, ctx, &ent.def.name, id, &format!("action:{}", def.name), None, params).await?;
+    let after = k.get_tx(&system(ctx), tx, &ent.def.name, id, false).await?;
+    let mut answer = serde_json::Map::new();
+    if let Some(s) = after.get("status").filter(|s| s.is_string()) {
+        answer.insert("status".into(), s.clone());
+    }
+    if !made.is_empty() {
+        answer.insert("made".into(), Value::Array(made));
+    }
+    Ok(Value::Object(answer))
+}
+
+/// The system, acting for `ctx`'s person: every right, read-only fields included, while the records it writes say
+/// who it acts for.
+pub(crate) fn system(ctx: &Ctx) -> Ctx {
+    Ctx {
         is_system: true,
         is_admin: true,
         egress: None,
         scopes: BTreeMap::new(),
         perms: Arc::new(PermSet { admin: true, entities: BTreeMap::new() }),
         ..ctx.clone()
-    };
-    let effects: Vec<Step> = serde_json::from_value(Value::Array(def.effects.clone())).map_err(|e| Error::invalid(e.to_string()))?;
-    // An `invoke` without a key of its own does its step once per action, record version (as pressed) and place.
-    let origin = format!("action:{}.{}:{id}:v{}:", ent.def.name, def.name, doc.get("version").unwrap_or(&Value::Null));
+    }
+}
+
+/// Runs `effects` (a configured action's or a transition's) on record `id` of `ent` in order in `tx`, as the system
+/// on `ctx`'s behalf, each seeing `params`, what the ones before gave as `results`, and the record as they left it.
+/// `origin` keys an `invoke` without a key of its own. The records they made.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_effects(
+    k: &Kernel,
+    ctx: &Ctx,
+    tx: &mut crate::db::Tx,
+    ent: &Arc<EffEntity>,
+    id: Uuid,
+    effects: &[Value],
+    params: &Value,
+    origin: &str,
+) -> Result<Vec<Value>> {
+    let system = system(ctx);
+    let effects: Vec<Step> = serde_json::from_value(Value::Array(effects.to_vec())).map_err(|e| Error::invalid(e.to_string()))?;
     let mut made = Vec::new();
     let mut results = Vec::new();
     for (i, effect) in effects.into_iter().enumerate() {
@@ -175,21 +209,12 @@ pub(crate) async fn run(
         let links = crate::links::load(k, ctx, tx, ent, &view, &automation::links_used(&effect)?).await?;
         // The settings it reads, as the workspace has them now (BD-17).
         let user = crate::settings::with(k, ctx, tx, automation::settings_used(&effect)?).await?.user_value();
-        let extra = [("params", &params), ("results", &done), ("links", &links)];
+        let extra = [("params", params), ("results", &done), ("links", &links)];
         let out = automation::run_step(k, &system, tx, &ent.def.name, Some(id), (&now, &view), &user, &extra, &format!("{origin}{i}"), effect).await?;
         if creates && !out.is_null() {
             made.push(out.clone());
         }
         results.push(out);
     }
-    crate::audit::record(tx, ctx, &ent.def.name, id, &format!("action:{}", def.name), None, params).await?;
-    let after = k.get_tx(&system, tx, &ent.def.name, id, false).await?;
-    let mut answer = serde_json::Map::new();
-    if let Some(s) = after.get("status").filter(|s| s.is_string()) {
-        answer.insert("status".into(), s.clone());
-    }
-    if !made.is_empty() {
-        answer.insert("made".into(), Value::Array(made));
-    }
-    Ok(Value::Object(answer))
+    Ok(made)
 }

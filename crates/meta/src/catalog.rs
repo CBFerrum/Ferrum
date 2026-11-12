@@ -1077,6 +1077,17 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
             return Err(format!("duplicate transition {} from {}", t.action, t.from));
         }
         compile(e, &format!("transition {}", t.action), t.condition.as_deref(), true)?;
+        // What it asks for and does (BD-19): a button's bounds; what effects write is the kernel's to check.
+        if t.effects.len() > MAX_EFFECTS {
+            return Err(format!("transition {}: at most {MAX_EFFECTS} effects", t.action));
+        }
+        let mut names = HashSet::new();
+        if let Some(p) = t.params.iter().find(|p| p.name.trim().is_empty() || !names.insert(p.name.as_str())) {
+            return Err(format!("transition {}: parameter '{}' is unnamed or named twice", t.action, p.name));
+        }
+        if let Some(p) = &t.approval {
+            validate_approval(e, wf, t, p)?;
+        }
         for path in &t.not_creator_of {
             let link = |fields: &[crate::types::FieldDef], name: &str| fields.iter().any(|f| f.name == name && f.ftype == FieldType::Link && f.to.is_some());
             let ok = match path.split_once('.') {
@@ -1093,6 +1104,66 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
                 return Err(format!("transition {}: {path} is not a link (a field, or table.field)", t.action));
             }
         }
+    }
+    Ok(())
+}
+
+/// Steps one approval policy holds.
+pub const MAX_APPROVAL_STEPS: usize = 10;
+
+/// An approval policy on transition `t` (BD-19): what it names is there, what it says compiles, each fault said with
+/// its step's place. Roles and business calendars are the workspace's, checked by the kernel when it is saved.
+fn validate_approval(e: &EntityDef, wf: &WorkflowDef, t: &crate::types::WorkflowTransition, p: &crate::types::ApprovalPolicy) -> Result<(), String> {
+    let what = format!("transition {}: approval", t.action);
+    if p.steps.is_empty() || p.steps.len() > MAX_APPROVAL_STEPS {
+        return Err(format!("{what}: 1 to {MAX_APPROVAL_STEPS} steps"));
+    }
+    if let Some(f) = p.reset_on.iter().find(|f| !e.fields.iter().any(|x| &x.name == *f)) {
+        return Err(format!("{what}: reset_on: {f} is not a field"));
+    }
+    if let Some(s) = &p.on_reject {
+        let status = |name: &str| wf.states.iter().find(|x| x.name == name).map(|x| x.docstatus);
+        if status(s).is_none() || status(s) != status(&t.from) {
+            return Err(format!("{what}: on_reject: {s} is not a state of the same document status as {}", t.from));
+        }
+    }
+    let who = |at: &str, a: &crate::types::Approvers| -> Result<(), String> {
+        if [&a.role, &a.field, &a.expr].iter().filter(|x| x.is_some()).count() != 1 {
+            return Err(format!("{at}: names exactly one of role, field and expr"));
+        }
+        if let Some(f) = a.field.as_ref().filter(|f| !e.fields.iter().any(|x| &x.name == *f)) {
+            return Err(format!("{at}: {f} is not a field"));
+        }
+        compile(e, at, a.expr.as_deref(), false)
+    };
+    for (i, s) in p.steps.iter().enumerate() {
+        let at = format!("{what} step {}", i + 1);
+        if s.label.trim().is_empty() {
+            return Err(format!("{at}: a step needs a label"));
+        }
+        who(&format!("{at} approvers"), &s.approvers)?;
+        if s.need == crate::types::ApprovalNeed::Count(0) {
+            return Err(format!("{at}: needs at least one approval"));
+        }
+        compile(e, &format!("{at} when"), s.when.as_deref(), false)?;
+        if s.escalate_to.is_some() != s.escalate_after.is_some() {
+            return Err(format!("{at}: escalate_after and escalate_to go together"));
+        }
+        if let Some(to) = &s.escalate_to {
+            who(&format!("{at} escalate_to"), to)?;
+        }
+        for d in [&s.remind_after, &s.escalate_after].into_iter().flatten() {
+            match ferrum_logic::target::within(&serde_json::Value::String(d.clone())) {
+                Ok(Some(_)) => {}
+                _ => return Err(format!("{at}: {d} is not a time (seconds or an ISO 8601 duration such as PT48H)")),
+            }
+        }
+        if let Some(a) = s.not_who_took.iter().find(|a| !wf.transitions.iter().any(|x| &x.action == *a)) {
+            return Err(format!("{at}: not_who_took: {a} is not a transition of this workflow"));
+        }
+    }
+    if p.steps.last().is_some_and(|s| s.with_next) {
+        return Err(format!("{what} step {}: with_next, but no step comes after it", p.steps.len()));
     }
     Ok(())
 }
