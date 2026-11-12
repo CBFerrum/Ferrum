@@ -4,6 +4,7 @@
 //! per key, who may use a connection, and secrets resting nowhere, with the debug capture on.
 
 use async_trait::async_trait;
+use ferrum_kernel::automation;
 use ferrum_kernel::capability::Invocation;
 use ferrum_kernel::connections::inbound::InboundHandler;
 use ferrum_kernel::connections::{self, Call, ConnectionInput};
@@ -33,6 +34,34 @@ static PROVIDER: Mutex<(bool, usize, String)> = Mutex::new((false, 0, String::ne
 
 /// The stand-in's pull routes: how often `/shaky` was asked (it answers "later" twice), whether `/down` is down.
 static SHAKY: AtomicUsize = AtomicUsize::new(0);
+const APP_PASSWORD: &str = "app-pw-Rr61-session";
+const SESSION_REFRESH: &str = "SR-1-Ww3-refresh";
+const REGISTERED: &str = "dyn-secret-Jj27-registered";
+/// The stand-in session service: logins made, the access token it takes now, whether it refuses refreshes.
+static SESSION: Mutex<(usize, String, bool)> = Mutex::new((0, String::new(), false));
+/// The stand-in DPoP provider: registrations made, the key's `x` its tokens are bound to.
+static BOUND: Mutex<(usize, String)> = Mutex::new((0, String::new()));
+
+/// A DPoP proof in a request (its `dpop` header), checked as a server would: ES256 under the key in its header. Its
+/// claims and the key's `x`.
+fn proof(text: &str, method: &str, url: &str) -> Option<(Value, String)> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let jwt = text.lines().find_map(|l| l.strip_prefix("dpop: "))?.trim();
+    let mut parts = jwt.split('.');
+    let (h, c, sig) = (parts.next()?, parts.next()?, parts.next()?);
+    let header: Value = serde_json::from_slice(&b64.decode(h).ok()?).ok()?;
+    let claims: Value = serde_json::from_slice(&b64.decode(c).ok()?).ok()?;
+    let (x, y) = (b64.decode(header["jwk"]["x"].as_str()?).ok()?, b64.decode(header["jwk"]["y"].as_str()?).ok()?);
+    let point = [&[4u8][..], &x, &y].concat();
+    let key = ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, point);
+    key.verify(format!("{h}.{c}").as_bytes(), &b64.decode(sig).ok()?).ok()?;
+    (header["typ"] == "dpop+jwt" && claims["htm"] == method && claims["htu"] == url && claims["jti"].is_string())
+        .then(|| (claims, header["jwk"]["x"].as_str().unwrap().to_string()))
+}
+
+/// How often `/busy` was asked (it answers 429 with a Retry-After once).
+static BUSY: AtomicUsize = AtomicUsize::new(0);
 static DOWN: Mutex<bool> = Mutex::new(true);
 
 fn issue() -> String {
@@ -42,7 +71,7 @@ fn issue() -> String {
     p.2.clone()
 }
 
-const PACKAGE: &str = "package: depot\nversion: 0.1.0\ndepends: [core]\npersonal_data:\n  - {entity: Parcel, match: label, erase: [tracking]}\n";
+const PACKAGE: &str = "package: depot\nversion: 0.1.0\ndepends: [core]\npersonal_data:\n  - {entity: Parcel, match: label, erase: [tracking]}\nroles:\n  - name: Mailer\n    permissions:\n      - {entity: Alert, read: true, write: true, create: true}\n";
 const ENTITIES: &str = r#"
 - name: Parcel
   label: Parcel
@@ -168,12 +197,105 @@ async fn service(seen: Seen) -> u16 {
                     "/v1/down" => (200, String::new(), json!({"data": []}).to_string()),
                     "/v1/broken" => (422, String::new(), json!({"error": "no such feed"}).to_string()),
                     "/v1/since" => (200, String::new(), json!({"data": [{"id": "S-1", "title": "Since"}]}).to_string()),
+                    "/v1/posts" => (201, "location: /v1/posts/P-77\r\nx-post-id: P-77\r\n".into(), json!({"counts": {"likes": 3, "shares": 4}}).to_string()),
+                    "/v1/busy" => match BUSY.fetch_add(1, Ordering::SeqCst) {
+                        0 => (429, "retry-after: 120\r\n".into(), json!({"error": "slow down"}).to_string()),
+                        _ => (200, String::new(), "{}".into()),
+                    },
+                    "/v1/feed" if path.contains("page=2") => (200, String::new(), json!({"data": [{"id": "L-2", "title": "Two"}]}).to_string()),
+                    "/v1/feed" => (
+                        200,
+                        "link: </v1/feed?page=2>; rel=\"next\", </v1/feed?page=9>; rel=\"last\"\r\n".into(),
+                        json!({"data": [{"id": "L-1", "title": "One"}]}).to_string(),
+                    ),
+                    "/v1/media" => {
+                        let kind = text.lines().find_map(|l| l.strip_prefix("content-type: ")).unwrap_or_default().to_string();
+                        (
+                            200,
+                            String::new(),
+                            json!({"kind": kind, "len": text.split("\r\n\r\n").skip(1).collect::<Vec<_>>().join("\r\n\r\n").len()}).to_string(),
+                        )
+                    }
+                    "/v1/label" => (200, String::new(), json!({"tracking": "T-1", "url": "/v1/files/label.pdf"}).to_string()),
+                    "/v1/label-astray" => (200, String::new(), json!({"url": "http://10.0.0.1/label.pdf"}).to_string()),
+                    "/v1/label-big" => (200, String::new(), json!({"url": "/v1/files/big.pdf"}).to_string()),
+                    "/v1/files/label.pdf" => (200, "content-type: application/pdf\r\n".into(), "%PDF-1.4 label".into()),
+                    "/v1/files/big.pdf" => (200, "content-type: application/pdf\r\n".into(), "x".repeat(2000)),
+                    "/v1/raw" => (200, "content-type: image/png\r\n".into(), "PNGDATA".into()),
+                    "/v1/session/login" => {
+                        let mut s = SESSION.lock().unwrap();
+                        s.0 += 1;
+                        if text.contains(APP_PASSWORD) {
+                            s.1 = format!("SA-{}-Ww3-access", s.0);
+                            (200, String::new(), json!({"accessJwt": s.1, "refreshJwt": SESSION_REFRESH, "expiresIn": 3600}).to_string())
+                        } else {
+                            (401, String::new(), json!({"error": "AuthenticationRequired"}).to_string())
+                        }
+                    }
+                    "/v1/session/refresh" => {
+                        let mut s = SESSION.lock().unwrap();
+                        if !s.2 && text.contains(&format!("authorization: Bearer {SESSION_REFRESH}\r\n")) {
+                            s.1 = format!("SA-r{}-Ww3-access", s.0);
+                            (200, String::new(), json!({"accessJwt": s.1, "expiresIn": "3600"}).to_string())
+                        } else {
+                            (400, String::new(), json!({"error": "ExpiredToken"}).to_string())
+                        }
+                    }
+                    "/v1/session/me" => {
+                        let now = SESSION.lock().unwrap().1.clone();
+                        if !now.is_empty() && text.contains(&format!("authorization: Bearer {now}\r\n")) {
+                            (200, String::new(), json!({"handle": "acme-net"}).to_string())
+                        } else {
+                            (401, String::new(), json!({"error": "invalid"}).to_string())
+                        }
+                    }
+                    "/v1/mine" => {
+                        let now = PROVIDER.lock().unwrap().2.clone();
+                        if text.contains(&format!("authorization: Bearer {now}\r\n")) && !now.is_empty() {
+                            (200, String::new(), json!({"data": [{"id": "MAIL-1", "title": "Hello"}]}).to_string())
+                        } else {
+                            (401, String::new(), json!({"error": "invalid_token"}).to_string())
+                        }
+                    }
+                    "/v1/dpop/register" => {
+                        BOUND.lock().unwrap().0 += 1;
+                        (201, String::new(), json!({"client_id": "dyn-1", "client_secret": REGISTERED}).to_string())
+                    }
+                    "/v1/dpop/token" => {
+                        let port = s.local_addr().unwrap().port();
+                        use base64::Engine as _;
+                        let basic = base64::engine::general_purpose::STANDARD.encode(format!("dyn-1:{REGISTERED}"));
+                        match proof(&text, "POST", &format!("http://127.0.0.1:{port}/v1/dpop/token")) {
+                            Some((c, _)) if c["nonce"] != "N-1" => (400, "dpop-nonce: N-1\r\n".into(), json!({"error": "use_dpop_nonce"}).to_string()),
+                            Some((_, x)) if text.contains(&format!("authorization: Basic {basic}\r\n")) => {
+                                BOUND.lock().unwrap().1 = x;
+                                (200, String::new(), json!({"access_token": "DP-AT-Ww9", "token_type": "DPoP", "expires_in": 3600}).to_string())
+                            }
+                            _ => (400, String::new(), json!({"error": "invalid_dpop_proof"}).to_string()),
+                        }
+                    }
+                    "/v1/dpop/me" => {
+                        use base64::Engine as _;
+                        use sha2::Digest as _;
+                        let port = s.local_addr().unwrap().port();
+                        let ath = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(b"DP-AT-Ww9"));
+                        let bound = BOUND.lock().unwrap().1.clone();
+                        match proof(&text, "GET", &format!("http://127.0.0.1:{port}/v1/dpop/me")) {
+                            Some((c, x)) if text.contains("authorization: DPoP DP-AT-Ww9\r\n") && c["ath"] == ath && x == bound => {
+                                if c["nonce"] == "R-1" {
+                                    (200, String::new(), json!({"bound": true}).to_string())
+                                } else {
+                                    (401, "www-authenticate: DPoP error=\"use_dpop_nonce\"\r\ndpop-nonce: R-1\r\n".into(), "{}".into())
+                                }
+                            }
+                            _ => (401, String::new(), json!({"error": "invalid_token"}).to_string()),
+                        }
+                    }
+                    "/v1/astray" => (200, "link: <http://10.0.0.1/v1/feed?page=2>; rel=\"next\"\r\n".into(), json!({"data": []}).to_string()),
                     _ => (404, String::new(), "{}".into()),
                 };
-                let reply = format!(
-                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                );
+                let kind = if extra.contains("content-type:") { "" } else { "content-type: application/json\r\n" };
+                let reply = format!("HTTP/1.1 {status} X\r\n{kind}{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
                 let _ = s.write_all(reply.as_bytes()).await;
             });
         }
@@ -322,6 +444,37 @@ async fn being_called(k: &Kernel, admin: &Ctx) {
         json!({"test": true, "apps": ["depot"], "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "token"}, "handler": "crm"}});
     let e = k.save_connection_def(admin, None, &input("crm", other_app, None)).await.unwrap_err();
     assert!(e.to_string().contains("not one of the apps"), "{e}");
+
+    // Signed without a timestamp (BD-49): the delivery id and the body are each taken once; refusals alike.
+    let verify = json!({"type": "signature", "header": "x-carrier-sig", "secret": "hook", "encoding": "base64"});
+    let map = json!({"entity": "Alert", "by": {"external_id": "/id"}, "set": {"title": "/status"}});
+    let none = json!({"test": true, "inbound": {"verify": verify, "map": map}});
+    let e = k.save_connection_def(admin, None, &input("tracking", none, None)).await.unwrap_err();
+    assert!(e.to_string().contains("delivery id"), "neither a timestamp nor a delivery id: {e}");
+    let d = json!({"test": true, "inbound": {"verify": verify, "delivery_header": "x-event-id", "map": map}});
+    let tracking = k.save_connection_def(admin, None, &input("tracking", d, Some(json!({"hook": INBOUND})))).await.unwrap();
+    let send = |event: &str, body: &str, secret: &str| {
+        use base64::Engine as _;
+        use hmac::Mac;
+        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body.as_bytes());
+        let h = headers(&[("X-Carrier-Sig", base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())), ("X-Event-Id", event.to_string())]);
+        let body = body.to_string();
+        async move { k.connection_inbound(tracking, &h, body.as_bytes()).await }
+    };
+    let first = r#"{"id": "TRK-1", "status": "in transit"}"#;
+    send("e-1", first, INBOUND).await.unwrap();
+    let refusals = [
+        send("e-2", first, INBOUND).await.unwrap_err(),
+        send("e-1", r#"{"id": "TRK-1", "status": "delivered"}"#, INBOUND).await.unwrap_err(),
+        send("e-3", r#"{"id": "TRK-1", "status": "delivered"}"#, "whsec-wrong").await.unwrap_err(),
+    ];
+    assert!(refusals.iter().all(|e| e.to_string() == alike), "the same body under a new id, an id again, a wrong signature: {refusals:?}");
+    send("e-4", r#"{"id": "TRK-1", "status": "delivered"}"#, INBOUND).await.unwrap();
+    drain(k).await;
+    assert_eq!(count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'TRK-1' and title = 'delivered'")).await, 1);
+    let refused = k.connection_defs(admin).await.unwrap().into_iter().find(|c| c["name"] == "tracking").unwrap()["refused"].clone();
+    assert_eq!(refused, json!(3));
 }
 
 /// Pulling: a cursor kept between runs, pages bounded per run, each item mapped as an inbound call is.
@@ -408,6 +561,343 @@ async fn pulling(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
     k.pull_now(admin, feeds, "down").await.unwrap();
     drain(k).await;
     assert_eq!(told("down").await, 2, "a new streak");
+}
+
+/// Answers beyond a JSON body (BD-46): headers and links in a result, Retry-After for a queued call, a page asked at
+/// the address its Link named (and never off the connection's hosts), pointers that read null, required values,
+/// expressions with the connection's name.
+async fn answers(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
+    let tenant = admin.tenant;
+    let alert = admin.schema.entity("Alert").unwrap().table.clone();
+    let map = json!({"entity": "Alert", "by": {"external_id": {"at": "/id", "required": true}}, "set": {"title": "/title", "state": "'linked'"}});
+    let page = |name: &str| json!({"name": name, "operation": name, "every_minutes": 15, "items_at": "/data", "next_at": {"link": "next"}, "map": map});
+    let d = json!({"base": base, "operations": {
+        "post": {"path": "/posts", "method": "POST", "body": "{}", "result": {
+            "id": {"header": "x-post-id"}, "where": {"header": "Location"}, "total": {"expr": "answer.counts.likes + answer.counts.shares"},
+            "via": {"expr": "connection.name + ':' + inputs.ref"}, "missing": "/nope"}},
+        "post_strict": {"path": "/posts", "method": "POST", "body": "{}", "result": {"id": "/id", "must": {"at": "/nope", "required": true}}},
+        "post_secret": {"path": "/posts", "method": "POST", "body": "{}", "result": {"k": {"expr": "secret.api_key"}}},
+        "busy": {"path": "/busy", "method": "POST", "body": "{}"},
+        "feed": {"path": "/feed"}, "astray": {"path": "/astray"}},
+        "pulls": [page("feed"), page("astray")]});
+    k.save_connection_def(admin, None, &input("social", d, Some(json!({"api_key": SECRET})))).await.unwrap();
+    let r = connections::call(k, admin, None, &call("social", "post", json!({"ref": "R-1"}), Some("p-1"))).await.unwrap();
+    assert_eq!(
+        r,
+        json!({"id": "P-77", "where": "/v1/posts/P-77", "total": 7, "via": "social:R-1", "missing": null}),
+        "headers, sums and the connection's name"
+    );
+    let e = connections::call(k, admin, None, &call("social", "post_strict", json!({}), Some("p-2"))).await.unwrap_err();
+    assert!(matches!(&e, Error::Invalid(m) if m.ends_with("the answer has no must")), "{e}");
+    let e = connections::call(k, admin, None, &call("social", "post_secret", json!({}), Some("p-3"))).await.unwrap_err();
+    assert!(!e.to_string().contains(SECRET), "an answer's expression does not read the secrets: {e}");
+
+    // A 429 with Retry-After: the queued call comes back when the service said, not on the backoff.
+    let busy = json!({"name": "x_busy", "label": "Busy", "effects": [{"type": "call", "connection": "social", "operation": "busy", "queue": true}]});
+    let add: NewCustomization = serde_json::from_value(json!({"entity": "Parcel", "op": {"op": "add_action", "action": busy}})).unwrap();
+    k.batch_customizations(admin, vec![add], false).await.map_err(|e| e.1).unwrap();
+    let admin = &k.load_ctx(tenant, admin.user, None, "it".into()).await.unwrap();
+    let parcel: Uuid = k.insert(admin, "Parcel", obj(json!({"label": "B-1"}))).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    k.run_action(admin, "Parcel", parcel, "x_busy", json!({})).await.unwrap();
+    while k.run_jobs_once(4).await.unwrap() > 0 {}
+    let waits = count(
+        k,
+        tenant,
+        &format!(
+            "select extract(epoch from run_at - now())::bigint from job where tenant_id = $1 and kind = '{}' and status = 'queued'",
+            connections::CALL_KIND
+        ),
+    )
+    .await;
+    assert!((100..=120).contains(&waits), "asked again after the service's 120 s: {waits}");
+    drain(k).await;
+    assert_eq!(BUSY.load(Ordering::SeqCst), 2);
+
+    // Paging by the Link header: the next page asked at the address it named; one naming another host is refused.
+    let id: Uuid = k.connection_defs(admin).await.unwrap().iter().find(|c| c["name"] == "social").unwrap()["id"].as_str().unwrap().parse().unwrap();
+    k.pull_now(admin, id, "feed").await.unwrap();
+    drain(k).await;
+    assert!(seen.lock().unwrap().iter().any(|s| s.starts_with("GET /v1/feed?page=2 ")), "the page the link named");
+    assert_eq!(count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and state = 'linked' and external_id in ('L-1', 'L-2')")).await, 2);
+    k.pull_now(admin, id, "astray").await.unwrap();
+    drain(k).await;
+    let astray = k.connection_pulls(admin, id).await.unwrap().into_iter().find(|p| p["name"] == "astray").unwrap();
+    assert!(astray["last_error"].as_str().is_some_and(|e| e.contains("10.0.0.1 is not one of the hosts")), "{astray}");
+
+    // A mapping's pointer reads null where the key is not there; `required` fails the item, saying which.
+    let hook = json!({"test": true, "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "token"}, "map": {"entity": "Alert", "items_at": "/items",
+        "by": {"external_id": {"at": "/id", "required": true}}, "set": {"state": "/state", "title": {"expr": "connection.name + ' ' + string(item.likes + item.shares)"}}}}});
+    let hook = k.save_connection_def(admin, None, &input("posts_in", hook, Some(json!({"token": TOKEN})))).await.unwrap();
+    let h = headers(&[("X-Token", TOKEN.into())]);
+    k.connection_inbound(hook, &h, json!({"items": [{"id": "N-1", "likes": 2, "shares": 5}]}).to_string().as_bytes()).await.unwrap();
+    k.connection_inbound(hook, &h, json!({"items": [{"id": "N-2", "likes": 1, "shares": 1}, {"likes": 0, "shares": 0}]}).to_string().as_bytes()).await.unwrap();
+    drain(k).await;
+    assert_eq!(
+        count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'N-1' and title = 'posts_in 7' and state is null"))
+            .await,
+        1
+    );
+    let failed = k.connection_inbound_log(admin, hook, 10).await.unwrap().into_iter().find(|r| r["state"] == "failed").unwrap();
+    assert!(failed["error"].as_str().unwrap().contains("item 2: external_id is required"), "{failed}");
+    assert_eq!(
+        count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'N-2'")).await,
+        0,
+        "the payload is taken whole or not at all"
+    );
+}
+
+/// Bodies beyond JSON (BD-47): a multipart form with a stored file, a file as the whole body, the caller's right to
+/// read it and the operation's limit; an answer stored as a file, fetched from the address it names within the
+/// connection's hosts and limit, attached to the record the call is about.
+async fn files(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
+    let photo: Uuid = k.store_file(admin, None, "photo.png", "image/png", b"PNG-PHOTO").await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let big: Uuid = k.store_file(admin, None, "big.png", "image/png", &[b'x'; 2000]).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let part = json!({"file": "{{ inputs.photo }}", "max_bytes": 1000});
+    let d = json!({"base": base, "roles": ["Poster"], "operations": {
+        "upload": {"path": "/media", "form": {"caption": "{{ inputs.caption }}", "media": part}, "result": {"kind": "/kind"}},
+        "put_raw": {"path": "/media", "method": "PUT", "body": {"file": "{{ inputs.photo }}"}, "result": {"kind": "/kind", "len": "/len"}},
+        "label": {"path": "/label", "method": "POST", "body": "{}", "result": {"tracking": "/tracking",
+            "label": {"file": {"from": "/url", "name": "label-{{ inputs.ref }}.pdf", "max_bytes": 1000}}}},
+        "label_astray": {"path": "/label-astray", "method": "POST", "body": "{}", "result": {"label": {"file": {"from": "/url"}}}},
+        "label_big": {"path": "/label-big", "method": "POST", "body": "{}", "result": {"label": {"file": {"from": "/url", "max_bytes": 1000}}}},
+        "raw": {"path": "/raw", "result": {"image": {"file": {"max_bytes": 100}}}}}});
+    k.save_connection_def(admin, None, &input("media", d, None)).await.unwrap();
+    let r = connections::call(k, admin, None, &call("media", "upload", json!({"caption": "Hello", "photo": photo}), Some("u-1"))).await.unwrap();
+    assert!(r["kind"].as_str().unwrap().starts_with("multipart/form-data; boundary="), "{r}");
+    let sent = seen.lock().unwrap().last().cloned().unwrap();
+    assert!(sent.contains("Content-Disposition: form-data; name=\"caption\"\r\n\r\nHello\r\n"), "{sent}");
+    assert!(sent.contains("name=\"media\"; filename=\"photo.png\"\r\nContent-Type: image/png\r\n\r\nPNG-PHOTO\r\n"), "{sent}");
+    let r = connections::call(k, admin, None, &call("media", "put_raw", json!({"photo": photo}), Some("u-2"))).await.unwrap();
+    assert_eq!(r, json!({"kind": "image/png", "len": 9}), "the file is the body, with its type");
+    // Over the operation's limit, or a file the caller may not read: refused before anything is sent.
+    let before = seen.lock().unwrap().len();
+    let e = connections::call(k, admin, None, &call("media", "upload", json!({"caption": "x", "photo": big}), Some("u-3"))).await.unwrap_err();
+    assert!(e.to_string().contains("larger than the 1000 bytes"), "{e}");
+    let mut poster = admin.clone();
+    (poster.is_admin, poster.roles) = (false, vec!["Poster".into()]);
+    poster.user = k.create_user(admin, "poster@depot.test", "Poster", None, &[], false).await.unwrap();
+    let e = connections::call(k, &poster, None, &call("media", "put_raw", json!({"photo": photo}), Some("u-4"))).await.unwrap_err();
+    assert!(e.to_string().contains("is not one you may send"), "another's upload: {e}");
+    assert_eq!(seen.lock().unwrap().len(), before, "nothing was sent");
+
+    // A label at the address the answer names: fetched, stored, attached to the record the call is about.
+    let parcel: Uuid = k.insert(admin, "Parcel", obj(json!({"label": "L-9"}))).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let about = Call { entity: Some("Parcel".into()), record: Some(parcel), ..call("media", "label", json!({"ref": "R9"}), Some("l-1")) };
+    let r = connections::call(k, admin, None, &about).await.unwrap();
+    assert_eq!(r["tracking"], "T-1");
+    let label: Uuid = r["label"].as_str().unwrap().parse().unwrap();
+    assert_eq!(k.read_file(admin, label).await.unwrap(), ("label-R9.pdf".into(), "application/pdf".into(), b"%PDF-1.4 label".to_vec()));
+    let attached = count(
+        k,
+        admin.tenant,
+        &format!("select count(*) from file_object where tenant_id = $1 and id = '{label}' and entity = 'Parcel' and record_id = '{parcel}'"),
+    )
+    .await;
+    assert_eq!(attached, 1, "attached to the parcel");
+    assert!(seen.lock().unwrap().iter().rev().find(|s| s.starts_with("GET /v1/files/label.pdf")).is_some_and(|s| !s.contains("authorization")));
+    let e = connections::call(k, admin, None, &call("media", "label_astray", json!({}), Some("l-2"))).await.unwrap_err();
+    assert!(e.to_string().contains("10.0.0.1 is not one of the hosts"), "an address off the connection's hosts: {e}");
+    let e = connections::call(k, admin, None, &call("media", "label_big", json!({}), Some("l-3"))).await.unwrap_err();
+    assert!(e.to_string().contains("larger than 1000 bytes"), "{e}");
+    // The answer itself, stored.
+    let r = connections::call(k, admin, None, &call("media", "raw", json!({}), None)).await.unwrap();
+    let image: Uuid = r["image"].as_str().unwrap().parse().unwrap();
+    assert_eq!(k.read_file(admin, image).await.unwrap().1, "image/png");
+}
+
+/// Sign-in that is not the authorisation-code flow (BD-48): a session from an app password, refreshed by its own
+/// operation, refused once and not hammered, reconnected; and a provider that registers its client and binds tokens
+/// to the connection's key (DPoP), with nonces at the token address and at the service.
+async fn sessions(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) -> Vec<String> {
+    let tenant = admin.tenant;
+    let login = json!({"path": "/session/login", "method": "POST", "changes": false,
+        "body": "{\"identifier\": {{ secret.handle | json }}, \"password\": {{ secret.app_password | json }}}"});
+    let refresh = json!({"path": "/session/refresh", "method": "POST", "body": "{}", "changes": false, "headers": {"authorization": "Bearer {{ inputs.refresh_token }}"}});
+    let d = json!({"base": base, "auth": {"type": "session", "login": "login", "refresh": "refresh", "token_at": "/accessJwt", "refresh_at": "/refreshJwt", "expires_at": "/expiresIn"},
+        "operations": {"login": login, "refresh": refresh, "me": {"path": "/session/me"}}});
+    let secrets = json!({"handle": "acme.social", "app_password": APP_PASSWORD});
+    let id = k.save_connection_def(admin, None, &input("network", d.clone(), Some(secrets.clone()))).await.unwrap();
+    let me = || call("network", "me", json!({}), None);
+    let logins = || SESSION.lock().unwrap().0;
+    assert_eq!(connections::call(k, admin, None, &me()).await.unwrap(), json!({"handle": "acme-net"}), "signed in on first use");
+    connections::call(k, admin, None, &me()).await.unwrap();
+    assert_eq!(logins(), 1, "once");
+    assert_eq!(k.connection_defs(admin).await.unwrap().iter().find(|c| c["name"] == "network").unwrap()["account"]["status"], "connected");
+    // The login is never an operation anyone calls: its answer is a token.
+    for e in [
+        connections::call(k, admin, None, &call("network", "login", json!({}), None)).await.unwrap_err(),
+        k.try_connection(admin, id, "refresh", &json!({}), None).await.unwrap_err(),
+    ] {
+        assert!(e.to_string().contains("signs in"), "{e}");
+    }
+    let mut pulled = d.clone();
+    pulled["pulls"] = json!([{"name": "p", "operation": "login", "every_minutes": 15, "items_at": "/x", "cursor": "time", "map": {"entity": "Alert", "by": {"external_id": "/id"}}}]);
+    assert!(k.save_connection_def(admin, Some(id), &input("network", pulled, None)).await.unwrap_err().to_string().contains("signs in"));
+    // Expiring: its refresh operation; a 401: refreshed once and called again.
+    let expire = || async move {
+        let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+        sqlx::query("update conn_token set expires_at = now() - interval '1 minute' where tenant_id = $1 and conn_id = $2")
+            .bind(tenant)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    };
+    expire().await;
+    connections::call(k, admin, None, &me()).await.unwrap();
+    assert!(seen.lock().unwrap().iter().any(|r| r.starts_with("POST /v1/session/refresh")), "refreshed by its operation");
+    SESSION.lock().unwrap().1 = "taken-back".into();
+    let before = seen.lock().unwrap().iter().filter(|r| r.starts_with("POST /v1/session/refresh")).count();
+    connections::call(k, admin, None, &me()).await.unwrap();
+    assert_eq!(seen.lock().unwrap().iter().filter(|r| r.starts_with("POST /v1/session/refresh")).count(), before + 1);
+    assert_eq!(logins(), 1);
+    // A refresh refused: "needs reconnecting", the administrators told once, nothing tried again on each call.
+    SESSION.lock().unwrap().2 = true;
+    expire().await;
+    let told = "select count(*) from notification where tenant_id = $1 and title = 'Reconnect network'";
+    for _ in 0..2 {
+        assert!(connections::call(k, admin, None, &me()).await.unwrap_err().to_string().contains("needs reconnecting"));
+        assert_eq!(count(k, tenant, told).await, 1);
+    }
+    assert_eq!(logins(), 1);
+    // Reconnected by an administrator: signed in afresh.
+    SESSION.lock().unwrap().2 = false;
+    assert_eq!(k.connect_session(admin, id).await.unwrap()["status"], "connected");
+    connections::call(k, admin, None, &me()).await.unwrap();
+    assert_eq!(logins(), 2);
+    // A wrong password: refused once, then not tried on every call.
+    let mut wrong = secrets.clone();
+    wrong["app_password"] = json!("not-the-password");
+    k.save_connection_def(admin, Some(id), &input("network", d.clone(), Some(wrong))).await.unwrap();
+    for _ in 0..2 {
+        assert!(connections::call(k, admin, None, &me()).await.unwrap_err().to_string().contains("needs reconnecting"));
+    }
+    assert_eq!(logins(), 3, "one login with the wrong password, not one a call");
+    k.save_connection_def(admin, Some(id), &input("network", d, Some(secrets))).await.unwrap();
+    connections::call(k, admin, None, &me()).await.unwrap();
+
+    // A provider that registers its client and binds its tokens (DPoP).
+    let provider = json!({"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/dpop/token"),
+        "registration_url": format!("{base}/dpop/register"), "dpop": true, "scopes": ["atproto"]});
+    let d = json!({"base": base, "auth": {"type": "oauth", "provider": provider}, "operations": {"me": {"path": "/dpop/me"}}});
+    let bound = k.save_connection_def(admin, None, &input("bound", d, None)).await.unwrap();
+    let session = Uuid::now_v7();
+    let url = k.connect_start(admin, bound, session).await.unwrap();
+    assert_eq!(query(&url)["client_id"], "dyn-1", "the registered client");
+    let registered = seen.lock().unwrap().iter().rev().find(|r| r.starts_with("POST /v1/dpop/register")).cloned().unwrap();
+    let asked: Value = serde_json::from_str(registered.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(
+        (asked["redirect_uris"].clone(), asked["dpop_bound_access_tokens"].clone()),
+        (json!(["https://ferrum.example.test/api/connections/callback"]), json!(true))
+    );
+    let state = query(&k.connect_start(admin, bound, session).await.unwrap())["state"].clone();
+    assert_eq!(BOUND.lock().unwrap().0, 1, "registered once");
+    k.connect_finish(admin, session, &state, Some("CODE-1"), None).await.unwrap();
+    assert_eq!(seen.lock().unwrap().iter().filter(|r| r.starts_with("POST /v1/dpop/token")).count(), 2, "asked again with the nonce");
+    assert_eq!(
+        connections::call(k, admin, None, &call("bound", "me", json!({}), None)).await.unwrap(),
+        json!({"bound": true}),
+        "a proof bound to the same key"
+    );
+    let listed = k.connection_defs(admin).await.unwrap().into_iter().find(|c| c["name"] == "bound").unwrap();
+    assert_eq!(listed["secrets"], json!([]), "what the platform keeps is not listed: {listed}");
+    vec![APP_PASSWORD.into(), SESSION_REFRESH.into(), "Ww3-access".into(), REGISTERED.into(), "DP-AT-Ww9".into()]
+}
+
+/// Operating a connection (BD-50): secrets merged without the rest, `meta` kept, a pull on a person's own connection
+/// run as each person connected (their sign-in, their rights) and stopped when their sign-in needs reconnecting or
+/// their account is closed, and what it maps marked as fetched from outside, so an automation for new records passes
+/// it by.
+async fn operating(k: &Kernel, admin: &Ctx, base: &str) {
+    let tenant = admin.tenant;
+    let carrier: Uuid = k.connection_defs(admin).await.unwrap().iter().find(|c| c["name"] == "carrier").unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let set = BTreeMap::from([("webhook".to_string(), "wh-Ee42-merged".to_string())]);
+    assert_eq!(k.merge_connection_secrets(admin, carrier, &set, &[]).await.unwrap(), vec!["api_key".to_string(), "webhook".into()]);
+    connections::call(k, admin, None, &call("carrier", "find", json!({}), None)).await.expect("the rest kept");
+    assert_eq!(k.merge_connection_secrets(admin, carrier, &BTreeMap::new(), &["webhook".into()]).await.unwrap(), vec!["api_key".to_string()]);
+    assert!(k.merge_connection_secrets(admin, carrier, &BTreeMap::from([("Bad Name".into(), "x".into())]), &[]).await.is_err());
+    let mut clerk = admin.clone();
+    clerk.is_admin = false;
+    assert!(matches!(k.merge_connection_secrets(&clerk, carrier, &set, &[]).await.unwrap_err(), Error::Forbidden(_)));
+    let audited = count(
+        k,
+        tenant,
+        "select count(*) from audit_event where tenant_id = $1 and action = 'secrets' and diff::text like '%webhook%' and diff::text not like '%Ee42%'",
+    )
+    .await;
+    assert_eq!(audited, 2, "audited by name only");
+    // `meta`: kept and given back, bounded.
+    let d = json!({"test": true, "meta": {"caps": ["video", "threads"]}, "operations": {"a": {}}});
+    k.save_connection_def(admin, None, &input("caps", d, None)).await.unwrap();
+    let listed = k.connection_defs(admin).await.unwrap().into_iter().find(|c| c["name"] == "caps").unwrap();
+    assert_eq!(listed["description"]["meta"], json!({"caps": ["video", "threads"]}));
+    for meta in [json!("text"), json!({"pad": "x".repeat(20 << 10)})] {
+        assert!(k.save_connection_def(admin, None, &input("caps2", json!({"test": true, "meta": meta}), None)).await.unwrap_err().to_string().contains("meta"));
+    }
+
+    // A person's own mailbox, pulled as them.
+    automation::save(
+        k,
+        admin,
+        &obj(json!({"name": "Greet", "entity": "Alert", "event": "created", "condition": "origin != 'outside'",
+        "actions": [{"type": "set_fields", "values": {"state": "'greeted'"}}]})),
+    )
+    .await
+    .unwrap();
+    let ana_id = k.create_user(admin, "ana@depot.test", "Ana", None, &[], false).await.unwrap();
+    k.set_user_roles(admin, ana_id, &["Mailer".into()]).await.unwrap();
+    let ana = k.load_ctx(tenant, ana_id, None, "it".into()).await.unwrap();
+    let provider = json!({"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/oauth/token"), "client_id": "ferrum-test", "client_secret": "client"});
+    let map = json!({"entity": "Alert", "by": {"external_id": "/id"}, "set": {"title": "/title"}, "outside": true});
+    let d = json!({"base": base, "auth": {"type": "oauth", "owner": "person", "provider": provider}, "roles": ["Mailer"], "operations": {"mine": {"path": "/mine"}},
+        "pulls": [{"name": "mail", "operation": "mine", "every_minutes": 15, "items_at": "/data", "cursor": "time", "map": map}]});
+    let inbox = k.save_connection_def(admin, None, &input("inbox", d, Some(json!({"client": CLIENT})))).await.unwrap();
+    assert!(k.connection_pulls(admin, inbox).await.unwrap().is_empty(), "nobody has connected: nothing to pull");
+    PROVIDER.lock().unwrap().0 = false;
+    let session = Uuid::now_v7();
+    let state = query(&k.connect_start(&ana, inbox, session).await.unwrap())["state"].clone();
+    k.connect_finish(&ana, session, &state, Some("CODE-1"), None).await.unwrap();
+    let pulls = k.connection_pulls(admin, inbox).await.unwrap();
+    assert_eq!(pulls.iter().map(|p| p["user"].clone()).collect::<Vec<_>>(), vec![json!(ana_id)], "one for her");
+    k.pull_now(admin, inbox, "mail").await.unwrap();
+    drain(k).await;
+    let alert = admin.schema.entity("Alert").unwrap().table.clone();
+    let made = count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'MAIL-1' and created_by = '{ana_id}'")).await;
+    assert_eq!(made, 1, "made as her");
+    while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+    assert_eq!(
+        count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'MAIL-1' and state is null")).await,
+        1,
+        "fetched from outside: not greeted"
+    );
+    let mine: Uuid = k.insert(admin, "Alert", obj(json!({"title": "Typed here"}))).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+    assert_eq!(k.get(admin, "Alert", mine, false).await.unwrap()["state"], "greeted", "one made here is");
+    // Her sign-in needs reconnecting: the pull waits, telling nothing more; connected again, it runs.
+    let failed = format!("select count(*) from notification where tenant_id = $1 and user_id = '{ana_id}' and title like 'Pulling%'");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update conn_token set status = 'needs_reconnecting' where tenant_id = $1 and user_id = $2")
+        .bind(tenant)
+        .bind(ana_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    k.pull_now(admin, inbox, "mail").await.unwrap();
+    drain(k).await;
+    assert!(k.connection_pulls(admin, inbox).await.unwrap()[0]["next_run"].is_null(), "waiting for her");
+    assert_eq!(count(k, tenant, &failed).await, 0);
+    let state = query(&k.connect_start(&ana, inbox, session).await.unwrap())["state"].clone();
+    k.connect_finish(&ana, session, &state, Some("CODE-1"), None).await.unwrap();
+    assert!(!k.connection_pulls(admin, inbox).await.unwrap()[0]["next_run"].is_null(), "running again");
+    // Her account closed: her pulls go.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update app_user set is_active = false where tenant_id = $1 and id = $2").bind(tenant).bind(ana_id).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    k.pull_now(admin, inbox, "mail").await.unwrap();
+    drain(k).await;
+    assert!(k.connection_pulls(admin, inbox).await.unwrap().is_empty(), "stopped");
 }
 
 fn query(url: &str) -> BTreeMap<String, String> {
@@ -529,7 +1019,7 @@ async fn signing_in(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) -> Vec<Str
 /// A person's data (BD-35): their own sign-in, the calls they made, a call about a record of theirs, a capture and a
 /// delivery naming them are in their report; erasure destroys the sign-in's tokens and revokes them at the provider
 /// (recorded), and leaves the log's lines without what named them.
-async fn erasing(k: &Kernel, admin: &Ctx, seen: &Seen) {
+async fn erasing(k: &Kernel, admin: &Ctx, seen: &Seen, store: Arc<Memory>) {
     let tenant = admin.tenant;
     let ivy_id = k.create_user(admin, "ivy@depot.test", "Ivy", None, &[], false).await.unwrap();
     let mut ivy = k.load_ctx(tenant, ivy_id, None, "it".into()).await.unwrap();
@@ -624,8 +1114,6 @@ async fn erasing(k: &Kernel, admin: &Ctx, seen: &Seen) {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    let store = Arc::new(Memory::default());
-    k.set_file_store(store.clone());
     let key = format!("{}{tenant}/1.json", ferrum_kernel::privacy::JOURNAL_PREFIX);
     let entry =
         json!({"tenant": tenant, "erasure": {"account": ivy_id, "records": [{"entity": "Parcel", "id": parcel, "fields": ["tracking"]}], "reason": "r"}});
@@ -706,6 +1194,8 @@ async fn boot() -> (Arc<Kernel>, Ctx) {
 
 async fn scenario() {
     let (k, admin) = boot().await;
+    let store = Arc::new(Memory::default());
+    k.set_file_store(store.clone());
     let seen: Seen = Arc::default();
     let port = service(seen.clone()).await;
     let base = format!("http://127.0.0.1:{port}/v1");
@@ -902,12 +1392,16 @@ async fn scenario() {
     assert!(log.iter().all(|l| !l.to_string().contains(SECRET)));
 
     being_called(&k, &admin).await;
+    answers(&k, &admin, &base, &seen).await;
+    files(&k, &admin, &base, &seen).await;
     pulling(&k, &admin, &base, &seen).await;
-    let signed_in = signing_in(&k, &admin, &base, &seen).await;
-    erasing(&k, &admin, &seen).await;
+    let mut signed_in = signing_in(&k, &admin, &base, &seen).await;
+    signed_in.extend(sessions(&k, &admin, &base, &seen).await);
+    erasing(&k, &admin, &seen, store).await;
+    operating(&k, &admin, &base).await;
 
     // ── secrets rest nowhere: not the log, the capture, the audit trail, the jobs ──
-    let mut never: Vec<&str> = vec![SECRET, SIGNING, INBOUND, TOKEN, CLIENT, REFRESH, "Xy9-access"];
+    let mut never: Vec<&str> = vec![SECRET, SIGNING, INBOUND, TOKEN, CLIENT, REFRESH, "Xy9-access", "wh-Ee42-merged"];
     never.extend(signed_in.iter().map(String::as_str));
     assert_eq!(rests(&k, &never).await, nowhere);
 }

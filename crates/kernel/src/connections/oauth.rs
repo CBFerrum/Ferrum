@@ -5,7 +5,7 @@
 //! expire by a job, and never shown back; a refresh the provider refuses marks the connection "needs reconnecting" and
 //! tells its owner once; disconnecting revokes at the provider when it offers that.
 
-use super::{Loaded, Reach, Request, is_name, pointer_problem};
+use super::{Auth, Loaded, Outcome, Reach, Request, is_name, pointer_problem};
 use crate::ctx::Ctx;
 use crate::db::Tx;
 use crate::error::{Error, Result};
@@ -35,6 +35,30 @@ const CALL_AHEAD_SECS: i64 = 60;
 /// Token answers larger than this are refused.
 const TOKEN_BYTES: u64 = 64 << 10;
 const TOKEN_TIMEOUT: Duration = Duration::from_secs(15);
+/// What the platform keeps among a connection's sealed secrets for it (names no administrator can give, since a
+/// secret's name starts with a letter): the client a provider registered, and the DPoP key pair (PKCS#8, base64).
+pub(crate) const REGISTERED_ID: &str = "_client_id";
+pub(crate) const REGISTERED_SECRET: &str = "_client_secret";
+pub(crate) const DPOP_KEY: &str = "_dpop_key";
+
+/// The last DPoP nonce each server gave a connection (RFC 9449 §8, §9), by connection and the server's address.
+static NONCES: std::sync::LazyLock<std::sync::Mutex<BTreeMap<(Uuid, String), String>>> = std::sync::LazyLock::new(Default::default);
+
+fn origin_of(url: &reqwest::Url) -> String {
+    format!("{}://{}", url.scheme(), url.authority())
+}
+
+/// Keeps the DPoP nonce an answer gives (its `DPoP-Nonce` header) for the next proof to that server; whether it gave
+/// one.
+pub(crate) fn remember_nonce(conn: Uuid, a: &super::Answer) -> bool {
+    let Some(n) = a.header("dpop-nonce").filter(|n| !n.is_empty() && n.len() <= 500) else { return false };
+    let mut nonces = NONCES.lock().unwrap_or_else(|p| p.into_inner());
+    if nonces.len() > 10_000 {
+        nonces.clear();
+    }
+    nonces.insert((conn, origin_of(&a.url)), n.to_string());
+    true
+}
 
 /// Whose account a connection acts for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,7 +90,17 @@ pub struct Provider {
     pub revoke_url: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<String>,
+    /// Empty when the provider registers the client itself (`registration_url`).
+    #[serde(default)]
     pub client_id: String,
+    /// The provider's dynamic client registration address (RFC 7591), from its metadata's `registration_endpoint`:
+    /// with no `client_id`, the first sign-in registers the platform's client there and keeps it sealed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_url: Option<String>,
+    /// Tokens bound to a key pair of the connection's own (DPoP, RFC 9449): a proof on the token request and on every
+    /// call, which the provider demands.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dpop: bool,
     /// Names the connection's secret holding the client secret; none for a public client (PKCE alone).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
@@ -92,11 +126,12 @@ impl Provider {
         if let Some(p) = address_problem("authorize_url", &self.authorize_url)
             .or_else(|| address_problem("token_url", &self.token_url))
             .or_else(|| self.revoke_url.as_deref().and_then(|u| address_problem("revoke_url", u)))
+            .or_else(|| self.registration_url.as_deref().and_then(|u| address_problem("registration_url", u)))
         {
             return Some(p);
         }
-        if self.client_id.trim().is_empty() {
-            return Some("auth.provider.client_id is required".into());
+        if self.client_id.trim().is_empty() && self.registration_url.is_none() {
+            return Some("auth.provider.client_id is required, unless the provider registers clients (registration_url)".into());
         }
         if self.client_secret.as_deref().is_some_and(|s| !is_name(s)) {
             return Some("auth.provider.client_secret names one of the connection's secrets".into());
@@ -153,6 +188,34 @@ fn oauth(conn: &Loaded) -> Result<(&Provider, Owner)> {
     }
 }
 
+/// The client the platform is at the provider: the described one, else the one it registered. Its id and secret.
+fn client(conn: &Loaded, provider: &Provider) -> Result<(String, Option<String>)> {
+    let registered = |n: &str| conn.secrets.get(n).filter(|v| !v.is_empty()).cloned();
+    let id = match provider.client_id.trim() {
+        "" => registered(REGISTERED_ID).ok_or_else(|| Error::invalid(format!("{} has no client at the provider yet: connect it first", conn.name)))?,
+        id => id.to_string(),
+    };
+    let secret = match &provider.client_secret {
+        Some(name) => Some(conn.secret(name)?.to_string()),
+        None if provider.client_id.trim().is_empty() => registered(REGISTERED_SECRET),
+        None => None,
+    };
+    Ok((id, secret))
+}
+
+/// When a token answer says it runs out: seconds from now, a Unix time (past 10^9), or a moment.
+pub(crate) fn expiry(v: &Value) -> Option<DateTime<Utc>> {
+    let n = match v {
+        Value::Number(n) => n.as_i64()?,
+        Value::String(s) => match s.trim().parse::<i64>() {
+            Ok(n) => n,
+            Err(_) => return DateTime::parse_from_rfc3339(s.trim()).ok().map(|t| t.to_utc()),
+        },
+        _ => return None,
+    };
+    if n >= 1_000_000_000 { DateTime::from_timestamp(n, 0) } else { Some(Utc::now() + chrono::Duration::seconds(n.clamp(0, 365 * 86400))) }
+}
+
 /// The claims of an id token, unverified: it came straight from the token address, over TLS (OpenID Connect 3.1.3.7).
 fn claims(id_token: &str) -> Value {
     id_token
@@ -194,6 +257,10 @@ impl Kernel {
         };
         let redirect = self.connection_callback()?;
         let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("signing in to an account needs the server's secret key".into()))?;
+        // A provider that registers its clients: registered once, the first time anyone connects.
+        let conn = if provider.client_id.trim().is_empty() { self.register_client(&conn, &redirect).await? } else { conn };
+        let (provider, _) = oauth(&conn)?;
+        let (client_id, _) = client(&conn, provider)?;
         let (state, verifier) = (random(), random());
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let state_digest = digest(&state);
@@ -216,7 +283,7 @@ impl Kernel {
         let mut url = reqwest::Url::parse(&provider.authorize_url).map_err(|_| Error::invalid("the provider's authorize_url is not an address"))?;
         {
             let mut q = url.query_pairs_mut();
-            q.append_pair("response_type", "code").append_pair("client_id", &provider.client_id).append_pair("redirect_uri", &redirect);
+            q.append_pair("response_type", "code").append_pair("client_id", &client_id).append_pair("redirect_uri", &redirect);
             if !provider.scopes.is_empty() {
                 q.append_pair("scope", &provider.scopes.join(" "));
             }
@@ -261,6 +328,10 @@ impl Kernel {
         };
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
         let account = self.keep_tokens(&mut tx, &conn, owner_id, &answer, None, Some(ctx.user)).await?;
+        // A person's own account: their pulls of it run (again), as them.
+        if !owner_id.is_nil() {
+            super::pull::person_connected(&mut tx, ctx.tenant, conn_id, owner_id, &conn.desc).await?;
+        }
         audit::record(
             &mut tx,
             ctx,
@@ -275,36 +346,60 @@ impl Kernel {
         Ok(conn_id)
     }
 
-    /// A form to a token or revocation address, the client proving itself as the provider says.
+    /// A form to a token or revocation address, the client proving itself as the provider says; with a DPoP proof at
+    /// the token address when the provider binds tokens, tried once more with the nonce it asks for.
     async fn token_request(&self, conn: &Loaded, provider: &Provider, url: &str, form: &[(&str, &str)]) -> Result<Granted> {
         let mut body = reqwest::Url::parse("http://form/").map_err(Error::internal)?;
         let mut headers = vec![("accept".to_string(), "application/json".to_string())];
+        let (client_id, secret) = client(conn, provider)?;
         {
             let mut q = body.query_pairs_mut();
             q.extend_pairs(form.iter().copied());
-            let secret = provider.client_secret.as_deref().map(|s| conn.secret(s)).transpose()?;
-            match (provider.client_auth, secret) {
-                (ClientAuth::Basic, Some(s)) => {
-                    let pair = base64::engine::general_purpose::STANDARD.encode(format!("{}:{s}", provider.client_id));
+            // A client the provider registered proves itself as it registered: with basic authentication.
+            let basic = provider.client_auth == ClientAuth::Basic || (provider.client_id.trim().is_empty() && secret.is_some());
+            match (basic, secret) {
+                (true, Some(s)) => {
+                    let pair = base64::engine::general_purpose::STANDARD.encode(format!("{client_id}:{s}"));
                     headers.push(("authorization".into(), format!("Basic {pair}")));
                 }
                 (_, secret) => {
-                    q.append_pair("client_id", &provider.client_id);
+                    q.append_pair("client_id", &client_id);
                     if let Some(s) = secret {
-                        q.append_pair("client_secret", s);
+                        q.append_pair("client_secret", &s);
                     }
                 }
             }
         }
-        let req = Request {
-            method: reqwest::Method::POST,
-            url: reqwest::Url::parse(url).map_err(|_| Error::invalid("the provider's address is not an address"))?,
-            headers,
-            body: Some((body.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded")),
-        };
+        let address = reqwest::Url::parse(url).map_err(|_| Error::invalid("the provider's address is not an address"))?;
+        let bound = provider.dpop && url == provider.token_url;
         let reach = Reach { hosts: vec![host_of(url)], timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES };
         let mask = conn.mask();
-        Ok(match self.fetch(req, &reach).await {
+        let mut tries = 0;
+        let got = loop {
+            tries += 1;
+            let mut headers = headers.clone();
+            if bound {
+                headers.push(("dpop".into(), self.dpop_proof(conn, &reqwest::Method::POST, &address, None).await?));
+            }
+            let req = Request {
+                method: reqwest::Method::POST,
+                url: address.clone(),
+                headers,
+                body: Some((body.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded".to_string())),
+            };
+            let got = self.fetch(req, &reach).await;
+            if bound
+                && let Ok(a) = &got
+                && remember_nonce(conn.id, a)
+                && tries == 1
+                && a.status == 400
+                && a.body.get("error").and_then(Value::as_str) == Some("use_dpop_nonce")
+            {
+                continue;
+            }
+            break got;
+        };
+        Ok(match got {
             Ok(a) if (200..300).contains(&a.status) && a.body.get("access_token").and_then(Value::as_str).is_some_and(|t| !t.is_empty()) => {
                 Granted::Tokens(a.body)
             }
@@ -314,6 +409,94 @@ impl Kernel {
             Err(Error::Unavailable(m)) => Granted::Later(super::masked_text(&m, &mask)),
             Err(e) => Granted::Refused(super::masked_text(&e.to_string(), &mask)),
         })
+    }
+
+    /// Registers the platform's client at a provider offering dynamic registration (RFC 7591), once: the client it
+    /// gives is sealed among the connection's secrets (a second sign-in, or two at once, uses it). The connection,
+    /// read again.
+    async fn register_client(&self, conn: &Loaded, redirect: &str) -> Result<Loaded> {
+        let (provider, _) = oauth(conn)?;
+        let url = provider.registration_url.clone().ok_or_else(|| Error::invalid("auth.provider.client_id is required"))?;
+        let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
+        let held = super::lock_secrets(&mut tx, self, conn.tenant, conn.id).await?;
+        if held.get(REGISTERED_ID).is_none_or(|v| v.is_empty()) {
+            let mut asked = json!({"client_name": conn.name, "redirect_uris": [redirect], "grant_types": ["authorization_code", "refresh_token"],
+                                   "response_types": ["code"], "token_endpoint_auth_method": "client_secret_basic"});
+            if !provider.scopes.is_empty() {
+                asked["scope"] = json!(provider.scopes.join(" "));
+            }
+            if provider.dpop {
+                asked["dpop_bound_access_tokens"] = json!(true);
+            }
+            let req = Request {
+                method: reqwest::Method::POST,
+                url: reqwest::Url::parse(&url).map_err(|_| Error::invalid("the provider's registration_url is not an address"))?,
+                headers: vec![("accept".into(), "application/json".into())],
+                body: Some((asked.to_string().into_bytes(), "application/json".to_string())),
+            };
+            let a = self.fetch(req, &Reach { hosts: vec![host_of(&url)], timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES }).await?;
+            let id = a.body.get("client_id").and_then(Value::as_str).filter(|i| (200..300).contains(&a.status) && !i.is_empty() && i.len() <= 500);
+            let Some(id) = id else {
+                return Err(Error::invalid(format!("the provider did not register a client ({})", a.status)));
+            };
+            let mut set = BTreeMap::from([(REGISTERED_ID.to_string(), id.to_string())]);
+            if let Some(secret) = a.body.get("client_secret").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                set.insert(REGISTERED_SECRET.into(), secret.to_string());
+            }
+            super::store_secrets(&mut tx, self, conn.tenant, conn.id, held, set, &[]).await?;
+            let system = Ctx::system(conn.tenant, self.registry.schema(conn.tenant).await?);
+            audit::record(&mut tx, &system, "Connection", conn.id, "register_client", None, json!({"client_id": id})).await?;
+        }
+        tx.commit().await?;
+        self.load_connection(conn.tenant, &conn.id.to_string()).await
+    }
+
+    /// The connection's DPoP key pair (PKCS#8), made and sealed among its secrets the first time.
+    async fn dpop_key(&self, conn: &Loaded) -> Result<Vec<u8>> {
+        use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+        let decode = |k: &str| base64::engine::general_purpose::STANDARD.decode(k).map_err(Error::internal);
+        if let Some(k) = conn.secrets.get(DPOP_KEY) {
+            return decode(k);
+        }
+        let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
+        let held = super::lock_secrets(&mut tx, self, conn.tenant, conn.id).await?;
+        if let Some(k) = held.get(DPOP_KEY).cloned() {
+            tx.commit().await?;
+            return decode(&k);
+        }
+        let rng = ring::rand::SystemRandom::new();
+        let made = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).map_err(|_| Error::internal("no key pair"))?;
+        let pkcs8 = made.as_ref().to_vec();
+        let set = BTreeMap::from([(DPOP_KEY.to_string(), base64::engine::general_purpose::STANDARD.encode(&pkcs8))]);
+        super::store_secrets(&mut tx, self, conn.tenant, conn.id, held, set, &[]).await?;
+        tx.commit().await?;
+        Ok(pkcs8)
+    }
+
+    /// A DPoP proof (RFC 9449 §4.2) of a request: ES256 under the connection's key, its public key in the header, a
+    /// fresh `jti`, the method, the address without query or fragment, the time, the access token's digest (`ath`)
+    /// on a call, and the nonce that server last gave.
+    pub(crate) async fn dpop_proof(&self, conn: &Loaded, method: &reqwest::Method, url: &reqwest::Url, token: Option<&str>) -> Result<String> {
+        use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+        let rng = ring::rand::SystemRandom::new();
+        let pair =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &self.dpop_key(conn).await?, &rng).map_err(|_| Error::internal("the DPoP key"))?;
+        let point = pair.public_key().as_ref();
+        let jwk = json!({"kty": "EC", "crv": "P-256", "x": URL_SAFE_NO_PAD.encode(&point[1..33]), "y": URL_SAFE_NO_PAD.encode(&point[33..65])});
+        let mut htu = url.clone();
+        htu.set_query(None);
+        htu.set_fragment(None);
+        let mut claims = json!({"jti": random(), "htm": method.as_str(), "htu": htu.as_str(), "iat": Utc::now().timestamp()});
+        if let Some(t) = token {
+            claims["ath"] = json!(URL_SAFE_NO_PAD.encode(Sha256::digest(t.as_bytes())));
+        }
+        if let Some(n) = NONCES.lock().unwrap_or_else(|p| p.into_inner()).get(&(conn.id, origin_of(url))) {
+            claims["nonce"] = json!(n);
+        }
+        let header = json!({"typ": "dpop+jwt", "alg": "ES256", "jwk": jwk});
+        let signing = format!("{}.{}", URL_SAFE_NO_PAD.encode(header.to_string()), URL_SAFE_NO_PAD.encode(claims.to_string()));
+        let sig = pair.sign(&rng, signing.as_bytes()).map_err(|_| Error::internal("a DPoP proof"))?;
+        Ok(format!("{signing}.{}", URL_SAFE_NO_PAD.encode(sig.as_ref())))
     }
 
     /// Seals what a token address gave for `owner` (nil: the workspace's), keeping `refresh` when it gave none; marks
@@ -326,12 +509,15 @@ impl Kernel {
             .get("expires_in")
             .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()))
             .map(|s| Utc::now() + chrono::Duration::seconds(s.clamp(0, 365 * 86400)));
-        let (provider, _) = oauth(conn)?;
         let mut seen = answer.clone();
         if let Some(id) = answer.get("id_token").and_then(Value::as_str) {
             seen["id_token"] = claims(id);
         }
-        let account = super::at(&seen, provider.account_at.as_deref()).map(|a| a.chars().take(200).collect::<String>());
+        let account_at = match &conn.desc.auth {
+            Auth::Oauth { provider, .. } => provider.account_at.as_deref(),
+            _ => None,
+        };
+        let account = super::at(&seen, account_at).map(|a| a.chars().take(200).collect::<String>());
         let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("tokens are sealed with the server's secret key".into()))?;
         let sealed = key.seal(&token_label(conn.tenant, conn.id, owner), &json!({"access_token": access, "refresh_token": refresh}).to_string())?;
         sqlx::query(
@@ -354,6 +540,9 @@ impl Kernel {
 
     /// Whose tokens a call by `ctx` uses: the workspace's, or the caller's own.
     fn token_owner(conn: &Loaded, ctx: &Ctx) -> Result<Uuid> {
+        if matches!(conn.desc.auth, Auth::Session { .. }) {
+            return Ok(Uuid::nil());
+        }
         match oauth(conn)?.1 {
             Owner::Workspace => Ok(Uuid::nil()),
             Owner::Person if ctx.user.is_nil() => Err(Error::invalid(format!("{} is each person's own: it is used as a person", conn.name))),
@@ -373,7 +562,12 @@ impl Kernel {
                 .fetch_optional(&mut *tx)
                 .await?;
         tx.commit().await?;
-        let (sealed, expires, status) = row.ok_or_else(|| Error::invalid(format!("{} is not connected to an account: connect it first", conn.name)))?;
+        let (sealed, expires, status) = match row {
+            Some(r) => r,
+            // A session signs itself in, the first time it is needed.
+            None if matches!(conn.desc.auth, Auth::Session { .. }) => return self.session_sign_in(conn, ctx).await,
+            None => return Err(Error::invalid(format!("{} is not connected to an account: connect it first", conn.name))),
+        };
         if status != "connected" {
             return Err(Error::invalid(format!("{} needs reconnecting: the provider no longer accepts its sign-in", conn.name)));
         }
@@ -388,7 +582,6 @@ impl Kernel {
     /// another refreshed meanwhile is used as it is (unless `stale` is the token a service just refused). A refusal
     /// marks it "needs reconnecting" and tells its owner once. The new access token.
     async fn refresh_tokens(&self, conn: &Loaded, owner: Uuid, stale: Option<&str>) -> Result<String> {
-        let (provider, _) = oauth(conn)?;
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
         let row: Option<(String, Option<DateTime<Utc>>, String)> =
             sqlx::query_as("select sealed, expires_at, status from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3 for update")
@@ -406,14 +599,23 @@ impl Kernel {
         if fresh && stale.is_none_or(|s| s != sealed) {
             return Ok(open["access_token"].as_str().unwrap_or_default().to_string());
         }
-        let Some(refresh) = open["refresh_token"].as_str().filter(|r| !r.is_empty()).map(str::to_string) else {
-            self.needs_reconnecting(&mut tx, conn, owner).await?;
-            tx.commit().await?;
-            return Err(Error::invalid(format!("{} needs reconnecting: its sign-in has run out", conn.name)));
+        let refresh = open["refresh_token"].as_str().filter(|r| !r.is_empty()).map(str::to_string);
+        let granted = match (&conn.desc.auth, &refresh) {
+            // A session refreshes with its refresh operation, else signs in again.
+            (Auth::Session { .. }, _) => self.session_grant(conn, refresh.as_deref()).await?,
+            (_, None) => {
+                self.needs_reconnecting(&mut tx, conn, owner).await?;
+                tx.commit().await?;
+                return Err(Error::invalid(format!("{} needs reconnecting: its sign-in has run out", conn.name)));
+            }
+            (_, Some(r)) => {
+                let (provider, _) = oauth(conn)?;
+                self.token_request(conn, provider, &provider.token_url, &[("grant_type", "refresh_token"), ("refresh_token", r)]).await?
+            }
         };
-        match self.token_request(conn, provider, &provider.token_url, &[("grant_type", "refresh_token"), ("refresh_token", &refresh)]).await? {
+        match granted {
             Granted::Tokens(answer) => {
-                self.keep_tokens(&mut tx, conn, owner, &answer, Some(refresh), None).await?;
+                self.keep_tokens(&mut tx, conn, owner, &answer, refresh, None).await?;
                 tx.commit().await?;
                 Ok(answer["access_token"].as_str().unwrap_or_default().to_string())
             }
@@ -438,12 +640,19 @@ impl Kernel {
         .bind(owner)
         .fetch_optional(&mut **tx)
         .await?;
-        let to = match tell {
-            Some(_) if !owner.is_nil() => Some(owner),
-            Some(by) => by,
-            None => None,
+        let to: Vec<Uuid> = match tell {
+            Some(_) if !owner.is_nil() => vec![owner],
+            Some(Some(by)) => vec![by],
+            // The workspace's, which nobody connected by hand (a session that signed itself in): its administrators.
+            Some(None) => {
+                sqlx::query_scalar("select id from app_user where tenant_id = $1 and is_admin and is_active and kind = 'member'")
+                    .bind(conn.tenant)
+                    .fetch_all(&mut **tx)
+                    .await?
+            }
+            None => vec![],
         };
-        if let Some(user) = to {
+        for user in to {
             let title = format!("Reconnect {}", conn.name);
             let body = "The provider no longer accepts its sign-in. Connect the account again to carry on.";
             crate::notify::send_kind(tx, conn.tenant, user, "general", "inapp", &title, Some(body), Some("Connection"), Some(conn.id)).await?;
@@ -455,6 +664,13 @@ impl Kernel {
     /// offers that; the tokens are gone here whatever it says. Whether the provider confirmed.
     pub async fn connect_remove(&self, ctx: &Ctx, id: Uuid) -> Result<bool> {
         let conn = self.load_connection(ctx.tenant, &id.to_string()).await?;
+        if matches!(conn.desc.auth, Auth::Session { .. }) {
+            if !ctx.is_admin {
+                return Err(Error::Forbidden("the workspace's account is disconnected by an administrator".into()));
+            }
+            self.forget_session(ctx, id).await?;
+            return Ok(false);
+        }
         let (provider, owner) = oauth(&conn)?;
         if owner == Owner::Workspace && !ctx.is_admin {
             return Err(Error::Forbidden("the workspace's account is disconnected by an administrator".into()));
@@ -517,6 +733,120 @@ impl Kernel {
             out.push(said);
         }
         out
+    }
+
+    /// What a session's login or refresh operation gives (`refresh`: the refresh token, for its refresh operation), as
+    /// a token address's answer would say it.
+    async fn session_grant(&self, conn: &Loaded, refresh: Option<&str>) -> Result<Granted> {
+        let Auth::Session { login, refresh: renew, token_at, refresh_at, expires_at, .. } = &conn.desc.auth else {
+            return Err(Error::invalid(format!("{} has no session", conn.name)));
+        };
+        let (op, inputs) = match (renew, refresh) {
+            (Some(op), Some(r)) => (op, json!({"refresh_token": r})),
+            _ => (login, json!({})),
+        };
+        // The refresh token is masked wherever the call's words are kept, as the secrets are.
+        let mut quiet = conn.clone();
+        if let Some(r) = refresh {
+            quiet.secrets.insert("\u{0}refresh".into(), r.to_string());
+        }
+        let ctx = Ctx::system(conn.tenant, self.registry.schema(conn.tenant).await?);
+        Ok(match Box::pin(self.perform(&ctx, &quiet, op, &inputs, None, None, None, None)).await? {
+            Outcome::Ok(_, a) => match super::at(&a.body, Some(token_at)).filter(|t| !t.is_empty()) {
+                Some(token) => {
+                    let mut out = json!({"access_token": token});
+                    if let Some(r) = super::at(&a.body, refresh_at.as_deref()) {
+                        out["refresh_token"] = json!(r);
+                    }
+                    if let Some(at) = expires_at.as_deref().and_then(|p| a.body.pointer(p)).and_then(expiry) {
+                        out["expires_in"] = json!((at - Utc::now()).num_seconds().max(0));
+                    }
+                    Granted::Tokens(out)
+                }
+                None => Granted::Refused(format!("{op} gave no token at {token_at}")),
+            },
+            Outcome::Later(why, _) => Granted::Later(why),
+            Outcome::No(why) => Granted::Refused(why),
+        })
+    }
+
+    /// Signs a session in when it has no tokens yet, one sign-in at a time per connection: one that another made
+    /// meanwhile is used. A login the service refuses marks it "needs reconnecting" and tells the administrators once,
+    /// so that a wrong password is not tried on every call.
+    async fn session_sign_in(&self, conn: &Loaded, ctx: &Ctx) -> Result<String> {
+        let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))").bind(format!("conn_session:{}", conn.id)).execute(&mut *tx).await?;
+        let here: Option<(String, String)> = sqlx::query_as("select sealed, status from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3")
+            .bind(conn.tenant)
+            .bind(conn.id)
+            .bind(Uuid::nil())
+            .fetch_optional(&mut *tx)
+            .await?;
+        if let Some((sealed, status)) = here {
+            tx.commit().await?;
+            if status != "connected" {
+                return Err(Error::invalid(format!("{} needs reconnecting: the service no longer accepts its sign-in", conn.name)));
+            }
+            let open: Value = serde_json::from_str(&self.open_sealed(&token_label(conn.tenant, conn.id, Uuid::nil()), &sealed)?).map_err(Error::internal)?;
+            return Ok(open["access_token"].as_str().unwrap_or_default().to_string());
+        }
+        let by = (!ctx.user.is_nil()).then_some(ctx.user);
+        match self.session_grant(conn, None).await? {
+            Granted::Tokens(answer) => {
+                self.keep_tokens(&mut tx, conn, Uuid::nil(), &answer, None, by).await?;
+                tx.commit().await?;
+                Ok(answer["access_token"].as_str().unwrap_or_default().to_string())
+            }
+            Granted::Later(why) => Err(Error::Unavailable(format!("{} did not sign in: {why}", conn.name))),
+            Granted::Refused(why) => {
+                let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("tokens are sealed with the server's secret key".into()))?;
+                sqlx::query(
+                    "insert into conn_token (tenant_id, conn_id, user_id, sealed, status, told, connected_by) values ($1, $2, $3, $4, 'connected', false, $5)",
+                )
+                .bind(conn.tenant)
+                .bind(conn.id)
+                .bind(Uuid::nil())
+                .bind(key.seal(&token_label(conn.tenant, conn.id, Uuid::nil()), "{}")?)
+                .bind(by)
+                .execute(&mut *tx)
+                .await?;
+                self.needs_reconnecting(&mut tx, conn, Uuid::nil()).await?;
+                tx.commit().await?;
+                Err(Error::invalid(format!("{} needs reconnecting: the service refused its sign-in ({why})", conn.name)))
+            }
+        }
+    }
+
+    /// Drops a session's tokens (its secrets changed, or an administrator disconnects it): the next call signs in
+    /// afresh.
+    pub(crate) async fn forget_session(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
+        let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
+        sqlx::query("delete from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3")
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(Uuid::nil())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// An administrator signs a session in now (`POST /api/admin/connections/{id}/session`), afresh: `{status,
+    /// expires_at}`, or what the service said.
+    pub async fn connect_session(&self, ctx: &Ctx, id: Uuid) -> Result<Value> {
+        if !ctx.is_admin {
+            return Err(Error::Forbidden("connections are configured by administrators".into()));
+        }
+        let conn = self.load_connection(ctx.tenant, &id.to_string()).await?;
+        if !matches!(conn.desc.auth, Auth::Session { .. }) {
+            return Err(Error::invalid(format!("{} does not sign in with a session", conn.name)));
+        }
+        self.forget_session(ctx, id).await?;
+        self.session_sign_in(&conn, ctx).await?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        audit::record(&mut tx, ctx, "Connection", id, "connect", None, json!({"owner": "workspace", "session": true})).await?;
+        tx.commit().await?;
+        self.workspace_account(ctx.tenant, id).await
     }
 
     /// The connections a person signs in to with their own account, and whether they have: `{id, name, label, status,
@@ -618,4 +948,26 @@ impl JobHandler for Refresh {
 
 pub(crate) fn handler(kind: &str) -> Option<Arc<dyn JobHandler>> {
     (kind == REFRESH_KIND).then(|| Arc::new(Refresh) as Arc<dyn JobHandler>)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expiries_and_providers_are_read() {
+        let soon = expiry(&json!(3600)).unwrap() - Utc::now();
+        assert!((3590..=3600).contains(&soon.num_seconds()), "seconds from now");
+        assert_eq!(expiry(&json!("1900000000")), DateTime::from_timestamp(1_900_000_000, 0), "a Unix time");
+        assert_eq!(expiry(&json!("2026-11-13T10:00:00Z")), Some(DateTime::parse_from_rfc3339("2026-11-13T10:00:00Z").unwrap().to_utc()));
+        assert_eq!(expiry(&json!("soon")), None);
+        let p = |v: Value| serde_json::from_value::<Provider>(v).unwrap().problem();
+        let base = json!({"authorize_url": "https://id.test/a", "token_url": "https://id.test/t"});
+        assert!(p(base.clone()).is_some_and(|e| e.contains("client_id")), "a client, or a provider that registers one");
+        let mut registers = base.clone();
+        registers["registration_url"] = json!("https://id.test/register");
+        assert_eq!(p(registers.clone()), None);
+        registers["registration_url"] = json!("javascript:alert(1)");
+        assert!(p(registers).is_some());
+    }
 }

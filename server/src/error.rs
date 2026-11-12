@@ -59,7 +59,7 @@ impl ApiError {
             b.extend(extra);
         }
         let mut resp = (status, axum::Json(body)).into_response();
-        if matches!(e, Error::Retryable(_) | Error::Unavailable(_) | Error::TooManyRequests(_) | Error::Wait(..)) {
+        if matches!(e, Error::Retryable(_) | Error::Unavailable(_) | Error::RetryAfter(..) | Error::TooManyRequests(_) | Error::Wait(..)) {
             resp.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
         }
         resp

@@ -46,6 +46,12 @@ const MAX_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_MAX_BYTES: u64 = 1 << 20;
 const MAX_BYTES: u64 = 10 << 20;
 const MAX_REDIRECTS: usize = 3;
+/// The longest a service's `Retry-After` makes a queued call or a pull wait.
+pub(crate) const MAX_RETRY_AFTER: u64 = 3600;
+/// A stored file a call sends or an answer gives: 10 MB unless the operation says, at most 25 MB; what one request
+/// sends of files, at most 25 MB in all.
+const DEFAULT_FILE_BYTES: u64 = 10 << 20;
+const MAX_FILE_BYTES: u64 = 25 << 20;
 /// The statuses that mean "try again later", when a description says none.
 pub(crate) const TEMPORARY: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
 /// The longest a debug capture stays on, and how much of a body it keeps.
@@ -107,7 +113,14 @@ pub struct Description {
     /// Schedules that pull from it (BD-31).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pulls: Vec<pull::Pull>,
+    /// What its author keeps with it (an app's record of what the service can do): an object, kept and given back,
+    /// never read by the platform; at most [`MAX_META`] bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
 }
+
+/// The most a description's `meta` holds, as JSON.
+const MAX_META: usize = 16 << 10;
 
 /// How a call proves who makes it. Each `secret` names one of the connection's sealed values.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -147,6 +160,25 @@ pub enum Auth {
         owner: oauth::Owner,
         provider: oauth::Provider,
     },
+    /// A session the connection signs in to itself (BD-48): its `login` operation exchanges its secrets for a token
+    /// (at `token_at` in the answer; a refresh token at `refresh_at`, the expiry at `expires_at`: seconds from now, a
+    /// Unix time or a moment), its `refresh` operation (given `inputs.refresh_token`) renews it, else it logs in again.
+    /// The token goes in `header` (`authorization`) after `prefix` (`Bearer `). The workspace's own account, sealed and
+    /// refreshed as the broker's tokens are; a login or refresh the service refuses marks it "needs reconnecting".
+    Session {
+        login: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refresh: Option<String>,
+        token_at: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refresh_at: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,13 +205,17 @@ pub struct Operation {
     pub query: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
-    /// A template giving JSON (`| json` writes a value as JSON).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A template giving JSON (`| json` writes a value as JSON), or a [`FilePart`] written as an object: the stored
+    /// file is the body, with its type.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "specs::one")]
     pub body: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Templates, sent as a form; with a [`FilePart`] written as an object among them (or a `content-type:
+    /// multipart/form-data` header), as `multipart/form-data`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "specs")]
     pub form: BTreeMap<String, String>,
-    /// Result name → JSON pointer into the answer; none: the whole answer.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Result name → where it is in the answer: a JSON pointer, or a [`PickSpec`] written as an object (kept as
+    /// [`spec`] text); none: the whole answer.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "specs")]
     pub result: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_at: Option<String>,
@@ -211,6 +247,238 @@ impl Operation {
     pub(crate) fn changes(&self) -> bool {
         self.changes.unwrap_or(self.method() != "GET")
     }
+
+    /// Whether its form goes as `multipart/form-data`: it sends a file, or its headers say so.
+    fn multipart(&self) -> bool {
+        self.form.values().any(|v| v.starts_with(SPEC))
+            || self.headers.iter().any(|(h, v)| h.eq_ignore_ascii_case("content-type") && v.trim().to_ascii_lowercase().starts_with("multipart/form-data"))
+    }
+
+    /// The most its answer may be when the answer itself is a file it stores.
+    fn answer_cap(&self) -> Option<u64> {
+        self.result
+            .values()
+            .filter_map(|r| match Pick::of(r) {
+                Ok(Pick::Spec(PickSpec { file: Some(f), .. })) if f.from.is_none() => Some(f.max_bytes.unwrap_or(DEFAULT_FILE_BYTES)),
+                _ => None,
+            })
+            .max()
+    }
+}
+
+/// Marks a value of an operation's `result` (and `form` and `body`) that a description writes as an object: it is kept
+/// as this character and the object's JSON, so that those fields stay strings for apps that build operations in code
+/// (`connections::spec(&json!({"header": "Location"}))`), and written back as the object.
+pub const SPEC: char = '\u{0}';
+
+/// An object for a field that takes a string or an object (see [`SPEC`]).
+pub fn spec(v: &Value) -> String {
+    format!("{SPEC}{v}")
+}
+
+/// The object a value written as one is, as `T`; `None` for a plain string.
+pub(crate) fn spec_of<T: serde::de::DeserializeOwned>(s: &str) -> Option<std::result::Result<T, String>> {
+    s.strip_prefix(SPEC).map(|j| serde_json::from_str(j).map_err(|e| e.to_string()))
+}
+
+/// Strings, or objects kept as [`spec`] text, in a map.
+mod specs {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer>(m: &BTreeMap<String, String>, s: S) -> Result<S::Ok, S::Error> {
+        m.iter().map(|(k, v)| (k, out(v))).collect::<BTreeMap<_, _>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, String>, D::Error> {
+        BTreeMap::<String, Value>::deserialize(d)?.into_iter().map(|(k, v)| Ok((k, inward::<D::Error>(v)?))).collect()
+    }
+
+    pub(super) fn out(v: &str) -> Value {
+        match v.strip_prefix(super::SPEC).and_then(|j| serde_json::from_str::<Value>(j).ok()) {
+            Some(o) => o,
+            None => Value::String(v.to_string()),
+        }
+    }
+
+    pub(super) fn inward<E: serde::de::Error>(v: Value) -> Result<String, E> {
+        match v {
+            Value::String(s) => Ok(s),
+            o @ Value::Object(_) => Ok(super::spec(&o)),
+            _ => Err(E::custom("a string or an object")),
+        }
+    }
+
+    /// The same for one optional value.
+    pub mod one {
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+        use serde_json::Value;
+
+        pub fn serialize<S: Serializer>(v: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
+            v.as_deref().map(super::out).serialize(s)
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+            Option::<Value>::deserialize(d)?.map(super::inward::<D::Error>).transpose()
+        }
+    }
+}
+
+/// Where a value is read: in an answer (an operation's `result`, a pull's `next_at`) or in an item (a mapping's
+/// values). A bare string is a JSON pointer (`/a/0/b`), whose key not there reads as null; in a mapping, a string that
+/// is not a pointer is an expression, as before.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Pick {
+    At(String),
+    Spec(PickSpec),
+}
+
+/// A [`Pick`] said in full: one of `at`, `header`, `link` or `expr`, and whether it must be there.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickSpec {
+    /// A JSON pointer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// A response header (answers only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    /// The address of the answer's `Link` header entry with this `rel` (`next`), made absolute (answers only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// An expression (the platform's): over `answer`, `headers`, `inputs` and `connection` in an answer; over
+    /// `payload`, `item` and `connection` in a mapping. `connection` is `{name, id}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<String>,
+    /// The answer is a file to store, or names the address of one (answers only); the value is the stored file's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileResult>,
+    /// Null here fails the call (an answer) or the item (a mapping), saying which.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+}
+
+/// A stored file a request sends: a form's part, or the whole body. The caller must be able to read it (a queued
+/// call reads as the system).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilePart {
+    /// A template giving the file's id.
+    pub file: String,
+    /// A template giving the name it is sent under; else its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Else its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    /// The largest it may be (10 MB, at most 25 MB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+}
+
+impl FilePart {
+    fn problem(&self) -> Option<String> {
+        if self.max_bytes.is_some_and(|b| b == 0 || b > MAX_FILE_BYTES) {
+            return Some(format!("a file's max_bytes is 1 to {MAX_FILE_BYTES}"));
+        }
+        if self.content_type.as_deref().is_some_and(|c| c.parse::<reqwest::header::HeaderValue>().is_err() || !c.contains('/')) {
+            return Some("a file's content_type is a media type".into());
+        }
+        std::iter::once(&self.file).chain(self.name.iter()).find_map(|t| template_problem(t))
+    }
+}
+
+/// A file an answer gives, stored as the platform's other files are (scanned, counted against the workspace's storage)
+/// and attached to the record the call is about: the answer itself, or the address `from` points at, fetched through
+/// the guard within the connection's hosts, without its credentials.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileResult {
+    /// A JSON pointer to the file's address in the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// A template over `inputs` and `answer` giving its name; else the address's last part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The largest it may be (10 MB, at most 25 MB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+}
+
+impl Pick {
+    /// An operation's `result` value: a pointer, or a spec written as an object.
+    pub(crate) fn of(s: &str) -> std::result::Result<Pick, String> {
+        match spec_of::<PickSpec>(s) {
+            Some(p) => p.map(Pick::Spec),
+            None => Ok(Pick::At(s.to_string())),
+        }
+    }
+
+    /// It said in full; a bare string is a pointer, or (`exprs`, a mapping) an expression when it is not one.
+    pub(crate) fn spec(&self, exprs: bool) -> PickSpec {
+        match self {
+            Pick::At(s) if exprs && !s.starts_with('/') => PickSpec { expr: Some(s.clone()), ..Default::default() },
+            Pick::At(s) => PickSpec { at: Some(s.clone()), ..Default::default() },
+            Pick::Spec(p) => p.clone(),
+        }
+    }
+
+    /// What is wrong with it; `answer`: it reads an answer (headers and links), else an item.
+    pub(crate) fn problem(&self, answer: bool) -> Option<String> {
+        let p = self.spec(!answer);
+        let said = [p.at.is_some(), p.header.is_some(), p.link.is_some(), p.expr.is_some(), p.file.is_some()].iter().filter(|b| **b).count();
+        if said != 1 {
+            return Some("a value is read from one of at, header, link, expr or file".into());
+        }
+        if !answer && (p.header.is_some() || p.link.is_some() || p.file.is_some()) {
+            return Some("a mapping reads the item: at or expr".into());
+        }
+        if let Some(f) = &p.file {
+            if f.max_bytes.is_some_and(|b| b == 0 || b > MAX_FILE_BYTES) {
+                return Some(format!("a file's max_bytes is 1 to {MAX_FILE_BYTES}"));
+            }
+            return f.from.as_deref().and_then(pointer_problem).or_else(|| f.name.as_deref().and_then(template_problem));
+        }
+        if let Some(l) = &p.link
+            && (l.is_empty() || !l.chars().all(|c| c.is_ascii_alphanumeric() || "-._".contains(c)))
+        {
+            return Some(format!("link: {l} is not a relation name"));
+        }
+        p.at.as_deref()
+            .and_then(pointer_problem)
+            .or_else(|| p.header.as_deref().and_then(header_problem))
+            .or_else(|| p.expr.as_deref().and_then(|e| ferrum_meta::Expr::compile(e).err().map(|m| format!("'{e}': {m}"))))
+    }
+}
+
+/// The target of the `Link` header entry (RFC 8288) whose `rel` holds `rel`, made absolute against `base`.
+pub(crate) fn link_target(header: &str, rel: &str, base: &reqwest::Url) -> Option<String> {
+    let mut rest = header;
+    while let Some(open) = rest.find('<') {
+        let close = open + rest[open..].find('>')?;
+        let target = &rest[open + 1..close];
+        let after = &rest[close + 1..];
+        let params = &after[..after.find('<').unwrap_or(after.len())];
+        let rels = params.split(';').filter_map(|p| p.trim().strip_prefix("rel=")).map(|v| v.trim_matches(['"', ',', ' ']));
+        if rels.flat_map(|v| v.split_whitespace()).any(|r| r.eq_ignore_ascii_case(rel)) {
+            return base.join(target).ok().map(String::from);
+        }
+        rest = after;
+    }
+    None
+}
+
+/// How long a `Retry-After` value (seconds, or an HTTP date) asks to wait, at least a second and at most
+/// [`MAX_RETRY_AFTER`].
+pub(crate) fn retry_after(v: &str, now: DateTime<Utc>) -> Option<u64> {
+    let v = v.trim();
+    let secs = match v.parse::<u64>() {
+        Ok(n) => n,
+        Err(_) => (DateTime::parse_from_rfc2822(v).ok()?.to_utc() - now).num_seconds().max(0) as u64,
+    };
+    Some(secs.clamp(1, MAX_RETRY_AFTER))
 }
 
 /// What is wrong with a template, if anything.
@@ -227,6 +495,12 @@ pub(crate) fn header_problem(h: &str) -> Option<String> {
 }
 
 impl Description {
+    /// Whether operation `name` is how the connection signs in (a session's login or refresh): never called as an
+    /// operation, by an app, a person, an effect, a pull or "try this", since its answer is a token.
+    pub(crate) fn signs_in_with(&self, name: &str) -> bool {
+        matches!(&self.auth, Auth::Session { login, refresh, .. } if login == name || refresh.as_deref() == Some(name))
+    }
+
     /// What is wrong with it, said plainly; `None` when it may be saved.
     pub fn problem(&self) -> Option<String> {
         if !self.test {
@@ -247,6 +521,9 @@ impl Description {
         if self.max_bytes.is_some_and(|b| b == 0 || b > MAX_BYTES) {
             return Some(format!("max_bytes is 1 to {MAX_BYTES}"));
         }
+        if self.meta.as_ref().is_some_and(|m| !m.is_object() || m.to_string().len() > MAX_META) {
+            return Some(format!("meta is an object of at most {MAX_META} bytes"));
+        }
         if self.roles.iter().chain(&self.apps).any(|r| r.trim().is_empty()) {
             return Some("roles and apps are names".into());
         }
@@ -266,6 +543,21 @@ impl Description {
             Auth::Basic { .. } | Auth::Bearer { .. } => {}
             Auth::Oauth { provider, .. } => {
                 if let Some(p) = provider.problem() {
+                    return Some(p);
+                }
+            }
+            Auth::Session { login, refresh, token_at, refresh_at, expires_at, header, .. } => {
+                if let Some(op) = std::iter::once(login).chain(refresh.iter()).find(|o| !self.operations.contains_key(*o)) {
+                    return Some(format!("auth: there is no operation {op}"));
+                }
+                if let Some(p) = std::iter::once(token_at)
+                    .chain(refresh_at.iter())
+                    .chain(expires_at.iter())
+                    .find_map(|p| pointer_problem(p).or_else(|| p.is_empty().then(|| "auth: a pointer is not empty".to_string())))
+                {
+                    return Some(p);
+                }
+                if let Some(p) = header.as_deref().and_then(header_problem) {
                     return Some(p);
                 }
             }
@@ -315,15 +607,28 @@ impl Operation {
         if self.body.is_some() && !self.form.is_empty() {
             return Some("a request has a body or a form, not both".into());
         }
-        let templates = std::iter::once(&self.path).chain(self.query.values()).chain(self.headers.values()).chain(self.body.iter()).chain(self.form.values());
+        let plain = |v: &&String| !v.starts_with(SPEC);
+        let templates = std::iter::once(&self.path)
+            .chain(self.query.values())
+            .chain(self.headers.values())
+            .chain(self.body.iter().filter(plain))
+            .chain(self.form.values().filter(plain));
         if let Some(p) = templates.filter_map(|t| template_problem(t)).next() {
             return Some(p);
+        }
+        for (name, v) in self.body.iter().map(|b| ("body", b)).chain(self.form.iter().map(|(k, v)| (k.as_str(), v))) {
+            if let Some(p) = spec_of::<FilePart>(v).and_then(|f| f.map_or_else(Some, |f| f.problem())) {
+                return Some(format!("{name}: {p}"));
+            }
         }
         if let Some(p) = self.headers.keys().chain(self.idempotency_header.iter()).find_map(|h| header_problem(h)) {
             return Some(p);
         }
-        if let Some(p) = self.result.values().chain(self.error_at.iter()).find_map(|p| pointer_problem(p)) {
+        if let Some(p) = self.error_at.as_deref().and_then(pointer_problem) {
             return Some(p);
+        }
+        if let Some((n, p)) = self.result.iter().find_map(|(n, p)| Some((n, Pick::of(p).map_or_else(Some, |p| p.problem(true))?))) {
+            return Some(format!("result {n}: {p}"));
         }
         if let Some(i) = self.inputs.iter().find(|i| !is_name(i)) {
             return Some(format!("input {i}: a name is lower case letters, digits and _"));
@@ -361,7 +666,8 @@ pub(crate) struct Request {
     pub method: reqwest::Method,
     pub url: reqwest::Url,
     pub headers: Vec<(String, String)>,
-    pub body: Option<(Vec<u8>, &'static str)>,
+    /// The bytes and their content type.
+    pub body: Option<(Vec<u8>, String)>,
 }
 
 /// How far a request may go: hosts (empty: the request's own), time, answer size.
@@ -378,6 +684,38 @@ pub(crate) struct Answer {
     pub status: u16,
     /// JSON when it was, else the text.
     pub body: Value,
+    /// Its headers, names in lower case.
+    pub headers: Vec<(String, String)>,
+    /// Where it came from, after any redirect.
+    pub url: reqwest::Url,
+    /// The bytes as they came.
+    pub raw: Vec<u8>,
+}
+
+impl Answer {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(h, _)| h.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+
+    /// When the service asked to be called again, for a temporary answer.
+    fn wait(&self) -> Option<u64> {
+        retry_after(self.header("retry-after")?, Utc::now())
+    }
+
+    /// What `p` reads here, `vars` bound for an expression.
+    pub(crate) fn read(&self, p: &PickSpec, vars: &[(&str, &Value)]) -> Result<Value> {
+        Ok(if let Some(at) = &p.at {
+            self.body.pointer(at).cloned().unwrap_or(Value::Null)
+        } else if let Some(h) = &p.header {
+            self.header(h).map_or(Value::Null, |v| Value::String(v.to_string()))
+        } else if let Some(rel) = &p.link {
+            self.header("link").and_then(|l| link_target(l, rel, &self.url)).map_or(Value::Null, Value::String)
+        } else if let Some(e) = &p.expr {
+            crate::automation::eval_with(e, &Value::Null, &Value::Null, vars)?
+        } else {
+            Value::Null
+        })
+    }
 }
 
 impl Kernel {
@@ -437,7 +775,7 @@ impl Kernel {
                 rb = rb.header(h.as_str(), v.as_str());
             }
             if let Some((body, kind)) = &req.body {
-                rb = rb.header(reqwest::header::CONTENT_TYPE, *kind).body(body.clone());
+                rb = rb.header(reqwest::header::CONTENT_TYPE, kind.as_str()).body(body.clone());
             }
             let mut res = rb.send().await.map_err(|e| Error::Unavailable(format!("the service did not answer: {}", e.without_url())))?;
             let status = res.status().as_u16();
@@ -462,7 +800,8 @@ impl Kernel {
                 }
             }
             let body = serde_json::from_slice(&buf).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&buf).into_owned()));
-            return Ok(Answer { status, body });
+            let headers = res.headers().iter().filter_map(|(h, v)| Some((h.as_str().to_string(), v.to_str().ok()?.to_string()))).collect();
+            return Ok(Answer { status, body, headers, url: req.url, raw: buf });
         }
         Err(Error::invalid(format!("more than {MAX_REDIRECTS} redirects")))
     }
@@ -530,6 +869,45 @@ fn digest(v: &Value) -> String {
 }
 
 // ── connections as stored ──
+
+/// A connection's secrets, open, its row locked for the rest of `tx` (to change them).
+pub(crate) async fn lock_secrets(tx: &mut Tx, k: &Kernel, tenant: Uuid, id: Uuid) -> Result<BTreeMap<String, String>> {
+    let sealed: Option<Option<String>> =
+        sqlx::query_scalar("select sealed from conn where tenant_id = $1 and id = $2 for update").bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
+    match sealed.ok_or_else(|| Error::NotFound("connection".into()))? {
+        Some(s) => serde_json::from_str(&k.open_sealed(&sealed_label(tenant, id), &s)?).map_err(Error::internal),
+        None => Ok(BTreeMap::new()),
+    }
+}
+
+/// Seals `held` with `set` set and `remove` removed as the connection's secrets, in `tx` (after [`lock_secrets`]).
+pub(crate) async fn store_secrets(
+    tx: &mut Tx,
+    k: &Kernel,
+    tenant: Uuid,
+    id: Uuid,
+    mut held: BTreeMap<String, String>,
+    set: BTreeMap<String, String>,
+    remove: &[String],
+) -> Result<BTreeMap<String, String>> {
+    held.extend(set);
+    held.retain(|n, _| !remove.contains(n));
+    let key = k.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("connection secrets need the server's secret key (FERRUM_SECRET_KEY)".into()))?;
+    let sealed = key.seal(&sealed_label(tenant, id), &serde_json::to_string(&held).map_err(Error::internal)?)?;
+    sqlx::query("update conn set sealed = $3, updated_at = now() where tenant_id = $1 and id = $2")
+        .bind(tenant)
+        .bind(id)
+        .bind(sealed)
+        .execute(&mut **tx)
+        .await?;
+    Ok(held)
+}
+
+/// Whether a secret is one the platform keeps for itself ([`oauth::REGISTERED_ID`], the DPoP key): never set, listed or
+/// dropped by an administrator's save.
+fn kept_by_platform(name: &str) -> bool {
+    name.starts_with('_')
+}
 
 pub(crate) fn sealed_label(tenant: Uuid, id: Uuid) -> String {
     format!("conn:{tenant}:{id}")
@@ -631,11 +1009,19 @@ pub struct Call {
 #[derive(Debug)]
 pub(crate) enum Outcome {
     /// The mapped result, and the whole answer.
-    Ok(Value, Value),
-    /// The service said "later", or did not answer.
-    Later(String),
+    Ok(Value, Box<Answer>),
+    /// The service said "later", or did not answer; when it said when, in seconds.
+    Later(String, Option<u64>),
     /// The service said no, or the call could not be made.
     No(String),
+}
+
+/// A page of a pull: its cursor, as the templates see it, and the address the last page's `Link` named, which is
+/// asked in place of the operation's path and query.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Page<'a> {
+    pub cursor: &'a Value,
+    pub address: Option<&'a str>,
 }
 
 /// Calls an operation of a connection and gives its mapped result: for apps (docs/api.md, "Connections"). `app` is the
@@ -656,12 +1042,21 @@ pub(crate) fn may_use(ctx: &Ctx, app: Option<&str>, desc: &Description) -> Resul
 
 impl Kernel {
     pub async fn call_connection(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
+        self.call_waiting(ctx, app, c, false).await
+    }
+
+    /// [`Kernel::call_connection`]; `waits`: a "later" with the service's `Retry-After` is `RetryAfter` (a queued call's
+    /// job then comes back when it said) rather than `Unavailable`.
+    async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call, waits: bool) -> Result<Value> {
         let conn = self.load_connection(ctx.tenant, &c.connection).await?;
         if !conn.enabled {
             return Err(Error::invalid(format!("the connection {} is turned off", conn.name)));
         }
         may_use(ctx, app, &conn.desc)?;
         let op = conn.desc.operations.get(&c.operation).ok_or_else(|| Error::invalid(format!("{} has no operation {}", conn.name, c.operation)))?;
+        if conn.desc.signs_in_with(&c.operation) {
+            return Err(Error::invalid(format!("{} is how {} signs in: it is not called", c.operation, conn.name)));
+        }
         let inputs = match &c.inputs {
             Value::Null => Value::Object(Map::new()),
             Value::Object(o) => {
@@ -692,7 +1087,8 @@ impl Kernel {
             .await?;
         match outcome {
             Outcome::Ok(result, _) => Ok(result),
-            Outcome::Later(why) => Err(Error::Unavailable(why)),
+            Outcome::Later(why, Some(secs)) if waits => Err(Error::RetryAfter(why, secs)),
+            Outcome::Later(why, _) => Err(Error::Unavailable(why)),
             Outcome::No(why) => Err(Error::invalid(why)),
         }
     }
@@ -713,7 +1109,7 @@ impl Kernel {
         Ok(row.map(|(d, r)| (d.unwrap_or_default(), r.unwrap_or(Value::Null))))
     }
 
-    /// One operation, made and logged. `extra` are more template variables (a pull's `cursor`).
+    /// One operation, made and logged. `page`: a pull's page (its `cursor` a template variable).
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn perform(
         &self,
@@ -722,28 +1118,49 @@ impl Kernel {
         name: &str,
         inputs: &Value,
         key: Option<&str>,
-        extra: Option<(&str, &Value)>,
+        page: Option<Page<'_>>,
         about: Option<(&str, Uuid)>,
         keep: Option<&str>,
     ) -> Result<Outcome> {
         let op = conn.desc.operations.get(name).ok_or_else(|| Error::invalid(format!("{} has no operation {name}", conn.name)))?;
+        // Signing in: made without credentials of its own, never captured (its answer is a token), never refreshed.
+        let bare = conn.desc.signs_in_with(name);
         let started = Instant::now();
         let mut mask = conn.mask();
         let mut debug = None;
         let answered = if conn.desc.test {
             let f = op.fixture.clone().unwrap_or_else(|| json!({"status": 200, "body": {}}));
-            Ok(Answer { status: f["status"].as_u64().unwrap_or(200) as u16, body: f.get("body").cloned().unwrap_or(Value::Null) })
+            let headers =
+                f["headers"].as_object().map(|h| h.iter().map(|(k, v)| (k.to_ascii_lowercase(), v.as_str().unwrap_or_default().to_string())).collect());
+            Ok(Answer {
+                status: f["status"].as_u64().unwrap_or(200) as u16,
+                body: f.get("body").cloned().unwrap_or(Value::Null),
+                headers: headers.unwrap_or_default(),
+                url: reqwest::Url::parse("https://fixture.invalid/").map_err(Error::internal)?,
+                raw: match f.get("body") {
+                    Some(Value::String(s)) => s.clone().into_bytes(),
+                    Some(v) => v.to_string().into_bytes(),
+                    None => vec![],
+                },
+            })
         } else {
             let mut tries = 0;
             let got = loop {
                 tries += 1;
-                let got = match self.build_request(ctx, conn, op, inputs, key, extra).await {
+                let got = match self.build_request(ctx, conn, op, inputs, key, page, bare).await {
                     Ok((req, more)) => {
                         mask.extend(more);
-                        if conn.debug {
+                        if conn.debug && !bare {
                             debug = Some(json!({"request": captured(&req, &mask)}));
                         }
-                        let got = self.fetch(req, &conn.reach()).await;
+                        let mut reach = conn.reach();
+                        if let Some(cap) = op.answer_cap() {
+                            reach.max_bytes = cap;
+                        }
+                        let got = self.fetch(req, &reach).await;
+                        if let Ok(a) = &got {
+                            oauth::remember_nonce(conn.id, a);
+                        }
                         if let (Some(d), Ok(a)) = (debug.as_mut(), &got) {
                             d["answer"] = json!({"status": a.status, "body": clipped(&masked(&a.body, &mask))});
                         }
@@ -751,10 +1168,18 @@ impl Kernel {
                     }
                     Err(e) => Err(e),
                 };
+                // A server binding tokens that asks for its nonce: the call made again with it (RFC 9449 §9).
+                if tries == 1
+                    && matches!(&conn.desc.auth, Auth::Oauth { provider, .. } if provider.dpop)
+                    && matches!(&got, Ok(a) if a.status == 401 && a.header("www-authenticate").is_some_and(|w| w.contains("use_dpop_nonce")))
+                {
+                    continue;
+                }
                 // A token the service no longer takes: refreshed once, and the call made again.
                 if tries == 1
+                    && !bare
                     && matches!(&got, Ok(a) if a.status == 401)
-                    && matches!(conn.desc.auth, Auth::Oauth { .. })
+                    && matches!(conn.desc.auth, Auth::Oauth { .. } | Auth::Session { .. })
                     && self.access_token(conn, ctx, true).await.is_ok()
                 {
                     continue;
@@ -773,21 +1198,20 @@ impl Kernel {
         };
         let (outcome, status, row_outcome) = match answered {
             Ok(a) if (200..300).contains(&a.status) => {
-                let result = if op.result.is_empty() {
-                    a.body.clone()
-                } else {
-                    Value::Object(op.result.iter().map(|(n, p)| (n.clone(), a.body.pointer(p).cloned().unwrap_or(Value::Null))).collect())
-                };
                 let status = a.status;
-                (Outcome::Ok(masked(&result, &mask), a.body), Some(status), "ok")
+                match self.mapped(ctx, conn, op, inputs, &a, about).await {
+                    Ok(result) => (Outcome::Ok(masked(&result, &mask), Box::new(a)), Some(status), "ok"),
+                    Err(Error::Unavailable(m)) => (Outcome::Later(masked_text(&m, &mask), None), Some(status), "temporary"),
+                    Err(e) => (Outcome::No(masked_text(&format!("{status}: {e}"), &mask)), Some(status), "failed"),
+                }
             }
-            Ok(a) if temporary.contains(&a.status) => (Outcome::Later(error_of(&a)), Some(a.status), "temporary"),
+            Ok(a) if temporary.contains(&a.status) => (Outcome::Later(error_of(&a), a.wait()), Some(a.status), "temporary"),
             Ok(a) => (Outcome::No(error_of(&a)), Some(a.status), "failed"),
-            Err(Error::Unavailable(m)) => (Outcome::Later(m), None, "temporary"),
+            Err(Error::Unavailable(m)) => (Outcome::Later(m, None), None, "temporary"),
             Err(e) => (Outcome::No(e.to_string()), None, "refused"),
         };
         let error = match &outcome {
-            Outcome::Later(m) | Outcome::No(m) => Some(m.clone()),
+            Outcome::Later(m, _) | Outcome::No(m) => Some(m.clone()),
             Outcome::Ok(..) => None,
         };
         let kept = match &outcome {
@@ -820,6 +1244,84 @@ impl Kernel {
         Ok(outcome)
     }
 
+    /// The mapped result of an answer that worked: each of the operation's `result` read as its [`Pick`] says (none: the
+    /// whole answer); one `required` and not there fails the call, naming it.
+    async fn mapped(&self, ctx: &Ctx, conn: &Loaded, op: &Operation, inputs: &Value, a: &Answer, about: Option<(&str, Uuid)>) -> Result<Value> {
+        if op.result.is_empty() {
+            return Ok(a.body.clone());
+        }
+        let headers = Value::Object(a.headers.iter().map(|(h, v)| (h.clone(), Value::String(v.clone()))).collect());
+        let connection = json!({"name": conn.name, "id": conn.id});
+        let vars = [("answer", &a.body), ("headers", &headers), ("inputs", inputs), ("connection", &connection)];
+        let mut out = Map::new();
+        for (name, pick) in &op.result {
+            let p = Pick::of(pick).map_err(Error::invalid)?.spec(false);
+            let v = match &p.file {
+                Some(f) => self.answer_file(ctx, conn, f, inputs, a, about).await?,
+                None => a.read(&p, &vars)?,
+            };
+            if p.required && v.is_null() {
+                return Err(Error::invalid(format!("the answer has no {name}")));
+            }
+            out.insert(name.clone(), v);
+        }
+        Ok(Value::Object(out))
+    }
+
+    /// A file an answer gives ([`FileResult`]), stored and attached to the record the call is about: its id. A test
+    /// connection fetches nothing (null).
+    async fn answer_file(&self, ctx: &Ctx, conn: &Loaded, f: &FileResult, inputs: &Value, a: &Answer, about: Option<(&str, Uuid)>) -> Result<Value> {
+        let cap = f.max_bytes.unwrap_or(DEFAULT_FILE_BYTES);
+        let got;
+        let (bytes, kind, url) = match &f.from {
+            Some(_) if conn.desc.test => return Ok(Value::Null),
+            Some(p) => {
+                let address = at(&a.body, Some(p)).ok_or_else(|| Error::invalid(format!("the answer gives no file address at {p}")))?;
+                let url = a.url.join(&address).map_err(|_| Error::invalid("the file's address is not an address"))?;
+                let reach = Reach { max_bytes: cap, ..conn.reach() };
+                got = self.fetch(Request { method: reqwest::Method::GET, url, headers: vec![], body: None }, &reach).await?;
+                if !(200..300).contains(&got.status) {
+                    let said = format!("the file's address answered {}", got.status);
+                    return Err(if TEMPORARY.contains(&got.status) { Error::Unavailable(said) } else { Error::invalid(said) });
+                }
+                (&got.raw, got.header("content-type"), &got.url)
+            }
+            None => (&a.raw, a.header("content-type"), &a.url),
+        };
+        if bytes.len() as u64 > cap {
+            return Err(Error::invalid(format!("the file is larger than {cap} bytes")));
+        }
+        let name = match &f.name {
+            Some(t) => render(t, &json!({"inputs": inputs, "answer": a.body}))?,
+            None => url.path_segments().and_then(|mut s| s.next_back()).filter(|s| !s.is_empty()).unwrap_or("file").to_string(),
+        };
+        let kind = kind.unwrap_or("application/octet-stream").to_string();
+        let stored = self.store_file(ctx, about, &name, &kind, bytes).await?;
+        Ok(stored["id"].clone())
+    }
+
+    /// A stored file a request sends, as the caller reads it: its name, type and bytes, within `budget` (what the
+    /// request may still send) and the part's own limit.
+    async fn sent_file(&self, ctx: &Ctx, part: &FilePart, vars: &Value, budget: &mut u64) -> Result<(String, String, Vec<u8>)> {
+        let given = render(&part.file, vars)?;
+        let id: Uuid = given.trim().parse().map_err(|_| Error::invalid(format!("{given} is not a stored file")))?;
+        let info = self.file_info(ctx, id).await.map_err(|_| Error::invalid(format!("the file {id} is not one you may send")))?;
+        let cap = part.max_bytes.unwrap_or(DEFAULT_FILE_BYTES).min(*budget);
+        if info.size < 0 || info.size as u64 > cap {
+            return Err(Error::invalid(format!("{} is larger than the {cap} bytes this call may send", info.name)));
+        }
+        let bytes = self.file_store()?.get(&info.key).await?;
+        if bytes.len() as u64 > cap {
+            return Err(Error::invalid(format!("{} is larger than the {cap} bytes this call may send", info.name)));
+        }
+        *budget -= bytes.len() as u64;
+        let name = match &part.name {
+            Some(t) => render(t, vars)?,
+            None => info.name,
+        };
+        Ok((name, part.content_type.clone().unwrap_or(info.content_type), bytes))
+    }
+
     /// The request an operation makes, and what more it must never show (a token).
     async fn build_request(
         &self,
@@ -828,13 +1330,24 @@ impl Kernel {
         op: &Operation,
         inputs: &Value,
         key: Option<&str>,
-        extra: Option<(&str, &Value)>,
+        page: Option<Page<'_>>,
+        bare: bool,
     ) -> Result<(Request, Vec<String>)> {
         let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key});
-        if let Some((n, v)) = extra {
-            vars[n] = v.clone();
+        if let Some(p) = page {
+            vars["cursor"] = p.cursor.clone();
         }
         let r = |s: &str| render(s, &vars);
+        // A page the last one's `Link` named is asked at that address as it is (the guard still checks its host).
+        if let Some(address) = page.and_then(|p| p.address) {
+            let url = reqwest::Url::parse(address).map_err(|_| Error::invalid("the next page's address is not an address"))?;
+            let mut headers = Vec::new();
+            for (h, v) in conn.desc.headers.iter().chain(&op.headers) {
+                headers.push((h.clone(), r(v)?));
+            }
+            let more = self.authenticate(ctx, conn, &mut headers, None, &reqwest::Method::GET, &url).await?;
+            return Ok((Request { method: reqwest::Method::GET, url, headers, body: None }, more));
+        }
         let mut url = reqwest::Url::parse(&format!("{}{}", conn.desc.base.trim_end_matches('/'), render_path(&op.path, &vars)?))
             .map_err(|_| Error::invalid("the operation's address is not an address"))?;
         if !op.query.is_empty() {
@@ -842,40 +1355,83 @@ impl Kernel {
             url.query_pairs_mut().extend_pairs(pairs);
         }
         let mut headers = Vec::new();
+        let multipart = op.multipart();
         for (h, v) in conn.desc.headers.iter().chain(&op.headers) {
-            headers.push((h.clone(), r(v)?));
+            // A file's body and a multipart form say their own type (and boundary).
+            if !(h.eq_ignore_ascii_case("content-type") && (multipart || op.body.as_deref().is_some_and(|b| b.starts_with(SPEC)))) {
+                headers.push((h.clone(), r(v)?));
+            }
         }
         if let (Some(h), Some(k)) = (&op.idempotency_header, key) {
             headers.push((h.clone(), k.to_string()));
         }
+        let mut budget = MAX_FILE_BYTES;
         let body = match &op.body {
-            Some(b) => {
-                let text = r(b)?;
-                serde_json::from_str::<Value>(&text).map_err(|e| Error::invalid(format!("the operation's body is not JSON: {e}")))?;
-                Some((text.into_bytes(), "application/json"))
+            Some(b) => match spec_of::<FilePart>(b) {
+                Some(part) => {
+                    let (_, kind, bytes) = self.sent_file(ctx, &part.map_err(Error::invalid)?, &vars, &mut budget).await?;
+                    Some((bytes, kind))
+                }
+                None => {
+                    let text = r(b)?;
+                    serde_json::from_str::<Value>(&text).map_err(|e| Error::invalid(format!("the operation's body is not JSON: {e}")))?;
+                    Some((text.into_bytes(), "application/json".to_string()))
+                }
+            },
+            None if multipart => {
+                let mut parts = Vec::new();
+                for (k, v) in &op.form {
+                    parts.push(match spec_of::<FilePart>(v) {
+                        Some(part) => {
+                            let (name, kind, bytes) = self.sent_file(ctx, &part.map_err(Error::invalid)?, &vars, &mut budget).await?;
+                            (k.clone(), Some((name, kind)), bytes)
+                        }
+                        None => (k.clone(), None, r(v)?.into_bytes()),
+                    });
+                }
+                Some(form_data(&parts))
             }
             None if !op.form.is_empty() => {
                 let mut f = reqwest::Url::parse("http://form/").map_err(Error::internal)?;
                 for (k, v) in &op.form {
                     f.query_pairs_mut().append_pair(k, &r(v)?);
                 }
-                Some((f.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded"))
+                Some((f.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded".to_string()))
             }
             None => None,
         };
-        let more = self.authenticate(ctx, conn, &mut headers, body.as_ref().map(|b| b.0.as_slice())).await?;
         let method = reqwest::Method::from_bytes(op.method().as_bytes()).map_err(Error::internal)?;
+        let more = if bare { vec![] } else { self.authenticate(ctx, conn, &mut headers, body.as_ref().map(|b| b.0.as_slice()), &method, &url).await? };
         Ok((Request { method, url, headers, body }, more))
     }
 
     /// Adds what proves who calls; what more it must never show.
-    async fn authenticate(&self, ctx: &Ctx, conn: &Loaded, headers: &mut Vec<(String, String)>, body: Option<&[u8]>) -> Result<Vec<String>> {
+    async fn authenticate(
+        &self,
+        ctx: &Ctx,
+        conn: &Loaded,
+        headers: &mut Vec<(String, String)>,
+        body: Option<&[u8]>,
+        method: &reqwest::Method,
+        url: &reqwest::Url,
+    ) -> Result<Vec<String>> {
         use base64::Engine as _;
         match &conn.desc.auth {
             Auth::None => {}
-            Auth::Oauth { .. } => {
+            Auth::Oauth { provider, .. } => {
                 let token = self.access_token(conn, ctx, false).await?;
-                headers.push(("authorization".into(), format!("Bearer {token}")));
+                if provider.dpop {
+                    headers.push(("authorization".into(), format!("DPoP {token}")));
+                    headers.push(("dpop".into(), self.dpop_proof(conn, method, url, Some(&token)).await?));
+                } else {
+                    headers.push(("authorization".into(), format!("Bearer {token}")));
+                }
+                return Ok(vec![token]);
+            }
+            Auth::Session { header, prefix, .. } => {
+                let token = self.access_token(conn, ctx, false).await?;
+                let (header, prefix) = (header.as_deref().unwrap_or("authorization"), prefix.as_deref().unwrap_or("Bearer "));
+                headers.push((header.to_string(), format!("{prefix}{token}")));
                 return Ok(vec![token]);
             }
             Auth::Header { header, secret, prefix } => headers.push((header.clone(), format!("{prefix}{}", conn.secret(secret)?))),
@@ -904,6 +1460,26 @@ impl Kernel {
         }
         Ok(vec![])
     }
+}
+
+/// A `multipart/form-data` body (RFC 7578) of `parts` (name, file name and type for a file, bytes), and its type. Names
+/// are the description's; a file name or type cannot end its line or its quotes.
+fn form_data(parts: &[(String, Option<(String, String)>, Vec<u8>)]) -> (Vec<u8>, String) {
+    let boundary = format!("ferrum-{}", Uuid::new_v4().simple());
+    let quoted = |s: &str| s.replace('"', "%22").replace('\r', "%0D").replace('\n', "%0A");
+    let mut out = Vec::new();
+    for (name, file, bytes) in parts {
+        out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{}\"", quoted(name)).as_bytes());
+        if let Some((file_name, kind)) = file {
+            let kind: String = kind.chars().filter(|c| !c.is_control()).collect();
+            out.extend_from_slice(format!("; filename=\"{}\"\r\nContent-Type: {kind}", quoted(file_name)).as_bytes());
+        }
+        out.extend_from_slice(b"\r\n\r\n");
+        out.extend_from_slice(bytes);
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (out, format!("multipart/form-data; boundary={boundary}"))
 }
 
 /// A request as the debug capture keeps it: every header that may prove who calls hidden, every secret masked.
@@ -967,6 +1543,7 @@ impl Kernel {
         }
         let id = id.unwrap_or_else(Uuid::now_v7);
         let source = self.packaged_connections(ctx).into_iter().find(|(_, c)| c.name == input.name).map(|(p, _)| format!("package:{p}"));
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let sealed = match &input.secrets {
             Some(s) => {
                 let key = self
@@ -974,11 +1551,25 @@ impl Kernel {
                     .secret_key
                     .as_ref()
                     .ok_or_else(|| Error::Unavailable("connection secrets need the server's secret key (FERRUM_SECRET_KEY)".into()))?;
-                Some(key.seal(&sealed_label(ctx.tenant, id), &serde_json::to_string(s).map_err(Error::internal)?)?)
+                // What the platform keeps among them (a registered client, a DPoP key) stays.
+                let held = match sqlx::query_scalar::<_, Option<String>>("select sealed from conn where tenant_id = $1 and id = $2 for update")
+                    .bind(ctx.tenant)
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .flatten()
+                {
+                    Some(old) => {
+                        serde_json::from_str::<BTreeMap<String, String>>(&self.open_sealed(&sealed_label(ctx.tenant, id), &old)?).map_err(Error::internal)?
+                    }
+                    None => BTreeMap::new(),
+                };
+                let mut all: BTreeMap<String, String> = held.into_iter().filter(|(n, _)| kept_by_platform(n)).collect();
+                all.extend(s.clone());
+                Some(key.seal(&sealed_label(ctx.tenant, id), &serde_json::to_string(&all).map_err(Error::internal)?)?)
             }
             None => None,
         };
-        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let n = sqlx::query(
             "insert into conn (tenant_id, id, name, label, description, sealed, enabled, source) values ($1, $2, $3, $4, $5, $6, $7, $8) \
              on conflict (tenant_id, id) do update set name = excluded.name, label = excluded.label, description = excluded.description, \
@@ -1002,7 +1593,37 @@ impl Kernel {
         audit::record(&mut tx, ctx, "Connection", id, "save", None, json!({"name": input.name, "enabled": input.enabled, "secrets": input.secrets.is_some()}))
             .await?;
         tx.commit().await?;
+        // A session signs in again with secrets given anew.
+        if input.secrets.is_some() && matches!(input.description.auth, Auth::Session { .. }) {
+            self.forget_session(ctx, id).await?;
+        }
         Ok(id)
+    }
+
+    /// Sets or replaces the secrets named in `set` and removes those in `remove`, keeping the rest
+    /// (`PATCH /api/admin/connections/{id}/secrets`); the audit trail names them, never their values. The names the
+    /// connection now has.
+    pub async fn merge_connection_secrets(&self, ctx: &Ctx, id: Uuid, set: &BTreeMap<String, String>, remove: &[String]) -> Result<Vec<String>> {
+        admin_only(ctx)?;
+        if set.keys().chain(remove).any(|n| !is_name(n)) || set.values().any(|v| v.len() > crate::secret::MAX_SECRET) {
+            return Err(Error::field("secrets", "each named as an input is, of at most 16 KB"));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let held = lock_secrets(&mut tx, self, ctx.tenant, id).await?;
+        let now = store_secrets(&mut tx, self, ctx.tenant, id, held, set.clone(), remove).await?;
+        let names: Vec<String> = now.into_keys().filter(|n| !kept_by_platform(n)).collect();
+        if names.len() > 20 {
+            return Err(Error::field("secrets", "at most 20"));
+        }
+        let description: Value =
+            sqlx::query_scalar("select description from conn where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_one(&mut *tx).await?;
+        audit::record(&mut tx, ctx, "Connection", id, "secrets", None, json!({"set": set.keys().collect::<Vec<_>>(), "removed": remove})).await?;
+        tx.commit().await?;
+        // A session signs in again with its secrets changed.
+        if description["auth"]["type"] == "session" {
+            self.forget_session(ctx, id).await?;
+        }
+        Ok(names)
     }
 
     /// What is wrong with a description, its mappings read against the workspace's entities.
@@ -1034,6 +1655,7 @@ impl Kernel {
                 Some(s) => serde_json::from_str::<BTreeMap<String, String>>(&self.open_sealed(&sealed_label(ctx.tenant, id), &s)?)
                     .map_err(Error::internal)?
                     .into_keys()
+                    .filter(|n| !kept_by_platform(n))
                     .collect(),
                 None => vec![],
             };
@@ -1070,13 +1692,16 @@ impl Kernel {
         admin_only(ctx)?;
         let conn = self.load_connection(ctx.tenant, &id.to_string()).await?;
         let op = conn.desc.operations.get(operation).ok_or_else(|| Error::invalid(format!("{} has no operation {operation}", conn.name)))?;
+        if conn.desc.signs_in_with(operation) {
+            return Err(Error::invalid(format!("{operation} is how {} signs in: it is not tried", conn.name)));
+        }
         if op.changes() && key.is_none_or(|k| k.trim().is_empty()) {
             return Err(Error::invalid(format!("{operation} changes something at the service, so trying it needs a key")));
         }
         let inputs = if inputs.is_null() { json!({}) } else { inputs.clone() };
         Ok(match self.perform(ctx, &conn, operation, &inputs, key, None, None, None).await? {
-            Outcome::Ok(result, answer) => json!({"ok": true, "result": result, "answer": masked(&answer, &conn.mask())}),
-            Outcome::Later(why) => json!({"ok": false, "temporary": true, "error": why}),
+            Outcome::Ok(result, answer) => json!({"ok": true, "result": result, "answer": masked(&answer.body, &conn.mask())}),
+            Outcome::Later(why, _) => json!({"ok": false, "temporary": true, "error": why}),
             Outcome::No(why) => json!({"ok": false, "temporary": false, "error": why}),
         })
     }
@@ -1239,7 +1864,8 @@ impl JobHandler for Queued {
         if let Some(u) = job.payload["user"].as_str().and_then(|u| u.parse().ok()) {
             ctx.user = u;
         }
-        let result = k.call_connection(&ctx, None, &c).await?;
+        // A "later" with the service's own Retry-After comes back when it said, capped.
+        let result = k.call_waiting(&ctx, None, &c, true).await?;
         Ok(json!({"result": result}))
     }
 
@@ -1315,6 +1941,74 @@ mod tests {
         assert!(bad(json!({"base": "https://x.test", "auth": {"type": "header", "header": "bad header", "secret": "k"}})).is_some());
         assert!(bad(json!({"base": "https://x.test", "auth": {"type": "magic"}})).is_some());
         assert!(bad(json!({"base": "https://x.test", "operations": {"a": {"body": "{{ x", "method": "POST"}}})).is_some());
+    }
+
+    #[test]
+    fn links_and_retry_after_are_read() {
+        let base = reqwest::Url::parse("https://api.example.test/v1/feed?page=1").unwrap();
+        let h = r#"<https://api.example.test/v1/feed?page=1>; rel="prev", </v1/feed?page=3&a=1,2>; rel="next last"; title="x""#;
+        assert_eq!(link_target(h, "next", &base).as_deref(), Some("https://api.example.test/v1/feed?page=3&a=1,2"));
+        assert_eq!(link_target(h, "prev", &base).as_deref(), Some("https://api.example.test/v1/feed?page=1"));
+        assert_eq!(link_target("<x>; rel=nextish", "next", &base), None);
+        assert_eq!(link_target("no link", "next", &base), None);
+        let now = DateTime::parse_from_rfc3339("2026-11-13T10:00:00Z").unwrap().to_utc();
+        assert_eq!(retry_after("120", now), Some(120));
+        assert_eq!(retry_after("0", now), Some(1), "at least a second");
+        assert_eq!(retry_after("99999999", now), Some(MAX_RETRY_AFTER), "capped");
+        assert_eq!(retry_after("Fri, 13 Nov 2026 10:05:00 GMT", now), Some(300));
+        assert_eq!(retry_after("Fri, 13 Nov 2026 09:00:00 GMT", now), Some(1), "a moment past");
+        assert_eq!(retry_after("soon", now), None);
+    }
+
+    #[test]
+    fn picks_are_checked() {
+        let p = |v: Value, answer: bool| serde_json::from_value::<Pick>(v).unwrap().problem(answer);
+        assert_eq!(p(json!("/a/0"), true), None);
+        assert_eq!(p(json!({"header": "Location", "required": true}), true), None);
+        assert_eq!(p(json!({"link": "next"}), true), None);
+        assert_eq!(p(json!({"expr": "answer.a + 1"}), true), None);
+        assert_eq!(p(json!("item.a + 1"), false), None, "a mapping's string is an expression");
+        assert!(p(json!("id"), true).is_some(), "an answer's string is a pointer");
+        assert!(p(json!({"at": "/a", "header": "x"}), true).is_some(), "one source");
+        assert!(p(json!({"header": "x"}), false).is_some(), "a mapping reads the item");
+        assert!(p(json!({"header": "bad header"}), true).is_some());
+        assert!(p(json!({"link": "next>"}), true).is_some());
+        assert!(p(json!({"expr": "a +"}), true).is_some());
+        assert!(serde_json::from_value::<Pick>(json!({"at": "/a", "colour": 1})).is_err());
+    }
+
+    #[test]
+    fn forms_keep_their_shape() {
+        let (body, kind) = form_data(&[
+            ("caption".into(), None, b"hi".to_vec()),
+            ("media".into(), Some(("a\"b\r\nX-Evil: 1.png".into(), "image/png\r\nX-Evil: 1".into())), b"PNG".to_vec()),
+        ]);
+        let boundary = kind.strip_prefix("multipart/form-data; boundary=").unwrap();
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.starts_with(&format!("--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\nhi\r\n")), "{text}");
+        assert!(text.contains("filename=\"a%22b%0D%0AX-Evil: 1.png\"\r\nContent-Type: image/pngX-Evil: 1\r\n\r\nPNG\r\n"), "{text}");
+        assert!(!text.contains("\r\nX-Evil"), "no header of its own: {text}");
+        assert!(text.ends_with(&format!("--{boundary}--\r\n")));
+        // An object in `form` or `result` is kept as text and written back as the object.
+        let op: Operation = serde_json::from_value(
+            json!({"form": {"a": "{{ inputs.a }}", "f": {"file": "{{ inputs.f }}"}}, "result": {"x": "/x", "y": {"header": "Location"}}}),
+        )
+        .unwrap();
+        assert!(op.multipart() && op.form["f"].starts_with(SPEC));
+        assert_eq!(serde_json::to_value(&op).unwrap()["form"]["f"], json!({"file": "{{ inputs.f }}"}));
+        assert_eq!(serde_json::to_value(&op).unwrap()["result"]["y"], json!({"header": "Location"}));
+        assert!(
+            serde_json::from_value::<Description>(json!({"test": true, "operations": {"a": {"form": {"f": {"file": "x", "colour": 1}}}}}))
+                .unwrap()
+                .problem()
+                .is_some()
+        );
+        assert!(
+            serde_json::from_value::<Description>(json!({"test": true, "operations": {"a": {"body": {"file": "x", "max_bytes": 1 << 30}}}}))
+                .unwrap()
+                .problem()
+                .is_some()
+        );
     }
 
     #[test]

@@ -69,6 +69,18 @@ engines:
     read: livekit/livekit LICENSE; docs/references/comms.md
     terms: LiveKit's marks are not ours to ship
     decided_in: docs/references/comms.md
+  - image: moqdev/moq-relay
+    name: Media over QUIC relay (Live)
+    license: MIT OR Apache-2.0
+    read: moq-dev/moq at tag moq-relay-v0.17.16 (LICENSE-MIT, LICENSE-APACHE); ferrum-app-live docs/moq.md
+    terms: None beyond the licence; its OBS plugin (cpp/obs, GPL-2.0-or-later) is not in the image and not used
+    decided_in: docs/operations.md
+  - image: moqdev/moq
+    name: Media over QUIC auth server (Live, `moq auth serve`)
+    license: MIT OR Apache-2.0
+    read: moq-dev/moq at tag moq-relay-v0.17.16 (LICENSE-MIT, LICENSE-APACHE); ferrum-app-live docs/moq.md
+    terms: None beyond the licence
+    decided_in: docs/operations.md
   - image: stalwartlabs/stalwart
     name: Stalwart (mail)
     license: AGPL-3.0-only OR LicenseRef-SEL

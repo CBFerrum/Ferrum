@@ -57,6 +57,10 @@ pub enum Error {
     Retryable(String),
     #[error("{0}")]
     Unavailable(String),
+    /// `Unavailable`, and the service said when to come back (its `Retry-After`): a job tries again after this many
+    /// seconds instead of its backoff, and it costs an attempt (unlike `Wait`).
+    #[error("{0}")]
+    RetryAfter(String, u64),
     #[error("database error: {0}")]
     Db(String),
     #[error("internal error: {0}")]
@@ -90,7 +94,7 @@ impl Error {
             Error::Forbidden(_) => 403,
             Error::Unauthorized(_) => 401,
             Error::TooManyRequests(_) | Error::Wait(..) => 429,
-            Error::Retryable(_) | Error::Unavailable(_) => 503,
+            Error::Retryable(_) | Error::Unavailable(_) | Error::RetryAfter(..) => 503,
             Error::Db(_) | Error::Internal(_) => 500,
             Error::Refused { status, .. } => *status,
         }
@@ -106,7 +110,7 @@ impl Error {
             Error::Unauthorized(_) => "unauthorized",
             Error::TooManyRequests(_) | Error::Wait(..) => "too_many_requests",
             Error::Retryable(_) => "retry",
-            Error::Unavailable(_) => "unavailable",
+            Error::Unavailable(_) | Error::RetryAfter(..) => "unavailable",
             Error::Db(_) => "database_error",
             Error::Internal(_) => "internal_error",
             Error::Refused { code, .. } => code,
@@ -134,6 +138,7 @@ impl Error {
             Error::Wait(s, n) => Error::Wait(r(s), n),
             Error::Retryable(s) => Error::Retryable(r(s)),
             Error::Unavailable(s) => Error::Unavailable(r(s)),
+            Error::RetryAfter(s, n) => Error::RetryAfter(r(s), n),
             Error::Db(s) => Error::Db(r(s)),
             Error::Internal(s) => Error::Internal(r(s)),
             Error::Refused { code, status, message, pointer } => Error::Refused { code, status, message: r(message), pointer },

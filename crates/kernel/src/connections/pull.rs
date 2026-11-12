@@ -4,7 +4,7 @@
 //! a run that stops half-way starts again at the page it did not finish, and mapping a page again changes nothing new.
 
 use super::inbound::Mapping;
-use super::{Outcome, at, is_name};
+use super::{Outcome, Page, Pick, is_name};
 use crate::Kernel;
 use crate::ctx::Ctx;
 use crate::db::Tx;
@@ -55,8 +55,10 @@ pub struct Pull {
     pub items_at: String,
     #[serde(default)]
     pub cursor: Cursor,
+    /// Where each answer gives the next cursor ([`Pick`]): a pointer, a header, or `{"link": "next"}`, whose address
+    /// is then asked as it is for the next page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_at: Option<String>,
+    pub next_at: Option<Pick>,
     /// The input the cursor is given as.
     #[serde(default = "cursor_input")]
     pub cursor_input: String,
@@ -77,6 +79,9 @@ impl Pull {
         if op.changes() {
             return at(format!("{} changes something; a pull only reads", self.operation));
         }
+        if desc.signs_in_with(&self.operation) {
+            return at(format!("{} is how the connection signs in", self.operation));
+        }
         if !op.inputs.is_empty() && !op.inputs.contains(&self.cursor_input) {
             return at(format!("{} takes no input {}", self.operation, self.cursor_input));
         }
@@ -86,7 +91,7 @@ impl Pull {
         if self.max_pages.is_some_and(|p| p == 0 || p > MAX_PAGES) {
             return at(format!("max_pages is 1 to {MAX_PAGES}"));
         }
-        if let Some(p) = super::pointer_problem(&self.items_at).or_else(|| self.next_at.as_deref().and_then(super::pointer_problem)) {
+        if let Some(p) = super::pointer_problem(&self.items_at).or_else(|| self.next_at.as_ref().and_then(|n| n.problem(true))) {
             return at(p);
         }
         if self.cursor == Cursor::Token && self.next_at.is_none() {
@@ -96,6 +101,11 @@ impl Pull {
             return at("it has a map, or the connection's inbound has one".into());
         }
         None
+    }
+
+    /// Whether the next page is the address an answer's `Link` names.
+    fn by_link(&self) -> bool {
+        self.next_at.as_ref().is_some_and(|n| n.spec(false).link.is_some())
     }
 
     fn map(&self, desc: &super::Description) -> Option<Mapping> {
@@ -114,12 +124,44 @@ pub(crate) async fn keep(tx: &mut Tx, tenant: Uuid, id: Uuid, desc: &super::Desc
         .bind(&names)
         .execute(&mut **tx)
         .await?;
-    sqlx::query("insert into conn_pull (tenant_id, conn_id, name) select $1, $2, unnest($3::text[]) on conflict do nothing")
+    // The workspace's own pull, or (a connection each person signs in to) one for each person connected (BD-50).
+    let personal = matches!(&desc.auth, super::Auth::Oauth { owner: super::oauth::Owner::Person, .. });
+    sqlx::query("delete from conn_pull where tenant_id = $1 and conn_id = $2 and (user_id = '00000000-0000-0000-0000-000000000000') = $3")
         .bind(tenant)
         .bind(id)
-        .bind(&names)
+        .bind(personal)
         .execute(&mut **tx)
         .await?;
+    sqlx::query(
+        "insert into conn_pull (tenant_id, conn_id, name, user_id) \
+         select $1, $2, n, u from unnest($3::text[]) n, \
+           (select '00000000-0000-0000-0000-000000000000'::uuid u where not $4 \
+            union all select user_id from conn_token where tenant_id = $1 and conn_id = $2 and $4 and user_id <> '00000000-0000-0000-0000-000000000000') us \
+         on conflict do nothing",
+    )
+    .bind(tenant)
+    .bind(id)
+    .bind(&names)
+    .bind(personal)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// A person connected their own account (again): their pulls of that connection are made, or run again at once,
+/// their failure streak over.
+pub(crate) async fn person_connected(tx: &mut Tx, tenant: Uuid, conn: Uuid, user: Uuid, desc: &super::Description) -> Result<()> {
+    let names: Vec<String> = desc.pulls.iter().map(|p| p.name.clone()).collect();
+    sqlx::query(
+        "insert into conn_pull (tenant_id, conn_id, name, user_id) select $1, $2, unnest($3::text[]), $4 \
+         on conflict (tenant_id, conn_id, name, user_id) do update set next_run = now(), told = false",
+    )
+    .bind(tenant)
+    .bind(conn)
+    .bind(&names)
+    .bind(user)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
@@ -127,46 +169,74 @@ impl Kernel {
     /// Queues the pulls that are due, on connections turned on (once a minute, from the schedule scanner).
     pub async fn sweep_pulls_at(&self, now: DateTime<Utc>) -> Result<usize> {
         let mut tx = self.db.system_tx().await?;
-        let due: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        let due: Vec<(Uuid, Uuid, String, Uuid)> = sqlx::query_as(
             "update conn_pull p set next_run = $1 + interval '5 minutes' from conn c \
              where c.tenant_id = p.tenant_id and c.id = p.conn_id and c.enabled and p.next_run <= $1 \
-               and (p.tenant_id, p.conn_id, p.name) in (select tenant_id, conn_id, name from conn_pull where next_run <= $1 order by next_run limit $2) \
-             returning p.tenant_id, p.conn_id, p.name",
+               and (p.tenant_id, p.conn_id, p.name, p.user_id) in \
+                 (select tenant_id, conn_id, name, user_id from conn_pull where next_run <= $1 order by next_run limit $2) \
+             returning p.tenant_id, p.conn_id, p.name, p.user_id",
         )
         .bind(now)
         .bind(SWEEP)
         .fetch_all(&mut *tx)
         .await?;
-        for (tenant, conn, name) in &due {
-            let mut job = NewJob::new(PULL_KIND, json!({"connection": conn, "pull": name}));
-            job.dedupe_key = Some(format!("{conn}:{name}"));
-            job.max_attempts = ATTEMPTS;
-            crate::jobs::enqueue(&mut tx, *tenant, None, job).await?;
+        for (tenant, conn, name, user) in &due {
+            queue(&mut tx, *tenant, *conn, name, *user, None).await?;
         }
         tx.commit().await?;
         Ok(due.len())
     }
 
-    /// One run of a pull ([`PULL_KIND`]): pages up to its bound, each page's records and cursor committed together.
+    /// One run of a pull ([`PULL_KIND`]): pages up to its bound, each page's records and cursor committed together. A
+    /// person's (BD-50) runs as them, with their sign-in and their rights; it stops when their account is closed (their
+    /// pulls go) or their sign-in needs reconnecting (it waits for them to connect again, which they were told).
     async fn run_pull(&self, job: &Job) -> Result<Value> {
         let tenant = job.tenant_id;
         let conn_id: Uuid = job.payload["connection"].as_str().and_then(|s| s.parse().ok()).ok_or_else(|| Error::invalid("names its connection"))?;
         let name = job.payload["pull"].as_str().unwrap_or_default().to_string();
+        let user: Uuid = job.payload["user"].as_str().and_then(|s| s.parse().ok()).unwrap_or_default();
         let conn = self.load_connection(tenant, &conn_id.to_string()).await?;
         let Some(pull) = conn.desc.pulls.iter().find(|p| p.name == name).cloned().filter(|_| conn.enabled) else { return Ok(json!({"done": "gone"})) };
         let map = pull.map(&conn.desc).ok_or_else(|| Error::invalid("the pull has no mapping"))?;
-        let ctx = Ctx::system(tenant, self.registry.schema(tenant).await?);
-        let started = Utc::now();
-        let mut tx = self.db.system_tenant_tx(tenant).await?;
-        let mut cursor: Option<String> = sqlx::query_scalar("select cursor from conn_pull where tenant_id = $1 and conn_id = $2 and name = $3")
+        let ctx = if user.is_nil() {
+            Ctx::system(tenant, self.registry.schema(tenant).await?)
+        } else {
+            let mut tx = self.db.system_tenant_tx(tenant).await?;
+            let (active, signed_in): (bool, Option<String>) = sqlx::query_as(
+                "select coalesce((select is_active from app_user where tenant_id = $1 and id = $3), false), \
+                   (select status from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3)",
+            )
             .bind(tenant)
             .bind(conn_id)
-            .bind(&name)
-            .fetch_optional(&mut *tx)
-            .await?
-            .flatten();
+            .bind(user)
+            .fetch_one(&mut *tx)
+            .await?;
+            let stop = match (active, signed_in.as_deref()) {
+                (true, Some("connected")) => None,
+                (true, Some(_)) => Some("update conn_pull set next_run = 'infinity' where tenant_id = $1 and conn_id = $2 and user_id = $3"),
+                _ => Some("delete from conn_pull where tenant_id = $1 and conn_id = $2 and user_id = $3"),
+            };
+            if let Some(sql) = stop {
+                sqlx::query(sql).bind(tenant).bind(conn_id).bind(user).execute(&mut *tx).await?;
+                tx.commit().await?;
+                return Ok(json!({"done": "stopped"}));
+            }
+            tx.commit().await?;
+            self.load_ctx(tenant, user, None, format!("pull-{}", job.id)).await?
+        };
+        let started = Utc::now();
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        let mut cursor: Option<String> =
+            sqlx::query_scalar("select cursor from conn_pull where tenant_id = $1 and conn_id = $2 and name = $3 and user_id = $4")
+                .bind(tenant)
+                .bind(conn_id)
+                .bind(&name)
+                .bind(user)
+                .fetch_optional(&mut *tx)
+                .await?
+                .flatten();
         tx.commit().await?;
-        let (mut items, mut pages, mut error, mut later) = (0usize, 0u32, None, false);
+        let (mut items, mut pages, mut error, mut later, mut wait) = (0usize, 0u32, None, false, None);
         while pages < pull.max_pages.unwrap_or(DEFAULT_PAGES) {
             pages += 1;
             let mut inputs = serde_json::Map::new();
@@ -174,10 +244,11 @@ impl Kernel {
                 inputs.insert(pull.cursor_input.clone(), json!(c));
             }
             let given = json!(cursor);
-            let answer = match self.perform(&ctx, &conn, &pull.operation, &Value::Object(inputs), None, Some(("cursor", &given)), None, None).await? {
+            let page = Page { cursor: &given, address: cursor.as_deref().filter(|_| pull.by_link()) };
+            let answer = match self.perform(&ctx, &conn, &pull.operation, &Value::Object(inputs), None, Some(page), None, None).await? {
                 Outcome::Ok(_, answer) => answer,
-                Outcome::Later(why) => {
-                    (error, later) = (Some(why), true);
+                Outcome::Later(why, after) => {
+                    (error, later, wait) = (Some(why), true, after);
                     break;
                 }
                 Outcome::No(why) => {
@@ -185,12 +256,24 @@ impl Kernel {
                     break;
                 }
             };
-            let next = match pull.cursor {
-                Cursor::Token => at(&answer, pull.next_at.as_deref()).filter(|n| !n.is_empty() && Some(n) != cursor.as_ref()),
-                Cursor::Time => None,
+            let next = match (pull.cursor, &pull.next_at) {
+                (Cursor::Token, Some(n)) => {
+                    let read = answer.read(&n.spec(false), &[("answer", &answer.body), ("connection", &json!({"name": conn.name, "id": conn.id}))]);
+                    match read {
+                        Ok(Value::String(s)) => Some(s),
+                        Ok(Value::Null) => None,
+                        Ok(other) => Some(other.to_string()),
+                        Err(e) => {
+                            error = Some(super::masked_text(&e.to_string(), &conn.mask()));
+                            break;
+                        }
+                    }
+                    .filter(|n| !n.is_empty() && Some(n) != cursor.as_ref())
+                }
+                _ => None,
             };
             let mut tx = self.db.system_tenant_tx(tenant).await?;
-            match self.apply_mapping(&ctx, &mut tx, &map, &answer).await {
+            match self.apply_mapping(&ctx, &mut tx, &map, &answer.body, &conn).await {
                 Ok(n) => items += n,
                 Err(e) => {
                     tx.rollback().await?;
@@ -202,11 +285,12 @@ impl Kernel {
                 (Cursor::Token, Some(n)) => Some(n.clone()),
                 _ => cursor.clone(),
             };
-            sqlx::query("update conn_pull set cursor = $4 where tenant_id = $1 and conn_id = $2 and name = $3")
+            sqlx::query("update conn_pull set cursor = $4 where tenant_id = $1 and conn_id = $2 and name = $3 and user_id = $5")
                 .bind(tenant)
                 .bind(conn_id)
                 .bind(&name)
                 .bind(&moved)
+                .bind(user)
                 .execute(&mut *tx)
                 .await?;
             tx.commit().await?;
@@ -219,14 +303,15 @@ impl Kernel {
         // "Later": tried again from the page that failed (the cursor stays where the last page committed), while
         // attempts are left and the retry would start before the next scheduled run; the job's dedupe keeps the
         // schedule from queueing another meanwhile.
-        let retry = later
-            && job.attempts < job.max_attempts
-            && Utc::now() + chrono::Duration::milliseconds((crate::jobs::backoff(job.attempts) * 1000.0) as i64) < next_run;
+        // The service's own Retry-After (capped) in place of the backoff when it gave one.
+        let delay = wait.map_or_else(|| crate::jobs::backoff(job.attempts), |s| s as f64);
+        let retry = later && job.attempts < job.max_attempts && Utc::now() + chrono::Duration::milliseconds((delay * 1000.0) as i64) < next_run;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
-        let told: bool = sqlx::query_scalar("select told from conn_pull where tenant_id = $1 and conn_id = $2 and name = $3 for update")
+        let told: bool = sqlx::query_scalar("select told from conn_pull where tenant_id = $1 and conn_id = $2 and name = $3 and user_id = $4 for update")
             .bind(tenant)
             .bind(conn_id)
             .bind(&name)
+            .bind(user)
             .fetch_optional(&mut *tx)
             .await?
             .unwrap_or(true);
@@ -235,7 +320,7 @@ impl Kernel {
         sqlx::query(
             "update conn_pull set last_run = $4, last_error = $5, next_run = $4 + make_interval(mins => $6), \
                cursor = case when $7 then $8 else cursor end, told = case when $5 is null then false when $9 then true else told end \
-             where tenant_id = $1 and conn_id = $2 and name = $3",
+             where tenant_id = $1 and conn_id = $2 and name = $3 and user_id = $10",
         )
         .bind(tenant)
         .bind(conn_id)
@@ -246,13 +331,38 @@ impl Kernel {
         .bind(pull.cursor == Cursor::Time && error.is_none())
         .bind(started.to_rfc3339())
         .bind(failed)
+        .bind(user)
         .execute(&mut *tx)
         .await?;
-        if failed && !told {
-            let admins: Vec<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and is_admin and is_active and kind = 'member'")
+        // A person's sign-in that ran out meanwhile: they were told to reconnect (once, by the broker); the pull waits.
+        let lapsed = failed
+            && !user.is_nil()
+            && sqlx::query_scalar::<_, bool>(
+                "select exists (select 1 from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3 and status <> 'connected')",
+            )
+            .bind(tenant)
+            .bind(conn_id)
+            .bind(user)
+            .fetch_one(&mut *tx)
+            .await?;
+        if lapsed {
+            sqlx::query("update conn_pull set next_run = 'infinity' where tenant_id = $1 and conn_id = $2 and user_id = $3")
                 .bind(tenant)
-                .fetch_all(&mut *tx)
+                .bind(conn_id)
+                .bind(user)
+                .execute(&mut *tx)
                 .await?;
+        }
+        if failed && !told && !lapsed {
+            // A person's own pull tells them; the workspace's, its administrators.
+            let admins: Vec<Uuid> = if user.is_nil() {
+                sqlx::query_scalar("select id from app_user where tenant_id = $1 and is_admin and is_active and kind = 'member'")
+                    .bind(tenant)
+                    .fetch_all(&mut *tx)
+                    .await?
+            } else {
+                vec![user]
+            };
             let title = format!("Pulling {name} from {} failed", conn.name);
             for user in admins {
                 crate::notify::send_kind(&mut tx, tenant, user, "general", "inapp", &title, error.as_deref(), Some("Connection"), Some(conn_id)).await?;
@@ -260,7 +370,10 @@ impl Kernel {
         }
         tx.commit().await?;
         if retry {
-            return Err(Error::Unavailable(error.unwrap_or_default()));
+            return Err(match wait {
+                Some(secs) => Error::RetryAfter(error.unwrap_or_default(), secs),
+                None => Error::Unavailable(error.unwrap_or_default()),
+            });
         }
         Ok(json!({"pages": pages, "items": items, "error": error}))
     }
@@ -271,21 +384,23 @@ impl Kernel {
             return Err(Error::Forbidden("connections are configured by administrators".into()));
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let here: bool = sqlx::query_scalar("select exists (select 1 from conn_pull where tenant_id = $1 and conn_id = $2 and name = $3)")
-            .bind(ctx.tenant)
-            .bind(id)
-            .bind(name)
-            .fetch_one(&mut *tx)
-            .await?;
-        if !here {
+        let users: Vec<Uuid> =
+            sqlx::query_scalar("select user_id from conn_pull where tenant_id = $1 and conn_id = $2 and name = $3 and next_run < 'infinity'")
+                .bind(ctx.tenant)
+                .bind(id)
+                .bind(name)
+                .fetch_all(&mut *tx)
+                .await?;
+        if users.is_empty() {
             return Err(Error::NotFound(format!("pull {name}")));
         }
-        let mut job = NewJob::new(PULL_KIND, json!({"connection": id, "pull": name}));
-        job.dedupe_key = Some(format!("{id}:{name}"));
-        job.max_attempts = ATTEMPTS;
-        let job = crate::jobs::enqueue(&mut tx, ctx.tenant, Some(ctx.user), job).await?;
+        // A person's pulls, one each.
+        let mut first = None;
+        for user in users {
+            first.get_or_insert(queue(&mut tx, ctx.tenant, id, name, user, Some(ctx.user)).await?);
+        }
         tx.commit().await?;
-        Ok(job)
+        Ok(first.unwrap_or_default())
     }
 
     /// A connection's pulls: `{name, cursor, last_run, next_run, last_error}`.
@@ -295,8 +410,9 @@ impl Kernel {
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows = sqlx::query_scalar(
-            "select jsonb_build_object('name', name, 'cursor', cursor, 'last_run', last_run, 'next_run', next_run, 'last_error', last_error) \
-             from conn_pull where tenant_id = $1 and conn_id = $2 order by name",
+            "select jsonb_build_object('name', name, 'user', nullif(user_id, '00000000-0000-0000-0000-000000000000'), 'cursor', cursor, \
+               'last_run', last_run, 'next_run', case when next_run < 'infinity' then next_run end, 'last_error', last_error) \
+             from conn_pull where tenant_id = $1 and conn_id = $2 order by name, user_id",
         )
         .bind(ctx.tenant)
         .bind(id)
@@ -305,6 +421,14 @@ impl Kernel {
         tx.commit().await?;
         Ok(rows)
     }
+}
+
+/// Queues one run of pull `name` (a person's, or the workspace's when `user` is nil), one at a time each.
+async fn queue(tx: &mut Tx, tenant: Uuid, conn: Uuid, name: &str, user: Uuid, by: Option<Uuid>) -> Result<Uuid> {
+    let mut job = NewJob::new(PULL_KIND, json!({"connection": conn, "pull": name, "user": user}));
+    job.dedupe_key = Some(if user.is_nil() { format!("{conn}:{name}") } else { format!("{conn}:{name}:{user}") });
+    job.max_attempts = ATTEMPTS;
+    crate::jobs::enqueue(tx, tenant, by, job).await
 }
 
 struct Run;
