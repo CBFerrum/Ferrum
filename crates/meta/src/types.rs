@@ -118,6 +118,20 @@ pub struct DocumentDef {
     pub values: Vec<String>,
     /// Language tag (`en`, `hi`, `pt-BR`) → its bodies.
     pub languages: std::collections::BTreeMap<String, DocumentBody>,
+    /// A query's rows in place of one record: `entity` is then the entity the query reads, and bodies read `rows`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<DocumentQuery>,
+}
+
+/// What a document about a query renders: a saved report's rows, one file for the whole result or, with `group_by`
+/// (a column of its rows that links to a record: a customer, an employee), one file per record linked, attached to it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentQuery {
+    /// The saved report's label.
+    pub report: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
 }
 
 /// A document's bodies in one language: the body, and for a page the header and footer each PDF page repeats (where
@@ -165,6 +179,11 @@ impl DocumentDef {
         }
         if let Some(v) = self.values.iter().find(|v| !crate::is_ident(v)) {
             return Some(format!("document {k}: '{v}' is not a name"));
+        }
+        if let Some(q) = &self.query
+            && (q.report.trim().is_empty() || q.group_by.as_deref().is_some_and(|g| g.trim().is_empty()) || self.default)
+        {
+            return Some(format!("document {k}: a query's document names its report (and a column to group by, when it groups), and is no record's default"));
         }
         None
     }

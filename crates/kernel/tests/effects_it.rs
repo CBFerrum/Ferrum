@@ -151,6 +151,17 @@ async fn scenario() {
             "has no field colour",
         ),
         (json!([{"type": "notify", "to": "owner", "title": "'t'", "when": "doc.code =="}]), "when 'doc.code =='"),
+        // The templates and recipients a message or a document names are there.
+        (
+            json!([{"type": "set_fields", "values": {}}, {"type": "message", "template": "wk.nothing", "to": "owner"}]),
+            "effect 2: there is no message template wk.nothing",
+        ),
+        (json!([{"type": "message", "template": "wk.nothing", "to": ["field:nofield"]}]), "message.to: Case has no field nofield"),
+        (json!([{"type": "generate", "template": "wk.nothing"}]), "effect 1: there is no document template wk.nothing"),
+        (
+            json!([{"type": "for_each", "table": "checklist", "effects": [{"type": "notify", "to": "owner", "message": "wk.nothing"}]}]),
+            "there is no message template wk.nothing",
+        ),
     ] {
         let e = batch(vec![action("XCase", "x_bad", effects)]).await.unwrap_err();
         assert!(e.contains(says), "{says}: {e}");
@@ -240,7 +251,7 @@ async fn scenario() {
     assert_eq!(open, [&c2["id"]], "every task of the first case closed, the second's left alone");
 
     // ───────────── a refusal anywhere keeps nothing ─────────────
-    refused(k.run_action(&a, "XCase", id_of(&c1), "x_party_then_fail", Value::Null).await, "title");
+    refused(k.run_action(&a, "XCase", id_of(&c1), "x_party_then_fail", Value::Null).await, "title: effect 2 (set_fields): ");
     let codes: Vec<Value> = k.list(&a, "XParty", &Default::default()).await.unwrap().rows.iter().map(|p| p["code"].clone()).collect();
     assert_eq!(codes, [json!("P-1")], "the party the first effect made went with the refusal");
 
@@ -249,7 +260,7 @@ async fn scenario() {
         k.insert(&a, "XLoose", obj(json!({"code": "DUP"}))).await.unwrap();
     }
     let dup = k.insert(&a, "XCase", case("Dup", "DUP")).await.unwrap();
-    refused(k.run_action(&a, "XCase", id_of(&dup), "x_loose", Value::Null).await, "find: more than one Loose has code DUP");
+    refused(k.run_action(&a, "XCase", id_of(&dup), "x_loose", Value::Null).await, "effect 1 (find): more than one Loose has code DUP");
     let blank = k.insert(&a, "XCase", obj(json!({"title": "Blank"}))).await.unwrap();
     refused(k.run_action(&a, "XCase", id_of(&blank), "x_loose", Value::Null).await, "code is empty");
 
@@ -272,7 +283,7 @@ async fn scenario() {
     assert!(k.get(&a, "XCase", id_of(&c3), false).await.unwrap()["party"].is_null(), "nothing kept");
     let lines: Vec<Value> = (0..=automation::MAX_ITEMS).map(|i| json!({"title": format!("L{i}")})).collect();
     let c4 = k.insert(&a, "XCase", obj(json!({"title": "Long", "checklist": lines}))).await.unwrap();
-    refused(k.run_action(&a, "XCase", id_of(&c4), "x_flag_all", Value::Null).await, "for_each: more than 100 lines of checklist");
+    refused(k.run_action(&a, "XCase", id_of(&c4), "x_flag_all", Value::Null).await, "effect 1 (for_each): more than 100 lines of checklist");
 
     // ───────────── automations alike ─────────────
     automation::save(
@@ -283,9 +294,100 @@ async fn scenario() {
     )
     .await
     .expect("an automation with a when");
+    let e = automation::save(
+        &k,
+        &a,
+        &obj(json!({"name": "Late", "entity": "XTask", "event": "created",
+        "actions": [{"type": "set_fields", "values": {"status": "'x'"}}, {"type": "generate", "template": "wk.nothing"}]})),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(&e, Error::Validation(f) if f[0].row == Some(("actions".into(), 1)) && f[0].message.contains("no document template wk.nothing")), "{e:?}");
     let low = k.insert(&a, "XTask", obj(json!({"status": "New", "priority": 1}))).await.unwrap();
     let high = k.insert(&a, "XTask", obj(json!({"status": "New", "priority": 2}))).await.unwrap();
     while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
     assert_eq!(k.get(&a, "XTask", id_of(&low), false).await.unwrap()["status"], "New");
     assert_eq!(k.get(&a, "XTask", id_of(&high), false).await.unwrap()["status"], "Urgent");
+
+    // ───────────── the lines of a linked record: a team's members ─────────────
+    batch(vec![
+        child("XMember", json!([{"name": "email", "type": "email"}, {"name": "note", "type": "int"}])),
+        define(json!({"name": "XTeam", "label": "Team", "kind": "master", "fields": [
+            {"name": "name", "type": "data"}, {"name": "members", "type": "table", "of": "XMember"}]})),
+        define(json!({"name": "XTicket", "label": "Ticket", "kind": "master", "fields": [
+            {"name": "title", "type": "data"}, {"name": "team", "type": "link", "to": "XTeam"}]})),
+        define(json!({"name": "XSeen", "label": "Seen", "kind": "master", "fields": [{"name": "who", "type": "data"}, {"name": "ticket", "type": "data"}]})),
+    ])
+    .await
+    .expect("teams");
+    let tell = |to: &str| json!([{"type": "notify", "to": to, "title": "'t'"}]);
+    for (effects, says) in [
+        (tell("links:title.members.email"), "title is not a link field of Ticket"),
+        (tell("links:team.nope.email"), "nope is not a table of lines of Team"),
+        (tell("links:team.members.colour"), "the lines of members have no field colour"),
+        (tell("links:team.members.note"), "note holds no address"),
+        (tell("links:team.members"), "notify.to must be"),
+        (json!([{"type": "message", "template": "x", "to": "links:team.nope.email"}]), "nope is not a table of lines of Team"),
+        (json!([{"type": "for_each", "links": "team.nope", "effects": [{"type": "notify", "to": "owner", "title": "'t'"}]}]), "nope is not a table of lines"),
+    ] {
+        let e = batch(vec![action("XTicket", "x_bad", effects)]).await.unwrap_err();
+        assert!(e.contains(says), "{says}: {e}");
+    }
+    let a = admin().await;
+    let mut people = Vec::new();
+    for n in 1..=3 {
+        people.push(k.create_user(&a, &format!("m{n}@firm.test"), "M", Some("Correct-Horse-9"), &[], false).await.unwrap());
+    }
+    let member = |n: u32| json!({"email": format!("M{n}@firm.test")});
+    // The first twice: told once all the same.
+    let team = k.insert(&a, "XTeam", obj(json!({"name": "Desk", "members": [member(1), member(2), member(1)]}))).await.unwrap();
+    automation::save(
+        &k,
+        &a,
+        &obj(json!({"name": "Assigned", "entity": "XTicket", "event": "updated", "condition": "doc.team != old.team",
+            "actions": [{"type": "notify", "to": "links:team.members.email", "title": "'Assigned to your team'"},
+                {"type": "for_each", "links": "team.members", "where": "item.email != ''",
+                 "effects": [{"type": "create_document", "entity": "XSeen", "values": {"who": "item.email", "ticket": "doc.id"}}]}]})),
+    )
+    .await
+    .expect("a notice to a group's members");
+    let told = |ticket: Value| {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+            let rows: Vec<(Uuid,)> =
+                sqlx::query_as("select user_id from notification where record_id = $1 and title = 'Assigned to your team' order by user_id")
+                    .bind(ticket.as_str().unwrap().parse::<Uuid>().unwrap())
+                    .fetch_all(&mut *tx)
+                    .await
+                    .unwrap();
+            rows.into_iter().map(|r| r.0).collect::<Vec<_>>()
+        }
+    };
+    let t1 = k.insert(&a, "XTicket", obj(json!({"title": "Printer"}))).await.unwrap();
+    k.update(&a, "XTicket", id_of(&t1), obj(json!({"team": team["id"]})), None).await.unwrap();
+    while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+    let mut want = vec![people[0], people[1]];
+    want.sort();
+    assert_eq!(told(t1["id"].clone()).await, want, "each member once, nobody else");
+    let seen = k.list(&a, "XSeen", &Default::default()).await.unwrap().rows;
+    assert_eq!(seen.len(), 3, "the loop ran once per line");
+    // The second member leaves; the third joins.
+    k.update(&a, "XTeam", id_of(&team), obj(json!({"members": [member(1), member(3)]})), None).await.unwrap();
+    let t2 = k.insert(&a, "XTicket", obj(json!({"title": "Screen"}))).await.unwrap();
+    k.update(&a, "XTicket", id_of(&t2), obj(json!({"team": team["id"]})), None).await.unwrap();
+    while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+    let mut want = vec![people[0], people[2]];
+    want.sort();
+    assert_eq!(told(t2["id"].clone()).await, want, "a member removed is not told");
+    // Over the bound: refused, nobody told.
+    batch(vec![action("XTicket", "x_tell", json!([{"type": "notify", "to": "links:team.members.email", "title": "'Big'"}]))]).await.expect("button");
+    let a = admin().await;
+    let crowd: Vec<Value> = (0..=automation::MAX_ITEMS).map(|i| json!({"email": format!("c{i}@firm.test")})).collect();
+    let big = k.insert(&a, "XTeam", obj(json!({"name": "Crowd", "members": crowd}))).await.unwrap();
+    let t3 = k.insert(&a, "XTicket", obj(json!({"title": "All", "team": big["id"]}))).await.unwrap();
+    refused(k.run_action(&a, "XTicket", id_of(&t3), "x_tell", Value::Null).await, "more than the 100 one message goes to");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let none: i64 = sqlx::query_scalar("select count(*) from notification where title = 'Big'").fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(none, 0, "nobody told when over the bound");
 }

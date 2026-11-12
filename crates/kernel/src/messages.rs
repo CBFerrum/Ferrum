@@ -246,11 +246,23 @@ pub(crate) fn without_secrets(schema: &ferrum_meta::Schema, ent: &ferrum_meta::E
     }
 }
 
+/// The platform's keys a record has besides its fields.
+const SAMPLE_KEYS: [&str; 8] = ["id", "number", "created_at", "updated_at", "created_by", "version", "docstatus", "status"];
+
+/// One channel's bodies of a language, as written.
+fn channel_bodies(b: &MessageBodies, ch: &str) -> Value {
+    match ch {
+        "email" => json!(b.email),
+        "text" => json!(b.text),
+        "chat" => json!(b.chat),
+        _ => json!(b.inapp),
+    }
+}
+
 /// A record of `entity` with every field there, for checking a template: an unknown field is refused.
 fn sample_doc(ctx: &Ctx, entity: Option<&str>) -> Value {
     let Some(ent) = entity.and_then(|e| ctx.schema.entity(e)) else { return json!({}) };
-    let mut doc: Map<String, Value> =
-        ["id", "number", "created_at", "updated_at", "created_by", "version", "docstatus", "status"].into_iter().map(|f| (f.to_string(), json!(""))).collect();
+    let mut doc: Map<String, Value> = SAMPLE_KEYS.into_iter().map(|f| (f.to_string(), json!(""))).collect();
     for f in ent.def.fields.iter().filter(|f| f.ftype != FieldType::Secret) {
         let v = match f.ftype {
             FieldType::Table => json!([]),
@@ -306,12 +318,58 @@ async fn check_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &MessageDef) ->
     let settings = crate::settings::load(k, ctx, tx, &settings_named(def)).await?;
     let values: Map<String, Value> = def.values.iter().map(|v| (v.clone(), json!(""))).collect();
     let vars = variables(sample_doc(ctx, def.entity.as_deref()), settings, Value::Object(values), "");
+    let ent = def.entity.as_deref().and_then(|e| ctx.schema.entity(e));
+    let has = |f: &str| match SAMPLE_KEYS.contains(&f) {
+        true => Some(false),
+        false => ent.and_then(|e| e.def.fields.iter().find(|d| d.name == f)).map(|d| d.ftype == FieldType::Secret),
+    };
     for (lang, b) in &def.languages {
         for ch in ferrum_meta::MESSAGE_CHANNELS.iter().filter(|c| b.has(c)) {
-            render_channel(b, ch, &vars, true).map_err(|e| Error::field("template", format!("{lang}, {ch}: {}", plain(&e))))?;
+            render_channel(b, ch, &vars, true).map_err(|e| {
+                let text = serde_json::to_string(&channel_bodies(b, ch)).unwrap_or_default();
+                Error::field(
+                    "template",
+                    format!(
+                        "{lang}, {ch}: {}",
+                        undefined_said(plain(&e), &text, &def.values, ent.map(|e| (e.def.label.as_str(), &has as &dyn Fn(&str) -> Option<bool>)))
+                    ),
+                )
+            })?;
         }
     }
     Ok(())
+}
+
+/// What a template's check said when a body reads what is not there, in plain words where the body names it: a value
+/// the template does not declare (`values.x`), or a field the record does not have (`doc.x`). `label` is the record's
+/// entity's, `has` whether a name is one of its keys (and a secret field); anything else keeps what the engine said. The line the engine
+/// named is kept (`(line 2)`).
+pub(crate) fn undefined_said(said: String, text: &str, values: &[String], entity: Option<(&str, &dyn Fn(&str) -> Option<bool>)>) -> String {
+    if !said.contains("undefined value") {
+        return said;
+    }
+    let line = said.rsplit_once("<string>:").and_then(|(_, r)| r.split(')').next()).filter(|n| n.chars().all(|c| c.is_ascii_digit()));
+    let at = line.map(|n| format!(" (line {n})")).unwrap_or_default();
+    let names = |prefix: &str| -> Vec<String> {
+        text.match_indices(prefix)
+            .filter(|(i, _)| *i == 0 || !text[..*i].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+            .map(|(i, _)| text[i + prefix.len()..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<String>())
+            .filter(|n| !n.is_empty())
+            .collect()
+    };
+    if let Some(v) = names("values.").into_iter().find(|v| !values.contains(v)) {
+        return format!("the body reads values.{v}, which is not among the values this template says the sender passes: add {v} to its values{at}");
+    }
+    if let Some((label, has)) = entity {
+        for f in names("doc.") {
+            match has(&f) {
+                None => return format!("doc.{f} is not a field of {label}{at}"),
+                Some(true) => return format!("doc.{f} is a secret field of {label}: no template prints one{at}"),
+                Some(false) => {}
+            }
+        }
+    }
+    said
 }
 
 fn plain(e: &Error) -> String {
@@ -647,16 +705,35 @@ async fn complete(tx: &mut Tx, tenant: Uuid, r: &Recipient) -> Result<Recipient>
     Ok(r)
 }
 
-/// Whether `address` opted out of promotional messages on `channel`.
-async fn opted_out(tx: &mut Tx, tenant: Uuid, address: &str, channel: &str) -> Result<bool> {
+/// Whether `address` opted out of promotional messages on `channel`, before an erasure (`erased`: its marks) or since.
+async fn opted_out(tx: &mut Tx, tenant: Uuid, address: &str, channel: &str, erased: &[String]) -> Result<bool> {
     Ok(sqlx::query_scalar(
-        "select exists (select 1 from contact_consent where tenant_id = $1 and purpose = 'marketing' and channel = $3 and not granted and lower(email::text) = lower($2))",
+        "select exists (select 1 from contact_consent where tenant_id = $1 and purpose = 'marketing' and channel = $3 and not granted \
+           and (lower(email::text) = lower($2) or email::text = any($4)))",
     )
     .bind(tenant)
     .bind(address)
     .bind(channel)
+    .bind(erased)
     .fetch_one(&mut **tx)
     .await?)
+}
+
+/// What an erased opt-out keeps in place of its address: [`erased_mark`].
+pub(crate) const ERASED: &str = "erased:";
+
+/// A keyed digest of the workspace, channel and address (normalised: an e-mail address in lower case, a number in
+/// international form), so an erased opt-out still stops a promotional message to that address on that channel
+/// while nothing shows the address, and trying addresses without the server's key finds nothing (BD-20).
+fn erased_mark(key: &crate::secret::SecretKey, tenant: Uuid, channel: &str, address: &str) -> String {
+    format!("{ERASED}{}", key.fingerprint("erased opt-out", &format!("{tenant}|{channel}|{}", address.trim().to_lowercase())))
+}
+
+impl Kernel {
+    /// The marks an erased opt-out of `address` on `channel` may carry: under the server's key and those being rotated out.
+    pub(crate) fn erased_marks(&self, tenant: Uuid, channel: &str, address: &str) -> Vec<String> {
+        self.secret_keys().map(|k| erased_mark(k, tenant, channel, address)).collect()
+    }
 }
 
 /// The enabled channel connection for `kind`.
@@ -802,7 +879,7 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message, secret: Opti
                     let channel_id = connection(tx, ctx.tenant, kind).await?;
                     let refused = if channel_id.is_none() {
                         Some("no channel configured".to_string())
-                    } else if promotional && opted_out(tx, ctx.tenant, &address, kind).await? {
+                    } else if promotional && opted_out(tx, ctx.tenant, &address, kind, &k.erased_marks(ctx.tenant, kind, &address)).await? {
                         Some("opted out".into())
                     } else {
                         over_limit(tx, ctx.tenant, &address, &cfg).await?
@@ -860,8 +937,10 @@ async fn over_limit(tx: &mut Tx, tenant: Uuid, address: &str, s: &Settings) -> R
 
 /// Who a recipient spec names, as the `message` effect writes them: `owner`, `user:<id>`, `role:<name>`, or
 /// `field:<name>`, a field of the record holding an address or a number, or a link to a record whose own address and
-/// number fields (by type) are used (a customer, a contact, an employee). An expression is the caller's to evaluate
-/// ([`Recipient::from_value`]).
+/// number fields (by type) are used (a customer, a contact, an employee); or `links:<link>.<table>.<field>`, that field
+/// of each line of a table of the record a link field names (the members of an assignment group), read as the
+/// workspace as `links` is (BD-14), at most [`crate::automation::MAX_ITEMS`] lines. An expression is the caller's to
+/// evaluate ([`Recipient::from_value`]).
 pub async fn recipients(k: &Kernel, tx: &mut Tx, ctx: &Ctx, entity: &str, doc: &Value, spec: &str) -> Result<Vec<Recipient>> {
     let users = |ids: Vec<Uuid>| ids.into_iter().map(Recipient::user).collect::<Vec<_>>();
     if spec == "owner" {
@@ -878,11 +957,73 @@ pub async fn recipients(k: &Kernel, tx: &mut Tx, ctx: &Ctx, entity: &str, doc: &
             .await?;
         return Ok(users(ids));
     }
+    let ent = ctx.schema.entity(entity).cloned().ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
+    if let Some(path) = spec.strip_prefix("links:") {
+        let (link, table, field) = lines_path(path).ok_or_else(|| Error::invalid(format!("{spec} is links:<link>.<table>.<field>")))?;
+        if let Some(m) = lines_problem(&ctx.schema, &ent, path) {
+            return Err(Error::invalid(m));
+        }
+        let names = std::collections::BTreeSet::from([link.to_string()]);
+        let linked = crate::links::load(k, ctx, tx, &ent, doc, &names).await?;
+        let rows = linked[link][table].as_array().cloned().unwrap_or_default();
+        if rows.len() > crate::automation::MAX_ITEMS {
+            return Err(Error::invalid(format!(
+                "{spec}: {} lines, more than the {} one message goes to; nothing was sent",
+                rows.len(),
+                crate::automation::MAX_ITEMS
+            )));
+        }
+        let lent = ent.field(link).and_then(|f| f.to.as_deref()).and_then(|t| ctx.schema.entity(t)).cloned();
+        let cent = lent.and_then(|l| l.field(table).and_then(|f| f.of.clone())).and_then(|c| ctx.schema.entity(&c).cloned());
+        let cent = cent.ok_or_else(|| Error::invalid(format!("{spec}: its lines are not installed")))?;
+        let mut out = Vec::new();
+        for r in &rows {
+            out.extend(of_field(k, tx, ctx, &cent, r, field).await?);
+        }
+        return Ok(out);
+    }
     let Some(field) = spec.strip_prefix("field:") else {
-        return Err(Error::invalid(format!("message.to '{spec}' is owner, user:<id>, role:<name>, field:<name> or expr:<expression>")));
+        return Err(Error::invalid(format!(
+            "message.to '{spec}' is owner, user:<id>, role:<name>, field:<name>, links:<link>.<table>.<field> or expr:<expression>"
+        )));
     };
-    let ent = ctx.schema.entity(entity).ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
-    let f = ent.field(field).ok_or_else(|| Error::invalid(format!("message.to: {entity} has no field {field}")))?;
+    of_field(k, tx, ctx, &ent, doc, field).await
+}
+
+/// `<link>.<table>.<field>`, split.
+pub(crate) fn lines_path(path: &str) -> Option<(&str, &str, &str)> {
+    let mut p = path.split('.');
+    let (Some(l), Some(t), Some(f), None) = (p.next(), p.next(), p.next(), p.next()) else { return None };
+    [l, t, f].iter().all(|s| !s.trim().is_empty()).then_some((l, t, f))
+}
+
+/// What is wrong with `<link>.<table>.<field>` on `ent` (`<link>.<table>` for a loop over the lines): a link field
+/// of it, a table of the record it names, a field of that table's lines holding an address, a number or a link.
+pub(crate) fn lines_problem(schema: &ferrum_meta::Schema, ent: &ferrum_meta::EffEntity, path: &str) -> Option<String> {
+    let parts: Vec<&str> = path.split('.').collect();
+    let (link, table, field) = match parts[..] {
+        [l, t] => (l, t, None),
+        [l, t, f] => (l, t, Some(f)),
+        _ => return Some(format!("links:{path} is links:<link>.<table>.<field>")),
+    };
+    let Some(to) = ent.field(link).filter(|f| f.ftype == FieldType::Link).and_then(|f| f.to.as_deref()) else {
+        return Some(format!("links:{path}: {link} is not a link field of {}", ent.def.label));
+    };
+    let Some(lent) = schema.entity(to) else { return Some(format!("links:{path}: {link} links to {to}, which is not installed")) };
+    let Some(cent) = lent.field(table).filter(|f| f.ftype == FieldType::Table).and_then(|f| f.of.as_deref()).and_then(|c| schema.entity(c)) else {
+        return Some(format!("links:{path}: {table} is not a table of lines of {}", lent.def.label));
+    };
+    match field.map(|f| (f, cent.field(f).map(|d| d.ftype))) {
+        None | Some((_, Some(FieldType::Email | FieldType::Phone | FieldType::Data | FieldType::Link))) => None,
+        Some((f, Some(_))) => Some(format!("links:{path}: {f} holds no address, number or link")),
+        Some((f, None)) => Some(format!("links:{path}: the lines of {table} have no field {f}")),
+    }
+}
+
+/// Who `field` of `doc` (a record or a line of `ent`) names: an address or a number it holds, or the record it links
+/// to's own address and number (by type).
+async fn of_field(k: &Kernel, tx: &mut Tx, ctx: &Ctx, ent: &ferrum_meta::EffEntity, doc: &Value, field: &str) -> Result<Vec<Recipient>> {
+    let f = ent.field(field).ok_or_else(|| Error::invalid(format!("message.to: {} has no field {field}", ent.def.name)))?;
     let Some(v) = doc.get(field).and_then(Value::as_str).filter(|v| !v.trim().is_empty()) else { return Ok(vec![]) };
     match (f.ftype, f.to.as_deref()) {
         (FieldType::Link, Some(target)) => {
@@ -901,6 +1042,19 @@ pub async fn recipients(k: &Kernel, tx: &mut Tx, ctx: &Ctx, entity: &str, doc: &
         (FieldType::Phone, _) => Ok(vec![Recipient { phone: Some(v.into()), ..Default::default() }]),
         _ => Ok(vec![Recipient::address(v)]),
     }
+}
+
+/// The people of the app `to` names, each once: those of an address (a user's) among them.
+pub(crate) async fn users_of(tx: &mut Tx, tenant: Uuid, to: &[Recipient]) -> Result<Vec<Uuid>> {
+    let mut out = Vec::new();
+    for r in to {
+        if let Some(u) = complete(tx, tenant, r).await?.user
+            && !out.contains(&u)
+        {
+            out.push(u);
+        }
+    }
+    Ok(out)
 }
 
 // ── delivery ──
@@ -1420,6 +1574,25 @@ impl Kernel {
     pub async fn set_message_opt_out(&self, ctx: &Ctx, address: &str, channel: &str, opted_out: bool) -> Result<()> {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // An erased one is named by its row (the listing's `erased`), and can only be taken away.
+        if address.starts_with(ERASED) {
+            if opted_out {
+                return Err(Error::field("address", "an erased opt-out can only be removed"));
+            }
+            let gone = sqlx::query("delete from contact_consent where tenant_id = $1 and purpose = 'marketing' and channel = $2 and email = $3")
+                .bind(ctx.tenant)
+                .bind(channel)
+                .bind(address)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+            if gone == 0 {
+                return Err(Error::NotFound("opt-out".into()));
+            }
+            audit::record(&mut tx, ctx, "ContactConsent", Uuid::nil(), "erased_opt_out_removed", None, json!({"channel": channel})).await?;
+            tx.commit().await?;
+            return Ok(());
+        }
         let address = match channel {
             "email" => crate::privacy::checked_email(address)?,
             "text" | "chat" => international(address, &workspace(&mut tx, ctx.tenant).await?.0).map_err(|e| Error::field("address", e))?,
@@ -1428,6 +1601,44 @@ impl Kernel {
         record_choice(&mut tx, ctx.tenant, (!ctx.user.is_nil()).then_some(ctx.user), &address, channel, !opted_out, "recorded by staff").await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// The opt-outs there are, newest first, each with who recorded it and when (`GET /api/admin/messages/opt-outs`):
+    /// `{opt_outs: [{address, erased, channel, source, recorded_at, recorded_by, recorded_by_name}], total}`. An erased
+    /// person's has no address and names its row in `erased`; `q` finds part of an address or a number (never an erased
+    /// one), `channel` one channel; `limit` 1 to 200.
+    pub async fn message_opt_outs(&self, ctx: &Ctx, q: Option<&str>, channel: Option<&str>, limit: i64, offset: i64) -> Result<Value> {
+        admin_only(ctx)?;
+        if !(1..=200).contains(&limit) || offset < 0 {
+            return Err(Error::field("limit", "1 to 200, from an offset of 0 or more"));
+        }
+        let q = q.map(str::trim).filter(|q| !q.is_empty()).map(|q| q.replace(['%', '_', '\\'], ""));
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('address', case when c.email::text like 'erased:%' then null else c.email::text end, \
+               'erased', case when c.email::text like 'erased:%' then c.email::text end, 'channel', c.channel, 'source', c.source, 'recorded_at', c.recorded_at, \
+               'recorded_by', c.recorded_by, 'recorded_by_name', coalesce(nullif(u.full_name, ''), u.email::text), 'total', count(*) over ()) \
+             from contact_consent c left join app_user u on u.tenant_id = c.tenant_id and u.id = c.recorded_by \
+             where c.tenant_id = $1 and c.purpose = 'marketing' and not c.granted and ($2::text is null or c.channel = $2) \
+               and ($3::text is null or (c.email::text not like 'erased:%' and c.email::text ilike '%' || $3 || '%')) order by c.recorded_at desc, c.email limit $4 offset $5",
+        )
+        .bind(ctx.tenant)
+        .bind(channel)
+        .bind(q)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let total = rows.first().and_then(|r| r["total"].as_i64()).unwrap_or(0);
+        let rows: Vec<Value> = rows
+            .into_iter()
+            .map(|mut r| {
+                r.as_object_mut().map(|m| m.remove("total"));
+                r
+            })
+            .collect();
+        Ok(json!({"opt_outs": rows, "total": total}))
     }
 
     /// The recipient following a signed link (`POST /api/messages/opt-out?token=`): no session. Returns the channel.
@@ -1589,9 +1800,12 @@ impl Kernel {
 /// The sends and codes of a person (their addresses, their account, their number's digits), for their report.
 pub(crate) async fn held_report(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, emails: &[String], digits: Option<&str>) -> Result<Vec<Value>> {
     Ok(sqlx::query_scalar(
-        "select jsonb_build_object('template', template, 'channel', channel, 'recipient', recipient, 'state', state, 'created_at', created_at) \
+        "select v from (select jsonb_build_object('template', template, 'channel', channel, 'recipient', recipient, 'state', state, 'created_at', created_at) v, created_at \
          from message_send where tenant_id = $1 and (lower(recipient) = any($2) or user_id = $3 \
-           or ($4::text is not null and regexp_replace(recipient, '\\D', '', 'g') like '%' || ltrim($4, '0'))) order by created_at",
+           or ($4::text is not null and regexp_replace(recipient, '\\D', '', 'g') like '%' || ltrim($4, '0'))) \
+         union all select jsonb_build_object('choice', case when granted then 'consented' else 'opted out' end, 'purpose', purpose, 'channel', channel, \
+           'recipient', email::text, 'created_at', recorded_at), recorded_at from contact_consent where tenant_id = $1 and email::text not like 'erased:%' \
+           and (lower(email::text) = any($2) or ($4::text is not null and channel <> 'email' and regexp_replace(email::text, '\\D', '', 'g') like '%' || ltrim($4, '0')))) h order by created_at",
     )
     .bind(tenant)
     .bind(emails)
@@ -1601,7 +1815,58 @@ pub(crate) async fn held_report(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>
     .await?)
 }
 
-/// Erases a person's sends and codes; returns the sends' ids, for the erasure's journal.
+/// The choices recorded for a person's addresses and number, as `(address, channel, granted)`.
+pub(crate) async fn choices_of(tx: &mut Tx, tenant: Uuid, emails: &[String], digits: Option<&str>) -> Result<Vec<(String, String, bool)>> {
+    Ok(sqlx::query_as(
+        "select email::text, channel, granted from contact_consent where tenant_id = $1 and purpose = 'marketing' and email::text not like 'erased:%' \
+           and (lower(email::text) = any($2) or ($3::text is not null and channel <> 'email' and regexp_replace(email::text, '\\D', '', 'g') like '%' || ltrim($3, '0')))",
+    )
+    .bind(tenant)
+    .bind(emails)
+    .bind(digits)
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
+/// Erases the address of each of these choices: a consent given goes, an opt-out keeps its effect under its
+/// [`erased_mark`], with its channel, source, date and who recorded it (BD-20). Without the server's key the choices
+/// stay as they are. Returns the marks, for the erasure's journal (they name no address).
+pub(crate) async fn erase_choices(
+    tx: &mut Tx,
+    tenant: Uuid,
+    key: Option<&crate::secret::SecretKey>,
+    choices: &[(String, String, bool)],
+) -> Result<Vec<String>> {
+    let Some(key) = key else {
+        if !choices.is_empty() {
+            tracing::warn!(%tenant, "no secret key: an erased person's opt-outs are kept with their address");
+        }
+        return Ok(vec![]);
+    };
+    let mut marks = Vec::new();
+    for (address, channel, granted) in choices {
+        let mark = erased_mark(key, tenant, channel, address);
+        // A consent goes; an opt-out replaces any it was erased as before.
+        sqlx::query("delete from contact_consent where tenant_id = $1 and purpose = 'marketing' and channel = $2 and email = $3")
+            .bind(tenant)
+            .bind(channel)
+            .bind(if *granted { address } else { &mark })
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query("update contact_consent set email = $4 where tenant_id = $1 and purpose = 'marketing' and channel = $2 and email = $3")
+            .bind(tenant)
+            .bind(channel)
+            .bind(address)
+            .bind(&mark)
+            .execute(&mut **tx)
+            .await?;
+        marks.push(mark);
+    }
+    Ok(marks)
+}
+
+/// Erases a person's sends and codes; returns the sends' ids, for the erasure's journal. Their choices:
+/// [`erase_choices`].
 pub(crate) async fn erase_held(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, emails: &[String], digits: Option<&str>) -> Result<Vec<Uuid>> {
     sqlx::query(
         "delete from message_code where tenant_id = $1 and (lower(recipient) = any($2) \

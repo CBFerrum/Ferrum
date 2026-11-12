@@ -136,7 +136,7 @@ struct AwayQuery {
 }
 
 /// `GET /api/away`: the caller's away periods today and to come, each with its stand-in (FEO-034); `?user=` for an
-/// administrator. Set at Studio's `POST /api/app/studio/away`.
+/// administrator. Set with `POST /api/away` (and, as before, Studio's `POST /api/app/studio/away`).
 async fn away(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<AwayQuery>) -> ApiResult<Response> {
     Ok(Json(away_of(&app_state(&app)?.kernel, &ctx, q.user).await?).into_response())
 }
@@ -144,6 +144,18 @@ async fn away(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<Aw
 /// What `GET /api/away` answers (callable without the HTTP layer).
 pub async fn away_of(k: &Kernel, ctx: &Ctx, user: Option<Uuid>) -> ApiResult<Value> {
     Ok(json!(k.away_of(ctx, user.unwrap_or(ctx.user)).await?))
+}
+
+/// `POST /api/away {starts_on, ends_on, substitute (an id or an e-mail), reason, user?}`: who stands in for the caller
+/// (or, said by an administrator, for `user`) between two days.
+async fn set_away(Auth(ctx): Auth, State(app): State<AppContext>, Json(b): Json<Value>) -> ApiResult<Response> {
+    Ok(Json(away_set(&app_state(&app)?.kernel, &ctx, &b).await?).into_response())
+}
+
+/// What `POST /api/away` answers (callable without the HTTP layer).
+pub async fn away_set(k: &Kernel, ctx: &Ctx, body: &Value) -> ApiResult<Value> {
+    k.set_away_given(ctx, body).await?;
+    Ok(json!({}))
 }
 
 /// `DELETE /api/away`: takes them back, all of them or `?starts_on=` the one; `{"cleared": n}`.
@@ -158,5 +170,5 @@ pub async fn away_cleared(k: &Kernel, ctx: &Ctx, user: Option<Uuid>, starts_on: 
 
 pub fn routes() -> Routes {
     use axum::routing::get;
-    Routes::new().add("/api/work", get(work)).add("/api/approvals", get(approvals)).add("/api/away", get(away).delete(clear_away))
+    Routes::new().add("/api/work", get(work)).add("/api/approvals", get(approvals)).add("/api/away", get(away).post(set_away).delete(clear_away))
 }

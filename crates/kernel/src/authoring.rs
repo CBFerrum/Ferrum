@@ -680,6 +680,9 @@ impl Kernel {
                         if template.is_some() {
                             notes.push(format!("{step}: its e-mail template is not carried over; the mail sends the body as text"));
                         }
+                        if to.starts_with("links:") {
+                            notes.push(format!("{step}: it mailed each of {to}; say whom a process mails"));
+                        }
                         action(
                             match purpose {
                                 crate::retention::Purpose::Marketing => "ferrum.mail.marketing".into(),
@@ -715,7 +718,8 @@ impl Kernel {
                     | crate::automation::AutomationAction::ForEach { .. }
                     | crate::automation::AutomationAction::CopyLines { .. }
                     | crate::automation::AutomationAction::Message { .. }
-                    | crate::automation::AutomationAction::Generate { .. } => {
+                    | crate::automation::AutomationAction::Generate { .. }
+                    | crate::automation::AutomationAction::ReportDocuments { .. } => {
                         notes
                             .push(format!("action {}: a find, loop, copy of lines, message or document is not carried over; say what the process does", i + 1));
                         continue;

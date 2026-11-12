@@ -11,7 +11,7 @@ use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::{Catalog, PermissionDef};
 use ferrum_server::controllers::docs::{DecisionBody, decided, take_transition};
-use ferrum_server::controllers::work::{away_cleared, away_of, work_of};
+use ferrum_server::controllers::work::{away_cleared, away_of, away_set, work_of};
 use ferrum_server::error::{ApiError, ApiResult};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -158,10 +158,29 @@ async fn scenario() {
     assert_eq!((status, b["status"].as_str()), (200, Some("recalled")));
     assert_eq!(answer(k.recall_approval(&annc, "XOrder", o2).await.map(axum::Json).map_err(ApiError)).await.0, 404, "nothing pending");
 
-    // ───────────── GET and DELETE /api/away ─────────────
+    // ───────────── POST, GET and DELETE /api/away ─────────────
     let today = chrono::Utc::now().date_naive();
-    k.set_away(&maxc, max, today, today + chrono::Duration::days(2), sub, "leave").await.unwrap();
-    k.set_away(&maxc, max, today + chrono::Duration::days(10), today + chrono::Duration::days(12), sub, "travel").await.unwrap();
+    let days = |n: i64| (today + chrono::Duration::days(n)).to_string();
+    let o3 = order("Three").await;
+    take(annc.clone(), o3, "Submit", r#"{"reason": "stock"}"#).await;
+    assert_eq!(answer(decided(&k, &subc, "XOrder", o3, body("approve", None)).await.map(axum::Json)).await.0, 403, "not hers before Max is away");
+    let set = |c: Ctx, b: Value| {
+        let k = k.clone();
+        async move { answer(away_set(&k, &c, &b).await.map(axum::Json)).await }
+    };
+    let (status, b) = set(maxc.clone(), json!({"starts_on": "soon", "ends_on": days(2), "substitute": "sub@acme.test", "reason": "leave"})).await;
+    assert_eq!((status, b["fields"][0]["field"].as_str()), (422, Some("starts_on")), "{b}");
+    let (status, _) =
+        set(subc.clone(), json!({"starts_on": days(0), "ends_on": days(2), "substitute": sub.to_string(), "reason": "x", "user": max.to_string()})).await;
+    assert_eq!(status, 403, "someone else's, not an administrator");
+    let (status, b) = set(maxc.clone(), json!({"starts_on": days(0), "ends_on": days(2), "substitute": "sub@acme.test", "reason": "leave"})).await;
+    assert_eq!((status, b), (200, json!({})), "by her e-mail");
+    let (status, _) =
+        set(admin.clone(), json!({"starts_on": days(10), "ends_on": days(12), "substitute": sub.to_string(), "reason": "travel", "user": max.to_string()}))
+            .await;
+    assert_eq!(status, 200, "an administrator for anyone");
+    let (status, b) = answer(decided(&k, &subc, "XOrder", o3, body("approve", Some("for Max"))).await.map(axum::Json)).await;
+    assert_eq!((status, b["status"].as_str()), (200, Some("approved")), "the stand-in decides while Max is away: {b}");
     let (status, b) = answer(away_of(&k, &maxc, None).await.map(axum::Json)).await;
     assert_eq!(status, 200);
     assert_eq!(

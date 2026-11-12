@@ -53,6 +53,25 @@ pub fn problems(k: &Kernel, tenant: Uuid, schema: &Schema) -> Vec<String> {
     out
 }
 
+/// The message and document templates `schema`'s configured actions and transitions name that are not there, one
+/// line each as [`problems`] says them.
+pub(crate) async fn template_problems(tx: &mut crate::db::Tx, tenant: Uuid, schema: &Schema) -> Result<Vec<String>> {
+    let known = automation::known_templates(tx, tenant, schema).await?;
+    let mut out = Vec::new();
+    for ent in schema.entities.values() {
+        let actions = ent.def.actions.iter().map(|a| (format!("action {}", a.name), &a.effects));
+        let transitions = ent.workflow.iter().flat_map(|w| &w.def.transitions).map(|t| (format!("transition {} from {}", t.action, t.from), &t.effects));
+        for (what, effects) in actions.chain(transitions) {
+            for (i, raw) in effects.iter().enumerate() {
+                if let Some(m) = serde_json::from_value::<Step>(raw.clone()).ok().and_then(|s| automation::unknown_template(&s, &known)) {
+                    out.push(format!("{}: {what}, effect {}: {m}", ent.def.name, i + 1));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn check_effect<'a>(k: &Kernel, system: &dyn Fn() -> &'a Ctx, schema: &Schema, ent: &EffEntity, step: &Step) -> std::result::Result<(), String> {
     let said = |e: Error| match e {
         Error::Validation(fs) => fs.into_iter().map(|f| f.message).collect::<Vec<_>>().join("; "),
@@ -86,6 +105,7 @@ fn check_effect<'a>(k: &Kernel, system: &dyn Fn() -> &'a Ctx, schema: &Schema, e
         | AutomationAction::Email { .. }
         | AutomationAction::Message { .. }
         | AutomationAction::Generate { .. }
+        | AutomationAction::ReportDocuments { .. }
         | AutomationAction::AppendLine { .. }
         | AutomationAction::SetLine { .. } => {
             return Ok(());
@@ -215,7 +235,10 @@ pub(crate) async fn run_effects(
         // The settings it reads, as the workspace has them now (BD-17).
         let user = crate::settings::with(k, ctx, tx, automation::settings_used(&effect)?).await?.user_value();
         let extra = [("params", params), ("results", &done), ("links", &links)];
-        let out = automation::run_step(k, &system, tx, &ent.def.name, Some(id), (&now, &view), &user, &extra, &format!("{origin}{i}"), effect).await?;
+        let what = effect.action.clone();
+        let out = automation::run_step(k, &system, tx, &ent.def.name, Some(id), (&now, &view), &user, &extra, &format!("{origin}{i}"), effect)
+            .await
+            .map_err(|e| automation::at_effect(i, &what, e))?;
         if creates && !out.is_null() {
             made.push(out.clone());
         }

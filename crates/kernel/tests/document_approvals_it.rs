@@ -15,7 +15,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-const PACKAGE: &str = "package: held\nversion: 0.1.0\ndepends: [core]\nroles:\n  - name: Clerk\n    permissions:\n      - {entity: Hold, read: true, write: true, create: true, submit: true, cancel: true}\n  - name: Boss\n    permissions:\n      - {entity: Hold, read: true}\n";
+const PACKAGE: &str = "package: held\nversion: 0.1.0\ndepends: [core]\nroles:\n  - name: Clerk\n    permissions:\n      - {entity: Hold, read: true, write: true, create: true, submit: true, cancel: true}\n  - name: Boss\n    permissions:\n      - {entity: Hold, read: true}\n\
+workflows:\n  - name: Leave\n    entity: Leave\n    initial_state: Draft\n    states: [{name: Draft}, {name: Granted}]\n    transitions: [{action: Ask, from: Draft, to: Granted, approval: {steps: [{label: The boss, approvers: {role: Boss}}]}}]\n";
+const LEAVE: &str = "name: Leave\nlabel: Leave\nkind: master\ntitle_field: reason\nfields:\n  - {name: reason, type: data}\n";
 const ENTITIES: &str = "name: Hold\nlabel: Hold\nkind: document\nsubmittable: true\ntitle_field: reference\nfields:\n  - {name: reference, type: data, required: true}\n  - {name: qty, type: int}\n  - {name: note, type: data}\n";
 
 /// The app: no hold of more than there is, and what ran on submit and cancel, as whom.
@@ -95,8 +97,10 @@ async fn scenario() {
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
-    let files: BTreeMap<String, String> =
-        [("package.yaml".to_string(), PACKAGE.to_string()), ("entities/hold.yaml".to_string(), ENTITIES.to_string())].into_iter().collect();
+    let files: BTreeMap<String, String> = [("package.yaml", PACKAGE), ("entities/hold.yaml", ENTITIES), ("entities/leave.yaml", LEAVE)]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
     let held = ferrum_meta::catalog::load_package_files(&files).expect("package");
     let stock = Arc::new(Stock::default());
     let mut hooks = HookRegistry::default();
@@ -169,6 +173,24 @@ async fn scenario() {
     let boss1 = person("boss1@acme.test", &["Boss"]).await;
     let boss2 = person("boss2@acme.test", &["Boss"]).await;
     let (clerkc, b1, b2) = (as_(clerk).await, as_(boss1).await, as_(boss2).await);
+    // The form knows, before Submit is pressed, what asks for approval: for whoever may submit or cancel, steps by
+    // their labels, nobody named.
+    let said = |c: &ferrum_kernel::Ctx, e: &str| ferrum_kernel::describe::describe(c, c.schema.entity(e).unwrap())["approvals"].clone();
+    assert_eq!(said(&clerkc, "XBill"), json!({"submit": {"asks": true, "steps": ["A boss"]}, "cancel": {"asks": false, "steps": []}}));
+    assert_eq!(said(&clerkc, "Hold"), json!({"submit": {"asks": true, "steps": ["Bosses"]}, "cancel": {"asks": true, "steps": ["A boss"]}}));
+    assert_eq!(said(&b1, "XBill"), json!({}), "a boss may not submit bills");
+    assert_eq!(said(&clerkc, "Leave"), json!({}), "not submittable");
+    // Customize sees what a package declares, marked as the package's; the workspace's own are not among them.
+    let declared = k.package_approvals_of(&admin, "Leave").unwrap();
+    assert_eq!(
+        (declared["approvals"][0]["on"].as_str(), declared["approvals"][0]["source"].as_str(), declared["approvals"][0]["package"].as_str()),
+        (Some("transition Ask from Draft"), Some("package"), Some("held")),
+        "{declared}"
+    );
+    assert_eq!(declared["approvals"][0]["policy"]["steps"][0]["label"], json!("The boss"));
+    assert_eq!(k.package_approvals_of(&admin, "Hold").unwrap()["approvals"], json!([]), "Hold's are the workspace's");
+    assert_eq!(k.custom_definition(&admin, "XBill").unwrap()["package_approvals"], json!([]));
+    assert!(k.package_approvals_of(&clerkc, "Leave").is_err(), "an administrator's");
     let hold = |reference: &'static str, qty: i64| {
         let (k, clerkc) = (k.clone(), clerkc.clone());
         async move { id_of(&k.insert(&clerkc, "Hold", obj(json!({"reference": reference, "qty": qty}))).await.unwrap()) }
