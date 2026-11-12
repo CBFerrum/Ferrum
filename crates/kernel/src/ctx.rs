@@ -92,6 +92,9 @@ pub struct EntityAccess {
     pub grants: [Vec<Grant>; 8],
     /// Actions rules name (BD-02), each with the grants of the rules naming it.
     pub actions: BTreeMap<String, Vec<Grant>>,
+    /// What an outside person sees of the conversation on the records they read (BD-22): `Some(false)` the shared
+    /// comments and files, `Some(true)` those and their own beside them.
+    pub shared: Option<bool>,
 }
 
 fn action_index(a: Action) -> usize {
@@ -175,6 +178,7 @@ struct PermRow {
     match_rule: Option<Value>,
     via: Option<String>,
     actions: Vec<String>,
+    shared: Option<String>,
 }
 
 impl PermSet {
@@ -184,7 +188,7 @@ impl PermSet {
         }
         let rows: Vec<PermRow> = sqlx::query_as(
             "select entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, can_export, can_import, \
-             if_owner, read_groups, write_groups, match_rule, via, actions from role_permission where tenant_id = $1 and role = any($2)",
+             if_owner, read_groups, write_groups, match_rule, via, actions, shared from role_permission where tenant_id = $1 and role = any($2)",
         )
         .bind(tenant)
         .bind(roles)
@@ -226,6 +230,12 @@ impl PermSet {
             }
             e.read_groups.extend(r.read_groups);
             e.write_groups.extend(r.write_groups);
+            // Only a rule that reads says anything of the conversation; the widest of them holds.
+            if r.can_read
+                && let Some(add) = r.shared.as_deref().map(|s| s == "add")
+            {
+                e.shared = Some(e.shared.unwrap_or(false) || add);
+            }
         }
         Ok(set)
     }
@@ -254,6 +264,12 @@ impl PermSet {
     /// The grants of the rules naming action `action` of `entity` (`None`: none names it).
     pub fn action_grants(&self, entity: &str, action: &str) -> Option<Vec<Grant>> {
         self.entities.get(entity).and_then(|e| e.actions.get(action)).cloned()
+    }
+
+    /// What the holder sees of the conversation on `entity`'s records they read (BD-22): `None` nothing, `Some(false)`
+    /// the shared comments and files, `Some(true)` those and their own. Only outside people are asked.
+    pub fn shared(&self, entity: &str) -> Option<bool> {
+        self.entities.get(entity).and_then(|e| e.shared)
     }
 
     /// The actions of `entity` some rule names, whatever their own permission asks.

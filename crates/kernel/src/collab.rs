@@ -13,6 +13,10 @@ use uuid::Uuid;
 
 const MAX_TAGS: usize = 20;
 const MAX_MENTIONS: usize = 20;
+/// Outside people told of one shared comment at most.
+const MAX_TOLD: i64 = 200;
+/// The platform's template telling outside people staff shared a comment with them (packages/core).
+pub const SHARED_TEMPLATE: &str = "core.comment_shared";
 
 /// A tag as stored: trimmed, inner whitespace collapsed, at most 60 characters.
 pub fn normalize_tag(raw: &str) -> Option<String> {
@@ -58,15 +62,18 @@ async fn follow_tx(tx: &mut Tx, tenant: Uuid, entity: &str, id: Uuid, user: Uuid
     Ok(())
 }
 
-/// Followers of a record other than `except`.
+/// Followers of a record other than `except`: its members only, as an outside person never follows (BD-22).
 async fn followers(tx: &mut Tx, tenant: Uuid, entity: &str, id: Uuid, except: Uuid) -> Result<Vec<Uuid>> {
-    Ok(sqlx::query_scalar("select user_id from record_follower where tenant_id = $1 and entity = $2 and record_id = $3 and user_id <> $4")
-        .bind(tenant)
-        .bind(entity)
-        .bind(id)
-        .bind(except)
-        .fetch_all(&mut **tx)
-        .await?)
+    Ok(sqlx::query_scalar(
+        "select f.user_id from record_follower f join app_user u on u.tenant_id = f.tenant_id and u.id = f.user_id and u.kind = 'member' \
+         where f.tenant_id = $1 and f.entity = $2 and f.record_id = $3 and f.user_id <> $4",
+    )
+    .bind(tenant)
+    .bind(entity)
+    .bind(id)
+    .bind(except)
+    .fetch_all(&mut **tx)
+    .await?)
 }
 
 impl Kernel {
@@ -81,12 +88,79 @@ impl Kernel {
         self.get(ctx, entity, id, false).await
     }
 
+    /// The record, when the caller may see its conversation (BD-22): a member who can read it (`None`), or an
+    /// outside person whose portal rule says what of it they see (`Some(add)`: whether they may add to it). An
+    /// outside person whose rules say nothing of it is refused before the record is looked at, the same for every
+    /// record; one who may not read the record is told it is not found, as everywhere.
+    async fn conversation(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<(Doc, Option<bool>)> {
+        if !ctx.outside {
+            return Ok((self.get(ctx, entity, id, false).await?, None));
+        }
+        let Some(add) = ctx.perms.shared(entity) else {
+            return Err(Error::Forbidden("a record's comments, files and people are for the workspace's members".into()));
+        };
+        Ok((self.get(ctx, entity, id, false).await?, Some(add)))
+    }
+
     /// Whether `user` (another member of the tenant) can read the record.
     async fn can_user_read(&self, ctx: &Ctx, user: Uuid, entity: &str, id: Uuid) -> bool {
         match self.load_ctx(ctx.tenant, user, None, ctx.request_id.clone()).await {
             Ok(other) => self.get(&other, entity, id, false).await.is_ok(),
             Err(_) => false,
         }
+    }
+
+    /// Whether `user` may be told of a comment on the record: one who can read it, and an outside person only when
+    /// the comment is `shared` and their rules show them shared comments (BD-22).
+    async fn may_be_told(&self, ctx: &Ctx, user: Uuid, entity: &str, id: Uuid, shared: bool) -> bool {
+        match self.load_ctx(ctx.tenant, user, None, ctx.request_id.clone()).await {
+            Ok(other) if other.outside && (!shared || other.perms.shared(entity).is_none()) => false,
+            Ok(other) => self.get(&other, entity, id, false).await.is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    /// Tells the outside people who may see `entity` `id`'s shared comments (portal people holding a role whose rule
+    /// says so, who can read the record now) that staff shared `comment` with them, through the platform's template
+    /// `core.comment_shared` (each in their language, on the first channel it reaches them on), in `tx`. At most
+    /// [`MAX_TOLD`] are asked; nothing is sent when the workspace has no such template.
+    async fn tell_outside(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, title: &str, comment: &str) -> Result<()> {
+        if !ctx.schema.messages.iter().any(|m| m.key == SHARED_TEMPLATE) {
+            return Ok(());
+        }
+        // ponytail: each candidate's context is loaded and the record read as them; a list of the record's
+        // outside readers kept in SQL if a record ever has hundreds.
+        let candidates: Vec<Uuid> = sqlx::query_scalar(
+            "select distinct u.id from app_user u join user_role ur on ur.tenant_id = u.tenant_id and ur.user_id = u.id \
+             join role r on r.tenant_id = ur.tenant_id and r.name = ur.role and r.portal \
+             join role_permission p on p.tenant_id = r.tenant_id and p.role = r.name and p.entity = $2 and p.can_read and p.shared is not null \
+             where u.tenant_id = $1 and u.kind = 'portal' and u.is_active and (ur.expires_at is null or ur.expires_at > now()) limit $3",
+        )
+        .bind(ctx.tenant)
+        .bind(entity)
+        .bind(MAX_TOLD)
+        .fetch_all(&mut **tx)
+        .await?;
+        let mut to = Vec::new();
+        for u in candidates {
+            if self.may_be_told(ctx, u, entity, id, true).await {
+                to.push(crate::messages::Recipient::user(u));
+            }
+        }
+        if to.is_empty() {
+            return Ok(());
+        }
+        let snippet: String = comment.chars().take(500).collect();
+        let m = crate::messages::Message {
+            template: SHARED_TEMPLATE.into(),
+            entity: Some(entity.to_string()),
+            record: Some(id),
+            to,
+            values: serde_json::Map::from_iter([("record".to_string(), json!(title)), ("comment".to_string(), json!(snippet))]),
+            ..Default::default()
+        };
+        crate::messages::send(self, tx, ctx, &m).await?;
+        Ok(())
     }
 
     /// The workspace's active members (for mentions and assignments), read by its members: portal
@@ -112,33 +186,54 @@ impl Kernel {
 
     // ───────────── comments ─────────────
 
+    /// A record's comments, oldest first, each saying whether it is `shared` with outside people: all of them to a
+    /// member who can read it; the shared ones to an outside person whose portal rule says so (BD-22), without the
+    /// authors' addresses.
     pub async fn comments(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<Vec<Value>> {
-        self.readable(ctx, entity, id).await?;
+        let (_, outside) = self.conversation(ctx, entity, id).await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let rows: Vec<(Uuid, String, Uuid, Option<String>, Option<String>, chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>)> =
-            sqlx::query_as(
-                "select c.id, c.body, c.created_by, u.full_name, u.email, c.created_at, c.edited_at from record_comment c \
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            Uuid,
+            String,
+            Uuid,
+            Option<String>,
+            Option<String>,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            bool,
+        )> = sqlx::query_as(
+            "select c.id, c.body, c.created_by, u.full_name, u.email, c.created_at, c.edited_at, c.shared from record_comment c \
              left join app_user u on u.tenant_id = c.tenant_id and u.id = c.created_by \
-             where c.tenant_id = $1 and c.entity = $2 and c.record_id = $3 order by c.created_at limit 1000",
-            )
-            .bind(ctx.tenant)
-            .bind(entity)
-            .bind(id)
-            .fetch_all(&mut *tx)
-            .await?;
+             where c.tenant_id = $1 and c.entity = $2 and c.record_id = $3 and (c.shared or not $4) order by c.created_at limit 1000",
+        )
+        .bind(ctx.tenant)
+        .bind(entity)
+        .bind(id)
+        .bind(outside.is_some())
+        .fetch_all(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(rows
             .into_iter()
-            .map(|(cid, body, by, name, email, at, edited)| {
+            .map(|(cid, body, by, name, email, at, edited, shared)| {
+                let email = if outside.is_some() { None } else { email };
                 json!({"id": cid, "body": body, "created_by": by, "author": name.or(email.clone()), "author_email": email, "created_at": at, "edited_at": edited,
-                       "mine": by == ctx.user})
+                       "mine": by == ctx.user, "shared": shared})
             })
             .collect())
     }
 
     /// Adds a comment; `mentions` (user ids from the composer's picker) who can read the record are
-    /// notified, followers too, and the author starts following.
+    /// notified, followers too, and the author starts following. Not shared with outside people.
     pub async fn add_comment(&self, ctx: &Ctx, entity: &str, id: Uuid, body: &str, mentions: &[Uuid]) -> Result<Uuid> {
+        self.add_comment_shared(ctx, entity, id, body, mentions, false).await
+    }
+
+    /// [`Kernel::add_comment`], shared with outside people when `shared` (BD-22): the portal people who may see the
+    /// record's shared comments are then told. What an outside person writes is shared whatever they ask, needs their
+    /// rule to say `add`, and tells the record's followers (its members).
+    pub async fn add_comment_shared(&self, ctx: &Ctx, entity: &str, id: Uuid, body: &str, mentions: &[Uuid], shared: bool) -> Result<Uuid> {
         let body = body.trim();
         if body.is_empty() || body.chars().count() > 20_000 {
             return Err(Error::field("body", "a comment needs 1 to 20000 characters"));
@@ -146,10 +241,15 @@ impl Kernel {
         if ctx.user.is_nil() {
             return Err(Error::Forbidden("comments need a signed-in user".into()));
         }
-        let doc = self.readable(ctx, entity, id).await?;
+        let (doc, outside) = self.conversation(ctx, entity, id).await?;
+        if outside == Some(false) {
+            return Err(Error::Forbidden("you may read this record's shared comments, not add to them".into()));
+        }
+        let shared = shared || outside.is_some();
         let mut notify_users = Vec::new();
-        for &m in mentions.iter().take(MAX_MENTIONS) {
-            if m != ctx.user && !notify_users.contains(&m) && self.can_user_read(ctx, m, entity, id).await {
+        // An outside person names nobody: the directory of people is not theirs.
+        for &m in mentions.iter().take(if ctx.outside { 0 } else { MAX_MENTIONS }) {
+            if m != ctx.user && !notify_users.contains(&m) && self.may_be_told(ctx, m, entity, id, shared).await {
                 notify_users.push(m);
             }
         }
@@ -158,13 +258,14 @@ impl Kernel {
         let snippet: String = body.chars().take(200).collect();
         let cid = Uuid::now_v7();
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        sqlx::query("insert into record_comment (tenant_id, id, entity, record_id, body, created_by) values ($1, $2, $3, $4, $5, $6)")
+        sqlx::query("insert into record_comment (tenant_id, id, entity, record_id, body, created_by, shared) values ($1, $2, $3, $4, $5, $6, $7)")
             .bind(ctx.tenant)
             .bind(cid)
             .bind(entity)
             .bind(id)
             .bind(body)
             .bind(ctx.user)
+            .bind(shared)
             .execute(&mut *tx)
             .await?;
         for &u in &notify_users {
@@ -197,10 +298,56 @@ impl Kernel {
                 .await?;
             }
         }
-        follow_tx(&mut tx, ctx.tenant, entity, id, ctx.user).await?;
+        if ctx.outside {
+            // What an outside person writes is for the record's members, who follow it; they follow nothing.
+        } else {
+            follow_tx(&mut tx, ctx.tenant, entity, id, ctx.user).await?;
+            if shared {
+                self.tell_outside(ctx, &mut tx, entity, id, &title, body).await?;
+            }
+        }
         announce(&mut tx, ctx.tenant, entity, id, "commented", ctx.user).await?;
         tx.commit().await?;
         Ok(cid)
+    }
+
+    /// Shares a comment with outside people, or stops sharing it (BD-22): a member who can read its record. One an
+    /// outside person wrote stays shared. Sharing tells the outside people who may see it, once each time.
+    pub async fn share_comment(&self, ctx: &Ctx, comment: Uuid, shared: bool) -> Result<()> {
+        if ctx.outside {
+            return Err(Error::Forbidden("staff choose what is shared".into()));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let row: Option<(String, Uuid, String, bool, Option<String>)> = sqlx::query_as(
+            "select c.entity, c.record_id, c.body, c.shared, u.kind from record_comment c left join app_user u on u.tenant_id = c.tenant_id and u.id = c.created_by \
+             where c.tenant_id = $1 and c.id = $2 for update of c",
+        )
+        .bind(ctx.tenant)
+        .bind(comment)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (entity, id, body, was, kind) = row.ok_or_else(|| Error::NotFound("comment".into()))?;
+        let doc = self.get(ctx, &entity, id, false).await.map_err(|_| Error::NotFound("comment".into()))?;
+        if !shared && kind.as_deref().is_some_and(|k| k != "member") {
+            return Err(Error::invalid("what an outside person wrote stays shared with them"));
+        }
+        if was == shared {
+            return Ok(());
+        }
+        sqlx::query("update record_comment set shared = $3 where tenant_id = $1 and id = $2")
+            .bind(ctx.tenant)
+            .bind(comment)
+            .bind(shared)
+            .execute(&mut *tx)
+            .await?;
+        crate::audit::record(&mut tx, ctx, &entity, id, if shared { "share_comment" } else { "unshare_comment" }, None, json!({"comment": comment})).await?;
+        if shared {
+            let title = record_title(ctx, &entity, &doc);
+            self.tell_outside(ctx, &mut tx, &entity, id, &title, &body).await?;
+        }
+        announce(&mut tx, ctx.tenant, &entity, id, "commented", ctx.user).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Mails a record and says so: the mail is queued and `<Entity>.emailed` raised on the outbox in one
@@ -243,6 +390,9 @@ impl Kernel {
         if by != ctx.user {
             return Err(Error::Forbidden("only its author can change a comment".into()));
         }
+        if ctx.outside && self.conversation(ctx, &entity, id).await?.1 != Some(true) {
+            return Err(Error::Forbidden("you may no longer add to this record's comments".into()));
+        }
         sqlx::query("update record_comment set body = $3, edited_at = now() where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)
             .bind(comment)
@@ -266,6 +416,9 @@ impl Kernel {
         let (entity, id, by) = row.ok_or_else(|| Error::NotFound("comment".into()))?;
         if by != ctx.user && !ctx.is_admin {
             return Err(Error::Forbidden("only its author or an administrator can delete a comment".into()));
+        }
+        if ctx.outside && self.conversation(ctx, &entity, id).await?.1 != Some(true) {
+            return Err(Error::Forbidden("you may no longer add to this record's comments".into()));
         }
         sqlx::query("delete from record_comment where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(comment).execute(&mut *tx).await?;
         crate::audit::record(&mut tx, ctx, &entity, id, "delete_comment", None, json!({"comment": comment})).await?;
@@ -683,27 +836,68 @@ impl Kernel {
 
     // ───────────── attachments ─────────────
 
-    /// Files attached to a record.
+    /// Files attached to a record, each saying whether it is `shared` with outside people: all of them to a member
+    /// who can read it; to an outside person whose portal rule says so, the shared ones and their own (BD-22).
     pub async fn attachments(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<Vec<Value>> {
-        self.readable(ctx, entity, id).await?;
+        let (_, outside) = self.conversation(ctx, entity, id).await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let rows: Vec<(Uuid, String, String, i64, Option<Uuid>, chrono::DateTime<chrono::Utc>, Option<String>)> = sqlx::query_as(
-            "select id, file_name, content_type, size_bytes, created_by, created_at, sha256 from file_object \
-             where tenant_id = $1 and entity = $2 and record_id = $3 order by created_at limit 500",
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(Uuid, String, String, i64, Option<Uuid>, chrono::DateTime<chrono::Utc>, Option<String>, bool)> = sqlx::query_as(
+            "select id, file_name, content_type, size_bytes, created_by, created_at, sha256, shared from file_object \
+             where tenant_id = $1 and entity = $2 and record_id = $3 and (shared or not $4 or created_by = $5) order by created_at limit 500",
         )
         .bind(ctx.tenant)
         .bind(entity)
         .bind(id)
+        .bind(outside.is_some())
+        .bind(ctx.user)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
         Ok(rows
             .into_iter()
             // The content's digest lets a device sending a file again see it is already here.
-            .map(|(fid, name, ct, size, by, at, sha)| {
-                json!({"id": fid, "file_name": name, "content_type": ct, "size_bytes": size, "created_by": by, "created_at": at, "sha256": sha, "url": format!("/files/{fid}")})
+            .map(|(fid, name, ct, size, by, at, sha, shared)| {
+                json!({"id": fid, "file_name": name, "content_type": ct, "size_bytes": size, "created_by": by, "created_at": at, "sha256": sha,
+                       "url": format!("/files/{fid}"), "shared": shared})
             })
             .collect())
+    }
+
+    /// Shares a file attached to a record with outside people, or stops sharing it (BD-22): a member who can read the
+    /// record. One an outside person uploaded stays shared.
+    pub async fn share_file(&self, ctx: &Ctx, file: Uuid, shared: bool) -> Result<()> {
+        if ctx.outside {
+            return Err(Error::Forbidden("staff choose what is shared".into()));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let row: Option<(Option<String>, Option<Uuid>, Option<String>)> = sqlx::query_as(
+            "select f.entity, f.record_id, u.kind from file_object f left join app_user u on u.tenant_id = f.tenant_id and u.id = f.created_by \
+             where f.tenant_id = $1 and f.id = $2 for update of f",
+        )
+        .bind(ctx.tenant)
+        .bind(file)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (Some(entity), Some(id), kind) = row.ok_or_else(|| Error::NotFound("file".into()))? else {
+            return Err(Error::invalid("only a file attached to a record is shared with outside people"));
+        };
+        self.get(ctx, &entity, id, false).await.map_err(|_| Error::NotFound("file".into()))?;
+        if !shared && kind.as_deref().is_some_and(|k| k != "member") {
+            return Err(Error::invalid("what an outside person uploaded stays shared with them"));
+        }
+        let changed = sqlx::query("update file_object set shared = $3 where tenant_id = $1 and id = $2 and shared <> $3")
+            .bind(ctx.tenant)
+            .bind(file)
+            .bind(shared)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if changed > 0 {
+            crate::audit::record(&mut tx, ctx, &entity, id, if shared { "share_file" } else { "unshare_file" }, None, json!({"file": file})).await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Detaches and deletes a file record (its uploader, or anyone with write access to the record

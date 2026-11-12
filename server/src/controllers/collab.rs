@@ -26,11 +26,14 @@ struct NewComment {
     body: String,
     #[serde(default)]
     mentions: Vec<Uuid>,
+    /// Shared with outside people (BD-22); an outside person's own always is.
+    #[serde(default)]
+    shared: bool,
 }
 
 async fn add_comment(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): RecordPath, Json(b): Json<NewComment>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    let cid = st.kernel.add_comment(&ctx, &entity, id, &b.body, &b.mentions).await?;
+    let cid = st.kernel.add_comment_shared(&ctx, &entity, id, &b.body, &b.mentions, b.shared).await?;
     Ok((StatusCode::CREATED, Json(json!({"id": cid}))).into_response())
 }
 
@@ -151,17 +154,35 @@ async fn delete_file(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): P
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+#[derive(Deserialize)]
+struct Shared {
+    shared: bool,
+}
+
+/// `PUT /api/comments/{id}/shared` `{shared}`: staff share a comment with outside people, or stop (BD-22).
+async fn share_comment(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(b): Json<Shared>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.share_comment(&ctx, id, b.shared).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `PUT /api/files/{id}/shared` `{shared}`: the same for a file attached to a record.
+async fn share_file(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(b): Json<Shared>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.share_file(&ctx, id, b.shared).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 async fn directory(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Json<Value>> {
     let st = app_state(&app)?;
     Ok(Json(json!({"users": st.kernel.user_directory(&ctx).await?})))
 }
 
 pub fn routes() -> Routes {
-    use axum::routing::{delete, get, patch, post};
+    use axum::routing::{delete, get, patch, post, put};
     Routes::new()
         .prefix("/api")
         .add("/v1/{entity}/{id}/comments", get(comments).post(add_comment))
         .add("/comments/{id}", patch(edit_comment).delete(delete_comment))
+        .add("/comments/{id}/shared", put(share_comment))
         .add("/v1/{entity}/{id}/assignments", get(assignments).post(assign))
         .add("/assignments", get(my_assignments))
         .add("/assignments/{id}/close", post(close_assignment))
@@ -170,5 +191,6 @@ pub fn routes() -> Routes {
         .add("/v1/{entity}/{id}/follow", get(following).put(set_following))
         .add("/v1/{entity}/{id}/attachments", get(attachments))
         .add("/files/{id}", delete(delete_file))
+        .add("/files/{id}/shared", put(share_file))
         .add("/users", get(directory))
 }

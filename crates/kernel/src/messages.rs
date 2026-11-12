@@ -293,6 +293,18 @@ async fn effective(tx: &mut Tx, ctx: &Ctx, key: &str) -> Result<MessageDef> {
     }
 }
 
+/// Template `key`'s in-app wording (`title`, `text`) rendered for `values` in `language` (else the workspace's, else
+/// English), with no record: what a public page of the platform says (BD-23). Plain text, for the caller to escape.
+pub(crate) async fn notice(tx: &mut Tx, ctx: &Ctx, key: &str, language: &str, values: &Value) -> Result<Option<(String, Option<String>)>> {
+    let def = effective(tx, ctx, key).await?;
+    let (_, b) = bodies(&def, Some(language), None);
+    if b.inapp.is_none() {
+        return Ok(None);
+    }
+    let said = render_channel(b, "inapp", &variables(Value::Null, json!({}), values.clone(), ""), false)?;
+    Ok(Some((said["title"].as_str().unwrap_or_default().to_string(), said["text"].as_str().map(str::to_string).filter(|t| !t.is_empty()))))
+}
+
 /// What a template's variables are: `doc`, `settings`, `values`, `opt_out`.
 fn variables(doc: Value, settings: Value, values: Value, opt_out: &str) -> Value {
     json!({"doc": doc, "settings": settings, "values": values, "opt_out": opt_out})
@@ -1578,7 +1590,7 @@ impl Kernel {
 }
 
 /// Equal, in time that does not depend on where they differ.
-fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 

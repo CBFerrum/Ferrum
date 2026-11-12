@@ -102,6 +102,12 @@ KMS = ("-p", "ferrum-kernel", "--test", "kms_it")
 SAGA = ("-p", "ferrum-kernel", "--test", "saga_it")
 SIGNUP = ("-p", "ferrum-kernel", "--test", "signup_it")
 PORTAL_SIGNUP = ("-p", "ferrum-kernel", "--test", "portal_signup_it")
+OUTSIDE_SHARED = ("-p", "ferrum-kernel", "--test", "outside_shared_it")
+ACTION_LINKS = ("-p", "ferrum-kernel", "--test", "action_links_it")
+ACTION_LINKS_UNIT = ("-p", "ferrum-kernel", "--lib", "action_link")
+LINK_PAGE = ("-p", "ferrum-server", "--lib", "controllers::links")
+ABSENCE = ("-p", "ferrum-kernel", "--test", "absence_it")
+PUBLISHED_FIND = ("-p", "ferrum-kernel", "--test", "published_it")
 ACCEPTANCE = ("-p", "ferrum-ops", "--test", "acceptance_it")
 INDUSTRIAL = ("-p", "ferrum-apps", "--lib", "industrial::tests")
 MANIFEST_UNIT = ("-p", "ferrum-apps", "--lib", "manifest::tests")
@@ -644,7 +650,7 @@ MUTANTS = [
     ("scheduled-ignores-the-zone", "crates/kernel/src/schedule.rs", "    qb.push_bind(tz.to_string()).push(\"::text as tz, \").push_bind(at)", "    qb.push_bind(\"UTC\".to_string()).push(\"::text as tz, \").push_bind(at)", SCHEDULE),
     ("scheduled-catches-up-forever", "crates/kernel/src/schedule.rs", "let floor = now - chrono::Duration::days(CATCH_UP_DAYS);", "let floor = now - chrono::Duration::days(3650);", SCHEDULE),
     ("scheduled-page-repeats-its-cursor", "crates/kernel/src/schedule.rs", "qb.push(\" and a.id > \").push_bind(c);", "qb.push(\" and a.id >= \").push_bind(c);", SCHEDULE),
-    ("scheduled-occurrences-never-pruned", "crates/kernel/src/schedule.rs", "\"delete from automation_occurrence where due_at < now() - make_interval(days => $1)\"", "\"delete from automation_occurrence where false and $1 = 0\"", SCHEDULE),
+    ("scheduled-occurrences-never-pruned", "crates/kernel/src/schedule.rs", "\"delete from automation_occurrence o where o.due_at < now()", "\"delete from automation_occurrence o where false and o.due_at < now()", SCHEDULE),
     ("schedule-takes-any-field", "crates/kernel/src/schedule.rs", "Some(_) => Err(bad(format!(\"{at}: {name} is not a date or datetime field\"))),", "Some(_) => Ok(false),", SCHEDULE),
     ("batch-checked-only-as-a-whole", "crates/kernel/src/customize.rs", "let now = if stepwise { Some(", "let now = if false { Some(", AUTHORING),
     ("dry-run-kept", "crates/kernel/src/customize.rs", "        if dry_run || ids.is_empty() {", "        if ids.is_empty() {", AUTHORING),
@@ -781,6 +787,26 @@ MUTANTS = [
     ("secret-mail-waits-plain", "crates/kernel/src/outbox.rs", "payload[\"html\"] = crate::messages::masked(&payload[\"html\"], mask);", "payload[\"html\"] = payload[\"html\"].clone();", SECRET_VALUES),
     ("secret-mail-seal-left", "crates/kernel/src/outbox.rs", "set payload = payload - 'sealed' where id = $1", "set payload = payload where id = $1", SECRET_VALUES),
 
+    # Comments and files shared with outside people (BD-22).
+    ("outside-reads-unshared-comments", "crates/kernel/src/collab.rs", "and (c.shared or not $4) order by c.created_at", "and (true or not $4) order by c.created_at", OUTSIDE_SHARED),
+    ("outside-lists-unshared-files", "crates/kernel/src/collab.rs", "and (shared or not $4 or created_by = $5)", "and (true or not $4 or created_by = $5)", OUTSIDE_SHARED),
+    ("outside-downloads-unshared-file", "crates/kernel/src/files.rs", "let seen = (shared && ctx.perms.shared(e).is_some())", "let seen = true || (shared && ctx.perms.shared(e).is_some())", OUTSIDE_SHARED),
+    ("outside-told-of-unshared-comment", "crates/kernel/src/collab.rs", "Ok(other) if other.outside && (!shared || other.perms.shared(entity).is_none()) => false,", "Ok(other) if false => false,", OUTSIDE_SHARED),
+    ("outside-follows-records", "crates/kernel/src/collab.rs", "        if ctx.outside {\n            // What an outside person writes", "        if false {\n            // What an outside person writes", OUTSIDE_SHARED),
+    ("outside-adds-with-read-only", "crates/kernel/src/collab.rs", "        if outside == Some(false) {\n            return Err(Error::Forbidden(\"you may read", "        if false {\n            return Err(Error::Forbidden(\"you may read", OUTSIDE_SHARED),
+    # Signed action links (BD-23).
+    ("link-used-past-its-uses", "crates/kernel/src/action_link.rs", "and expires_at > now() and uses < max_uses", "and expires_at > now()", ACTION_LINKS),
+    ("link-expired-still-works", "crates/kernel/src/action_link.rs", "and revoked_at is null and expires_at > now()", "and revoked_at is null", ACTION_LINKS),
+    ("link-of-another-workspace", "crates/kernel/src/action_link.rs", "where tenant_id = $1 and digest = $2", "where $1::uuid is not null and digest = $2", ACTION_LINKS),
+    ("link-runs-an-action-it-does-not-name", "crates/kernel/src/action_link.rs", "if action == VIEW || !link.actions.iter().any(|a| a == action) {", "if action == VIEW {", ACTION_LINKS),
+    ("link-fixed-values-overridden", "crates/kernel/src/action_link.rs", "    out.extend(fixed.clone());", "    let _ = &fixed;", ACTION_LINKS),
+    ("link-shows-any-field", "crates/kernel/src/action_link.rs", "if matches!(f.ftype, FieldType::Secret | FieldType::Table | FieldType::Attach) || f.perm_group.is_some() {", "if false {", ACTION_LINKS),
+    ("link-page-framed-by-anyone", "server/src/controllers/links.rs", "if origins.is_empty() { \"frame-ancestors 'none'\".into() }", "if origins.is_empty() { \"frame-ancestors *\".into() }", LINK_PAGE),
+    # Published records' pages (BD-25) and schedules by absence (BD-27).
+    ("published-search-wildcards", "crates/kernel/src/published.rs", ".replace('%', \"\\\\%\")", ".replace('%', \"%\")", PUBLISHED_FIND),
+    ("published-address-of-a-draft", "crates/kernel/src/published.rs", "        // Whatever the filter says: a draft or a cancelled document is never public.\n        qb.push(\" and a.docstatus = 1\");\n    }\n    if let Some(address)", "        qb.push(\"\");\n    }\n    if let Some(address)", PUBLISHED_FIND),
+    ("absence-not-asked", "crates/kernel/src/schedule.rs", "    if let Some(a) = absent {\n        push_absent(qb,", "    if let Some(a) = absent.filter(|_| false) {\n        push_absent(qb,", ABSENCE),
+    ("absence-fires-every-run", "crates/kernel/src/schedule.rs", "a.within.sql(\"(m.due at time zone prm.tz)\").2)", "\"(m.due at time zone prm.tz)\")", ABSENCE),
 ]
 
 
