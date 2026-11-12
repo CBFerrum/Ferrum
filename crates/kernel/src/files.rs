@@ -77,8 +77,11 @@ impl Kernel {
     /// Stores a file, optionally attached to a record the caller can read, and returns
     /// `{id, url, file_name, size, sha256}` — exactly what the upload API returns.
     pub async fn store_file(&self, ctx: &Ctx, attach_to: Option<(&str, Uuid)>, file_name: &str, content_type: &str, data: &[u8]) -> Result<Value> {
-        if let Some((entity, record)) = attach_to {
-            self.get(ctx, entity, record, false).await?;
+        match attach_to {
+            // An outside person attaches as the upload route has them do (BD-22).
+            Some((entity, record)) if ctx.outside => self.may_attach(ctx, entity, record).await?,
+            Some((entity, record)) => drop(self.get(ctx, entity, record, false).await?),
+            None => {}
         }
         self.check_storage_quota(ctx.tenant, data.len() as u64).await?;
         let scanned = self.scan_stream(ctx, file_name, data.len() as u64, futures::stream::iter([Ok::<_, Error>(data)])).await?;
@@ -106,8 +109,8 @@ impl Kernel {
         let sha = hex::encode(Sha256::digest(data));
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query(
-            "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by, scan_status) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by, scan_status, shared) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(ctx.tenant)
         .bind(id)
@@ -120,6 +123,8 @@ impl Kernel {
         .bind(&sha)
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
         .bind(scanned)
+        // What an outside person uploads is shared by nature (BD-22).
+        .bind(ctx.outside)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -131,28 +136,43 @@ impl Kernel {
     /// without reading it.
     pub async fn file_info(&self, ctx: &Ctx, id: Uuid) -> Result<FileInfo> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let row: Option<(String, String, String, Option<String>, Option<Uuid>, i64, Option<Uuid>)> = sqlx::query_as(
-            "select file_name, content_type, storage_key, entity, record_id, size_bytes, created_by from file_object where tenant_id = $1 and id = $2",
+        let row: Option<(String, String, String, Option<String>, Option<Uuid>, i64, Option<Uuid>, bool)> = sqlx::query_as(
+            "select file_name, content_type, storage_key, entity, record_id, size_bytes, created_by, shared from file_object where tenant_id = $1 and id = $2",
         )
         .bind(ctx.tenant)
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
-        let (name, content_type, key, entity, record, size, by) = row.ok_or_else(|| Error::NotFound("file".into()))?;
-        self.may_download(ctx, entity.as_deref(), record, by).await?;
+        let (name, content_type, key, entity, record, size, by, shared) = row.ok_or_else(|| Error::NotFound("file".into()))?;
+        self.may_download_file(ctx, id, entity.as_deref(), record, by, shared).await?;
         Ok(FileInfo { name, content_type, size, key })
     }
 
     /// Whether `ctx` may download a file: one tied to a record, whoever may read the record (an approver too, while it
     /// awaits them: BD-19); one tied to none, its
-    /// uploader and administrators (`by`: who uploaded it). Not found otherwise.
+    /// uploader and administrators (`by`: who uploaded it). Not found otherwise. Not knowing which file, it refuses an
+    /// outside person any file tied to a record: [`Kernel::may_download_file`] decides theirs.
     pub async fn may_download(&self, ctx: &Ctx, entity: Option<&str>, record: Option<Uuid>, by: Option<Uuid>) -> Result<()> {
         match (entity, record) {
+            (Some(_), Some(_)) if ctx.outside => Err(Error::NotFound("file".into())),
             (Some(e), Some(r)) => self.read_record(ctx, e, r, false).await.map(drop),
             _ if owns_loose(ctx, by) => Ok(()),
             _ => Err(Error::NotFound("file".into())),
         }
+    }
+
+    /// [`Kernel::may_download`] for stored file `file` (`shared`: whether it is shared with outside people). An outside
+    /// person downloads a file of a record they read when it is shared and their rule shows them shared files, when
+    /// they uploaded it, or when a field of the record as they read it names it (BD-22); otherwise it is not found,
+    /// the same as a file that is not there.
+    pub async fn may_download_file(&self, ctx: &Ctx, file: Uuid, entity: Option<&str>, record: Option<Uuid>, by: Option<Uuid>, shared: bool) -> Result<()> {
+        let (Some(e), Some(r), true) = (entity, record, ctx.outside) else { return self.may_download(ctx, entity, record, by).await };
+        let doc = self.read_record(ctx, e, r, false).await.map_err(|_| Error::NotFound("file".into()))?;
+        let seen = (shared && ctx.perms.shared(e).is_some())
+            || (!ctx.user.is_nil() && by == Some(ctx.user))
+            || ctx.schema.entity(e).is_some_and(|ent| named_files(ctx, ent, &doc).contains(&file));
+        if seen { Ok(()) } else { Err(Error::NotFound("file".into())) }
     }
 
     /// Counts an outside person's upload tied to no record against 20 an hour (docs/limits.md); a member's is not

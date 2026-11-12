@@ -1256,7 +1256,15 @@ pub struct PermissionDef {
     /// action's condition and its app's checks still apply.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<String>,
+    /// What a portal role's holders see of the conversation on the records this rule lets them read: `read`, the
+    /// comments and files staff marked shared with outside people; `add`, those and their own beside them. None:
+    /// nothing of it (the default). Members read every comment and file of a record they read, whatever this says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<String>,
 }
+
+/// What a rule's `shared` may say.
+pub const SHARED_REACH: &[&str] = &["read", "add"];
 
 /// Whether records of `e` hold personal data: a package declares them its people's (`declared`), or
 /// they keep an email or a phone number. A portal role reads such records only as its holders' own.
@@ -1426,7 +1434,7 @@ impl PermissionDef {
         }
         if !self.if_owner && self.via.is_none() {
             // Reference data (consent forms, appointment types) may be read whole, to pick from.
-            let reads_only = !(self.write || self.create || self.submit || !self.actions.is_empty() || !self.write_groups.is_empty());
+            let reads_only = !(self.write || self.create || self.submit || !self.actions.is_empty() || !self.write_groups.is_empty() || self.shared.is_some());
             if personal || !reads_only {
                 return Some(format!(
                     "a portal role reaches only its holders' own {}: make the rule own records only, or give the path they are reached by \

@@ -3,6 +3,22 @@ version: 0.2.0
 label: Core
 description: What every app needs — companies, currencies with their exchange rates, units.
 
+# The platform's own wording for people outside the workspace (docs/builder/decisions.md BD-22, BD-23): a workspace
+# edits each like any message template.
+messages:
+  - key: core.comment_shared
+    label: Staff shared a comment with someone outside
+    channels: [email, inapp]
+    values: [record, comment]
+    languages:
+      en:
+        email:
+          subject: "A new note on {{ values.record }}"
+          body: "<p>There is a new note for you on {{ values.record }}:</p><blockquote>{{ values.comment }}</blockquote>"
+        inapp:
+          title: "A new note on {{ values.record }}"
+          text: "{{ values.comment }}"
+
 seed:
   - entity: Currency
     key: [code]

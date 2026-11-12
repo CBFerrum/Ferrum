@@ -90,6 +90,12 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         self.get_tx(ctx, &mut tx, entity, id, false).await?;
         let ent = self.entity(ctx, entity)?;
+        // An outside person whose portal rule lets them add to a record's conversation attaches to one they read
+        // (BD-22): what they upload is shared by nature.
+        if ctx.outside && ctx.perms.shared(entity) == Some(true) {
+            tx.commit().await?;
+            return Ok(());
+        }
         let scope = row_scope(ctx, &ent, Action::Write)?;
         let doc = self.load_marked(&mut tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.admits(&mut tx, ctx.tenant, &doc).await? {

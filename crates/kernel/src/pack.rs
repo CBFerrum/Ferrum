@@ -427,6 +427,7 @@ struct Rule {
     match_rule: Option<Value>,
     via: Option<String>,
     actions: Vec<String>,
+    shared: Option<String>,
 }
 
 impl Rule {
@@ -447,6 +448,7 @@ impl Rule {
             condition: self.match_rule.and_then(|m| serde_json::from_value(m).ok()).unwrap_or_default(),
             via: self.via,
             actions: self.actions,
+            shared: self.shared,
         }
     }
 }
@@ -460,7 +462,7 @@ fn as_kept(p: &PermissionDef) -> PermissionDef {
 async fn rules_of(tx: &mut Tx, tenant: Uuid, role: Option<&str>) -> Result<Vec<Rule>> {
     Ok(sqlx::query_as(
         "select role, entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, can_export, can_import, if_owner, \
-         read_groups, write_groups, match_rule, via, actions from role_permission where tenant_id = $1 and ($2::text is null or role = $2) \
+         read_groups, write_groups, match_rule, via, actions, shared from role_permission where tenant_id = $1 and ($2::text is null or role = $2) \
          order by role, entity, if_owner, rule_key",
     )
     .bind(tenant)
