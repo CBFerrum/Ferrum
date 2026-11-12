@@ -111,6 +111,7 @@ APPS_API = ("-p", "ferrum-server", "--test", "apps_api")
 LINKS = ("-p", "ferrum-kernel", "--test", "links_it")
 META_LINKS = ("-p", "ferrum-meta", "--lib", "linked_records")
 STREAMED = ("-p", "ferrum-server", "--test", "streamed_files_it")
+SECRET_VALUES = ("-p", "ferrum-kernel", "--test", "secrets_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -719,7 +720,7 @@ MUTANTS = [
     # Message templates and channels (docs/api.md, Messages; BD-20).
     ("message-opt-out-ignored", "crates/kernel/src/messages.rs", "} else if promotional && opted_out(tx, ctx.tenant, &address, kind, ", "} else if false && opted_out(tx, ctx.tenant, &address, kind, ", MESSAGES),
     ("message-template-reads-secrets", "crates/kernel/src/messages.rs", "for f in ent.def.fields.iter().filter(|f| f.ftype != FieldType::Secret) {", "for f in ent.def.fields.iter() {", MESSAGES),
-    ("message-code-kept-in-log", "crates/kernel/src/messages.rs", "let content = masked(message, pending[\"mask\"].as_str());", "let content = message.clone();", MESSAGES),
+    ("message-code-kept-in-log", "crates/kernel/src/messages.rs", "let content = masked(message, &mask);", "let content = message.clone();", MESSAGES),
     ("message-code-verified-twice", "crates/kernel/src/messages.rs", "used_at = case when $3 then now() end where", "used_at = null where", MESSAGES),
     ("message-inbound-unsigned-accepted", "crates/kernel/src/messages.rs", "        if !ok {", "        if false {", MESSAGES),
     ("message-number-guessed", "crates/kernel/src/messages.rs", "let code = s.calling_code.as_deref().ok_or_else(", "let code = s.calling_code.as_deref().or(Some(\"+1\")).ok_or_else(", MESSAGES_UNIT),
@@ -759,6 +760,13 @@ MUTANTS = [
     # Documents about a query (docs/api.md, A report as a document; BD-21).
     ("query-documents-person-unbounded", "crates/kernel/src/documents.rs", "    if person && total > MAX_GROUPS {", "    if false {", STUDIO_QUERY_DOCUMENTS),
     ("query-documents-cursor-ignored", "crates/kernel/src/documents.rs", "filter(|(id, _)| after.is_none_or(|a| *id > a))", "filter(|_| true)", STUDIO_QUERY_DOCUMENTS),
+    # Secret parameters, answers given once and secret message values.
+    ("secret-param-audited", "crates/kernel/src/doc.rs", "None, def.redacted(params)).await?;", "None, params.clone()).await?;", SECRET_VALUES),
+    ("secret-param-in-error", "crates/kernel/src/doc.rs", ".map_err(|e| e.redact(&secrets.unwrap_or_default()))", ".map_err(|e| e.redact(&secrets.map(|_| vec![]).unwrap_or_default()))", SECRET_VALUES),
+    ("secret-param-digest-unkeyed", "crates/kernel/src/capability.rs", "input[\"params\"] = self.digestible_params(ctx, cap.entity.as_deref().unwrap_or_default(), &a.name, params)?;", "input[\"params\"] = params.clone();", SECRET_VALUES),
+    ("answer-once-kept", "crates/kernel/src/receipt.rs", "keep(&mut tx, ctx, key, 200, &def.map_or_else(|| out.clone(), |d| d.kept_result(&out))).await?;", "keep(&mut tx, ctx, key, 200, &out).await?;", SECRET_VALUES),
+    ("secret-mail-waits-plain", "crates/kernel/src/outbox.rs", "payload[\"html\"] = crate::messages::masked(&payload[\"html\"], mask);", "payload[\"html\"] = payload[\"html\"].clone();", SECRET_VALUES),
+    ("secret-mail-seal-left", "crates/kernel/src/outbox.rs", "set payload = payload - 'sealed' where id = $1", "set payload = payload where id = $1", SECRET_VALUES),
 
 ]
 

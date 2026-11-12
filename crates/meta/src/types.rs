@@ -370,6 +370,28 @@ pub struct ActionContract {
     /// it; one checked against it is told.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deprecated: Option<String>,
+    /// Fields of what it returns that are given to the caller once and never kept with its receipt (a new card's
+    /// code): a repeat under the same key gets the rest, and is told so and what to do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_once: Option<AnswerOnce>,
+}
+
+/// Result fields given once ([`ActionContract::answer_once`]).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AnswerOnce {
+    pub fields: Vec<String>,
+    /// What a caller whose first answer was lost should do ("Make a new code with New Code").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then: Option<String>,
+}
+
+impl AnswerOnce {
+    /// What a repeat under the same key is told, for an action labelled `label`.
+    pub fn told(&self, label: &str) -> String {
+        let then = self.then.as_deref().unwrap_or("What was done stands, and was not done again.");
+        format!("{label} was done under this key, and its {} were given in that first answer only: they are not kept. {then}", self.fields.join(", "))
+    }
 }
 
 /// Rows of an engine table (`table`) or of an entity's (`entity`) that a release changes in
@@ -853,6 +875,59 @@ pub struct ActionParam {
     pub required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// A secret (a card's PIN): the handler reads it, and the audit log, the receipts and error messages show it as
+    /// [`REDACTED`]; the digest a receipt is claimed with holds it only keyed with the server's secret key. An action's
+    /// only: a transition keeps what it is given.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
+}
+
+/// What a secret parameter is shown as wherever it would be kept.
+pub const REDACTED: &str = "[redacted]";
+
+impl ActionDef {
+    /// The text of each secret parameter given in `params` (not empty), for keeping them out of what is written.
+    pub fn secret_values(&self, params: &Value) -> Vec<String> {
+        self.params
+            .iter()
+            .filter(|p| p.secret)
+            .filter_map(|p| match params.get(&p.name)? {
+                Value::Null => None,
+                Value::String(s) => Some(s.clone()),
+                other => Some(other.to_string()),
+            })
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    /// `params` with each secret parameter given shown as [`REDACTED`].
+    pub fn redacted(&self, params: &Value) -> Value {
+        let mut out = params.clone();
+        if let Some(o) = out.as_object_mut() {
+            for p in self.params.iter().filter(|p| p.secret) {
+                if let Some(v) = o.get_mut(&p.name).filter(|v| !v.is_null()) {
+                    *v = Value::String(REDACTED.into());
+                }
+            }
+        }
+        out
+    }
+
+    /// The fields of its result given once (`contract.answer_once`).
+    pub fn answer_once(&self) -> Option<&AnswerOnce> {
+        self.contract.as_ref().and_then(|c| c.answer_once.as_ref()).filter(|a| !a.fields.is_empty())
+    }
+
+    /// `result` as a receipt keeps it: without the fields given once.
+    pub fn kept_result(&self, result: &Value) -> Value {
+        let mut out = result.clone();
+        if let (Some(a), Some(o)) = (self.answer_once(), out.as_object_mut()) {
+            for f in &a.fields {
+                o.remove(f);
+            }
+        }
+        out
+    }
 }
 
 fn default_param_type() -> String {
