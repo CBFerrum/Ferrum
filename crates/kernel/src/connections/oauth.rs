@@ -470,13 +470,53 @@ impl Kernel {
         let Some(sealed) = sealed else { return Err(Error::NotFound("a connected account".into())) };
         audit::record(&mut tx, ctx, "Connection", id, "disconnect", None, json!({"owner": if owner.is_nil() { "workspace" } else { "person" }})).await?;
         tx.commit().await?;
+        self.revoke_tokens(&conn, provider, owner, &sealed).await
+    }
+
+    /// Revokes the tokens `sealed` (of `owner`'s sign-in) at the provider, where it gives a revoke address: the refresh
+    /// token, else the access token. Whether it confirmed.
+    async fn revoke_tokens(&self, conn: &Loaded, provider: &Provider, owner: Uuid, sealed: &str) -> Result<bool> {
         let Some(url) = &provider.revoke_url else { return Ok(false) };
-        let open: Value = serde_json::from_str(&self.open_sealed(&token_label(ctx.tenant, id, owner), &sealed)?).map_err(Error::internal)?;
+        let open: Value = serde_json::from_str(&self.open_sealed(&token_label(conn.tenant, conn.id, owner), sealed)?).map_err(Error::internal)?;
         let (token, hint) = match open["refresh_token"].as_str() {
             Some(r) => (r.to_string(), "refresh_token"),
             None => (open["access_token"].as_str().unwrap_or_default().to_string(), "access_token"),
         };
-        Ok(matches!(self.token_request(&conn, provider, url, &[("token", &token), ("token_type_hint", hint)]).await?, Granted::Tokens(_)))
+        Ok(matches!(self.token_request(conn, provider, url, &[("token", &token), ("token_type_hint", hint)]).await?, Granted::Tokens(_)))
+    }
+
+    /// After an erasure took a person's own sign-ins (their tokens destroyed here, `taken`: connection and sealed
+    /// tokens): each revoked at its provider where it gives a revoke address, best effort, and what came of it in the
+    /// connection's history. What came of each: `{connection, revoked}` (`revoked` null without a revoke address).
+    pub(crate) async fn revoke_erased(&self, ctx: &Ctx, person: Uuid, taken: Vec<(Uuid, String)>) -> Vec<Value> {
+        let mut out = Vec::new();
+        for (id, sealed) in taken {
+            let tried = async {
+                let conn = self.load_connection(ctx.tenant, &id.to_string()).await?;
+                let (provider, _) = oauth(&conn)?;
+                if provider.revoke_url.is_none() {
+                    return Ok(None);
+                }
+                self.revoke_tokens(&conn, provider, person, &sealed).await.map(Some)
+            }
+            .await;
+            let said = match &tried {
+                Ok(r) => json!({"connection": id, "revoked": r}),
+                Err(e) => json!({"connection": id, "revoked": false, "error": e.to_string()}),
+            };
+            let recorded = async {
+                let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+                audit::record(&mut tx, ctx, "Connection", id, "revoke_on_erasure", None, said.clone()).await?;
+                tx.commit().await?;
+                Ok::<(), Error>(())
+            }
+            .await;
+            if let Err(e) = recorded {
+                tracing::warn!(tenant = %ctx.tenant, connection = %id, "an erased person's sign-in: what its revocation did was not recorded: {e}");
+            }
+            out.push(said);
+        }
+        out
     }
 
     /// The connections a person signs in to with their own account, and whether they have: `{id, name, label, status,

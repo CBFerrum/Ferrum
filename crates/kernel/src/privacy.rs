@@ -558,6 +558,7 @@ impl Kernel {
         let emails = addresses(&mut tx, ctx.tenant, &email).await?;
         let mut records = Vec::new();
         let reached = reached(ctx, &mut tx, &emails, phone.as_deref()).await?;
+        let theirs: Vec<(String, Uuid)> = reached.iter().flat_map(|(d, ids)| ids.iter().map(|i| (d.entity.clone(), *i))).collect();
         let mut possibly = match person.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
             Some(name) => named(ctx, &mut tx, name, &reached).await?,
             None => vec![],
@@ -622,6 +623,10 @@ impl Kernel {
         // The messages sent to them (messages.rs).
         for held in crate::messages::held_report(&mut tx, ctx.tenant, account_id, &emails, phone.as_deref()).await? {
             apps.push(json!({"app": "messages", "held": held}));
+        }
+        // What connections keep of them: calls they made or about their records, deliveries naming them, their sign-ins.
+        for held in crate::connections::personal::held_report(&mut tx, ctx.tenant, account_id, &emails, &theirs).await? {
+            apps.push(json!({"app": "connections", "held": held}));
         }
         tx.rollback().await?;
         Ok(json!({
@@ -712,6 +717,12 @@ impl Kernel {
         if !messages.is_empty() {
             apps.push(json!({"app": "messages", "erased": messages.len()}));
         }
+        // What connections keep of them; their own sign-ins' tokens go here, and are revoked once this commits.
+        let records: Vec<(String, Uuid)> = erased.iter().filter_map(|e| Some((e["entity"].as_str()?.to_string(), e["id"].as_str()?.parse().ok()?))).collect();
+        let conns = crate::connections::personal::erase_held(&mut tx, ctx.tenant, account, &emails, &records).await?;
+        if conns.calls + conns.inbound > 0 || !conns.sign_ins.is_empty() {
+            apps.push(json!({"app": "connections", "erased": conns.calls + conns.inbound + conns.sign_ins.len() as u64}));
+        }
         // Their opt-outs keep stopping promotional messages, under a keyed digest of the address (BD-20).
         let choices = crate::messages::choices_of(&mut tx, ctx.tenant, &emails, phone.as_deref()).await?;
         let opt_outs = crate::messages::erase_choices(&mut tx, ctx.tenant, self.settings.secret_key.as_ref(), &choices).await?;
@@ -732,7 +743,12 @@ impl Kernel {
         if let Some(id) = account {
             self.invalidate_user(ctx.tenant, id);
         }
+        let revoked = match account {
+            Some(id) if !conns.sign_ins.is_empty() => self.revoke_erased(ctx, id, conns.sign_ins).await,
+            _ => vec![],
+        };
         Ok(json!({
+            "sign_ins_revoked": revoked,
             "email": email, "addresses": emails, "phone": phone, "erased": erased, "retained": retained, "held": held, "account_erased": account.is_some(),
             "audit_events_redacted": events, "files_deleted": files, "exports_deleted": exports, "apps": apps, "not_searched": ctx.schema.undeclared_personal_data,
         }))
