@@ -381,7 +381,7 @@ async fn check_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef) -
         ("now", json!("")),
         ("title", json!("")),
         ("checking", json!(true)),
-        ("print", json!({"copy": "", "language": "en", "title": "", "entity": "", "now": "", "time": ""})),
+        ("print", json!({"copy": "", "language": "en", "title": "", "entity": "", "now": "", "time": "", "letterhead": false, "letterhead_name": ""})),
         ("company", ctx.schema.entity("Company").map(|c| Value::Object(sample_of(c, ctx))).unwrap_or(json!({}))),
     ] {
         vars[name] = v;
@@ -790,11 +790,13 @@ async fn print_settings(k: &Kernel, tx: &mut Tx, ctx: &Ctx) -> Result<PrintSet> 
 #[derive(Debug, Clone)]
 struct LetterHead {
     id: Uuid,
+    name: String,
     company: Option<Uuid>,
     header: Option<Layout>,
     footer: Option<Layout>,
-    header_mm: f64,
-    footer_mm: f64,
+    /// The room its header and footer take on a PDF page; none: as much as their blocks need, worked out as it prints.
+    header_mm: Option<f64>,
+    footer_mm: Option<f64>,
 }
 
 /// Letter head `id`, read as the workspace; a disabled one, or one whose parts no longer pass the check, is none.
@@ -811,14 +813,15 @@ async fn letter_head(k: &Kernel, tx: &mut Tx, ctx: &Ctx, id: Uuid) -> Result<Opt
         let l = Layout::from_letterhead(r.get(f).unwrap_or(&Value::Null)).ok().flatten()?;
         layout::check(&ctx.schema, None, &l).is_empty().then_some(l)
     };
-    let mm = |f: &str, d: f64| r.get(f).and_then(Value::as_f64).unwrap_or(d).clamp(0.0, 120.0);
+    let mm = |f: &str, most: f64| r.get(f).and_then(Value::as_f64).map(|v| v.clamp(0.0, most));
     Ok(Some(LetterHead {
         id,
+        name: r.get("letter_head_name").and_then(Value::as_str).unwrap_or_default().to_string(),
         company: r.get("company").and_then(Value::as_str).and_then(|v| v.parse().ok()),
         header: part("header"),
         footer: part("footer"),
-        header_mm: mm("header_height_mm", 30.0),
-        footer_mm: mm("footer_height_mm", 15.0),
+        header_mm: mm("header_height_mm", 120.0),
+        footer_mm: mm("footer_height_mm", 80.0),
     }))
 }
 
@@ -831,14 +834,15 @@ fn draft_letter_head(ctx: &Ctx, d: &Value) -> Result<LetterHead> {
     }
     let part = |f: &str| Layout::from_letterhead(doc.get(f).unwrap_or(&Value::Null)).ok().flatten();
     let uuid = |f: &str| doc.get(f).and_then(Value::as_str).and_then(|v| v.parse::<Uuid>().ok());
-    let mm = |f: &str, d: f64| doc.get(f).and_then(Value::as_f64).unwrap_or(d).clamp(0.0, 120.0);
+    let mm = |f: &str, most: f64| doc.get(f).and_then(Value::as_f64).map(|v| v.clamp(0.0, most));
     Ok(LetterHead {
         id: uuid("id").unwrap_or_default(),
+        name: doc.get("letter_head_name").and_then(Value::as_str).unwrap_or_default().to_string(),
         company: uuid("company"),
         header: part("header"),
         footer: part("footer"),
-        header_mm: mm("header_height_mm", 30.0),
-        footer_mm: mm("footer_height_mm", 15.0),
+        header_mm: mm("header_height_mm", 120.0),
+        footer_mm: mm("footer_height_mm", 80.0),
     })
 }
 
@@ -1157,10 +1161,11 @@ async fn render_page(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, id: 
     let title = vars["title"].as_str().unwrap_or_default().to_string();
     let doc_title = format!("{} {}", ent.def.label, vars["doc"].get("number").and_then(Value::as_str).filter(|n| !n.is_empty()).unwrap_or(&title));
     let print = |copy: Option<&str>| -> Map<String, Value> {
-        json!({"copy": copy.unwrap_or(""), "now": now, "time": local, "language": tag, "title": title, "entity": ent.def.label})
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
+        json!({"copy": copy.unwrap_or(""), "now": now, "time": local, "language": tag, "title": title, "entity": ent.def.label,
+               "letterhead": lh.is_some(), "letterhead_name": lh.as_ref().map(|l| l.name.clone()).unwrap_or_default()})
+        .as_object()
+        .cloned()
+        .unwrap_or_default()
     };
     let links = vars["links"].as_object().cloned().unwrap_or_default();
     let currency = vars["currency"].as_str().map(str::to_string);
@@ -1202,9 +1207,14 @@ async fn render_page(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, id: 
     let font = def.layout.as_ref().and_then(|l| l.style.as_ref()).and_then(|s| s.font).unwrap_or(settings.font).name();
     let mut margin_head = lh_head.as_ref().filter(|_| repeat_head).map(|h| layout::margin_page(h, &tag, font, side, (page.margin_mm.top, 0)));
     let mut margin_foot = lh_foot.as_ref().filter(|_| repeat_foot).map(|f| layout::margin_page(f, &tag, font, side, (0, page.margin_mm.bottom)));
+    // A letter head's height as given, else as tall as its blocks come out on this print (`auto`).
+    let width = page.sheet_mm().0 - (page.margin_mm.left + page.margin_mm.right) as f64;
+    let room = |given: Option<f64>, part: &Option<Layout>, most: f64| {
+        given.unwrap_or_else(|| part.as_ref().map_or(0.0, |l| layout::estimate_mm(l, &layout::Data { part: Part::Margin, ..base }, width).min(most)))
+    };
     let (head_mm, foot_mm) = (
-        lh.as_ref().filter(|_| margin_head.is_some()).map_or(0.0, |l| l.header_mm),
-        lh.as_ref().filter(|_| margin_foot.is_some()).map_or(0.0, |l| l.footer_mm),
+        lh.as_ref().filter(|_| margin_head.is_some()).map_or(0.0, |l| room(l.header_mm, &l.header, 120.0)),
+        lh.as_ref().filter(|_| margin_foot.is_some()).map_or(0.0, |l| room(l.footer_mm, &l.footer, 80.0)),
     );
     let copies: Vec<Option<String>> = if ask.copies.is_empty() { vec![None] } else { ask.copies.iter().cloned().map(Some).collect() };
     let mut parts = Vec::new();

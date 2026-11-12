@@ -25,6 +25,8 @@ pub struct Locale {
     pub symbol_after: bool,
     /// `strftime` patterns; `%B` is the month's name in this language.
     pub short: &'static str,
+    /// Day, month and year with no doubt about their order (`29 Oct 2026`): what a print shows by default.
+    pub medium: &'static str,
     pub long: &'static str,
     pub months: Option<[&'static str; 12]>,
 }
@@ -34,18 +36,18 @@ const HI_MONTHS: [&str; 12] = ["जनवरी", "फ़रवरी", "मा�
 const AR_MONTHS: [&str; 12] = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
 
 const fn loc(tag: &'static str, group: &'static str, decimal: &'static str, symbol_after: bool, short: &'static str) -> Locale {
-    Locale { tag, group, decimal, lakh: false, arabic_digits: false, symbol_after, short, long: short, months: None }
+    Locale { tag, group, decimal, lakh: false, arabic_digits: false, symbol_after, short, medium: short, long: short, months: None }
 }
 
 /// The languages whose number and date forms are known; any other is written as English is. The first row is the
 /// fallback.
 pub const LOCALES: &[Locale] = &[
-    Locale { long: "%B %-d, %Y", months: Some(EN_MONTHS), ..loc("en", ",", ".", false, "%m/%d/%Y") },
-    Locale { long: "%-d %B %Y", months: Some(EN_MONTHS), ..loc("en-GB", ",", ".", false, "%d/%m/%Y") },
-    Locale { lakh: true, long: "%-d %B %Y", months: Some(EN_MONTHS), ..loc("en-IN", ",", ".", false, "%d/%m/%Y") },
-    Locale { lakh: true, long: "%-d %B %Y", months: Some(HI_MONTHS), ..loc("hi", ",", ".", false, "%d/%m/%Y") },
-    Locale { arabic_digits: true, long: "%-d %B %Y", months: Some(AR_MONTHS), ..loc("ar", "٬", "٫", true, "%d/%m/%Y") },
-    Locale { long: "%-d %B %Y", months: Some(AR_MONTHS), ..loc("ar-AE", ",", ".", true, "%d/%m/%Y") },
+    Locale { long: "%B %-d, %Y", medium: "%-d %b %Y", months: Some(EN_MONTHS), ..loc("en", ",", ".", false, "%m/%d/%Y") },
+    Locale { long: "%-d %B %Y", medium: "%-d %b %Y", months: Some(EN_MONTHS), ..loc("en-GB", ",", ".", false, "%d/%m/%Y") },
+    Locale { lakh: true, long: "%-d %B %Y", medium: "%-d %b %Y", months: Some(EN_MONTHS), ..loc("en-IN", ",", ".", false, "%d/%m/%Y") },
+    Locale { lakh: true, long: "%-d %B %Y", medium: "%-d %B %Y", months: Some(HI_MONTHS), ..loc("hi", ",", ".", false, "%d/%m/%Y") },
+    Locale { arabic_digits: true, long: "%-d %B %Y", medium: "%-d %B %Y", months: Some(AR_MONTHS), ..loc("ar", "٬", "٫", true, "%d/%m/%Y") },
+    Locale { long: "%-d %B %Y", medium: "%-d %B %Y", months: Some(AR_MONTHS), ..loc("ar-AE", ",", ".", true, "%d/%m/%Y") },
     loc("de", ".", ",", true, "%d.%m.%Y"),
     loc("fr", "\u{202f}", ",", true, "%d/%m/%Y"),
     loc("es", ".", ",", true, "%d/%m/%Y"),
@@ -153,12 +155,14 @@ pub fn amount(d: Decimal, c: &Currency, l: &Locale, show: Show) -> String {
     }
 }
 
-/// A date (`2026-11-12`, or a moment's date part) in `style` `short` or `long`, or a `strftime` pattern of its own,
+/// A date (`2026-11-12`, or a moment's date part) in `style` `short`, `medium` (`29 Oct 2026`) or `long`, or a `strftime`
+/// pattern of its own,
 /// `%B` the month's name in the language.
 pub fn date(v: &str, style: &str, l: &Locale) -> Result<String, String> {
     let day = chrono::NaiveDate::parse_from_str(v.get(..10).unwrap_or(v), "%Y-%m-%d").map_err(|_| format!("'{v}' is not a date"))?;
     let pattern = match style {
         "short" => l.short,
+        "medium" => l.medium,
         "long" => l.long,
         own => own,
     };

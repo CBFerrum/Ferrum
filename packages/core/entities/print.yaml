@@ -12,8 +12,8 @@
     - {name: company, type: link, to: Company, in_list: true, in_filter: true, description: "Whose letter head; empty: the workspace's"}
     - {name: header, type: json, description: "Blocks (layout sections) printed at the top"}
     - {name: footer, type: json, description: "Blocks printed at the foot"}
-    - {name: header_height_mm, type: int, default: 30, min: 0, max: 120, label: Header Height (mm)}
-    - {name: footer_height_mm, type: int, default: 15, min: 0, max: 80, label: Footer Height (mm)}
+    - {name: header_height_mm, type: int, min: 0, max: 120, label: Header Height (mm), description: "Empty: as tall as its blocks come out on each print"}
+    - {name: footer_height_mm, type: int, min: 0, max: 80, label: Footer Height (mm), description: "Empty: as tall as its blocks come out on each print"}
     - {name: disabled, type: check, in_list: true}
   list: {columns: [letter_head_name, company, disabled], sort: letter_head_name asc}
 
