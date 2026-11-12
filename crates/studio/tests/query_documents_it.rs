@@ -236,4 +236,28 @@ async fn scenario() {
     assert_eq!(payload["to"], json!("ann@stmt.test"), "{payload}");
     assert_eq!(payload["files"], json!([file.to_string()]), "{payload}");
     assert_eq!(text(file), "Ann|2.25;10.5;|12.75");
+    drop(tx);
+
+    // ───────────── a pack with the report and the documents about it installs in one go ─────────────
+    let opts = ferrum_kernel::pack::ExportOptions { name: "statements".into(), label: "Statements".into(), version: 1, records: vec![] };
+    let pack = k.export_pack(&a, &opts).await.expect("exported");
+    assert!(pack["documents"].as_array().is_some_and(|d| d.len() == 3), "{}", pack["documents"]);
+    let other = k
+        .create_tenant(NewTenant {
+            slug: "stmt2".into(),
+            name: "Statements Too".into(),
+            admin_email: "admin@stmt2.test".into(),
+            admin_password: "Correct-Horse-9".into(),
+            admin_name: None,
+            packages: vec!["core".into(), "studio".into()],
+            settings: None,
+        })
+        .await
+        .expect("tenant");
+    let session = k.login("stmt2", "admin@stmt2.test", "Correct-Horse-9").await.expect("login");
+    let b = k.load_ctx(other, session.user, None, "it".into()).await.unwrap();
+    let plan = k.plan_pack(&b, &pack).await.expect("planned");
+    k.install_pack(&b, &pack, plan["digest"].as_str().unwrap()).await.expect("the report and its documents in one install");
+    let b = k.load_ctx(other, session.user, None, "it".into()).await.unwrap();
+    assert!(k.document_template(&b, "x.statement").await.is_ok());
 }
