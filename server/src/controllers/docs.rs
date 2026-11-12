@@ -349,6 +349,7 @@ async fn print(
         language: one("language"),
         copies: pairs.iter().filter(|(n, _)| n == "copy").map(|(_, v)| v.clone()).collect(),
         pdf,
+        letterhead_draft: None,
     };
     Ok(super::documents::file_response(st.kernel.print_record(&ctx, &entity, id, &ask).await?))
 }
@@ -358,10 +359,25 @@ struct EmailBody {
     to: String,
     subject: Option<String>,
     message: Option<String>,
+    /// The message as rich text from the editor: cleaned here by the kernel's allow-list (`richtext::sanitize_html`), and
+    /// taken over `message` when it says anything.
+    message_html: Option<String>,
     /// Attach the document as a PDF (the default).
     pdf: Option<bool>,
     /// What the attachment prints as, as `/print` takes it: the format (else the entity's default), the letter head,
     /// the language, the copies.
+    template: Option<String>,
+    letterhead: Option<String>,
+    language: Option<String>,
+    copies: Option<Vec<String>>,
+    /// The same choices as one object (`{template, letterhead, language, copies}`), as the print dialog keeps them; a
+    /// field given at the top wins.
+    print: Option<PrintChoice>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct PrintChoice {
     template: Option<String>,
     letterhead: Option<String>,
     language: Option<String>,
@@ -389,6 +405,9 @@ async fn email_doc(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity,
     let title = format!("{label} {number}");
     let subject = b.subject.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&title).to_string();
     ferrum_kernel::outbox::check_mail(&b.to, &subject)?;
+    if b.message_html.as_ref().is_some_and(|h| h.len() > 512 * 1024) {
+        return Err(ApiError(Error::field("message_html", "a message may be at most 512 KB")));
+    }
     let mut files = Vec::new();
     if b.pdf.unwrap_or(true) {
         if !k.mailer.as_ref().is_some_and(|m| m.can_attach()) {
@@ -396,22 +415,30 @@ async fn email_doc(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity,
         }
         // The attachment is what `/print?format=pdf` makes with the same choices: the default format, not the print
         // format, when none is named.
+        let p = b.print.as_ref();
         let ask = ferrum_kernel::documents::PrintAsk {
-            template: b.template.clone(),
-            letterhead: b.letterhead.clone(),
-            language: b.language.clone(),
-            copies: b.copies.clone().unwrap_or_default(),
+            template: b.template.clone().or_else(|| p.and_then(|p| p.template.clone())),
+            letterhead: b.letterhead.clone().or_else(|| p.and_then(|p| p.letterhead.clone())),
+            language: b.language.clone().or_else(|| p.and_then(|p| p.language.clone())),
+            copies: b.copies.clone().or_else(|| p.and_then(|p| p.copies.clone())).unwrap_or_default(),
             pdf: true,
+            letterhead_draft: None,
         };
         let printed = k.print_record(&ctx, &entity, id, &ask).await?;
         let stored = k.store_file(&ctx, Some((&entity, id)), &printed.file_name, "application/pdf", &printed.bytes).await?;
         files.extend(stored.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()));
     }
+    let rich = b
+        .message_html
+        .as_deref()
+        .map(ferrum_kernel::richtext::sanitize_html)
+        .filter(|h| !ferrum_kernel::richtext::html_to_text(h).trim().is_empty() || h.contains("<img") || h.contains("<hr"));
     let message = b.message.as_deref().map(str::trim).filter(|m| !m.is_empty());
-    let html = match message {
-        Some(m) => format!("<p>{}</p>", esc(m).replace('\n', "<br>")),
-        None if files.is_empty() => format!("<p>{}</p>", esc(&title)),
-        None => format!("<p>Please find {} attached.</p>", esc(&title)),
+    let html = match (rich, message) {
+        (Some(h), _) => h,
+        (None, Some(m)) => format!("<p>{}</p>", esc(m).replace('\n', "<br>")),
+        (None, None) if files.is_empty() => format!("<p>{}</p>", esc(&title)),
+        (None, None) => format!("<p>Please find {} attached.</p>", esc(&title)),
     };
     k.email_record(&ctx, &entity, &doc, &b.to, &subject, &html, &files).await?;
     let to = b.to.trim().to_string();

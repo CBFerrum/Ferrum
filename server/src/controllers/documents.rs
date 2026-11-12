@@ -147,6 +147,7 @@ pub fn preview_ask(body: &Value) -> ApiResult<PreviewAsk> {
         sample: body.get("sample").and_then(Value::as_bool).unwrap_or(false),
         language: text("language"),
         letterhead: text("letterhead"),
+        letterhead_draft: body.get("letterhead").filter(|v| v.is_object()).cloned(),
         copies,
         design,
         pdf,
