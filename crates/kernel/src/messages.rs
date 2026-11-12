@@ -682,6 +682,74 @@ pub async fn send(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Vec
     Box::pin(send_with(k, tx, ctx, m)).await
 }
 
+/// A message rendered for one recipient as [`send`] would send it, for an app that sends it itself (BD-45): its mail's
+/// `subject` and `html`, its `text` body when the template has one, and, for a promotional message, the opt-out
+/// address and the `List-Unsubscribe` and `List-Unsubscribe-Post` header values to send with it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Rendered {
+    pub channel: String,
+    pub address: String,
+    pub language: String,
+    pub subject: Option<String>,
+    pub html: Option<String>,
+    pub text: Option<String>,
+    pub opt_out: Option<String>,
+    pub list_unsubscribe: Option<(String, String)>,
+}
+
+/// Renders `m` for its one recipient on `channel` (`email` or `text`/`chat`) exactly as [`send`] would, and sends
+/// nothing (BD-45). Refused, saying so, when the address opted out of a promotional message on that channel (an erased
+/// person's opt-out kept as a digest included) or may not be contacted, when it has no such address, or when a
+/// promotional message's opt-out link cannot be made (the server's public address or key not configured).
+pub async fn render_for(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message, channel: &str) -> Result<Rendered> {
+    let [r] = m.to.as_slice() else { return Err(Error::invalid("a message is rendered for one recipient")) };
+    let def = effective(tx, ctx, &m.template).await?;
+    let promotional = def.category == MessageCategory::Promotional;
+    let r = complete(tx, ctx.tenant, r).await?;
+    let (cfg, workspace_language) = workspace(tx, ctx.tenant).await?;
+    let address = match channel {
+        "email" => r.email.clone().ok_or_else(|| Error::field("to", "no e-mail address"))?,
+        "text" | "chat" => international(r.phone.as_deref().ok_or_else(|| Error::field("to", "no phone number"))?, &cfg).map_err(|m| Error::field("to", m))?,
+        other => return Err(Error::invalid(format!("{other} is not a channel an app sends on itself"))),
+    };
+    if channel == "email" {
+        let purpose = if promotional { crate::retention::Purpose::Marketing } else { crate::retention::Purpose::Transactional };
+        if !k.may_contact_for(tx, ctx.tenant, &address, purpose).await? {
+            return Err(Error::Forbidden(if promotional { "opted out" } else { "processing of their data is restricted" }.into()));
+        }
+    } else if promotional && k.opted_out(tx, ctx.tenant, channel, &address).await? {
+        return Err(Error::Forbidden("opted out".into()));
+    }
+    let opt_out = match (promotional, k.link_base(ctx.tenant).await, k.settings.secret_key.as_ref()) {
+        (false, ..) => None,
+        (true, Some(base), Some(key)) => Some(format!("{base}/api/messages/opt-out?token={}", opt_out_token(key, ctx.tenant, channel, &address))),
+        (true, ..) => return Err(Error::Unavailable("a promotional message needs the server's public address and key for its opt-out link".into())),
+    };
+    let doc = record_view(k, tx, ctx, m.entity.as_deref(), m.record).await?;
+    let settings = crate::settings::load(k, ctx, tx, &settings_named(&def)).await?;
+    let (language, b) = bodies(&def, r.language.as_deref(), workspace_language.as_deref());
+    let vars = variables(doc, settings, Value::Object(m.values.clone()), opt_out.as_deref().unwrap_or_default());
+    let (subject, html) = match (channel, b.email.is_some()) {
+        ("email", true) => {
+            let mail = render_channel(b, "email", &vars, false)?;
+            (mail["subject"].as_str().map(str::to_string), mail["html"].as_str().map(str::to_string))
+        }
+        ("email", false) => return Err(Error::field("channel", "the template has no e-mail body in this language")),
+        _ => (None, None),
+    };
+    let text = if b.has("text") { render_channel(b, "text", &vars, false)?["text"].as_str().map(str::to_string) } else { None };
+    Ok(Rendered {
+        channel: channel.into(),
+        address,
+        language: language.into(),
+        subject,
+        html,
+        text,
+        list_unsubscribe: opt_out.as_ref().map(|u| (format!("<{u}>"), "List-Unsubscribe=One-Click".into())),
+        opt_out,
+    })
+}
+
 /// One recipient, completed: a user's address, language and zone from their account.
 async fn complete(tx: &mut Tx, tenant: Uuid, r: &Recipient) -> Result<Recipient> {
     let mut r = r.clone();
@@ -744,6 +812,16 @@ fn erased_mark(key: &crate::secret::SecretKey, tenant: Uuid, channel: &str, addr
 }
 
 impl Kernel {
+    /// Whether a promotional message may not go to `address` on `channel` (BD-45): the address opted out (an erased
+    /// person's opt-out, kept as a digest, included), or, for e-mail, its processing is restricted. What
+    /// [`render_for`] and [`send`] ask; an app sending through another transport asks it too.
+    pub async fn opted_out(&self, tx: &mut Tx, tenant: Uuid, channel: &str, address: &str) -> Result<bool> {
+        if channel == "email" {
+            return Ok(!self.may_contact_for(tx, tenant, address, crate::retention::Purpose::Marketing).await?);
+        }
+        opted_out(tx, tenant, address, channel, &self.erased_marks(tenant, channel, address)).await
+    }
+
     /// The marks an erased opt-out of `address` on `channel` may carry: under the server's key and those being rotated out.
     pub(crate) fn erased_marks(&self, tenant: Uuid, channel: &str, address: &str) -> Vec<String> {
         self.secret_keys().map(|k| erased_mark(k, tenant, channel, address)).collect()
@@ -2008,7 +2086,7 @@ mod tests {
         assert!(!kept.contains("<svg"), "no drawing of it: {kept}");
         assert!(kept.contains("https://shop.example/accept?t=••••••") && kept.contains("Accept"), "{kept}");
         // A channel's request percent-encodes what it puts in an address: masked too.
-        let address = format!("https://sms.example/send?text=Tk%2F9%2Ba%26b%3Dc%27d%20%3Ce%3E&to=1");
+        let address = "https://sms.example/send?text=Tk%2F9%2Ba%26b%3Dc%27d%20%3Ce%3E&to=1";
         assert_eq!(masked(&json!(address), &masks), json!("https://sms.example/send?text=••••••&to=1"));
     }
 

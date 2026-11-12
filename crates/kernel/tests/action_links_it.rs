@@ -93,7 +93,7 @@ fn quotation() -> Vec<NewCustomization> {
              "condition_message": "{{ doc.title }} was accepted already; nothing more is needed",
              "params": [{"name": "photos", "label": "Photos", "type": "files", "required": true, "max_files": 2, "max_bytes": 1000, "accept": ["image/*"]},
                         {"name": "note", "label": "Note", "type": "data"}],
-             "effects": [{"type": "set_fields", "values": {"feedback": "has(params.note) ? params.note : 'photo'"}}]},
+             "effects": [{"type": "set_fields", "values": {"feedback": "coalesce(params.note, 'photo')"}}]},
             {"name": "offer", "label": "Offer until it is valid", "permission": "write",
              "effects": [{"type": "link", "actions": ["accept"], "show": ["title", "lines"], "columns": {"lines": ["item", "qty"]}, "until": "doc.valid_until"}]}
         ]

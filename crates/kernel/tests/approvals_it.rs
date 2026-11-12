@@ -456,4 +456,65 @@ async fn scenario() {
     k.read_record(&out1c, "XClaim", taken_back, false).await.expect("while pending");
     k.recall_approval(&annc, "XClaim", taken_back).await.unwrap();
     refused(k.read_record(&out1c, "XClaim", taken_back, false).await, "not permitted");
+
+    // ───────────── a quorum the record says, worked out when asked and kept (BD-45) ─────────────
+    batch(vec![
+        op(
+            "XMotion",
+            json!({"op": "define_entity", "entity": {"name": "XMotion", "label": "Motion", "kind": "master", "title_field": "title",
+            "fields": [{"name": "title", "type": "data"}, {"name": "quorum", "type": "int"}]}}),
+        ),
+        op(
+            "XMotion",
+            json!({"op": "set_workflow", "workflow": {"name": "motions", "entity": "XMotion", "initial_state": "Open",
+            "states": [{"name": "Open"}, {"name": "Carried"}],
+            "transitions": [{"action": "Carry", "from": "Open", "to": "Carried", "approval": {"steps": [
+                {"label": "Board", "approvers": {"role": "Finance"}, "need": "doc.quorum"}]}}]}}),
+        ),
+    ])
+    .await
+    .expect("motions");
+    let e = batch(vec![op(
+        "XMotion",
+        json!({"op": "set_workflow", "workflow": {"name": "motions", "entity": "XMotion", "initial_state": "Open",
+        "states": [{"name": "Open"}, {"name": "Carried"}], "transitions": [{"action": "Carry", "from": "Open", "to": "Carried", "approval": {"steps": [
+            {"label": "Board", "approvers": {"role": "Finance"}, "need": "doc.nothing +"}]}}]}}),
+    )])
+    .await
+    .unwrap_err();
+    assert!(e.contains("step 1 need"), "{e}");
+    let admin = as_(root).await;
+    k.set_role_permission(&admin, "Staff", &PermissionDef { entity: "XMotion".into(), read: true, write: true, create: true, ..Default::default() })
+        .await
+        .unwrap();
+    let (f1, f2, f3) = (as_(fin1).await, as_(fin2).await, as_(fin3).await);
+    let motion = |quorum: i64| {
+        let (k, admin) = (k.clone(), admin.clone());
+        async move { id_of(&k.insert(&admin, "XMotion", obj(json!({"title": "M", "quorum": quorum}))).await.unwrap()) }
+    };
+    let state = |id: Uuid| {
+        let (k, admin) = (k.clone(), admin.clone());
+        async move { k.get(&admin, "XMotion", id, false).await.unwrap()["workflow_state"].clone() }
+    };
+    // Two of three; the record changed to one meanwhile does not move it.
+    let m = motion(2).await;
+    k.transition(&as_(ann).await, "XMotion", m, "Carry", None).await.unwrap();
+    k.decide_approval(&f1, "XMotion", m, true, None).await.unwrap();
+    k.update(&admin, "XMotion", m, obj(json!({"quorum": 1})), None).await.unwrap();
+    assert_eq!(state(m).await, json!("Open"), "two were asked for");
+    k.decide_approval(&f2, "XMotion", m, true, None).await.unwrap();
+    assert_eq!(state(m).await, json!("Carried"));
+    // More than there are approvers: all of them. None: one.
+    let m = motion(9).await;
+    k.transition(&as_(ann).await, "XMotion", m, "Carry", None).await.unwrap();
+    for f in [&f1, &f2] {
+        k.decide_approval(f, "XMotion", m, true, None).await.unwrap();
+    }
+    assert_eq!(state(m).await, json!("Open"));
+    k.decide_approval(&f3, "XMotion", m, true, None).await.unwrap();
+    assert_eq!(state(m).await, json!("Carried"));
+    let m = motion(0).await;
+    k.transition(&as_(ann).await, "XMotion", m, "Carry", None).await.unwrap();
+    k.decide_approval(&f1, "XMotion", m, true, None).await.unwrap();
+    assert_eq!(state(m).await, json!("Carried"));
 }

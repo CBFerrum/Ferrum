@@ -182,6 +182,25 @@ async fn scenario() {
     submitted(&k).await;
     travel(&k).await;
     by_record(&k).await;
+    engine_writes(&k).await;
+}
+
+/// An app's engine write that is not a save (`set_values_tx`) moves the targets as a save does (BD-45): a paused
+/// ticket put back to open by it runs again.
+async fn engine_writes(k: &Arc<Kernel>) {
+    let w = set_up(k, "engine").await;
+    // Monday 9 November 09:00 in Kolkata; on hold at 11:00, two office hours in.
+    let t = w.ticket("2026-11-09T03:30:00Z", json!({})).await;
+    let id = id_of(&t);
+    let t = w.set("2026-11-09T05:30:00Z", id, json!({"status": "Waiting"})).await;
+    assert_eq!(kept(&t, "respond"), (None, Some("paused".into())));
+    // Back on Wednesday 09:00 through the engine's write: two hours left, to 11:00 there.
+    k.pin_clock(Some(at("2026-11-11T03:30:00Z")));
+    let admin = w.admin().await;
+    let mut tx = k.db.tenant_tx(w.tenant).await.unwrap();
+    k.set_values_tx(&admin, &mut tx, "Ticket", id, obj(json!({"status": "Open"}))).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(kept(&w.get(id).await, "respond"), running("2026-11-11T05:30:00Z"));
 }
 
 /// A target counting on the calendar a record's agreement names and from the moment the record says it opened

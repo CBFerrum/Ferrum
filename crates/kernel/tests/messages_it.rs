@@ -507,6 +507,36 @@ async fn scenario() {
     assert_eq!(send(&k, &admin, zoe(promo("email"), "email")).await[0].reason.as_deref(), Some("opted out"));
     assert_eq!(send(&k, &admin, zoe(text("text"), "text")).await[0].state, "queued", "operational goes");
     assert_eq!(send(&k, &admin, zoe(text("text"), "email")).await[0].state, "queued", "operational goes");
+    // An app sending through another transport asks the same (BD-45): an erased opt-out kept as a digest refuses it.
+    let render = |m: Message, ch: &'static str| {
+        let (k, admin) = (&k, admin.clone());
+        async move {
+            let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+            let r = messages::render_for(k, &mut tx, &admin, &m, ch).await;
+            tx.commit().await.unwrap();
+            r
+        }
+    };
+    for ch in ["email", "text"] {
+        let e = render(zoe(promo(ch), ch), ch).await.expect_err("opted out");
+        assert!(e.to_string().contains("opted out"), "{ch}: {e}");
+    }
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    assert!(k.opted_out(&mut tx, tenant, "email", "zoe@example.com").await.unwrap());
+    assert!(k.opted_out(&mut tx, tenant, "text", "+491515555555").await.unwrap());
+    assert!(!k.opted_out(&mut tx, tenant, "email", "amy@example.com").await.unwrap());
+    tx.commit().await.unwrap();
+    // Rendered as a send would render it, with the opt-out link and the headers to send it with; nothing sent.
+    let amy = |m: Message| Message { to: vec![Recipient { email: Some("amy@example.com".into()), ..Default::default() }], channels: vec!["email".into()], ..m };
+    let r = render(amy(promo("email")), "email").await.unwrap();
+    let link = r.opt_out.clone().expect("a promotional message's opt-out link");
+    assert!(link.starts_with("https://ferrum.test/api/messages/opt-out?token="), "{link}");
+    assert_eq!(r.subject.as_deref(), Some("Sale"));
+    let token = link.rsplit("token=").next().unwrap();
+    assert!(r.html.as_deref().unwrap().contains(&format!("opt-out?token={token}")) && r.text.as_deref().unwrap().contains(&link), "{r:?}");
+    assert_eq!(r.list_unsubscribe, Some((format!("<{link}>"), "List-Unsubscribe=One-Click".into())));
+    let r = render(amy(text("email")), "email").await.unwrap();
+    assert!(r.opt_out.is_none() && r.list_unsubscribe.is_none(), "an operational message carries none");
     // Staff take an erased one away by its row, not by the address.
     let row_of = erased.iter().find(|r| r["channel"] == "text").unwrap()["erased"].as_str().unwrap().to_string();
     k.set_message_opt_out(&admin, "0151 5555555", "text", false).await.unwrap();
