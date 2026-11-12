@@ -171,17 +171,7 @@ pub(crate) async fn run(
         Value::Object(_) => params.clone(),
         _ => return Err(Error::invalid(format!("'{}' takes its parameters as an object", def.label))),
     };
-    let user = ctx.user_value();
-    let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
-    let refusals = ent.exprs.action_refusals.get(&def.name).map(Vec::as_slice).unwrap_or_default();
-    let links = crate::links::load(k, ctx, tx, ent, &view, &crate::links::used(refusals.iter().map(|(e, _)| e))).await?;
-    for (expr, message) in refusals {
-        let holds =
-            expr.eval_with(&Scope { doc: &view, old: None, parent: None, user: &user }, &[("params", &params), ("links", &links)]).map_err(Error::invalid)?;
-        if holds == Value::Bool(true) {
-            return Err(Error::Forbidden(crate::print::message(message, || crate::doc::told(ctx, ent, doc.clone(), Some(k)))));
-        }
-    }
+    refuse_if(k, ctx, tx, ent, def, doc, &params).await?;
     // An `invoke` without a key of its own does its step once per action, record version (as pressed) and place.
     let origin = format!("action:{}.{}:{id}:v{}:", ent.def.name, def.name, doc.get("version").unwrap_or(&Value::Null));
     let made = run_effects(k, ctx, tx, ent, id, &def.effects, &params, &origin).await?;
@@ -195,6 +185,26 @@ pub(crate) async fn run(
         answer.insert("made".into(), Value::Array(made));
     }
     Ok(Value::Object(answer))
+}
+
+/// Refuses action `def` on `doc` with `params` as `ctx` where one of its `refuse_if` holds, in its own words.
+pub(crate) async fn refuse_if(k: &Kernel, ctx: &Ctx, tx: &mut crate::db::Tx, ent: &Arc<EffEntity>, def: &ActionDef, doc: &Doc, params: &Value) -> Result<()> {
+    let refusals = ent.exprs.action_refusals.get(&def.name).map(Vec::as_slice).unwrap_or_default();
+    if refusals.is_empty() {
+        return Ok(());
+    }
+    let params = if params.is_null() { &json!({}) } else { params };
+    let user = ctx.user_value();
+    let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
+    let links = crate::links::load(k, ctx, tx, ent, &view, &crate::links::used(refusals.iter().map(|(e, _)| e))).await?;
+    for (expr, message) in refusals {
+        let holds =
+            expr.eval_with(&Scope { doc: &view, old: None, parent: None, user: &user }, &[("params", params), ("links", &links)]).map_err(Error::invalid)?;
+        if holds == Value::Bool(true) {
+            return Err(Error::Forbidden(crate::print::message(message, || crate::doc::told(ctx, ent, doc.clone(), Some(k)))));
+        }
+    }
+    Ok(())
 }
 
 /// The system, acting for `ctx`'s person: every right, read-only fields included, while the records it writes say

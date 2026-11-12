@@ -103,6 +103,16 @@ pub struct DocumentApproval {
     pub exprs: Vec<Expr>,
 }
 
+/// Why an approval cannot stand on action `name` of `def`, if it cannot: the entity has no such action, or it
+/// changes nothing (`read_only`), so there is nothing to agree to.
+pub(crate) fn action_approval_problem(def: &EntityDef, name: &str) -> Option<String> {
+    match def.actions.iter().find(|a| a.name == name) {
+        None => Some(format!("{} has no action {name}", def.label)),
+        Some(a) if a.read_only => Some(format!("the action {name} changes nothing, so there is nothing to approve")),
+        Some(_) => None,
+    }
+}
+
 /// What an approval policy's expressions say: each step's `when`, its approvers' and its escalation's `expr`.
 fn policy_exprs(p: &ApprovalPolicy) -> Result<Vec<Expr>, MetaError> {
     let mut out = Vec::new();
@@ -874,7 +884,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         // Its approvals on its documents: defaults the workspace's `set_approval` comes over.
         for a in &pkg.manifest.approvals {
             if let Some(b) = building.get_mut(&a.entity) {
-                b.approvals.insert(a.on, a.policy.clone());
+                b.approvals.insert(a.on.clone(), a.policy.clone());
             }
         }
     }
@@ -1014,7 +1024,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                 }
                 OverlayOp::SetApproval { on, approval } => {
                     match approval {
-                        Some(p) => b.approvals.insert(*on, p.clone()),
+                        Some(p) => b.approvals.insert(on.clone(), p.clone()),
                         None => b.approvals.remove(on),
                     };
                     Ok(None)
@@ -1134,8 +1144,10 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         // Approval before a document is submitted or cancelled: on a submittable entity no workflow submits.
         let mut ignored = Vec::new();
         for (on, p) in &b.approvals {
-            let what = format!("{}: approval", on.as_str());
-            let checked = if !b.def.submittable {
+            let what = format!("{}: approval", on.key());
+            let checked = if let DocumentAction::Action(name) = on {
+                action_approval_problem(&b.def, name).map_or_else(|| crate::catalog::validate_approval(&b.def, &what, None, p), |m| Err(format!("{what}: {m}")))
+            } else if !b.def.submittable {
                 Err(format!("{what}: {} is not submittable", b.def.label))
             } else if b.workflow.is_some() {
                 Err(format!("{what}: its workflow submits and cancels it, so the approval goes on the workflow's transition"))
@@ -1144,7 +1156,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
             };
             if let Err(m) = checked {
                 warnings.push(SchemaWarning { entity: name.clone(), message: format!("approval ignored: {m}") });
-                ignored.push(*on);
+                ignored.push(on.clone());
             }
         }
         for on in ignored {
