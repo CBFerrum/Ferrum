@@ -27,16 +27,16 @@ progress after a lesson changes.
   its parameters) before its handler runs, so what an action's handler then writes directly is
   under that entry.
 
-## The 141 statements, by kind
+## The 143 statements, by kind
 
 | Kind | How many | What keeps them right |
 |---|---|---|
-| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 82 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
+| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 83 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
 | Consequence of an audited document operation (a hook of submit, cancel, save or an action) | 39 | The operation that runs the hook is on the record |
-| A person's action on a public link: opens and clicks, subscribe, confirm, unsubscribe, viewing a shared file | 12 | The record they change carries its evidence (the consent's source and time, the link's views) |
+| A person's action on a public link: opens and clicks, subscribe, confirm, unsubscribe, viewing a shared file | 13 | The record they change carries its evidence (the consent's source and time, the link's views) |
 | Records its own audit or activity entry | 8 | Drive's activity log ("Link Created", "Link Revoked", "Shared With Guest", "Share Expired", "Delete"), Edge's and MES's audit entries |
 
-By app: Campaigns 42, Drive 23, Comms 18, ERP 11, POS 10, Commerce 6, Projects 6, HR 5, LMS 5, Edge 4, Helpdesk 3, CRM 2, Objectives 2,
+By app: Campaigns 43, Drive 23, Comms 18, ERP 12, POS 10, Commerce 6, Projects 6, HR 5, LMS 5, Edge 4, Helpdesk 3, CRM 2, Objectives 2,
 and one each in Bookings, DAM, Field Service and Forms.
 
 ## Findings
@@ -85,29 +85,30 @@ and one each in Bookings, DAM, Field Service and Forms.
 | campaigns | `src/delivery.rs:59` | `update e_campaign_recipient` | `sync` | engine work: statuses, counts, queues, upkeep |
 | campaigns | `src/delivery.rs:80` | `update e_campaign_recipient` | `apply` | engine work: statuses, counts, queues, upkeep |
 | campaigns | `src/delivery.rs:143` | `update e_marketing_contact` | `engaged` | engine work: statuses, counts, queues, upkeep |
-| campaigns | `src/events.rs:263` | `update e_journey_enrollment` | `take` | engine work: statuses, counts, queues, upkeep |
-| campaigns | `src/events.rs:280` | `update e_journey_enrollment` | `take` | engine work: statuses, counts, queues, upkeep |
+| campaigns | `src/events.rs:262` | `update e_journey_enrollment` | `take` | engine work: statuses, counts, queues, upkeep |
+| campaigns | `src/events.rs:279` | `update e_journey_enrollment` | `take` | engine work: statuses, counts, queues, upkeep |
 | campaigns | `src/events.rs:303` | `insert into e_journey_enrollment` | `enroll` | engine work: statuses, counts, queues, upkeep |
 | campaigns | `src/import.rs:39` | `insert into e_marketing_contact` | `push_insert` | engine work: statuses, counts, queues, upkeep |
 | campaigns | `src/import.rs:60` | `insert into e_email_suppression` | `push_insert` | engine work: statuses, counts, queues, upkeep |
 | campaigns | `src/import.rs:138` | `update e_marketing_contact` | `run` | engine work: statuses, counts, queues, upkeep |
 | campaigns | `src/import.rs:164` | `insert into e_marketing_contact` | `adopt_group_members` | engine work: statuses, counts, queues, upkeep |
 | campaigns | `src/journey.rs:233` | `update e_journey_enrollment` | `action` | consequence of an audited document operation (hook) |
-| campaigns | `src/journey.rs:410` | `insert into e_journey_enrollment` | `push_enroll` | engine work: statuses, counts, queues, upkeep |
-| campaigns | `src/journey.rs:530` | `update e_journey_enrollment` | `leave` | engine work: statuses, counts, queues, upkeep |
-| campaigns | `src/journey.rs:541` | `update e_journey_enrollment` | `leave` | engine work: statuses, counts, queues, upkeep |
-| campaigns | `src/journey.rs:668` | `insert into e_campaign_recipient` | `advance` | engine work: statuses, counts, queues, upkeep |
-| campaigns | `src/journey.rs:695` | `update e_campaign_recipient` | `advance` | engine work: statuses, counts, queues, upkeep |
-| campaigns | `src/journey.rs:705` | `update e_campaign_recipient` | `advance` | engine work: statuses, counts, queues, upkeep |
-| campaigns | `src/journey.rs:736` | `insert into e_campaign_recipient` | `advance` | engine work: statuses, counts, queues, upkeep |
-| campaigns | `src/journey.rs:902` | `update e_journey_enrollment` | `advance` | engine work: statuses, counts, queues, upkeep |
-| campaigns | `src/journey.rs:925` | `update e_marketing_journey` | `refresh_counts` | engine work: statuses, counts, queues, upkeep |
-| campaigns | `src/public.rs:164` | `update e_campaign_recipient` | `record_open` | a person's action on a public link (tracking, consent, viewing) |
-| campaigns | `src/public.rs:202` | `update e_campaign_recipient` | `click` | a person's action on a public link (tracking, consent, viewing) |
-| campaigns | `src/public.rs:262` | `update e_campaign_recipient` | `unsubscribe` | a person's action on a public link (tracking, consent, viewing) |
-| campaigns | `src/public.rs:480` | `update e_subscription_form` | `subscribe` | a person's action on a public link (tracking, consent, viewing) |
-| campaigns | `src/public.rs:574` | `update e_subscription_form` | `confirm` | a person's action on a public link (tracking, consent, viewing) |
-| campaigns | `src/topics.rs:244` | `delete from e_email_suppression` | `save` | a person's action on a public link (tracking, consent, viewing) |
+| campaigns | `src/journey.rs:423` | `insert into e_journey_enrollment` | `push_enroll` | engine work: statuses, counts, queues, upkeep |
+| campaigns | `src/journey.rs:544` | `update e_journey_enrollment` | `leave` | engine work: statuses, counts, queues, upkeep |
+| campaigns | `src/journey.rs:562` | `update e_journey_enrollment` | `leave` | engine work: statuses, counts, queues, upkeep |
+| campaigns | `src/journey.rs:699` | `insert into e_campaign_recipient` | `advance` | engine work: statuses, counts, queues, upkeep |
+| campaigns | `src/journey.rs:726` | `update e_campaign_recipient` | `advance` | engine work: statuses, counts, queues, upkeep |
+| campaigns | `src/journey.rs:736` | `update e_campaign_recipient` | `advance` | engine work: statuses, counts, queues, upkeep |
+| campaigns | `src/journey.rs:767` | `insert into e_campaign_recipient` | `advance` | engine work: statuses, counts, queues, upkeep |
+| campaigns | `src/journey.rs:933` | `update e_journey_enrollment` | `advance` | engine work: statuses, counts, queues, upkeep |
+| campaigns | `src/journey.rs:956` | `update e_marketing_journey` | `refresh_counts` | engine work: statuses, counts, queues, upkeep |
+| campaigns | `src/public.rs:166` | `update e_campaign_recipient` | `record_open` | a person's action on a public link (tracking, consent, viewing) |
+| campaigns | `src/public.rs:204` | `update e_campaign_recipient` | `click` | a person's action on a public link (tracking, consent, viewing) |
+| campaigns | `src/public.rs:264` | `update e_campaign_recipient` | `unsubscribe` | a person's action on a public link (tracking, consent, viewing) |
+| campaigns | `src/public.rs:482` | `update e_subscription_form` | `subscribe` | a person's action on a public link (tracking, consent, viewing) |
+| campaigns | `src/public.rs:576` | `update e_subscription_form` | `confirm` | a person's action on a public link (tracking, consent, viewing) |
+| campaigns | `src/public.rs:631` | `delete from e_email_suppression` | `reconfirm` | a person's action on a public link (tracking, consent, viewing) |
+| campaigns | `src/topics.rs:254` | `delete from e_email_suppression` | `save` | a person's action on a public link (tracking, consent, viewing) |
 | commerce | `src/coupon.rs:147` | `update e_coupon_code` | `redeem` | engine work: statuses, counts, queues, upkeep |
 | commerce | `src/coupon.rs:163` | `update e_coupon_code` | `release` | engine work: statuses, counts, queues, upkeep |
 | commerce | `src/payment.rs:605` | `update e_payment_request` | `on_cancel` | consequence of an audited document operation (hook) |
@@ -173,6 +174,7 @@ and one each in Bookings, DAM, Field Service and Forms.
 | erp | `addons/wms/src/counts.rs:210` | `update e_storage_bin` | `unfreeze` | engine work: statuses, counts, queues, upkeep |
 | erp | `addons/wms/src/posting.rs:211` | `update e_managed_warehouse` | `start_managing` | engine work: statuses, counts, queues, upkeep |
 | erp | `addons/wms/src/tasks.rs:518` | `update e_handling_unit` | `place_unit` | engine work: statuses, counts, queues, upkeep |
+| erp | `src/shipping.rs:695` | `update e_carrier_connection` | `handle` | engine work: statuses, counts, queues, upkeep |
 | field-service | `src/contract.rs:138` | `update e_service_contract` | `expire` | engine work: statuses, counts, queues, upkeep |
 | forms | `src/form.rs:429` | `update e_form_response` | `after_save` | consequence of an audited document operation (hook) |
 | helpdesk | `src/merge.rs:79` | `update e_ticket__conversation` | `merge` | consequence of an audited document operation (hook) |
@@ -183,10 +185,10 @@ and one each in Bookings, DAM, Field Service and Forms.
 | hr | `src/payroll/mod.rs:358` | `update e_employee_tax_exemption_declaration__declarations` | `action` | consequence of an audited document operation (hook) |
 | hr | `src/talent.rs:68` | `delete from e_training_record` | `on_cancel` | consequence of an audited document operation (hook) |
 | hr | `src/talent.rs:80` | `update e_job_opening` | `close_openings` | engine work: statuses, counts, queues, upkeep |
-| lms | `src/catalog.rs:315` | `update e_lms_course` | `refresh_course_stats` | consequence of an audited document operation (hook) |
+| lms | `src/catalog.rs:316` | `update e_lms_course` | `refresh_course_stats` | consequence of an audited document operation (hook) |
 | lms | `src/certificate.rs:164` | `update e_lms_certificate` | `expire_all` | engine work: statuses, counts, queues, upkeep |
-| lms | `src/enrollment.rs:431` | `update e_lms_enrollment` | `refresh_course` | consequence of an audited document operation (hook) |
-| lms | `src/enrollment.rs:674` | `update e_lms_enrollment` | `send_due_reminders` | engine work: statuses, counts, queues, upkeep |
+| lms | `src/enrollment.rs:444` | `update e_lms_enrollment` | `refresh_course` | consequence of an audited document operation (hook) |
+| lms | `src/enrollment.rs:692` | `update e_lms_enrollment` | `send_due_reminders` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/live.rs:78` | `update e_lms_cohort__sessions` | `sync` | consequence of an audited document operation (hook) |
 | objectives | `src/okr.rs:416` | `update e_key_result` | `after_save` | consequence of an audited document operation (hook) |
 | objectives | `src/okr.rs:423` | `update e_check_in` | `after_save` | consequence of an audited document operation (hook) |
@@ -205,4 +207,4 @@ and one each in Bookings, DAM, Field Service and Forms.
 | projects | `src/billing.rs:413` | `update e_timesheet__time_logs` | `unmark_billed` | consequence of an audited document operation (hook) |
 | projects | `src/billing.rs:419` | `update e_task` | `unmark_billed` | consequence of an audited document operation (hook) |
 | projects | `src/lib.rs:96` | `update e_task` | `mark_overdue` | engine work: statuses, counts, queues, upkeep |
-| projects | `src/timesheet.rs:555` | `update e_project_person` | `remind_missing_time` | engine work: statuses, counts, queues, upkeep |
+| projects | `src/timesheet.rs:565` | `update e_project_person` | `remind_missing_time` | engine work: statuses, counts, queues, upkeep |
