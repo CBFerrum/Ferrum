@@ -31,6 +31,10 @@ const REFRESH: &str = "RT-1-Zz8-refresh";
 /// takes now.
 static PROVIDER: Mutex<(bool, usize, String)> = Mutex::new((false, 0, String::new()));
 
+/// The stand-in's pull routes: how often `/shaky` was asked (it answers "later" twice), whether `/down` is down.
+static SHAKY: AtomicUsize = AtomicUsize::new(0);
+static DOWN: Mutex<bool> = Mutex::new(true);
+
 fn issue() -> String {
     let mut p = PROVIDER.lock().unwrap();
     p.1 += 1;
@@ -38,7 +42,7 @@ fn issue() -> String {
     p.2.clone()
 }
 
-const PACKAGE: &str = "package: depot\nversion: 0.1.0\ndepends: [core]\n";
+const PACKAGE: &str = "package: depot\nversion: 0.1.0\ndepends: [core]\npersonal_data:\n  - {entity: Parcel, match: label, erase: [tracking]}\n";
 const ENTITIES: &str = r#"
 - name: Parcel
   label: Parcel
@@ -156,6 +160,13 @@ async fn service(seen: Seen) -> u16 {
                             (401, String::new(), json!({"error": "invalid_token"}).to_string())
                         }
                     }
+                    "/v1/shaky" => match SHAKY.fetch_add(1, Ordering::SeqCst) {
+                        0 | 1 => (503, String::new(), json!({"error": "busy"}).to_string()),
+                        _ => (200, String::new(), json!({"data": [{"id": "SH-1", "title": "Shaky"}], "next": "s2"}).to_string()),
+                    },
+                    "/v1/down" if *DOWN.lock().unwrap() => (503, String::new(), "{}".into()),
+                    "/v1/down" => (200, String::new(), json!({"data": []}).to_string()),
+                    "/v1/broken" => (422, String::new(), json!({"error": "no such feed"}).to_string()),
                     "/v1/since" => (200, String::new(), json!({"data": [{"id": "S-1", "title": "Since"}]}).to_string()),
                     _ => (404, String::new(), "{}".into()),
                 };
@@ -349,6 +360,54 @@ async fn pulling(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
     let mut bad = d.clone();
     bad["operations"]["orders"]["method"] = json!("POST");
     assert!(k.save_connection_def(admin, Some(id), &input("orders", bad, None)).await.unwrap_err().to_string().contains("a pull only reads"));
+
+    // A pull answered "later" is tried again from where it stood, before the next run, without a second job.
+    let ops = json!({"shaky": {"path": "/shaky"}, "down": {"path": "/down"}, "broken": {"path": "/broken"}});
+    let pull = |name: &str| json!({"name": name, "operation": name, "every_minutes": 15, "items_at": "/data", "next_at": "/next", "max_pages": 1, "map": map});
+    let feeds = json!({"base": base, "operations": ops, "pulls": [pull("shaky"), pull("down"), pull("broken")]});
+    let feeds = k.save_connection_def(admin, None, &input("feeds", feeds, None)).await.unwrap();
+    let state = |name: &'static str| async move { k.connection_pulls(admin, feeds).await.unwrap().into_iter().find(|p| p["name"] == name).unwrap() };
+    let job_of = |name: &'static str| {
+        let sql = format!(
+            "select (attempts * 10 + case status when 'queued' then 1 when 'done' then 2 else 3 end)::bigint from job where tenant_id = $1 and dedupe_key = '{feeds}:{name}' order by created_at desc limit 1"
+        );
+        async move { count(k, tenant, &sql).await }
+    };
+    let told = |name: &str| {
+        let sql = format!("select count(*) from notification where tenant_id = $1 and title = 'Pulling {name} from feeds failed'");
+        async move { count(k, tenant, &sql).await }
+    };
+    assert_eq!(k.sweep_pulls_at(chrono::Utc::now()).await.unwrap(), 3);
+    while k.run_jobs_once(4).await.unwrap() > 0 {}
+    assert_eq!(job_of("shaky").await, 11, "one attempt, queued again with backoff");
+    assert!(state("shaky").await["cursor"].is_null(), "the cursor did not move");
+    assert_eq!(told("shaky").await, 0, "not told of a run still being tried");
+    assert_eq!(k.sweep_pulls_at(chrono::Utc::now() + chrono::Duration::minutes(2)).await.unwrap(), 0, "the next run is not due, nor queued over the retry");
+    drain(k).await;
+    assert_eq!(job_of("shaky").await, 32, "done on the third attempt");
+    let shaky = state("shaky").await;
+    assert_eq!((shaky["cursor"].as_str(), shaky["last_error"].is_null()), (Some("s2"), true), "{shaky}");
+    assert_eq!(SHAKY.load(Ordering::SeqCst), 3);
+    // Always "later": a bounded number of attempts, then recorded and told once per streak.
+    assert_eq!(job_of("down").await, 42, "four attempts, then the run ends");
+    assert!(state("down").await["last_error"].is_string());
+    assert_eq!(told("down").await, 1);
+    // A permanent refusal: not tried again, recorded, told once over two failed runs.
+    assert_eq!(job_of("broken").await, 12, "one attempt");
+    assert!(state("broken").await["last_error"].as_str().is_some_and(|e| e.contains("422")));
+    k.pull_now(admin, feeds, "broken").await.unwrap();
+    k.pull_now(admin, feeds, "down").await.unwrap();
+    drain(k).await;
+    assert_eq!((told("broken").await, told("down").await), (1, 1), "once per streak");
+    // A run that works ends the streak; the next failure tells again.
+    *DOWN.lock().unwrap() = false;
+    k.pull_now(admin, feeds, "down").await.unwrap();
+    drain(k).await;
+    assert!(state("down").await["last_error"].is_null());
+    *DOWN.lock().unwrap() = true;
+    k.pull_now(admin, feeds, "down").await.unwrap();
+    drain(k).await;
+    assert_eq!(told("down").await, 2, "a new streak");
 }
 
 fn query(url: &str) -> BTreeMap<String, String> {
@@ -465,6 +524,144 @@ async fn signing_in(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) -> Vec<Str
     let bad = json!({"auth": {"type": "oauth", "provider": {"authorize_url": "javascript:alert(1)", "token_url": "https://x.test/t", "client_id": "c"}}, "test": true});
     assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("authorize_url"));
     made
+}
+
+/// A person's data (BD-35): their own sign-in, the calls they made, a call about a record of theirs, a capture and a
+/// delivery naming them are in their report; erasure destroys the sign-in's tokens and revokes them at the provider
+/// (recorded), and leaves the log's lines without what named them.
+async fn erasing(k: &Kernel, admin: &Ctx, seen: &Seen) {
+    let tenant = admin.tenant;
+    let ivy_id = k.create_user(admin, "ivy@depot.test", "Ivy", None, &[], false).await.unwrap();
+    let mut ivy = k.load_ctx(tenant, ivy_id, None, "it".into()).await.unwrap();
+    ivy.roles.push("Mailer".into());
+    let defs = k.connection_defs(admin).await.unwrap();
+    let id_of = |name: &str| -> Uuid { defs.iter().find(|c| c["name"] == name).unwrap()["id"].as_str().unwrap().parse().unwrap() };
+    let (mailbox, carrier) = (id_of("mailbox"), id_of("carrier"));
+    PROVIDER.lock().unwrap().0 = false;
+    let session = Uuid::now_v7();
+    let state = query(&k.connect_start(&ivy, mailbox, session).await.unwrap())["state"].clone();
+    k.connect_finish(&ivy, session, &state, Some("CODE-1"), None).await.unwrap();
+    connections::call(k, &ivy, None, &call("mailbox", "me", json!({}), None)).await.unwrap();
+    let parcel: Uuid =
+        k.insert(admin, "Parcel", obj(json!({"label": "ivy@depot.test", "tracking": "T-9"}))).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let about = Call { entity: Some("Parcel".into()), record: Some(parcel), ..call("carrier", "find", json!({"q": "x"}), None) };
+    connections::call(k, admin, None, &about).await.unwrap();
+    connections::call(k, admin, None, &call("carrier", "find", json!({"q": "ivy@depot.test"}), None)).await.unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("insert into conn_inbound (tenant_id, conn_id, delivery, state, payload, error) values ($1, $2, 'd-ivy', 'failed', $3, 'no')")
+        .bind(tenant)
+        .bind(carrier)
+        .bind(json!({"from": "Ivy@Depot.test"}))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let report = k.personal_data(admin, "ivy@depot.test").await.unwrap();
+    let held: Vec<&Value> = report["apps"].as_array().unwrap().iter().filter(|a| a["app"] == "connections").map(|a| &a["held"]).collect();
+    let kinds = |kind: &str| held.iter().filter(|h| h["kind"] == kind).count();
+    assert_eq!((kinds("sign_in"), kinds("inbound")), (1, 1), "{report}");
+    assert!(held.iter().any(|h| h["kind"] == "call" && h["made_by_them"] == json!(true)), "the call they made: {report}");
+    assert!(held.iter().any(|h| h["record"] == json!(parcel)), "the call about their record: {report}");
+    assert!(held.iter().any(|h| h["operation"] == "find" && h["record"].is_null()), "the capture naming them: {report}");
+    assert!(!report.to_string().contains(REFRESH), "never a token");
+
+    let revokes = || seen.lock().unwrap().iter().filter(|s| s.starts_with("POST /v1/oauth/revoke")).count();
+    let before = revokes();
+    let erased = k.erase_personal_data(admin, "ivy@depot.test", "asked to be forgotten").await.unwrap();
+    assert_eq!(erased["sign_ins_revoked"], json!([{"connection": mailbox, "revoked": true}]), "{erased}");
+    assert_eq!(revokes(), before + 1, "revoked at the provider");
+    let left = |sql: &'static str| async move { count(k, tenant, sql).await };
+    assert_eq!(
+        left("select count(*) from conn_token where tenant_id = $1 and user_id <> '00000000-0000-0000-0000-000000000000'").await,
+        0,
+        "the tokens are gone"
+    );
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let hers: i64 =
+        sqlx::query_scalar("select count(*) from conn_call where tenant_id = $1 and user_id = $2").bind(tenant).bind(ivy_id).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(hers, 0, "no call names her as its caller");
+    assert_eq!(left("select count(*) from conn_call where tenant_id = $1 and lower(concat(debug::text, error, result::text)) like '%ivy@depot%'").await, 0);
+    assert_eq!(
+        left(
+            "select count(*) from conn_call where tenant_id = $1 and record_id is not null and debug is not null and entity = 'Parcel' and operation = 'find'"
+        )
+        .await,
+        0
+    );
+    assert_eq!(left("select count(*) from conn_inbound where tenant_id = $1 and payload is null and delivery = 'd-ivy'").await, 1, "the line stays, emptied");
+    assert_eq!(left("select count(*) from audit_event where tenant_id = $1 and action = 'revoke_on_erasure'").await, 1, "recorded");
+    let again = k.personal_data(admin, "ivy@depot.test").await.unwrap();
+    // The record stays theirs (only its declared fields go), so the call about it is still listed, emptied.
+    let left: Vec<&Value> = again["apps"].as_array().unwrap().iter().filter(|a| a["app"] == "connections").map(|a| &a["held"]).collect();
+    assert!(left.iter().all(|h| h["record"] == json!(parcel) && h["made_by_them"] == json!(false)), "{again}");
+
+    // A restore from before the erasure brings her rows back; the erasure's journal takes them again.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update app_user set email = 'ivy@depot.test' where tenant_id = $1 and id = $2").bind(tenant).bind(ivy_id).execute(&mut *tx).await.unwrap();
+    sqlx::query("insert into conn_token (tenant_id, conn_id, user_id, sealed) values ($1, $2, $3, 'restored')")
+        .bind(tenant)
+        .bind(mailbox)
+        .bind(ivy_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("insert into conn_call (tenant_id, id, conn_id, operation, outcome, user_id, debug) values ($1, $2, $3, 'me', 'ok', $4, $5)")
+        .bind(tenant)
+        .bind(Uuid::now_v7())
+        .bind(mailbox)
+        .bind(ivy_id)
+        .bind(json!({"request": {"url": "https://x.test/?to=ivy%40depot.test"}}))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("update conn_inbound set payload = $3 where tenant_id = $1 and conn_id = $2 and delivery = 'd-ivy'")
+        .bind(tenant)
+        .bind(carrier)
+        .bind(json!({"from": "ivy@depot.test"}))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let store = Arc::new(Memory::default());
+    k.set_file_store(store.clone());
+    let key = format!("{}{tenant}/1.json", ferrum_kernel::privacy::JOURNAL_PREFIX);
+    let entry =
+        json!({"tenant": tenant, "erasure": {"account": ivy_id, "records": [{"entity": "Parcel", "id": parcel, "fields": ["tracking"]}], "reason": "r"}});
+    ferrum_kernel::files::FileStore::put(&*store, &key, entry.to_string().as_bytes()).await.unwrap();
+    k.reapply_erasure(&key).await.unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let back: (i64, i64, i64) = sqlx::query_as(
+        "select (select count(*) from conn_token where tenant_id = $1 and user_id = $2), (select count(*) from conn_call where tenant_id = $1 and user_id = $2), \
+           (select count(*) from conn_inbound where tenant_id = $1 and payload is not null and delivery = 'd-ivy')",
+    )
+    .bind(tenant)
+    .bind(ivy_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(back, (0, 0, 0), "the restored sign-in, call and delivery are taken again");
+}
+
+/// Stored files, in memory.
+#[derive(Default)]
+struct Memory(Mutex<BTreeMap<String, Vec<u8>>>);
+
+#[async_trait]
+impl ferrum_kernel::files::FileStore for Memory {
+    async fn put(&self, key: &str, data: &[u8]) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().insert(key.into(), data.to_vec());
+        Ok(())
+    }
+    async fn get(&self, key: &str) -> ferrum_kernel::Result<Vec<u8>> {
+        self.0.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound(key.into()))
+    }
+    async fn delete(&self, key: &str) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
 }
 
 #[test]
@@ -707,6 +904,7 @@ async fn scenario() {
     being_called(&k, &admin).await;
     pulling(&k, &admin, &base, &seen).await;
     let signed_in = signing_in(&k, &admin, &base, &seen).await;
+    erasing(&k, &admin, &seen).await;
 
     // ── secrets rest nowhere: not the log, the capture, the audit trail, the jobs ──
     let mut never: Vec<&str> = vec![SECRET, SIGNING, INBOUND, TOKEN, CLIENT, REFRESH, "Xy9-access"];

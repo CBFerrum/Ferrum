@@ -196,16 +196,20 @@ impl Catalog {
             }
         }
         for a in &p.manifest.approvals {
-            let what = format!("{}: approval on {}", a.entity, a.on.as_str());
+            let what = format!("{}: approval on {}", a.entity, a.on.key());
             let Some(e) = ours(&a.entity) else { return invalid(format!("{name}: {what}: {} is not this package's entity", a.entity)) };
-            if !e.submittable || p.manifest.workflows.iter().any(|w| w.entity == a.entity) {
+            if let DocumentAction::Action(action) = &a.on {
+                if let Some(m) = crate::effective::action_approval_problem(e, action) {
+                    return invalid(format!("{name}: {what}: {m}"));
+                }
+            } else if !e.submittable || p.manifest.workflows.iter().any(|w| w.entity == a.entity) {
                 return invalid(format!("{name}: {what}: only a submittable entity without a workflow asks approval on submit or cancel"));
             }
             validate_approval(e, &format!("{name}: {what}"), None, &a.policy).map_err(MetaError::Invalid)?;
             check(what, &serde_json::to_value(&a.policy).unwrap_or_default())?;
         }
         let mut names = HashSet::new();
-        const EVENTS: [&str; 7] = ["created", "updated", "submitted", "cancelled", "deleted", "transitioned", "scheduled"];
+        const EVENTS: [&str; 8] = ["created", "updated", "submitted", "cancelled", "deleted", "transitioned", "scheduled", "opened"];
         for a in &p.manifest.automations {
             let what = format!("{}: automation {}", a.entity, a.name);
             if !is_ident(&a.name) || !names.insert(a.name.as_str()) {

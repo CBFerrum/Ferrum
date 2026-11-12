@@ -1272,7 +1272,13 @@ async fn render_page(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, id: 
     };
     let lh = match (&ask.letterhead_draft, chosen) {
         (Some(d), _) => Some(draft_letter_head(ctx, d)?),
-        (None, Some(l)) => letter_head(k, tx, ctx, l).await?,
+        (None, Some(l)) => match letter_head(k, tx, ctx, l).await? {
+            // One asked for by its id that is not there, or not in use, is refused, not left out unsaid.
+            None if ask.letterhead.as_deref().and_then(|s| s.parse::<Uuid>().ok()) == Some(l) => {
+                return Err(Error::field("letterhead", format!("there is no letter head {l} in use")));
+            }
+            found => found,
+        },
         (None, None) => None,
     };
     if company.is_null()
@@ -1600,8 +1606,8 @@ async fn keep(
         crate::outbox::release_objects(tx, ctx.tenant, &gone).await?;
     }
     let sha = hex::encode(Sha256::digest(&bytes));
-    let stored_type =
-        if crate::files::ACTIVE_TYPES.iter().any(|t| content_type.starts_with(t)) { "application/octet-stream".to_string() } else { content_type };
+    // Its own type, whatever it is: the file routes serve one a browser would run as an attachment that runs nothing.
+    let stored_type = content_type;
     sqlx::query(
         "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by, scan_status, document) \
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'unscanned', $11)",

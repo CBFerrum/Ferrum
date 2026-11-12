@@ -34,6 +34,10 @@ pub const DEFAULT_DAYS: i64 = 7;
 const MAX_VALUE: usize = 2000;
 /// Fields a link's page shows at most.
 const MAX_SHOW: usize = 12;
+/// The columns a table it shows has, at most.
+pub const MAX_COLUMNS: usize = 8;
+/// The rows of a table its page shows, at most.
+const MAX_ROWS: usize = 200;
 
 /// The platform's templates for a link's page (packages/core): each a message template a workspace edits.
 pub const PAGE: &str = "core.link_page";
@@ -68,6 +72,10 @@ pub struct LinkSpec {
     /// Origins that may show its page in a frame (`https://host[:port]`); none by default.
     #[serde(default)]
     pub frame_origins: Vec<String>,
+    /// The columns of each table field `show` lists (`{field: [column, ...]}`, 1 to [`MAX_COLUMNS`] each): the page
+    /// shows its rows read-only, those columns alone.
+    #[serde(default)]
+    pub columns: BTreeMap<String, Vec<String>>,
 }
 
 /// A link as issued: its address holds the token, given only now.
@@ -93,6 +101,8 @@ pub struct LinkPage {
     pub intro: Option<String>,
     /// `{label, value}` of each field the link shows, as text.
     pub fields: Vec<(String, String)>,
+    /// Each table field it shows: its label, its columns' labels, and its rows' values as text, read-only.
+    pub tables: Vec<(String, Vec<String>, Vec<Vec<String>>)>,
     /// `(name, label, params the visitor gives)` of each action.
     pub actions: Vec<(String, String, Vec<ActionParam>)>,
     /// The code step's wording (`title`: what the box asks; `text`: the button sending one), when the link asks one.
@@ -205,7 +215,7 @@ async fn find(tx: &mut Tx, tenant: Uuid, token: &str, lock: bool) -> Result<Opti
     }
     let want = digest(token);
     let sql = format!(
-        "select id, digest, entity, record_id, actions, show, params, max_uses, uses, code_to, recipient, frame_origins from action_link \
+        "select id, digest, entity, record_id, actions, show, params, max_uses, uses, code_to, recipient, frame_origins, columns from action_link \
          where tenant_id = $1 and digest = $2 and revoked_at is null and expires_at > now() and uses < max_uses{}",
         if lock { " for update" } else { "" }
     );
@@ -230,6 +240,7 @@ struct Row {
     code_to: Option<String>,
     recipient: Option<String>,
     frame_origins: Vec<String>,
+    columns: Value,
 }
 
 impl Kernel {
@@ -261,10 +272,25 @@ impl Kernel {
         if spec.show.len() > MAX_SHOW {
             return Err(Error::field("show", format!("a link shows at most {MAX_SHOW} fields")));
         }
+        let public = |f: &ferrum_meta::FieldDef| !matches!(f.ftype, FieldType::Secret | FieldType::Table | FieldType::Attach) && f.perm_group.is_none();
         for name in &spec.show {
             let f = ent.field(name).ok_or_else(|| Error::field("show", format!("{name} is not a field of {}", ent.def.label)))?;
-            if matches!(f.ftype, FieldType::Secret | FieldType::Table | FieldType::Attach) || f.perm_group.is_some() {
+            // A table is shown by the columns named for it, each a field a public page may show.
+            if f.ftype == FieldType::Table && f.perm_group.is_none() && spec.columns.contains_key(name) {
+                continue;
+            }
+            if !public(f) {
                 return Err(Error::field("show", format!("{name} is not shown on a public page")));
+            }
+        }
+        for (table, cols) in &spec.columns {
+            let child = ent.children.get(table).filter(|_| spec.show.contains(table)).and_then(|c| ctx.schema.entity(&c.entity).cloned());
+            let child = child.ok_or_else(|| Error::field("columns", format!("{table} is not a table the link shows")))?;
+            if cols.is_empty() || cols.len() > MAX_COLUMNS {
+                return Err(Error::field("columns", format!("{table} shows 1 to {MAX_COLUMNS} columns")));
+            }
+            if let Some(c) = cols.iter().find(|c| !child.field(c).is_some_and(public)) {
+                return Err(Error::field("columns", format!("{table}.{c} is not shown on a public page")));
             }
         }
         for name in spec.params.keys() {
@@ -288,8 +314,8 @@ impl Kernel {
         let (token, digest) = new_token();
         let id = Uuid::now_v7();
         sqlx::query(
-            "insert into action_link (tenant_id, id, digest, entity, record_id, actions, show, params, max_uses, expires_at, code_to, recipient, frame_origins, issued_by) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+            "insert into action_link (tenant_id, id, digest, entity, record_id, actions, show, params, max_uses, expires_at, code_to, recipient, frame_origins, issued_by, columns) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
         )
         .bind(ctx.tenant)
         .bind(id)
@@ -305,6 +331,7 @@ impl Kernel {
         .bind(&recipient)
         .bind(&frames)
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
+        .bind(json!(spec.columns))
         .execute(&mut **tx)
         .await?;
         crate::audit::record(
@@ -339,7 +366,8 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<Value> = sqlx::query_scalar(
             "select jsonb_build_object('id', id, 'actions', actions, 'show', show, 'uses', uses, 'max_uses', max_uses, 'expires_at', expires_at, \
-             'recipient', recipient, 'code', code_to is not null, 'revoked_at', revoked_at, 'created_at', created_at, 'issued_by', issued_by) \
+             'recipient', recipient, 'code', code_to is not null, 'revoked_at', revoked_at, 'created_at', created_at, 'issued_by', issued_by, \
+             'opened_at', opened_at, 'columns', columns) \
              from action_link where tenant_id = $1 and entity = $2 and record_id = $3 order by created_at desc limit 200",
         )
         .bind(ctx.tenant)
@@ -415,9 +443,19 @@ impl Kernel {
             None => None,
         };
         tx.commit().await?;
+        // Each table it shows, read-only, by the columns it names: rows past the bound left off.
+        let mut tables = Vec::new();
+        for (table, cols) in link.columns.as_object().into_iter().flatten() {
+            let (Some(f), Some(c)) = (ent.field(table), ent.children.get(table).and_then(|c| schema.entity(&c.entity))) else { continue };
+            let cols: Vec<&ferrum_meta::FieldDef> = cols.as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|n| c.field(n)).collect();
+            let rows = doc.get(table).and_then(Value::as_array).into_iter().flatten().take(MAX_ROWS);
+            let rows = rows.map(|r| cols.iter().map(|f| shown(r.get(&f.name))).collect()).collect();
+            tables.push((f.label().to_string(), cols.iter().map(|f| f.label().to_string()).collect(), rows));
+        }
         let fields = link
             .show
             .iter()
+            .filter(|n| link.columns.get(n.as_str()).is_none())
             .filter_map(|n| {
                 ent.field(n).map(|f| {
                     (f.label().to_string(), if f.ftype == FieldType::Link { shown(doc.get("_titles").and_then(|t| t.get(n))) } else { shown(doc.get(n)) })
@@ -441,10 +479,61 @@ impl Kernel {
             heading,
             intro,
             fields,
+            tables,
             actions,
             code,
             frame_origins: link.frame_origins,
         }))
+    }
+
+    /// The first time a visitor acts on link `token`'s page (its first POST-back: sending a code or an action, even
+    /// one refused), recorded once, with the record's `opened` event (`link: {id, recipient}`) that automations and
+    /// apps' subscribers hear. A preview fetcher or a mail scanner reads the page and never posts, so neither opens it.
+    /// Nothing for a link not working.
+    pub async fn link_opened(&self, slug: &str, token: &str) -> Result<()> {
+        let Some((tenant, ..)) = self.link_workspace(slug).await? else { return Ok(()) };
+        let schema = self.registry.schema(tenant).await?;
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        let Some(link) = find(&mut tx, tenant, token, true).await? else { return Ok(()) };
+        let first = sqlx::query("update action_link set opened_at = now() where tenant_id = $1 and id = $2 and opened_at is null")
+            .bind(tenant)
+            .bind(link.id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        let Some(ent) = schema.entity(&link.entity).cloned().filter(|_| first > 0) else { return Ok(tx.commit().await?) };
+        let guest = guest(schema.clone(), tenant, &link.entity, link.record_id, &link.actions, link.recipient.as_deref());
+        let doc = self.get_tx(&crate::actions::system(&guest), &mut tx, &link.entity, link.record_id, false).await?;
+        let about = json!({"id": link.id, "recipient": link.recipient});
+        self.emit_about(&guest, &mut tx, &ent, link.record_id, "opened", "link:opened", &doc, ("link", about)).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Ends the signed links of record `record` of `entity` still working (those naming `action`, or all), in the
+    /// caller's transaction: an app's own way to take its links back, as a person revoking each would. Whoever asks
+    /// reads the record (the system may). How many it ended.
+    pub async fn revoke_action_links(&self, tx: &mut Tx, ctx: &Ctx, entity: &str, record: Uuid, action: Option<&str>) -> Result<u64> {
+        if ctx.outside {
+            return Err(Error::Forbidden("staff revoke links".into()));
+        }
+        if !ctx.is_system {
+            self.get_tx(ctx, tx, entity, record, false).await?;
+        }
+        let ended: Vec<Uuid> = sqlx::query_scalar(
+            "update action_link set revoked_at = now() where tenant_id = $1 and entity = $2 and record_id = $3 and revoked_at is null \
+             and ($4::text is null or $4 = any(actions)) returning id",
+        )
+        .bind(ctx.tenant)
+        .bind(entity)
+        .bind(record)
+        .bind(action)
+        .fetch_all(&mut **tx)
+        .await?;
+        if !ended.is_empty() {
+            crate::audit::record(tx, ctx, entity, record, "revoke_link", None, json!({"links": ended, "action": action})).await?;
+        }
+        Ok(ended.len() as u64)
     }
 
     /// The wording of a link's page outside a working link (`gone`) or after a use (`done`), in the workspace's
@@ -458,6 +547,17 @@ impl Kernel {
         let said = notice(&sys, &mut tx, if done { DONE } else { GONE }, language.as_deref().unwrap_or("en"), &json!({})).await?;
         tx.commit().await?;
         Ok(said.unwrap_or_else(fallback))
+    }
+
+    /// What every link that does not work says, whichever workspace its address names or whether there is one: the
+    /// platform's own `core.link_gone` as its package ships it (in English), never a workspace's edit of it, so the
+    /// answer tells a stranger nothing of which workspaces exist.
+    pub fn link_gone_wording(&self) -> (String, Option<String>) {
+        let shipped = self.registry.catalog().package("core").and_then(|p| p.manifest.messages.iter().find(|m| m.key == GONE).cloned());
+        shipped
+            .and_then(|m| m.languages.get("en").and_then(|l| l.inapp.clone()))
+            .map(|n| (n.title, n.text))
+            .unwrap_or_else(|| ("This link does not work any more".into(), None))
     }
 
     /// Sends the one-time code a link asks for to the address it names (the platform's codes: five an hour a recipient,

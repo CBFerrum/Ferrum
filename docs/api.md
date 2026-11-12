@@ -293,6 +293,25 @@ says to whoever may submit or cancel whether each asks for approval first: `appr
 "steps": ["Manager"]}, "cancel": {"asks": false, "steps": []}}` (the steps' labels, no approver named; an action the
 caller may not take is left out).
 
+### Approval before an action runs
+
+The same policy on one of an entity's actions (a button's effects or an app's handler), `on: {action: <name>}`, by the
+workspace or in a package's `approvals:` ([BD-34](builder/decisions.md#bd-34-approval-before-an-action-runs)):
+
+```json
+{"entity": "Change", "op": {"op": "set_approval", "on": {"action": "implement"}, "approval": {
+  "steps": [{"label": "Change board", "approvers": {"role": "Change Board"}, "need": 2}]}}}
+```
+
+Refused for an action the entity lacks or a `read_only` one. `POST /api/v1/{E}/{id}/actions/{name}` by someone who may
+run it now answers `{"_approval": {…, "on_action": true, "action": "implement", "params": {…}}}` and runs nothing; a
+secret parameter shows as `[redacted]` there and in the history, its value sealed with the server's key (without one, an
+action given a secret is refused). When the last step approves, the action runs once **as its requester at that
+moment**, with exactly the parameters asked; refused then (their right gone, the record no longer meets the action's
+condition or a refusal), the request ends `failed` with `failure` in the action's words and the requester is told. A
+rejection or a recall runs nothing; a transition or a submit of the record does not end the request. Customize lists it
+as `approvals: {"action:implement": …}`.
+
 ## Public sign-up
 
 Off unless an administrator turns it on for a portal role: `PUT /api/admin/roles/{role}/signup {domains?: [...], passes?:
@@ -319,7 +338,7 @@ are kept a day. A code works once, for 10 minutes, five tries; a code sent befor
 | `POST /api/assignments/{id}/close` | `{status: "Done" \| "Cancelled"}` |
 | `GET /api/v1/{E}/{id}/tags`, `PUT …` `{tags: [...]}` | tags; `GET /api/tags/{E}` → `{tags: [{tag, count}]}` over the records the caller can read |
 | `GET /api/v1/{E}/{id}/follow`, `PUT …` `{follow: bool}` | followers get a notification when the record changes |
-| `GET /api/v1/{E}/{id}/attachments` | → `{attachments: [{id, file_name, content_type, size_bytes, created_by, created_at, url}]}`; `DELETE /api/files/{id}` removes one (an attachment only by someone who can edit its record; a loose upload by its uploader) |
+| `GET /api/v1/{E}/{id}/attachments` | → `{attachments: [{id, file_name, content_type, size_bytes, created_by, created_at, url, shared}]}` (what an outside person uploaded is always `shared: true`); `DELETE /api/files/{id}` removes one (an attachment only by someone who can edit its record; a loose upload by its uploader) |
 | `GET /api/users` | directory of active users `[{id, full_name, email}]` for mentions and assignment |
 
 **Shared with outside people** ([BD-22](builder/decisions.md#bd-22-comments-and-files-shared-with-outside-people)).
@@ -339,20 +358,27 @@ record's followers.
 
 | Method & path | Notes |
 |---|---|
-| `POST /api/v1/{E}/{id}/links` | staff: `{actions: [name] \| ["view"], show?: [field], params?: {name: value}, expires_at?, uses?: 1-100, code_to?: address or number, recipient?, frame_origins?: [origin]}` → `201 {id, url, expires_at}`; the `url` holds the token and is shown only now |
-| `GET /api/v1/{E}/{id}/links` | `{links: [{id, actions, show, uses, max_uses, expires_at, recipient, code, revoked_at, created_at, issued_by}]}`, never a token |
+| `POST /api/v1/{E}/{id}/links` | staff: `{actions: [name] \| ["view"], show?: [field], columns?: {table field: [column]}, params?: {name: value}, expires_at?, uses?: 1-100, code_to?: address or number, recipient?, frame_origins?: [origin]}` → `201 {id, url, expires_at}`; the `url` holds the token and is shown only now. A table field in `show` needs 1 to 8 `columns`, each a field a public page may show; its rows are shown read-only |
+| `GET /api/v1/{E}/{id}/links` | `{links: [{id, actions, show, columns, uses, max_uses, expires_at, recipient, code, revoked_at, created_at, issued_by, opened_at}]}`, never a token |
 | `DELETE /api/links/{id}` | revokes it (`204`) |
 | `GET /api/public/{workspace}/links/{token}` | the page, no session: the record's kind and title, the fields `show` lists, one form per action asking its own parameters (not those fixed), and the code step when the link has one |
 | `POST /api/public/{workspace}/links/{token}` | a form: `_send=1` sends the code; `_action`, the action's parameters and `_code` run it once. The answer is a page: done (`core.link_done`), the form again with what was wrong (`422`), or gone |
 
-A link that does not work (unknown, expired, revoked, used up, another workspace's) answers `404` with the page
-`core.link_gone`, whatever the reason. Pages are never cached and send no referrer. Every request counts against the
+A link that does not work (unknown, expired, revoked, used up, another workspace's, a workspace that is not there)
+answers `404` with the page `core.link_gone` as the platform ships it (never a workspace's edit, so the answer is the
+same whether the workspace exists), whatever the reason. The first `POST` to a working link's page records
+`opened_at` once and raises the record's `opened` event (`link: {id, recipient}`; automations take `event: "opened"`);
+reading the page does not, so a link preview or a mail scanner opens nothing
+([BD-38](builder/decisions.md#bd-38-signed-links-ended-by-an-app-dated-by-the-record-opened-with-lines)). Pages are never cached and send no referrer. Every request counts against the
 public limiter (per address and workspace, kept in the database).
 
-The effect `{"type": "link", "actions": [...], "show"?: [...], "params"?: {name: expression}, "days"?: n, "uses"?: n,
-"code_to"?: expression, "recipient"?: expression, "frame_origins"?: [...]}` issues one on the record as the system and
-gives `{id, url, expires_at}`; send it with a `message` effect: `"values": {"url": "results[0].url"}, "secret": ["url"]`.
-An app calls `Kernel::issue_link(ctx, tx, entity, id, &LinkSpec)` in its own transaction.
+The effect `{"type": "link", "actions": [...], "show"?: [...], "columns"?: {...}, "params"?: {name: expression}, "days"?:
+n, "until"?: expression, "uses"?: n, "code_to"?: expression, "recipient"?: expression, "frame_origins"?: [...]}` issues one
+on the record as the system and gives `{id, url, expires_at}`; send it with a `message` effect: `"values": {"url":
+"results[0].url"}, "secret": ["url"]`. `until` gives a date (the link works through that day, UTC) or a moment, the
+record's valid-until say; with `days` too the sooner; never past 90 days; one already past is refused. An app calls
+`Kernel::issue_link(ctx, tx, entity, id, &LinkSpec)` in its own transaction, and ends a record's links in it with
+`Kernel::revoke_action_links(tx, ctx, entity, record, Some(action) | None)` (how many it ended).
 
 ### Replacing an app's own guest link with a signed action link
 
@@ -837,7 +863,8 @@ POST /api/admin/automations
   `/public/{workspace}/lists/{name}/{value}`; `"detail": [...]` (the same rules, at most 12) are fields only that page
   shows; `"summary"` (one of the fields shown) is its description for search engines. A list with a slug takes `?q=`
   (its own text fields, any case) and `?page=` (rows a page: its `limit`; at most 100 pages), on the page and on
-  `GET /api/public/{workspace}/lists/{name}` (which then adds `addresses`, each row's slug, and `page`). It is offered to
+  `GET /api/public/{workspace}/lists/{name}` (which then adds `addresses`, each row's slug; its JSON always says `page`,
+and `q` when searched; a page past the last is a `404` there too). It is offered to
   search engines: `index, follow`, a canonical link, and `/public/{workspace}/sitemap.xml` of every published record's
   page; a list without a slug stays `noindex`. Every answer carries an `ETag` of its content (`304` when unchanged) and
   `Cache-Control: public, max-age=60`. A draft, cancelled or filtered-out record, a list without a slug and a page past
@@ -931,8 +958,10 @@ write, create, delete, submit, cancel, export or import; `record` asks about one
 (comma-separated) answers for those roles instead of the person's own. Nothing changes by asking.
 
 Backfills (data a release moves in batches, [operations](operations.md#upgrades)): `GET /api/admin/backfills` →
-`{backfills: [{package, name, state (waiting|running|done), changed, remaining, started_at, finished_at, needing_now}]}`;
-`POST /api/admin/backfills/{package}/{name}/rerun` runs a finished one again at the next upkeep (409 while it runs).
+`{backfills: [{package, name, state (waiting|running|done|failed), changed, remaining, started_at, finished_at, needing_now, error}]}`;
+`POST /api/admin/backfills/{package}/{name}/rerun` runs a finished one again at the next upkeep, and one whose job
+failed at once from where it got (409 while it runs). A failed one is also queued again, once, when its package's
+installed version changes ([BD-39](builder/decisions.md#bd-39-faults-a-walk-of-a-live-server-found)).
 
 Roles one person may not hold together (segregation of duties): `GET /api/admin/role-conflicts` →
 `{conflicts: [{role_a, role_b, reason, created_at, holders: [{id, email, full_name}]}]}`, where
@@ -1082,6 +1111,13 @@ address unless the operator names the host in `FERRUM_CONNECTION_HOSTS` (which a
 | `GET /api/admin/connections/{id}/log?limit=` | `{calls: [{at, operation, outcome, status, duration_ms, entity, record_id, error, debug}], received: [{delivery, received_at, state, error}]}` |
 | `GET /api/admin/connections/{id}/pulls` | `{pulls: [{name, cursor, last_run, next_run, last_error}]}` |
 | `POST /api/admin/connections/{id}/pulls/{name}` | pulls now → `202 {job}` |
+
+A pull answered "later" is tried again from where its cursor stood, with backoff, at most four attempts and only before
+its next run; a run that fails (or runs out of attempts) keeps `last_error` and tells the workspace's administrators
+once per streak of failed runs ([BD-36](builder/decisions.md#bd-36-a-failed-pull-is-tried-again)). A person's data
+report and erasure reach the calls they made or that were about their records, deliveries and captures naming them, and
+their own sign-ins, whose tokens go and are revoked at the provider where it says how
+([BD-35](builder/decisions.md#bd-35-connections-in-a-persons-data)).
 | `GET /api/connections` | a person's own: `{connections: [{id, name, label, status, account}]}` |
 | `POST /api/connections/{id}/connect` | from the browser, signed in → `{url}` to send it to |
 | `DELETE /api/connections/{id}/connect` | disconnects (the workspace's: administrators) → `{revoked}` |
@@ -1526,7 +1562,8 @@ package wins (an add-on over what it extends), then the first by key; null: the 
 with Print Settings' `page`). `GET /api/v1/{E}/{id}/print?template=<key|
 standard>&letterhead=<none|id>&language=&copy=<label>&copy=…&format=pdf|html` → the page (HTML with the sandboxing
 policy, or `application/pdf` named `<label> <number>.pdf` on the format's paper); `403` roles or a refused draft,
-`404` an unknown format, `422` a disabled one or a bad parameter (`fields: [{field: template|letterhead|copy|language}]`).
+`404` an unknown format, `422` a disabled one or a bad parameter (`fields: [{field: template|letterhead|copy|language}]`; a letter head id that is
+not there or not in use is one).
 `POST /api/v1/{E}/{id}/email {to, subject?, message?, pdf?, template?, letterhead?, language?, copies?}` attaches
 exactly what `/print?format=pdf` makes with the same choices (the default format when none is named); the choices may
 also come nested as `print: {template, letterhead, language, copies}`.
@@ -1731,7 +1768,7 @@ the app is gone or the person may no longer use it.
 
 ## Files
 
-`POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download, streamed; one `Range: bytes=…` answered with 206).
+`POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download, streamed; one `Range: bytes=…` answered with 206). Every download carries its type (a file kept without one as `application/octet-stream`), `X-Content-Type-Options: nosniff` and `Content-Disposition: attachment` with its name; a type a browser would run (HTML, SVG, XML, script) also a sandboxing CSP, also on the public route, where other types are inline. A generated document keeps the type it was made as ([BD-37](builder/decisions.md#bd-37-generated-documents-keep-their-type)).
 
 Who may attach and download (the uploads below alike):
 

@@ -64,6 +64,13 @@ fn named_files(ctx: &Ctx, ent: &EffEntity, doc: &Doc) -> BTreeSet<Uuid> {
 /// Content types never served inline as-is (they could run script in the app's origin).
 pub(crate) const ACTIVE_TYPES: &[&str] = &["text/html", "application/xhtml+xml", "image/svg+xml", "application/javascript", "text/javascript"];
 
+/// Whether a browser may run what a file of `content_type` holds (its parameters aside): the active types, and XML,
+/// which a browser renders as a document too. Such a file is only ever served as an attachment that runs nothing.
+pub fn runs_in_browser(content_type: &str) -> bool {
+    let base = content_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+    ACTIVE_TYPES.contains(&base.as_str()) || base == "application/xml" || base == "text/xml" || base.ends_with("+xml")
+}
+
 impl Kernel {
     /// Installs the object store (once, at boot).
     pub fn set_file_store(&self, store: Arc<dyn FileStore>) {

@@ -27,7 +27,7 @@ progress after a lesson changes.
   its parameters) before its handler runs, so what an action's handler then writes directly is
   under that entry.
 
-## The 143 statements, by kind
+## The 149 statements, by kind
 
 | Kind | How many | What keeps them right |
 |---|---|---|
@@ -36,7 +36,7 @@ progress after a lesson changes.
 | A person's action on a public link: opens and clicks, subscribe, confirm, unsubscribe, viewing a shared file | 13 | The record they change carries its evidence (the consent's source and time, the link's views) |
 | Records its own audit or activity entry | 8 | Drive's activity log ("Link Created", "Link Revoked", "Shared With Guest", "Share Expired", "Delete"), Edge's and MES's audit entries |
 
-By app: Campaigns 43, Drive 23, Comms 18, ERP 12, POS 10, Commerce 6, Projects 6, HR 5, LMS 5, Edge 4, Helpdesk 3, CRM 2, Objectives 2,
+By app: Campaigns 43, Drive 23, Comms 18, ERP 12, POS 10, CRM 8, Commerce 6, Projects 6, HR 5, LMS 5, Edge 4, Helpdesk 3, Objectives 2,
 and one each in Bookings, DAM, Field Service and Forms.
 
 ## Findings
@@ -135,6 +135,12 @@ and one each in Bookings, DAM, Field Service and Forms.
 | comms | `src/subscribe.rs:352` | `update e_calendar` | `subscribe` | consequence of an audited document operation (hook) |
 | crm | `src/consent.rs:110` | `update e_contact` | `erase` | consequence of an audited document operation (hook) |
 | crm | `src/score.rs:219` | `update e_lead` | `stale` | consequence of an audited document operation (hook) |
+| crm | `src/sequence.rs:138` | `update e_sequence_enrolment` | `stop_for` | engine work: statuses, counts, queues, upkeep |
+| crm | `src/sequence.rs:217` | `update e_sequence_enrolment` | `run_tenant` | engine work: statuses, counts, queues, upkeep |
+| crm | `src/sequence.rs:260` | `update e_sequence_enrolment` | `step` | engine work: statuses, counts, queues, upkeep |
+| crm | `src/sequence.rs:272` | `update e_sequence_enrolment` | `step` | engine work: statuses, counts, queues, upkeep |
+| crm | `src/sequence.rs:331` | `update e_sequence_enrolment` | `step` | engine work: statuses, counts, queues, upkeep |
+| crm | `src/sequence.rs:342` | `update e_sequence_enrolment` | `step` | engine work: statuses, counts, queues, upkeep |
 | dam | `src/sharing.rs:139` | `update e_asset_share` | `open` | a person's action on a public link (tracking, consent, viewing) |
 | drive | `src/files.rs:383` | `delete from e_drive_file_version` | `prune` | engine work: statuses, counts, queues, upkeep |
 | drive | `src/leaver.rs:39` | `update e_drive_file` | `on_event` | engine work: statuses, counts, queues, upkeep |
@@ -192,10 +198,10 @@ and one each in Bookings, DAM, Field Service and Forms.
 | lms | `src/live.rs:78` | `update e_lms_cohort__sessions` | `sync` | consequence of an audited document operation (hook) |
 | objectives | `src/okr.rs:416` | `update e_key_result` | `after_save` | consequence of an audited document operation (hook) |
 | objectives | `src/okr.rs:423` | `update e_check_in` | `after_save` | consequence of an audited document operation (hook) |
-| pos | `src/closing.rs:290` | `update e_pos_invoice` | `on_cancel` | consequence of an audited document operation (hook) |
-| pos | `src/closing.rs:484` | `update e_pos_invoice` | `consolidate` | consequence of an audited document operation (hook) |
-| pos | `src/closing.rs:599` | `update e_sales_invoice__items` | `make` | consequence of an audited document operation (hook) |
-| pos | `src/closing.rs:706` | `update e_pos_invoice` | `invoice_now` | consequence of an audited document operation (hook) |
+| pos | `src/closing.rs:358` | `update e_pos_invoice` | `on_cancel` | consequence of an audited document operation (hook) |
+| pos | `src/closing.rs:552` | `update e_pos_invoice` | `consolidate` | consequence of an audited document operation (hook) |
+| pos | `src/closing.rs:667` | `update e_sales_invoice__items` | `make` | consequence of an audited document operation (hook) |
+| pos | `src/closing.rs:774` | `update e_pos_invoice` | `invoice_now` | consequence of an audited document operation (hook) |
 | pos | `src/limits.rs:292` | `update e_pos_approval` | `use_approvals` | consequence of an audited document operation (hook) |
 | pos | `src/loyalty.rs:110` | `update e_loyalty_point_entry` | `consume` | consequence of an audited document operation (hook) |
 | pos | `src/loyalty.rs:231` | `update e_loyalty_point_entry` | `on_cancel` | consequence of an audited document operation (hook) |
