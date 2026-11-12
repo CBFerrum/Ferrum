@@ -712,6 +712,9 @@ impl Kernel {
         if !messages.is_empty() {
             apps.push(json!({"app": "messages", "erased": messages.len()}));
         }
+        // Their opt-outs keep stopping promotional messages, under a keyed digest of the address (BD-20).
+        let choices = crate::messages::choices_of(&mut tx, ctx.tenant, &emails, phone.as_deref()).await?;
+        let opt_outs = crate::messages::erase_choices(&mut tx, ctx.tenant, self.settings.secret_key.as_ref(), &choices).await?;
         // Their addresses in the history's payloads (who did what, as apps write it) go as well.
         if !erased.is_empty() || account.is_some() {
             events += redact_addresses(&mut tx, ctx, &emails, reason).await?;
@@ -720,8 +723,8 @@ impl Kernel {
         let exports = if erased.is_empty() && account.is_none() { 0 } else { crate::export::drop_exports(&mut tx, ctx.tenant, None).await? };
         // By id and field name only: it outlives the data, and must not hold what it erased. Kept here too,
         // for a workspace taken back to an older copy to erase again (FEO-078).
-        let entry = json!({"account": account, "records": journal, "reason": reason, "messages": messages});
-        if !journal.is_empty() || account.is_some() || !apps.is_empty() {
+        let entry = json!({"account": account, "records": journal, "reason": reason, "messages": messages, "opt_outs": opt_outs});
+        if !journal.is_empty() || account.is_some() || !apps.is_empty() || !opt_outs.is_empty() {
             sqlx::query("insert into privacy_erasure (tenant_id, erasure) values ($1, $2)").bind(ctx.tenant).bind(&entry).execute(&mut *tx).await?;
         }
         outbox::enqueue(&mut tx, ctx.tenant, ERASED_TOPIC, None, None, entry).await?;
@@ -832,6 +835,18 @@ impl Kernel {
         }
         if !addresses.is_empty() {
             redact_addresses(tx, ctx, &addresses, reason).await?;
+        }
+        // Choices the restore brought back with their addresses: those the erasure took, known by their marks.
+        let marks: Vec<String> = erasure["opt_outs"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(str::to_string)).collect();
+        if !marks.is_empty() {
+            let back: Vec<(String, String, bool)> = sqlx::query_as(
+                "select email::text, channel, granted from contact_consent where tenant_id = $1 and purpose = 'marketing' and email::text not like 'erased:%'",
+            )
+            .bind(tenant)
+            .fetch_all(&mut **tx)
+            .await?;
+            let back: Vec<_> = back.into_iter().filter(|(a, c, _)| self.erased_marks(tenant, c, a).iter().any(|m| marks.contains(m))).collect();
+            done += crate::messages::erase_choices(tx, tenant, self.settings.secret_key.as_ref(), &back).await?.len();
         }
         let sends: Vec<Uuid> = erasure["messages"].as_array().into_iter().flatten().filter_map(|i| i.as_str()?.parse().ok()).collect();
         done +=

@@ -12,12 +12,18 @@
 //! * **Keeping.** [`generate`] stores the file on the record in the caller's transaction, replaces the one the
 //!   template made before when asked, and gives its id and SHA-256 digest to later effects (a `message` attaches it, an
 //!   `invoke` hands it to the Sign app).
+//! * **Queries.** A template may be about a saved report's rows instead of one record ([`DocumentQuery`]): one file
+//!   for the whole result, or one per record a column of the rows links to, kept on that record (a statement per
+//!   customer). The rows come through [`QueryRows`], which the server wires to the analytics engine: read as the person
+//!   who asks, or as the workspace when an effect or a schedule runs it (as generated documents are, above). At most
+//!   [`MAX_QUERY_ROWS`] rows and [`MAX_GROUPS`] files a run: a person asking for more is refused with the numbers; an
+//!   effect's run goes on in a job of its own after the last record it did, never dropping the rest.
 
 use crate::ctx::Ctx;
 use crate::db::Tx;
 use crate::error::{Error, Result};
 use crate::{Action, Kernel, audit};
-use ferrum_meta::{DocumentBody, DocumentDef, DocumentOutput, FieldType};
+use ferrum_meta::{DocumentBody, DocumentDef, DocumentOutput, DocumentQuery, FieldType};
 use minijinja::value::Value as JValue;
 use minijinja::{AutoEscape, Error as JError, ErrorKind, UndefinedBehavior};
 use serde::{Deserialize, Serialize};
@@ -33,6 +39,21 @@ pub const MAX_BODY: usize = 256 * 1024;
 pub const MAX_RECORDS: usize = 200;
 pub const MAX_COPIES: u32 = 100;
 pub const MAX_LABELS: usize = 1000;
+/// Rows a document about a query reads, and files one run of a grouped one makes: more is refused when a person
+/// asks, and done in the next job when an effect asked.
+pub const MAX_QUERY_ROWS: usize = 10_000;
+pub const MAX_GROUPS: usize = 100;
+/// The job that renders a grouped query's files for an effect, [`MAX_GROUPS`] at a time.
+pub const GROUPS_KIND: &str = "platform.document.groups";
+
+/// Where a document about a query gets its rows: the analytics engine's report path, wired by the server.
+#[async_trait::async_trait]
+pub trait QueryRows: Send + Sync {
+    /// The rows of the saved report labelled `report`, with `params` (`filters`, `from`, `to`, `limit`), read as `ctx`
+    /// may read them: `{columns: [{name, type, to?}], rows: [{..}], meta: {entity, truncated}}`.
+    async fn rows(&self, k: &Kernel, ctx: &Ctx, report: &str, params: &Value) -> Result<Value>;
+}
+
 /// What separates two records' pages when a page template renders several (each starts a page).
 const PAGE_BREAK: &str = "\n<div style=\"break-after:page\"></div>\n";
 
@@ -264,7 +285,10 @@ async fn check_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef) -
     {
         return Err(Error::field("key", format!("{p} has no document {}; a workspace's own template has a key no package's name starts", def.key)));
     }
-    let mut vars = sample(ctx, &def.entity);
+    let mut vars = match &def.query {
+        Some(q) => query_sample(k, ctx, def, q).await?,
+        None => sample(ctx, &def.entity),
+    };
     vars["settings"] = crate::settings::load(k, ctx, tx, &named(&all_text(def), "settings.")).await?;
     vars["values"] = Value::Object(def.values.iter().map(|v| (v.clone(), json!(""))).collect());
     for (name, v) in
@@ -272,11 +296,74 @@ async fn check_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef) -
     {
         vars[name] = v;
     }
+    let ent = if def.query.is_none() { ctx.schema.entity(&def.entity) } else { None };
+    let has = |f: &str| match f == "_titles" || ["id", "number", "created_at", "updated_at", "created_by", "version", "docstatus", "status"].contains(&f) {
+        true => Some(false),
+        false => ent.and_then(|e| e.def.fields.iter().find(|d| d.name == f)).map(|d| d.ftype == FieldType::Secret),
+    };
     for (lang, b) in &def.languages {
         vars["language"] = json!(lang);
-        render_all(def, b, &vars, true).map_err(|e| Error::field("template", format!("{lang}: {}", plain(&e))))?;
+        render_all(def, b, &vars, true).map_err(|e| {
+            let text = [Some(&b.body), b.header.as_ref(), b.footer.as_ref()].into_iter().flatten().cloned().collect::<Vec<_>>().join("\n");
+            let said =
+                crate::messages::undefined_said(plain(&e), &text, &def.values, ent.map(|e| (e.def.label.as_str(), &has as &dyn Fn(&str) -> Option<bool>)));
+            Error::field("template", format!("{lang}: {said}"))
+        })?;
     }
     Ok(())
+}
+
+/// What a document about a query is checked against: the report's columns as one row, and a record of the entity its
+/// grouping column links to as `group`. The report is run once, as whoever saves it, to learn them.
+async fn query_sample(k: &Kernel, ctx: &Ctx, def: &DocumentDef, q: &DocumentQuery) -> Result<Value> {
+    let (columns, _) = query_rows(k, ctx, def, q, &json!({"limit": 1})).await?;
+    let row: Map<String, Value> = columns
+        .iter()
+        .filter_map(|c| {
+            let v = match serde_json::from_value::<FieldType>(c["type"].clone()) {
+                Ok(t) if t.is_numeric() => json!(0),
+                Ok(FieldType::Check) => json!(false),
+                _ => json!(""),
+            };
+            Some((c["name"].as_str()?.to_string(), v))
+        })
+        .collect();
+    let group = match group_target(ctx, &columns, q) {
+        Ok(Some(target)) => sample(ctx, &target)["doc"].clone(),
+        Ok(None) => Value::Null,
+        Err(e) => return Err(Error::field("query", e)),
+    };
+    Ok(json!({"rows": [row], "columns": columns, "group": group}))
+}
+
+/// The entity `q.group_by` links to, among `columns` (a report's): none when it does not group.
+fn group_target(ctx: &Ctx, columns: &[Value], q: &DocumentQuery) -> std::result::Result<Option<String>, String> {
+    let Some(g) = &q.group_by else { return Ok(None) };
+    let col = columns.iter().find(|c| c["name"] == json!(g)).ok_or_else(|| format!("report {} has no column {g}", q.report))?;
+    match (col["type"].as_str(), col["to"].as_str()) {
+        (Some("link"), Some(to)) if ctx.schema.entity(to).is_some() => Ok(Some(to.to_string())),
+        _ => Err(format!("{g} of report {} links to no record: a document is grouped by a column that does", q.report)),
+    }
+}
+
+/// The report's columns and rows for `def`, read as `ctx` may: refused when the report reads another entity than the
+/// template says, and when it has more than [`MAX_QUERY_ROWS`] rows, with the numbers.
+async fn query_rows(k: &Kernel, ctx: &Ctx, def: &DocumentDef, q: &DocumentQuery, params: &Value) -> Result<(Vec<Value>, Vec<Map<String, Value>>)> {
+    let source = k.hooks.query_rows().ok_or_else(|| Error::invalid("documents about a query need the analytics engine, which this server does not have"))?;
+    let mut params = if params.is_object() { params.clone() } else { json!({}) };
+    params.as_object_mut().map(|m| m.entry("limit").or_insert(json!(MAX_QUERY_ROWS)));
+    let out = source.rows(k, ctx, &q.report, &params).await?;
+    if out["meta"]["entity"].as_str() != Some(def.entity.as_str()) {
+        return Err(Error::field("entity", format!("report {} reads {}, not {}", q.report, out["meta"]["entity"].as_str().unwrap_or("nothing"), def.entity)));
+    }
+    let rows: Vec<Map<String, Value>> = out["rows"].as_array().into_iter().flatten().filter_map(|r| r.as_object().cloned()).collect();
+    if out["meta"]["truncated"] == json!(true) || rows.len() > MAX_QUERY_ROWS {
+        return Err(Error::invalid(format!(
+            "report {} gives more than {MAX_QUERY_ROWS} rows, the most one document reads; narrow it with its filters or dates",
+            q.report
+        )));
+    }
+    Ok((out["columns"].as_array().cloned().unwrap_or_default(), rows))
 }
 
 fn plain(e: &Error) -> String {
@@ -318,7 +405,7 @@ fn may_use(ctx: &Ctx, def: &DocumentDef) -> bool {
 
 /// The entity's default: the workspace's (own or edited) over a package's, the first by key among several.
 fn default_of<'a>(all: &'a BTreeMap<String, (DocumentDef, &'static str, bool)>, entity: &str) -> Option<&'a DocumentDef> {
-    let of = || all.values().filter(|(d, ..)| d.entity == entity && d.default);
+    let of = || all.values().filter(|(d, ..)| d.entity == entity && d.default && d.query.is_none());
     of().find(|(_, source, _)| *source != "package").or_else(|| of().next()).map(|t| &t.0)
 }
 
@@ -494,36 +581,56 @@ pub struct Generated {
 /// caller's transaction: it is there, and the one it replaces gone, only if that commits. On the record's audit trail.
 pub async fn generate(k: &Kernel, tx: &mut Tx, ctx: &Ctx, g: &Generate) -> Result<Generated> {
     let def = effective(tx, ctx, &g.template).await?;
+    if def.query.is_some() {
+        return Err(Error::invalid(format!("document {} is about a query: it is made from the report's rows", def.key)));
+    }
     // Whoever generates it may read the record; what the document holds is the workspace's view.
     k.get_tx(ctx, tx, &def.entity, g.record, false).await?;
     let (pages, vars, _) = render_record(k, tx, ctx, Reader::Outside, &def, g.record, g.language.as_deref(), &g.values).await?;
     // ponytail: the PDF service is called inside the caller's transaction (up to its 60 s); a job if that ever matters.
     let (bytes, content_type, ext) = produce(k, &def, pages, k.pdf_enabled()).await?;
     let name = file_name(&def, vars["title"].as_str().unwrap_or_default(), g.name.as_deref(), ext);
+    keep(k, tx, ctx, &def.key, (&def.entity, g.record), name, bytes, content_type, g.replace).await
+}
+
+/// Stores `bytes` as template `key`'s file on record `record` of `entity` in the caller's transaction (the one the
+/// template made for it before dropped with `replace`), on the record's audit trail.
+#[allow(clippy::too_many_arguments)]
+async fn keep(
+    k: &Kernel,
+    tx: &mut Tx,
+    ctx: &Ctx,
+    template: &str,
+    (entity, record): (&str, Uuid),
+    name: String,
+    bytes: Vec<u8>,
+    content_type: String,
+    replace: bool,
+) -> Result<Generated> {
     k.check_storage_quota(ctx.tenant, bytes.len() as u64).await?;
     let id = Uuid::now_v7();
     let key = format!("tenants/{}/{}", ctx.tenant, id);
     // ponytail: the object is written before the transaction commits; one it rolls back leaves an object no row names.
     k.file_store()?.put(&key, &bytes).await?;
-    if g.replace {
+    if replace {
         // One a mail still waits to attach stays on the record, no longer this template's: the mail goes with it.
         sqlx::query(
             "update file_object f set document = null where f.tenant_id = $1 and f.entity = $2 and f.record_id = $3 and f.document = $4 \
              and exists (select 1 from outbox o where o.tenant_id = $1 and o.topic = $5 and o.processed_at is null and not o.dead and o.payload->'files' ? f.id::text)",
         )
         .bind(ctx.tenant)
-        .bind(&def.entity)
-        .bind(g.record)
-        .bind(&def.key)
+        .bind(entity)
+        .bind(record)
+        .bind(template)
         .bind(crate::outbox::MAIL_TOPIC)
         .execute(&mut **tx)
         .await?;
         let gone: Vec<String> =
             sqlx::query_scalar("delete from file_object where tenant_id = $1 and entity = $2 and record_id = $3 and document = $4 returning storage_key")
                 .bind(ctx.tenant)
-                .bind(&def.entity)
-                .bind(g.record)
-                .bind(&def.key)
+                .bind(entity)
+                .bind(record)
+                .bind(template)
                 .fetch_all(&mut **tx)
                 .await?;
         crate::outbox::release_objects(tx, ctx.tenant, &gone).await?;
@@ -537,18 +644,18 @@ pub async fn generate(k: &Kernel, tx: &mut Tx, ctx: &Ctx, g: &Generate) -> Resul
     )
     .bind(ctx.tenant)
     .bind(id)
-    .bind(&def.entity)
-    .bind(g.record)
+    .bind(entity)
+    .bind(record)
     .bind(&name)
     .bind(&stored_type)
     .bind(bytes.len() as i64)
     .bind(&key)
     .bind(&sha)
     .bind((!ctx.user.is_nil()).then_some(ctx.user))
-    .bind(&def.key)
+    .bind(template)
     .execute(&mut **tx)
     .await?;
-    audit::record(tx, ctx, &def.entity, g.record, "document:generate", None, json!({"template": def.key, "file": id, "sha256": sha})).await?;
+    audit::record(tx, ctx, entity, record, "document:generate", None, json!({"template": template, "file": id, "sha256": sha})).await?;
     Ok(Generated {
         file: id,
         url: format!("/files/{id}"),
@@ -556,10 +663,220 @@ pub async fn generate(k: &Kernel, tx: &mut Tx, ctx: &Ctx, g: &Generate) -> Resul
         content_type: stored_type,
         size: bytes.len(),
         sha256: sha,
-        template: def.key,
-        entity: def.entity,
-        record: g.record,
+        template: template.to_string(),
+        entity: entity.to_string(),
+        record,
     })
+}
+
+// ── documents about a query ──
+
+/// A document about a query to render ([`Kernel::render_query_document`], [`Kernel::generate_query_documents`], the
+/// `report_documents` effect).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryRun {
+    pub template: String,
+    /// The report's parameters: `filters`, `from`, `to`.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub params: Value,
+    /// What the template reads as `values`.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub values: Map<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
+/// A grouped run's files and where the next run starts (the last record done), when there are more.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GroupFiles {
+    pub files: Vec<Generated>,
+    pub next: Option<Uuid>,
+}
+
+/// The template a run names, if it is about a query, with its query.
+async fn query_template(tx: &mut Tx, ctx: &Ctx, key: &str) -> Result<(DocumentDef, DocumentQuery)> {
+    let def = effective(tx, ctx, key).await?;
+    let q = def.query.clone().ok_or_else(|| Error::invalid(format!("document {key} is about one record, not a query")))?;
+    Ok((def, q))
+}
+
+/// One file's pages for `rows` (and the record `group`, when grouped): the variables are `rows`, `columns`, `group`,
+/// `values`, `settings`, `language`, `currencies` and `now`; totals are the template's to compute (`rows|total('x')`).
+#[allow(clippy::too_many_arguments)]
+async fn render_rows(
+    k: &Kernel,
+    tx: &mut Tx,
+    ctx: &Ctx,
+    def: &DocumentDef,
+    columns: &[Value],
+    rows: Vec<Map<String, Value>>,
+    group: Value,
+    run: &QueryRun,
+    person: bool,
+) -> Result<Pages> {
+    let (theirs, workspace) = languages(tx, ctx, person).await?;
+    let (tag, body) = bodies(def, &[run.language.as_deref(), theirs.as_deref(), workspace.as_deref()]);
+    let text = all_text(def);
+    let vars = json!({
+        "rows": rows, "columns": columns, "group": group, "values": run.values, "language": tag,
+        "settings": crate::settings::load(k, ctx, tx, &named(&text, "settings.")).await?,
+        "currencies": currencies(k, tx, ctx, &text).await?, "now": chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
+    });
+    render_all(def, body, &vars, false)
+}
+
+/// The rows by the record their `group_by` column links to, in that record's id order; rows linking to none are in
+/// no file.
+fn grouped(rows: Vec<Map<String, Value>>, by: &str) -> BTreeMap<Uuid, Vec<Map<String, Value>>> {
+    let mut out: BTreeMap<Uuid, Vec<Map<String, Value>>> = BTreeMap::new();
+    for r in rows {
+        if let Some(id) = r.get(by).and_then(Value::as_str).and_then(|s| s.parse().ok()) {
+            out.entry(id).or_default().push(r);
+        }
+    }
+    out
+}
+
+/// Renders and keeps the files of the groups after `after`, at most [`MAX_GROUPS`]: each on its record, the one the
+/// template made there before replaced. `ctx` reads the rows and the records (a person, or the workspace); what is
+/// kept leaves their secret fields out, as a generated document does. `then` runs for each file kept (an effect's
+/// message).
+async fn group_files(
+    k: &Kernel,
+    tx: &mut Tx,
+    ctx: &Ctx,
+    run: &QueryRun,
+    after: Option<Uuid>,
+    person: bool,
+) -> Result<(GroupFiles, Vec<(String, Uuid, Value)>, usize)> {
+    let (def, q) = query_template(tx, ctx, &run.template).await?;
+    let (columns, rows) = query_rows(k, ctx, &def, &q, &run.params).await?;
+    let target = group_target(ctx, &columns, &q).map_err(Error::invalid)?.ok_or_else(|| Error::invalid(format!("document {} groups by nothing", def.key)))?;
+    let tent = k.entity(ctx, &target)?;
+    let groups = grouped(rows, q.group_by.as_deref().unwrap_or_default());
+    let left: Vec<(Uuid, Vec<Map<String, Value>>)> = groups.into_iter().filter(|(id, _)| after.is_none_or(|a| *id > a)).collect();
+    let total = left.len();
+    if person && total > MAX_GROUPS {
+        return Err(Error::invalid(format!(
+            "report {} gives rows for {total} records of {}, more than the {MAX_GROUPS} files one run makes; narrow it with its filters, or let an action or a schedule make them in turns",
+            q.report, tent.def.label
+        )));
+    }
+    let (mut files, mut records) = (Vec::new(), Vec::new());
+    for (id, rows) in left.into_iter().take(MAX_GROUPS) {
+        let mut record = k.get_tx(ctx, tx, &target, id, false).await?;
+        k.add_titles(ctx, tx, &tent, std::slice::from_mut(&mut record)).await?;
+        crate::messages::without_secrets(&ctx.schema, &tent, &mut record);
+        let title = crate::collab::record_title(ctx, &target, &record);
+        let pages = render_rows(k, tx, ctx, &def, &columns, rows, Value::Object(record.clone()), run, person).await?;
+        let (bytes, content_type, ext) = produce(k, &def, pages, k.pdf_enabled()).await?;
+        let name = file_name(&def, &title, None, ext);
+        files.push(keep(k, tx, ctx, &def.key, (&target, id), name, bytes, content_type, true).await?);
+        records.push((target.clone(), id, tent.cel_view(&Value::Object(record), &ctx.schema)));
+    }
+    let next = (total > MAX_GROUPS).then(|| files.last().map(|f: &Generated| f.record)).flatten();
+    Ok((GroupFiles { files, next }, records, total))
+}
+
+/// A query document's first file as the administrator previewing it reads the rows: the first group's, when grouped.
+async fn preview_query(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, run: &QueryRun) -> Result<Pages> {
+    let q = def.query.clone().unwrap_or_else(|| DocumentQuery { report: String::new(), group_by: None });
+    let (columns, rows) = query_rows(k, ctx, def, &q, &json!({})).await?;
+    let (rows, group) = match (group_target(ctx, &columns, &q).map_err(Error::invalid)?, &q.group_by) {
+        (Some(target), Some(by)) => match grouped(rows, by).into_iter().next() {
+            Some((id, rows)) => (rows, Value::Object(k.get_tx(ctx, tx, &target, id, false).await?)),
+            None => (vec![], Value::Null),
+        },
+        _ => (rows, Value::Null),
+    };
+    render_rows(k, tx, ctx, def, &columns, rows, group, run, true).await
+}
+
+/// What the `report_documents` effect asks, kept in its job: the run, the message each record is sent its file with,
+/// and the record after which the next job starts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct GroupsJob {
+    pub run: QueryRun,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<ReportMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Uuid>,
+}
+
+/// The message each record's file goes out with: a template about the grouped entity, to the recipient specs a
+/// `message` effect takes (`field:<name>` of that record, `owner`, `role:<name>`, `user:<id>`, `links:…`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportMessage {
+    pub template: String,
+    #[serde(deserialize_with = "crate::automation::one_or_many")]
+    pub to: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<String>,
+}
+
+struct Groups;
+
+#[async_trait::async_trait]
+impl crate::jobs::JobHandler for Groups {
+    fn kind(&self) -> &'static str {
+        GROUPS_KIND
+    }
+
+    fn title(&self) -> &'static str {
+        "Documents from a report"
+    }
+
+    /// One batch as the workspace, in one transaction: its files kept and sent, and the next batch's job queued when
+    /// there are more, or none of it.
+    async fn run(&self, k: &Kernel, job: &crate::jobs::Job) -> Result<Value> {
+        let spec: GroupsJob = serde_json::from_value(job.payload.clone()).map_err(Error::internal)?;
+        let ctx = Ctx::system(job.tenant_id, k.registry.schema(job.tenant_id).await?);
+        let mut tx = k.db.tenant_tx(job.tenant_id).await?;
+        let (out, records, total) = Box::pin(group_files(k, &mut tx, &ctx, &spec.run, spec.after, false)).await?;
+        if let Some(m) = &spec.message {
+            for ((entity, id, doc), file) in records.iter().zip(&out.files) {
+                let mut to = Vec::new();
+                for t in &m.to {
+                    to.extend(crate::messages::recipients(k, &mut tx, &ctx, entity, doc, t).await?);
+                }
+                let msg = crate::messages::Message {
+                    template: m.template.clone(),
+                    entity: Some(entity.clone()),
+                    record: Some(*id),
+                    to,
+                    channels: m.channels.clone(),
+                    attachments: vec![file.file],
+                    ..Default::default()
+                };
+                crate::messages::send(k, &mut tx, &ctx, &msg).await?;
+            }
+        }
+        if let Some(next) = out.next {
+            let more = GroupsJob { after: Some(next), ..spec };
+            crate::jobs::enqueue(&mut tx, job.tenant_id, job.created_by, crate::jobs::NewJob::new(GROUPS_KIND, json!(more))).await?;
+        }
+        tx.commit().await?;
+        Ok(json!({"files": out.files.len(), "left": total - out.files.len(), "next": out.next}))
+    }
+
+    fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(600)
+    }
+}
+
+pub(crate) fn handler(kind: &str) -> Option<std::sync::Arc<dyn crate::jobs::JobHandler>> {
+    (kind == GROUPS_KIND).then(|| std::sync::Arc::new(Groups) as std::sync::Arc<dyn crate::jobs::JobHandler>)
+}
+
+/// Queues the first job of a grouped run for an effect, in the caller's transaction: nothing is done unless it commits.
+pub(crate) async fn queue_groups(tx: &mut Tx, ctx: &Ctx, run: QueryRun, message: Option<ReportMessage>) -> Result<Uuid> {
+    if query_template(tx, ctx, &run.template).await?.1.group_by.is_none() {
+        return Err(Error::invalid(format!("document {} makes one file, not one per record: report_documents makes those", run.template)));
+    }
+    let by = (!ctx.user.is_nil()).then_some(ctx.user);
+    crate::jobs::enqueue(tx, ctx.tenant, by, crate::jobs::NewJob::new(GROUPS_KIND, json!(GroupsJob { run, message, after: None }))).await
 }
 
 impl Kernel {
@@ -635,6 +952,13 @@ impl Kernel {
                 def
             }
         };
+        if def.query.is_some() {
+            let values: Map<String, Value> = def.values.iter().map(|v| (v.clone(), json!(format!("[{v}]")))).collect();
+            let run = QueryRun { template: def.key.clone(), values, language: language.map(str::to_string), ..Default::default() };
+            let pages = preview_query(self, &mut tx, ctx, &def, &run).await?;
+            tx.commit().await?;
+            return Ok(json!({"output": def.output, "content": pages.body, "header": pages.header, "footer": pages.footer}));
+        }
         let id = match record {
             Some(id) => id,
             None => {
@@ -649,6 +973,50 @@ impl Kernel {
         Ok(json!({"language": tag, "output": def.output, "content": pages.body, "header": pages.header, "footer": pages.footer, "record_id": id}))
     }
 
+    // ── documents about a query ──
+
+    /// Whether template `key`, about a query, makes one file per record (else one file); refused for a record's.
+    pub async fn query_document_groups(&self, ctx: &Ctx, key: &str) -> Result<bool> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let (_, q) = query_template(&mut tx, ctx, key).await?;
+        tx.commit().await?;
+        Ok(q.group_by.is_some())
+    }
+
+    /// Template `run.template`, about a query that does not group, over the report's rows as `ctx` may read them:
+    /// one file. A file of data needs export permission and is on the audit trail (as an export of `entity`).
+    pub async fn render_query_document(&self, ctx: &Ctx, run: &QueryRun) -> Result<Rendered> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let (def, q) = query_template(&mut tx, ctx, &run.template).await?;
+        may_render(ctx, &def)?;
+        if q.group_by.is_some() {
+            return Err(Error::invalid(format!("document {} makes a file per record: generate them", def.key)));
+        }
+        let (columns, rows) = query_rows(self, ctx, &def, &q, &run.params).await?;
+        let pages = render_rows(self, &mut tx, ctx, &def, &columns, rows, Value::Null, run, true).await?;
+        let (bytes, content_type, ext) = produce(self, &def, pages, self.pdf_enabled()).await?;
+        if def.output != DocumentOutput::Page {
+            let sha = hex::encode(Sha256::digest(&bytes));
+            audit::record(&mut tx, ctx, &def.entity, Uuid::nil(), "document:export", None, json!({"template": def.key, "report": q.report, "sha256": sha}))
+                .await?;
+        }
+        tx.commit().await?;
+        let name = file_name(&def, &q.report, None, ext);
+        Ok(Rendered { bytes, content_type, file_name: name, output: def.output, language: run.language.clone().unwrap_or_default() })
+    }
+
+    /// Template `run.template`, about a query grouped by a link, over the report's rows as `ctx` may read them: one
+    /// file per record linked, kept on it (the one the template made there before replaced). More than
+    /// [`MAX_GROUPS`] records is refused with the numbers.
+    pub async fn generate_query_documents(&self, ctx: &Ctx, run: &QueryRun) -> Result<GroupFiles> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let (def, _) = query_template(&mut tx, ctx, &run.template).await?;
+        may_render(ctx, &def)?;
+        let (out, ..) = Box::pin(group_files(self, &mut tx, ctx, run, None, true)).await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
     // ── people printing ──
 
     /// The templates `ctx` may print `entity` with (`{key, label, output}`), and the one it prints with when none is
@@ -661,7 +1029,7 @@ impl Kernel {
         let default = default_of(&all, entity).filter(|d| may_use(ctx, d)).map(|d| d.key.clone());
         let templates: Vec<Value> = all
             .values()
-            .filter(|(d, ..)| d.entity == entity && may_use(ctx, d))
+            .filter(|(d, ..)| d.entity == entity && d.query.is_none() && may_use(ctx, d))
             .map(|(d, ..)| json!({"key": d.key, "label": d.label, "output": d.output}))
             .collect();
         Ok(json!({"templates": templates, "default": default}))
@@ -694,6 +1062,9 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let def = effective(&mut tx, ctx, key).await?;
         may_render(ctx, &def)?;
+        if def.query.is_some() {
+            return Err(Error::invalid(format!("document {key} is about a query, not a record")));
+        }
         let (mut body, mut first, mut tag) = (Vec::new(), None, String::new());
         let mut head = (None, None);
         for id in ids {
@@ -736,6 +1107,7 @@ mod tests {
             crlf: false,
             values: vec![],
             languages: BTreeMap::from([("en".into(), DocumentBody { body: body.into(), ..Default::default() })]),
+            query: None,
         }
     }
 

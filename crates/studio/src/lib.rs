@@ -37,6 +37,27 @@ pub fn register(hooks: &mut HookRegistry) {
         hooks.register(entity, Arc::new(builder::StudioHook(entity)));
     }
     hooks.add_site("studio", Arc::new(site::StudioSite));
+    hooks.set_query_rows(Arc::new(StudioRows));
+}
+
+/// Saved reports' rows for documents about a query (docs/builder/decisions.md BD-21), through the report path: the
+/// report seen and its rows read as the caller may, as `/api/reports` runs a saved report.
+struct StudioRows;
+
+#[async_trait]
+impl ferrum_kernel::documents::QueryRows for StudioRows {
+    async fn rows(&self, k: &Kernel, ctx: &Ctx, report: &str, params: &Value) -> Result<Value> {
+        let sys = Ctx::system(ctx.tenant, ctx.schema.clone());
+        let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+        let found = k.find_tx(&sys, &mut tx, builder::REPORT, &[ferrum_kernel::query::Filter::eq("label", report)], None, 2).await?;
+        tx.commit().await?;
+        let id = match found.as_slice() {
+            [one] => ferrum_kernel::store::doc_id(one)?,
+            [] => return Err(Error::field("query", format!("there is no report {report}"))),
+            _ => return Err(Error::field("query", format!("more than one report is called {report}: name one by a label of its own"))),
+        };
+        Ok(builder::run_report(k, ctx, id, &builder::Runtime::parse(params)?).await?["data"].take())
+    }
 }
 
 /// This app's reports: ad-hoc queries and saved reports through the platform's report API, so
