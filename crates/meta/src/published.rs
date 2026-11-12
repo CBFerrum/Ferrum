@@ -43,7 +43,35 @@ fn shape(l: &PublishedListDef) -> Result<(), String> {
     if l.filter.len() > 20 {
         return Err("its filter has at most 20 conditions".into());
     }
+    if l.detail.len() > MAX_FIELDS {
+        return Err(format!("its detail page shows at most {MAX_FIELDS} more fields"));
+    }
+    if let Some(f) = l.detail.iter().enumerate().find(|(i, f)| l.detail[..*i].contains(f) || l.fields.contains(f)).map(|(_, f)| f) {
+        return Err(format!("it names {f} twice"));
+    }
+    if (l.summary.is_some() || !l.detail.is_empty()) && l.slug.is_none() {
+        return Err("a detail page and its summary need a slug, the field giving each record's address".into());
+    }
+    if let Some(s) = l.summary.as_ref().filter(|s| !l.fields.contains(s) && !l.detail.contains(s)) {
+        return Err(format!("its summary {s} is one of the fields it shows"));
+    }
+    if l.frame_origins.len() > 10 || l.frame_origins.iter().any(|o| frame_origin(o).as_deref() != Some(o.as_str())) {
+        return Err("it may be framed by at most 10 origins, each written like https://example.com".into());
+    }
     Ok(())
+}
+
+/// An origin a public page may be framed by (BD-24): `https://host[:port]`, or `http://localhost[:port]`; no path,
+/// no wildcard, lower case. `None` for anything else.
+pub fn frame_origin(o: &str) -> Option<String> {
+    let o = o.trim().trim_end_matches('/');
+    let rest = o.strip_prefix("https://").or_else(|| o.strip_prefix("http://").filter(|r| r.starts_with("localhost")))?;
+    let (host, port) = rest.split_once(':').unwrap_or((rest, ""));
+    let host_ok = !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|l| !l.is_empty() && l.len() <= 63 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+    let port_ok = port.is_empty() || (port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit()));
+    (host_ok && port_ok).then(|| o.to_ascii_lowercase())
 }
 
 /// Adds `list` of `entity` to the workspace's lists, or replaces the one of the same name.
@@ -132,7 +160,7 @@ pub(crate) fn settle<'a>(list: &PublishedList, lookup: &impl Fn(&str) -> Option<
     }
     let mut why = Vec::new();
     let mut kept = list.clone();
-    kept.list.fields.retain(|name| {
+    let shows = |name: &String, why: &mut Vec<String>| {
         if name == "number" {
             return true;
         }
@@ -145,7 +173,26 @@ pub(crate) fn settle<'a>(list: &PublishedList, lookup: &impl Fn(&str) -> Option<
             return false;
         }
         true
-    });
+    };
+    kept.list.fields.retain(|name| shows(name, &mut why));
+    kept.list.detail.retain(|name| shows(name, &mut why));
+    if let Some(slug) = kept.list.slug.clone() {
+        let text = def.fields.iter().any(|f| f.name == slug && matches!(f.ftype, FieldType::Data | FieldType::Text));
+        if !text {
+            why.push(format!("its slug {slug} is not a text field of {}", def.name));
+            kept.list.slug = None;
+        } else if !shows(&slug, &mut why) {
+            kept.list.slug = None;
+        }
+        if kept.list.slug.is_none() {
+            kept.list.detail.clear();
+            kept.list.summary = None;
+        }
+    }
+    if let Some(s) = kept.list.summary.clone().filter(|s| !kept.list.fields.contains(s) && !kept.list.detail.contains(s)) {
+        why.push(format!("its summary {s} is no longer shown"));
+        kept.list.summary = None;
+    }
     if kept.list.fields.is_empty() {
         why.push("none of its fields may be shown, so it is taken down".into());
         return (None, why);
@@ -290,6 +337,14 @@ mod tests {
             (vec![publish("Permit", json!({"fields": thirteen}))], "1 to 12 fields"),
             (vec![publish("Permit", json!({"fields": ["holder", "holder"]}))], "names holder twice"),
             (vec![publish("Permit", json!({"limit": 1001}))], "limit is 1 to 1000"),
+            (vec![publish("Permit", json!({"detail": ["fee"]}))], "need a slug"),
+            (vec![publish("Permit", json!({"slug": "holder", "summary": "fee"}))], "its summary fee is one of the fields it shows"),
+            (vec![publish("Permit", json!({"slug": "holder", "detail": ["holder"]}))], "names holder twice"),
+            (vec![publish("Permit", json!({"slug": "holder", "detail": ["contact_email"]}))], "contact_email holds an email address"),
+            (vec![publish("Permit", json!({"slug": "issued_on"}))], "its slug issued_on is not a text field"),
+            (vec![publish("Permit", json!({"slug": "inspector_note"}))], "inspector_note is in the field group inspection"),
+            (vec![publish("Permit", json!({"frame_origins": ["https://*.example.com"]}))], "framed by at most 10 origins"),
+            (vec![publish("Permit", json!({"frame_origins": ["http://shop.example.com"]}))], "framed by at most 10 origins"),
             (vec![publish("Permit", json!({"limit": 0}))], "limit is 1 to 1000"),
             (many, "at most 20 lists"),
             (vec![publish("Permit", json!({})), publish("Category", json!({"fields": ["category_name"]}))], "the name is taken by a list of Permit"),
@@ -311,6 +366,10 @@ mod tests {
             sort: None,
             csv: false,
             limit: None,
+            slug: None,
+            detail: vec![],
+            summary: None,
+            frame_origins: vec![],
         };
         let mut def = catalog().packages().next().unwrap().entities.iter().find(|e| e.name == "Permit").unwrap().clone();
         assert!(

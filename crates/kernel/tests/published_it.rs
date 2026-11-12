@@ -136,8 +136,55 @@ async fn scenario() {
     k.install_pack(&bare, &pack, &digest).await.unwrap();
     assert!(fresh(&k, &bare).await.schema.published_list("permits").is_some());
 
+    // Detail pages, search and pages (BD-25): a list with a slug gives each published record an address, and nothing
+    // unpublished one.
+    let admin = fresh(&k, &admin).await;
+    k.add_customization(
+        &admin,
+        "XPermit",
+        permits(json!({"name": "register", "fields": ["holder", "kind"], "limit": 1, "slug": "holder", "detail": ["fee"], "summary": "kind",
+                       "frame_origins": ["https://town.example"]})),
+        None,
+    )
+    .await
+    .unwrap();
+    let admin = fresh(&k, &admin).await;
+    let mut ids = Vec::new();
+    for (holder, kind, submit) in [("ann-bakery", "Trade", true), ("bob-fence", "Fence", true), ("cy-draft", "Trade", false)] {
+        let d = k.insert(&admin, "XPermit", json!({"holder": holder, "kind": kind, "fee": 40}).as_object().cloned().unwrap()).await.unwrap();
+        let id: Uuid = d["id"].as_str().unwrap().parse().unwrap();
+        if submit {
+            k.submit(&admin, "XPermit", id, None).await.unwrap();
+        }
+        ids.push(id);
+    }
+    let find = |q: Option<&str>, page: u32, address: Option<&str>| ferrum_kernel::published::Find {
+        q: q.map(str::to_string),
+        page,
+        address: address.map(str::to_string),
+    };
+    let one = k.published_find("acme", "register", &find(None, 1, Some("ann-bakery"))).await.unwrap().expect("a published record");
+    assert_eq!((one.rows.len(), one.rows[0].get("fee").cloned(), one.frame_origins.clone()), (1, Some(json!("40")), vec!["https://town.example".to_string()]));
+    assert!(one.rows[0].get("contact_email").is_none() && one.rows[0].get("id").is_none(), "the allow-list only: {:?}", one.rows[0]);
+    for (address, why) in [("cy-draft", "a draft"), ("nobody", "no such record"), ("ann%", "a pattern")] {
+        assert!(k.published_find("acme", "register", &find(None, 1, Some(address))).await.unwrap().is_none(), "{why}");
+    }
+    assert!(k.published_find("acme", "permits", &find(None, 1, Some("ann-bakery"))).await.unwrap().is_none(), "a list without a slug has no detail pages");
+    let fence = k.published_find("acme", "register", &find(Some("FENCE"), 1, None)).await.unwrap().unwrap();
+    assert_eq!(fence.addresses, ["bob-fence"], "searched in any case");
+    assert!(k.published_find("acme", "register", &find(Some("draft"), 1, None)).await.unwrap().unwrap().rows.is_empty(), "never the unpublished");
+    assert!(k.published_find("acme", "register", &find(Some("%"), 1, None)).await.unwrap().unwrap().rows.is_empty(), "a percent sign is a character");
+    let first = k.published_find("acme", "register", &find(None, 1, None)).await.unwrap().unwrap();
+    let second = k.published_find("acme", "register", &find(None, 2, None)).await.unwrap().unwrap();
+    assert!(first.more && !second.more && first.addresses != second.addresses, "a page each: {:?} {:?}", first.addresses, second.addresses);
+    assert!(k.published_find("acme", "register", &find(None, 3, None)).await.unwrap().is_none(), "past the last page");
+    let mut all = k.published_addresses("acme").await.unwrap().unwrap();
+    all.sort();
+    assert_eq!(all, [("register".to_string(), "ann-bakery".to_string()), ("register".to_string(), "bob-fence".to_string())], "the sitemap");
+    assert!(k.published_addresses("nowhere").await.unwrap().is_none());
+
     // Taken down.
     let admin = fresh(&k, &admin).await;
     k.add_customization(&admin, "XPermit", op(json!({"op": "unpublish_list", "name": "permits"})), None).await.unwrap();
-    assert!(fresh(&k, &admin).await.schema.published_lists.is_empty());
+    assert!(fresh(&k, &admin).await.schema.published_list("permits").is_none());
 }
