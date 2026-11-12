@@ -572,7 +572,14 @@ message. Built once in the platform (`crates/kernel/src/messages.rs`; the API in
 * **One-time codes** for apps: kept as a salted digest, sent through a template, verified once, expiring in ten
   minutes, five tries, five sends a recipient an hour. The test channel's log masks the code.
 * **Personal data**: a person's sends and codes are in their report and go with their erasure, by id in its journal
-  so a restore erases them again.
+  so a restore erases them again. **An opt-out outlives its person's erasure, without its address**: the address
+  becomes an HMAC-SHA256 under the server's key (`FERRUM_SECRET_KEY`, and those being rotated out) of the workspace,
+  channel and normalised address, which a promotional send to that address on that channel still matches, while no
+  table, log, report or listing holds or finds the address (a consent given goes; staff remove an erased opt-out only
+  by its row). A restored backup brings the clear rows back, as it does every erased datum, and the platform's answer
+  applies: the erasure's journal keeps the digests, so `ferrum task reapply_erasures` (or a workspace taken back,
+  FEO-078) erases them again (without a configured key an erased opt-out keeps its address; retiring a key for good
+  stops the digests made under it from matching).
 
 **Rules out**: a provider named in code; a message rendered with the reader's rights; a send outside the caller's
 transaction; marketing past an opt-out; a number's country guessed.

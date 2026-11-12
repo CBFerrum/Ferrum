@@ -705,16 +705,35 @@ async fn complete(tx: &mut Tx, tenant: Uuid, r: &Recipient) -> Result<Recipient>
     Ok(r)
 }
 
-/// Whether `address` opted out of promotional messages on `channel`.
-async fn opted_out(tx: &mut Tx, tenant: Uuid, address: &str, channel: &str) -> Result<bool> {
+/// Whether `address` opted out of promotional messages on `channel`, before an erasure (`erased`: its marks) or since.
+async fn opted_out(tx: &mut Tx, tenant: Uuid, address: &str, channel: &str, erased: &[String]) -> Result<bool> {
     Ok(sqlx::query_scalar(
-        "select exists (select 1 from contact_consent where tenant_id = $1 and purpose = 'marketing' and channel = $3 and not granted and lower(email::text) = lower($2))",
+        "select exists (select 1 from contact_consent where tenant_id = $1 and purpose = 'marketing' and channel = $3 and not granted \
+           and (lower(email::text) = lower($2) or email::text = any($4)))",
     )
     .bind(tenant)
     .bind(address)
     .bind(channel)
+    .bind(erased)
     .fetch_one(&mut **tx)
     .await?)
+}
+
+/// What an erased opt-out keeps in place of its address: [`erased_mark`].
+pub(crate) const ERASED: &str = "erased:";
+
+/// A keyed digest of the workspace, channel and address (normalised: an e-mail address in lower case, a number in
+/// international form), so an erased opt-out still stops a promotional message to that address on that channel
+/// while nothing shows the address, and trying addresses without the server's key finds nothing (BD-20).
+fn erased_mark(key: &crate::secret::SecretKey, tenant: Uuid, channel: &str, address: &str) -> String {
+    format!("{ERASED}{}", key.fingerprint("erased opt-out", &format!("{tenant}|{channel}|{}", address.trim().to_lowercase())))
+}
+
+impl Kernel {
+    /// The marks an erased opt-out of `address` on `channel` may carry: under the server's key and those being rotated out.
+    pub(crate) fn erased_marks(&self, tenant: Uuid, channel: &str, address: &str) -> Vec<String> {
+        self.secret_keys().map(|k| erased_mark(k, tenant, channel, address)).collect()
+    }
 }
 
 /// The enabled channel connection for `kind`.
@@ -860,7 +879,7 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message, secret: Opti
                     let channel_id = connection(tx, ctx.tenant, kind).await?;
                     let refused = if channel_id.is_none() {
                         Some("no channel configured".to_string())
-                    } else if promotional && opted_out(tx, ctx.tenant, &address, kind).await? {
+                    } else if promotional && opted_out(tx, ctx.tenant, &address, kind, &k.erased_marks(ctx.tenant, kind, &address)).await? {
                         Some("opted out".into())
                     } else {
                         over_limit(tx, ctx.tenant, &address, &cfg).await?
@@ -1555,6 +1574,25 @@ impl Kernel {
     pub async fn set_message_opt_out(&self, ctx: &Ctx, address: &str, channel: &str, opted_out: bool) -> Result<()> {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // An erased one is named by its row (the listing's `erased`), and can only be taken away.
+        if address.starts_with(ERASED) {
+            if opted_out {
+                return Err(Error::field("address", "an erased opt-out can only be removed"));
+            }
+            let gone = sqlx::query("delete from contact_consent where tenant_id = $1 and purpose = 'marketing' and channel = $2 and email = $3")
+                .bind(ctx.tenant)
+                .bind(channel)
+                .bind(address)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+            if gone == 0 {
+                return Err(Error::NotFound("opt-out".into()));
+            }
+            audit::record(&mut tx, ctx, "ContactConsent", Uuid::nil(), "erased_opt_out_removed", None, json!({"channel": channel})).await?;
+            tx.commit().await?;
+            return Ok(());
+        }
         let address = match channel {
             "email" => crate::privacy::checked_email(address)?,
             "text" | "chat" => international(address, &workspace(&mut tx, ctx.tenant).await?.0).map_err(|e| Error::field("address", e))?,
@@ -1566,8 +1604,9 @@ impl Kernel {
     }
 
     /// The opt-outs there are, newest first, each with who recorded it and when (`GET /api/admin/messages/opt-outs`):
-    /// `{opt_outs: [{address, channel, source, recorded_at, recorded_by, recorded_by_name}], total}`. `q` finds part
-    /// of an address or a number, `channel` one channel; `limit` 1 to 200.
+    /// `{opt_outs: [{address, erased, channel, source, recorded_at, recorded_by, recorded_by_name}], total}`. An erased
+    /// person's has no address and names its row in `erased`; `q` finds part of an address or a number (never an erased
+    /// one), `channel` one channel; `limit` 1 to 200.
     pub async fn message_opt_outs(&self, ctx: &Ctx, q: Option<&str>, channel: Option<&str>, limit: i64, offset: i64) -> Result<Value> {
         admin_only(ctx)?;
         if !(1..=200).contains(&limit) || offset < 0 {
@@ -1576,11 +1615,12 @@ impl Kernel {
         let q = q.map(str::trim).filter(|q| !q.is_empty()).map(|q| q.replace(['%', '_', '\\'], ""));
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<Value> = sqlx::query_scalar(
-            "select jsonb_build_object('address', c.email::text, 'channel', c.channel, 'source', c.source, 'recorded_at', c.recorded_at, \
+            "select jsonb_build_object('address', case when c.email::text like 'erased:%' then null else c.email::text end, \
+               'erased', case when c.email::text like 'erased:%' then c.email::text end, 'channel', c.channel, 'source', c.source, 'recorded_at', c.recorded_at, \
                'recorded_by', c.recorded_by, 'recorded_by_name', coalesce(nullif(u.full_name, ''), u.email::text), 'total', count(*) over ()) \
              from contact_consent c left join app_user u on u.tenant_id = c.tenant_id and u.id = c.recorded_by \
              where c.tenant_id = $1 and c.purpose = 'marketing' and not c.granted and ($2::text is null or c.channel = $2) \
-               and ($3::text is null or c.email::text ilike '%' || $3 || '%') order by c.recorded_at desc, c.email limit $4 offset $5",
+               and ($3::text is null or (c.email::text not like 'erased:%' and c.email::text ilike '%' || $3 || '%')) order by c.recorded_at desc, c.email limit $4 offset $5",
         )
         .bind(ctx.tenant)
         .bind(channel)
@@ -1764,8 +1804,8 @@ pub(crate) async fn held_report(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>
          from message_send where tenant_id = $1 and (lower(recipient) = any($2) or user_id = $3 \
            or ($4::text is not null and regexp_replace(recipient, '\\D', '', 'g') like '%' || ltrim($4, '0'))) \
          union all select jsonb_build_object('choice', case when granted then 'consented' else 'opted out' end, 'purpose', purpose, 'channel', channel, \
-           'recipient', email::text, 'created_at', recorded_at), recorded_at from contact_consent where tenant_id = $1 and (lower(email::text) = any($2) \
-           or ($4::text is not null and channel <> 'email' and regexp_replace(email::text, '\\D', '', 'g') like '%' || ltrim($4, '0')))) h order by created_at",
+           'recipient', email::text, 'created_at', recorded_at), recorded_at from contact_consent where tenant_id = $1 and email::text not like 'erased:%' \
+           and (lower(email::text) = any($2) or ($4::text is not null and channel <> 'email' and regexp_replace(email::text, '\\D', '', 'g') like '%' || ltrim($4, '0')))) h order by created_at",
     )
     .bind(tenant)
     .bind(emails)
@@ -1775,18 +1815,59 @@ pub(crate) async fn held_report(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>
     .await?)
 }
 
-/// Erases a person's sends, codes and the choices recorded for their addresses and number (an opt-out among them);
-/// returns the sends' ids, for the erasure's journal.
-pub(crate) async fn erase_held(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, emails: &[String], digits: Option<&str>) -> Result<Vec<Uuid>> {
-    sqlx::query(
-        "delete from contact_consent where tenant_id = $1 and (lower(email::text) = any($2) \
-           or ($3::text is not null and channel <> 'email' and regexp_replace(email::text, '\\D', '', 'g') like '%' || ltrim($3, '0')))",
+/// The choices recorded for a person's addresses and number, as `(address, channel, granted)`.
+pub(crate) async fn choices_of(tx: &mut Tx, tenant: Uuid, emails: &[String], digits: Option<&str>) -> Result<Vec<(String, String, bool)>> {
+    Ok(sqlx::query_as(
+        "select email::text, channel, granted from contact_consent where tenant_id = $1 and purpose = 'marketing' and email::text not like 'erased:%' \
+           and (lower(email::text) = any($2) or ($3::text is not null and channel <> 'email' and regexp_replace(email::text, '\\D', '', 'g') like '%' || ltrim($3, '0')))",
     )
     .bind(tenant)
     .bind(emails)
     .bind(digits)
-    .execute(&mut **tx)
-    .await?;
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
+/// Erases the address of each of these choices: a consent given goes, an opt-out keeps its effect under its
+/// [`erased_mark`], with its channel, source, date and who recorded it (BD-20). Without the server's key the choices
+/// stay as they are. Returns the marks, for the erasure's journal (they name no address).
+pub(crate) async fn erase_choices(
+    tx: &mut Tx,
+    tenant: Uuid,
+    key: Option<&crate::secret::SecretKey>,
+    choices: &[(String, String, bool)],
+) -> Result<Vec<String>> {
+    let Some(key) = key else {
+        if !choices.is_empty() {
+            tracing::warn!(%tenant, "no secret key: an erased person's opt-outs are kept with their address");
+        }
+        return Ok(vec![]);
+    };
+    let mut marks = Vec::new();
+    for (address, channel, granted) in choices {
+        let mark = erased_mark(key, tenant, channel, address);
+        // A consent goes; an opt-out replaces any it was erased as before.
+        sqlx::query("delete from contact_consent where tenant_id = $1 and purpose = 'marketing' and channel = $2 and email = $3")
+            .bind(tenant)
+            .bind(channel)
+            .bind(if *granted { address } else { &mark })
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query("update contact_consent set email = $4 where tenant_id = $1 and purpose = 'marketing' and channel = $2 and email = $3")
+            .bind(tenant)
+            .bind(channel)
+            .bind(address)
+            .bind(&mark)
+            .execute(&mut **tx)
+            .await?;
+        marks.push(mark);
+    }
+    Ok(marks)
+}
+
+/// Erases a person's sends and codes; returns the sends' ids, for the erasure's journal. Their choices:
+/// [`erase_choices`].
+pub(crate) async fn erase_held(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, emails: &[String], digits: Option<&str>) -> Result<Vec<Uuid>> {
     sqlx::query(
         "delete from message_code where tenant_id = $1 and (lower(recipient) = any($2) \
            or ($3::text is not null and regexp_replace(recipient, '\\D', '', 'g') like '%' || ltrim($3, '0')))",
