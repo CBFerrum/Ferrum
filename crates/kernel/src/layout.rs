@@ -40,6 +40,7 @@ body.pf{margin:0;color:var(--pf-color,#111);line-height:var(--pf-lh,1.45);backgr
 .pf-a-start{text-align:start}.pf-a-center{text-align:center}.pf-a-end{text-align:end}
 .pf-w-bold{font-weight:700}.pf-w-normal{font-weight:400}
 .pf-field{padding:.3mm 0}
+.pf-label,.pf-table th,.pf-totals th,.pf-sign-label{unicode-bidi:isolate}
 .pf-field.pf-inline .pf-label{color:#555;margin-inline-end:1.5mm}
 .pf-field.pf-inline .pf-label::after{content:":"}
 .pf-field.pf-above .pf-label{display:block;color:#555;font-size:.85em;text-transform:none}
@@ -107,6 +108,15 @@ pub fn esc(s: &str) -> String {
         }
     }
     out
+}
+
+/// `html` (a printed value) isolated from the line around it: numbers and amounts, and text with no right-to-left
+/// letters, left to right; text with some, by its first strong letter.
+pub fn isolate(html: &str, numeric: bool) -> String {
+    let rtl_letter =
+        |c: char| matches!(c, '\u{0590}'..='\u{065F}' | '\u{066A}'..='\u{06EF}' | '\u{06FA}'..='\u{08FF}' | '\u{FB1D}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFF}');
+    let dir = if !numeric && html.chars().any(rtl_letter) { "auto" } else { "ltr" };
+    format!("<bdi dir=\"{dir}\">{html}</bdi>")
 }
 
 /// Whether a language is written right to left.
@@ -333,8 +343,17 @@ impl<'a> Renderer<'a> {
         Some(known.unwrap_or_else(|| crate::docfmt::Currency::iso(&code)))
     }
 
-    /// A value as it prints, escaped (a line break a `<br>`); None when there is nothing to print.
+    /// A value as it prints, escaped and direction-isolated (`<bdi>`): a phone number or an amount in an Arabic line
+    /// keeps its own order. None when there is nothing to print.
     fn show(&mut self, g: &Got<'_>, fmt: Option<&Format>) -> Option<(String, bool)> {
+        let (html, numeric) = self.show_raw(g, fmt)?;
+        if html.starts_with("<span class=\"pageNumber\"") || html.starts_with("<span class=\"totalPages\"") {
+            return Some((html, numeric));
+        }
+        Some((isolate(&html, numeric), numeric))
+    }
+
+    fn show_raw(&mut self, g: &Got<'_>, fmt: Option<&Format>) -> Option<(String, bool)> {
         if empty(&g.v) {
             return None;
         }
