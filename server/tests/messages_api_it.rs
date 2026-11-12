@@ -134,11 +134,15 @@ async fn scenario() {
     assert_eq!((page["opt_outs"].as_array().unwrap().len(), page["total"].clone()), (1, json!(3)));
     assert_eq!(answer(list(json!({"limit": 0})).await.unwrap_err()).await.0, 422);
     assert_eq!(answer(opt_outs_listed(&k, &writer, &Default::default()).await.unwrap_err()).await.0, 403, "administrators only");
-    // Erasing the person takes their opt-out too, and says it held it before.
+    // Their report lists it; erased, it stays without the address, and is not found by it.
     let held = k.personal_data(&admin, "ann@out.test").await.unwrap();
     assert!(held.to_string().contains("opted out"), "{held}");
     k.erase_personal_data(&admin, "ann@out.test", "request 7").await.unwrap();
     assert_eq!(list(json!({"q": "ann"})).await.unwrap()["total"], json!(0));
+    let all = list(json!({"channel": "email"})).await.unwrap();
+    assert_eq!(all["total"], json!(1), "{all}");
+    assert!(all["opt_outs"][0]["address"].is_null() && all["opt_outs"][0]["erased"].as_str().unwrap().starts_with("erased:"), "{all}");
+    assert!(!all.to_string().contains("ann@"), "{all}");
 
     // Public sign-up to a portal role: off by default (404); on, the same answer for a new address and a member's.
     let req = |email: &str| -> ferrum_kernel::portal_signup::SignupRequest {

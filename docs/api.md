@@ -1053,8 +1053,9 @@ reason, provider_id, error, content, created_at, updated_at}]}`, newest first. `
 **Opt-outs**: `PUT /api/admin/messages/opt-outs {address, channel, opted_out}` (staff); `GET
 /api/admin/messages/opt-outs?q=&channel=&limit=&offset=` (administrators) → `{opt_outs: [{address, channel, source,
 recorded_at, recorded_by, recorded_by_name}], total}`, newest first, `q` part of an address or number, `limit` 1 to 200
-(50); erasing a person takes the choices recorded for their addresses and number with the rest, and their report lists
-them; a promotional message's
+(50); erasing a person keeps their opt-outs without the address (a keyed digest still stops promotional messages to
+it; listed with `address: null` and `erased` naming the row, never found by `q`; `PUT` with that row as `address` and
+`opted_out: false` removes one), takes the consents they gave, and their report lists both before; a promotional message's
 `opt_out` link (`GET` shows a page, `POST /api/messages/opt-out?token=` records it); a reply with a stop word. Kept
 per address or number and channel with the consent records. Operational messages always go.
 
