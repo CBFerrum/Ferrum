@@ -27,16 +27,16 @@ progress after a lesson changes.
   its parameters) before its handler runs, so what an action's handler then writes directly is
   under that entry.
 
-## The 114 statements, by kind
+## The 117 statements, by kind
 
 | Kind | How many | What keeps them right |
 |---|---|---|
-| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 69 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
-| Consequence of an audited document operation (a hook of submit, cancel, save or an action) | 26 | The operation that runs the hook is on the record |
+| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 70 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
+| Consequence of an audited document operation (a hook of submit, cancel, save or an action) | 28 | The operation that runs the hook is on the record |
 | A person's action on a public link: opens and clicks, subscribe, confirm, unsubscribe, viewing a shared file | 11 | The record they change carries its evidence (the consent's source and time, the link's views) |
 | Records its own audit or activity entry | 8 | Drive's activity log ("Link Created", "Link Revoked", "Shared With Guest", "Share Expired", "Delete"), Edge's and MES's audit entries |
 
-By app: Campaigns 34, Drive 23, Comms 11, ERP 10, Commerce 5, LMS 5, POS 5, Projects 5, Edge 4, Helpdesk 3, HR 3, CRM 2,
+By app: Campaigns 34, Drive 23, Comms 14, ERP 10, Commerce 5, LMS 5, POS 5, Projects 5, Edge 4, Helpdesk 3, HR 3, CRM 2,
 and one each in Bookings, DAM, Field Service and Forms.
 
 ## Findings
@@ -105,6 +105,9 @@ and one each in Bookings, DAM, Field Service and Forms.
 | commerce | `src/payment.rs:597` | `update e_payment_request` | `on_cancel` | consequence of an audited document operation (hook) |
 | commerce | `src/upkeep.rs:133` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
 | commerce | `src/upkeep.rs:149` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
+| comms | `src/calendars.rs:127` | `update e_calendar_event` | `ensure_default` | engine work: statuses, counts, queues, upkeep |
+| comms | `src/calendars.rs:263` | `update e_calendar` | `change` | consequence of an audited document operation (hook) |
+| comms | `src/calendars.rs:287` | `update e_calendar_event` | `change` | consequence of an audited document operation (hook) |
 | comms | `src/chat.rs:741` | `update e_chat_channel` | `post` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/inbound.rs:501` | `update e_email_account` | `poll_account` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/inbound.rs:505` | `update e_email_account` | `poll_account` | engine work: statuses, counts, queues, upkeep |

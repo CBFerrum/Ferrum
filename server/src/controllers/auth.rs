@@ -7,9 +7,10 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
-use ferrum_kernel::Error;
 use ferrum_kernel::auth::{Session, SignIn};
 use ferrum_kernel::identity::DIRECTORY;
+use ferrum_kernel::portal_signup::SignupRequest;
+use ferrum_kernel::{Error, Kernel};
 use loco_rs::app::AppContext;
 use loco_rs::auth::jwt::JWT;
 use loco_rs::controller::Routes;
@@ -182,6 +183,25 @@ async fn send_code(State(app): State<AppContext>, headers: HeaderMap, Json(req):
     tokio::time::sleep_until(until).await;
     sent?;
     Ok(Json(json!({"sent": true})).into_response())
+}
+
+/// `POST /api/auth/code/sign-up {tenant, role, name, email, passes?}`: someone outside signs themselves up to a portal
+/// role that takes it, and is mailed a code to confirm at `/code/sign-in`. `{"sent": true}` whether or not the address
+/// is someone's; limited per address and per network address.
+pub async fn sign_up_with_code(k: &Kernel, req: &SignupRequest, network: &str) -> ApiResult<Value> {
+    if req.tenant.len() > 63 || req.tenant.trim().eq_ignore_ascii_case(DIRECTORY) {
+        return Err(ApiError(Error::field("tenant", "names no workspace")));
+    }
+    let until = tokio::time::Instant::now() + CODE_ANSWER;
+    let sent = k.request_portal_signup(req, network).await;
+    tokio::time::sleep_until(until).await;
+    sent?;
+    Ok(json!({"sent": true}))
+}
+
+async fn sign_up(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SignupRequest>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    Ok(Json(sign_up_with_code(&st.kernel, &req, &client_ip(&headers)).await?).into_response())
 }
 
 #[derive(Deserialize)]
@@ -723,6 +743,7 @@ pub fn routes() -> Routes {
         .add("/login/second-factor", post(login_second_factor))
         .add("/code", post(send_code))
         .add("/code/sign-in", post(sign_in_with_code))
+        .add("/code/sign-up", post(sign_up))
         .add("/sso", get(sso_options))
         .add("/sso/start", post(sso_start))
         .add("/sso/finish", post(sso_finish))

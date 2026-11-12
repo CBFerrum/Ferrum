@@ -175,6 +175,17 @@ fn configured_actions(k: &Kernel, tenant: Uuid, was: &Schema, now: &Schema) -> R
     if new.is_empty() { Ok(()) } else { Err(Error::invalid(format!("customization rejected: {}", new.join("; ")))) }
 }
 
+/// The approval policies `packaged` (the packages alone) has on `entity`: on submit and cancel, and on its workflow's
+/// transitions, each `{on, policy, source: "package", package}`.
+fn package_approvals(packaged: &Schema, entity: &str) -> Vec<Value> {
+    let Some(e) = packaged.entity(entity) else { return vec![] };
+    let mark = |on: String, policy: &ferrum_meta::ApprovalPolicy| json!({"on": on, "policy": policy, "source": "package", "package": e.package});
+    let documents = e.document_approvals.iter().map(|(on, a)| mark(on.as_str().to_string(), &a.policy));
+    let transitions =
+        e.workflow.iter().flat_map(|w| &w.def.transitions).filter_map(|t| Some(mark(format!("transition {} from {}", t.action, t.from), t.approval.as_ref()?)));
+    documents.chain(transitions).collect()
+}
+
 fn require_admin(ctx: &Ctx) -> Result<()> {
     if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("only administrators can customize".into())) }
 }
@@ -652,6 +663,12 @@ impl Kernel {
             return Err(Error::invalid(format!("customization rejected: {}", msgs.join("; "))));
         }
         configured_actions(self, ctx.tenant, was, &now)?;
+        // The templates their messages and documents name are there (the workspace's are in its tables).
+        let before = crate::actions::template_problems(tx, ctx.tenant, was).await?;
+        let new: Vec<String> = crate::actions::template_problems(tx, ctx.tenant, &now).await?.into_iter().filter(|p| !before.contains(p)).collect();
+        if !new.is_empty() {
+            return Err(Error::invalid(format!("customization rejected: {}", new.join("; "))));
+        }
         crate::published::check(was, &now)?;
         crate::targets::check_calendars(tx, ctx.tenant, was, &now).await?;
         crate::approvals::check_names(tx, ctx.tenant, was, &now).await?;
@@ -767,7 +784,17 @@ impl Kernel {
         // Its workflow as `set_workflow` takes it, its transitions' parameters, effects and approvals with it, and the
         // approvals on its submit and cancel as `set_approval` takes them (BD-19).
         let approvals: serde_json::Map<String, Value> = ent.document_approvals.iter().map(|(on, a)| (on.as_str().to_string(), json!(a.policy))).collect();
-        Ok(json!({"entity": ent.def, "lines": lines, "workflow": ent.workflow.as_ref().map(|w| &w.def), "approvals": approvals}))
+        Ok(json!({"entity": ent.def, "lines": lines, "workflow": ent.workflow.as_ref().map(|w| &w.def), "approvals": approvals,
+                  "package_approvals": package_approvals(&self.packaged(ctx)?, entity)}))
+    }
+
+    /// The approval policies `entity`'s packages declare, as the packages have them (the workspace's own changes
+    /// left out), each marked `source: package` with its package: `{entity, package, approvals: [...]}`. For a
+    /// package's entity, which has no definition to replace, this is what Customize shows of its approvals.
+    pub fn package_approvals_of(&self, ctx: &Ctx, entity: &str) -> Result<Value> {
+        require_admin(ctx)?;
+        let ent = ctx.schema.entity(entity).ok_or_else(|| Error::NotFound(format!("entity {entity}")))?;
+        Ok(json!({"entity": entity, "package": ent.package, "approvals": package_approvals(&self.packaged(ctx)?, entity)}))
     }
 
     /// Change-set export: every active customization in order.
