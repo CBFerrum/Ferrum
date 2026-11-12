@@ -1128,6 +1128,36 @@ pub struct ApprovalPolicy {
     /// The state a rejection moves the record to (one of the same document status); without it the record stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_reject: Option<String>,
+    /// Fields an approver reading the record while their decision is pending sees though a field group hides them
+    /// from them (none by default).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub show: Vec<String>,
+    /// While it is pending the record is not edited, but for a change to a `reset_on` field (which voids the
+    /// decisions so far); without it edits are allowed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lock: bool,
+    /// On a document's submit or cancel: the system (an automation, another app's engine) goes ahead without asking.
+    /// Never by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub system_bypass: bool,
+}
+
+/// What a document approval policy is on (`set_approval`, BD-19): submitting a submittable entity's documents, or
+/// cancelling them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentAction {
+    Submit,
+    Cancel,
+}
+
+impl DocumentAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DocumentAction::Submit => "submit",
+            DocumentAction::Cancel => "cancel",
+        }
+    }
 }
 
 /// One step of an approval policy.
@@ -1333,6 +1363,12 @@ pub enum OverlayOp {
     /// Tenant-only: takes a published list down.
     UnpublishList {
         name: String,
+    },
+    /// Tenant-only: an approval policy on submitting (`on: submit`) or cancelling (`on: cancel`) a submittable entity's
+    /// documents, outside any workflow (BD-19); `approval: null` takes it away.
+    SetApproval {
+        on: DocumentAction,
+        approval: Option<ApprovalPolicy>,
     },
     /// Package-only: a form section for fields the package adds, after the section holding the
     /// field `after` (or last).

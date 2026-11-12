@@ -116,6 +116,7 @@ async fn deployed(k: &Kernel, slug: &str, timeout: Value) -> (Ctx, Ctx, Ctx) {
         holidays: Default::default(),
         revision: 0,
         hours: None,
+        exceptions: Default::default(),
     };
     k.set_logic_calendar(&admin, &office).await.unwrap();
     let saved = k.save_release(&admin, &source(timeout)).await.expect("release");

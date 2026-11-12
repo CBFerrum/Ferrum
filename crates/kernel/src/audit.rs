@@ -172,8 +172,9 @@ pub async fn anchor_day(db: &Db, day: NaiveDate) -> Result<usize> {
 impl crate::Kernel {
     /// A record's audit trail with the result of verifying its hash chain. Requires read access.
     pub async fn audit_trail(&self, ctx: &crate::Ctx, entity: &str, id: Uuid) -> Result<Value> {
-        // Reading the record proves read permission (and tenant ownership) before showing its history.
-        self.get(ctx, entity, id, false).await?;
+        // Reading the record proves read permission (and tenant ownership) before showing its history; an approver
+        // reads the one awaiting them (BD-19).
+        self.read_record(ctx, entity, id, false).await?;
         // Who changed it and when is the workspace members' business, not a portal person's (BD-02).
         if ctx.outside {
             return Err(Error::Forbidden("a record's history is for the workspace's members".into()));
