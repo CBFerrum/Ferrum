@@ -97,6 +97,18 @@ impl Round {
 /// start; pause or resume; a new `within` while running; met; a met round re-opened starts the next; `within`
 /// giving nothing drops a running round.
 pub fn step(prev: &Round, said: Said, now: DateTime<Utc>, cal: Option<&Calendar>) -> Result<(Round, Option<DateTime<Utc>>, Option<&'static str>), String> {
+    step_from(prev, said, now, None, cal)
+}
+
+/// [`step`], a round that starts now counted from `start` instead when it is earlier (a record's own opening moment,
+/// BD-41): its due moment `within` of open time after `start`, past already when that has gone by.
+pub fn step_from(
+    prev: &Round,
+    said: Said,
+    now: DateTime<Utc>,
+    start: Option<DateTime<Utc>>,
+    cal: Option<&Calendar>,
+) -> Result<(Round, Option<DateTime<Utc>>, Option<&'static str>), String> {
     let mut r = prev.clone();
     let Some(within) = said.within else {
         if r.met_at.is_none() {
@@ -112,8 +124,9 @@ pub fn step(prev: &Round, said: Said, now: DateTime<Utc>, cal: Option<&Calendar>
         if !said.start || said.met {
             return Ok((r, None, None));
         }
-        r = Round { round: r.round + 1, started_at: Some(now), resumed_at: Some(now), within_secs: within, ..Round::default() };
-        r.due_at = Some(r.due_from(cal, now)?);
+        let from = start.filter(|s| *s < now).unwrap_or(now);
+        r = Round { round: r.round + 1, started_at: Some(from), resumed_at: Some(from), within_secs: within, ..Round::default() };
+        r.due_at = Some(add(cal, from, within)?);
     }
     if r.met_at.is_none() {
         let running = r.paused_at.is_none();
@@ -137,6 +150,36 @@ pub fn step(prev: &Round, said: Said, now: DateTime<Utc>, cal: Option<&Calendar>
     }
     let (due, word) = (r.due_at, r.word());
     Ok((r, due, word))
+}
+
+/// A running round whose calendar or start moved (BD-41), worked out again once at `now`: the open time counted so
+/// far stays as the calendar it ran under counted it (`old_cal`), what is left counts on `new_cal` from now, and a
+/// start moved from `moved.0` to `moved.1` (never past now) adds or takes away the open time between them. Pauses
+/// and a breach already recorded stay; a round met or not started is left as it is.
+pub fn reanchor(
+    prev: &Round,
+    old_cal: Option<&Calendar>,
+    new_cal: Option<&Calendar>,
+    moved: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    now: DateTime<Utc>,
+) -> Result<Round, String> {
+    let mut r = prev.clone();
+    if r.started_at.is_none() || r.met_at.is_some() {
+        return Ok(r);
+    }
+    if let Some(at) = r.resumed_at {
+        r.worked_secs += between(old_cal, at, now)?;
+        r.resumed_at = Some(now);
+    }
+    if let Some((old, new)) = moved {
+        let new = new.min(now);
+        r.worked_secs += if new < old { between(new_cal, new, old)? } else { -between(new_cal, old, new)? };
+        r.started_at = Some(new);
+    }
+    if r.paused_at.is_none() {
+        r.due_at = Some(r.due_from(new_cal, now)?);
+    }
+    Ok(r)
 }
 
 #[cfg(test)]
@@ -267,5 +310,61 @@ mod tests {
         for bad in [json!("soon"), json!(-1), json!(0), json!(true), json!("P2Y")] {
             assert!(within(&bad).is_err(), "{bad}");
         }
+    }
+
+    /// Berlin office hours, Monday to Friday 09:00–17:00; summer time ends Sunday 25 October 2026.
+    fn berlin() -> Calendar {
+        let day = json!([["09:00", "17:00"]]);
+        serde_json::from_value(json!({"name": "berlin", "zone": "Europe/Berlin", "weekends": ["sat", "sun"], "holidays": [],
+            "revision": 1, "hours": {"mon": day, "tue": day, "wed": day, "thu": day, "fri": day}}))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_round_started_from_a_moment_of_the_record() {
+        let c = berlin();
+        let run = said(true, Some(4 * H), false, false);
+        // Opened Friday 15:00 in summer time (13:00Z), saved on Saturday: two hours on Friday, two on Monday from
+        // 09:00 in winter time (08:00Z).
+        let (r, due, word) = step_from(&Round::default(), run, utc("2026-10-24T09:00:00Z"), Some(utc("2026-10-23T13:00:00Z")), Some(&c)).unwrap();
+        assert_eq!((due, word), (Some(utc("2026-10-26T10:00:00Z")), Some("running")));
+        assert_eq!(r.started_at, Some(utc("2026-10-23T13:00:00Z")));
+        // A start in the future starts now; none starts now.
+        let now = utc("2026-11-02T10:00:00Z");
+        for start in [Some(utc("2026-11-03T10:00:00Z")), None] {
+            assert_eq!(step_from(&Round::default(), run, now, start, None).unwrap().0.started_at, Some(now));
+        }
+        // Already past: due in the past, running until the sweep marks it.
+        let (_, due, word) = step_from(&Round::default(), run, now, Some(utc("2026-11-01T00:00:00Z")), None).unwrap();
+        assert_eq!((due, word), (Some(utc("2026-11-01T04:00:00Z")), Some("running")));
+    }
+
+    #[test]
+    fn a_round_worked_out_again() {
+        let t0 = utc("2026-11-02T10:00:00Z");
+        let run = said(true, Some(10 * H), false, false);
+        let (r, ..) = step(&Round::default(), run, t0, None).unwrap();
+        // Two hours in, the calendar becomes office hours: two hours kept, eight on the new calendar from now
+        // (Monday 2 November 15:30 in Kolkata: two and a half hours that day, then Wednesday from 09:00).
+        let office = office();
+        let now = utc("2026-11-02T12:00:00Z");
+        let moved = reanchor(&r, None, Some(&office), None, now).unwrap();
+        assert_eq!(moved.worked_secs, 2 * 3600);
+        assert_eq!(moved.due_at, Some(office.add_working(now, 8 * H, &[]).unwrap()));
+        // The start moved an hour earlier: an hour more used, the due moment an hour sooner.
+        let earlier = reanchor(&r, None, None, Some((t0, utc("2026-11-02T09:00:00Z"))), now).unwrap();
+        assert_eq!(earlier.due_at, Some(utc("2026-11-02T19:00:00Z")));
+        // An hour later: an hour less used. Never past now.
+        let later = reanchor(&r, None, None, Some((t0, utc("2026-11-02T11:00:00Z"))), now).unwrap();
+        assert_eq!(later.due_at, Some(utc("2026-11-02T21:00:00Z")));
+        let future = reanchor(&r, None, None, Some((t0, utc("2026-11-03T11:00:00Z"))), now).unwrap();
+        assert_eq!(future.due_at, Some(utc("2026-11-02T22:00:00Z")));
+        // A pause and a breach stay; a met round is left alone.
+        let mut paused = step(&r, said(true, Some(10 * H), true, false), now, None).unwrap().0;
+        paused.breached_at = Some(now);
+        let again = reanchor(&paused, None, Some(&office), None, utc("2026-11-02T13:00:00Z")).unwrap();
+        assert_eq!((again.paused_at, again.due_at, again.breached_at, again.word()), (Some(now), None, Some(now), Some("breached")));
+        let met = step(&r, said(true, Some(10 * H), false, true), now, None).unwrap().0;
+        assert_eq!(reanchor(&met, None, Some(&office), None, now).unwrap(), met);
     }
 }

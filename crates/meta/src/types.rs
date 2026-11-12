@@ -929,6 +929,14 @@ pub struct TargetDef {
     /// A business calendar's name; none counts plain elapsed time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar: Option<String>,
+    /// Where each record names its calendar (BD-41): a data or select field of the record, or a link and such a
+    /// field of the linked record (`agreement.calendar`). Empty there, `calendar`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_field: Option<String>,
+    /// A date-time field of the record the clock starts from (`opened_at`), never later than the save that starts
+    /// it; empty, the clock starts at that save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_field: Option<String>,
     /// The clock starts at the first save on which it holds; without it, when the record is created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_when: Option<String>,

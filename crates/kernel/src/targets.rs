@@ -40,13 +40,41 @@ struct Row {
     due_at: Option<DateTime<Utc>>,
     met_at: Option<DateTime<Utc>>,
     breached_at: Option<DateTime<Utc>>,
+    calendar: Option<String>,
+    start_from: Option<DateTime<Utc>>,
+    anchored: bool,
+}
+
+/// What a round was worked out from (BD-41): its calendar's name (`""`, plain time) and the record's start moment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Anchors {
+    calendar: String,
+    start_from: Option<DateTime<Utc>>,
 }
 
 impl Row {
-    fn round(self) -> Round {
-        let Row { round, started_at, resumed_at, paused_at, worked_secs, within_secs, due_at, met_at, breached_at, .. } = self;
-        Round { round, started_at, resumed_at, paused_at, worked_secs, within_secs, due_at, met_at, breached_at }
+    fn round(self) -> (Round, Option<Anchors>) {
+        let Row { round, started_at, resumed_at, paused_at, worked_secs, within_secs, due_at, met_at, breached_at, calendar, start_from, anchored, .. } = self;
+        let anchors = anchored.then(|| Anchors { calendar: calendar.unwrap_or_default(), start_from });
+        (Round { round, started_at, resumed_at, paused_at, worked_secs, within_secs, due_at, met_at, breached_at }, anchors)
     }
+}
+
+/// The calendar's name target `t` counts on for the record: the one the record names where it says
+/// (`calendar_field`), else the target's own; `""` for plain time.
+fn calendar_of(t: &ferrum_meta::TargetDef, doc: &Doc, links: &Value) -> String {
+    let named = t.calendar_field.as_deref().and_then(|path| match path.split_once('.') {
+        None => doc.get(path).and_then(Value::as_str).map(str::to_string),
+        Some((link, field)) => links.get(link).and_then(|r| r.get(field)).and_then(Value::as_str).map(str::to_string),
+    });
+    named.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).or_else(|| t.calendar.clone()).unwrap_or_default()
+}
+
+/// The record's start moment for target `t` (`start_field`); none when empty or still to come, so the clock starts
+/// at the save, as without one.
+fn start_of(t: &ferrum_meta::TargetDef, doc: &Doc, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let v = doc.get(t.start_field.as_deref()?)?.as_str()?;
+    crate::value::parse_datetime(v).ok().filter(|at| *at <= now)
 }
 
 impl Kernel {
@@ -72,7 +100,7 @@ pub(crate) async fn keep(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id
     }
     let now = k.now();
     let rows: Vec<Row> = sqlx::query_as(
-        "select target, round, started_at, resumed_at, paused_at, worked_secs, within_secs, due_at, met_at, breached_at \
+        "select target, round, started_at, resumed_at, paused_at, worked_secs, within_secs, due_at, met_at, breached_at, calendar, start_from, anchored \
          from record_target where tenant_id = $1 and entity = $2 and record_id = $3 for update",
     )
     .bind(ctx.tenant)
@@ -80,12 +108,14 @@ pub(crate) async fn keep(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id
     .bind(id)
     .fetch_all(&mut **tx)
     .await?;
-    let mut rounds: BTreeMap<String, Round> = rows.into_iter().map(|r| (r.target.clone(), r.round())).collect();
+    let mut rounds: BTreeMap<String, (Round, Option<Anchors>)> = rows.into_iter().map(|r| (r.target.clone(), r.round())).collect();
     let user = ctx.user_value();
     let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
     let scope = Scope { doc: &view, old: None, parent: None, user: &user };
     let all = ent.exprs.targets.values().flat_map(|x| [x.start_when.as_ref(), Some(&x.within), x.pause_when.as_ref(), Some(&x.met_when)]).flatten();
-    let links = crate::links::load(k, ctx, tx, ent, &view, &crate::links::used(all)).await?;
+    let mut names = crate::links::used(all);
+    names.extend(ent.def.targets.iter().filter_map(|t| t.calendar_field.as_deref()?.split_once('.').map(|(link, _)| link.to_string())));
+    let links = crate::links::load(k, ctx, tx, ent, &view, &names).await?;
     let extra = [("links", &links)];
     for t in &ent.def.targets {
         let x = ent.exprs.targets.get(&t.name).ok_or_else(|| Error::internal(format!("target {} is not compiled", t.name)))?;
@@ -94,18 +124,31 @@ pub(crate) async fn keep(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id
         let within = target::within(&x.within.eval_with(&scope, &extra).map_err(fail)?).map_err(fail)?;
         let said =
             Said { start: holds(x.start_when.as_ref(), true)?, within, pause: holds(x.pause_when.as_ref(), false)?, met: holds(Some(&x.met_when), false)? };
-        let calendar = match (&t.calendar, within) {
-            (Some(name), Some(_)) => Some(crate::load_calendar(tx, ctx.tenant, name).await?.ok_or_else(|| fail(format!("the calendar {name} is not there")))?),
-            _ => None,
+        let anchors = Anchors { calendar: calendar_of(t, doc, &links), start_from: start_of(t, doc, now) };
+        let calendar = match within {
+            Some(_) => load(tx, ctx.tenant, &anchors.calendar).await?.map_err(fail)?,
+            None => None,
         };
-        let prev = rounds.remove(&t.name).unwrap_or_default();
-        let (next, due, word) = target::step(&prev, said, now, calendar.as_ref()).map_err(fail)?;
-        if next != prev {
+        let (prev, was) = rounds.remove(&t.name).unwrap_or_default();
+        // A round already running whose calendar or start moved is worked out again, once (BD-41).
+        let mut base = prev.clone();
+        if let Some(was) = was.as_ref().filter(|w| **w != anchors) {
+            let old_cal = if was.calendar == anchors.calendar { calendar.clone() } else { load(tx, ctx.tenant, &was.calendar).await?.unwrap_or(None) };
+            let moved = match (was.start_from, anchors.start_from) {
+                (Some(a), Some(b)) if a != b => Some((a, b)),
+                _ => None,
+            };
+            if was.calendar != anchors.calendar || moved.is_some() {
+                base = target::reanchor(&prev, old_cal.as_ref(), calendar.as_ref(), moved, now).map_err(fail)?;
+            }
+        }
+        let (next, due, word) = target::step_from(&base, said, now, anchors.start_from, calendar.as_ref()).map_err(fail)?;
+        if next != prev || was.as_ref() != Some(&anchors) {
             sqlx::query(
                 "insert into record_target (tenant_id, entity, record_id, target, round, started_at, resumed_at, paused_at, worked_secs, within_secs, \
-                 due_at, met_at, breached_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+                 due_at, met_at, breached_at, calendar, start_from, anchored) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, true) \
                  on conflict (tenant_id, entity, record_id, target) do update set round = $5, started_at = $6, resumed_at = $7, paused_at = $8, \
-                 worked_secs = $9, within_secs = $10, due_at = $11, met_at = $12, breached_at = $13",
+                 worked_secs = $9, within_secs = $10, due_at = $11, met_at = $12, breached_at = $13, calendar = $14, start_from = $15, anchored = true",
             )
             .bind(ctx.tenant)
             .bind(&ent.def.name)
@@ -120,6 +163,8 @@ pub(crate) async fn keep(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id
             .bind(next.due_at)
             .bind(next.met_at)
             .bind(next.breached_at)
+            .bind(&anchors.calendar)
+            .bind(anchors.start_from)
             .execute(&mut **tx)
             .await?;
         }
@@ -133,6 +178,14 @@ pub(crate) async fn keep(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id
         }
     }
     Ok(())
+}
+
+/// Calendar `name` (`""`: none, plain time); an inner error when the workspace has no such calendar.
+async fn load(tx: &mut Tx, tenant: Uuid, name: &str) -> Result<std::result::Result<Option<ferrum_logic::calendar::Calendar>, String>> {
+    if name.is_empty() {
+        return Ok(Ok(None));
+    }
+    Ok(crate::load_calendar(tx, tenant, name).await?.map(Some).ok_or_else(|| format!("the calendar {name} is not there")))
 }
 
 /// The business calendars `schema`'s targets name.
