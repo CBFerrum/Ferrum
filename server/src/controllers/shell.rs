@@ -404,7 +404,8 @@ async fn page(
                 Place::Workspace(t) => Some(t),
                 _ => None,
             };
-            return Ok(super::lists::page(&st.kernel, &st.public_limiter, &headers, rest.unwrap_or_default(), bound).await);
+            let origin = shell::request_host(&headers).map(|h| format!("{}://{h}", if st.shell.secure { "https" } else { "http" }));
+            return Ok(super::lists::page(&st.kernel, &st.public_limiter, &headers, rest.unwrap_or_default(), bound, &q, origin.as_deref()).await);
         }
         // Today's web app's addresses (controllers/legacy.rs); `/app/` comes here, slash and all.
         "app" => return Ok(super::legacy::answer(&uri)),

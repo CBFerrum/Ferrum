@@ -44,14 +44,44 @@ pub struct Published {
     pub fields: Vec<Value>,
     /// Each with the listed fields and nothing else.
     pub rows: Vec<Map<String, Value>>,
-    /// More records match than the list shows.
+    /// More records match than the list shows (on this page).
     pub more: bool,
     pub csv: bool,
+    /// The page shown, from 1.
+    pub page: u32,
+    /// Each row's address (its slug's value) when the list has a slug, in the rows' order.
+    pub addresses: Vec<String>,
+    /// The field giving a detail page's description, and the origins that may frame its pages.
+    pub summary: Option<String>,
+    pub frame_origins: Vec<String>,
+    /// Whether search engines are offered it: a list with a slug.
+    pub indexed: bool,
 }
+
+/// What a public read asks of a list: words its text fields must hold, a page, or one record by its address.
+#[derive(Debug, Clone, Default)]
+pub struct Find {
+    pub q: Option<String>,
+    pub page: u32,
+    pub address: Option<String>,
+}
+
+/// Pages a visitor may turn to at most, and the longest search.
+pub const MAX_PAGE: u32 = 100;
+pub const MAX_QUERY: usize = 100;
+/// Addresses a sitemap lists at most, over every list.
+pub const MAX_SITEMAP: usize = 10_000;
 
 impl Published {
     pub fn json(&self) -> Value {
-        json!({"label": self.label, "description": self.description, "fields": self.fields, "rows": self.rows, "more": self.more})
+        let mut out = json!({"label": self.label, "description": self.description, "fields": self.fields, "rows": self.rows, "more": self.more});
+        if self.page > 1 {
+            out["page"] = json!(self.page);
+        }
+        if self.indexed {
+            out["addresses"] = json!(self.addresses);
+        }
+        out
     }
 
     /// The rows as CSV (CRLF), headed by the fields' labels, every cell through [`csv_cell`].
@@ -85,8 +115,15 @@ fn title(schema: &Schema, ent: &EffEntity, f: &FieldDef) -> String {
 /// The query of `l`: its rows (one more than its limit) as the workspace, with the filter, submitted
 /// records only where the entity is submittable, in its order.
 fn query(schema: &Schema, ent: &EffEntity, l: &PublishedList, tenant: Uuid) -> Result<QueryBuilder<Postgres>> {
+    query_with(schema, ent, l, tenant, &Find::default())
+}
+
+/// [`query`] narrowed by what a visitor asks: the words `q` in any of the list's text fields (as typed, any case),
+/// page `page` (the list's limit a page), or the one record whose slug is `address`, its detail fields too.
+fn query_with(schema: &Schema, ent: &EffEntity, l: &PublishedList, tenant: Uuid, find: &Find) -> Result<QueryBuilder<Postgres>> {
     let mut cols = select_list(ent, "a");
-    for f in l.list.fields.iter().filter_map(|n| ent.field(n)).filter(|f| f.ftype == FieldType::Link) {
+    let shown = l.list.fields.iter().chain(&l.list.detail);
+    for f in shown.filter_map(|n| ent.field(n)).filter(|f| f.ftype == FieldType::Link) {
         cols.push_str(&format!(", {} as \"_t_{}\"", title(schema, ent, f), f.name));
     }
     let mut qb = QueryBuilder::new(format!("select to_jsonb(x) from (select {cols}"));
@@ -96,10 +133,43 @@ fn query(schema: &Schema, ent: &EffEntity, l: &PublishedList, tenant: Uuid) -> R
         // Whatever the filter says: a draft or a cancelled document is never public.
         qb.push(" and a.docstatus = 1");
     }
+    if let Some(address) = &find.address {
+        let slug = l.list.slug.as_deref().and_then(|f| field_expr(ent, f, "a")).ok_or_else(|| Error::NotFound("record".into()))?;
+        qb.push(format!(" and ({slug})::text = ")).push_bind(address.clone());
+    }
+    if let Some(q) = find.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        let texts: Vec<String> = l
+            .list
+            .fields
+            .iter()
+            .filter_map(|n| ent.field(n))
+            .filter(|f| matches!(f.ftype, FieldType::Data | FieldType::Select | FieldType::Text | FieldType::Markdown))
+            .filter_map(|f| field_expr(ent, &f.name, "a"))
+            .collect();
+        if texts.is_empty() {
+            qb.push(" and false");
+        } else {
+            let like = format!("%{}%", q.chars().take(MAX_QUERY).collect::<String>().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+            qb.push(" and (");
+            for (i, t) in texts.iter().enumerate() {
+                if i > 0 {
+                    qb.push(" or ");
+                }
+                qb.push(format!("({t})::text ilike ")).push_bind(like.clone());
+            }
+            qb.push(")");
+        }
+    }
     let (field, desc) = l.list.sort.as_ref().map_or(("created_at", true), |(f, d)| (f.as_str(), *d == SortDirection::Desc));
     let order = order_by(ent, field, desc, "a").ok_or_else(|| Error::invalid(format!("a list cannot be ordered by {field}")))?;
     let limit = l.list.limit.unwrap_or(DEFAULT_ROWS) as i64;
-    qb.push(format!(" order by {order} limit ")).push_bind(limit + 1).push(") x");
+    // `a.id` last, so that a page's rows never shift onto the next.
+    qb.push(format!(" order by {order}, a.id limit ")).push_bind(limit + 1);
+    let page = find.page.clamp(1, MAX_PAGE) as i64;
+    if page > 1 {
+        qb.push(" offset ").push_bind((page - 1) * limit);
+    }
+    qb.push(") x");
     Ok(qb)
 }
 
@@ -117,6 +187,13 @@ impl Kernel {
     /// The list `name` the workspace at `slug` publishes, read as the workspace; `None` when there is
     /// no such workspace, it is not active, or it publishes no such list.
     pub async fn published_list(&self, slug: &str, name: &str) -> Result<Option<Published>> {
+        self.published_find(slug, name, &Find::default()).await
+    }
+
+    /// [`Kernel::published_list`] as a visitor asks for it (BD-25): searched, a page of it, or one record by its address
+    /// (its detail fields too). `None` for anything not published, a record included: a list without a slug, an
+    /// address no published record has, a page past the last.
+    pub async fn published_find(&self, slug: &str, name: &str, find: &Find) -> Result<Option<Published>> {
         let mut tx = self.db.system_tx().await?;
         let found: Option<(Uuid, String, String)> =
             sqlx::query_as("select id, status, name from tenant where slug = $1").bind(slug.trim().to_lowercase()).fetch_optional(&mut *tx).await?;
@@ -125,7 +202,10 @@ impl Kernel {
         let schema = self.registry.schema(tenant).await?;
         let Some(l) = schema.published_list(name) else { return Ok(None) };
         let Some(ent) = schema.entity(&l.entity) else { return Ok(None) };
-        let mut qb = match query(&schema, ent, l, tenant) {
+        if find.address.is_some() && l.list.slug.is_none() {
+            return Ok(None);
+        }
+        let mut qb = match query_with(&schema, ent, l, tenant, find) {
             Ok(qb) => qb,
             Err(e) => {
                 tracing::warn!(tenant = %tenant, list = name, "a published list does not build: {e}");
@@ -136,15 +216,24 @@ impl Kernel {
         let mut found: Vec<Value> = qb.build_query_scalar().fetch_all(&mut *tx).await?;
         tx.commit().await?;
         let limit = l.list.limit.unwrap_or(DEFAULT_ROWS) as usize;
-        let more = found.len() > limit;
-        found.truncate(limit);
-        let fields: Vec<(&str, Option<&FieldDef>)> = l.list.fields.iter().map(|n| (n.as_str(), ent.field(n))).collect();
+        let page = find.page.clamp(1, MAX_PAGE);
+        if (find.address.is_some() || page > 1) && found.is_empty() {
+            return Ok(None);
+        }
+        let more = found.len() > limit && find.address.is_none();
+        found.truncate(if find.address.is_some() { 1 } else { limit });
+        let names: Vec<&String> = if find.address.is_some() { l.list.fields.iter().chain(&l.list.detail).collect() } else { l.list.fields.iter().collect() };
+        let fields: Vec<(&str, Option<&FieldDef>)> = names.iter().map(|n| (n.as_str(), ent.field(n))).collect();
+        let mut addresses = Vec::new();
         let rows = found
             .into_iter()
             .map(|row| {
                 let titles: Map<String, Value> =
                     row.as_object().map(|r| r.iter().filter(|(k, _)| k.starts_with("_t_")).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
                 let doc = row_to_doc(ent, &schema, row);
+                if let Some(s) = &l.list.slug {
+                    addresses.push(doc.get(s).and_then(Value::as_str).unwrap_or_default().to_string());
+                }
                 fields
                     .iter()
                     .map(|(n, f)| {
@@ -164,6 +253,48 @@ impl Kernel {
                 None => json!({"name": n, "label": "Number", "type": "data"}),
             })
             .collect();
-        Ok(Some(Published { tenant, workspace, label: l.list.label.clone(), description: l.list.description.clone(), fields, rows, more, csv: l.list.csv }))
+        Ok(Some(Published {
+            tenant,
+            workspace,
+            label: l.list.label.clone(),
+            description: l.list.description.clone(),
+            fields,
+            rows,
+            more,
+            csv: l.list.csv,
+            page,
+            addresses,
+            summary: l.list.summary.clone(),
+            frame_origins: l.list.frame_origins.clone(),
+            indexed: l.list.slug.is_some(),
+        }))
+    }
+
+    /// Every published record's address of the workspace at `slug`, for its sitemap: `(list, address)` of each list
+    /// with a slug, every page of it, [`MAX_SITEMAP`] in all; nothing a list does not publish. `None` for a
+    /// workspace not active.
+    pub async fn published_addresses(&self, slug: &str) -> Result<Option<Vec<(String, String)>>> {
+        let mut tx = self.db.system_tx().await?;
+        let found: Option<(Uuid, String)> =
+            sqlx::query_as("select id, status from tenant where slug = $1").bind(slug.trim().to_lowercase()).fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
+        let Some((tenant, _)) = found.filter(|(_, status)| status == "active") else { return Ok(None) };
+        let schema = self.registry.schema(tenant).await?;
+        let mut out = Vec::new();
+        'lists: for l in schema.published_lists.iter().filter(|l| l.list.slug.is_some()) {
+            // Every page of it, as a visitor turns them.
+            for page in 1..=MAX_PAGE {
+                let Some(p) = self.published_find(slug, &l.list.name, &Find { page, ..Default::default() }).await? else { break };
+                out.extend(p.addresses.into_iter().filter(|a| !a.is_empty()).map(|a| (l.list.name.clone(), a)));
+                if out.len() >= MAX_SITEMAP {
+                    out.truncate(MAX_SITEMAP);
+                    break 'lists;
+                }
+                if !p.more {
+                    break;
+                }
+            }
+        }
+        Ok(Some(out))
     }
 }

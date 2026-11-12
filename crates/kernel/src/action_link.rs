@@ -116,24 +116,15 @@ pub fn well_formed(token: &str) -> bool {
     token.len() == 43 && token.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
-/// An origin a page may be framed by: `https://host[:port]`, or `http://localhost[:port]`; no path, no wildcard.
-pub fn frame_origin(o: &str) -> Option<String> {
-    let o = o.trim().trim_end_matches('/');
-    let rest = o.strip_prefix("https://").or_else(|| o.strip_prefix("http://").filter(|r| r.starts_with("localhost")))?;
-    let (host, port) = rest.split_once(':').unwrap_or((rest, ""));
-    let host_ok = !host.is_empty()
-        && host.len() <= 253
-        && host.split('.').all(|l| !l.is_empty() && l.len() <= 63 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
-    let port_ok = port.is_empty() || (port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit()));
-    (host_ok && port_ok).then(|| o.to_ascii_lowercase())
-}
-
 /// Checks origins a page may be framed by (at most 10), as kept.
 pub fn frame_origins(given: &[String]) -> Result<Vec<String>> {
     if given.len() > 10 {
         return Err(Error::field("frame_origins", "at most 10 origins may frame a page"));
     }
-    given.iter().map(|o| frame_origin(o).ok_or_else(|| Error::field("frame_origins", format!("{o} is not an origin like https://example.com")))).collect()
+    given
+        .iter()
+        .map(|o| ferrum_meta::published::frame_origin(o).ok_or_else(|| Error::field("frame_origins", format!("{o} is not an origin like https://example.com"))))
+        .collect()
 }
 
 /// The guest a link's use runs as: no person, outside, its rights the link's record and actions alone.
@@ -553,8 +544,8 @@ mod tests {
 
     #[test]
     fn frames_are_named_origins_only() {
-        assert_eq!(frame_origin("https://Shop.Example.com/"), Some("https://shop.example.com".into()));
-        assert_eq!(frame_origin("http://localhost:5173"), Some("http://localhost:5173".into()));
+        assert_eq!(ferrum_meta::published::frame_origin("https://Shop.Example.com/"), Some("https://shop.example.com".into()));
+        assert_eq!(ferrum_meta::published::frame_origin("http://localhost:5173"), Some("http://localhost:5173".into()));
         for bad in [
             "http://shop.example.com",
             "https://*.example.com",
@@ -564,7 +555,7 @@ mod tests {
             "'none'",
             "https://a.com b.com",
         ] {
-            assert_eq!(frame_origin(bad), None, "{bad}");
+            assert_eq!(ferrum_meta::published::frame_origin(bad), None, "{bad}");
         }
     }
 

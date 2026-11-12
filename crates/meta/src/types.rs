@@ -872,9 +872,23 @@ pub struct PublishedListDef {
     /// Also offered as CSV.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub csv: bool,
-    /// Rows at most (200 without it, 1000 at most).
+    /// Rows at most (200 without it, 1000 at most); with paging, rows a page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// A text field whose value is each record's stable public address (`…/lists/{name}/{value}`): with it, each
+    /// record has a detail page, and the list is offered to search engines (a sitemap, link tags) rather than kept
+    /// from them. Held to the same rules as `fields`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// Fields only a record's detail page shows (an article's body), after `fields`; the same rules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detail: Vec<String>,
+    /// The field a detail page gives search engines as its description; one of `fields` or `detail`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Origins that may show its pages in a frame (`https://host[:port]`); none by default (BD-24).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

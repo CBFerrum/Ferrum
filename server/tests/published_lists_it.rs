@@ -7,7 +7,7 @@
 mod common;
 
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::routing::{any, get as route_get};
 use ferrum_kernel::tenant::NewTenant;
@@ -34,7 +34,9 @@ async fn serve(k: Arc<Kernel>, limit: u32) -> String {
         .route("/api/public/{tenant}/{plugin}/{*path}", any(|| async { "a plugin" }))
         .route(
             "/public/{*rest}",
-            route_get(|State(s): State<S>, Path(rest): Path<String>, h: HeaderMap| async move { lists::page(&s.0, &s.1, &h, &rest, None).await }),
+            route_get(|State(s): State<S>, Path(rest): Path<String>, Query(q): Query<Vec<(String, String)>>, h: HeaderMap| async move {
+                lists::page(&s.0, &s.1, &h, &rest, None, &q, Some("https://acme.example")).await
+            }),
         )
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -175,6 +177,31 @@ async fn scenario() {
     let csp = headers["content-security-policy"].to_str().unwrap();
     assert!(csp.starts_with("default-src 'none'") && !csp.contains("script-src"), "{csp}");
     assert_eq!(headers["x-robots-tag"], "noindex");
+
+    // A list with a slug (BD-25): a page per published record with link tags, search, a sitemap of what is published
+    // and nothing else, framed only where it says (BD-24), and an unchanged answer not sent again.
+    let register = json!({"name": "register", "label": "Register", "fields": ["holder", "kind"], "slug": "holder", "summary": "kind",
+        "frame_origins": ["https://town.example"]});
+    k.add_customization(&fresh(&k, &acme).await, "XPermit", op(json!({"op": "publish_list", "list": register})), None).await.unwrap();
+    let (status, headers, html) = fetch(&format!("{base}/public/acme/lists/register/Fence%20Holder")).await;
+    assert_eq!(status, 200, "{html}");
+    assert!(html.contains(r#"<link rel="canonical" href="https://acme.example/public/acme/lists/register/Fence%20Holder">"#), "{html}");
+    assert!(html.contains(r#"<meta name="description" content="Fence">"#) && html.contains("<h1>Fence Holder</h1>") && !html.contains("12.5"), "{html}");
+    assert_eq!(headers["content-security-policy"].to_str().unwrap().rsplit("; ").next(), Some("frame-ancestors https://town.example"));
+    assert!(headers.get("x-frame-options").is_none() && headers.get("x-robots-tag").is_none());
+    for hidden in ["Draft%20Holder", "Cancelled%20Holder", "Nobody"] {
+        assert_eq!(fetch(&format!("{base}/public/acme/lists/register/{hidden}")).await.0, 404, "{hidden}");
+    }
+    assert_eq!(fetch(&format!("{base}/public/acme/lists/permits/Fence%20Holder")).await.0, 404, "a list without a slug has no record pages");
+    let (_, _, found) = fetch(&format!("{base}/public/acme/lists/register?q=fence")).await;
+    assert!(found.contains("Fence Holder") && !found.contains("Bold"), "{found}");
+    let (status, headers, map) = fetch(&format!("{base}/public/acme/sitemap.xml")).await;
+    assert_eq!((status, headers["content-type"].to_str().unwrap()), (200, "application/xml; charset=utf-8"));
+    assert!(map.contains("https://acme.example/public/acme/lists/register/Fence%20Holder") && !map.contains("Draft") && !map.contains("Cancelled"), "{map}");
+    let tag = headers["etag"].clone();
+    let again = reqwest::Client::new().get(format!("{base}/public/acme/sitemap.xml")).header("if-none-match", tag).send().await.unwrap();
+    assert_eq!(again.status().as_u16(), 304);
+    assert_eq!(fetch(&format!("{base}/public/acme/lists/permits")).await.1["x-frame-options"], "DENY", "the other list stays unframeable");
 
     // A plugin's public route is still a plugin's.
     assert_eq!(fetch(&format!("{base}/api/public/acme/forms/submit")).await.2, "a plugin");
