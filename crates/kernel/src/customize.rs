@@ -652,6 +652,12 @@ impl Kernel {
             return Err(Error::invalid(format!("customization rejected: {}", msgs.join("; "))));
         }
         configured_actions(self, ctx.tenant, was, &now)?;
+        // The templates their messages and documents name are there (the workspace's are in its tables).
+        let before = crate::actions::template_problems(tx, ctx.tenant, was).await?;
+        let new: Vec<String> = crate::actions::template_problems(tx, ctx.tenant, &now).await?.into_iter().filter(|p| !before.contains(p)).collect();
+        if !new.is_empty() {
+            return Err(Error::invalid(format!("customization rejected: {}", new.join("; "))));
+        }
         crate::published::check(was, &now)?;
         crate::targets::check_calendars(tx, ctx.tenant, was, &now).await?;
         crate::approvals::check_names(tx, ctx.tenant, was, &now).await?;

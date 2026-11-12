@@ -935,9 +935,6 @@ impl Kernel {
         }
         let items = pack.customizations.iter().map(|c| NewCustomization { entity: c.entity.clone(), op: c.op.clone(), note: c.note.clone() }).collect();
         let (saved, schema) = self.merge_customizations(ctx, tx, items).await.map_err(|e| about("customizations", e))?;
-        for (delete, key) in early {
-            sqlx::query(delete).bind(ctx.tenant).bind(key).execute(&mut **tx).await?;
-        }
         let section = summary.entry("customizations").or_default();
         for (name, status) in saved {
             section.add(name, status);
@@ -954,6 +951,10 @@ impl Kernel {
             summary.entry("automations").or_default().add(a.name.clone(), status);
         }
         self.install_studio(ctx, tx, &pack.studio, summary.entry("studio").or_default()).await?;
+        // The templates kept early are saved now, checked, as any other.
+        for (delete, key) in early {
+            sqlx::query(delete).bind(ctx.tenant).bind(key).execute(&mut **tx).await?;
+        }
         for m in &pack.messages {
             let status = crate::messages::save_template(self, tx, ctx, m).await.map_err(|e| about(&format!("message {}", m.key), e))?;
             summary.entry("messages").or_default().add(m.key.clone(), status);

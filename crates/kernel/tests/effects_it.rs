@@ -151,6 +151,17 @@ async fn scenario() {
             "has no field colour",
         ),
         (json!([{"type": "notify", "to": "owner", "title": "'t'", "when": "doc.code =="}]), "when 'doc.code =='"),
+        // The templates and recipients a message or a document names are there.
+        (
+            json!([{"type": "set_fields", "values": {}}, {"type": "message", "template": "wk.nothing", "to": "owner"}]),
+            "effect 2: there is no message template wk.nothing",
+        ),
+        (json!([{"type": "message", "template": "wk.nothing", "to": ["field:nofield"]}]), "message.to: Case has no field nofield"),
+        (json!([{"type": "generate", "template": "wk.nothing"}]), "effect 1: there is no document template wk.nothing"),
+        (
+            json!([{"type": "for_each", "table": "checklist", "effects": [{"type": "notify", "to": "owner", "message": "wk.nothing"}]}]),
+            "there is no message template wk.nothing",
+        ),
     ] {
         let e = batch(vec![action("XCase", "x_bad", effects)]).await.unwrap_err();
         assert!(e.contains(says), "{says}: {e}");
@@ -283,6 +294,15 @@ async fn scenario() {
     )
     .await
     .expect("an automation with a when");
+    let e = automation::save(
+        &k,
+        &a,
+        &obj(json!({"name": "Late", "entity": "XTask", "event": "created",
+        "actions": [{"type": "set_fields", "values": {"status": "'x'"}}, {"type": "generate", "template": "wk.nothing"}]})),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(&e, Error::Validation(f) if f[0].row == Some(("actions".into(), 1)) && f[0].message.contains("no document template wk.nothing")), "{e:?}");
     let low = k.insert(&a, "XTask", obj(json!({"status": "New", "priority": 1}))).await.unwrap();
     let high = k.insert(&a, "XTask", obj(json!({"status": "New", "priority": 2}))).await.unwrap();
     while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}

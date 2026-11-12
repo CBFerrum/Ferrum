@@ -745,6 +745,7 @@ MUTANTS = [
     # A pack's own roles there before what names them (a transition's approval).
     ("pack-roles-after-customizations", "crates/kernel/src/pack.rs", "for role in pack.roles.iter().filter(|r| !here.contains(&r.name)) {", "for role in pack.roles.iter().filter(|_| false) {", PACKS),
     ("away-route-unreachable", "crates/studio/src/logic.rs", "\"dependents\" | \"away\"", "\"dependents\"", STUDIO_SOLUTIONS),
+    ("effect-template-unchecked", "crates/kernel/src/automation.rs", "        match (message.filter(|m| !messages.contains(*m)), document.filter(|d| !documents.contains(*d))) {", "        match (None::<&String>, None::<&String>) {", EFFECTS),
     # Documents about a query (docs/api.md, A report as a document; BD-21).
     ("query-documents-person-unbounded", "crates/kernel/src/documents.rs", "    if person && total > MAX_GROUPS {", "    if false {", STUDIO_QUERY_DOCUMENTS),
     ("query-documents-cursor-ignored", "crates/kernel/src/documents.rs", "filter(|(id, _)| after.is_none_or(|a| *id > a))", "filter(|_| true)", STUDIO_QUERY_DOCUMENTS),
