@@ -1001,7 +1001,10 @@ body is HTML, every value it prints escaped; everything else is text.
 * `POST /api/admin/messages/templates` with a template (the YAML entry above as JSON) saves it: a copy of a package's
   default, or the workspace's own under a key no installed package's name starts. Refused (422 on `template`, `key`
   or `entity`) when a body does not compile or fails against a record with every field, reads a field the entity does
-  not have (a secret field included), or a value it does not declare.
+  not have (a secret field included), or a value it does not declare, said in plain words after the language and
+  channel the screen places it by (`en, text: doc.titel is not a field of Note (line 2)`, `en, email: the body reads
+  values.name, which is not among the values this template says the sender passes: add name to its values`);
+  document templates say the same after their language.
 * `DELETE /api/admin/messages/templates/{key}` goes back to the default (or removes the workspace's own).
 * `POST /api/admin/messages/preview {template, channel, language?, record_id?}`: `template` a key or an unsaved
   template; against the record named (read with the caller's rights), else the latest the caller may read →

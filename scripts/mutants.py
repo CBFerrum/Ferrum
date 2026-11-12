@@ -754,6 +754,7 @@ MUTANTS = [
     ("portal-signup-without-limit", "crates/kernel/src/portal_signup.rs", "        if theirs >= PER_ADDRESS_HOUR || here >= PER_NETWORK_HOUR {", "        if false {", PORTAL_SIGNUP),
     ("portal-signup-from-any-domain", "crates/kernel/src/portal_signup.rs", "        if !setting.domains.is_empty() && !setting.domains.iter().any(|d| d == domain) {", "        if false {", PORTAL_SIGNUP),
     ("portal-signup-without-the-code", "crates/kernel/src/portal_signup.rs", "    if code_hash(id, code) != hash {", "    if false {", PORTAL_SIGNUP),
+    ("template-refusal-raw", "crates/kernel/src/messages.rs", "    if !said.contains(\"undefined value\") {", "    if true {", MESSAGES),
     # Documents about a query (docs/api.md, A report as a document; BD-21).
     ("query-documents-person-unbounded", "crates/kernel/src/documents.rs", "    if person && total > MAX_GROUPS {", "    if false {", STUDIO_QUERY_DOCUMENTS),
     ("query-documents-cursor-ignored", "crates/kernel/src/documents.rs", "filter(|(id, _)| after.is_none_or(|a| *id > a))", "filter(|_| true)", STUDIO_QUERY_DOCUMENTS),
