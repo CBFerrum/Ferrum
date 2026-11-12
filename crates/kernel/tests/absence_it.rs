@@ -159,6 +159,10 @@ async fn scenario() {
     run(&k, at("2026-11-09T09:00:30Z")).await;
     drain(&k).await;
     assert_eq!(w.mails().await, ["nots Bob"], "Monday: Bob alone; Ann logged this week, Cy is not active");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let keys: Vec<At> = sqlx::query_scalar("select due_at from automation_occurrence where automation_id = $1").bind(sheets).fetch_all(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(keys, [at("2026-11-09T00:00:00Z")], "the scan itself queues Bob alone, keyed by the week's start");
     // Every later day of the week looks again and fires nothing more: once a period.
     for day in 10..=15 {
         run(&k, at(&format!("2026-11-{day}T09:00:30Z"))).await;
