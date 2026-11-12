@@ -77,6 +77,8 @@ PACKS = ("-p", "ferrum-studio", "--test", "pack_it")
 ACTIONS = ("-p", "ferrum-kernel", "--test", "actions_it")
 SETTINGS = ("-p", "ferrum-kernel", "--test", "settings_it")
 EFFECTS = ("-p", "ferrum-kernel", "--test", "effects_it")
+MESSAGES = ("-p", "ferrum-kernel", "--test", "messages_it")
+MESSAGES_UNIT = ("-p", "ferrum-kernel", "--lib", "messages::tests")
 INVOKE = ("-p", "ferrum-kernel", "--test", "invoke_it")
 TARGETS = ("-p", "ferrum-kernel", "--test", "targets_it")
 META_TARGETS = ("-p", "ferrum-meta", "--lib", "service_targets")
@@ -120,8 +122,8 @@ MUTANTS = [
     ("workbook-cut-short", "server/src/controllers/docs.rs", "Some(_) if rows.len() >= cap => {", "Some(_) if rows.len() >= cap && cap == 0 => {", EXPORT_UNIT),
     ("csv-stops-at-a-page", "server/src/controllers/docs.rs", "(None, next.map(Some), fetch, columns)", "(None, None, fetch, columns)", EXPORT_UNIT),
     # A person's choices follow them to their record's new address (FEO-009).
-    ("address-change-forgets-consent", "crates/kernel/src/retention.rs", "where tenant_id = $1 and email = $2 on conflict (tenant_id, email, purpose) do nothing", "where tenant_id = $1 and email = $3 on conflict (tenant_id, email, purpose) do nothing", CONSENT),
-    ("address-change-overrides-own-word", "crates/kernel/src/retention.rs", "where tenant_id = $1 and email = $2 on conflict (tenant_id, email, purpose) do nothing", "where tenant_id = $1 and email = $2 on conflict (tenant_id, email, purpose) do update set granted = excluded.granted", CONSENT),
+    ("address-change-forgets-consent", "crates/kernel/src/retention.rs", "where tenant_id = $1 and email = $2 and channel = 'email' on conflict (tenant_id, email, purpose, channel) do nothing", "where tenant_id = $1 and email = $3 and channel = 'email' on conflict (tenant_id, email, purpose, channel) do nothing", CONSENT),
+    ("address-change-overrides-own-word", "crates/kernel/src/retention.rs", "where tenant_id = $1 and email = $2 and channel = 'email' on conflict (tenant_id, email, purpose, channel) do nothing", "where tenant_id = $1 and email = $2 and channel = 'email' on conflict (tenant_id, email, purpose, channel) do update set granted = excluded.granted", CONSENT),
     ("address-change-forgets-restriction", "crates/kernel/src/retention.rs", "where tenant_id = $1 and email = $2 and lifted_at is null", "where tenant_id = $1 and email = $3 and lifted_at is null", CONSENT),
     # Duties kept apart across documents (FEO-013).
     ("approves-what-they-raised", "crates/kernel/src/doc.rs", "if raised_linked(tx, ctx, &ent, &doc, path, ctx.user).await? {", "if raised_linked(tx, ctx, &ent, &doc, path, ctx.user).await? && path.is_empty() {", COLLAB),
@@ -368,7 +370,7 @@ MUTANTS = [
     ("privacy-erased-files-stay", "crates/kernel/src/privacy.rs", "        outbox::release_objects(tx, ctx.tenant, &keys).await?;\n", "        let _ = &keys;\n", PRIVACY),
     ("privacy-old-address-lost", "crates/kernel/src/privacy.rs", "           union select user_id from person_identifier where tenant_id = $1 and email = $2::citext) \\\n", "           ) \\\n", PRIVACY),
     ("privacy-account-stays-after-restore", "crates/kernel/src/privacy.rs", 'if let Some(email) = present.filter(|e| !e.ends_with("@erased.invalid")) {', "if let Some(email) = present.filter(|_| false) {", PRIVACY),
-    ("privacy-journal-records-values", "crates/kernel/src/privacy.rs", '"records": journal, "reason": reason}', '"records": journal, "reason": reason, "email": email}', PRIVACY),
+    ("privacy-journal-records-values", "crates/kernel/src/privacy.rs", '"records": journal, "reason": reason, "messages": messages}', '"records": journal, "reason": reason, "messages": messages, "email": email}', PRIVACY),
     ("unknown-filter-ignored", "crates/kernel/src/scim.rs", 'return Err(bad_filter(format!("cannot filter on {attr}")));', "return Ok(vec![]);", SCIM_UNIT),
     ("job-outcome-unfenced", "crates/kernel/src/jobs.rs", """let fence = "tenant_id = $1 and id = $2 and lease_token = $3 and status = 'running'";""", """let fence = "tenant_id = $1 and id = $2 and $3::uuid is not null";""", JOBS),
     ("job-retries-the-impossible", "crates/kernel/src/jobs.rs", "let last = gives_up(e) || job.attempts >= job.max_attempts;", "let last = job.attempts >= job.max_attempts;", JOBS),
@@ -473,7 +475,7 @@ MUTANTS = [
     ("merge-forgets-the-chosen-values", "crates/kernel/src/merge.rs", "if let Some((chosen, version)) = values.filter(|(v, _)| !v.is_empty()) {", "if let Some((chosen, version)) = values.filter(|_| false) {", MERGE),
     # Marketing stops where consent ends, asked as each message goes (FEO-015).
     ("marketing-ignores-withdrawal", "crates/kernel/src/retention.rs", "Ok(!(restricted || (purpose == Purpose::Marketing && withdrawn)))", "Ok(!restricted)", CONSENT),
-    ("mail-not-asked-as-it-goes", "crates/kernel/src/outbox.rs", "            if !may {\n                tracing::info!(tenant = %ev.tenant_id, ?purpose, \"a queued mail was not sent: its recipient may no longer be contacted for it\");\n                return Ok(());\n            }\n", "", CONSENT),
+    ("mail-not-asked-as-it-goes", "crates/kernel/src/outbox.rs", "            if !may {\n                tracing::info!(tenant = %ev.tenant_id, ?purpose, \"a queued mail was not sent: its recipient may no longer be contacted for it\");\n                return self.mail_settled(ev.tenant_id, send, \"skipped\", Some(\"they may no longer be contacted for it\")).await;\n            }\n", "", CONSENT),
     ("automation-mail-loses-its-purpose", "crates/kernel/src/automation.rs", "k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;", "k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], crate::retention::Purpose::Transactional).await?;", CONSENT),
     ("marketing-capability-as-a-notice", "crates/kernel/src/capability.rs", 'let purpose = if cap.id == "ferrum.mail.marketing" {', 'let purpose = if cap.id == "never" {', CONSENT),
     ("marketing-stream-asks-no-one", "crates/kernel/src/connect.rs", "        if let Some(field) = &map.consent {", "        if let Some(field) = map.consent.as_ref().filter(|_| false) {", CONNECT),
@@ -708,6 +710,17 @@ MUTANTS = [
     ("effect-when-ignored", "crates/kernel/src/automation.rs", "        && eval_with(w, doc, user, extra)? != Value::Bool(true)\n    {\n        return Ok(Value::Null);", "        && false\n    {\n        return Ok(Value::Null);", EFFECTS),
     ("find-takes-the-first-of-two", "crates/kernel/src/automation.rs", "        _ => Err(Error::invalid(format!(\"more than one {}", "        [one, ..] => Ok(made(one)),\n        _ => Err(Error::invalid(format!(\"more than one {}", EFFECTS),
     ("for-each-cut-silently", "crates/kernel/src/automation.rs", "            if items.len() > MAX_ITEMS {", "            if false {", EFFECTS),
+    # Message templates and channels (docs/api.md, Messages; BD-20).
+    ("message-opt-out-ignored", "crates/kernel/src/messages.rs", "} else if promotional && opted_out(tx, ctx.tenant, &address, kind).await? {", "} else if false && opted_out(tx, ctx.tenant, &address, kind).await? {", MESSAGES),
+    ("message-template-reads-secrets", "crates/kernel/src/messages.rs", "for f in ent.def.fields.iter().filter(|f| f.ftype != FieldType::Secret) {", "for f in ent.def.fields.iter() {", MESSAGES),
+    ("message-code-kept-in-log", "crates/kernel/src/messages.rs", "let content = masked(message, pending[\"mask\"].as_str());", "let content = message.clone();", MESSAGES),
+    ("message-code-verified-twice", "crates/kernel/src/messages.rs", "used_at = case when $3 then now() end where", "used_at = null where", MESSAGES),
+    ("message-inbound-unsigned-accepted", "crates/kernel/src/messages.rs", "        if !ok {", "        if false {", MESSAGES),
+    ("message-number-guessed", "crates/kernel/src/messages.rs", "let code = s.calling_code.as_deref().ok_or_else(", "let code = s.calling_code.as_deref().or(Some(\"+1\")).ok_or_else(", MESSAGES_UNIT),
+    ("message-refusal-retried", "crates/kernel/src/messages.rs", "Ok((status, answer)) if temporary.contains(&status) && !last => {", "Ok((status, answer)) if !last => {", MESSAGES),
+    ("message-quiet-hours-ignored", "crates/kernel/src/messages.rs", "        if pending[\"promotional\"] == json!(true)", "        if false", MESSAGES),
+    ("message-recipient-unlimited", "crates/kernel/src/messages.rs", "} else if theirs >= s.per_recipient_hour.unwrap_or(PER_RECIPIENT_HOUR) {", "} else if false {", MESSAGES),
+    ("message-default-change-untold", "crates/kernel/src/messages.rs", "let changed = default.is_some_and(|m| base.as_deref() != Some(digest(m).as_str()));", "let changed = false;", MESSAGES),
 
 ]
 

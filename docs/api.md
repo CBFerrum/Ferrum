@@ -590,7 +590,7 @@ An automation fires on a record's event, or on time: with `event: "scheduled"` i
 `{"relative": {"field": F, "offset"?: "-P3D", "at"?: "09:00", "repeat"?: "P1D"|"P1W"|"P1M"|"P1Y", "until"?: G}}` fires for each record at its date or datetime field `F` plus `offset` (a signed ISO-8601 duration of days, hours and minutes: `-P3D`, `PT2H`, `-P1DT30M`; at most five years either way); a date field's moment is at `at` (default 09:00) in the workspace's time zone, a datetime field's at its own time. With `repeat` it fires again every day, week, month or year after that (a month after 31 January is 28 February, then 31 March), up to the record's date or datetime field `G` (`until`, a date counting whole) when given.
 `{"every": {"period": "day"|"week"|"month", "at": "HH:MM", "on"?: 1-7 (a week, Monday 1, default 1) | 1-28 or "last" (a month, default 1), "filter"?: [[field, op, value], ...]}}` fires at each period's moment for every record that passes `filter` (list-filter form over the entity's own fields, literal values, at most 8 conditions, all of them).
 Moments are found within a minute by a scan on every server, and each (record, moment) fires once however many look. A new automation, or one whose schedule or entity changes, or one switched on again, starts from now: no moment already past fires. A moment fires with the record as it is then, read with the rights of whoever saved the automation: it does not fire if the record is gone, its date has moved away or been cleared, or it no longer passes the filter, and `condition` is judged on it then. A date moved to a new moment fires again for that moment; one moved into the past does not. After the scan has been stopped for more than seven days, the older moments are skipped (logged with how many), not fired late. A scheduled run's changes count one step in an event chain, as an event's do. Each moment queues an `<Entity>.scheduled` event carrying `{automation, record, due_at}`, which webhooks subscribed to the entity's events also receive.
-Automation actions: `{"type":"set_fields","values":{field: CEL}}`, `{"type":"create_document","entity":E,"values":{field: CEL}}`, `{"type":"update_linked","link":F,"values":{field: CEL}}`, `{"type":"notify","to":"owner|role:<name>|user:<id>","title":CEL,"body"?:CEL}`, `{"type":"email","to":CEL,"subject":CEL,"body":CEL,"template"?:"<jinja html>"}`, `{"type":"invoke","capability":ID,"input":{name: CEL},"key"?:CEL}` (another app's step through the capability gate, below, "Calling another app's steps").
+Automation actions: `{"type":"set_fields","values":{field: CEL}}`, `{"type":"create_document","entity":E,"values":{field: CEL}}`, `{"type":"update_linked","link":F,"values":{field: CEL}}`, `{"type":"notify","to":"owner|role:<name>|user:<id>","title":CEL,"body"?:CEL}`, `{"type":"email","to":CEL,"subject":CEL,"body":CEL,"template"?:"<jinja html>"}` (or `"message":KEY` in place of `subject` and `body`, and `"message":KEY` in place of `notify`'s `title`: a [message template](#messages)), `{"type":"message","template":KEY,"to":[…],"channels"?:[…],"all"?:bool,"values"?:{name: CEL}}` ([messages](#messages)), `{"type":"invoke","capability":ID,"input":{name: CEL},"key"?:CEL}` (another app's step through the capability gate, below, "Calling another app's steps").
 Each action after the first sees what the ones before it gave as `results` (as a configured action's effects do, below).
 **Effects on lines**: `{"type":"append_line","table":T,"values":{field: CEL}}` adds one line at the end of the record's table field `T`; `{"type":"set_line","table":T,"where":CEL,"values":{field: CEL}}` changes the one line for which `where` holds, an expression over `row` (the line) besides `doc`, `user`, `params`, `results` and `links`, which its values also see. No line, or more than one, refuses the run and says which (`set_line: no line of reviews has row.stage == params.stage`; `set_line: lines 3, 4 of reviews all have …`). Both write through the record's ordinary save: one new version per effect, computed fields, rollups, row rules, checks, Logic rules and the audit; every other line keeps its id and values, and the line changed keeps the fields not named. A submitted record refuses them (`a submitted Application cannot be edited; cancel and amend it instead`), and the cap on lines holds. Checked when saved: `T` is a table field of the entity, and each field a field of its lines that an effect may write. They are the only effects that change a table.
 `update_linked` writes the record the link field `F` of the triggering record names: that record is locked and saved through its own pipeline (its computed fields, checks, Logic rules and unique keys; its events and automations follow), with the rights of whoever saved the automation, as `set_fields` is (a read-only field of it is not written). Its values see `doc` (the triggering record) and `linked` (the record written, as it was before). An empty link does nothing; a link naming a record that is not there fails the run. `F` must be a link field of the entity and each field written a field of the linked entity, checked when the automation is saved; the chain rule holds, the linked record's change being one step further in the chain.
@@ -943,6 +943,148 @@ true when an entity took longer than its time budget and was left out. The bar's
 and the apps' `shell.search` providers together; a provider answers `GET {endpoint}?q=&limit=` with
 `{results: [{title, subtitle?, url, icon?, updated_at?}]}`, each `url` a page of this site the caller
 may open.
+
+## Messages
+
+Messages to people outside and inside the workspace come from templates a workspace edits, on e-mail, text message,
+chat app or in-app notice, every send recorded ([BD-20](builder/decisions.md#bd-20-message-templates-and-channels)).
+
+**A package's defaults** (`package.yaml`): one per message the package sends, key `{package}.{name}`.
+
+```yaml
+messages:
+  - key: bookings.confirmed
+    label: Booking confirmed
+    entity: Booking            # optional: the record it is about
+    category: operational      # or promotional (opt-outs, quiet hours)
+    channels: [email, text]    # optional: the order tried; else email, text, chat, inapp as it has bodies
+    values: [link]             # what the sender passes, read as values.link
+    languages:
+      en:
+        email: {subject: "Booking {{ doc.number }} confirmed", body: "<p>See you on {{ doc.starts_on }}. <a href=\"{{ values.link }}\">Change it</a></p>"}
+        text: {text: "Booking {{ doc.number }} confirmed for {{ doc.starts_on }}: {{ values.link }}"}
+        chat: {template: booking_confirmed, values: ["{{ doc.number }}", "{{ doc.starts_on }}"]}   # or {text: …}
+        inapp: {title: "Booking {{ doc.number }} confirmed", text: "{{ doc.service }}"}
+      de:
+        text: {text: "Buchung {{ doc.number }} bestätigt"}
+```
+
+Bodies are MiniJinja (print formats' engine) over `doc` (the record as the workspace holds it, secret fields left
+out), `settings.<Entity>.<field>`, `values` and `opt_out` (a promotional message's signed opt-out link). An e-mail's
+body is HTML, every value it prints escaped; everything else is text.
+
+**A workspace's templates** (administrators):
+
+* `GET /api/admin/messages/templates` → `{templates: [{key, label, entity, category, channels, languages, source, default_changed}]}`;
+  `source` is `package`, `edited` (the workspace's copy of a default) or `workspace` (its own).
+* `GET /api/admin/messages/templates/{key}` → `{template, default, edited, default_changed}`.
+* `POST /api/admin/messages/templates` with a template (the YAML entry above as JSON) saves it: a copy of a package's
+  default, or the workspace's own under a key no installed package's name starts. Refused (422 on `template`, `key`
+  or `entity`) when a body does not compile or fails against a record with every field, reads a field the entity does
+  not have (a secret field included), or a value it does not declare.
+* `DELETE /api/admin/messages/templates/{key}` goes back to the default (or removes the workspace's own).
+* `POST /api/admin/messages/preview {template, channel, language?, record_id?}`: `template` a key or an unsaved
+  template; against the record named (read with the caller's rights), else the latest the caller may read →
+  `{language, message, record_id}`, `message` being `{subject, html}`, `{text}`, `{template_name, values, text}` or
+  `{title, text}`. Sends and writes nothing.
+* `POST /api/admin/messages/test {template, channel, phone?, record_id?}` sends it to the caller themselves.
+
+**The effect**, on buttons, transitions, approvals and automations, with `when` like every effect:
+
+```json
+{"type": "message", "template": "bookings.confirmed", "to": ["field:customer", "role:Front desk"],
+ "channels": ["text", "email"], "all": false, "values": {"link": "'https://…/' + doc.token"}}
+```
+
+`to` is one spec or a list: `owner`, `user:<id>`, `role:<name>`, `field:<name>` (an e-mail or phone field, or a link to
+a record whose first e-mail and phone fields are used: a customer, a contact, an employee) or `expr:<CEL>` giving an
+address, a number or `{email, phone, language, time_zone}`. It gives the sends. An approval policy's `message` names a
+template its notices go out with instead of the fixed wording (`values.notice`: `waiting`, `reminder`, `escalated`,
+`approved`, `rejected`, `not_done`; `values.title`: the fixed wording).
+
+**From an app**, in its own transaction (nothing goes unless it commits):
+
+```rust
+pub async fn ferrum_kernel::messages::send(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Vec<Sent>>;
+// Message { template, entity, record, to: Vec<Recipient>, channels, all, values, attachments }
+// Recipient { user, email, phone, language, time_zone }; Recipient::user(id), Recipient::address("a@b" | "+49…")
+// messages::recipients(k, tx, ctx, entity, doc, "field:customer") resolves a spec as the effect does.
+pub async fn Kernel::send_code(&self, tx, ctx, purpose: &str, template: &str, to: &Recipient, channel: &str) -> Result<Sent>;
+pub async fn Kernel::verify_code(&self, tx, ctx, purpose: &str, to: &Recipient, code: &str) -> Result<bool>;
+```
+
+For each recipient the channels are tried in order; the first they can be reached on is used (each, with `all`).
+One that cannot be used is recorded `skipped` with why: no address, no phone number, a number without a calling code,
+opted out, no channel configured, a limit. A code is six digits, kept as a salted digest, valid ten minutes, once,
+within five tries; five a recipient an hour. The template reads it as `values.code`.
+
+**The log**: `GET /api/messages/log?entity=&record_id=` (whoever may read the record) or `?recipient=` (administrators;
+an address or a number) → `{sends: [{id, template, channel, recipient, user_id, entity, record_id, language, state,
+reason, provider_id, error, content, created_at, updated_at}]}`, newest first. `state`: `queued`, `held` (quiet hours),
+`sent`, `delivered`, `failed`, `skipped`. `content` is what the test channel delivered, a code masked.
+
+**Opt-outs**: `PUT /api/admin/messages/opt-outs {address, channel, opted_out}` (staff); a promotional message's
+`opt_out` link (`GET` shows a page, `POST /api/messages/opt-out?token=` records it); a reply with a stop word. Kept
+per address or number and channel with the consent records. Operational messages always go.
+
+**Settings** (`PUT /api/admin/settings`, `messages`): `calling_code` (`+49`) completes a number written without `+`,
+`trunk_prefix` (`0`) is dropped from it first; with no calling code such a number is refused for sending, never
+guessed. `quiet_hours` `{from: "21:00", to: "08:00"}` hold promotional text and chat-app messages (none by default),
+in the recipient's zone when known, else the workspace's. `per_hour` (500) and `per_recipient_hour` (10) limit text and
+chat-app messages.
+
+**Channel connections** (administrators): `GET|POST /api/admin/messages/channels`, `PUT|DELETE
+/api/admin/messages/channels/{id}` with `{kind: text | chat, name, description, secrets?, enabled?}`. One enabled for
+each kind; `secrets` (`{name: value}`) are sealed with the server's key and never read back (left out, they stay).
+`description`: `url`, `method` (POST), `headers`, `body` (a JSON template) or `form` (fields), each a template over
+`to` (international form), `text`, `template_name`, `values`, `language`, `from` and `secret.<name>` (`| json` writes a
+value as JSON); `id_at` and `error_at` (JSON pointers into the answer); `temporary` (statuses meaning "later";
+408, 425, 429, 500, 502, 503, 504 when left out; any other non-2xx fails at once). `{"test": true}` is a test channel:
+it delivers into the log only. Two worked examples, with placeholder addresses:
+
+```json
+{"kind": "text", "name": "SMS gateway", "secrets": {"key": "…", "hook": "…"},
+ "description": {"url": "https://sms.gateway.example/v1/send", "form": {"to": "{{ to }}", "message": "{{ text }}", "sender": "{{ from }}"},
+   "headers": {"Authorization": "Bearer {{ secret.key }}"}, "from": "Acme", "id_at": "/message_id", "error_at": "/error",
+   "inbound": {"auth": "token", "secret": "hook", "id_at": "/message_id", "status_at": "/status",
+     "statuses": {"DELIVRD": "delivered", "UNDELIV": "failed", "REJECTD": "failed"}, "from_at": "/from", "text_at": "/text",
+     "stop": ["STOP", "UNSUBSCRIBE"], "start": ["START"]}}}
+```
+
+```json
+{"kind": "chat", "name": "Chat app", "secrets": {"token": "…", "hook": "…"},
+ "description": {"url": "https://chat.provider.example/v1/accounts/123/messages",
+   "headers": {"Authorization": "Bearer {{ secret.token }}"},
+   "body": "{\"to\": {{ to|json }}, \"type\": \"template\", \"template\": {\"name\": {{ template_name|json }}, \"language\": {{ language|json }}, \"parameters\": {{ values|json }}}}",
+   "id_at": "/messages/0/id", "error_at": "/error/message",
+   "inbound": {"auth": "hmac", "header": "X-Signature", "secret": "hook", "id_at": "/status/id", "status_at": "/status/state",
+     "statuses": {"sent": "sent", "delivered": "delivered", "read": "delivered", "failed": "failed"},
+     "from_at": "/message/from", "text_at": "/message/text", "stop": ["STOP"], "start": ["START"]}}}
+```
+
+**Delivery reports and replies**: `POST /api/messages/inbound/{channel}` (no session; the address the channel listing
+gives). Authenticated as `inbound` says: `hmac` (the body's HMAC-SHA256 under `secret.<inbound.secret>`, in hex, in
+`header`, `sha256=` before it or not) or `token` (`header`, or the `token` query parameter, equal to the secret). JSON
+or a form. A report (`id_at` and `status_at` present, the status mapped by `statuses`) moves the send forward only
+(`sent`, then `delivered`; `failed` is final); a reply (`from_at`, `text_at`) with a `stop` or `start` word records the
+number's choice for that channel. Unknown, unsigned or wrongly signed calls are refused (404, 401) and counted (the
+channel's `refused`).
+
+### Moving an app's fixed wording to templates
+
+1. For each message the app sends, add a `messages:` entry to its `package.yaml`: key `{package}.{name}`, the entity
+   it is about, `category` (operational unless it markets), the bodies it sends today in `en` (its Rust subject and
+   HTML become `email.subject` and `email.body`, `{{ doc.<field> }}` where it formatted a field), and `values` for
+   whatever it computes that is not a field (a link, a code, a time in the guest's zone).
+2. Where it built the mail and called `queue_mail` / `queue_mail_with` / `notify::send_kind`, call
+   `ferrum_kernel::messages::send` with `Message { template, entity, record, to, values, attachments, ..Default::default() }`
+   in the same transaction, `to` as `Recipient`s (`Recipient::address(&email)`, `Recipient::user(id)`; a phone when the
+   record has one, so the workspace may add a text body). Leave `channels` empty: the template's order decides.
+3. A one-time code: `Kernel::send_code` and `Kernel::verify_code` in place of the app's own code table.
+4. Delete the Rust wording, and run the app's tests against the rendered message: a preview (`preview_message`) of
+   each template against a fixture record gives the same subject and text as before.
+5. Say in the app's README that its messages are templates a workspace edits under Settings, and which `values` each
+   reads.
 
 ## Notifications — `/api/notifications` (the caller's own)
 
