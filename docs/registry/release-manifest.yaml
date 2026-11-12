@@ -1,23 +1,23 @@
 # What this commit builds: generated from Cargo.lock and the Dockerfile by scripts/release_evidence.py,
 # and checked by scripts/registry.py. A build's own evidence is release-evidence.json, on its CI run.
 components:
-  - {repository: CBFerrum/Ferrum-Frontend, pinned: 6d4c321058c29eb7d233e9b549018476dd646cca}
+  - {repository: CBFerrum/Ferrum-Frontend, pinned: 648825b1f82718d85daa45fe007c8ab8f9a6784f}
   - {repository: CBFerrum/ferrum-app-assets, pinned: 3081bd73a54ad6c62038720a4c7875a85f8d3a1a}
   - {repository: CBFerrum/ferrum-app-bookings, pinned: 5158cba4a22c7545f82e03ac7594c7f5d0775a46}
   - {repository: CBFerrum/ferrum-app-campaigns, pinned: 346d662a21973af64795ba1d41efb50e67a04c21}
-  - {repository: CBFerrum/ferrum-app-commerce, pinned: 4e4c09257736780cfd9e741f9c02008a877bb90e}
+  - {repository: CBFerrum/ferrum-app-commerce, pinned: 01f1c2ad4c82114effd2c99c5614a9f86ae0c7be}
   - {repository: CBFerrum/ferrum-app-comms, pinned: 757021c2ad37602f529f9e29bfa2172be84f34ed}
   - {repository: CBFerrum/ferrum-app-construction, pinned: b61041e1c2aef482a8afd890f5ebbf1c565aa8b5}
   - {repository: CBFerrum/ferrum-app-contracts, pinned: 113d868f4c8ceffd85e5a3bb75cd882ef736aaa0}
   - {repository: CBFerrum/ferrum-app-control, pinned: ab7c97e568944d9e319dd53a5a6be70a087f15ee}
-  - {repository: CBFerrum/ferrum-app-crm, pinned: c3a71e6609bc1ac8946ff6607a0c35f91cc35396}
+  - {repository: CBFerrum/ferrum-app-crm, pinned: f62626b1ff639851980566d2c000518dacdcb2f2}
   - {repository: CBFerrum/ferrum-app-dam, pinned: 4f83f84d275b195ab3d9ee9bb475147f5898c4b5}
   - {repository: CBFerrum/ferrum-app-developers, pinned: ac398a947c3c685105d977b922e7d139e9c8f4be}
   - {repository: CBFerrum/ferrum-app-docs, pinned: f598ec6375a4c346b871a8a1c8c1e81fb98fe41c}
   - {repository: CBFerrum/ferrum-app-drive, pinned: 73495875d79012f9afb7413fe95ce96e94c9c092}
   - {repository: CBFerrum/ferrum-app-edge, pinned: 0373aa39e6d4ac17b8602c5c03d48b02fd9c8fbf}
   - {repository: CBFerrum/ferrum-app-education, pinned: 0a59c68d7f46ab4c17f1ac5764472b6a45a26de1}
-  - {repository: CBFerrum/ferrum-app-erp, pinned: d3e051272e2e7e9c83b1f2ccc2cfe8229caf7532}
+  - {repository: CBFerrum/ferrum-app-erp, pinned: 242c7c326aa75ea83ccc4c1b1031de5627a7e739}
   - {repository: CBFerrum/ferrum-app-field-service, pinned: 7068e638360e546781eec7ee51bc62f07482a90b}
   - {repository: CBFerrum/ferrum-app-forms, pinned: 9c5f3d7cc2d198e0bf01c3cafa5b5ac89efbbbdf}
   - {repository: CBFerrum/ferrum-app-government, pinned: a52dfe3a3b50cd53514b2c3c24b7f5499d95e2a0}
@@ -28,14 +28,14 @@ components:
   - {repository: CBFerrum/ferrum-app-hr, pinned: c7f595ced3ae69c41233d0440a6c6fda33bd7099}
   - {repository: CBFerrum/ferrum-app-intelligence, pinned: 47536c87e2f4cde31844e65f3c17a126ba53f9ba}
   - {repository: CBFerrum/ferrum-app-intranet, pinned: 09c7b163471abd74ca02f901335738bebcd5526d}
-  - {repository: CBFerrum/ferrum-app-itsm, pinned: 80db8c0d02b1a4045e027a63976ee2b8b82a7770}
+  - {repository: CBFerrum/ferrum-app-itsm, pinned: 46a75b48e71f661fff8d95a2eeadcea8297b6fc8}
   - {repository: CBFerrum/ferrum-app-live, pinned: f40ffe419d5cbc2da08c02049cdf55c9c2dc40a5}
   - {repository: CBFerrum/ferrum-app-lms, pinned: ba27eb53034823e3880876edb6bd262bc3a4aec9}
   - {repository: CBFerrum/ferrum-app-logistics, pinned: c43e123c33f2c35eeed3efd64567a3afbb893803}
   - {repository: CBFerrum/ferrum-app-metrics, pinned: e5879bc038c6a150935e94dc05300e7c61aaa435}
   - {repository: CBFerrum/ferrum-app-nonprofit, pinned: 5ce2c5764dffffeeeb5dca5e68064b4fcf6af342}
   - {repository: CBFerrum/ferrum-app-objectives, pinned: 1354d35d411a92d88ff34f07aad472f1e0891e53}
-  - {repository: CBFerrum/ferrum-app-pos, pinned: 4dcb293c82f645c1d7090c8e874ab9b94625c281}
+  - {repository: CBFerrum/ferrum-app-pos, pinned: 42ceefe7edd9f30e0d9486377a913335df987832}
   - {repository: CBFerrum/ferrum-app-projects, pinned: 1f987a8978fed18c45ccdd4bfa1eda6c4d71a444}
   - {repository: CBFerrum/ferrum-app-property, pinned: 5bf0e49090587faf008218087b8c895eb9699e1f}
   - {repository: CBFerrum/ferrum-app-restaurant, pinned: d7c2f67713748175f66f4423074f1f1d29efa72f}
