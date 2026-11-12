@@ -45,7 +45,7 @@ impl Mailer for LocoMailer {
             from: self.from.clone(),
             to: to.to_string(),
             subject: subject.chars().take(250).collect(),
-            text: html.to_string(),
+            text: ferrum_kernel::richtext::html_to_text(html),
             html: html.to_string(),
             ..Default::default()
         };
@@ -64,7 +64,7 @@ impl Mailer for LocoMailer {
         let bad = |what: &str, e: &dyn std::fmt::Display| Error::invalid(format!("{what}: {e}"));
         let from: Mailbox = self.from.as_deref().unwrap_or(loco_rs::mailer::DEFAULT_FROM_SENDER).parse().map_err(|e| bad("sender", &e))?;
         let to: Mailbox = to.parse().map_err(|e| bad("recipient", &e))?;
-        let mut body = MultiPart::mixed().multipart(MultiPart::alternative_plain_html(html.to_string(), html.to_string()));
+        let mut body = MultiPart::mixed().multipart(MultiPart::alternative_plain_html(ferrum_kernel::richtext::html_to_text(html), html.to_string()));
         for a in attachments {
             let ctype = ContentType::parse(&a.content_type).unwrap_or(ContentType::parse("application/octet-stream").map_err(|e| bad("content type", &e))?);
             body = body.singlepart(Attachment::new(a.file_name.clone()).body(a.data.clone(), ctype));
