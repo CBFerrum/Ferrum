@@ -640,3 +640,167 @@ headless browser on the API server.
 GS1-128 (FNC1) and other symbologies; amounts in words beyond the three languages; a page's header and footer without
 the PDF service; a label printer reached directly (the template is the printer's language; sending it is the device
 bridge's).
+
+## BD-22. Comments and files shared with outside people
+
+Decided 12 November 2026. Qualifies BD-02, which kept a record's comments and files from portal people wholesale. Asked for
+by six apps waiting on what outside people may see of a record: a customer following a ticket, a client their project.
+
+* **A mark on each comment and file, off by default.** `record_comment.shared` and `file_object.shared`; nothing written
+  before is shared. Staff choose (`add_comment_shared`, `PUT /api/comments/{id}/shared`, `PUT /api/files/{id}/shared`);
+  what an outside person writes or uploads is shared by nature and cannot be unshared.
+* **The portal role's rule says what its people see, per entity**: `shared: read` (the shared comments and files) or
+  `shared: add` (and their own beside them), on a rule that reads the entity; none says nothing of it. Only on the
+  records the person can read anyway: the rule widens nothing about which records.
+* **Everything unmarked stays out of sight everywhere.** Listing filters on the mark in SQL; a download by an outside
+  person needs the mark (or their own upload, or a field of the record as they read it naming the file, as before);
+  history, tags, assignments, followers, search and exports stay the members'. An outside person never follows a record,
+  and a mention in an unshared comment does not reach them, so no notice carries unshared words.
+* **Told both ways.** Staff sharing a comment tells the portal people who may see it through the platform's template
+  `core.comment_shared` (a workspace edits it); an outside person's comment tells the record's followers, its members.
+
+Threats and their tests (`outside_shared_it`, two portal people of different customers and a member of staff):
+enumeration (another customer's record and no record at all both answer *not found*; an outside person whose rule says
+nothing is refused before the record is looked at, the same for every record); a file id guessed (an unshared file
+answers as a file that is not there); leaks through notices (an unshared comment, even one naming them, tells them
+nothing); writing where only reading was given.
+
+**Rules out**: a comment visible to some outside people of a record and not others; outside people choosing what staff
+see as shared; a shared mark on a file tied to no record.
+
+**Changed**: before, an outside person could download any file tied to a record they read, knowing its id; now only one
+shared with them, their own, or one a field of the record names. Attaching a file directly to a record needs, for an
+outside person, write access as before or `shared: add`.
+
+## BD-23. Signed action links
+
+Decided 12 November 2026. Eight apps hash guest links of their own (Bookings' reschedule, Field Service's tracking, ...);
+six more need one (accept a quotation, rate a ticket). One mechanism: "a person with this link may do this one thing to
+this one record" (`crates/kernel/src/action_link.rs`, docs/api.md "Signed action links").
+
+* **What a link names**: a record; one or more of the entity's actions, or `view` alone; the fields its page shows (an
+  allow-list, never a secret, a table, a file or a field in a group); parameters the issuer fixed; an expiry (7 days by
+  default, 90 at most); 1 to 100 uses; an optional one-time code sent to an address the issuer named (the platform's
+  codes, BD-20); who it was issued to; the origins that may frame its page (BD-24).
+* **Issued three ways**: the `link` effect (giving `{id, url, expires_at}`, which a later `message` sends, naming `url`
+  among its `secret` values so it is kept nowhere), `Kernel::issue_link` for apps, and staff from a record
+  (`POST /api/v1/{Entity}/{id}/links`). A person issues only actions they could run themselves; a configured action
+  limited to roles cannot be linked (a guest holds none). Revoked by staff (`DELETE /api/links/{id}`).
+* **Used as a guest bound to the link**, through the save pipeline: a context with no person, outside, its reads scoped
+  to the one record, holding the named actions and nothing else; the action's own checks (condition, document status,
+  `refuse_if`, the app's hooks) all apply. The visitor's parameters are the action's declared ones, typed; the issuer's
+  fixed ones override theirs. The use is counted in the transaction that runs the action, after locking the link, so a
+  single-use link runs once however many requests race; a refused action or a wrong code uses nothing. The record's
+  history gets `link:<action>` with the link and its recipient, beside the action's own entry.
+* **The page** is plain server-rendered HTML, no script, labelled and keyboard-operable forms, the workspace's name and
+  colour (`brand_color`), never cached, no referrer sent; its wording comes from the templates `core.link_page`,
+  `core.link_done`, `core.link_gone` and `core.link_code`, which a workspace edits.
+
+Threats and their tests (`action_links_it`, configuration only on a custom entity): guessing (256-bit tokens, only the
+SHA-256 kept, compared again in constant time after the indexed lookup); enumeration (unknown, malformed, expired,
+revoked, used up, another workspace's address and an unknown workspace all answer the same `None` and the same page);
+replay (a single-use link used twice, and two uses at once, run once); reaching another record or action (the guest's
+scope and named actions; an unnamed action refused); overriding what the issuer fixed; a code skipped or wrong (refused,
+nothing used); the token kept in a message log (sent as a secret value). Rate limits: every public request counts
+against the public limiter (kept in the database, per address and workspace), the code's sends and tries are the
+platform's codes' limits.
+
+**Rules out**: a link reaching more than one record; a link running a workflow transition (not built: an action can be
+configured to move the record instead); a comment added by link (not built); a token kept or shown again.
+
+## BD-24. Frame headers per page
+
+Decided 12 November 2026. Forms could not offer embedding: every public page said `frame-ancestors 'none'`.
+
+* **Off by default, per page.** A published list (`frame_origins`), an action link (`frame_origins`) and an app's site
+  page (its answer's `x-ferrum-frame-ancestors` header, which Forms sets per form) may name the origins that may frame
+  them: `https://host[:port]` (or `http://localhost`), at most ten, no paths, no wildcards, checked when saved. Only that
+  page's answer gets `Content-Security-Policy: frame-ancestors <origins>`; every other answer keeps `'none'` (and
+  `X-Frame-Options: DENY`, which cannot name origins and is left out when some are named).
+
+Threat: clickjacking of a page that acts (an action link's Accept). Tested (`controllers::links` and `controllers::lists`
+unit tests, the site page's in `controllers::shell`): an allowed page's headers and a disallowed one's.
+
+## BD-25. Public pages for published records
+
+Decided 12 November 2026. Extends BD-15 for a help centre, a job list, a course catalogue or a status page by
+configuration (docs/api.md "Published lists").
+
+* **A slug gives each published record an address.** `slug` names a text field of the entity (held to the list's field
+  rules); with it, `/public/{workspace}/lists/{name}/{value}` is that record's page, showing the list's `fields` and the
+  `detail` fields only it shows (an article's body), under the same rules. The page's title is its first field, its
+  description `summary`, its canonical address the workspace's (`link_base`) or the host asked. Two records with one
+  value: the first in the list's order is shown; give the field a unique key.
+* **Search and pages over the published fields.** `?q=` matches the list's own text fields (any case, `%` and `_` as
+  characters, 100 characters at most); `?page=` turns pages of the list's `limit` rows, 100 pages at most; past the last
+  is the 404 of anything not published. Both through the same query as the list, so its filter and "submitted only"
+  hold.
+* **Offered to search engines only when it has a slug.** Then the list page and record pages carry `index, follow`, a
+  canonical link and a description, and `/public/{workspace}/sitemap.xml` lists every published record's page (10,000 at
+  most). A list without a slug keeps `noindex`, as before; a search or a page past the first is never indexed.
+* **Caching that follows publication**: `Cache-Control: public, max-age=60` as before, and an `ETag` of the content, so a
+  record changed, unpublished or a list taken down is a new answer (or the 404) for whoever asks again; an unchanged
+  page is a `304`.
+* **Rate-limited** by the public limiter, kept in the database, per address and workspace, as every public read.
+
+Threats and tests (`published_it`, `published_lists_it`, `controllers::lists`): an address naming a draft, a cancelled
+or a filtered-out record, or a record of a list without a slug (all the one 404); a search reaching unpublished rows or
+using `%` as a wildcard; markup in a value (escaped everywhere, the description included); the sitemap listing anything
+unpublished.
+
+**Rules out**: a page builder; content per visitor; a detail field the list's rules would refuse; Markdown rendered as
+markup (a body is shown as its text).
+
+## BD-26. An outside person's session on a site host (design only)
+
+Decided 12 November 2026 as a design; **not built** in this slice, because doing it safely needs a session kind the
+server does not have yet and a change to how every authenticated request is checked, which is wider than this slice.
+
+**How hosts relate today.** A workspace's hosts (`tenant_host`) each serve one target: `shell` (the workspace),
+`portal` (sign-in and the portal) or `site:{app}` (an app's public site at the root). The session cookie is
+`__Host-ferrum` (host-only, `Path=/`, `HttpOnly`, `SameSite=Lax`, `Secure`), so a browser never sends one host's
+session to another; and `ShellState::check_host` refuses any session on a `site:` host, the accounts host or the hooks
+host. Changing requests are checked by `may_change` (`Sec-Fetch-Site: same-origin`, else `Origin` equal to the host).
+So a site host today has no session at all, which is safe and is why apps' public sites cannot say "who is this".
+
+**What would be safe**:
+
+1. *A session of its own per site host.* Signing in on `shop.example` (the platform's e-mailed code, `POST
+   /api/auth/code/sign-in` with the portal role the site offers, and public sign-up where the role allows it) issues a
+   session row marked with the host (`session.host`), set as `__Host-ferrum-site` on that host only. `check_host`
+   accepts on a `site:` host only a session whose `host` is that host, and on any other host refuses a session that has
+   one: no session is shared with the staff workspace host, and a staff session never works on a site.
+2. *Outside people only.* The session's context is loaded with `outside` forced on and only the portal roles the site
+   offers (`tenant_host.portal_role`), so a member signing in on a shop is a customer there, nothing more.
+3. *Forgery.* Every state-changing route on a site host needs `may_change` (same origin) plus, for forms, a per-session
+   token in the form (`SameSite=Lax` alone lets a top-level cross-site POST through on older browsers).
+4. *What apps see.* `SiteRequest.user` (today always `None` on a site) carries the context, so an app's public page asks
+   "who is this" and shows records through the kernel's portal scopes, never its own lookups.
+5. *Sign-out* clears the cookie and deletes the session row; the e-mailed-code limits (per address and per network
+   address, kept in the database) apply as on the portal.
+
+Threats it must be tested against when built: a staff session replayed on a site host and the reverse; a session of
+one site used on another site of the same workspace; a cross-site form post; a member gaining member rights on a site;
+enumeration by the code sign-in (it already answers alike).
+
+## BD-27. Schedules by absence
+
+Decided 12 November 2026. "Remind whoever logged no timesheet this week", "employees with no contract on file": a
+schedule fires for what is missing (docs/api.md, Automations).
+
+* **An `absent` clause on an `every` schedule**: records of the automation's entity passing its filter for which no
+  record of another entity, linking to them by a named link field and passing its own filter, has a date in a period
+  relative to the run: `week`, `month`, or the last `P{n}D` (1 to 366 days). Checked when saved: the entity, that the
+  link field links to this entity, a date or datetime field, at most 8 conditions.
+* **Once a period for each record**: the occurrence (`automation_occurrence`, whose primary key makes a moment fire
+  once across replicas) is keyed by the period's start, so a daily schedule fires on the first day a record is missing
+  something and not again that period. Occurrences of absence schedules are kept up to 367 days (others 30, as before).
+* **Bounded like other schedules**: one SQL statement a page of 500 records, a `not exists` on the other entity in the
+  same statement; the run judges the record again (it may have what it missed by then).
+
+Tests (`absence_it`): people with no timesheet this week (an inactive one, and one who logged, left out); a daily run
+across a week fires once; the next week again; one who logs between the scan and the run is not told; employees with
+no contract in the last 365 days (a passport, or a contract of two years ago, does not count).
+
+**Rules out**: absence across more than one link; a period not tied to the run (a fiscal quarter); counting (fewer than
+N records) rather than absence.
