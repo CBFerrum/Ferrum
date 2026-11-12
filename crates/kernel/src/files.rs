@@ -62,7 +62,7 @@ fn named_files(ctx: &Ctx, ent: &EffEntity, doc: &Doc) -> BTreeSet<Uuid> {
 }
 
 /// Content types never served inline as-is (they could run script in the app's origin).
-const ACTIVE_TYPES: &[&str] = &["text/html", "application/xhtml+xml", "image/svg+xml", "application/javascript", "text/javascript"];
+pub(crate) const ACTIVE_TYPES: &[&str] = &["text/html", "application/xhtml+xml", "image/svg+xml", "application/javascript", "text/javascript"];
 
 impl Kernel {
     /// Installs the object store (once, at boot).

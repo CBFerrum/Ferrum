@@ -61,7 +61,7 @@ pub fn format_money(v: &Value, precision: u32) -> String {
     }
 }
 
-fn field_meta(ent: &EffEntity, schema: &ferrum_meta::Schema) -> Value {
+pub(crate) fn field_meta(ent: &EffEntity, schema: &ferrum_meta::Schema) -> Value {
     let fields: Vec<Value> = ent
         .def
         .fields
@@ -101,7 +101,35 @@ pub(crate) fn environment() -> Environment<'static> {
         let j: Value = serde_json::to_value(&v).unwrap_or(Value::Null);
         format_money(&j, precision.unwrap_or(2))
     });
+    crate::docfmt::add_helpers(&mut env);
     env
+}
+
+/// A field's value as a print shows it: a link's title, an amount grouped with its precision, a decimal as written,
+/// a check as Yes or No. `f` is a field as `entity.fields` describes it.
+pub(crate) fn display(f: JValue, row: JValue) -> String {
+    let f: Value = serde_json::to_value(&f).unwrap_or(Value::Null);
+    let row: Value = serde_json::to_value(&row).unwrap_or(Value::Null);
+    let name = f.get("name").and_then(Value::as_str).unwrap_or_default();
+    if let Some(t) = row.get("_titles").and_then(|t| t.get(name)).and_then(Value::as_str) {
+        return t.to_string();
+    }
+    let v = row.get(name).cloned().unwrap_or(Value::Null);
+    let ty = f.get("type").and_then(Value::as_str).unwrap_or_default();
+    match (ty, &v) {
+        (_, Value::Null) => String::new(),
+        ("currency", _) => format_money(&v, f.get("precision").and_then(Value::as_u64).unwrap_or(2) as u32),
+        ("decimal" | "percent", _) => parse_decimal(&v).map(|d: Decimal| d.normalize().to_string()).unwrap_or_default(),
+        ("check", Value::Bool(b)) => {
+            if *b {
+                "Yes".into()
+            } else {
+                "No".into()
+            }
+        }
+        (_, Value::String(s)) => s.clone(),
+        (_, other) => other.to_string(),
+    }
 }
 
 /// A rule's or a refusal's message with values from the record in it (`still needed: {{ doc.missing }}`). `doc` is
@@ -133,37 +161,7 @@ impl Kernel {
             }
         }
         let mut env = environment();
-        env.add_function("display", |f: JValue, row: JValue| -> String {
-            let f: Value = serde_json::to_value(&f).unwrap_or(Value::Null);
-            let row: Value = serde_json::to_value(&row).unwrap_or(Value::Null);
-            let name = f.get("name").and_then(Value::as_str).unwrap_or_default();
-            if let Some(t) = row.get("_titles").and_then(|t| t.get(name)).and_then(Value::as_str) {
-                return t.to_string();
-            }
-            let v = row.get(name).cloned().unwrap_or(Value::Null);
-            let ty = f.get("type").and_then(Value::as_str).unwrap_or_default();
-            match (ty, &v) {
-                (_, Value::Null) => String::new(),
-                ("currency", _) => format_money(&v, f.get("precision").and_then(Value::as_u64).unwrap_or(2) as u32),
-                ("decimal" | "percent", _) => parse_decimal(&v).map(|d: Decimal| d.normalize().to_string()).unwrap_or_default(),
-                ("check", Value::Bool(b)) => {
-                    if *b {
-                        "Yes".into()
-                    } else {
-                        "No".into()
-                    }
-                }
-                (_, Value::String(s)) => s.clone(),
-                (_, other) => other.to_string(),
-            }
-        });
-        env.add_function("qr", |text: String| -> JValue {
-            // A QR code as inline SVG (the signed QR code of an e-invoice, a payment link…).
-            match qrcode::QrCode::new(text.as_bytes()) {
-                Ok(code) => JValue::from_safe_string(code.render::<qrcode::render::svg::Color>().min_dimensions(150, 150).quiet_zone(true).build()),
-                Err(_) => JValue::from(""),
-            }
-        });
+        env.add_function("display", display);
         env.add_template_owned("print".to_string(), template).map_err(|e| Error::invalid(format!("print template: {e}")))?;
         let tmpl = env.get_template("print").map_err(Error::internal)?;
         tmpl.render(minijinja::context! {

@@ -302,6 +302,22 @@ async fn print(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    // A document template picked (`?template=`), else the entity's default one; else the print format as it was.
+    let picked = match q.get("template") {
+        Some(key) => {
+            let offered = st.kernel.document_choices(&ctx, &entity).await?;
+            if !offered["templates"].as_array().is_some_and(|t| t.iter().any(|t| t["key"] == key.as_str())) {
+                return Err(ApiError(Error::field("template", format!("{key} is not a template you may print a {entity} with"))));
+            }
+            Some(key.clone())
+        }
+        None => st.kernel.default_document(&ctx, &entity).await?,
+    };
+    if let Some(key) = picked {
+        let pdf = q.get("format").map(String::as_str) == Some("pdf");
+        let r = st.kernel.render_document(&ctx, &key, id, q.get("language").map(String::as_str), pdf).await?;
+        return Ok(super::documents::file_response(r));
+    }
     if q.get("format").map(String::as_str) == Some("pdf") {
         let pdf = st.kernel.print_pdf(&ctx, &entity, id).await?;
         let mut resp = pdf.into_response();
