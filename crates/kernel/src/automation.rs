@@ -189,6 +189,20 @@ pub enum AutomationAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
     },
+    /// An operation of a connection (BD-29): `inputs` its inputs as expressions, `key` the call's key as an expression.
+    /// Without `key`, the run's own: the same run on the same record version calls once. Inline, it gives the operation's
+    /// mapped result to later effects (`results[i]`), and a service that refuses refuses the run. With `queue`, it is
+    /// called after the run commits, retried while the service says "later", and gives `{queued}` (the job).
+    Call {
+        connection: String,
+        operation: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        inputs: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        queue: bool,
+    },
     /// Adds one line at the end of `table`, a table field of the record, through the record's ordinary save; each
     /// value an expression. Every other line keeps its id and values.
     AppendLine { table: String, values: BTreeMap<String, String> },
@@ -306,6 +320,7 @@ fn sources(a: &AutomationAction) -> Vec<&str> {
         }
         AutomationAction::ReportDocuments { values, params_from, .. } => values.values().chain(params_from.values()).collect(),
         AutomationAction::Invoke { input, key, .. } => input.values().chain(key.iter()).collect(),
+        AutomationAction::Call { inputs, key, .. } => inputs.values().chain(key.iter()).collect(),
         AutomationAction::Link { params, code_to, recipient, .. } => params.values().chain(code_to.iter()).chain(recipient.iter()).collect(),
     };
     all.into_iter().map(String::as_str).collect()
@@ -360,6 +375,11 @@ pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
     }
     if let AutomationAction::Email { template: Some(t), .. } = a {
         mail_template(t)?;
+    }
+    if let AutomationAction::Call { connection, operation, .. } = a
+        && !(crate::connections::is_name(connection) && crate::connections::is_name(operation))
+    {
+        return Err(Error::invalid("call: connection and operation are names (lower case letters, digits and _)"));
     }
     if let AutomationAction::Message { values, secret, .. } = a
         && let Some(n) = secret.iter().find(|n| !values.contains_key(*n))
@@ -688,7 +708,9 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
                 }
                 continue;
             }
-            AutomationAction::Generate { .. } | AutomationAction::Invoke { .. } | AutomationAction::ReportDocuments { .. } => continue,
+            AutomationAction::Generate { .. } | AutomationAction::Invoke { .. } | AutomationAction::Call { .. } | AutomationAction::ReportDocuments { .. } => {
+                continue;
+            }
             AutomationAction::Link { actions, show, .. } => {
                 let ent = schema.entity(entity).ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
                 if let Some(a) = actions.iter().find(|a| *a != crate::action_link::VIEW && !ent.def.actions.iter().any(|d| &d.name == *a)) {
@@ -1336,6 +1358,21 @@ pub(crate) async fn execute(
                 }
                 Err(e) => Err(e),
             };
+        }
+        AutomationAction::Call { connection, operation, inputs, key: named, queue } => {
+            let mut values = Map::new();
+            for (name, expr) in inputs {
+                values.insert(name, eval(&expr)?);
+            }
+            let key = match named {
+                Some(src) => as_text(eval(&src)?),
+                None => key.to_string(),
+            };
+            let c = crate::connections::Call { connection, operation, inputs: Value::Object(values), key: Some(key), entity: Some(entity.to_string()), record };
+            if queue {
+                return Ok(serde_json::json!({"queued": crate::connections::queue(tx, ctx, &c).await?}));
+            }
+            return k.call_connection(ctx, None, &c).await.map_err(|e| crate::pack::about("call", e));
         }
         AutomationAction::AppendLine { table, values } => {
             let id = record.ok_or_else(|| Error::invalid("append_line needs a record"))?;

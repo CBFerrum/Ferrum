@@ -714,6 +714,16 @@ impl Kernel {
                         let input = Value::Object(given.iter().map(|(k, v)| (k.clone(), json!(trigger_of(v)))).collect());
                         action(capability.clone(), input, format!("Use {capability}"))
                     }
+                    crate::automation::AutomationAction::Call { connection, operation, inputs, key, queue } => {
+                        if key.is_some() || *queue || inputs.values().any(|x| x.contains("results")) {
+                            notes.push(format!("{step}: its key, queue and `results` are the automation's; say how the process names the call"));
+                        }
+                        let mut input = json!({"connection": format!("\"{connection}\""), "operation": format!("\"{operation}\"")});
+                        for (k, v) in inputs {
+                            input[format!("inputs.{k}")] = json!(trigger_of(v));
+                        }
+                        action("ferrum.call".into(), input, format!("Call {connection}: {operation}"))
+                    }
                     crate::automation::AutomationAction::Find { .. }
                     | crate::automation::AutomationAction::ForEach { .. }
                     | crate::automation::AutomationAction::CopyLines { .. }

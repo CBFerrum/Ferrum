@@ -40,8 +40,9 @@ column; `ExternalObjectMap` is `connection_link`; `SyncCursor` is `connection.cu
 `IntegrationJob` is the job queue; `InboxEvent` is `connection_event`; `SyncConflict` and
 `ReconciliationResult` are `connection_drift`; `ConnectorHealth` is `health`.
 
-Not built: token refresh in a broker for OAuth providers (PayPal's short-lived token still lives in
-its plugin's store), provider-wide budgets shared between connections, and a reviewer's screen for
+Built 12 November 2026: described connections with a sign-in broker for OAuth providers, inbound
+addresses and pulls (`crates/kernel/src/connections`, BD-29 to BD-33); connectors and plugins have not
+moved onto them (PayPal's short-lived token still lives in its plugin's store). Not built: provider-wide budgets shared between connections, and a reviewer's screen for
 any of this. The operations exist as API; the connection console is a screen still to be drawn.
 
 ## Admission gates

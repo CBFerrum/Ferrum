@@ -20,6 +20,7 @@ pub mod capability;
 pub mod coedit;
 pub mod collab;
 pub mod connect;
+pub mod connections;
 pub mod ctx;
 pub mod customize;
 pub mod db;
@@ -134,6 +135,9 @@ pub struct MailAttachment {
 pub struct KernelSettings {
     /// Allow webhooks to private/loopback addresses (development only).
     pub webhooks_allow_private: bool,
+    /// Hosts the operator lets connections reach on a private address or over plain http
+    /// (`FERRUM_CONNECTION_HOSTS`, comma-separated): a service inside the operator's own network.
+    pub connection_hosts: Vec<String>,
     /// Allow single sign-on providers on private addresses, and over plain http (an identity
     /// provider inside the operator's own network; development).
     pub sso_allow_private: bool,
@@ -188,6 +192,7 @@ impl Default for KernelSettings {
     fn default() -> Self {
         KernelSettings {
             webhooks_allow_private: false,
+            connection_hosts: Vec::new(),
             sso_allow_private: false,
             ctx_ttl: Duration::from_secs(30),
             event_retention_days: 30,
@@ -427,6 +432,7 @@ impl Kernel {
             + self.purge_sessions().await?
             + self.purge_exports().await?
             + self.purge_connection_events().await?
+            + self.purge_connections().await?
             + self.prune_occurrences().await?;
         if purged > 0 {
             tracing::info!(purged, "old events purged");

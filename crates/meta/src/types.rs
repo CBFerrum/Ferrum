@@ -58,6 +58,11 @@ pub struct PackageManifest {
     /// Key `{package}.{name}`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<DocumentDef>,
+    /// Connections to outside services this package describes (BD-33): `{name, label, description}`, never a secret
+    /// or a token. Each is offered to a workspace turned off, for an administrator to give its secrets or connect its
+    /// account; the kernel checks the description when it is taken up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<serde_json::Value>,
     /// Approval policies on submitting or cancelling this package's own documents (BD-19), as defaults: a workspace
     /// switches one off, replaces or edits it with `set_approval`, and a release changing it flags the workspace's
     /// (a transition's default is the `approval` of the package's workflow, changed with `set_transition_approval`).
