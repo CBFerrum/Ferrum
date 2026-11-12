@@ -131,6 +131,8 @@ PRINT = ("-p", "ferrum-kernel", "--test", "print_it")
 DOCUMENTS_API = ("-p", "ferrum-server", "--test", "documents_api_it")
 AUTOMATION_UNIT = ("-p", "ferrum-kernel", "--lib", "automation::tests")
 REQUEST_LOG_UNIT = ("-p", "ferrum-server", "--lib", "request_log::tests")
+RULE_HIDE = ("-p", "ferrum-kernel", "--test", "rule_hide_it")
+APP_CALLS = ("-p", "ferrum-kernel", "--test", "app_calls_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -621,7 +623,7 @@ MUTANTS = [
     ("transition-gate-not-asked", "crates/kernel/src/doc.rs", "        if !crate::ctx::transition_gate(ctx, &ent, t)?.admits(tx, ctx.tenant, &doc).await? {", "        if false {", PORTAL),
     ("transition-offered-to-anyone", "crates/kernel/src/describe.rs", "json!(crate::ctx::transition_gate(ctx, ent, def).is_ok())", "json!(true)", PORTAL),
     # Tying a file to a record needs the right to change it.
-    ("attach-on-read", "crates/kernel/src/doc.rs", "        if !scope.admits(&mut tx, ctx.tenant, &doc).await? {\n            return Err(Error::Forbidden(format!(\"only someone who may change", "        if !scope.admits(&mut tx, ctx.tenant, &doc).await? && false {\n            return Err(Error::Forbidden(format!(\"only someone who may change", STREAMED),
+    ("attach-on-read", "crates/kernel/src/doc.rs", "        if !scope.admits(tx, ctx.tenant, &doc).await? {\n            return Err(Error::Forbidden(format!(\"only someone who may change", "        if !scope.admits(tx, ctx.tenant, &doc).await? && false {\n            return Err(Error::Forbidden(format!(\"only someone who may change", STREAMED),
     ("upload-attaches-on-read", "server/src/objects.rs", "Some((entity, record)) => k.may_attach(ctx, entity, *record).await?,", "Some((entity, record)) => k.get(ctx, entity, *record, false).await.map(drop)?,", STREAMED),
     # A file tied to no record is its uploader's until a record they save names it.
     ("loose-file-served-to-anyone", "crates/kernel/src/files.rs", "            _ if owns_loose(ctx, by) => Ok(()),", "            _ if true => Ok(()),", PORTAL),
@@ -732,7 +734,7 @@ MUTANTS = [
     ("target-shares-a-field", "crates/meta/src/effective.rs", "            if !kept.insert(name.as_str()) {", "            if !kept.insert(name.as_str()) && false {", META_TARGETS),
     ("target-keeps-a-packages-field", "crates/meta/src/effective.rs", "OverlayOp::AddTarget { target: t } if !b.custom &&", "OverlayOp::AddTarget { target: t } if false &&", META_TARGETS),
     ("target-breached-twice", "crates/kernel/src/targets.rs", "paused_at is null and breached_at is null and due_at <= $1", "paused_at is null and due_at <= $1", TARGETS),
-    ("target-fields-take-input", "crates/kernel/src/doc.rs", "f.rollup.is_some() || ent.target_keeping(k).is_some() {", "f.rollup.is_some() {", TARGETS),
+    ("target-fields-take-input", "crates/kernel/src/doc.rs", "f.rollup.is_some() || ent.target_keeping(k).is_some() || counted(ctx, ent, k) {", "f.rollup.is_some() || counted(ctx, ent, k) {", TARGETS),
     ("target-calendar-unchecked", "crates/kernel/src/customize.rs", "        crate::targets::check_calendars(tx, ctx.tenant, was, &now).await?;\n", "\n", TARGETS),
     ("target-calendar-deleted-under-it", "crates/kernel/src/process.rs", "if let Some(by) = crate::targets::naming(&ctx.schema, name) {", "if let Some(by) = None::<String> {", TARGETS),
     ("target-rounds-outlive-record", "crates/kernel/src/doc.rs", "\"record_secret\", \"record_target\"]", "\"record_secret\"]", TARGETS),
@@ -866,6 +868,35 @@ MUTANTS = [
     ("outside-upload-listed-unshared", "crates/kernel/src/collab.rs", "f.shared or coalesce(u.kind <> 'member', false) from file_object f", "f.shared and coalesce(u.kind <> 'member', true) from file_object f", OUTSIDE_SHARED),
     ("list-json-ignores-search", "server/src/controllers/lists.rs", "    let found = match kernel.published_find(workspace, name, &find).await {", "    let found = match kernel.published_list(workspace, name).await {", PUBLISHED),
     ("expected-503-logged-twice", "server/src/request_log.rs", "    !matches!(class, ServerErrorsFailureClass::StatusCode(s) if s.as_u16() == 503)", "    let _ = class;\n    true", REQUEST_LOG_UNIT),
+    # BD-40: a rule hides named fields from those it alone reaches; checked when saved; a package's rule follows its releases.
+    ("hidden-field-read", "crates/kernel/src/ctx.rs", "self.group_readable(entity, f) && self.hidden(entity).is_none_or(|h| !h.contains(&f.name))", "self.group_readable(entity, f)", RULE_HIDE),
+    ("hidden-field-per-record-ignored", "crates/kernel/src/ctx.rs", "            out.retain(|f| hide.contains(f));", "            let _ = hide;", RULE_HIDE),
+    ("hidden-shown-by-whole-rule-ignored", "crates/kernel/src/ctx.rs", "e.hidden.iter().filter(|f| whole_shows(e, f) || every.as_ref().is_some_and(|w| whole_shows(w, f))).cloned().collect();", "Vec::new();", RULE_HIDE),
+    ("hidden-field-written", "crates/kernel/src/doc.rs", "if !trusted && ctx.perms.hidden(&ent.def.name).is_some_and(|h| h.contains(k)) {", "if false {", RULE_HIDE),
+    ("hide-reach-field-allowed", "crates/meta/src/types.rs", "if self.condition.contains_key(name) || via_head.as_deref() == Some(name.as_str()) {", "if false {", RULE_HIDE),
+    ("packaged-rule-not-updated", "crates/kernel/src/tenant.rs", "hide = case when role_permission.packaged or (role_permission.packaged is null and role_permission.hide = '{}') then excluded.hide", "hide = case when false then excluded.hide", RULE_HIDE),
+    ("admin-rule-overwritten", "crates/kernel/src/auth.rs", "shared = excluded.shared, hide = excluded.hide, packaged = false", "shared = excluded.shared, hide = excluded.hide, packaged = true", RULE_HIDE),
+    # BD-41: a target counts on the record's calendar and from its start, worked out again once on a change.
+    ("target-start-field-ignored", "crates/logic/src/target.rs", "let from = start.filter(|s| *s < now).unwrap_or(now);", "let from = now;", LOGIC_UNIT),
+    ("target-calendar-swap-ignored", "crates/kernel/src/targets.rs", "if was.calendar != anchors.calendar || moved.is_some() {", "if false {", TARGETS),
+    ("target-record-calendar-ignored", "crates/kernel/src/targets.rs", "named.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).or_else(|| t.calendar.clone())", "t.calendar.clone()", TARGETS),
+    # BD-42: public counts once a visitor, from the page's own POST-back, an address's budget, no new version.
+    ("view-counted-twice", "crates/kernel/src/published.rs", "keyed(&key, &[b\"view\", day.to_string().as_bytes(), visitor.as_bytes()])", "keyed(&key, &[b\"view\", Uuid::now_v7().as_bytes()])", PUBLISHED),
+    ("vote-counted-twice", "crates/kernel/src/published.rs", "                if was == Some(up) {", "                if false {", PUBLISHED),
+    ("count-flood-unlimited", "crates/kernel/src/published.rs", "        if n > MAX_COUNTS_PER_HOUR {", "        if false {", PUBLISHED),
+    ("count-from-another-site", "server/src/controllers/lists.rs", "    if !crate::shell::may_change(&axum::http::Method::POST, headers) {", "    if false {", PUBLISHED),
+    ("counter-written-by-person", "crates/kernel/src/doc.rs", "|| ent.target_keeping(k).is_some() || counted(ctx, ent, k) {", "|| ent.target_keeping(k).is_some() {", PUBLISHED),
+    ("counter-not-int", "crates/meta/src/published.rs", "f.name == name && f.ftype == FieldType::Int &&", "f.name == name &&", META_PUBLISHED),
+    # BD-43: an app's calls ask what their routes ask.
+    ("tag-call-unchecked", "crates/kernel/src/collab.rs", "        ctx.require(entity, Action::Write)?;\n        self.get_tx(ctx, tx, entity, id, false).await?;", "        self.get_tx(ctx, tx, entity, id, false).await?;", APP_CALLS),
+    ("calendar-call-overwrites", "crates/kernel/src/process.rs", "        if there {\n            return Ok(false);", "        if false {\n            return Ok(false);", APP_CALLS),
+    ("files-call-takes-anothers", "crates/kernel/src/files.rs", "(None, None) => ctx.is_system || r.6 == Some(ctx.user),", "(None, None) => true,", APP_CALLS),
+    # BD-44: secrets masked in every form; a link's uploads held to their parameter and discarded on refusal; its own refusal words.
+    ("secret-masked-plain-only", "crates/kernel/src/messages.rs", "    let masks = encodings(&masks);", "", MESSAGES_UNIT),
+    ("link-upload-limits-ignored", "crates/kernel/src/action_link.rs", "                if let Some(why) = p.file_problem(i + 1, &f.content_type, f.data.len() as u64) {", "                if let Some(why) = None::<String> {", ACTION_LINKS),
+    ("link-upload-kept-on-refusal", "crates/kernel/src/action_link.rs", "        if !matches!(out, Ok(Some(_))) && !kept.is_empty() {", "        if false {", ACTION_LINKS),
+    ("condition-message-ignored", "crates/kernel/src/doc.rs", "                    Some(m) => crate::print::message(m, || told(ctx, &ent, doc.clone(), Some(self))),", "                    Some(_) => String::new(),", ACTION_LINKS),
+
 ]
 
 
