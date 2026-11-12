@@ -193,7 +193,7 @@ fn shown(e: &Error) -> String {
     }
 }
 
-fn backoff(attempts: i32) -> f64 {
+pub(crate) fn backoff(attempts: i32) -> f64 {
     // 10 s, 20 s, 40 s ... up to an hour.
     ((10u64 << attempts.clamp(1, 12).saturating_sub(1)) as f64).min(3600.0)
 }

@@ -226,6 +226,16 @@ async fn scenario() {
     let mine = uuid(&upload(&ann, Some(ann_t), "photo.txt").await.unwrap()["id"]);
     assert!(k.attachments(&staff, "Ticket", ann_t).await.unwrap().iter().any(|f| f["id"] == json!(mine) && f["shared"] == json!(true)));
     k.file_info(&ann, mine).await.expect("her own upload");
+    // Stored without the flag, as the server's upload route once kept hers: still listed as what it is, shared.
+    let mut tx = k.db.tenant_tx(staff.tenant).await.unwrap();
+    sqlx::query("update file_object set shared = false where tenant_id = $1 and id = $2").bind(staff.tenant).bind(mine).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    for who in [&staff, &ann] {
+        assert!(
+            k.attachments(who, "Ticket", ann_t).await.unwrap().iter().any(|f| f["id"] == json!(mine) && f["shared"] == json!(true)),
+            "the flag says what is true"
+        );
+    }
     assert!(upload(&bob, Some(ann_t), "x.txt").await.is_err(), "Bob attaches to Ann's ticket");
     assert!(matches!(upload(&wes, Some(wes_t), "x.txt").await, Err(Error::Forbidden(_))), "reading only");
     assert!(k.share_file(&staff, mine, false).await.is_err(), "what an outside person uploaded stays shared");

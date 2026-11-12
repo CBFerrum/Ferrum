@@ -5,6 +5,7 @@
 //! unknown link (all answered alike), a code not given or wrong, two uses at once of a single-use link.
 
 use ferrum_kernel::action_link::LinkSpec;
+use ferrum_kernel::automation;
 use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings};
@@ -58,7 +59,7 @@ async fn workspace(k: &Kernel, slug: &str) -> Ctx {
 
 /// The quotation, by configuration: accepting it takes a typed name, rating it a number from 1 to 5 and a comment, and
 /// sending it issues a link and mails it.
-fn quotation() -> NewCustomization {
+fn quotation() -> Vec<NewCustomization> {
     let entity = json!({
         "name": "XQuote", "label": "Quotation", "kind": "master", "title_field": "title",
         "fields": [
@@ -70,7 +71,10 @@ fn quotation() -> NewCustomization {
             {"name": "accepted_by", "type": "data"},
             {"name": "rating", "type": "int"},
             {"name": "feedback", "type": "data"},
-            {"name": "cost", "type": "data", "perm_group": "internal"}
+            {"name": "cost", "type": "data", "perm_group": "internal"},
+            {"name": "valid_until", "type": "date"},
+            {"name": "seen", "type": "data"},
+            {"name": "lines", "type": "table", "of": "XQuoteLine"}
         ],
         "actions": [
             {"name": "accept", "label": "Accept the quotation", "permission": "write", "condition": "doc.status == 'Open'",
@@ -84,10 +88,17 @@ fn quotation() -> NewCustomization {
              "effects": [
                 {"type": "link", "actions": ["accept"], "show": ["title", "total"], "days": 3, "recipient": "doc.customer_email"},
                 {"type": "message", "template": "x_quote_link", "to": ["expr:doc.customer_email"], "values": {"url": "results[0].url"}, "secret": ["url"]}
-             ]}
+             ]},
+            {"name": "offer", "label": "Offer until it is valid", "permission": "write",
+             "effects": [{"type": "link", "actions": ["accept"], "show": ["title", "lines"], "columns": {"lines": ["item", "qty"]}, "until": "doc.valid_until"}]}
         ]
     });
-    serde_json::from_value(json!({"entity": "XQuote", "op": {"op": "define_entity", "entity": entity}})).unwrap()
+    let line = json!({"name": "XQuoteLine", "label": "Quotation Line", "kind": "child", "fields": [
+        {"name": "item", "type": "data"}, {"name": "qty", "type": "int"}, {"name": "cost", "type": "data", "perm_group": "internal"}, {"name": "photo", "type": "attach"}]});
+    [("XQuoteLine", line), ("XQuote", entity)]
+        .into_iter()
+        .map(|(name, e)| serde_json::from_value(json!({"entity": name, "op": {"op": "define_entity", "entity": e}})).unwrap())
+        .collect()
 }
 
 #[test]
@@ -113,7 +124,7 @@ async fn scenario() {
     }))
     .unwrap();
     k.save_message_template(&admin, &template).await.unwrap();
-    k.batch_customizations(&admin, vec![quotation()], false).await.map_err(|(_, e)| e.to_string()).unwrap();
+    k.batch_customizations(&admin, quotation(), false).await.map_err(|(_, e)| e.to_string()).unwrap();
     let admin = k.load_ctx(admin.tenant, admin.user, None, "it".into()).await.unwrap();
     let quote = |title: &str| {
         let (k, admin, title) = (&k, admin.clone(), title.to_string());
@@ -283,4 +294,100 @@ async fn scenario() {
     };
     assert!(k.issue_link_now(&ann, "XQuote", q7, &spec(json!({"actions": ["accept"]}))).await.is_err(), "an outside person issues nothing");
     assert!(k.revoke_link(&ann, links[0]["id"].as_str().unwrap().parse().unwrap()).await.is_err());
+
+    // ───────────── an app ends a record's links in its own transaction ─────────────
+    let q8 = quote("Q-8 Chairs").await;
+    let acc = k.issue_link_now(&admin, "XQuote", q8, &spec(json!({"actions": ["accept"]}))).await.unwrap();
+    let rat = k.issue_link_now(&admin, "XQuote", q8, &spec(json!({"actions": ["rate"]}))).await.unwrap();
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    assert_eq!(k.revoke_action_links(&mut tx, &admin, "XQuote", q8, Some("rate")).await.unwrap(), 1, "those naming rate");
+    tx.commit().await.unwrap();
+    assert!(k.link_page("acme", &token(&rat.url)).await.unwrap().is_none(), "ended, answered as any link not working");
+    assert!(k.link_page("acme", &token(&acc.url)).await.unwrap().is_some(), "the other stands");
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    assert!(k.revoke_action_links(&mut tx, &ann, "XQuote", q8, None).await.is_err(), "an outside person ends none");
+    drop(tx);
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    assert_eq!(k.revoke_action_links(&mut tx, &admin, "XQuote", q8, None).await.unwrap(), 1, "the rest; a rolled-back end would leave them");
+    tx.commit().await.unwrap();
+    assert!(k.link_page("acme", &token(&acc.url)).await.unwrap().is_none());
+
+    // ───────────── a link lives until the record says, and shows its lines read-only ─────────────
+    let in_ten = (chrono::Utc::now() + chrono::Duration::days(10)).date_naive();
+    let q9 = id_of(
+        &k.insert(
+            &admin,
+            "XQuote",
+            obj(json!({"title": "Q-9 Lamps", "valid_until": in_ten.to_string(),
+            "lines": [{"item": "Lamp <b>", "qty": 2, "cost": "9"}, {"item": "Bulb", "qty": 6}]})),
+        )
+        .await
+        .unwrap(),
+    );
+    let made = k.run_action(&admin, "XQuote", q9, "offer", json!({})).await.unwrap();
+    let issued = k.record_links(&admin, "XQuote", q9).await.unwrap();
+    let until: chrono::DateTime<chrono::Utc> = serde_json::from_value(issued[0]["expires_at"].clone()).unwrap();
+    assert_eq!(until, (in_ten + chrono::Duration::days(1)).and_hms_opt(0, 0, 0).unwrap().and_utc(), "through the valid-until day: {made}");
+    let q9b = id_of(&k.insert(&admin, "XQuote", obj(json!({"title": "Q-9b", "valid_until": "2000-01-01"}))).await.unwrap());
+    assert!(k.run_action(&admin, "XQuote", q9b, "offer", json!({})).await.is_err(), "past its valid-until: refused as an expired link");
+    let shown = k
+        .issue_link_now(&admin, "XQuote", q9, &spec(json!({"actions": ["view"], "show": ["title", "lines"], "columns": {"lines": ["item", "qty"]}})))
+        .await
+        .unwrap();
+    let page = k.link_page("acme", &token(&shown.url)).await.unwrap().unwrap();
+    assert_eq!(page.fields.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["Title"], "the table is not a field");
+    assert_eq!(page.tables.len(), 1);
+    let (label, cols, rows) = &page.tables[0];
+    assert_eq!(
+        (label.as_str(), cols.clone(), rows.clone()),
+        ("Lines", vec!["Item".to_string(), "Qty".to_string()], vec![vec!["Lamp <b>".to_string(), "2".to_string()], vec!["Bulb".to_string(), "6".to_string()]])
+    );
+    for (bad, why) in [
+        (json!({"actions": ["view"], "show": ["lines"]}), "a table without its columns"),
+        (json!({"actions": ["view"], "show": ["lines"], "columns": {"lines": ["cost"]}}), "a column in a group"),
+        (json!({"actions": ["view"], "show": ["lines"], "columns": {"lines": ["photo"]}}), "a file column"),
+        (json!({"actions": ["view"], "show": ["title"], "columns": {"lines": ["item"]}}), "columns of a table it does not show"),
+        (json!({"actions": ["view"], "show": ["lines"], "columns": {"lines": []}}), "no columns"),
+    ] {
+        assert!(matches!(k.issue_link_now(&admin, "XQuote", q9, &spec(bad.clone())).await, Err(Error::Validation(_))), "{why}: {bad}");
+    }
+
+    // ───────────── opened: by the page's first POST-back, once; reading it is not opening it ─────────────
+    automation::save(
+        &k,
+        &admin,
+        &obj(json!({"name": "seen", "entity": "XQuote", "event": "opened", "actions": [{"type": "set_fields", "values": {"seen": "'opened'"}}]})),
+    )
+    .await
+    .expect("an automation on opened");
+    let opened_count = || {
+        let k = &k;
+        let tenant = admin.tenant;
+        async move {
+            let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+            let n: i64 = sqlx::query_scalar("select count(*) from audit_event where tenant_id = $1 and action = 'link:opened'")
+                .bind(tenant)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            n
+        }
+    };
+    let t = token(&shown.url);
+    k.link_page("acme", &t).await.unwrap().unwrap();
+    assert_eq!(opened_count().await, 0, "a GET, as a preview fetcher makes, opens nothing");
+    k.link_opened("acme", &t).await.unwrap();
+    k.link_opened("acme", &t).await.unwrap();
+    k.link_opened("nowhere", &t).await.unwrap();
+    assert_eq!(opened_count().await, 1, "once");
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
+    assert_eq!(get(q9).await["seen"], json!("opened"), "automations hear it");
+    let listed = k.record_links(&admin, "XQuote", q9).await.unwrap();
+    assert!(listed.iter().any(|l| l["opened_at"].is_string()), "{listed:?}");
+
+    // A link that does not work says the platform's own words, never a workspace's: the same answer with or without one.
+    let (title, text) = k.link_gone_wording();
+    assert_eq!(title, "This link does not work any more");
+    assert!(text.is_some_and(|t| t.contains("Ask whoever sent it")), "the shipped sentence, for a workspace that is not there too");
 }

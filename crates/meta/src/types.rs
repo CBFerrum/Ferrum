@@ -74,7 +74,8 @@ pub struct PackageManifest {
     pub automations: Vec<PackageAutomation>,
 }
 
-/// A package's approval policy on submitting or cancelling its documents ([`PackageManifest::approvals`]).
+/// A package's approval policy on submitting or cancelling its documents, or on one of its entities' actions
+/// ([`PackageManifest::approvals`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageApproval {
@@ -1651,20 +1652,61 @@ pub struct ApprovalPolicy {
     pub message: Option<String>,
 }
 
-/// What a document approval policy is on (`set_approval`, BD-19): submitting a submittable entity's documents, or
-/// cancelling them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// What an approval policy outside a workflow is on (`set_approval`, BD-19): submitting a submittable entity's
+/// documents (`submit`), cancelling them (`cancel`), or running one of the entity's own actions (`{action: name}`,
+/// a button's effects or an app's handler; BD-34).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "OnWritten", into = "OnWritten")]
 pub enum DocumentAction {
     Submit,
     Cancel,
+    Action(String),
+}
+
+/// [`DocumentAction`] as it is written: a word, or `{action: name}` (YAML takes no tagged enums).
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum OnWritten {
+    Word(String),
+    Action { action: String },
+}
+
+impl TryFrom<OnWritten> for DocumentAction {
+    type Error = String;
+    fn try_from(w: OnWritten) -> Result<Self, String> {
+        match w {
+            OnWritten::Word(w) if w == "submit" => Ok(DocumentAction::Submit),
+            OnWritten::Word(w) if w == "cancel" => Ok(DocumentAction::Cancel),
+            OnWritten::Word(w) => Err(format!("an approval is on submit, cancel or {{action: name}}, not {w}")),
+            OnWritten::Action { action } => Ok(DocumentAction::Action(action)),
+        }
+    }
+}
+
+impl From<DocumentAction> for OnWritten {
+    fn from(on: DocumentAction) -> Self {
+        match on {
+            DocumentAction::Action(action) => OnWritten::Action { action },
+            other => OnWritten::Word(other.as_str().into()),
+        }
+    }
 }
 
 impl DocumentAction {
-    pub fn as_str(self) -> &'static str {
+    /// What a request on it names as its action: `submit`, `cancel`, or the action's name.
+    pub fn as_str(&self) -> &str {
         match self {
             DocumentAction::Submit => "submit",
             DocumentAction::Cancel => "cancel",
+            DocumentAction::Action(name) => name,
+        }
+    }
+
+    /// How a message or a listing names it: `submit`, `cancel`, or `action:<name>`.
+    pub fn key(&self) -> String {
+        match self {
+            DocumentAction::Action(name) => format!("action:{name}"),
+            other => other.as_str().to_string(),
         }
     }
 }
@@ -1874,7 +1916,8 @@ pub enum OverlayOp {
         name: String,
     },
     /// Tenant-only: an approval policy on submitting (`on: submit`) or cancelling (`on: cancel`) a submittable entity's
-    /// documents, outside any workflow (BD-19); `approval: null` takes it away.
+    /// documents, outside any workflow (BD-19), or on running one of its actions (`on: {action: name}`, BD-34);
+    /// `approval: null` takes it away.
     SetApproval {
         on: DocumentAction,
         approval: Option<ApprovalPolicy>,

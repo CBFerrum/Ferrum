@@ -35,6 +35,7 @@ use uuid::Uuid;
 
 pub mod inbound;
 pub mod oauth;
+pub(crate) mod personal;
 pub mod pull;
 
 pub const CALL_KIND: &str = "platform.connection.call";
@@ -795,8 +796,8 @@ impl Kernel {
         };
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
         sqlx::query(
-            "insert into conn_call (tenant_id, id, conn_id, operation, outcome, status, duration_ms, entity, record_id, error, key, input_digest, result, debug) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) on conflict do nothing",
+            "insert into conn_call (tenant_id, id, conn_id, operation, outcome, status, duration_ms, entity, record_id, error, key, input_digest, result, debug, user_id) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) on conflict do nothing",
         )
         .bind(conn.tenant)
         .bind(Uuid::now_v7())
@@ -812,6 +813,7 @@ impl Kernel {
         .bind(keep)
         .bind(kept)
         .bind(debug)
+        .bind((!ctx.user.is_nil()).then_some(ctx.user))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;

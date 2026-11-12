@@ -60,6 +60,38 @@ fn table_of(ctx: &Ctx, b: &BackfillDef) -> Result<String> {
     }
 }
 
+/// Whether the newest job of backfill `package`/`name` failed: one queued or run since (a rerun, a new release) has
+/// taken its place.
+async fn last_failed(tx: &mut crate::db::Tx, tenant: Uuid, package: &str, name: &str) -> Result<Option<Option<String>>> {
+    let newest: Option<(String, Option<String>)> =
+        sqlx::query_as("select status, last_error from job where tenant_id = $1 and kind = $2 and dedupe_key = $3 order by created_at desc, id desc limit 1")
+            .bind(tenant)
+            .bind(KIND)
+            .bind(format!("{package}/{name}"))
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(newest.filter(|(status, _)| status == "failed").map(|(_, e)| e))
+}
+
+/// Queues backfill `package`/`name` (its run row made if missing, marked with the package's installed version).
+async fn queue(tx: &mut crate::db::Tx, tenant: Uuid, package: &str, name: &str) -> Result<()> {
+    sqlx::query(
+        "insert into backfill_run (tenant_id, package, name, version) \
+         values ($1, $2, $3, (select version from installed_package where tenant_id = $1 and name = $2)) \
+         on conflict (tenant_id, package, name) do update set version = excluded.version",
+    )
+    .bind(tenant)
+    .bind(package)
+    .bind(name)
+    .execute(&mut **tx)
+    .await?;
+    let mut job = NewJob::new(KIND, json!({"package": package, "name": name}));
+    job.priority = PRIORITY_BULK;
+    job.dedupe_key = Some(format!("{package}/{name}"));
+    enqueue(tx, tenant, None, job).await?;
+    Ok(())
+}
+
 impl Kernel {
     /// Starts, in every workspace, the backfills its packages declare that have not started, and
     /// queues again those that have not finished (one job each at a time). Part of the upkeep.
@@ -89,28 +121,25 @@ impl Kernel {
                 if matches!(finished, Some(Some(_))) {
                     continue;
                 }
-                // One that ended as failed is not queued again by itself: it says why (`backfills`), and an
-                // administrator queues the failed job again once the cause is put right.
-                let failed: bool =
-                    sqlx::query_scalar("select exists (select 1 from job where tenant_id = $1 and kind = $2 and dedupe_key = $3 and status = 'failed')")
-                        .bind(tenant)
-                        .bind(KIND)
-                        .bind(format!("{package}/{}", b.name))
-                        .fetch_one(&mut *tx)
-                        .await?;
-                if failed {
-                    continue;
-                }
-                sqlx::query("insert into backfill_run (tenant_id, package, name) values ($1, $2, $3) on conflict do nothing")
+                // One whose last job failed is not queued again by itself while its package stays as it is: it says
+                // why (`backfills`), and an administrator runs it again once the cause is put right. A release of the
+                // package (another installed version) is that cause put right, and queues it again, once.
+                if last_failed(&mut tx, tenant, &package, &b.name).await?.is_some() {
+                    let changed: bool = sqlx::query_scalar(
+                        "select r.version is distinct from (select version from installed_package where tenant_id = $1 and name = $2) \
+                         from backfill_run r where r.tenant_id = $1 and r.package = $2 and r.name = $3",
+                    )
                     .bind(tenant)
                     .bind(&package)
                     .bind(&b.name)
-                    .execute(&mut *tx)
-                    .await?;
-                let mut job = NewJob::new(KIND, json!({"package": package, "name": b.name}));
-                job.priority = PRIORITY_BULK;
-                job.dedupe_key = Some(format!("{package}/{}", b.name));
-                enqueue(&mut tx, tenant, None, job).await?;
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .unwrap_or(true);
+                    if !changed {
+                        continue;
+                    }
+                }
+                queue(&mut tx, tenant, &package, &b.name).await?;
                 queued += 1;
             }
             tx.commit().await?;
@@ -137,13 +166,7 @@ impl Kernel {
                     .bind(ctx.tenant)
                     .fetch_one(&mut *tx)
                     .await?;
-            let failure: Option<Option<String>> =
-                sqlx::query_scalar("select last_error from job where tenant_id = $1 and kind = $2 and dedupe_key = $3 and status = 'failed' limit 1")
-                    .bind(ctx.tenant)
-                    .bind(KIND)
-                    .bind(format!("{package}/{}", b.name))
-                    .fetch_optional(&mut *tx)
-                    .await?;
+            let failure = last_failed(&mut tx, ctx.tenant, &package, &b.name).await?;
             let state = match &run {
                 _ if failure.is_some() => "failed",
                 None => "waiting",
@@ -159,13 +182,20 @@ impl Kernel {
     }
 
     /// Runs a finished backfill again from the start, at the next upkeep: after the rows it could
-    /// not change have been put right, say (administrators only).
+    /// not change have been put right, say; or one whose job failed, queued now from where it got
+    /// (administrators only).
     pub async fn rerun_backfill(&self, ctx: &Ctx, package: &str, name: &str) -> Result<()> {
         admin_only(ctx)?;
         if !declared(self, ctx).iter().any(|(p, b)| p == package && b.name == name) {
             return Err(Error::NotFound(format!("backfill {package}/{name}")));
         }
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
+        if last_failed(&mut tx, ctx.tenant, package, name).await?.is_some() {
+            queue(&mut tx, ctx.tenant, package, name).await?;
+            crate::audit::record(&mut tx, ctx, "Backfill", Uuid::nil(), "rerun", None, json!({"package": package, "name": name, "failed": true})).await?;
+            tx.commit().await?;
+            return Ok(());
+        }
         let gone = sqlx::query("delete from backfill_run where tenant_id = $1 and package = $2 and name = $3 and finished_at is not null")
             .bind(ctx.tenant)
             .bind(package)

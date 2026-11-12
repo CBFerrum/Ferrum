@@ -180,7 +180,7 @@ fn configured_actions(k: &Kernel, tenant: Uuid, was: &Schema, now: &Schema) -> R
 fn package_approvals(packaged: &Schema, entity: &str) -> Vec<Value> {
     let Some(e) = packaged.entity(entity) else { return vec![] };
     let mark = |on: String, policy: &ferrum_meta::ApprovalPolicy| json!({"on": on, "policy": policy, "source": "package", "package": e.package});
-    let documents = e.document_approvals.iter().map(|(on, a)| mark(on.as_str().to_string(), &a.policy));
+    let documents = e.document_approvals.iter().map(|(on, a)| mark(on.key(), &a.policy));
     let transitions =
         e.workflow.iter().flat_map(|w| &w.def.transitions).filter_map(|t| Some(mark(format!("transition {} from {}", t.action, t.from), t.approval.as_ref()?)));
     documents.chain(transitions).collect()
@@ -783,7 +783,7 @@ impl Kernel {
         }
         // Its workflow as `set_workflow` takes it, its transitions' parameters, effects and approvals with it, and the
         // approvals on its submit and cancel as `set_approval` takes them (BD-19).
-        let approvals: serde_json::Map<String, Value> = ent.document_approvals.iter().map(|(on, a)| (on.as_str().to_string(), json!(a.policy))).collect();
+        let approvals: serde_json::Map<String, Value> = ent.document_approvals.iter().map(|(on, a)| (on.key(), json!(a.policy))).collect();
         Ok(json!({"entity": ent.def, "lines": lines, "workflow": ent.workflow.as_ref().map(|w| &w.def), "approvals": approvals,
                   "package_approvals": package_approvals(&self.packaged(ctx)?, entity)}))
     }

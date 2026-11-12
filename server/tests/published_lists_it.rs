@@ -29,7 +29,9 @@ async fn serve(k: Arc<Kernel>, limit: u32) -> String {
     let app = Router::new()
         .route(
             "/api/public/{tenant}/lists/{name}",
-            route_get(|State(s): State<S>, Path((w, n)): Path<(String, String)>, h: HeaderMap| async move { lists::answer(&s.0, &s.1, &h, &w, &n).await }),
+            route_get(|State(s): State<S>, Path((w, n)): Path<(String, String)>, Query(q): Query<Vec<(String, String)>>, h: HeaderMap| async move {
+                lists::answer(&s.0, &s.1, &h, &w, &n, &q).await
+            }),
         )
         .route("/api/public/{tenant}/{plugin}/{*path}", any(|| async { "a plugin" }))
         .route(
@@ -195,6 +197,14 @@ async fn scenario() {
     assert_eq!(fetch(&format!("{base}/public/acme/lists/permits/Fence%20Holder")).await.0, 404, "a list without a slug has no record pages");
     let (_, _, found) = fetch(&format!("{base}/public/acme/lists/register?q=fence")).await;
     assert!(found.contains("Fence Holder") && !found.contains("Bold"), "{found}");
+    // The JSON answer is searched and paged as the page is, and says so.
+    let (status, _, body) = fetch(&format!("{base}/api/public/acme/lists/register?q=fence")).await;
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((status, v["q"].as_str(), v["page"].as_u64()), (200, Some("fence"), Some(1)), "{v}");
+    let holders: Vec<&str> = v["rows"].as_array().unwrap().iter().filter_map(|r| r["holder"].as_str()).collect();
+    assert_eq!(holders, ["Fence Holder"], "{v}");
+    assert_eq!(fetch(&format!("{base}/api/public/acme/lists/register?page=9")).await.0, 404, "a page past the last, as on the page");
+    assert_eq!(serde_json::from_str::<Value>(&fetch(&format!("{base}/api/public/acme/lists/register")).await.2).unwrap()["page"], json!(1));
     let (status, headers, map) = fetch(&format!("{base}/public/acme/sitemap.xml")).await;
     assert_eq!((status, headers["content-type"].to_str().unwrap()), (200, "application/xml; charset=utf-8"));
     assert!(map.contains("https://acme.example/public/acme/lists/register/Fence%20Holder") && !map.contains("Draft") && !map.contains("Cancelled"), "{map}");

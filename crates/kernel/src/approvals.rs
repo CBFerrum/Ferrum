@@ -73,9 +73,13 @@ struct Request {
     /// On the document pipeline's submit or cancel (`action`), not a workflow transition.
     document: bool,
     failure: Option<String>,
+    /// On running the entity's action `action` (BD-34), not a transition or the document pipeline.
+    on_action: bool,
+    /// Its secret parameters, each sealed with the server's key ([`seal_secrets`]).
+    sealed: Option<Value>,
 }
 
-const COLUMNS: &str = "id, entity, record_id, action, from_state, requester, params, policy, steps, status, created_at, document, failure";
+const COLUMNS: &str = "id, entity, record_id, action, from_state, requester, params, policy, steps, status, created_at, document, failure, on_action, sealed";
 
 impl Request {
     fn parts(&self) -> Result<(ApprovalPolicy, Vec<Step>)> {
@@ -134,6 +138,38 @@ fn satisfied(step: &Step, of: &[&Decision], requester: Uuid, allow_requester: bo
     let asked_by = if allow_requester { String::new() } else { requester.to_string() };
     let plan = Plan { digest: "", requested_by: &asked_by, policy_revision: 0, expires_at_ms: i64::MAX, required: step.need as u32 };
     ferrum_logic::approval::satisfied(&plan, "", &decided, 0, 0).is_ok()
+}
+
+/// What binds a request's sealed parameter `name` to it.
+pub(crate) fn sealed_label(tenant: Uuid, request: Uuid, name: &str) -> String {
+    format!("{tenant}/approval/{request}/{name}")
+}
+
+/// `params` of action `def` as a request keeps them: each secret parameter given shown as `[redacted]`, and its value
+/// sealed with the server's key apart (`{name: sealed}`), which only completing the request opens. Refused without
+/// the server's key when a secret was given: it is never kept in the clear.
+fn seal_secrets(k: &Kernel, tenant: Uuid, request: Uuid, def: &ferrum_meta::ActionDef, params: &Value) -> Result<(Value, Value)> {
+    let mut sealed = serde_json::Map::new();
+    for p in def.params.iter().filter(|p| p.secret) {
+        let Some(v) = params.get(&p.name).filter(|v| !v.is_null()) else { continue };
+        let key = k.settings.secret_key.as_ref().ok_or_else(|| {
+            Error::Unavailable("an action with a secret parameter waits for approval only where the server has its secret key (FERRUM_SECRET_KEY)".into())
+        })?;
+        sealed.insert(p.name.clone(), json!(key.seal(&sealed_label(tenant, request, &p.name), &v.to_string())?));
+    }
+    Ok((def.redacted(params), Value::Object(sealed)))
+}
+
+/// The parameters request `r` was asked with, its secret ones opened again.
+fn unsealed(k: &Kernel, tenant: Uuid, r: &Request) -> Result<Value> {
+    let mut params = r.params.clone();
+    if let (Some(Value::Object(sealed)), Some(out)) = (&r.sealed, params.as_object_mut()) {
+        for (name, s) in sealed {
+            let plain = k.open_sealed(&sealed_label(tenant, r.id, name), s.as_str().unwrap_or_default())?;
+            out.insert(name.clone(), serde_json::from_str(&plain).map_err(|e| Error::internal(format!("sealed parameter {name}: {e}")))?);
+        }
+    }
+    Ok(params)
 }
 
 /// The first reminder or escalation the open steps still owe.
@@ -394,9 +430,10 @@ async fn open_next(k: &Kernel, ctx: &Ctx, tx: &mut Tx, on: &On<'_>, steps: &mut 
 
 impl Kernel {
     /// Asks for approval of `action` of record `id` (`doc`, locked) under `policy`, as `ctx` (who took it, its gates
-    /// passed): a workflow transition from state `from`, or with `document` the pipeline's submit or cancel. A request
-    /// with its first stage open, the record left where it is. `None` when every step's `when` is false: the action
-    /// goes through at once.
+    /// passed): a workflow transition from state `from`, with `document` the pipeline's submit or cancel, or with
+    /// `on_action` the entity's action of that definition (its secret parameters sealed). A request with its first
+    /// stage open, the record left where it is. `None` when every step's `when` is false: the action goes through at
+    /// once.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn request_approval(
         &self,
@@ -408,6 +445,7 @@ impl Kernel {
         (action, from, document): (&str, &str, bool),
         policy: &ApprovalPolicy,
         params: &Value,
+        on_action: Option<&ferrum_meta::ActionDef>,
     ) -> Result<Option<Value>> {
         if let Some(r) = pending(tx, ctx.tenant, &ent.def.name, id).await? {
             return Err(Error::Conflict(format!(
@@ -421,12 +459,21 @@ impl Kernel {
             return Ok(None);
         }
         let request = Uuid::now_v7();
+        let params = if params.is_null() { &json!({}) } else { params };
+        let (params, sealed) = match on_action {
+            Some(def) => {
+                let (shown, sealed) = seal_secrets(self, ctx.tenant, request, def, params)?;
+                (shown, Some(sealed))
+            }
+            None => (params.clone(), None),
+        };
+        let params = &params;
         let on = On { ent, record: id, doc, request, requester: ctx.user, action, policy };
         open_next(self, ctx, tx, &on, &mut steps).await?;
         let steps_json = serde_json::to_value(&steps).map_err(|e| Error::internal(e.to_string()))?;
         sqlx::query(
-            "insert into approval_request (tenant_id, id, entity, record_id, action, from_state, requester, params, policy, steps, next_due, document) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+            "insert into approval_request (tenant_id, id, entity, record_id, action, from_state, requester, params, policy, steps, next_due, document, on_action, sealed) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(ctx.tenant)
         .bind(request)
@@ -440,6 +487,8 @@ impl Kernel {
         .bind(&steps_json)
         .bind(next_due(&steps))
         .bind(document)
+        .bind(on_action.is_some())
+        .bind(&sealed)
         .execute(&mut **tx)
         .await?;
         crate::audit::record(tx, ctx, &ent.def.name, id, "approval:requested", None, json!({"request": request, "action": action, "params": params})).await?;
@@ -476,7 +525,8 @@ impl Kernel {
         let req = pending(tx, ctx.tenant, entity, id).await?.ok_or_else(|| Error::NotFound("an approval awaiting a decision on this record".into()))?;
         let (policy, mut steps) = req.parts()?;
         let state = doc.get("workflow_state").and_then(Value::as_str).unwrap_or_default();
-        if state != req.from_state {
+        // An action's request is not tied to where the record stands: the action's own conditions decide when it runs.
+        if !req.on_action && state != req.from_state {
             return Err(Error::Conflict(format!("the record moved on from {} since approval was asked", req.from_state)));
         }
         let requester = req.requester.unwrap_or_default();
@@ -552,7 +602,7 @@ impl Kernel {
                 tell(self, tx, ctx, (policy.message.as_deref(), "approved"), &[requester], &format!("Approved: {} {record_title}", req.action), entity, id)
                     .await?;
                 // Once, here: the request is no longer pending, so nothing completes it again.
-                if req.document {
+                if req.document || req.on_action {
                     self.complete_document(ctx, tx, entity, id, &req, &record_title).await?;
                 } else {
                     let system = self.on_behalf(ctx, req.requester).await;
@@ -566,7 +616,8 @@ impl Kernel {
         summary(tx, ctx.tenant, &ent, &r).await
     }
 
-    /// Completes an approved submit or cancel (`req`) of record `id` as its requester at this moment, not as the system:
+    /// Completes an approved submit, cancel or action (`req`) of record `id` as its requester at this moment, not as the
+    /// system (an action with the parameters it was asked with, its secret ones unsealed):
     /// their rights, the app's hooks and checks as if they pressed it now (the system, when the system asked). Where
     /// that is refused (their rights gone, a check of the app's), nothing of it stays: the request fails, saying why,
     /// and the requester is told. What may be tried again (a conflict between transactions) is passed on instead.
@@ -579,10 +630,22 @@ impl Kernel {
         let done = match who {
             Ok(mut who) => {
                 who.depth = ctx.depth;
-                if req.action == DocumentAction::Cancel.as_str() {
-                    Box::pin(self.cancel_inner(&who, tx, entity, id, None, None)).await
+                if req.on_action {
+                    match unsealed(self, ctx.tenant, req) {
+                        Ok(params) => {
+                            let def = self.entity(&who, entity).ok().and_then(|e| e.def.actions.iter().find(|a| a.name == req.action).cloned());
+                            let secrets = def.map(|a| a.secret_values(&params));
+                            Box::pin(self.action_given(&who, tx, entity, id, &req.action, &params, true))
+                                .await
+                                .map(|_| ())
+                                .map_err(|e| e.redact(&secrets.unwrap_or_default()))
+                        }
+                        Err(e) => Err(e),
+                    }
+                } else if req.action == DocumentAction::Cancel.as_str() {
+                    Box::pin(self.cancel_inner(&who, tx, entity, id, None, None)).await.map(|_| ())
                 } else {
-                    Box::pin(self.submit_inner(&who, tx, entity, id, None, None)).await
+                    Box::pin(self.submit_inner(&who, tx, entity, id, None, None)).await.map(|_| ())
                 }
             }
             Err(e) => Err(e),
@@ -693,7 +756,7 @@ impl Kernel {
         }
         sqlx::query(
             "update approval_request set status = 'cancelled', ended_at = now(), next_due = null \
-             where tenant_id = $1 and entity = $2 and record_id = $3 and status = 'pending'",
+             where tenant_id = $1 and entity = $2 and record_id = $3 and status = 'pending' and not on_action",
         )
         .bind(ctx.tenant)
         .bind(&ent.def.name)
@@ -955,7 +1018,7 @@ async fn summary(tx: &mut Tx, tenant: Uuid, ent: &EffEntity, r: &Request) -> Res
     Ok(json!({
         "id": r.id, "entity": r.entity, "record": r.record_id, "action": r.action, "from": r.from_state, "to": to,
         "requester": r.requester, "requested_at": r.created_at, "status": r.status, "params": r.params,
-        "steps": steps, "decisions": decided, "document": r.document, "failure": r.failure,
+        "steps": steps, "decisions": decided, "document": r.document, "on_action": r.on_action, "failure": r.failure,
     }))
 }
 
@@ -968,7 +1031,7 @@ pub(crate) async fn check_names(tx: &mut Tx, tenant: Uuid, was: &Schema, now: &S
         for e in s.entities.values() {
             let on_transitions =
                 e.workflow.iter().flat_map(|w| &w.def.transitions).filter_map(|t| Some((format!("transition {}", t.action), t.approval.as_ref()?)));
-            let on_documents = e.document_approvals.iter().map(|(on, a)| (on.as_str().to_string(), &a.policy));
+            let on_documents = e.document_approvals.iter().map(|(on, a)| (on.key(), &a.policy));
             for (action, p) in on_transitions.chain(on_documents) {
                 for (i, st) in p.steps.iter().enumerate() {
                     let roles = st.approvers.role.iter().chain(st.escalate_to.iter().flat_map(|x| x.role.iter()));
