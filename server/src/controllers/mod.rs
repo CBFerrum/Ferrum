@@ -14,6 +14,7 @@ pub mod jobs;
 pub mod legacy;
 pub mod lists;
 pub mod mcp;
+pub mod messages;
 pub mod meta;
 pub mod notifications;
 pub mod oauth;
