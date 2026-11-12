@@ -102,7 +102,7 @@ async fn scenario() {
     // Alpha's own release still reaches its row (the stored row stands for an older release of alpha).
     exec(&k, one, "update role_permission set can_create = false, can_delete = true, hide = '{}' where tenant_id = $1 and role = 'Clerk'").await;
     k.install_packages(one, &["beta".into()]).await.unwrap();
-    assert_eq!(row(&k, one).await.2, false, "another package's install does not correct it");
+    assert!(!row(&k, one).await.2, "another package's install does not correct it");
     k.install_packages(one, &["alpha".into()]).await.unwrap();
     assert_eq!(row(&k, one).await, alpha_row, "its own does: a withdrawn grant and a new hide");
 

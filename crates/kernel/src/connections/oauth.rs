@@ -419,7 +419,7 @@ impl Kernel {
         let url = provider.registration_url.clone().ok_or_else(|| Error::invalid("auth.provider.client_id is required"))?;
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
         let held = super::lock_secrets(&mut tx, self, conn.tenant, conn.id).await?;
-        if !held.get(REGISTERED_ID).is_some_and(|v| !v.is_empty()) {
+        if held.get(REGISTERED_ID).is_none_or(|v| v.is_empty()) {
             let mut asked = json!({"client_name": conn.name, "redirect_uris": [redirect], "grant_types": ["authorization_code", "refresh_token"],
                                    "response_types": ["code"], "token_endpoint_auth_method": "client_secret_basic"});
             if !provider.scopes.is_empty() {

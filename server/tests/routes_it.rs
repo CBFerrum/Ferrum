@@ -17,7 +17,7 @@ async fn every_controller_mounts_once_and_is_reached() {
     let routes = App::routes(&ctx);
     let listed: Vec<(Method, String)> = routes.collect().iter().flat_map(|r| r.actions.iter().map(|m| (m.clone(), r.uri.clone()))).collect();
     let built = std::panic::catch_unwind(AssertUnwindSafe(|| routes.to_router::<App>(ctx.clone(), axum::Router::new())));
-    built.expect("the routes build into one router: no path and method is mounted twice").expect("the router");
+    let _router = built.expect("the routes build into one router: no path and method is mounted twice").expect("the router");
     let id = "{id}";
     for (method, path) in [
         // The connector hub (connect.rs).
