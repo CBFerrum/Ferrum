@@ -6555,7 +6555,7 @@
   ],
   "requires": {
     "packages": {
-      "core": "0.2.0",
+      "core": "0.3.0",
       "parties": "0.1.0",
       "products": "0.1.0",
       "selling": "0.1.0",
