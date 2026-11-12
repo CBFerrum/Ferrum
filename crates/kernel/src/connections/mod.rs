@@ -617,7 +617,7 @@ impl Operation {
             return Some(p);
         }
         for (name, v) in self.body.iter().map(|b| ("body", b)).chain(self.form.iter().map(|(k, v)| (k.as_str(), v))) {
-            if let Some(p) = spec_of::<FilePart>(v).map(|f| f.map_or_else(Some, |f| f.problem())).flatten() {
+            if let Some(p) = spec_of::<FilePart>(v).and_then(|f| f.map_or_else(Some, |f| f.problem())) {
                 return Some(format!("{name}: {p}"));
             }
         }

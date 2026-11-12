@@ -923,7 +923,7 @@ MUTANTS = [
     ("session-login-hammered", "crates/kernel/src/connections/oauth.rs", "                self.needs_reconnecting(&mut tx, conn, Uuid::nil()).await?;\n                tx.commit().await?;\n                Err(Error::invalid(format!(\"{} needs reconnecting: the service refused", "                let _ = &mut tx;\n                tx.commit().await?;\n                Err(Error::invalid(format!(\"{} needs reconnecting: the service refused", CONNECTIONS),
     ("dpop-unbound", "crates/kernel/src/connections/mod.rs", "                if provider.dpop {", "                if false {", CONNECTIONS),
     ("dpop-without-token-digest", "crates/kernel/src/connections/oauth.rs", "        if let Some(t) = token {\n            claims[\"ath\"]", "        if let Some(t) = token.filter(|_| false) {\n            claims[\"ath\"]", CONNECTIONS),
-    ("client-registered-twice", "crates/kernel/src/connections/oauth.rs", "        if !held.get(REGISTERED_ID).is_some_and(|v| !v.is_empty()) {", "        if true {", CONNECTIONS),
+    ("client-registered-twice", "crates/kernel/src/connections/oauth.rs", "        if held.get(REGISTERED_ID).is_none_or(|v| v.is_empty()) {", "        if true {", CONNECTIONS),
     # BD-49: a body signed without a timestamp is taken once, and only with a delivery id.
     ("inbound-untimed-body-twice", "crates/kernel/src/connections/inbound.rs", ".bind(untimed.then(|| hex::encode(Sha256::digest(body))))", ".bind(None::<String>)", CONNECTIONS),
     ("inbound-untimed-without-delivery", "crates/kernel/src/connections/inbound.rs", "if timestamp_header.is_none() && self.delivery_header.is_none() && self.delivery_at.is_none() {", "if false {", CONNECTIONS_UNIT),
