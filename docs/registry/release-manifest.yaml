@@ -29,6 +29,7 @@ components:
   - {repository: CBFerrum/ferrum-app-intelligence, pinned: 47536c87e2f4cde31844e65f3c17a126ba53f9ba}
   - {repository: CBFerrum/ferrum-app-intranet, pinned: 09c7b163471abd74ca02f901335738bebcd5526d}
   - {repository: CBFerrum/ferrum-app-itsm, pinned: 4d4fc6f7a2685d59e260002a14c42d6cc0abd636}
+  - {repository: CBFerrum/ferrum-app-live, pinned: f40ffe419d5cbc2da08c02049cdf55c9c2dc40a5}
   - {repository: CBFerrum/ferrum-app-lms, pinned: ba27eb53034823e3880876edb6bd262bc3a4aec9}
   - {repository: CBFerrum/ferrum-app-logistics, pinned: c43e123c33f2c35eeed3efd64567a3afbb893803}
   - {repository: CBFerrum/ferrum-app-metrics, pinned: e5879bc038c6a150935e94dc05300e7c61aaa435}

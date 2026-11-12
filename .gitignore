@@ -15,3 +15,7 @@ deploy/.env
 server/.claude/
 # The editor server's WOPI proof key (deploy/docker-compose.yml, `office`): a private key.
 deploy/office-proof-key*
+# Live's relay (deploy/live.yml): its certificate and signing keys.
+deploy/live/cert.pem
+deploy/live/key.pem
+deploy/live/keys/
