@@ -797,7 +797,9 @@ async fn delete_calendar(Auth(ctx): Auth, State(app): State<AppContext>, Path(na
 
 async fn list_automations(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
     admin(&ctx)?;
-    let rows = query_json(&app, &ctx, "select to_jsonb(a) - 'tenant_id' from automation a where a.tenant_id = $1 order by a.created_at").await?;
+    let mut rows = query_json(&app, &ctx, "select to_jsonb(a) - 'tenant_id' from automation a where a.tenant_id = $1 order by a.created_at").await?;
+    // A package's: whether the workspace edited it, and whether a release changed it since.
+    ferrum_kernel::automation::package_marks(&app_state(&app)?.kernel.registry.catalog(), &mut rows);
     Ok(Json(json!({"automations": rows})).into_response())
 }
 
@@ -829,6 +831,16 @@ async fn delete_automation(Auth(ctx): Auth, State(app): State<AppContext>, Path(
     admin(&ctx)?;
     let st = app_state(&app)?;
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
+    let package: Option<String> = sqlx::query_scalar("select package from automation where tenant_id = $1 and id = $2")
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(Error::from)?
+        .flatten();
+    if let Some(p) = package {
+        return Err(Error::Conflict(format!("this automation comes with {p}: switch it off instead")).into());
+    }
     sqlx::query("delete from automation where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await.map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
     Ok(StatusCode::NO_CONTENT.into_response())

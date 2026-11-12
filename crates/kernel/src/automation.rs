@@ -1681,6 +1681,58 @@ pub(crate) async fn save_in(ctx: &Ctx, tx: &mut crate::db::Tx, input: &Map<Strin
     Ok(id)
 }
 
+/// An automation row as a package's default is compared with it ([`ferrum_meta::PackageAutomation::definition`]).
+const DEFINITION: &str = "jsonb_build_object('name', name, 'entity', entity, 'event', event, 'condition', condition, 'schedule', schedule, \
+                          'actions', actions)";
+
+/// Installs package `package`'s automation `a` in `ctx`'s workspace, as the system: new, it is added, turned on; one the
+/// workspace has not edited takes the package's definition as it now is, staying on or off as the workspace left it;
+/// an edited one is the workspace's and is kept (and flagged when the default changed, [`package_marks`]).
+pub(crate) async fn install_default(ctx: &Ctx, tx: &mut crate::db::Tx, package: &str, a: &ferrum_meta::PackageAutomation) -> Result<()> {
+    let default = a.definition();
+    let found: Option<(Uuid, bool, Option<Value>, Value)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select id, is_active, base, {DEFINITION} from automation where tenant_id = $1 and package = $2 and package_key = $3 for update"
+    )))
+    .bind(ctx.tenant)
+    .bind(package)
+    .bind(&a.name)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (id, active) = match found {
+        // Edited here, or already as the package says.
+        Some((_, _, base, now)) if base.as_ref() != Some(&now) || now == default => return Ok(()),
+        Some((id, active, ..)) => (id, active),
+        None => (Uuid::now_v7(), true),
+    };
+    let mut input = default.as_object().cloned().unwrap_or_default();
+    input.insert("id".into(), Value::String(id.to_string()));
+    input.insert("is_active".into(), Value::Bool(active));
+    save_in(ctx, tx, &input).await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "update automation set package = $3, package_key = $4, base = {DEFINITION}, created_by = null where tenant_id = $1 and id = $2"
+    )))
+    .bind(ctx.tenant)
+    .bind(id)
+    .bind(package)
+    .bind(&a.name)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Marks each of `rows` (automations as listed, `to_jsonb` of their rows) that a package ships: `edited` when the
+/// workspace changed it, `default_changed` when a release changed the default since it was installed or edited.
+pub fn package_marks(catalog: &ferrum_meta::Catalog, rows: &mut [Value]) {
+    for r in rows.iter_mut() {
+        let (Some(p), Some(key)) = (r["package"].as_str(), r["package_key"].as_str()) else { continue };
+        let default = catalog.package(p).and_then(|p| p.manifest.automations.iter().find(|a| a.name == key)).map(|a| a.definition());
+        let now = serde_json::json!({"name": r["name"], "entity": r["entity"], "event": r["event"], "condition": r["condition"],
+            "schedule": r["schedule"], "actions": r["actions"]});
+        r["edited"] = Value::Bool(r["base"] != now);
+        r["default_changed"] = Value::Bool(default.is_some_and(|d| d != r["base"]));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
