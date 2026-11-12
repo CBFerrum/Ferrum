@@ -109,6 +109,14 @@ for business days. Apps use the same clock: `ferrum_kernel::load_calendar` reads
 name inside the caller's transaction, and `Calendar::add_working(from, seconds, stopped)` and
 `working_between(from, to, stopped)` leave out the intervals in which a clock stood still.
 
+**Dated exceptions.** `exceptions` say what one local date is, whatever its weekday and holidays say:
+`{"2026-12-24": {"open": false, "hours": [["12:00", "24:00"]]}, "2026-12-27": {"open": true}}`. Open, with its
+windows or all day without them, opens a holiday or a weekend day and replaces a weekday's hours; closed takes the
+day away, or with windows only those hours of its own windows. A date opened counts as a business day, one closed
+all day does not, one closed some hours still does. They are local dates, so a daylight-saving day opened whole is
+23 or 25 hours long, and its windows follow the rules above. Every clock function, wait, service target and approval
+step's time counts them; a calendar without them behaves as before.
+
 **Structure.** A race's loser is asked to stop, and what it had in flight is kept: an effect that settles
 after its branch lost, or after the run was cancelled, is recorded and handed to a person. Compensation runs
 newest first; one that fails stays an open item, and the run waits for a person, who can resume it to try what

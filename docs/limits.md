@@ -186,7 +186,7 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   a package that marks neither sends everything a person can read.
 - **Working time** (`Calendar::add_working`, `working_between`, `next_open`, a wait in open time) looks
   at most 1,830 days (five years) ahead of where it starts, and says so past that; `working_between` counts
-  over at most that span. Hours of the day are whole minutes. Deleting a calendar is not refused while a
+  over at most that span. Hours of the day are whole minutes; a calendar holds at most 1,000 dated exceptions. Deleting a calendar is not refused while a
   release's waits name it.
 - **Background jobs** have no calendar: nothing schedules one for later or repeats it. Apps' periodic
   work stays in their `maintenance`. A running job hears of a cancellation within 5 seconds, and work

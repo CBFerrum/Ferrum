@@ -136,7 +136,7 @@ struct AwayQuery {
 }
 
 /// `GET /api/away`: the caller's away periods today and to come, each with its stand-in (FEO-034); `?user=` for an
-/// administrator. Set at Studio's `POST /api/app/studio/logic/away`.
+/// administrator. Set at Studio's `POST /api/app/studio/away`.
 async fn away(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<AwayQuery>) -> ApiResult<Response> {
     Ok(Json(away_of(&app_state(&app)?.kernel, &ctx, q.user).await?).into_response())
 }
