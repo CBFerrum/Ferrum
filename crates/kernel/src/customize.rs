@@ -764,8 +764,10 @@ impl Kernel {
                 }
             }
         }
-        // Its workflow as `set_workflow` takes it, its transitions' parameters, effects and approvals with it (BD-19).
-        Ok(json!({"entity": ent.def, "lines": lines, "workflow": ent.workflow.as_ref().map(|w| &w.def)}))
+        // Its workflow as `set_workflow` takes it, its transitions' parameters, effects and approvals with it, and the
+        // approvals on its submit and cancel as `set_approval` takes them (BD-19).
+        let approvals: serde_json::Map<String, Value> = ent.document_approvals.iter().map(|(on, a)| (on.as_str().to_string(), json!(a.policy))).collect();
+        Ok(json!({"entity": ent.def, "lines": lines, "workflow": ent.workflow.as_ref().map(|w| &w.def), "approvals": approvals}))
     }
 
     /// Change-set export: every active customization in order.
