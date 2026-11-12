@@ -2540,7 +2540,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-campaigns"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#728eaff30afa0b5d96dec516cb11220b615ad0d2"
+source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#7ec3c243e3ba93debd803ab57da1752a7c593f2f"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2594,7 +2594,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-comms"
 version = "0.7.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#18a27a10cb30b718226c140fb98b444f03091bcb"
+source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#42ddc6e7a0a8f13e8cdcff85555af3fe3d7c5e2a"
 dependencies = [
  "ammonia",
  "async-imap",
