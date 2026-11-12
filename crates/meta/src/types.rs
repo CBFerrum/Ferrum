@@ -888,6 +888,10 @@ pub struct ActionDef {
     /// CEL condition on `doc` for showing/allowing the action.
     #[serde(default)]
     pub condition: Option<String>,
+    /// What a refusal for `condition` says (BD-44), as a rule's message: `{{ doc.<field> }}` shows the record as its
+    /// reader may read it. Without it, the platform's general words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition_message: Option<String>,
     /// The action only reads (a lookup, a preview): it runs without locking the record or
     /// writing an audit entry, in a read-only transaction when run on its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -990,6 +994,29 @@ pub struct PublishedListDef {
     /// Origins that may show its pages in a frame (`https://host[:port]`); none by default (BD-24).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub frame_origins: Vec<String>,
+    /// A whole-number field counting each record page's views by visitors (BD-42): the page's own POST-back, once a
+    /// visitor a record a day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count_views: Option<String>,
+    /// Whole-number fields counting "was this helpful" answers on each record page (BD-42): once a visitor a record,
+    /// changeable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub votes: Option<ListVotes>,
+}
+
+/// The fields a published list counts its record pages' votes in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListVotes {
+    pub up: String,
+    pub down: String,
+}
+
+impl PublishedListDef {
+    /// The fields the platform counts into for this list.
+    pub fn counters(&self) -> impl Iterator<Item = &String> {
+        self.count_views.iter().chain(self.votes.iter().flat_map(|v| [&v.up, &v.down]))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1037,6 +1064,38 @@ pub struct ActionParam {
     /// only: a transition keeps what it is given.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secret: bool,
+    /// A `files` parameter (BD-44): the files at most (1 to 10; 1 without it), each at most `max_bytes` (10 MB at most
+    /// and without it), of the content types `accept` lists (`image/*` for a family; any without it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_files: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accept: Vec<String>,
+}
+
+/// The most files a `files` parameter takes, and the largest file.
+pub const MAX_PARAM_FILES: u32 = 10;
+pub const MAX_PARAM_BYTES: u64 = 10 << 20;
+
+impl ActionParam {
+    /// Why a file of `content_type` and `size` bytes, the `n`th given (from 1), may not go to this `files` parameter.
+    pub fn file_problem(&self, n: usize, content_type: &str, size: u64) -> Option<String> {
+        let most = self.max_files.unwrap_or(1).clamp(1, MAX_PARAM_FILES) as usize;
+        if n > most {
+            return Some(format!("{} takes at most {most} file(s)", self.label));
+        }
+        let largest = self.max_bytes.unwrap_or(MAX_PARAM_BYTES).min(MAX_PARAM_BYTES);
+        if size > largest {
+            return Some(format!("{} takes files of at most {largest} bytes", self.label));
+        }
+        let ct = content_type.split(';').next().unwrap_or_default().trim().to_lowercase();
+        let fits = |a: &String| a.strip_suffix("/*").map_or(*a == ct, |family| ct.split('/').next() == Some(family));
+        if !self.accept.is_empty() && !self.accept.iter().any(fits) {
+            return Some(format!("{} takes {}", self.label, self.accept.join(", ")));
+        }
+        None
+    }
 }
 
 /// What a secret parameter is shown as wherever it would be kept.

@@ -55,6 +55,13 @@ fn shape(l: &PublishedListDef) -> Result<(), String> {
     if let Some(s) = l.summary.as_ref().filter(|s| !l.fields.contains(s) && !l.detail.contains(s)) {
         return Err(format!("its summary {s} is one of the fields it shows"));
     }
+    let counters: Vec<&String> = l.counters().collect();
+    if !counters.is_empty() && l.slug.is_none() {
+        return Err("views and votes are counted on record pages, which need a slug".into());
+    }
+    if let Some(f) = counters.iter().enumerate().find(|(i, f)| counters[..*i].contains(f)).map(|(_, f)| f) {
+        return Err(format!("it counts into {f} twice"));
+    }
     if l.frame_origins.len() > 10 || l.frame_origins.iter().any(|o| frame_origin(o).as_deref() != Some(o.as_str())) {
         return Err("it may be framed by at most 10 origins, each written like https://example.com".into());
     }
@@ -193,6 +200,26 @@ pub(crate) fn settle<'a>(list: &PublishedList, lookup: &impl Fn(&str) -> Option<
         why.push(format!("its summary {s} is no longer shown"));
         kept.list.summary = None;
     }
+    // A counter is a whole-number field of the record's own, nothing else works out.
+    let counts = |name: &str, why: &mut Vec<String>| {
+        let ok = def.fields.iter().any(|f| {
+            f.name == name && f.ftype == FieldType::Int && f.computed.is_none() && f.rollup.is_none() && f.fetch_from.is_none() && f.perm_group.is_none()
+        });
+        if !ok {
+            why.push(format!("it counts into {name}, which is not a whole-number field of {} the platform may keep", def.name));
+        }
+        ok
+    };
+    if kept.list.count_views.as_deref().is_some_and(|c| !counts(c, &mut why)) {
+        kept.list.count_views = None;
+    }
+    if kept.list.votes.as_ref().is_some_and(|v| !(counts(&v.up, &mut why) & counts(&v.down, &mut why))) {
+        kept.list.votes = None;
+    }
+    if kept.list.slug.is_none() {
+        kept.list.count_views = None;
+        kept.list.votes = None;
+    }
     if kept.list.fields.is_empty() {
         why.push("none of its fields may be shown, so it is taken down".into());
         return (None, why);
@@ -254,6 +281,8 @@ mod tests {
     - {name: vault, type: link, to: Vault}
     - {name: mailbox, type: link, to: Mailbox}
     - {name: applicant, type: link, to: Person}
+    - {name: views, type: int}
+    - {name: helpful, type: int}
 "#,
         )
         .unwrap();
@@ -370,6 +399,8 @@ mod tests {
             detail: vec![],
             summary: None,
             frame_origins: vec![],
+            count_views: None,
+            votes: None,
         };
         let mut def = catalog().packages().next().unwrap().entities.iter().find(|e| e.name == "Permit").unwrap().clone();
         assert!(
@@ -377,6 +408,25 @@ mod tests {
         );
         let own = with(&[ov("XClass", x("XClass")), publish("XClass", json!({"name": "classes", "fields": ["title"]}))]);
         assert!(own.warnings.is_empty() && own.published_list("classes").is_some(), "{:?}", own.warnings);
+    }
+
+    #[test]
+    fn counters_are_whole_numbers_on_record_pages() {
+        let ok = with(&[publish("Permit", json!({"slug": "holder", "count_views": "views", "votes": {"up": "helpful", "down": "fee_x"}}))]);
+        assert!(ok.warnings.iter().any(|w| w.message.contains("counts into fee_x")), "{:?}", ok.warnings);
+        assert!(ok.published_list("permits").unwrap().list.votes.is_none());
+        assert_eq!(ok.published_list("permits").unwrap().list.count_views.as_deref(), Some("views"));
+        refused(&[publish("Permit", json!({"slug": "holder", "count_views": "fee"}))], "counts into fee");
+        refused(&[publish("Permit", json!({"slug": "holder", "count_views": "inspector_note"}))], "counts into inspector_note");
+        let s = build(&catalog(), &["core".into()], &[publish("Permit", json!({"count_views": "views"}))], 1);
+        assert!(s.is_err() || s.unwrap().warnings.iter().any(|w| w.message.contains("slug")));
+        let s = build(
+            &catalog(),
+            &["core".into()],
+            &[publish("Permit", json!({"slug": "holder", "count_views": "views", "votes": {"up": "views", "down": "helpful"}}))],
+            1,
+        );
+        assert!(s.is_err() || s.unwrap().warnings.iter().any(|w| w.message.contains("twice")));
     }
 
     #[test]

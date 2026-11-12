@@ -38,6 +38,9 @@ async fn serve(k: Arc<Kernel>, limit: u32) -> String {
             "/public/{*rest}",
             route_get(|State(s): State<S>, Path(rest): Path<String>, Query(q): Query<Vec<(String, String)>>, h: HeaderMap| async move {
                 lists::page(&s.0, &s.1, &h, &rest, None, &q, Some("https://acme.example")).await
+            })
+            .post(|State(s): State<S>, Path(rest): Path<String>, h: HeaderMap, body: axum::body::Bytes| async move {
+                lists::count(&s.0, &s.1, &h, &rest, &body, false).await
             }),
         )
         .with_state(state);
@@ -294,4 +297,132 @@ async fn scenario() {
     assert_eq!(fetch(&format!("{small}/api/public/acme/lists/permits")).await.0, 429);
     assert_eq!(fetch(&format!("{small}/public/acme/lists/permits")).await.0, 429);
     assert_eq!(fetch(&format!("{small}/api/public/nobody/lists/permits")).await.0, 404);
+
+    counts(&k, &base).await;
+}
+
+/// A help centre's article pages count views and "was this helpful" answers from visitors who are not signed in
+/// (docs/builder/decisions.md BD-42).
+async fn counts(k: &Arc<Kernel>, base: &str) {
+    let tenant = k
+        .create_tenant(NewTenant {
+            slug: "help".into(),
+            name: "Help".into(),
+            admin_email: "admin@help.test".into(),
+            admin_password: "Correct-Horse-9".into(),
+            admin_name: None,
+            packages: vec![],
+            settings: None,
+        })
+        .await
+        .unwrap();
+    let session = k.login("help", "admin@help.test", "Correct-Horse-9").await.unwrap();
+    let admin = k.load_ctx(tenant, session.user, None, "it".into()).await.unwrap();
+    let article = json!({"name": "XArticle", "label": "Article", "kind": "master", "title_field": "title", "fields": [
+        {"name": "title", "type": "data"}, {"name": "path", "type": "data"}, {"name": "body", "type": "text"},
+        {"name": "views", "type": "int"}, {"name": "helpful", "type": "int"}, {"name": "unhelpful", "type": "int"}]});
+    k.add_customization(&admin, "XArticle", op(json!({"op": "define_entity", "entity": article})), None).await.unwrap();
+    let admin = fresh(k, &admin).await;
+    let list = json!({"name": "help", "label": "Help", "fields": ["title"], "slug": "path", "detail": ["body"],
+        "count_views": "views", "votes": {"up": "helpful", "down": "unhelpful"}});
+    k.add_customization(&admin, "XArticle", op(json!({"op": "publish_list", "list": list})), None).await.unwrap();
+    let admin = fresh(k, &admin).await;
+    let a = k.insert(&admin, "XArticle", doc(json!({"title": "Reset", "path": "reset", "body": "Press the button"}))).await.unwrap();
+    let id: Uuid = a["id"].as_str().unwrap().parse().unwrap();
+    let page = format!("{base}/public/help/lists/help/reset");
+    let numbers = || async {
+        let d = k.get(&admin, "XArticle", id, false).await.unwrap();
+        let n = |f: &str| d.get(f).and_then(Value::as_i64).unwrap_or(0);
+        (n("views"), n("helpful"), n("unhelpful"), d["version"].clone())
+    };
+    let version = numbers().await.3;
+    let audits = || async {
+        let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+        let n: i64 = sqlx::query_scalar("select count(*) from audit_event where record_id = $1").bind(id).fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        n
+    };
+    let audited = audits().await;
+
+    // The page carries its beacon (allowed by its digest) and the two answers; reading it counts nothing.
+    let (status, headers, html) = fetch(&page).await;
+    assert_eq!(status, 200);
+    let csp = headers.get("content-security-policy").unwrap().to_str().unwrap().to_string();
+    assert!(html.contains("sendBeacon") && html.contains(r#"value="up""#) && csp.contains("script-src 'sha256-"), "{csp}");
+    fetch(&page).await;
+    assert_eq!(numbers().await.0, 0, "a fetcher reading the page counts nothing");
+
+    let origin = base.to_string();
+    let post = |body: &'static str, cookie: Option<String>, from: &'static str, site: &'static str| {
+        let (page, origin) = (page.clone(), origin.clone());
+        async move {
+            let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+            let mut r = client.post(&page).header("content-type", "application/x-www-form-urlencoded").header("x-forwarded-for", from).body(body);
+            r = if site.is_empty() { r.header("origin", origin) } else { r.header("sec-fetch-site", site) };
+            if let Some(c) = cookie {
+                r = r.header("cookie", format!("{}={c}", lists::VISITOR));
+            }
+            let r = r.send().await.unwrap();
+            let set = r.headers().get("set-cookie").and_then(|v| v.to_str().ok()).map(|v| v.split(';').next().unwrap().split_once('=').unwrap().1.to_string());
+            (r.status().as_u16(), set)
+        }
+    };
+    // Visitor one, first time: counted, and given a cookie; again: not counted.
+    let (status, cookie) = post("do=view", None, "10.0.0.1", "same-origin").await;
+    assert_eq!(status, 204);
+    let one = cookie.expect("a visitor's cookie");
+    assert_eq!(post("do=view", Some(one.clone()), "10.0.0.1", "").await, (204, None));
+    assert_eq!(numbers().await.0, 1);
+    // Visitor two: counted.
+    let two = "b".repeat(32);
+    assert_eq!(post("do=view", Some(two.clone()), "10.0.0.2", "same-origin").await.0, 204);
+    assert_eq!(numbers().await.0, 2);
+    // From another site, or a value not asked for: nothing.
+    assert_eq!(post("do=view", Some("c".repeat(32)), "10.0.0.3", "cross-site").await.0, 403);
+    assert_eq!(post("do=edit", Some("c".repeat(32)), "10.0.0.3", "same-origin").await.0, 404);
+    assert_eq!(numbers().await.0, 2);
+
+    // Votes: once a visitor, changeable.
+    assert_eq!(post("do=up", Some(one.clone()), "10.0.0.1", "same-origin").await.0, 303);
+    assert_eq!(post("do=up", Some(one.clone()), "10.0.0.1", "same-origin").await.0, 303);
+    assert_eq!(numbers().await.1, 1);
+    post("do=down", Some(one.clone()), "10.0.0.1", "same-origin").await;
+    post("do=up", Some(two.clone()), "10.0.0.2", "same-origin").await;
+    let (views, up, down, now_version) = numbers().await;
+    assert_eq!((views, up, down), (2, 1, 1));
+    // No new version, no audit entry.
+    assert_eq!(now_version, version);
+    assert_eq!(audits().await, audited);
+    // What a person sends for a counter is ignored.
+    k.update(&admin, "XArticle", id, doc(json!({"views": 999, "body": "Press it"})), None).await.unwrap();
+    assert_eq!(numbers().await.0, 2);
+
+    // The next day visitor one counts again, under a digest unlinkable to the day before's.
+    k.pin_clock(Some(chrono::Utc::now() + chrono::Duration::days(1)));
+    post("do=view", Some(one.clone()), "10.0.0.1", "same-origin").await;
+    assert_eq!(numbers().await.0, 3);
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let digests: Vec<Vec<u8>> = sqlx::query_scalar("select visitor from published_view where record_id = $1").bind(id).fetch_all(&mut *tx).await.unwrap();
+    let stored: String =
+        sqlx::query_scalar("select coalesce(string_agg(encode(visitor, 'escape'), ''), '') from published_view").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(digests.iter().collect::<BTreeSet<_>>().len(), 3);
+    assert!(!stored.contains(&one) && !stored.contains(&two), "no cookie value is kept");
+
+    // A flood from one address with a new cookie each time: counted up to the address's hourly budget, then 429.
+    let mut refused = 0;
+    for _ in 0..70 {
+        if post("do=view", None, "10.0.0.9", "same-origin").await.0 == 429 {
+            refused += 1;
+        }
+    }
+    assert_eq!(numbers().await.0, 3 + 70 - refused);
+    assert_eq!(refused, 70 - ferrum_kernel::published::MAX_COUNTS_PER_HOUR as i64);
+    k.pin_clock(None);
+
+    // Nothing unpublished is counted.
+    let gone = format!("{base}/public/help/lists/help/nothing");
+    let client = reqwest::Client::new();
+    let r = client.post(&gone).header("sec-fetch-site", "same-origin").body("do=view").send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 404);
 }

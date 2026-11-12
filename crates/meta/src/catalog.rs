@@ -929,6 +929,20 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>, cu
             return Err(format!("action {}: invalid permission {}", a.name, a.permission));
         }
         compile(e, &format!("action {}", a.name), a.condition.as_deref(), true)?;
+        if let Some(p) = a.params.iter().find(|p| {
+            let files = p.ptype == "files";
+            (p.max_files.is_some() || p.max_bytes.is_some() || !p.accept.is_empty()) && !files
+                || files
+                    && (p.max_files.is_some_and(|n| n == 0 || n > crate::MAX_PARAM_FILES) || p.max_bytes.is_some_and(|b| b == 0 || b > crate::MAX_PARAM_BYTES))
+        }) {
+            return Err(format!(
+                "action {}: parameter '{}': limits on files belong to a files parameter (1 to {} files, each at most {} MB)",
+                a.name,
+                p.name,
+                crate::MAX_PARAM_FILES,
+                crate::MAX_PARAM_BYTES >> 20
+            ));
+        }
         if let Some(p) = a.params.iter().find(|p| p.secret && !["data", "text"].contains(&p.ptype.as_str())) {
             return Err(format!("action {}: secret parameter '{}' is data or text", a.name, p.name));
         }
