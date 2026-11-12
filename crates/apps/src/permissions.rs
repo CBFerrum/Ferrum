@@ -244,6 +244,8 @@ fn describe(op: &OverlayOp) -> String {
         OverlayOp::RedefineEntity { entity } => format!("redefines entity {}", entity.name),
         OverlayOp::SetWorkflow { workflow } => format!("sets workflow {}", workflow.name),
         OverlayOp::SetPrintTemplate { .. } => "replaces the print template".into(),
+        OverlayOp::SetApproval { on, approval: Some(_) } => format!("asks approval before {}", on.as_str()),
+        OverlayOp::SetApproval { on, approval: None } => format!("takes away the approval before {}", on.as_str()),
         OverlayOp::AddAction { action } => format!("adds action {}", action.name),
         OverlayOp::RemoveAction { name } => format!("removes action {name}"),
         OverlayOp::DefineModule { module } => format!("defines menu {}", module.name),

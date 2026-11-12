@@ -15,6 +15,11 @@
 //! (clocks went back) is the earlier for a start and the later for an end. So a window across a gap is
 //! shorter by the gap, one across a repeated hour is longer by it, a window inside a gap is empty, and none
 //! has negative length; windows that the repeated hour makes overlap count their shared time once.
+//!
+//! Dated exceptions say what one local date is, whatever its weekday or holidays say: `open`, with its own
+//! windows (all day without them), which opens a holiday or a weekend day and replaces a weekday's hours; or
+//! closed, all day, or with windows only those hours of the day's own. A date open by an exception is a business
+//! day; one closed all day is not.
 
 use chrono::{DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc, Weekday};
 use chrono_tz::Tz;
@@ -27,6 +32,8 @@ pub const MAX_BUSINESS_DAYS: u32 = 260;
 /// How far the working-time functions look for open time, in days: five years, so that a year of open time
 /// at forty hours a week fits.
 pub const MAX_SEARCH_DAYS: u32 = 1830;
+/// Dated exceptions one calendar holds.
+pub const MAX_EXCEPTIONS: usize = 1000;
 /// The longest a wait may be, in seconds (a year).
 pub const MAX_WAIT: u64 = 31_536_000;
 
@@ -114,6 +121,34 @@ pub struct Calendar {
     /// end at most `24:00`. Left out, every hour of a business day is open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hours: Option<BTreeMap<String, Vec<(String, String)>>>,
+    /// What given local dates are, whatever the rest says: `{"2026-12-24": {"open": false, "hours": [["12:00", "24:00"]]}}`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exceptions: BTreeMap<NaiveDate, Exception>,
+}
+
+/// One date's exception: open (in `hours`, all day without them), or closed (only in `hours` when given).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Exception {
+    pub open: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hours: Vec<(String, String)>,
+}
+
+/// Windows as minutes of the day, sorted, or what is wrong with them (`what` names them).
+fn spans_of(what: &str, windows: &[(String, String)]) -> Result<Vec<(u32, u32)>, String> {
+    let mut spans = vec![];
+    for (s, e) in windows {
+        match (minute(s), minute(e)) {
+            (Some(a), Some(b)) if a < b => spans.push((a, b)),
+            _ => return Err(format!("{what} {s}–{e} is not a window (HH:MM to a later HH:MM, at most 24:00)")),
+        }
+    }
+    spans.sort();
+    if spans.windows(2).any(|w| w[1].0 < w[0].1) {
+        return Err(format!("the windows of {what} overlap"));
+    }
+    Ok(spans)
 }
 
 /// An open stretch of time, `[start, end)`.
@@ -164,6 +199,12 @@ impl Calendar {
         if off.len() >= 7 {
             return Some("a calendar needs at least one business day a week".to_string());
         }
+        if self.exceptions.len() > MAX_EXCEPTIONS {
+            return Some(format!("exceptions: at most {MAX_EXCEPTIONS} dates"));
+        }
+        if let Some(p) = self.exceptions.iter().find_map(|(d, x)| spans_of(&d.to_string(), &x.hours).err()) {
+            return Some(format!("exceptions: {p}"));
+        }
         let hours = self.hours.as_ref()?;
         for (day, windows) in hours {
             if weekday(day).is_none() {
@@ -172,23 +213,25 @@ impl Calendar {
             if !windows.is_empty() && off.contains(day.as_str()) {
                 return Some(format!("hours: {day} is a weekend day, so it has no hours"));
             }
-            let mut spans = vec![];
-            for (s, e) in windows {
-                match (minute(s), minute(e)) {
-                    (Some(a), Some(b)) if a < b => spans.push((a, b)),
-                    _ => return Some(format!("hours: {day} {s}–{e} is not a window (HH:MM to a later HH:MM, at most 24:00)")),
-                }
-            }
-            spans.sort();
-            if spans.windows(2).any(|w| w[1].0 < w[0].1) {
-                return Some(format!("hours: the windows of {day} overlap"));
+            if let Err(p) = spans_of(day, windows) {
+                return Some(format!("hours: {p}"));
             }
         }
         (!hours.values().any(|w| !w.is_empty())).then(|| "hours: a calendar with hours needs at least one window a week".to_string())
     }
 
-    fn business(&self, d: NaiveDate) -> bool {
+    /// A business day by its weekday and holidays alone.
+    fn regular(&self, d: NaiveDate) -> bool {
         !self.weekends.iter().filter_map(|w| weekday(w)).any(|w| w == d.weekday()) && !self.holidays.contains(&d)
+    }
+
+    /// A business day, its exception first: open makes it one, closed all day takes it away.
+    fn business(&self, d: NaiveDate) -> bool {
+        match self.exceptions.get(&d) {
+            Some(x) if x.open => true,
+            Some(x) if x.hours.is_empty() => false,
+            _ => self.regular(d),
+        }
     }
 
     /// `days` business days after `from`, at the same local time.
@@ -230,13 +273,45 @@ impl Calendar {
 
     /// The open windows of a local date, as instants (see the module's header for skipped and repeated times).
     fn windows(&self, tz: &Tz, d: NaiveDate) -> Vec<Span> {
-        if !self.business(d) {
-            return vec![];
-        }
-        let mut spans: Vec<(u32, u32)> = match &self.hours {
-            None => vec![(0, 1440)],
-            Some(h) => {
-                h.get(DAYS[d.weekday().num_days_from_monday() as usize]).into_iter().flatten().filter_map(|(s, e)| Some((minute(s)?, minute(e)?))).collect()
+        let own = || -> Vec<(u32, u32)> {
+            if !self.regular(d) {
+                return vec![];
+            }
+            match &self.hours {
+                None => vec![(0, 1440)],
+                Some(h) => {
+                    h.get(DAYS[d.weekday().num_days_from_monday() as usize]).into_iter().flatten().filter_map(|(s, e)| Some((minute(s)?, minute(e)?))).collect()
+                }
+            }
+        };
+        let given = |x: &Exception| spans_of("", &x.hours).unwrap_or_default();
+        let mut spans: Vec<(u32, u32)> = match self.exceptions.get(&d) {
+            None => own(),
+            Some(x) if x.open && x.hours.is_empty() => vec![(0, 1440)],
+            Some(x) if x.open => given(x),
+            Some(x) if x.hours.is_empty() => vec![],
+            // Closed in some hours: the day's own windows without them.
+            Some(x) => {
+                let shut = given(x);
+                own()
+                    .into_iter()
+                    .flat_map(|(s, e)| {
+                        let (mut cur, mut out) = (s, vec![]);
+                        for &(a, b) in &shut {
+                            if b <= cur || a >= e {
+                                continue;
+                            }
+                            if a > cur {
+                                out.push((cur, a));
+                            }
+                            cur = cur.max(b);
+                        }
+                        if cur < e {
+                            out.push((cur, e));
+                        }
+                        out
+                    })
+                    .collect()
             }
         };
         spans.sort();
@@ -402,6 +477,7 @@ mod tests {
             holidays: holidays.iter().map(|d| d.parse().unwrap()).collect(),
             revision,
             hours: None,
+            exceptions: Default::default(),
         }
     }
 
@@ -437,7 +513,15 @@ mod tests {
 
     #[test]
     fn a_skipped_local_time_moves_past_the_gap_and_a_repeated_one_takes_the_earlier() {
-        let ny = Calendar { name: "ny".into(), zone: "America/New_York".into(), weekends: vec![], holidays: BTreeSet::new(), revision: 1, hours: None };
+        let ny = Calendar {
+            name: "ny".into(),
+            zone: "America/New_York".into(),
+            weekends: vec![],
+            holidays: BTreeSet::new(),
+            revision: 1,
+            hours: None,
+            exceptions: Default::default(),
+        };
         // 02:30 on 8 March 2026 does not exist in New York (clocks go from 02:00 to 03:00).
         let from = Tz::America__New_York.with_ymd_and_hms(2026, 3, 7, 2, 30, 0).unwrap().with_timezone(&Utc);
         let d = ny.add_business_days(from, 1).unwrap();
@@ -471,6 +555,7 @@ mod tests {
             holidays: holidays.iter().map(|d| d.parse().unwrap()).collect(),
             revision: 3,
             hours: serde_json::from_value(hours).unwrap(),
+            exceptions: Default::default(),
         }
     }
 
@@ -638,6 +723,66 @@ mod tests {
         let halves = all(json!({"sun": [["02:00", "02:30"], ["02:30", "03:00"]]}));
         assert_eq!(day(&halves, "2026-10-25"), Duration::hours(2));
         assert_eq!(halves.add_working(utc("2026-10-25T00:00:00Z"), 2 * H, &[]).unwrap(), utc("2026-10-25T02:00:00Z"));
+    }
+
+    #[test]
+    fn dated_exceptions_open_and_close_days_and_hours() {
+        let with = |x: Value| Calendar { exceptions: serde_json::from_value(x).unwrap(), ..office() };
+        let c = with(json!({
+            // The holiday (Wednesday) opens in the morning; Saturday opens all day; Friday closes from 12:00;
+            // Thursday closes all day; Tuesday has other hours.
+            "2026-11-11": {"open": true, "hours": [["10:00", "12:00"]]},
+            "2026-11-14": {"open": true},
+            "2026-11-13": {"open": false, "hours": [["12:00", "24:00"]]},
+            "2026-11-12": {"open": false},
+            "2026-11-10": {"open": true, "hours": [["07:00", "08:00"]]}
+        }));
+        let between = |a: &str, b: &str| c.working_between(ist(a), ist(b), &[]).unwrap();
+        assert_eq!(between("2026-11-11 00:00", "2026-11-12 00:00"), Duration::hours(2), "the holiday, open in the morning");
+        assert_eq!(between("2026-11-14 00:00", "2026-11-15 00:00"), Duration::hours(24), "a weekend day open all day");
+        assert_eq!(between("2026-11-13 00:00", "2026-11-14 00:00"), Duration::hours(3), "closed from 12:00: 09:00-12:00 is left");
+        assert_eq!(between("2026-11-12 00:00", "2026-11-13 00:00"), Duration::zero(), "closed all day");
+        assert_eq!(between("2026-11-10 00:00", "2026-11-11 00:00"), Duration::hours(1), "its own hours replace the day's");
+        assert_eq!(between("2026-11-09 00:00", "2026-11-10 00:00"), Duration::hours(8), "other days as before");
+        assert!(c.is_open(ist("2026-11-11 10:30")) && !c.is_open(ist("2026-11-11 12:30")));
+        assert!(c.is_open(ist("2026-11-13 11:59")) && !c.is_open(ist("2026-11-13 14:30")));
+        assert!(!c.is_open(ist("2026-11-10 09:30")) && c.is_open(ist("2026-11-10 07:30")));
+        assert_eq!(c.next_open(ist("2026-11-11 12:00")).unwrap(), ist("2026-11-13 09:00"), "past the day closed all day");
+        assert_eq!(c.add_working(ist("2026-11-13 11:00"), 2 * H, &[]).unwrap(), ist("2026-11-14 01:00"), "on into the opened Saturday");
+        // Business days count what the exceptions make of a date; one closed only some hours still counts.
+        let days = |from: &str, n: u32| c.add_business_days(ist(from), n).unwrap().at;
+        assert_eq!(days("2026-11-10 10:00", 1), ist("2026-11-11 10:00"), "the opened holiday is one");
+        assert_eq!(days("2026-11-11 10:00", 1), ist("2026-11-13 10:00"), "the day closed all day is not");
+        assert_eq!(days("2026-11-13 10:00", 1), ist("2026-11-14 10:00"), "nor is it lost to one closed from noon");
+        // Checked like hours, and read and written as the API takes it.
+        assert!(with(json!({"2026-11-13": {"open": false, "hours": [["13:00", "12:00"]]}})).problem().unwrap().starts_with("exceptions:"));
+        assert!(with(json!({"2026-11-13": {"open": true, "hours": [["09:00", "12:00"], ["11:00", "13:00"]]}})).problem().unwrap().contains("overlap"));
+        assert!(
+            serde_json::from_value::<Calendar>(json!({"name": "x", "zone": "UTC", "weekends": [], "holidays": [], "revision": 1,
+            "exceptions": {"2026-11-13": {"closed": true}}}))
+            .is_err()
+        );
+        assert_eq!(serde_json::from_value::<Calendar>(serde_json::to_value(&c).unwrap()).unwrap(), c);
+        assert!(!serde_json::to_value(office()).unwrap().as_object().unwrap().contains_key("exceptions"), "none: as before");
+    }
+
+    #[test]
+    fn exceptions_on_a_daylight_saving_day() {
+        // Sunday 29 March 2026 in Berlin has 23 hours; 25 October 25.
+        let c = Calendar {
+            exceptions: serde_json::from_value(json!({
+                "2026-03-29": {"open": true},
+                "2026-10-25": {"open": true, "hours": [["01:00", "04:00"]]},
+                "2026-10-26": {"open": false, "hours": [["02:00", "03:00"]]}
+            }))
+            .unwrap(),
+            ..calendar("Europe/Berlin", &["sun"], &[], json!({"mon": [["01:00", "04:00"]]}))
+        };
+        let day = |d: &str| c.working_between(berlin(&format!("{d} 00:00")), berlin(&format!("{d} 23:59")) + Duration::minutes(1), &[]).unwrap();
+        assert_eq!(day("2026-03-29"), Duration::hours(23), "a weekend day opened whole is as long as the day");
+        assert_eq!(day("2026-10-25"), Duration::hours(4), "its window across the repeated hour is longer by it");
+        assert_eq!(day("2026-10-26"), Duration::hours(2), "closed an hour of the Monday's window");
+        assert_eq!(day("2026-03-22"), Duration::zero(), "other Sundays stay closed");
     }
 
     #[test]

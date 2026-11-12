@@ -57,6 +57,7 @@ CONNECT = ("-p", "ferrum-kernel", "--test", "connect_it")
 COLLAB = ("-p", "ferrum-kernel", "--test", "collab_it")
 TRANSITIONS = ("-p", "ferrum-kernel", "--test", "transitions_it")
 APPROVALS = ("-p", "ferrum-kernel", "--test", "approvals_it")
+DOCUMENT_APPROVALS = ("-p", "ferrum-kernel", "--test", "document_approvals_it")
 HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
@@ -164,7 +165,7 @@ MUTANTS = [
     ("clock-end-takes-earlier", "crates/logic/src/calendar.rs", "Some((at(s, false)?, at(e, true)?))", "Some((at(s, false)?, at(e, false)?))", LOGIC_UNIT),
     ("clock-repeat-counted-twice", "crates/logic/src/calendar.rs", ".filter(|(s2, _)| *s2 < e)", ".filter(|_| false)", LOGIC_UNIT),
     ("clock-stopped-ignored", "crates/logic/src/calendar.rs", ".filter(|&(a, b)| a < b && b > from)", ".filter(|_| false)", LOGIC_UNIT),
-    ("clock-holiday-open", "crates/logic/src/calendar.rs", "        if !self.business(d) {\n            return vec![];", "        if false {\n            return vec![];", LOGIC_UNIT),
+    ("clock-holiday-open", "crates/logic/src/calendar.rs", "            if !self.regular(d) {\n                return vec![];", "            if false {\n                return vec![];", LOGIC_UNIT),
     ("rule-writes-the-apps-field", "crates/logic/src/compile.rs", "if !f.customer {", "if false && !f.customer {", LOGIC_UNIT),
     ("deprecation-unsaid", "crates/logic/src/compile.rs", "if let Some(why) = &c.deprecated {", "if let Some(why) = c.deprecated.as_ref().filter(|_| false) {", LOGIC_UNIT),
     ("erasure-misses-run-copies", "crates/kernel/src/privacy.rs", "let runs = crate::process::erase_run_copies(tx, ctx.tenant, entity, id, fields).await?;", "let runs = 0u64;", PROCESS_RECORDS),
@@ -659,6 +660,15 @@ MUTANTS = [
     ("transition-approval-not-rechecked", "crates/kernel/src/approvals.rs", "        if !still {", "        if false {", APPROVALS),
     ("transition-approval-stand-in-requester", "crates/kernel/src/approvals.rs", "if out.contains(&ctx.user) || out.contains(&person) {", "if out.contains(&person) {", APPROVALS),
     ("transition-approval-reject-without-reason", "crates/kernel/src/approvals.rs", "if !approve && comment.is_none() {", "if false {", APPROVALS),
+    ("approver-reads-after-deciding", "crates/kernel/src/approvals.rs", "and d.decider = $5))", "and false))", APPROVALS),
+    ("approver-reads-any-record", "crates/kernel/src/approvals.rs", "and entity = $2 and record_id = $3 and status = 'pending' and exists (", "and entity = $2 and ($3::uuid is not null) and status = 'pending' and exists (", APPROVALS),
+    ("approver-sees-hidden-fields", "crates/kernel/src/approvals.rs", "let mut doc = self.mask(ctx, &ent, full.clone());", "let mut doc = full.clone();", APPROVALS),
+    ("document-approval-skipped", "crates/kernel/src/doc.rs", "let Some(a) = ent.document_approvals.get(&on) else {", "let Some(a) = ent.document_approvals.get(&on).filter(|_| false) else {", DOCUMENT_APPROVALS),
+    ("document-approval-system-bypasses", "crates/kernel/src/doc.rs", "if ctx.is_system && a.policy.system_bypass {", "if ctx.is_system {", DOCUMENT_APPROVALS),
+    ("document-approval-completes-as-system", "crates/kernel/src/approvals.rs", "Some(u) => self.load_ctx(ctx.tenant, u, None, ctx.request_id.clone()).await,", "Some(_) => Ok(crate::actions::system(ctx)),", DOCUMENT_APPROVALS),
+    ("document-approval-lock-ignored", "crates/kernel/src/approvals.rs", "        if policy.lock {", "        if false {", DOCUMENT_APPROVALS),
+    ("calendar-exception-ignored", "crates/logic/src/calendar.rs", "        match self.exceptions.get(&d) {\n            Some(x) if x.open => true,", "        match self.exceptions.get(&d).filter(|_| false) {\n            Some(x) if x.open => true,", LOGIC_UNIT),
+    ("calendar-closed-hours-ignored", "crates/logic/src/calendar.rs", "                            if a > cur {\n                                out.push((cur, a));", "                            if a > cur && false {\n                                out.push((cur, a));", LOGIC_UNIT),
     ("transition-approval-names-unchecked", "crates/kernel/src/customize.rs", "        crate::approvals::check_names(tx, ctx.tenant, was, &now).await?;\n", "\n", APPROVALS),
     # Service targets (docs/api.md, Service targets).
     ("target-pause-ignored", "crates/logic/src/target.rs", "        if running && said.pause {", "        if false {", LOGIC_UNIT),
