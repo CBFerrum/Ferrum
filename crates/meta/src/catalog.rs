@@ -821,6 +821,9 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>, cu
             return Err(format!("action {}: invalid permission {}", a.name, a.permission));
         }
         compile(e, &format!("action {}", a.name), a.condition.as_deref(), true)?;
+        if let Some(p) = a.params.iter().find(|p| p.secret && !["data", "text"].contains(&p.ptype.as_str())) {
+            return Err(format!("action {}: secret parameter '{}' is data or text", a.name, p.name));
+        }
         if let Some(c) = &a.contract {
             validate_contract(e, a, c)?;
         }
@@ -892,6 +895,12 @@ fn validate_contract(e: &EntityDef, a: &ActionDef, c: &ActionContract) -> Result
     }
     if c.completion.as_deref().is_some_and(|t| t.trim().is_empty()) {
         return Err(format!("action {}: completion says nothing", a.name));
+    }
+    if let Some(once) = &c.answer_once {
+        let declared = c.returns.as_ref().and_then(|r| r.get("properties")).and_then(Value::as_object);
+        if once.fields.is_empty() || once.fields.iter().any(|f| !is_ident(f) || declared.is_some_and(|d| !d.contains_key(f))) {
+            return Err(format!("action {}: answer_once names fields of what it returns", a.name));
+        }
     }
     Ok(())
 }
@@ -1110,6 +1119,9 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
         let mut names = HashSet::new();
         if let Some(p) = t.params.iter().find(|p| p.name.trim().is_empty() || !names.insert(p.name.as_str())) {
             return Err(format!("transition {}: parameter '{}' is unnamed or named twice", t.action, p.name));
+        }
+        if let Some(p) = t.params.iter().find(|p| p.secret) {
+            return Err(format!("transition {}: parameter '{}' cannot be secret: a transition keeps what it is given", t.action, p.name));
         }
         if let Some(p) = &t.approval {
             validate_approval(e, &format!("transition {}: approval", t.action), Some((wf, &t.from)), p)?;
@@ -1398,6 +1410,12 @@ mod tests {
         assert!(refused("[{name: place, label: Place, contract: {compensate_with: place}}]").contains("place"), "an action cannot undo itself");
         assert!(with_actions("[{name: place, label: Place, contract: {compensate_with: release}}, {name: release, label: Release}]").is_ok());
         assert!(refused("[{name: place, label: Place, contract: {returns: 3}}]").contains("returns"));
+        // A secret parameter is text; what is given once is a field of what it returns.
+        assert!(with_actions("[{name: redeem, label: Redeem, params: [{name: pin, label: PIN, secret: true}]}]").is_ok());
+        assert!(refused("[{name: redeem, label: Redeem, params: [{name: pin, label: PIN, type: int, secret: true}]}]").contains("data or text"));
+        let once = "contract: {returns: {type: object, properties: {code: {type: string}}}, answer_once: {fields: [code]}}";
+        assert!(with_actions(&format!("[{{name: issue, label: Issue, {once}}}]")).is_ok());
+        assert!(refused(&format!("[{{name: issue, label: Issue, {}}}]", once.replace("[code]", "[pin]"))).contains("answer_once"));
         let unknown = serde_yaml::from_str::<ActionDef>("{name: place, label: Place, contract: {effect: query, sideways: true}}");
         assert!(unknown.unwrap_err().to_string().contains("sideways"), "unknown keys are refused when the package is read");
     }

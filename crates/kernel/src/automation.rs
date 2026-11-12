@@ -115,6 +115,9 @@ pub enum AutomationAction {
         /// (`results[0]`). One that gives nothing (a step that did not run) attaches nothing.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<String>,
+        /// Names of `values` that are secret: sent, but kept nowhere once handed over (`messages::Message::secret`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        secret: Vec<String>,
     },
     /// A document from a template (BD-21) for the record, rendered as the workspace holds it, its secret fields left
     /// out; stored on the record in the run's transaction, named by `name` (an expression; else the template's label
@@ -325,6 +328,11 @@ pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
     }
     if let AutomationAction::Email { template: Some(t), .. } = a {
         mail_template(t)?;
+    }
+    if let AutomationAction::Message { values, secret, .. } = a
+        && let Some(n) = secret.iter().find(|n| !values.contains_key(*n))
+    {
+        return Err(Error::invalid(format!("message: secret names {n}, which is not one of its values")));
     }
     if let AutomationAction::Message { to, channels, .. } = a {
         let fits = |t: &String| {
@@ -1121,7 +1129,7 @@ pub(crate) async fn execute(
             };
             return Ok(serde_json::json!(crate::messages::send(k, tx, ctx, &m).await?));
         }
-        AutomationAction::Message { template, to, channels, all, values, attachments } => {
+        AutomationAction::Message { template, to, channels, all, values, attachments, secret } => {
             let mut given = Map::new();
             for (name, expr) in values {
                 given.insert(name, eval(&expr)?);
@@ -1144,6 +1152,7 @@ pub(crate) async fn execute(
                 all,
                 values: given,
                 attachments: files,
+                secret,
             };
             return Ok(serde_json::json!(crate::messages::send(k, tx, ctx, &m).await?));
         }

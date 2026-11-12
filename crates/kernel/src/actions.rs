@@ -182,7 +182,7 @@ pub(crate) async fn run(
     // An `invoke` without a key of its own does its step once per action, record version (as pressed) and place.
     let origin = format!("action:{}.{}:{id}:v{}:", ent.def.name, def.name, doc.get("version").unwrap_or(&Value::Null));
     let made = run_effects(k, ctx, tx, ent, id, &def.effects, &params, &origin).await?;
-    crate::audit::record(tx, ctx, &ent.def.name, id, &format!("action:{}", def.name), None, params).await?;
+    crate::audit::record(tx, ctx, &ent.def.name, id, &format!("action:{}", def.name), None, def.redacted(&params)).await?;
     let after = k.get_tx(&system(ctx), tx, &ent.def.name, id, false).await?;
     let mut answer = serde_json::Map::new();
     if let Some(s) = after.get("status").filter(|s| s.is_string()) {
