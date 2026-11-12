@@ -424,6 +424,8 @@ mod tests {
             summary: Some("body".into()),
             frame_origins: vec![],
             indexed,
+            counts_views: false,
+            counts_votes: false,
         }
     }
 
@@ -435,8 +437,23 @@ mod tests {
         assert!(html.contains("&lt;img src=x onerror=alert(1)&gt;") && html.contains("A &amp; B &lt;Co&gt;") && html.contains("&quot;quoted&quot;"));
         assert!(html.contains(r#"href="/api/public/acme/lists/permits.csv""#) && html.contains("noindex"));
         assert!(!html.contains("canonical") && !html.contains("<form"), "a list without a slug is kept from search engines, as before");
-        let csp = policy(&[]);
+        let csp = policy(&[], false);
         assert!(csp.starts_with("default-src 'none'; style-src 'sha256-") && !csp.contains("script-src") && !csp.contains("unsafe"), "{csp}");
+    }
+
+    /// A record page counting views runs its one beacon, allowed by its digest alone, posting to the page itself; one
+    /// counting votes has the two answers as forms (BD-42).
+    #[test]
+    fn a_counting_page_runs_its_beacon_only() {
+        let mut p = published(true);
+        (p.counts_views, p.counts_votes) = (true, true);
+        let html = detail_of(&p, "acme", "help", "reset password", None);
+        assert!(html.contains(&format!("<script>{BEACON}</script>")) && html.matches("<script").count() == 1, "{html}");
+        assert!(html.contains(r#"name="do" value="up""#) && html.contains(r#"name="do" value="down""#), "{html}");
+        let csp = policy(&[], true);
+        assert!(csp.contains(&format!("script-src 'sha256-{}'", sha(BEACON))) && csp.contains("connect-src 'self'") && !csp.contains("unsafe"), "{csp}");
+        p.counts_views = false;
+        assert!(!detail_of(&p, "acme", "help", "reset password", None).contains("<script"));
     }
 
     #[test]
@@ -459,10 +476,10 @@ mod tests {
 
     #[test]
     fn a_page_is_framed_only_by_the_origins_it_names() {
-        let denied = html_response(StatusCode::OK, String::new(), false, &[]);
+        let denied = html_response(StatusCode::OK, String::new(), false, &[], false);
         let csp = denied.headers().get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap().to_string();
         assert!(csp.ends_with("frame-ancestors 'none'") && denied.headers().get(header::X_FRAME_OPTIONS).unwrap() == "DENY", "{csp}");
-        let allowed = html_response(StatusCode::OK, String::new(), false, &["https://shop.example".into()]);
+        let allowed = html_response(StatusCode::OK, String::new(), false, &["https://shop.example".into()], false);
         let csp = allowed.headers().get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap().to_string();
         assert!(csp.ends_with("frame-ancestors https://shop.example") && allowed.headers().get(header::X_FRAME_OPTIONS).is_none(), "{csp}");
     }
