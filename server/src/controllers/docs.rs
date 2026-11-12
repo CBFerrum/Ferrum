@@ -122,7 +122,7 @@ async fn create(
 async fn read(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>, Query(p): Query<ReadParams>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let titles = p.titles.unwrap_or(true) || ctx.schema.entity(&entity).is_some_and(|e| e.headed_by_link());
-    Ok(doc_response(st.kernel.get(&ctx, &entity, id, titles).await?, StatusCode::OK))
+    Ok(doc_response(st.kernel.read_record(&ctx, &entity, id, titles).await?, StatusCode::OK))
 }
 
 /// The receipt a write is sent under (`Idempotency-Key`, and the client's `Idempotency-Digest` when its body

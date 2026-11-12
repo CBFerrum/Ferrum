@@ -1128,6 +1128,10 @@ pub struct ApprovalPolicy {
     /// The state a rejection moves the record to (one of the same document status); without it the record stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_reject: Option<String>,
+    /// Fields an approver reading the record while their decision is pending sees though a field group hides them
+    /// from them (none by default).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub show: Vec<String>,
 }
 
 /// One step of an approval policy.

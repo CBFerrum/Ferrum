@@ -7,7 +7,7 @@
 use chrono::{DateTime, Duration, Utc};
 use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::tenant::NewTenant;
-use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings};
+use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery};
 use ferrum_meta::{Catalog, PermissionDef};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -381,4 +381,79 @@ async fn scenario() {
     assert_eq!(asked["_approval"]["status"], json!("pending"));
     k.decide_approval(&as_(dir).await, "Uom", unit, true, None).await.unwrap();
     assert_eq!(k.get(&admin, "Uom", unit, false).await.unwrap()["workflow_state"], json!("Retired"));
+
+    // ───────────── an approver with no role on the entity reads the one record awaiting them, while it does ─────────────
+    batch(vec![
+        op("XClaimLine", json!({"op": "define_entity", "entity": {"name": "XClaimLine", "label": "Claim Line", "kind": "child", "fields": [{"name": "item", "type": "data"}]}})),
+        op(
+            "XClaim",
+            json!({"op": "define_entity", "entity": {"name": "XClaim", "label": "Claim", "kind": "document", "title_field": "title", "fields": [
+                {"name": "title", "type": "data"}, {"name": "approver", "type": "data"}, {"name": "second", "type": "data"},
+                {"name": "salary", "type": "int", "perm_group": "pay"}, {"name": "bank", "type": "data", "perm_group": "bank"},
+                {"name": "lines", "type": "table", "of": "XClaimLine"}]}}),
+        ),
+        op(
+            "XClaim",
+            json!({"op": "set_workflow", "workflow": {"name": "claims", "entity": "XClaim", "initial_state": "Draft",
+                "states": [{"name": "Draft"}, {"name": "Paid"}],
+                "transitions": [{"action": "Pay", "from": "Draft", "to": "Paid", "approval": {"show": ["salary"], "steps": [
+                    {"label": "First", "approvers": {"field": "approver"}}, {"label": "Second", "approvers": {"field": "second"}}]}}]}}),
+        ),
+    ])
+    .await
+    .expect("claims");
+    let mut p = json!({"show": ["nope"], "steps": [{"label": "First", "approvers": {"field": "approver"}}]});
+    let e = batch(vec![op(
+        "XClaim",
+        json!({"op": "set_workflow", "workflow": {"name": "claims", "entity": "XClaim", "initial_state": "Draft",
+        "states": [{"name": "Draft"}, {"name": "Paid"}], "transitions": [{"action": "Pay", "from": "Draft", "to": "Paid", "approval": p.take()}]}}),
+    )])
+    .await
+    .unwrap_err();
+    assert!(e.contains("show: nope is not a field"), "{e}");
+    let admin = as_(root).await;
+    k.set_role_permission(&admin, "Staff", &PermissionDef { entity: "XClaim".into(), read: true, write: true, create: true, ..Default::default() })
+        .await
+        .unwrap();
+    let out1 = person("out1@firm.test", &[]).await;
+    let out2 = person("out2@firm.test", &[]).await;
+    let out3 = person("out3@firm.test", &[]).await;
+    let (annc, out1c, out2c, out3c) = (as_(ann).await, as_(out1).await, as_(out2).await, as_(out3).await);
+    let claim = |title: &'static str| {
+        let (k, admin) = (k.clone(), admin.clone());
+        async move {
+            let d = json!({"title": title, "approver": out1.to_string(), "second": out2.to_string(), "salary": 5000, "bank": "DE00 1234",
+                "lines": [{"item": "Taxi"}]});
+            id_of(&k.insert(&admin, "XClaim", obj(d)).await.unwrap())
+        }
+    };
+    let (paid, other, taken_back) = (claim("Paid").await, claim("Other").await, claim("Taken back").await);
+    refused(k.read_record(&out1c, "XClaim", paid, false).await, "not permitted");
+    k.transition(&annc, "XClaim", paid, "Pay", None).await.unwrap();
+    let seen = k.read_record(&out1c, "XClaim", paid, true).await.expect("the approver reads the record awaiting them");
+    assert_eq!((seen["title"].as_str(), seen["lines"][0]["item"].as_str()), (Some("Paid"), Some("Taxi")), "with its lines");
+    assert_eq!(seen["salary"], json!(5000), "a field the policy shows them");
+    assert!(seen.get("bank").is_none(), "a field group not shown stays hidden: {seen:?}");
+    assert!(k.audit_trail(&out1c, "XClaim", paid).await.is_ok(), "and its history");
+    refused(k.read_record(&out1c, "XClaim", other, false).await, "not permitted");
+    refused(k.read_record(&out2c, "XClaim", paid, false).await, "not permitted");
+    refused(k.get(&out1c, "XClaim", paid, false).await, "not permitted");
+    refused(k.list(&out1c, "XClaim", &ListQuery::default()).await, "not permitted");
+    refused(k.update(&out1c, "XClaim", paid, obj(json!({"title": "Mine"})), None).await, "not permitted");
+    k.decide_approval(&out1c, "XClaim", paid, true, None).await.expect("the first decides");
+    refused(k.read_record(&out1c, "XClaim", paid, false).await, "not permitted");
+    // The second step is theirs: away, their stand-in reads and decides for them.
+    let today = Utc::now().date_naive();
+    k.set_away(&out2c, out2, today, today + Duration::days(1), out3, "leave").await.unwrap();
+    k.read_record(&out3c, "XClaim", paid, false).await.expect("the stand-in reads it");
+    k.decide_approval(&out3c, "XClaim", paid, true, None).await.expect("the stand-in decides");
+    assert_eq!(k.get(&admin, "XClaim", paid, false).await.unwrap()["workflow_state"], json!("Paid"));
+    for c in [&out1c, &out2c, &out3c] {
+        refused(k.read_record(c, "XClaim", paid, false).await, "not permitted");
+    }
+    // Recalled, the access ends with it.
+    k.transition(&annc, "XClaim", taken_back, "Pay", None).await.unwrap();
+    k.read_record(&out1c, "XClaim", taken_back, false).await.expect("while pending");
+    k.recall_approval(&annc, "XClaim", taken_back).await.unwrap();
+    refused(k.read_record(&out1c, "XClaim", taken_back, false).await, "not permitted");
 }

@@ -1121,6 +1121,9 @@ fn validate_approval(e: &EntityDef, wf: &WorkflowDef, t: &crate::types::Workflow
     if let Some(f) = p.reset_on.iter().find(|f| !e.fields.iter().any(|x| &x.name == *f)) {
         return Err(format!("{what}: reset_on: {f} is not a field"));
     }
+    if let Some(f) = p.show.iter().find(|f| !e.fields.iter().any(|x| &x.name == *f)) {
+        return Err(format!("{what}: show: {f} is not a field"));
+    }
     if let Some(s) = &p.on_reject {
         let status = |name: &str| wf.states.iter().find(|x| x.name == name).map(|x| x.docstatus);
         if status(s).is_none() || status(s) != status(&t.from) {
