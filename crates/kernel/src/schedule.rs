@@ -525,6 +525,10 @@ impl Kernel {
                 if let Err(e) = k.sweep_pulls_at(Utc::now()).await {
                     tracing::warn!("connection pulls: {e}");
                 }
+                // Sign-ins about to expire, refreshed ahead (connections/oauth.rs).
+                if let Err(e) = k.sweep_tokens_at(Utc::now()).await {
+                    tracing::warn!("connection sign-ins: {e}");
+                }
                 // Approvals owed a reminder or an escalation (approvals.rs); a full pass looks again at once.
                 let more = more
                     | match k.sweep_approvals_at(Utc::now()).await {

@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 pub mod inbound;
+pub mod oauth;
 pub mod pull;
 
 pub const CALL_KIND: &str = "platform.connection.call";
@@ -138,6 +139,12 @@ pub enum Auth {
         encoding: Encoding,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         prefix: String,
+    },
+    /// Tokens a person's sign-in at the provider gave (BD-31): the workspace's account, or each person's own.
+    Oauth {
+        #[serde(default)]
+        owner: oauth::Owner,
+        provider: oauth::Provider,
     },
 }
 
@@ -256,6 +263,11 @@ impl Description {
                 return Some("auth.secret names one of the connection's secrets".into());
             }
             Auth::Basic { .. } | Auth::Bearer { .. } => {}
+            Auth::Oauth { provider, .. } => {
+                if let Some(p) = provider.problem() {
+                    return Some(p);
+                }
+            }
         }
         if let Auth::Signed { timestamp_header: Some(h), .. } = &self.auth
             && let Some(p) = header_problem(h)
@@ -545,7 +557,7 @@ impl Loaded {
         self.secrets.values().cloned().collect()
     }
 
-    fn secret(&self, name: &str) -> Result<&str> {
+    pub(crate) fn secret(&self, name: &str) -> Result<&str> {
         self.secrets
             .get(name)
             .map(String::as_str)
@@ -714,27 +726,40 @@ impl Kernel {
     ) -> Result<Outcome> {
         let op = conn.desc.operations.get(name).ok_or_else(|| Error::invalid(format!("{} has no operation {name}", conn.name)))?;
         let started = Instant::now();
-        let mask = conn.mask();
+        let mut mask = conn.mask();
         let mut debug = None;
         let answered = if conn.desc.test {
             let f = op.fixture.clone().unwrap_or_else(|| json!({"status": 200, "body": {}}));
             Ok(Answer { status: f["status"].as_u64().unwrap_or(200) as u16, body: f.get("body").cloned().unwrap_or(Value::Null) })
         } else {
-            match self.build_request(ctx, conn, op, inputs, key, extra).await {
-                Ok((req, more_mask)) => {
-                    let mask: Vec<String> = mask.iter().cloned().chain(more_mask).collect();
-                    if conn.debug {
-                        debug = Some(json!({"request": captured(&req, &mask)}));
+            let mut tries = 0;
+            let got = loop {
+                tries += 1;
+                let got = match self.build_request(ctx, conn, op, inputs, key, extra).await {
+                    Ok((req, more)) => {
+                        mask.extend(more);
+                        if conn.debug {
+                            debug = Some(json!({"request": captured(&req, &mask)}));
+                        }
+                        let got = self.fetch(req, &conn.reach()).await;
+                        if let (Some(d), Ok(a)) = (debug.as_mut(), &got) {
+                            d["answer"] = json!({"status": a.status, "body": clipped(&masked(&a.body, &mask))});
+                        }
+                        got
                     }
-                    let got = self.fetch(req, &conn.reach()).await;
-                    if let (Some(d), Ok(a)) = (debug.as_mut(), &got) {
-                        d["answer"] = json!({"status": a.status, "body": clipped(&masked(&a.body, &mask))});
-                    }
-                    got.map_err(|e| (e, mask))
+                    Err(e) => Err(e),
+                };
+                // A token the service no longer takes: refreshed once, and the call made again.
+                if tries == 1
+                    && matches!(&got, Ok(a) if a.status == 401)
+                    && matches!(conn.desc.auth, Auth::Oauth { .. })
+                    && self.access_token(conn, ctx, true).await.is_ok()
+                {
+                    continue;
                 }
-                Err(e) => Err((e, mask.clone())),
-            }
-            .map_err(|(e, mask)| match e {
+                break got;
+            };
+            got.map_err(|e| match e {
                 Error::Unavailable(m) => Error::Unavailable(masked_text(&m, &mask)),
                 other => Error::invalid(masked_text(&other.to_string(), &mask)),
             })
@@ -841,10 +866,15 @@ impl Kernel {
     }
 
     /// Adds what proves who calls; what more it must never show.
-    async fn authenticate(&self, _ctx: &Ctx, conn: &Loaded, headers: &mut Vec<(String, String)>, body: Option<&[u8]>) -> Result<Vec<String>> {
+    async fn authenticate(&self, ctx: &Ctx, conn: &Loaded, headers: &mut Vec<(String, String)>, body: Option<&[u8]>) -> Result<Vec<String>> {
         use base64::Engine as _;
         match &conn.desc.auth {
             Auth::None => {}
+            Auth::Oauth { .. } => {
+                let token = self.access_token(conn, ctx, false).await?;
+                headers.push(("authorization".into(), format!("Bearer {token}")));
+                return Ok(vec![token]);
+            }
             Auth::Header { header, secret, prefix } => headers.push((header.clone(), format!("{prefix}{}", conn.secret(secret)?))),
             Auth::Bearer { secret } => headers.push(("authorization".into(), format!("Bearer {}", conn.secret(secret)?))),
             Auth::Basic { username, secret } => {
@@ -982,7 +1012,8 @@ impl Kernel {
         pull::keep(tx, tenant, id, d).await
     }
 
-    /// The connections, never a secret: `{id, name, label, description, enabled, secrets (names), source, refused, debug_until, inbound}`.
+    /// The connections, never a secret: `{id, name, label, description, enabled, secrets (names), account (the workspace's
+    /// signed-in account: `{status, account, expires_at}`), source, refused, debug_until, inbound}`.
     pub async fn connection_defs(&self, ctx: &Ctx) -> Result<Vec<Value>> {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
@@ -1001,7 +1032,8 @@ impl Kernel {
                     .collect(),
                 None => vec![],
             };
-            out.push(json!({"id": id, "name": name, "label": label, "description": description, "enabled": enabled, "secrets": names,
+            let account = self.workspace_account(ctx.tenant, id).await?;
+            out.push(json!({"id": id, "name": name, "label": label, "description": description, "enabled": enabled, "secrets": names, "account": account,
                             "source": source, "refused": refused, "debug_until": debug_until, "inbound": format!("/api/connections/inbound/{id}")}));
         }
         Ok(out)
@@ -1141,7 +1173,11 @@ impl JobHandler for Queued {
 }
 
 pub(crate) fn handler(kind: &str) -> Option<Arc<dyn JobHandler>> {
-    (kind == CALL_KIND).then(|| Arc::new(Queued) as Arc<dyn JobHandler>).or_else(|| inbound::handler(kind)).or_else(|| pull::handler(kind))
+    (kind == CALL_KIND)
+        .then(|| Arc::new(Queued) as Arc<dyn JobHandler>)
+        .or_else(|| inbound::handler(kind))
+        .or_else(|| pull::handler(kind))
+        .or_else(|| oauth::handler(kind))
 }
 
 #[cfg(test)]
