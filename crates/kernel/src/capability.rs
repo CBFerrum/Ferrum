@@ -486,7 +486,8 @@ impl Kernel {
             if ent.def.kind == EntityKind::Child || ctx.perms.access(&ent.def.name, Action::Read) == Access::None {
                 continue;
             }
-            let mut kinds = vec!["created", "updated", "deleted"];
+            // `opened`: a signed link to the record first acted on by its visitor (BD-38), any entity's.
+            let mut kinds = vec!["created", "updated", "deleted", "opened"];
             if ent.def.submittable {
                 kinds.extend(["submitted", "cancelled"]);
             }

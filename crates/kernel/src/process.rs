@@ -2134,6 +2134,23 @@ impl Kernel {
         Ok(())
     }
 
+    /// The working calendar `cal.name`, made from `cal` in the caller's transaction when the workspace has none of that
+    /// name (BD-43): an app's default hours. One already there is left as it is, whatever it says. Asked as the
+    /// calendars route asks (an administrator; the system always). Whether it was made.
+    pub async fn ensure_calendar_tx(&self, ctx: &Ctx, tx: &mut Tx, cal: &Calendar) -> Result<bool> {
+        require_admin(ctx)?;
+        let there: bool = sqlx::query_scalar("select exists (select 1 from logic_calendar where tenant_id = $1 and name = $2)")
+            .bind(ctx.tenant)
+            .bind(&cal.name)
+            .fetch_one(&mut **tx)
+            .await?;
+        if there {
+            return Ok(false);
+        }
+        set_calendar_in(tx, ctx, cal).await?;
+        Ok(true)
+    }
+
     /// Sets a business calendar (administrators); each change is a new revision.
     pub async fn set_logic_calendar(&self, ctx: &Ctx, cal: &Calendar) -> Result<i64> {
         require_admin(ctx)?;
