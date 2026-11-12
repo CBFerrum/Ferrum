@@ -331,14 +331,30 @@ async fn download_public(State(app): State<AppContext>, Path(id): Path<Uuid>, he
     let (name, ctype, key) = row.ok_or_else(|| ApiError(Error::NotFound("file".into())))?;
     let mut resp = streamed(&st, &key, &headers).await?;
     let h = resp.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&ctype).unwrap_or(HeaderValue::from_static("application/octet-stream")));
-    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    file_headers(h, &ctype, &name, true);
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
-    h.insert("content-security-policy", HeaderValue::from_static("default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"));
-    if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{}\"", name.replace('"', ""))) {
+    h.insert("content-security-policy", HeaderValue::from_static(FILE_SANDBOX));
+    Ok(resp)
+}
+
+/// What a file a browser would run is served under: it runs nothing and loads nothing but images of this origin.
+pub const FILE_SANDBOX: &str = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox";
+
+/// The headers a stored file is served with: its type (one kept without a type as bytes), never sniffed, by its
+/// name; `inline` where the route shows files in place, but a type a browser would run (HTML, SVG, XML, script)
+/// always as an attachment under [`FILE_SANDBOX`], so it never runs on the application's own origin.
+pub fn file_headers(h: &mut HeaderMap, ctype: &str, name: &str, inline: bool) {
+    let ctype = if ctype.trim().is_empty() { "application/octet-stream" } else { ctype };
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_str(ctype).unwrap_or(HeaderValue::from_static("application/octet-stream")));
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    let runs = ferrum_kernel::files::runs_in_browser(ctype);
+    if runs {
+        h.insert("content-security-policy", HeaderValue::from_static(FILE_SANDBOX));
+    }
+    let how = if inline && !runs { "inline" } else { "attachment" };
+    if let Ok(v) = HeaderValue::from_str(&format!("{how}; filename=\"{}\"", name.replace(['"', '\\'], ""))) {
         h.insert(header::CONTENT_DISPOSITION, v);
     }
-    Ok(resp)
 }
 
 /// A stored object as a streamed response, so a large file never sits whole in memory: the range
@@ -412,12 +428,7 @@ async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path
     let (name, ctype, key, entity, record, by, shared) = row.ok_or_else(|| ApiError(Error::NotFound("file".into())))?;
     st.kernel.may_download_file(&ctx, id, entity.as_deref(), record, by, shared).await?;
     let mut resp = streamed(&st, &key, &headers).await?;
-    let h = resp.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&ctype).unwrap_or(HeaderValue::from_static("application/octet-stream")));
-    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
-    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{}\"", name.replace('"', ""))) {
-        h.insert(header::CONTENT_DISPOSITION, v);
-    }
+    file_headers(resp.headers_mut(), &ctype, &name, false);
     Ok(resp)
 }
 
