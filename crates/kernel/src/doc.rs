@@ -81,7 +81,22 @@ impl Kernel {
         if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
-        Ok(self.mask(ctx, &ent, doc))
+        self.mask_record(ctx, tx, &ent, doc).await
+    }
+
+    /// [`Kernel::mask`] for one record the caller reached: a field a rule hides (BD-40) is left out unless another
+    /// rule reaching this record shows it.
+    pub async fn mask_record(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: Doc) -> Result<Doc> {
+        if ctx.perms.hidden(&ent.def.name).is_none() {
+            return Ok(self.mask(ctx, ent, doc));
+        }
+        let hidden = crate::ctx::record_hidden(ctx, tx, ent, &doc).await?;
+        let mut perms = (*ctx.perms).clone();
+        if let Some(e) = perms.entities.get_mut(&ent.def.name) {
+            e.hidden = hidden;
+        }
+        let ctx = Ctx { perms: std::sync::Arc::new(perms), ..ctx.clone() };
+        Ok(self.mask(&ctx, ent, doc))
     }
 
     /// Whether `ctx` may tie a file to record `id` of `entity` (`POST /api/files`, an upload's start): only whoever
@@ -197,7 +212,10 @@ impl Kernel {
             let id = r.get("id")?.as_str()?;
             Some(query::encode_cursor(ts, id))
         });
-        let mut docs: Vec<Doc> = rows.into_iter().take(limit as usize).map(|r| self.mask(ctx, &ent, store::row_to_doc(&ent, &ctx.schema, r))).collect();
+        let mut docs: Vec<Doc> = Vec::with_capacity(rows.len());
+        for r in rows.into_iter().take(limit as usize) {
+            docs.push(self.mask_record(ctx, &mut tx, &ent, store::row_to_doc(&ent, &ctx.schema, r)).await?);
+        }
         let total = if q.with_count {
             let mut cq = QueryBuilder::new("select count(*)");
             query::push_from_where_for(&mut cq, ctx, &ent, &scope, &q.filters, q.search.as_deref())?;
@@ -1217,6 +1235,11 @@ impl Kernel {
                 if let Some(m) = refusal(f, v, old.and_then(|o| o.get(k))) {
                     errors.push(FieldError::new(k, m));
                 }
+                continue;
+            }
+            // A field a rule hides (BD-40) is refused whatever is sent: "unchanged" would tell its value.
+            if !trusted && ctx.perms.hidden(&ent.def.name).is_some_and(|h| h.contains(k)) {
+                errors.push(FieldError::new(k, "you are not permitted to change this field"));
                 continue;
             }
             if !trusted && !ctx.perms.can_write_field(&ent.def.name, f) {
