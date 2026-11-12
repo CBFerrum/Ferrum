@@ -27,16 +27,16 @@ progress after a lesson changes.
   its parameters) before its handler runs, so what an action's handler then writes directly is
   under that entry.
 
-## The 117 statements, by kind
+## The 125 statements, by kind
 
 | Kind | How many | What keeps them right |
 |---|---|---|
-| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 70 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
-| Consequence of an audited document operation (a hook of submit, cancel, save or an action) | 28 | The operation that runs the hook is on the record |
+| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 72 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
+| Consequence of an audited document operation (a hook of submit, cancel, save or an action) | 34 | The operation that runs the hook is on the record |
 | A person's action on a public link: opens and clicks, subscribe, confirm, unsubscribe, viewing a shared file | 11 | The record they change carries its evidence (the consent's source and time, the link's views) |
 | Records its own audit or activity entry | 8 | Drive's activity log ("Link Created", "Link Revoked", "Shared With Guest", "Share Expired", "Delete"), Edge's and MES's audit entries |
 
-By app: Campaigns 34, Drive 23, Comms 14, ERP 10, Commerce 5, LMS 5, POS 5, Projects 5, Edge 4, Helpdesk 3, HR 3, CRM 2,
+By app: Campaigns 34, Drive 23, Comms 14, ERP 10, POS 10, Commerce 6, HR 5, LMS 5, Projects 5, Edge 4, Helpdesk 3, CRM 2,
 and one each in Bookings, DAM, Field Service and Forms.
 
 ## Findings
@@ -102,9 +102,10 @@ and one each in Bookings, DAM, Field Service and Forms.
 | campaigns | `src/public.rs:522` | `update e_subscription_form` | `confirm` | a person's action on a public link (tracking, consent, viewing) |
 | commerce | `src/coupon.rs:147` | `update e_coupon_code` | `redeem` | engine work: statuses, counts, queues, upkeep |
 | commerce | `src/coupon.rs:163` | `update e_coupon_code` | `release` | engine work: statuses, counts, queues, upkeep |
-| commerce | `src/payment.rs:597` | `update e_payment_request` | `on_cancel` | consequence of an audited document operation (hook) |
-| commerce | `src/upkeep.rs:133` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
-| commerce | `src/upkeep.rs:149` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
+| commerce | `src/payment.rs:605` | `update e_payment_request` | `on_cancel` | consequence of an audited document operation (hook) |
+| commerce | `src/store.rs:280` | `update e_item` | `mark_delivery_charge` | engine work: statuses, counts, queues, upkeep |
+| commerce | `src/upkeep.rs:136` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
+| commerce | `src/upkeep.rs:152` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/calendars.rs:127` | `update e_calendar_event` | `ensure_default` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/calendars.rs:263` | `update e_calendar` | `change` | consequence of an audited document operation (hook) |
 | comms | `src/calendars.rs:287` | `update e_calendar_event` | `change` | consequence of an audited document operation (hook) |
@@ -164,19 +165,26 @@ and one each in Bookings, DAM, Field Service and Forms.
 | helpdesk | `src/merge.rs:79` | `update e_ticket__conversation` | `merge` | consequence of an audited document operation (hook) |
 | helpdesk | `src/merge.rs:115` | `insert into e_ticket__conversation` | `merge` | consequence of an audited document operation (hook) |
 | helpdesk | `src/merge.rs:133` | `update e_ticket__conversation` | `merge` | consequence of an audited document operation (hook) |
-| hr | `src/attendance.rs:537` | `update e_employee_checkin` | `on_cancel` | consequence of an audited document operation (hook) |
-| hr | `src/talent.rs:65` | `delete from e_training_record` | `on_cancel` | consequence of an audited document operation (hook) |
-| hr | `src/talent.rs:77` | `update e_job_opening` | `close_openings` | engine work: statuses, counts, queues, upkeep |
+| hr | `src/attendance.rs:582` | `update e_employee_checkin` | `on_cancel` | consequence of an audited document operation (hook) |
+| hr | `src/documents.rs:97` | `update e_employee_document` | `warn_expiring` | engine work: statuses, counts, queues, upkeep |
+| hr | `src/payroll/mod.rs:358` | `update e_employee_tax_exemption_declaration__declarations` | `action` | consequence of an audited document operation (hook) |
+| hr | `src/talent.rs:68` | `delete from e_training_record` | `on_cancel` | consequence of an audited document operation (hook) |
+| hr | `src/talent.rs:80` | `update e_job_opening` | `close_openings` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/catalog.rs:315` | `update e_lms_course` | `refresh_course_stats` | consequence of an audited document operation (hook) |
 | lms | `src/certificate.rs:164` | `update e_lms_certificate` | `expire_all` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/enrollment.rs:431` | `update e_lms_enrollment` | `refresh_course` | consequence of an audited document operation (hook) |
 | lms | `src/enrollment.rs:674` | `update e_lms_enrollment` | `send_due_reminders` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/live.rs:78` | `update e_lms_cohort__sessions` | `sync` | consequence of an audited document operation (hook) |
-| pos | `src/closing.rs:286` | `update e_pos_invoice` | `on_cancel` | consequence of an audited document operation (hook) |
-| pos | `src/closing.rs:465` | `update e_pos_invoice` | `consolidate` | consequence of an audited document operation (hook) |
+| pos | `src/closing.rs:290` | `update e_pos_invoice` | `on_cancel` | consequence of an audited document operation (hook) |
+| pos | `src/closing.rs:484` | `update e_pos_invoice` | `consolidate` | consequence of an audited document operation (hook) |
+| pos | `src/closing.rs:599` | `update e_sales_invoice__items` | `make` | consequence of an audited document operation (hook) |
+| pos | `src/closing.rs:706` | `update e_pos_invoice` | `invoice_now` | consequence of an audited document operation (hook) |
+| pos | `src/limits.rs:292` | `update e_pos_approval` | `use_approvals` | consequence of an audited document operation (hook) |
 | pos | `src/loyalty.rs:110` | `update e_loyalty_point_entry` | `consume` | consequence of an audited document operation (hook) |
-| pos | `src/loyalty.rs:230` | `update e_loyalty_point_entry` | `on_cancel` | consequence of an audited document operation (hook) |
-| pos | `src/loyalty.rs:267` | `update e_loyalty_point_entry` | `expire_points` | engine work: statuses, counts, queues, upkeep |
+| pos | `src/loyalty.rs:231` | `update e_loyalty_point_entry` | `on_cancel` | consequence of an audited document operation (hook) |
+| pos | `src/loyalty.rs:268` | `update e_loyalty_point_entry` | `expire_points` | engine work: statuses, counts, queues, upkeep |
+| pos | `src/stored.rs:175` | `update e_payment_entry` | `settle` | consequence of an audited document operation (hook) |
+| pos | `src/stored.rs:193` | `update e_pos_invoice__payments` | `settle` | consequence of an audited document operation (hook) |
 | projects | `src/billing.rs:344` | `update e_timesheet__time_logs` | `mark_billed` | consequence of an audited document operation (hook) |
 | projects | `src/billing.rs:352` | `update e_task` | `mark_billed` | consequence of an audited document operation (hook) |
 | projects | `src/billing.rs:378` | `update e_timesheet__time_logs` | `unmark_billed` | consequence of an audited document operation (hook) |
