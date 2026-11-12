@@ -1368,6 +1368,10 @@ pub struct PermissionDef {
     /// nothing of it (the default). Members read every comment and file of a record they read, whatever this says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared: Option<String>,
+    /// Fields and child tables of the entity this rule neither shows nor accepts: a person reaching a record only
+    /// through rules hiding a field does not read it, and nobody holding such a rule writes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hide: Vec<String>,
 }
 
 /// What a rule's `shared` may say.
@@ -1521,6 +1525,31 @@ impl PermissionDef {
             None => serde_json::to_string(&self.condition_values()).unwrap_or_default(),
         };
         if via.is_empty() { key } else { format!("{via}|{key}") }
+    }
+
+    /// Whether the fields it hides may be hidden (`None`: they may): fields of the entity, never one the rule reaches
+    /// records by (its `where`, the first step of its `via`), the title field or a field of a unique key.
+    pub fn hide_problem(&self, entity: Option<&EntityDef>) -> Option<String> {
+        if self.hide.is_empty() {
+            return None;
+        }
+        let Some(e) = entity else { return Some("a rule for every entity hides nothing".into()) };
+        let via_head = self.via.as_deref().map(|v| v.trim().split('.').next().unwrap_or_default().to_string());
+        for name in &self.hide {
+            if !e.fields.iter().any(|f| &f.name == name) {
+                return Some(format!("{} has no field {name}", e.name));
+            }
+            let keyed = e.title_field.as_deref() == Some(name.as_str())
+                || e.fields.iter().any(|f| &f.name == name && f.unique)
+                || e.unique.iter().any(|k| k.contains(name));
+            if keyed {
+                return Some(format!("{name} names or keys the record; it cannot be hidden"));
+            }
+            if self.condition.contains_key(name) || via_head.as_deref() == Some(name.as_str()) {
+                return Some(format!("{name} is how this rule reaches its records; it cannot be hidden"));
+            }
+        }
+        None
     }
 
     /// Whether the actions it names are the entity's: `None` when they are.

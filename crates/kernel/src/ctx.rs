@@ -95,6 +95,11 @@ pub struct EntityAccess {
     /// What an outside person sees of the conversation on the records they read (BD-22): `Some(false)` the shared
     /// comments and files, `Some(true)` those and their own beside them.
     pub shared: Option<bool>,
+    /// Each rule reading the entity, with the fields it hides (BD-40), to tell what one record shows.
+    pub read_rules: Vec<(Grant, BTreeSet<String>)>,
+    /// Fields some rule hides and no rule reading every record shows: left out wherever a set of records is read
+    /// (lists, filters, sorting, search, reports, exports, history, live updates) and never written.
+    pub hidden: BTreeSet<String>,
 }
 
 fn action_index(a: Action) -> usize {
@@ -179,6 +184,7 @@ struct PermRow {
     via: Option<String>,
     actions: Vec<String>,
     shared: Option<String>,
+    hide: Vec<String>,
 }
 
 impl PermSet {
@@ -188,7 +194,7 @@ impl PermSet {
         }
         let rows: Vec<PermRow> = sqlx::query_as(
             "select entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, can_export, can_import, \
-             if_owner, read_groups, write_groups, match_rule, via, actions, shared from role_permission where tenant_id = $1 and role = any($2)",
+             if_owner, read_groups, write_groups, match_rule, via, actions, shared, hide from role_permission where tenant_id = $1 and role = any($2)",
         )
         .bind(tenant)
         .bind(roles)
@@ -230,6 +236,11 @@ impl PermSet {
             }
             e.read_groups.extend(r.read_groups);
             e.write_groups.extend(r.write_groups);
+            let hide: BTreeSet<String> = r.hide.into_iter().collect();
+            e.hidden.extend(hide.iter().cloned());
+            if r.can_read {
+                e.read_rules.push((grant.clone(), hide));
+            }
             // Only a rule that reads says anything of the conversation; the widest of them holds.
             if r.can_read
                 && let Some(add) = r.shared.as_deref().map(|s| s == "add")
@@ -237,7 +248,24 @@ impl PermSet {
                 e.shared = Some(e.shared.unwrap_or(false) || add);
             }
         }
+        // A field a rule reading every record shows is shown everywhere: such a rule reaches each record.
+        let whole_shows = |e: &EntityAccess, f: &str| e.read_rules.iter().any(|(g, h)| g.is_whole() && !h.contains(f));
+        let every = set.entities.get("*").cloned();
+        for e in set.entities.values_mut() {
+            let shown: Vec<String> = e.hidden.iter().filter(|f| whole_shows(e, f) || every.as_ref().is_some_and(|w| whole_shows(w, f))).cloned().collect();
+            for f in shown {
+                e.hidden.remove(&f);
+            }
+        }
         Ok(set)
+    }
+
+    /// Fields of `entity` hidden from the holder wherever a set of its records is read, and never written (BD-40).
+    pub fn hidden(&self, entity: &str) -> Option<&BTreeSet<String>> {
+        if self.admin {
+            return None;
+        }
+        self.entities.get(entity).map(|e| &e.hidden).filter(|h| !h.is_empty())
     }
 
     pub fn access(&self, entity: &str, action: Action) -> Access {
@@ -289,6 +317,11 @@ impl PermSet {
     }
 
     pub fn can_read_field(&self, entity: &str, f: &FieldDef) -> bool {
+        self.group_readable(entity, f) && self.hidden(entity).is_none_or(|h| !h.contains(&f.name))
+    }
+
+    /// Whether the field's group lets the holder read it, whatever rules hide.
+    pub fn group_readable(&self, entity: &str, f: &FieldDef) -> bool {
         match &f.perm_group {
             None => true,
             Some(g) => self.admin || self.groups(entity, false).contains(g.as_str()) || self.groups(entity, true).contains(g.as_str()),
@@ -296,6 +329,9 @@ impl PermSet {
     }
 
     pub fn can_write_field(&self, entity: &str, f: &FieldDef) -> bool {
+        if self.hidden(entity).is_some_and(|h| h.contains(&f.name)) {
+            return false;
+        }
         match &f.perm_group {
             None => true,
             Some(g) => self.admin || self.groups(entity, true).contains(g.as_str()),
@@ -337,6 +373,10 @@ impl PermSet {
             };
             e.read_groups = groups("read field group ", self.groups(name, false));
             e.write_groups = groups("write field group ", self.groups(name, true));
+            if let Some(mine) = self.entities.get(name) {
+                e.read_rules = mine.read_rules.clone();
+                e.hidden = mine.hidden.clone();
+            }
             if ACTIONS.iter().any(|(a, _)| e.get(*a) != Access::None) || !e.read_groups.is_empty() || !e.write_groups.is_empty() {
                 out.entities.insert(name.to_string(), e);
             }
@@ -742,6 +782,25 @@ pub fn transition_gate(ctx: &Ctx, ent: &EffEntity, t: &ferrum_meta::WorkflowTran
         return Err(Error::Forbidden(format!("'{}' requires one of the roles: {}", t.action, t.roles.join(", "))));
     }
     row_scope(ctx, ent, Action::Read)
+}
+
+/// The fields of one record hidden from `ctx` (BD-40): those every rule reaching the record hides. A field one rule
+/// hides and another reaching the same record shows is shown. Empty when no rule hides anything.
+pub async fn record_hidden(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc) -> Result<BTreeSet<String>> {
+    let Some(hidden) = ctx.perms.hidden(&ent.def.name) else { return Ok(BTreeSet::new()) };
+    let mut out = hidden.clone();
+    for (grant, hide) in ctx.perms.entities.get(&ent.def.name).map(|e| e.read_rules.as_slice()).unwrap_or_default() {
+        if out.is_empty() {
+            break;
+        }
+        if out.iter().all(|f| hide.contains(f)) {
+            continue;
+        }
+        if scope_of(ctx, ent, Some(vec![grant.clone()]))?.admits(tx, ctx.tenant, doc).await? {
+            out.retain(|f| hide.contains(f));
+        }
+    }
+    Ok(out)
 }
 
 /// The scope `grants` give on `ent` (`None`: every record), with the user's scopes on top.
