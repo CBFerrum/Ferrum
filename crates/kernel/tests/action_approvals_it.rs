@@ -231,4 +231,36 @@ async fn scenario() {
     let s = decide(b2.clone(), c7, true).await.expect("the decision is kept");
     assert_eq!(s["status"], json!("failed"), "the requester lost the right: {s}");
     assert_eq!(bumps(c7).await, 0, "not run, by anyone");
+
+    // ───────────── the server's key rotated while a request waits: its sealed parameters move with the rest ─────────────
+    k.set_user_roles(&admin, changer, &["Changer".into()]).await.unwrap();
+    let cc = as_(changer).await;
+    let c8 = change("C8").await;
+    k.run_action(&cc, "Change", c8, "apply", json!({"window": "Sun", "pin": PIN})).await.unwrap();
+    let boot = |current: [u8; 32], retired: Option<[u8; 32]>| {
+        let board = board.clone();
+        async move {
+            let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+            let db = Db::connect(DbConfig { url, max_connections: 4, ..Default::default() }).await.expect("connect");
+            let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
+            let files: BTreeMap<String, String> =
+                [("package.yaml", PACKAGE), ("entities/change.yaml", CHANGE)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let pkg = ferrum_meta::catalog::load_package_files(&files).expect("package");
+            let mut hooks = HookRegistry::default();
+            hooks.register("Change", board);
+            let settings = KernelSettings {
+                secret_key: Some(ferrum_kernel::secret::SecretKey::new(current)),
+                retired_secret_keys: retired.into_iter().map(ferrum_kernel::secret::SecretKey::new).collect(),
+                ..Default::default()
+            };
+            Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, settings, None).await.expect("boot")
+        }
+    };
+    let rotating = boot([6u8; 32], Some([5u8; 32])).await;
+    assert!(rotating.reseal_secrets().await.unwrap().moved >= 1, "the waiting PIN moved to the new key");
+    let only_new = boot([6u8; 32], None).await;
+    let b1n = only_new.load_ctx(tenant, boss1, None, "it".into()).await.unwrap();
+    let s = only_new.decide_approval(&b1n, "Change", c8, true, Some("ok")).await.unwrap();
+    assert_eq!(s["status"], json!("approved"), "{s}");
+    assert_eq!(board.ran("C8"), [(changer, json!({"window": "Sun", "pin": PIN}))], "replayed under the new key alone");
 }

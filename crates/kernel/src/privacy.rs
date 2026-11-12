@@ -849,6 +849,16 @@ impl Kernel {
         for app in self.hooks.personal_held() {
             done += app.erase(tx, tenant, account, &addresses, reason).await? as usize;
         }
+        // What connections kept of them, as the restore brought it back: their calls, deliveries and sign-ins (already
+        // revoked at the provider when the erasure first ran).
+        let records: Vec<(String, Uuid)> = erasure["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| Some((r["entity"].as_str()?.to_string(), r["id"].as_str()?.parse().ok()?)))
+            .collect();
+        let conns = crate::connections::personal::erase_held(tx, tenant, account, &addresses, &records).await?;
+        done += (conns.calls + conns.inbound) as usize + conns.sign_ins.len();
         if !addresses.is_empty() {
             redact_addresses(tx, ctx, &addresses, reason).await?;
         }

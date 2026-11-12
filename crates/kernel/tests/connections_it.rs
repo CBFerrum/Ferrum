@@ -596,6 +596,72 @@ async fn erasing(k: &Kernel, admin: &Ctx, seen: &Seen) {
     // The record stays theirs (only its declared fields go), so the call about it is still listed, emptied.
     let left: Vec<&Value> = again["apps"].as_array().unwrap().iter().filter(|a| a["app"] == "connections").map(|a| &a["held"]).collect();
     assert!(left.iter().all(|h| h["record"] == json!(parcel) && h["made_by_them"] == json!(false)), "{again}");
+
+    // A restore from before the erasure brings her rows back; the erasure's journal takes them again.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update app_user set email = 'ivy@depot.test' where tenant_id = $1 and id = $2").bind(tenant).bind(ivy_id).execute(&mut *tx).await.unwrap();
+    sqlx::query("insert into conn_token (tenant_id, conn_id, user_id, sealed) values ($1, $2, $3, 'restored')")
+        .bind(tenant)
+        .bind(mailbox)
+        .bind(ivy_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("insert into conn_call (tenant_id, id, conn_id, operation, outcome, user_id, debug) values ($1, $2, $3, 'me', 'ok', $4, $5)")
+        .bind(tenant)
+        .bind(Uuid::now_v7())
+        .bind(mailbox)
+        .bind(ivy_id)
+        .bind(json!({"request": {"url": "https://x.test/?to=ivy%40depot.test"}}))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("update conn_inbound set payload = $3 where tenant_id = $1 and conn_id = $2 and delivery = 'd-ivy'")
+        .bind(tenant)
+        .bind(carrier)
+        .bind(json!({"from": "ivy@depot.test"}))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let store = Arc::new(Memory::default());
+    k.set_file_store(store.clone());
+    let key = format!("{}{tenant}/1.json", ferrum_kernel::privacy::JOURNAL_PREFIX);
+    let entry =
+        json!({"tenant": tenant, "erasure": {"account": ivy_id, "records": [{"entity": "Parcel", "id": parcel, "fields": ["tracking"]}], "reason": "r"}});
+    ferrum_kernel::files::FileStore::put(&*store, &key, entry.to_string().as_bytes()).await.unwrap();
+    k.reapply_erasure(&key).await.unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let back: (i64, i64, i64) = sqlx::query_as(
+        "select (select count(*) from conn_token where tenant_id = $1 and user_id = $2), (select count(*) from conn_call where tenant_id = $1 and user_id = $2), \
+           (select count(*) from conn_inbound where tenant_id = $1 and payload is not null and delivery = 'd-ivy')",
+    )
+    .bind(tenant)
+    .bind(ivy_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(back, (0, 0, 0), "the restored sign-in, call and delivery are taken again");
+}
+
+/// Stored files, in memory.
+#[derive(Default)]
+struct Memory(Mutex<BTreeMap<String, Vec<u8>>>);
+
+#[async_trait]
+impl ferrum_kernel::files::FileStore for Memory {
+    async fn put(&self, key: &str, data: &[u8]) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().insert(key.into(), data.to_vec());
+        Ok(())
+    }
+    async fn get(&self, key: &str) -> ferrum_kernel::Result<Vec<u8>> {
+        self.0.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound(key.into()))
+    }
+    async fn delete(&self, key: &str) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
 }
 
 #[test]
