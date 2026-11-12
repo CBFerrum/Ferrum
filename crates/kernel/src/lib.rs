@@ -61,6 +61,7 @@ pub mod recovery;
 pub mod registry;
 pub mod resources;
 pub mod retention;
+pub mod richtext;
 pub mod saga;
 pub mod scan;
 pub mod schedule;
