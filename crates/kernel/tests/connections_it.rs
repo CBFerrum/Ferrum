@@ -31,6 +31,10 @@ const REFRESH: &str = "RT-1-Zz8-refresh";
 /// takes now.
 static PROVIDER: Mutex<(bool, usize, String)> = Mutex::new((false, 0, String::new()));
 
+/// The stand-in's pull routes: how often `/shaky` was asked (it answers "later" twice), whether `/down` is down.
+static SHAKY: AtomicUsize = AtomicUsize::new(0);
+static DOWN: Mutex<bool> = Mutex::new(true);
+
 fn issue() -> String {
     let mut p = PROVIDER.lock().unwrap();
     p.1 += 1;
@@ -156,6 +160,13 @@ async fn service(seen: Seen) -> u16 {
                             (401, String::new(), json!({"error": "invalid_token"}).to_string())
                         }
                     }
+                    "/v1/shaky" => match SHAKY.fetch_add(1, Ordering::SeqCst) {
+                        0 | 1 => (503, String::new(), json!({"error": "busy"}).to_string()),
+                        _ => (200, String::new(), json!({"data": [{"id": "SH-1", "title": "Shaky"}], "next": "s2"}).to_string()),
+                    },
+                    "/v1/down" if *DOWN.lock().unwrap() => (503, String::new(), "{}".into()),
+                    "/v1/down" => (200, String::new(), json!({"data": []}).to_string()),
+                    "/v1/broken" => (422, String::new(), json!({"error": "no such feed"}).to_string()),
                     "/v1/since" => (200, String::new(), json!({"data": [{"id": "S-1", "title": "Since"}]}).to_string()),
                     _ => (404, String::new(), "{}".into()),
                 };
@@ -349,6 +360,54 @@ async fn pulling(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
     let mut bad = d.clone();
     bad["operations"]["orders"]["method"] = json!("POST");
     assert!(k.save_connection_def(admin, Some(id), &input("orders", bad, None)).await.unwrap_err().to_string().contains("a pull only reads"));
+
+    // A pull answered "later" is tried again from where it stood, before the next run, without a second job.
+    let ops = json!({"shaky": {"path": "/shaky"}, "down": {"path": "/down"}, "broken": {"path": "/broken"}});
+    let pull = |name: &str| json!({"name": name, "operation": name, "every_minutes": 15, "items_at": "/data", "next_at": "/next", "max_pages": 1, "map": map});
+    let feeds = json!({"base": base, "operations": ops, "pulls": [pull("shaky"), pull("down"), pull("broken")]});
+    let feeds = k.save_connection_def(admin, None, &input("feeds", feeds, None)).await.unwrap();
+    let state = |name: &'static str| async move { k.connection_pulls(admin, feeds).await.unwrap().into_iter().find(|p| p["name"] == name).unwrap() };
+    let job_of = |name: &'static str| {
+        let sql = format!(
+            "select (attempts * 10 + case status when 'queued' then 1 when 'done' then 2 else 3 end)::bigint from job where tenant_id = $1 and dedupe_key = '{feeds}:{name}' order by created_at desc limit 1"
+        );
+        async move { count(k, tenant, &sql).await }
+    };
+    let told = |name: &str| {
+        let sql = format!("select count(*) from notification where tenant_id = $1 and title = 'Pulling {name} from feeds failed'");
+        async move { count(k, tenant, &sql).await }
+    };
+    assert_eq!(k.sweep_pulls_at(chrono::Utc::now()).await.unwrap(), 3);
+    while k.run_jobs_once(4).await.unwrap() > 0 {}
+    assert_eq!(job_of("shaky").await, 11, "one attempt, queued again with backoff");
+    assert!(state("shaky").await["cursor"].is_null(), "the cursor did not move");
+    assert_eq!(told("shaky").await, 0, "not told of a run still being tried");
+    assert_eq!(k.sweep_pulls_at(chrono::Utc::now() + chrono::Duration::minutes(2)).await.unwrap(), 0, "the next run is not due, nor queued over the retry");
+    drain(k).await;
+    assert_eq!(job_of("shaky").await, 32, "done on the third attempt");
+    let shaky = state("shaky").await;
+    assert_eq!((shaky["cursor"].as_str(), shaky["last_error"].is_null()), (Some("s2"), true), "{shaky}");
+    assert_eq!(SHAKY.load(Ordering::SeqCst), 3);
+    // Always "later": a bounded number of attempts, then recorded and told once per streak.
+    assert_eq!(job_of("down").await, 42, "four attempts, then the run ends");
+    assert!(state("down").await["last_error"].is_string());
+    assert_eq!(told("down").await, 1);
+    // A permanent refusal: not tried again, recorded, told once over two failed runs.
+    assert_eq!(job_of("broken").await, 12, "one attempt");
+    assert!(state("broken").await["last_error"].as_str().is_some_and(|e| e.contains("422")));
+    k.pull_now(admin, feeds, "broken").await.unwrap();
+    k.pull_now(admin, feeds, "down").await.unwrap();
+    drain(k).await;
+    assert_eq!((told("broken").await, told("down").await), (1, 1), "once per streak");
+    // A run that works ends the streak; the next failure tells again.
+    *DOWN.lock().unwrap() = false;
+    k.pull_now(admin, feeds, "down").await.unwrap();
+    drain(k).await;
+    assert!(state("down").await["last_error"].is_null());
+    *DOWN.lock().unwrap() = true;
+    k.pull_now(admin, feeds, "down").await.unwrap();
+    drain(k).await;
+    assert_eq!(told("down").await, 2, "a new streak");
 }
 
 fn query(url: &str) -> BTreeMap<String, String> {
