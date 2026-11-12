@@ -4,6 +4,7 @@
 //! per key, who may use a connection, and secrets resting nowhere, with the debug capture on.
 
 use async_trait::async_trait;
+use ferrum_kernel::automation;
 use ferrum_kernel::capability::Invocation;
 use ferrum_kernel::connections::inbound::InboundHandler;
 use ferrum_kernel::connections::{self, Call, ConnectionInput};
@@ -70,7 +71,7 @@ fn issue() -> String {
     p.2.clone()
 }
 
-const PACKAGE: &str = "package: depot\nversion: 0.1.0\ndepends: [core]\npersonal_data:\n  - {entity: Parcel, match: label, erase: [tracking]}\n";
+const PACKAGE: &str = "package: depot\nversion: 0.1.0\ndepends: [core]\npersonal_data:\n  - {entity: Parcel, match: label, erase: [tracking]}\nroles:\n  - name: Mailer\n    permissions:\n      - {entity: Alert, read: true, write: true, create: true}\n";
 const ENTITIES: &str = r#"
 - name: Parcel
   label: Parcel
@@ -246,6 +247,14 @@ async fn service(seen: Seen) -> u16 {
                             (200, String::new(), json!({"handle": "acme-net"}).to_string())
                         } else {
                             (401, String::new(), json!({"error": "invalid"}).to_string())
+                        }
+                    }
+                    "/v1/mine" => {
+                        let now = PROVIDER.lock().unwrap().2.clone();
+                        if text.contains(&format!("authorization: Bearer {now}\r\n")) && !now.is_empty() {
+                            (200, String::new(), json!({"data": [{"id": "MAIL-1", "title": "Hello"}]}).to_string())
+                        } else {
+                            (401, String::new(), json!({"error": "invalid_token"}).to_string())
                         }
                     }
                     "/v1/dpop/register" => {
@@ -796,6 +805,101 @@ async fn sessions(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) -> Vec<Strin
     vec![APP_PASSWORD.into(), SESSION_REFRESH.into(), "Ww3-access".into(), REGISTERED.into(), "DP-AT-Ww9".into()]
 }
 
+/// Operating a connection (BD-50): secrets merged without the rest, `meta` kept, a pull on a person's own connection
+/// run as each person connected (their sign-in, their rights) and stopped when their sign-in needs reconnecting or
+/// their account is closed, and what it maps marked as fetched from outside, so an automation for new records passes
+/// it by.
+async fn operating(k: &Kernel, admin: &Ctx, base: &str) {
+    let tenant = admin.tenant;
+    let carrier: Uuid = k.connection_defs(admin).await.unwrap().iter().find(|c| c["name"] == "carrier").unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let set = BTreeMap::from([("webhook".to_string(), "wh-Ee42-merged".to_string())]);
+    assert_eq!(k.merge_connection_secrets(admin, carrier, &set, &[]).await.unwrap(), vec!["api_key".to_string(), "webhook".into()]);
+    connections::call(k, admin, None, &call("carrier", "find", json!({}), None)).await.expect("the rest kept");
+    assert_eq!(k.merge_connection_secrets(admin, carrier, &BTreeMap::new(), &["webhook".into()]).await.unwrap(), vec!["api_key".to_string()]);
+    assert!(k.merge_connection_secrets(admin, carrier, &BTreeMap::from([("Bad Name".into(), "x".into())]), &[]).await.is_err());
+    let mut clerk = admin.clone();
+    clerk.is_admin = false;
+    assert!(matches!(k.merge_connection_secrets(&clerk, carrier, &set, &[]).await.unwrap_err(), Error::Forbidden(_)));
+    let audited = count(
+        k,
+        tenant,
+        "select count(*) from audit_event where tenant_id = $1 and action = 'secrets' and diff::text like '%webhook%' and diff::text not like '%Ee42%'",
+    )
+    .await;
+    assert_eq!(audited, 2, "audited by name only");
+    // `meta`: kept and given back, bounded.
+    let d = json!({"test": true, "meta": {"caps": ["video", "threads"]}, "operations": {"a": {}}});
+    k.save_connection_def(admin, None, &input("caps", d, None)).await.unwrap();
+    let listed = k.connection_defs(admin).await.unwrap().into_iter().find(|c| c["name"] == "caps").unwrap();
+    assert_eq!(listed["description"]["meta"], json!({"caps": ["video", "threads"]}));
+    for meta in [json!("text"), json!({"pad": "x".repeat(20 << 10)})] {
+        assert!(k.save_connection_def(admin, None, &input("caps2", json!({"test": true, "meta": meta}), None)).await.unwrap_err().to_string().contains("meta"));
+    }
+
+    // A person's own mailbox, pulled as them.
+    automation::save(
+        k,
+        admin,
+        &obj(json!({"name": "Greet", "entity": "Alert", "event": "created", "condition": "origin != 'outside'",
+        "actions": [{"type": "set_fields", "values": {"state": "'greeted'"}}]})),
+    )
+    .await
+    .unwrap();
+    let ana_id = k.create_user(admin, "ana@depot.test", "Ana", None, &[], false).await.unwrap();
+    k.set_user_roles(admin, ana_id, &["Mailer".into()]).await.unwrap();
+    let ana = k.load_ctx(tenant, ana_id, None, "it".into()).await.unwrap();
+    let provider = json!({"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/oauth/token"), "client_id": "ferrum-test", "client_secret": "client"});
+    let map = json!({"entity": "Alert", "by": {"external_id": "/id"}, "set": {"title": "/title"}, "outside": true});
+    let d = json!({"base": base, "auth": {"type": "oauth", "owner": "person", "provider": provider}, "roles": ["Mailer"], "operations": {"mine": {"path": "/mine"}},
+        "pulls": [{"name": "mail", "operation": "mine", "every_minutes": 15, "items_at": "/data", "cursor": "time", "map": map}]});
+    let inbox = k.save_connection_def(admin, None, &input("inbox", d, Some(json!({"client": CLIENT})))).await.unwrap();
+    assert!(k.connection_pulls(admin, inbox).await.unwrap().is_empty(), "nobody has connected: nothing to pull");
+    PROVIDER.lock().unwrap().0 = false;
+    let session = Uuid::now_v7();
+    let state = query(&k.connect_start(&ana, inbox, session).await.unwrap())["state"].clone();
+    k.connect_finish(&ana, session, &state, Some("CODE-1"), None).await.unwrap();
+    let pulls = k.connection_pulls(admin, inbox).await.unwrap();
+    assert_eq!(pulls.iter().map(|p| p["user"].clone()).collect::<Vec<_>>(), vec![json!(ana_id)], "one for her");
+    k.pull_now(admin, inbox, "mail").await.unwrap();
+    drain(k).await;
+    let alert = admin.schema.entity("Alert").unwrap().table.clone();
+    let made = count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'MAIL-1' and created_by = '{ana_id}'")).await;
+    assert_eq!(made, 1, "made as her");
+    while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+    assert_eq!(
+        count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'MAIL-1' and state is null")).await,
+        1,
+        "fetched from outside: not greeted"
+    );
+    let mine: Uuid = k.insert(admin, "Alert", obj(json!({"title": "Typed here"}))).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+    assert_eq!(k.get(admin, "Alert", mine, false).await.unwrap()["state"], "greeted", "one made here is");
+    // Her sign-in needs reconnecting: the pull waits, telling nothing more; connected again, it runs.
+    let failed = format!("select count(*) from notification where tenant_id = $1 and user_id = '{ana_id}' and title like 'Pulling%'");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update conn_token set status = 'needs_reconnecting' where tenant_id = $1 and user_id = $2")
+        .bind(tenant)
+        .bind(ana_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    k.pull_now(admin, inbox, "mail").await.unwrap();
+    drain(k).await;
+    assert!(k.connection_pulls(admin, inbox).await.unwrap()[0]["next_run"].is_null(), "waiting for her");
+    assert_eq!(count(k, tenant, &failed).await, 0);
+    let state = query(&k.connect_start(&ana, inbox, session).await.unwrap())["state"].clone();
+    k.connect_finish(&ana, session, &state, Some("CODE-1"), None).await.unwrap();
+    assert!(!k.connection_pulls(admin, inbox).await.unwrap()[0]["next_run"].is_null(), "running again");
+    // Her account closed: her pulls go.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update app_user set is_active = false where tenant_id = $1 and id = $2").bind(tenant).bind(ana_id).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    k.pull_now(admin, inbox, "mail").await.unwrap();
+    drain(k).await;
+    assert!(k.connection_pulls(admin, inbox).await.unwrap().is_empty(), "stopped");
+}
+
 fn query(url: &str) -> BTreeMap<String, String> {
     reqwest::Url::parse(url).unwrap().query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect()
 }
@@ -1294,9 +1398,10 @@ async fn scenario() {
     let mut signed_in = signing_in(&k, &admin, &base, &seen).await;
     signed_in.extend(sessions(&k, &admin, &base, &seen).await);
     erasing(&k, &admin, &seen, store).await;
+    operating(&k, &admin, &base).await;
 
     // ── secrets rest nowhere: not the log, the capture, the audit trail, the jobs ──
-    let mut never: Vec<&str> = vec![SECRET, SIGNING, INBOUND, TOKEN, CLIENT, REFRESH, "Xy9-access"];
+    let mut never: Vec<&str> = vec![SECRET, SIGNING, INBOUND, TOKEN, CLIENT, REFRESH, "Xy9-access", "wh-Ee42-merged"];
     never.extend(signed_in.iter().map(String::as_str));
     assert_eq!(rests(&k, &never).await, nowhere);
 }

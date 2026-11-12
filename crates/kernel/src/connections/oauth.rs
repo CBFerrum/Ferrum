@@ -328,6 +328,10 @@ impl Kernel {
         };
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
         let account = self.keep_tokens(&mut tx, &conn, owner_id, &answer, None, Some(ctx.user)).await?;
+        // A person's own account: their pulls of it run (again), as them.
+        if !owner_id.is_nil() {
+            super::pull::person_connected(&mut tx, ctx.tenant, conn_id, owner_id, &conn.desc).await?;
+        }
         audit::record(
             &mut tx,
             ctx,

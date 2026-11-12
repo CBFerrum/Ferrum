@@ -105,6 +105,11 @@ pub struct Mapping {
     pub create: BTreeMap<String, Pick>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub update_only: bool,
+    /// The records it writes are fetched from outside: their changes carry `origin: outside` (BD-50), which a hook
+    /// reads as `ctx.origin` and an automation as `origin`, so that what a new record sets going (an invitation, a
+    /// notification) is not sent for one that came from another system.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside: bool,
 }
 
 /// An app's code for what a connection accepts. Runs in the transaction that marks the call processed: what it changes
@@ -350,6 +355,13 @@ impl Kernel {
         }
         let empty = json!({});
         let connection = json!({"name": conn.name, "id": conn.id});
+        let outside;
+        let ctx = if map.outside {
+            outside = Ctx { origin: Some("outside".into()), ..ctx.clone() };
+            &outside
+        } else {
+            ctx
+        };
         for (i, item) in items.iter().enumerate() {
             let at = |e| crate::pack::about(&format!("item {}", i + 1), e);
             let picked = map.pick(item, &[("payload", payload), ("item", item), ("connection", &connection)]).map_err(at)?;
