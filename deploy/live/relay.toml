@@ -1,0 +1,21 @@
+# moq-relay 0.17.16 (docs/moq.md). The certificate for the relay's public name, mounted at /certs.
+[listen]
+bind = "[::]:443"            # QUIC and WebTransport, UDP
+
+[listen.tls]
+cert = "/certs/cert.pem"     # reloaded when the file changes
+key = "/certs/key.pem"
+
+[web.https]
+listen = "[::]:443"          # HTTPS and the WebSocket fallback (Safari, networks that drop UDP), TCP
+cert = "/certs/cert.pem"
+key = "/certs/key.pem"
+
+[web.http]
+listen = "[::]:8080"         # /health for the stack and the probes; never published (no port line for it)
+
+[auth]
+url = "http://127.0.0.1:4440/"   # moq auth serve, in the same network namespace; verifies the tokens Live signs
+
+[cache]
+duration = "30s"             # the relay's default: also how long a HLS gateway could serve a segment from it

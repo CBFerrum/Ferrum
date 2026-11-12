@@ -3050,6 +3050,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-live"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-live?branch=main#f40ffe419d5cbc2da08c02049cdf55c9c2dc40a5"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-lms"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#ba27eb53034823e3880876edb6bd262bc3a4aec9"
@@ -3864,6 +3886,7 @@ dependencies = [
  "ferrum-app-intelligence",
  "ferrum-app-intranet",
  "ferrum-app-itsm",
+ "ferrum-app-live",
  "ferrum-app-lms",
  "ferrum-app-logistics",
  "ferrum-app-metrics",
