@@ -572,7 +572,14 @@ message. Built once in the platform (`crates/kernel/src/messages.rs`; the API in
 * **One-time codes** for apps: kept as a salted digest, sent through a template, verified once, expiring in ten
   minutes, five tries, five sends a recipient an hour. The test channel's log masks the code.
 * **Personal data**: a person's sends and codes are in their report and go with their erasure, by id in its journal
-  so a restore erases them again.
+  so a restore erases them again. **An opt-out outlives its person's erasure, without its address**: the address
+  becomes an HMAC-SHA256 under the server's key (`FERRUM_SECRET_KEY`, and those being rotated out) of the workspace,
+  channel and normalised address, which a promotional send to that address on that channel still matches, while no
+  table, log, report or listing holds or finds the address (a consent given goes; staff remove an erased opt-out only
+  by its row). A restored backup brings the clear rows back, as it does every erased datum, and the platform's answer
+  applies: the erasure's journal keeps the digests, so `ferrum task reapply_erasures` (or a workspace taken back,
+  FEO-078) erases them again (without a configured key an erased opt-out keeps its address; retiring a key for good
+  stops the digests made under it from matching).
 
 **Rules out**: a provider named in code; a message rendered with the reader's rights; a send outside the caller's
 transaction; marketing past an opt-out; a number's country guessed.
@@ -619,8 +626,17 @@ write a text or data file from records. Built once in the platform (`crates/kern
 amount in words written in one country's way for everyone; a file whose structure a record's value can break; a
 headless browser on the API server.
 
-**Not yet**: a report or query as a document (one file per group, mailed per party, on a schedule: FN-16 and the
-statutory registers wait for it); a Word or Office file as the source (DC-33); a document generated as a Docs document;
+* **A report as a document** (added 12 November 2026). A template may be about a saved report's rows (`query: {report,
+  group_by?}`) instead of one record: one file for the whole result, or one per record a link column of the rows names
+  (per customer, per employee), kept on that record and mailed to it by the `report_documents` effect. The kernel asks
+  for the rows through one trait (`documents::QueryRows`) the analytics engine fills, so the kernel does not know Studio.
+  Rows are read with the report path's rights for whoever runs it: a person asking gets the rows and records they may
+  read; the effect (a configured action, an automation, a schedule) reads them as the workspace, as a generated
+  document is rendered, its secret fields left out. Bounded: 10,000 rows and 100 files a run; a person asking for more
+  is refused with the numbers, an effect's run goes on in its next job after the last record it did, never cut.
+  Rows that link to no record are in no file.
+
+**Not yet**: a statutory register built on a report document; a Word or Office file as the source (DC-33); a document generated as a Docs document;
 GS1-128 (FNC1) and other symbologies; amounts in words beyond the three languages; a page's header and footer without
 the PDF service; a label printer reached directly (the template is the printer's language; sending it is the device
 bridge's).

@@ -902,6 +902,37 @@ impl Kernel {
             };
             summary.entry("calendars").or_default().add(c.name.clone(), status);
         }
+        // What the customizations name is there before them: the pack's roles by name (their rules, which name
+        // entities, come after) and its message and document templates, kept as they come until they are saved below.
+        let here: BTreeSet<String> =
+            sqlx::query_scalar("select name from role where tenant_id = $1").bind(ctx.tenant).fetch_all(&mut **tx).await?.into_iter().collect();
+        for role in pack.roles.iter().filter(|r| !here.contains(&r.name)) {
+            sqlx::query("insert into role (tenant_id, name, description) values ($1, $2, $3)")
+                .bind(ctx.tenant)
+                .bind(&role.name)
+                .bind(&role.description)
+                .execute(&mut **tx)
+                .await?;
+        }
+        const KEEP: [(&str, &str); 2] = [
+            (
+                "insert into message_template (tenant_id, key, def) values ($1, $2, $3) on conflict do nothing",
+                "delete from message_template where tenant_id = $1 and key = $2",
+            ),
+            (
+                "insert into document_template (tenant_id, key, def) values ($1, $2, $3) on conflict do nothing",
+                "delete from document_template where tenant_id = $1 and key = $2",
+            ),
+        ];
+        let messages = pack.messages.iter().map(|m| (KEEP[0], &m.key, serde_json::to_value(m)));
+        let documents = pack.documents.iter().map(|d| (KEEP[1], &d.key, serde_json::to_value(d)));
+        let mut early = Vec::new();
+        for ((insert, delete), key, def) in messages.chain(documents) {
+            let made = sqlx::query(insert).bind(ctx.tenant).bind(key).bind(def.map_err(Error::internal)?).execute(&mut **tx).await?;
+            if made.rows_affected() == 1 {
+                early.push((delete, key));
+            }
+        }
         let items = pack.customizations.iter().map(|c| NewCustomization { entity: c.entity.clone(), op: c.op.clone(), note: c.note.clone() }).collect();
         let (saved, schema) = self.merge_customizations(ctx, tx, items).await.map_err(|e| about("customizations", e))?;
         let section = summary.entry("customizations").or_default();
@@ -912,6 +943,7 @@ impl Kernel {
         let ctx = &Ctx { schema: Arc::new(schema), ..ctx.clone() };
         for role in &pack.roles {
             let status = self.install_role(ctx, tx, role).await.map_err(|e| about(&format!("role {}", role.name), e))?;
+            let status = if here.contains(&role.name) { status } else { "created" };
             summary.entry("roles").or_default().add(role.name.clone(), status);
         }
         for a in &pack.automations {
@@ -919,6 +951,10 @@ impl Kernel {
             summary.entry("automations").or_default().add(a.name.clone(), status);
         }
         self.install_studio(ctx, tx, &pack.studio, summary.entry("studio").or_default()).await?;
+        // The templates kept early are saved now, checked, as any other.
+        for (delete, key) in early {
+            sqlx::query(delete).bind(ctx.tenant).bind(key).execute(&mut **tx).await?;
+        }
         for m in &pack.messages {
             let status = crate::messages::save_template(self, tx, ctx, m).await.map_err(|e| about(&format!("message {}", m.key), e))?;
             summary.entry("messages").or_default().add(m.key.clone(), status);

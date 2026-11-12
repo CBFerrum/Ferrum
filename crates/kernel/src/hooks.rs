@@ -203,6 +203,7 @@ pub struct HookRegistry {
     restored: Vec<Arc<dyn crate::recovery::Restored>>,
     leaving: Vec<Arc<dyn crate::account::Leaving>>,
     personal_held: Vec<Arc<dyn crate::privacy::PersonalHeld>>,
+    query_rows: Option<Arc<dyn crate::documents::QueryRows>>,
     health: Vec<(String, Arc<dyn crate::support::Health>)>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
@@ -425,6 +426,16 @@ impl HookRegistry {
 
     pub fn health(&self) -> &[(String, Arc<dyn crate::support::Health>)] {
         &self.health
+    }
+
+    /// Where documents about a query get their rows (the analytics engine). There is at most one.
+    pub fn set_query_rows(&mut self, source: Arc<dyn crate::documents::QueryRows>) -> &mut Self {
+        self.query_rows = Some(source);
+        self
+    }
+
+    pub fn query_rows(&self) -> Option<&Arc<dyn crate::documents::QueryRows>> {
+        self.query_rows.as_ref()
     }
 
     pub fn set_resources(&mut self, resources: Arc<dyn crate::resources::Resources>) -> &mut Self {

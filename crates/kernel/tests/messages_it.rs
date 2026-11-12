@@ -36,6 +36,7 @@ messages:
     category: promotional
     languages:
       en:
+        email: {subject: "Sale", body: "<p>Sale! {{ opt_out }}</p>"}
         text: {text: "Sale! {{ opt_out }}"}
         chat: {template: "sale_2026", values: ["{{ values.percent }}"]}
     values: [percent]
@@ -208,16 +209,21 @@ async fn scenario() {
     let listed = k.message_templates(&admin).await.unwrap();
     let welcome = listed.iter().find(|t| t["key"] == "notes.welcome").unwrap();
     assert_eq!((welcome["source"].clone(), welcome["default_changed"].clone()), (json!("edited"), json!(true)));
-    for (bad, why) in [
-        ("{{ doc.titel }}", "unknown field"),
-        ("{{ doc.pin }}", "a secret field is never rendered"),
-        ("{{ values.nope }}", "a value the sender does not pass"),
-        ("{% if %}", "does not compile"),
+    for (bad, why, says) in [
+        ("{{ doc.titel }}", "unknown field", "en, text: doc.titel is not a field of Note (line 2)"),
+        ("{{ doc.pin }}", "a secret field is never rendered", "en, text: doc.pin is a secret field of Note: no template prints one"),
+        (
+            "{{ values.nope }}",
+            "a value the sender does not pass",
+            "en, text: the body reads values.nope, which is not among the values this template says the sender passes",
+        ),
+        ("{% if %}", "does not compile", "en, text: "),
     ] {
         let mut d = def.clone();
-        d.languages.get_mut("en").unwrap().text.as_mut().unwrap().text = bad.into();
+        d.languages.get_mut("en").unwrap().text.as_mut().unwrap().text = format!("Hi\n{bad}");
         let e = k.save_message_template(&admin, &d).await.unwrap_err();
-        assert!(matches!(e, ferrum_kernel::Error::Validation(_)), "{why}: {e}");
+        let ferrum_kernel::Error::Validation(f) = &e else { panic!("{why}: {e}") };
+        assert!(f[0].field == "template" && f[0].message.starts_with(says), "{why}: {}", f[0].message);
     }
     let mut stray = def.clone();
     stray.key = "notes.nothing".into();
@@ -454,4 +460,56 @@ async fn scenario() {
         k.erase_personal_data_of(&admin, &ferrum_kernel::privacy::Person { email: "bob@example.com".into(), ..Default::default() }, "request 7").await.unwrap();
     assert!(gone["apps"].as_array().unwrap().iter().any(|a| a["app"] == "messages"), "{gone}");
     assert!(k.message_log(&admin, None, Some("bob@example.com"), 50).await.unwrap().is_empty());
+
+    // ── an erased person's opt-out still stops promotional messages, and nothing shows their address (BD-20) ──
+    k.set_message_opt_out(&admin, "zoe@example.com", "email", true).await.unwrap();
+    k.set_message_opt_out(&admin, "+491515555555", "text", true).await.unwrap();
+    let zoe = |m: Message, ch: &str| Message {
+        to: vec![Recipient { email: Some("Zoe@Example.com".into()), phone: Some("0151 5555555".into()), ..Default::default() }],
+        channels: vec![ch.into()],
+        ..m
+    };
+    assert_eq!(send(&k, &admin, zoe(promo("text"), "text")).await[0].reason.as_deref(), Some("opted out"));
+    k.erase_personal_data_of(
+        &admin,
+        &ferrum_kernel::privacy::Person { email: "zoe@example.com".into(), phone: Some("0151 5555555".into()), ..Default::default() },
+        "request 8",
+    )
+    .await
+    .unwrap();
+    // Nowhere: the opt-outs, the delivery log, the audit trail, the erasure's journal, the listing.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let found: i64 = sqlx::query_scalar(
+        "select (select count(*) from contact_consent c where tenant_id = $1 and to_jsonb(c)::text ilike any($2)) \
+               + (select count(*) from message_send s where tenant_id = $1 and to_jsonb(s)::text ilike any($2)) \
+               + (select count(*) from audit_event a where tenant_id = $1 and to_jsonb(a)::text ilike any($2)) \
+               + (select count(*) from privacy_erasure e where tenant_id = $1 and to_jsonb(e)::text ilike any($2))",
+    )
+    .bind(tenant)
+    .bind(vec!["%zoe@example%", "%1515555555%"])
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(found, 0, "the address is gone");
+    let listed = k.message_opt_outs(&admin, None, None, 200, 0).await.unwrap();
+    let shown = listed.to_string();
+    assert!(!shown.contains("zoe@example") && !shown.contains("1515555555"), "{listed}");
+    let erased: Vec<&Value> = listed["opt_outs"].as_array().unwrap().iter().filter(|r| r["address"].is_null()).collect();
+    assert_eq!(erased.iter().map(|r| r["channel"].as_str().unwrap()).collect::<Vec<_>>().len(), 2, "{listed}");
+    assert!(erased.iter().all(|r| r["erased"].as_str().unwrap().starts_with("erased:") && r["source"] == "recorded by staff" && r["recorded_at"].is_string()));
+    assert_eq!(k.message_opt_outs(&admin, Some("zoe"), None, 200, 0).await.unwrap()["total"], json!(0), "not found by its address");
+    assert_eq!(k.message_opt_outs(&admin, Some("1515555555"), None, 200, 0).await.unwrap()["total"], json!(0));
+    // Imported again, the same address and the same number in another form: promotional skipped, operational goes.
+    assert_eq!(send(&k, &admin, zoe(promo("text"), "text")).await[0].reason.as_deref(), Some("opted out"));
+    assert_eq!(send(&k, &admin, zoe(promo("email"), "email")).await[0].reason.as_deref(), Some("opted out"));
+    assert_eq!(send(&k, &admin, zoe(text("text"), "text")).await[0].state, "queued", "operational goes");
+    assert_eq!(send(&k, &admin, zoe(text("text"), "email")).await[0].state, "queued", "operational goes");
+    // Staff take an erased one away by its row, not by the address.
+    let row_of = erased.iter().find(|r| r["channel"] == "text").unwrap()["erased"].as_str().unwrap().to_string();
+    k.set_message_opt_out(&admin, "0151 5555555", "text", false).await.unwrap();
+    assert_eq!(send(&k, &admin, zoe(promo("text"), "text")).await[0].reason.as_deref(), Some("opted out"), "not by its address");
+    assert!(k.set_message_opt_out(&admin, &row_of, "text", true).await.is_err());
+    k.set_message_opt_out(&admin, &row_of, "text", false).await.unwrap();
+    assert_eq!(send(&k, &admin, zoe(promo("text"), "text")).await[0].state, "queued", "removed by its row");
 }
