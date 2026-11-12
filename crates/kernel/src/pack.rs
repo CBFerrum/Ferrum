@@ -101,12 +101,14 @@ pub struct PackCalendar {
     pub holidays: BTreeSet<chrono::NaiveDate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hours: Option<BTreeMap<String, Vec<(String, String)>>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exceptions: BTreeMap<chrono::NaiveDate, ferrum_logic::calendar::Exception>,
 }
 
 impl PackCalendar {
     fn calendar(&self) -> ferrum_logic::calendar::Calendar {
-        let PackCalendar { name, zone, weekends, holidays, hours } = self.clone();
-        ferrum_logic::calendar::Calendar { name, zone, weekends, holidays, revision: 0, hours }
+        let PackCalendar { name, zone, weekends, holidays, hours, exceptions } = self.clone();
+        ferrum_logic::calendar::Calendar { name, zone, weekends, holidays, revision: 0, hours, exceptions }
     }
 }
 
@@ -576,7 +578,7 @@ impl Kernel {
         let mut calendars = Vec::new();
         for name in ctx.schema.entities.values().flat_map(|e| e.def.targets.iter().filter_map(|t| t.calendar.clone())).collect::<BTreeSet<_>>() {
             if let Some(c) = crate::load_calendar(&mut tx, ctx.tenant, &name).await? {
-                calendars.push(PackCalendar { name, zone: c.zone, weekends: c.weekends, holidays: c.holidays, hours: c.hours });
+                calendars.push(PackCalendar { name, zone: c.zone, weekends: c.weekends, holidays: c.holidays, hours: c.hours, exceptions: c.exceptions });
             }
         }
         let installed: Vec<(String, String)> =
