@@ -39,7 +39,7 @@ pub struct FileInfo {
     pub name: String,
     pub content_type: String,
     pub size: i64,
-    key: String,
+    pub(crate) key: String,
 }
 
 /// A file tied to no record is its uploader's, and an administrator's (and the system's).

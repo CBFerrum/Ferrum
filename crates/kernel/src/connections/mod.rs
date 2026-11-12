@@ -48,6 +48,10 @@ const MAX_BYTES: u64 = 10 << 20;
 const MAX_REDIRECTS: usize = 3;
 /// The longest a service's `Retry-After` makes a queued call or a pull wait.
 pub(crate) const MAX_RETRY_AFTER: u64 = 3600;
+/// A stored file a call sends or an answer gives: 10 MB unless the operation says, at most 25 MB; what one request
+/// sends of files, at most 25 MB in all.
+const DEFAULT_FILE_BYTES: u64 = 10 << 20;
+const MAX_FILE_BYTES: u64 = 25 << 20;
 /// The statuses that mean "try again later", when a description says none.
 pub(crate) const TEMPORARY: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
 /// The longest a debug capture stays on, and how much of a body it keeps.
@@ -175,10 +179,13 @@ pub struct Operation {
     pub query: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
-    /// A template giving JSON (`| json` writes a value as JSON).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A template giving JSON (`| json` writes a value as JSON), or a [`FilePart`] written as an object: the stored
+    /// file is the body, with its type.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "specs::one")]
     pub body: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Templates, sent as a form; with a [`FilePart`] written as an object among them (or a `content-type:
+    /// multipart/form-data` header), as `multipart/form-data`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", with = "specs")]
     pub form: BTreeMap<String, String>,
     /// Result name → where it is in the answer: a JSON pointer, or a [`PickSpec`] written as an object (kept as
     /// [`spec`] text); none: the whole answer.
@@ -213,6 +220,23 @@ impl Operation {
 
     pub(crate) fn changes(&self) -> bool {
         self.changes.unwrap_or(self.method() != "GET")
+    }
+
+    /// Whether its form goes as `multipart/form-data`: it sends a file, or its headers say so.
+    fn multipart(&self) -> bool {
+        self.form.values().any(|v| v.starts_with(SPEC))
+            || self.headers.iter().any(|(h, v)| h.eq_ignore_ascii_case("content-type") && v.trim().to_ascii_lowercase().starts_with("multipart/form-data"))
+    }
+
+    /// The most its answer may be when the answer itself is a file it stores.
+    fn answer_cap(&self) -> Option<u64> {
+        self.result
+            .values()
+            .filter_map(|r| match Pick::of(r) {
+                Ok(Pick::Spec(PickSpec { file: Some(f), .. })) if f.from.is_none() => Some(f.max_bytes.unwrap_or(DEFAULT_FILE_BYTES)),
+                _ => None,
+            })
+            .max()
     }
 }
 
@@ -302,9 +326,59 @@ pub struct PickSpec {
     /// `payload`, `item` and `connection` in a mapping. `connection` is `{name, id}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expr: Option<String>,
+    /// The answer is a file to store, or names the address of one (answers only); the value is the stored file's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileResult>,
     /// Null here fails the call (an answer) or the item (a mapping), saying which.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
+}
+
+/// A stored file a request sends: a form's part, or the whole body. The caller must be able to read it (a queued
+/// call reads as the system).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilePart {
+    /// A template giving the file's id.
+    pub file: String,
+    /// A template giving the name it is sent under; else its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Else its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    /// The largest it may be (10 MB, at most 25 MB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+}
+
+impl FilePart {
+    fn problem(&self) -> Option<String> {
+        if self.max_bytes.is_some_and(|b| b == 0 || b > MAX_FILE_BYTES) {
+            return Some(format!("a file's max_bytes is 1 to {MAX_FILE_BYTES}"));
+        }
+        if self.content_type.as_deref().is_some_and(|c| c.parse::<reqwest::header::HeaderValue>().is_err() || !c.contains('/')) {
+            return Some("a file's content_type is a media type".into());
+        }
+        std::iter::once(&self.file).chain(self.name.iter()).find_map(|t| template_problem(t))
+    }
+}
+
+/// A file an answer gives, stored as the platform's other files are (scanned, counted against the workspace's storage)
+/// and attached to the record the call is about: the answer itself, or the address `from` points at, fetched through
+/// the guard within the connection's hosts, without its credentials.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileResult {
+    /// A JSON pointer to the file's address in the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// A template over `inputs` and `answer` giving its name; else the address's last part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The largest it may be (10 MB, at most 25 MB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
 }
 
 impl Pick {
@@ -328,12 +402,18 @@ impl Pick {
     /// What is wrong with it; `answer`: it reads an answer (headers and links), else an item.
     pub(crate) fn problem(&self, answer: bool) -> Option<String> {
         let p = self.spec(!answer);
-        let said = [p.at.is_some(), p.header.is_some(), p.link.is_some(), p.expr.is_some()].iter().filter(|b| **b).count();
+        let said = [p.at.is_some(), p.header.is_some(), p.link.is_some(), p.expr.is_some(), p.file.is_some()].iter().filter(|b| **b).count();
         if said != 1 {
-            return Some("a value is read from one of at, header, link or expr".into());
+            return Some("a value is read from one of at, header, link, expr or file".into());
         }
-        if !answer && (p.header.is_some() || p.link.is_some()) {
+        if !answer && (p.header.is_some() || p.link.is_some() || p.file.is_some()) {
             return Some("a mapping reads the item: at or expr".into());
+        }
+        if let Some(f) = &p.file {
+            if f.max_bytes.is_some_and(|b| b == 0 || b > MAX_FILE_BYTES) {
+                return Some(format!("a file's max_bytes is 1 to {MAX_FILE_BYTES}"));
+            }
+            return f.from.as_deref().and_then(pointer_problem).or_else(|| f.name.as_deref().and_then(template_problem));
         }
         if let Some(l) = &p.link
             && (l.is_empty() || !l.chars().all(|c| c.is_ascii_alphanumeric() || "-._".contains(c)))
@@ -477,9 +557,19 @@ impl Operation {
         if self.body.is_some() && !self.form.is_empty() {
             return Some("a request has a body or a form, not both".into());
         }
-        let templates = std::iter::once(&self.path).chain(self.query.values()).chain(self.headers.values()).chain(self.body.iter()).chain(self.form.values());
+        let plain = |v: &&String| !v.starts_with(SPEC);
+        let templates = std::iter::once(&self.path)
+            .chain(self.query.values())
+            .chain(self.headers.values())
+            .chain(self.body.iter().filter(plain))
+            .chain(self.form.values().filter(plain));
         if let Some(p) = templates.filter_map(|t| template_problem(t)).next() {
             return Some(p);
+        }
+        for (name, v) in self.body.iter().map(|b| ("body", b)).chain(self.form.iter().map(|(k, v)| (k.as_str(), v))) {
+            if let Some(p) = spec_of::<FilePart>(v).map(|f| f.map_or_else(Some, |f| f.problem())).flatten() {
+                return Some(format!("{name}: {p}"));
+            }
         }
         if let Some(p) = self.headers.keys().chain(self.idempotency_header.iter()).find_map(|h| header_problem(h)) {
             return Some(p);
@@ -526,7 +616,8 @@ pub(crate) struct Request {
     pub method: reqwest::Method,
     pub url: reqwest::Url,
     pub headers: Vec<(String, String)>,
-    pub body: Option<(Vec<u8>, &'static str)>,
+    /// The bytes and their content type.
+    pub body: Option<(Vec<u8>, String)>,
 }
 
 /// How far a request may go: hosts (empty: the request's own), time, answer size.
@@ -547,6 +638,8 @@ pub(crate) struct Answer {
     pub headers: Vec<(String, String)>,
     /// Where it came from, after any redirect.
     pub url: reqwest::Url,
+    /// The bytes as they came.
+    pub raw: Vec<u8>,
 }
 
 impl Answer {
@@ -632,7 +725,7 @@ impl Kernel {
                 rb = rb.header(h.as_str(), v.as_str());
             }
             if let Some((body, kind)) = &req.body {
-                rb = rb.header(reqwest::header::CONTENT_TYPE, *kind).body(body.clone());
+                rb = rb.header(reqwest::header::CONTENT_TYPE, kind.as_str()).body(body.clone());
             }
             let mut res = rb.send().await.map_err(|e| Error::Unavailable(format!("the service did not answer: {}", e.without_url())))?;
             let status = res.status().as_u16();
@@ -658,7 +751,7 @@ impl Kernel {
             }
             let body = serde_json::from_slice(&buf).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&buf).into_owned()));
             let headers = res.headers().iter().filter_map(|(h, v)| Some((h.as_str().to_string(), v.to_str().ok()?.to_string()))).collect();
-            return Ok(Answer { status, body, headers, url: req.url });
+            return Ok(Answer { status, body, headers, url: req.url, raw: buf });
         }
         Err(Error::invalid(format!("more than {MAX_REDIRECTS} redirects")))
     }
@@ -950,6 +1043,11 @@ impl Kernel {
                 body: f.get("body").cloned().unwrap_or(Value::Null),
                 headers: headers.unwrap_or_default(),
                 url: reqwest::Url::parse("https://fixture.invalid/").map_err(Error::internal)?,
+                raw: match f.get("body") {
+                    Some(Value::String(s)) => s.clone().into_bytes(),
+                    Some(v) => v.to_string().into_bytes(),
+                    None => vec![],
+                },
             })
         } else {
             let mut tries = 0;
@@ -961,7 +1059,11 @@ impl Kernel {
                         if conn.debug {
                             debug = Some(json!({"request": captured(&req, &mask)}));
                         }
-                        let got = self.fetch(req, &conn.reach()).await;
+                        let mut reach = conn.reach();
+                        if let Some(cap) = op.answer_cap() {
+                            reach.max_bytes = cap;
+                        }
+                        let got = self.fetch(req, &reach).await;
                         if let (Some(d), Ok(a)) = (debug.as_mut(), &got) {
                             d["answer"] = json!({"status": a.status, "body": clipped(&masked(&a.body, &mask))});
                         }
@@ -992,8 +1094,9 @@ impl Kernel {
         let (outcome, status, row_outcome) = match answered {
             Ok(a) if (200..300).contains(&a.status) => {
                 let status = a.status;
-                match self.mapped(conn, op, inputs, &a) {
+                match self.mapped(ctx, conn, op, inputs, &a, about).await {
                     Ok(result) => (Outcome::Ok(masked(&result, &mask), Box::new(a)), Some(status), "ok"),
+                    Err(Error::Unavailable(m)) => (Outcome::Later(masked_text(&m, &mask), None), Some(status), "temporary"),
                     Err(e) => (Outcome::No(masked_text(&format!("{status}: {e}"), &mask)), Some(status), "failed"),
                 }
             }
@@ -1038,7 +1141,7 @@ impl Kernel {
 
     /// The mapped result of an answer that worked: each of the operation's `result` read as its [`Pick`] says (none: the
     /// whole answer); one `required` and not there fails the call, naming it.
-    fn mapped(&self, conn: &Loaded, op: &Operation, inputs: &Value, a: &Answer) -> Result<Value> {
+    async fn mapped(&self, ctx: &Ctx, conn: &Loaded, op: &Operation, inputs: &Value, a: &Answer, about: Option<(&str, Uuid)>) -> Result<Value> {
         if op.result.is_empty() {
             return Ok(a.body.clone());
         }
@@ -1048,13 +1151,70 @@ impl Kernel {
         let mut out = Map::new();
         for (name, pick) in &op.result {
             let p = Pick::of(pick).map_err(Error::invalid)?.spec(false);
-            let v = a.read(&p, &vars)?;
+            let v = match &p.file {
+                Some(f) => self.answer_file(ctx, conn, f, inputs, a, about).await?,
+                None => a.read(&p, &vars)?,
+            };
             if p.required && v.is_null() {
                 return Err(Error::invalid(format!("the answer has no {name}")));
             }
             out.insert(name.clone(), v);
         }
         Ok(Value::Object(out))
+    }
+
+    /// A file an answer gives ([`FileResult`]), stored and attached to the record the call is about: its id. A test
+    /// connection fetches nothing (null).
+    async fn answer_file(&self, ctx: &Ctx, conn: &Loaded, f: &FileResult, inputs: &Value, a: &Answer, about: Option<(&str, Uuid)>) -> Result<Value> {
+        let cap = f.max_bytes.unwrap_or(DEFAULT_FILE_BYTES);
+        let got;
+        let (bytes, kind, url) = match &f.from {
+            Some(_) if conn.desc.test => return Ok(Value::Null),
+            Some(p) => {
+                let address = at(&a.body, Some(p)).ok_or_else(|| Error::invalid(format!("the answer gives no file address at {p}")))?;
+                let url = a.url.join(&address).map_err(|_| Error::invalid("the file's address is not an address"))?;
+                let reach = Reach { max_bytes: cap, ..conn.reach() };
+                got = self.fetch(Request { method: reqwest::Method::GET, url, headers: vec![], body: None }, &reach).await?;
+                if !(200..300).contains(&got.status) {
+                    let said = format!("the file's address answered {}", got.status);
+                    return Err(if TEMPORARY.contains(&got.status) { Error::Unavailable(said) } else { Error::invalid(said) });
+                }
+                (&got.raw, got.header("content-type"), &got.url)
+            }
+            None => (&a.raw, a.header("content-type"), &a.url),
+        };
+        if bytes.len() as u64 > cap {
+            return Err(Error::invalid(format!("the file is larger than {cap} bytes")));
+        }
+        let name = match &f.name {
+            Some(t) => render(t, &json!({"inputs": inputs, "answer": a.body}))?,
+            None => url.path_segments().and_then(|mut s| s.next_back()).filter(|s| !s.is_empty()).unwrap_or("file").to_string(),
+        };
+        let kind = kind.unwrap_or("application/octet-stream").to_string();
+        let stored = self.store_file(ctx, about, &name, &kind, bytes).await?;
+        Ok(stored["id"].clone())
+    }
+
+    /// A stored file a request sends, as the caller reads it: its name, type and bytes, within `budget` (what the
+    /// request may still send) and the part's own limit.
+    async fn sent_file(&self, ctx: &Ctx, part: &FilePart, vars: &Value, budget: &mut u64) -> Result<(String, String, Vec<u8>)> {
+        let given = render(&part.file, vars)?;
+        let id: Uuid = given.trim().parse().map_err(|_| Error::invalid(format!("{given} is not a stored file")))?;
+        let info = self.file_info(ctx, id).await.map_err(|_| Error::invalid(format!("the file {id} is not one you may send")))?;
+        let cap = part.max_bytes.unwrap_or(DEFAULT_FILE_BYTES).min(*budget);
+        if info.size < 0 || info.size as u64 > cap {
+            return Err(Error::invalid(format!("{} is larger than the {cap} bytes this call may send", info.name)));
+        }
+        let bytes = self.file_store()?.get(&info.key).await?;
+        if bytes.len() as u64 > cap {
+            return Err(Error::invalid(format!("{} is larger than the {cap} bytes this call may send", info.name)));
+        }
+        *budget -= bytes.len() as u64;
+        let name = match &part.name {
+            Some(t) => render(t, vars)?,
+            None => info.name,
+        };
+        Ok((name, part.content_type.clone().unwrap_or(info.content_type), bytes))
     }
 
     /// The request an operation makes, and what more it must never show (a token).
@@ -1089,24 +1249,48 @@ impl Kernel {
             url.query_pairs_mut().extend_pairs(pairs);
         }
         let mut headers = Vec::new();
+        let multipart = op.multipart();
         for (h, v) in conn.desc.headers.iter().chain(&op.headers) {
-            headers.push((h.clone(), r(v)?));
+            // A file's body and a multipart form say their own type (and boundary).
+            if !(h.eq_ignore_ascii_case("content-type") && (multipart || op.body.as_deref().is_some_and(|b| b.starts_with(SPEC)))) {
+                headers.push((h.clone(), r(v)?));
+            }
         }
         if let (Some(h), Some(k)) = (&op.idempotency_header, key) {
             headers.push((h.clone(), k.to_string()));
         }
+        let mut budget = MAX_FILE_BYTES;
         let body = match &op.body {
-            Some(b) => {
-                let text = r(b)?;
-                serde_json::from_str::<Value>(&text).map_err(|e| Error::invalid(format!("the operation's body is not JSON: {e}")))?;
-                Some((text.into_bytes(), "application/json"))
+            Some(b) => match spec_of::<FilePart>(b) {
+                Some(part) => {
+                    let (_, kind, bytes) = self.sent_file(ctx, &part.map_err(Error::invalid)?, &vars, &mut budget).await?;
+                    Some((bytes, kind))
+                }
+                None => {
+                    let text = r(b)?;
+                    serde_json::from_str::<Value>(&text).map_err(|e| Error::invalid(format!("the operation's body is not JSON: {e}")))?;
+                    Some((text.into_bytes(), "application/json".to_string()))
+                }
+            },
+            None if multipart => {
+                let mut parts = Vec::new();
+                for (k, v) in &op.form {
+                    parts.push(match spec_of::<FilePart>(v) {
+                        Some(part) => {
+                            let (name, kind, bytes) = self.sent_file(ctx, &part.map_err(Error::invalid)?, &vars, &mut budget).await?;
+                            (k.clone(), Some((name, kind)), bytes)
+                        }
+                        None => (k.clone(), None, r(v)?.into_bytes()),
+                    });
+                }
+                Some(form_data(&parts))
             }
             None if !op.form.is_empty() => {
                 let mut f = reqwest::Url::parse("http://form/").map_err(Error::internal)?;
                 for (k, v) in &op.form {
                     f.query_pairs_mut().append_pair(k, &r(v)?);
                 }
-                Some((f.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded"))
+                Some((f.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded".to_string()))
             }
             None => None,
         };
@@ -1151,6 +1335,26 @@ impl Kernel {
         }
         Ok(vec![])
     }
+}
+
+/// A `multipart/form-data` body (RFC 7578) of `parts` (name, file name and type for a file, bytes), and its type. Names
+/// are the description's; a file name or type cannot end its line or its quotes.
+fn form_data(parts: &[(String, Option<(String, String)>, Vec<u8>)]) -> (Vec<u8>, String) {
+    let boundary = format!("ferrum-{}", Uuid::new_v4().simple());
+    let quoted = |s: &str| s.replace('"', "%22").replace('\r', "%0D").replace('\n', "%0A");
+    let mut out = Vec::new();
+    for (name, file, bytes) in parts {
+        out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{}\"", quoted(name)).as_bytes());
+        if let Some((file_name, kind)) = file {
+            let kind: String = kind.chars().filter(|c| !c.is_control()).collect();
+            out.extend_from_slice(format!("; filename=\"{}\"\r\nContent-Type: {kind}", quoted(file_name)).as_bytes());
+        }
+        out.extend_from_slice(b"\r\n\r\n");
+        out.extend_from_slice(bytes);
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (out, format!("multipart/form-data; boundary={boundary}"))
 }
 
 /// A request as the debug capture keeps it: every header that may prove who calls hidden, every secret masked.
@@ -1597,6 +1801,40 @@ mod tests {
         assert!(p(json!({"link": "next>"}), true).is_some());
         assert!(p(json!({"expr": "a +"}), true).is_some());
         assert!(serde_json::from_value::<Pick>(json!({"at": "/a", "colour": 1})).is_err());
+    }
+
+    #[test]
+    fn forms_keep_their_shape() {
+        let (body, kind) = form_data(&[
+            ("caption".into(), None, b"hi".to_vec()),
+            ("media".into(), Some(("a\"b\r\nX-Evil: 1.png".into(), "image/png\r\nX-Evil: 1".into())), b"PNG".to_vec()),
+        ]);
+        let boundary = kind.strip_prefix("multipart/form-data; boundary=").unwrap();
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.starts_with(&format!("--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\nhi\r\n")), "{text}");
+        assert!(text.contains("filename=\"a%22b%0D%0AX-Evil: 1.png\"\r\nContent-Type: image/pngX-Evil: 1\r\n\r\nPNG\r\n"), "{text}");
+        assert!(!text.contains("\r\nX-Evil"), "no header of its own: {text}");
+        assert!(text.ends_with(&format!("--{boundary}--\r\n")));
+        // An object in `form` or `result` is kept as text and written back as the object.
+        let op: Operation = serde_json::from_value(
+            json!({"form": {"a": "{{ inputs.a }}", "f": {"file": "{{ inputs.f }}"}}, "result": {"x": "/x", "y": {"header": "Location"}}}),
+        )
+        .unwrap();
+        assert!(op.multipart() && op.form["f"].starts_with(SPEC));
+        assert_eq!(serde_json::to_value(&op).unwrap()["form"]["f"], json!({"file": "{{ inputs.f }}"}));
+        assert_eq!(serde_json::to_value(&op).unwrap()["result"]["y"], json!({"header": "Location"}));
+        assert!(
+            serde_json::from_value::<Description>(json!({"test": true, "operations": {"a": {"form": {"f": {"file": "x", "colour": 1}}}}}))
+                .unwrap()
+                .problem()
+                .is_some()
+        );
+        assert!(
+            serde_json::from_value::<Description>(json!({"test": true, "operations": {"a": {"body": {"file": "x", "max_bytes": 1 << 30}}}}))
+                .unwrap()
+                .problem()
+                .is_some()
+        );
     }
 
     #[test]
