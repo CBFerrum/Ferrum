@@ -300,7 +300,7 @@ impl Kernel {
             method: reqwest::Method::POST,
             url: reqwest::Url::parse(url).map_err(|_| Error::invalid("the provider's address is not an address"))?,
             headers,
-            body: Some((body.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded")),
+            body: Some((body.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded".to_string())),
         };
         let reach = Reach { hosts: vec![host_of(url)], timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES };
         let mask = conn.mask();

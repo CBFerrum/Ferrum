@@ -181,13 +181,25 @@ async fn service(seen: Seen) -> u16 {
                         "link: </v1/feed?page=2>; rel=\"next\", </v1/feed?page=9>; rel=\"last\"\r\n".into(),
                         json!({"data": [{"id": "L-1", "title": "One"}]}).to_string(),
                     ),
+                    "/v1/media" => {
+                        let kind = text.lines().find_map(|l| l.strip_prefix("content-type: ")).unwrap_or_default().to_string();
+                        (
+                            200,
+                            String::new(),
+                            json!({"kind": kind, "len": text.split("\r\n\r\n").skip(1).collect::<Vec<_>>().join("\r\n\r\n").len()}).to_string(),
+                        )
+                    }
+                    "/v1/label" => (200, String::new(), json!({"tracking": "T-1", "url": "/v1/files/label.pdf"}).to_string()),
+                    "/v1/label-astray" => (200, String::new(), json!({"url": "http://10.0.0.1/label.pdf"}).to_string()),
+                    "/v1/label-big" => (200, String::new(), json!({"url": "/v1/files/big.pdf"}).to_string()),
+                    "/v1/files/label.pdf" => (200, "content-type: application/pdf\r\n".into(), "%PDF-1.4 label".into()),
+                    "/v1/files/big.pdf" => (200, "content-type: application/pdf\r\n".into(), "x".repeat(2000)),
+                    "/v1/raw" => (200, "content-type: image/png\r\n".into(), "PNGDATA".into()),
                     "/v1/astray" => (200, "link: <http://10.0.0.1/v1/feed?page=2>; rel=\"next\"\r\n".into(), json!({"data": []}).to_string()),
                     _ => (404, String::new(), "{}".into()),
                 };
-                let reply = format!(
-                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                );
+                let kind = if extra.contains("content-type:") { "" } else { "content-type: application/json\r\n" };
+                let reply = format!("HTTP/1.1 {status} X\r\n{kind}{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
                 let _ = s.write_all(reply.as_bytes()).await;
             });
         }
@@ -507,6 +519,65 @@ async fn answers(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
     );
 }
 
+/// Bodies beyond JSON (BD-47): a multipart form with a stored file, a file as the whole body, the caller's right to
+/// read it and the operation's limit; an answer stored as a file, fetched from the address it names within the
+/// connection's hosts and limit, attached to the record the call is about.
+async fn files(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
+    let photo: Uuid = k.store_file(admin, None, "photo.png", "image/png", b"PNG-PHOTO").await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let big: Uuid = k.store_file(admin, None, "big.png", "image/png", &[b'x'; 2000]).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let part = json!({"file": "{{ inputs.photo }}", "max_bytes": 1000});
+    let d = json!({"base": base, "roles": ["Poster"], "operations": {
+        "upload": {"path": "/media", "form": {"caption": "{{ inputs.caption }}", "media": part}, "result": {"kind": "/kind"}},
+        "put_raw": {"path": "/media", "method": "PUT", "body": {"file": "{{ inputs.photo }}"}, "result": {"kind": "/kind", "len": "/len"}},
+        "label": {"path": "/label", "method": "POST", "body": "{}", "result": {"tracking": "/tracking",
+            "label": {"file": {"from": "/url", "name": "label-{{ inputs.ref }}.pdf", "max_bytes": 1000}}}},
+        "label_astray": {"path": "/label-astray", "method": "POST", "body": "{}", "result": {"label": {"file": {"from": "/url"}}}},
+        "label_big": {"path": "/label-big", "method": "POST", "body": "{}", "result": {"label": {"file": {"from": "/url", "max_bytes": 1000}}}},
+        "raw": {"path": "/raw", "result": {"image": {"file": {"max_bytes": 100}}}}}});
+    k.save_connection_def(admin, None, &input("media", d, None)).await.unwrap();
+    let r = connections::call(k, admin, None, &call("media", "upload", json!({"caption": "Hello", "photo": photo}), Some("u-1"))).await.unwrap();
+    assert!(r["kind"].as_str().unwrap().starts_with("multipart/form-data; boundary="), "{r}");
+    let sent = seen.lock().unwrap().last().cloned().unwrap();
+    assert!(sent.contains("Content-Disposition: form-data; name=\"caption\"\r\n\r\nHello\r\n"), "{sent}");
+    assert!(sent.contains("name=\"media\"; filename=\"photo.png\"\r\nContent-Type: image/png\r\n\r\nPNG-PHOTO\r\n"), "{sent}");
+    let r = connections::call(k, admin, None, &call("media", "put_raw", json!({"photo": photo}), Some("u-2"))).await.unwrap();
+    assert_eq!(r, json!({"kind": "image/png", "len": 9}), "the file is the body, with its type");
+    // Over the operation's limit, or a file the caller may not read: refused before anything is sent.
+    let before = seen.lock().unwrap().len();
+    let e = connections::call(k, admin, None, &call("media", "upload", json!({"caption": "x", "photo": big}), Some("u-3"))).await.unwrap_err();
+    assert!(e.to_string().contains("larger than the 1000 bytes"), "{e}");
+    let mut poster = admin.clone();
+    (poster.is_admin, poster.roles) = (false, vec!["Poster".into()]);
+    poster.user = k.create_user(admin, "poster@depot.test", "Poster", None, &[], false).await.unwrap();
+    let e = connections::call(k, &poster, None, &call("media", "put_raw", json!({"photo": photo}), Some("u-4"))).await.unwrap_err();
+    assert!(e.to_string().contains("is not one you may send"), "another's upload: {e}");
+    assert_eq!(seen.lock().unwrap().len(), before, "nothing was sent");
+
+    // A label at the address the answer names: fetched, stored, attached to the record the call is about.
+    let parcel: Uuid = k.insert(admin, "Parcel", obj(json!({"label": "L-9"}))).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let about = Call { entity: Some("Parcel".into()), record: Some(parcel), ..call("media", "label", json!({"ref": "R9"}), Some("l-1")) };
+    let r = connections::call(k, admin, None, &about).await.unwrap();
+    assert_eq!(r["tracking"], "T-1");
+    let label: Uuid = r["label"].as_str().unwrap().parse().unwrap();
+    assert_eq!(k.read_file(admin, label).await.unwrap(), ("label-R9.pdf".into(), "application/pdf".into(), b"%PDF-1.4 label".to_vec()));
+    let attached = count(
+        k,
+        admin.tenant,
+        &format!("select count(*) from file_object where tenant_id = $1 and id = '{label}' and entity = 'Parcel' and record_id = '{parcel}'"),
+    )
+    .await;
+    assert_eq!(attached, 1, "attached to the parcel");
+    assert!(seen.lock().unwrap().iter().rev().find(|s| s.starts_with("GET /v1/files/label.pdf")).is_some_and(|s| !s.contains("authorization")));
+    let e = connections::call(k, admin, None, &call("media", "label_astray", json!({}), Some("l-2"))).await.unwrap_err();
+    assert!(e.to_string().contains("10.0.0.1 is not one of the hosts"), "an address off the connection's hosts: {e}");
+    let e = connections::call(k, admin, None, &call("media", "label_big", json!({}), Some("l-3"))).await.unwrap_err();
+    assert!(e.to_string().contains("larger than 1000 bytes"), "{e}");
+    // The answer itself, stored.
+    let r = connections::call(k, admin, None, &call("media", "raw", json!({}), None)).await.unwrap();
+    let image: Uuid = r["image"].as_str().unwrap().parse().unwrap();
+    assert_eq!(k.read_file(admin, image).await.unwrap().1, "image/png");
+}
+
 fn query(url: &str) -> BTreeMap<String, String> {
     reqwest::Url::parse(url).unwrap().query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect()
 }
@@ -626,7 +697,7 @@ async fn signing_in(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) -> Vec<Str
 /// A person's data (BD-35): their own sign-in, the calls they made, a call about a record of theirs, a capture and a
 /// delivery naming them are in their report; erasure destroys the sign-in's tokens and revokes them at the provider
 /// (recorded), and leaves the log's lines without what named them.
-async fn erasing(k: &Kernel, admin: &Ctx, seen: &Seen) {
+async fn erasing(k: &Kernel, admin: &Ctx, seen: &Seen, store: Arc<Memory>) {
     let tenant = admin.tenant;
     let ivy_id = k.create_user(admin, "ivy@depot.test", "Ivy", None, &[], false).await.unwrap();
     let mut ivy = k.load_ctx(tenant, ivy_id, None, "it".into()).await.unwrap();
@@ -721,8 +792,6 @@ async fn erasing(k: &Kernel, admin: &Ctx, seen: &Seen) {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    let store = Arc::new(Memory::default());
-    k.set_file_store(store.clone());
     let key = format!("{}{tenant}/1.json", ferrum_kernel::privacy::JOURNAL_PREFIX);
     let entry =
         json!({"tenant": tenant, "erasure": {"account": ivy_id, "records": [{"entity": "Parcel", "id": parcel, "fields": ["tracking"]}], "reason": "r"}});
@@ -803,6 +872,8 @@ async fn boot() -> (Arc<Kernel>, Ctx) {
 
 async fn scenario() {
     let (k, admin) = boot().await;
+    let store = Arc::new(Memory::default());
+    k.set_file_store(store.clone());
     let seen: Seen = Arc::default();
     let port = service(seen.clone()).await;
     let base = format!("http://127.0.0.1:{port}/v1");
@@ -1000,9 +1071,10 @@ async fn scenario() {
 
     being_called(&k, &admin).await;
     answers(&k, &admin, &base, &seen).await;
+    files(&k, &admin, &base, &seen).await;
     pulling(&k, &admin, &base, &seen).await;
     let signed_in = signing_in(&k, &admin, &base, &seen).await;
-    erasing(&k, &admin, &seen).await;
+    erasing(&k, &admin, &seen, store).await;
 
     // ── secrets rest nowhere: not the log, the capture, the audit trail, the jobs ──
     let mut never: Vec<&str> = vec![SECRET, SIGNING, INBOUND, TOKEN, CLIENT, REFRESH, "Xy9-access"];

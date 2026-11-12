@@ -1483,13 +1483,13 @@ impl Kernel {
             let headers = desc.headers.iter().map(|(h, v)| Ok((h.clone(), r(v)?))).collect::<Result<Vec<_>>>()?;
             let body = if let Some(b) = &desc.body {
                 let body: Value = serde_json::from_str(&r(b)?).map_err(|e| Error::invalid(format!("the channel's body is not JSON: {e}")))?;
-                Some((body.to_string().into_bytes(), "application/json"))
+                Some((body.to_string().into_bytes(), "application/json".to_string()))
             } else if !desc.form.is_empty() {
                 let mut f = reqwest::Url::parse("http://form/").map_err(Error::internal)?;
                 for (k, v) in &desc.form {
                     f.query_pairs_mut().append_pair(k, &r(v)?);
                 }
-                Some((f.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded"))
+                Some((f.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded".to_string()))
             } else {
                 None
             };
