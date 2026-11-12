@@ -1600,8 +1600,8 @@ async fn keep(
         crate::outbox::release_objects(tx, ctx.tenant, &gone).await?;
     }
     let sha = hex::encode(Sha256::digest(&bytes));
-    let stored_type =
-        if crate::files::ACTIVE_TYPES.iter().any(|t| content_type.starts_with(t)) { "application/octet-stream".to_string() } else { content_type };
+    // Its own type, whatever it is: the file routes serve one a browser would run as an attachment that runs nothing.
+    let stored_type = content_type;
     sqlx::query(
         "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by, scan_status, document) \
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'unscanned', $11)",
