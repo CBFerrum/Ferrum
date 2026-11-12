@@ -654,6 +654,7 @@ impl Kernel {
         configured_actions(self, ctx.tenant, was, &now)?;
         crate::published::check(was, &now)?;
         crate::targets::check_calendars(tx, ctx.tenant, was, &now).await?;
+        crate::approvals::check_names(tx, ctx.tenant, was, &now).await?;
         self.guard_records(ctx, tx, was, &now).await?;
         Ok(now)
     }
@@ -733,6 +734,7 @@ impl Kernel {
         let now = self.build(ctx, &self.active_overlays(&mut tx, ctx.tenant).await?)?;
         configured_actions(self, ctx.tenant, &was, &now)?;
         crate::targets::check_calendars(&mut tx, ctx.tenant, &was, &now).await?;
+        crate::approvals::check_names(&mut tx, ctx.tenant, &was, &now).await?;
         self.guard_records(ctx, &mut tx, &was, &now).await?;
         self.sync_custom_keys(ctx, &mut tx, &was, &now).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;

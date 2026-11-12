@@ -498,6 +498,7 @@ impl Kernel {
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("update vanished"))?;
         self.hook_after_save(ctx, tx, &ent, &stored, Some(&old)).await?;
         crate::retention::carry_contact_choices(tx, ctx, &ent, id, &old, &stored).await?;
+        self.approval_record_changed(ctx, tx, &ent, id, &old, &stored).await?;
         self.emit(ctx, tx, &ent, id, "updated", "update", Some(version), Some(&old), Some(&stored)).await?;
         Ok(self.mask(ctx, &ent, stored))
     }
@@ -810,7 +811,7 @@ impl Kernel {
     pub async fn transition_with(&self, ctx: &Ctx, entity: &str, id: Uuid, action: &str, expected_version: Option<i64>, params: Value) -> Result<Doc> {
         with_retry(|| async {
             let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-            let doc = self.take_tx(ctx, &mut tx, entity, id, action, expected_version, &params).await?;
+            let doc = self.take_tx(ctx, &mut tx, entity, id, action, expected_version, &params, None).await?;
             tx.commit().await?;
             Ok(doc)
         })
@@ -819,11 +820,13 @@ impl Kernel {
     }
 
     pub async fn transition_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, action: &str, expected_version: Option<i64>) -> Result<Doc> {
-        self.take_tx(ctx, tx, entity, id, action, expected_version, &Value::Null).await
+        self.take_tx(ctx, tx, entity, id, action, expected_version, &Value::Null, None).await
     }
 
     /// Takes transition `action` of record `id` as `ctx`, with `params`: who may, its guard, what its state needs, its
-    /// rules `on: transition`, then the move, its effects and its event (BD-19).
+    /// rules `on: transition`, then (unless an approval policy asks first) the move, its effects and its event
+    /// (BD-19). `approved`: the approval request this completes (approvals.rs), `ctx` the system on its requester's
+    /// behalf.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn take_tx(
         &self,
@@ -834,6 +837,7 @@ impl Kernel {
         action: &str,
         expected_version: Option<i64>,
         params: &Value,
+        approved: Option<Uuid>,
     ) -> Result<Doc> {
         let ent = self.entity(ctx, entity)?;
         // The settings its expressions read, once for this save (BD-17).
@@ -881,41 +885,24 @@ impl Kernel {
         next.insert("workflow_state".into(), json!(t.to));
         let moving = json!({"action": t.action, "from": t.from, "to": t.to, "params": params});
         self.transition_rules(ctx, tx, &ent, &next, &doc, &moving).await?;
+        // Who must agree first: the record stays, awaiting them (approvals.rs).
+        if let (Some(policy), None) = (&t.approval, approved)
+            && let Some(asked) = self.request_approval(ctx, tx, &ent, id, &doc, t, policy, &params).await?
+        {
+            let mut out = self.mask(ctx, &ent, doc);
+            out.insert("_approval".into(), asked);
+            return Ok(out);
+        }
         let from_status = docstatus_of(&doc) as i16;
         let version = version_of(&doc);
         let out = match (from_status, target.docstatus) {
             (0, 1) => self.submit_inner(ctx, tx, entity, id, Some(version), Some(t.to.clone())).await?,
             (1, 2) => self.cancel_inner(ctx, tx, entity, id, Some(version), Some(t.to.clone())).await?,
-            (a, b) if a == b => {
-                // The record's targets see it in its new state; what they keep is written with it.
-                crate::targets::keep(self, ctx, tx, &ent, id, &mut next).await?;
-                let kept: Doc = ent
-                    .def
-                    .targets
-                    .iter()
-                    .flat_map(|t| [&t.due_field, &t.state_field])
-                    .map(|f| (f.clone(), next.get(f).cloned().unwrap_or_default()))
-                    .collect();
-                sqlx::query(AssertSqlSafe(format!(
-                    "update {} a set workflow_state = $3, version = version + 1, updated_at = now(), updated_by = $4 where a.tenant_id = $1 and a.id = $2{}",
-                    crate::ddl::q(&ent.table),
-                    store::entity_predicate(&ent, "a")
-                )))
-                .bind(ctx.tenant)
-                .bind(id)
-                .bind(&t.to)
-                .bind((!ctx.user.is_nil()).then_some(ctx.user))
-                .execute(&mut **tx)
-                .await?;
-                if !kept.is_empty() {
-                    store::set_values(tx, &ent, ctx.tenant, id, &kept).await?;
-                }
-                let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("transition vanished"))?;
-                self.emit(ctx, tx, &ent, id, "transitioned", &format!("workflow:{action}"), Some(version + 1), Some(&doc), Some(&stored)).await?;
-                self.mask(ctx, &ent, stored)
-            }
+            (a, b) if a == b => self.write_state(ctx, tx, &ent, id, &doc, &t.to, &format!("workflow:{action}")).await?,
             _ => return Err(Error::invalid("this workflow transition would move the document backwards")),
         };
+        // A request still pending on the record is over: it moved on.
+        self.approvals_moved(tx, ctx, &ent, id).await?;
         if params.as_object().is_some_and(|p| !p.is_empty()) {
             audit::record(tx, ctx, &ent.def.name, id, &format!("workflow:{action}"), None, json!({"params": params})).await?;
         }
@@ -926,6 +913,36 @@ impl Kernel {
         crate::actions::run_effects(self, ctx, tx, &ent, id, &t.effects, &params, &origin).await?;
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("transition vanished"))?;
         Ok(self.mask(ctx, &ent, stored))
+    }
+
+    /// Moves record `id` (`doc`, locked) to workflow state `to` of its own document status, as a transition writes it:
+    /// its targets kept, a new version, the history entry `audit_action` and the `transitioned` event. Masked for `ctx`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn write_state(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: Uuid, doc: &Doc, to: &str, audit_action: &str) -> Result<Doc> {
+        let version = version_of(doc);
+        // The record's targets see it in its new state; what they keep is written with it.
+        let mut next = doc.clone();
+        next.insert("workflow_state".into(), json!(to));
+        crate::targets::keep(self, ctx, tx, ent, id, &mut next).await?;
+        let kept: Doc =
+            ent.def.targets.iter().flat_map(|t| [&t.due_field, &t.state_field]).map(|f| (f.clone(), next.get(f).cloned().unwrap_or_default())).collect();
+        sqlx::query(AssertSqlSafe(format!(
+            "update {} a set workflow_state = $3, version = version + 1, updated_at = now(), updated_by = $4 where a.tenant_id = $1 and a.id = $2{}",
+            crate::ddl::q(&ent.table),
+            store::entity_predicate(ent, "a")
+        )))
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(to)
+        .bind((!ctx.user.is_nil()).then_some(ctx.user))
+        .execute(&mut **tx)
+        .await?;
+        if !kept.is_empty() {
+            store::set_values(tx, ent, ctx.tenant, id, &kept).await?;
+        }
+        let stored = self.load_marked(tx, ctx, ent, id, false).await?.ok_or_else(|| Error::internal("transition vanished"))?;
+        self.emit(ctx, tx, ent, id, "transitioned", audit_action, Some(version + 1), Some(doc), Some(&stored)).await?;
+        Ok(self.mask(ctx, ent, stored))
     }
 
     /// The rules of `ent` that run `on: transition`, on `next` (the record in its new state; `old`, as it was), each
