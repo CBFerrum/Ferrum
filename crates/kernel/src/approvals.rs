@@ -775,17 +775,36 @@ impl Kernel {
         .bind(limit)
         .fetch_all(&mut *tx)
         .await?;
+        let asked_by: Vec<Uuid> = to_decide.iter().chain(&awaiting).filter_map(|r| r.requester).collect();
+        let names: std::collections::HashMap<Uuid, String> =
+            sqlx::query_as::<_, (Uuid, String)>("select id, full_name from app_user where tenant_id = $1 and id = any($2)")
+                .bind(ctx.tenant)
+                .bind(&asked_by)
+                .fetch_all(&mut *tx)
+                .await?
+                .into_iter()
+                .collect();
+        let standing: Vec<Uuid> = people.iter().filter_map(|p| p.parse().ok()).collect();
         let mut lists = Vec::new();
-        for rows in [to_decide, awaiting] {
+        for (mine, rows) in [(true, to_decide), (false, awaiting)] {
             let mut out = Vec::new();
             for r in rows {
                 let Some(ent) = ctx.schema.entity(&r.entity).cloned() else { continue };
                 // Named as a notice names it: whoever decides learns what they decide on.
                 let doc = self.get_tx(&crate::actions::system(ctx), &mut tx, &r.entity, r.record_id, false).await.unwrap_or_default();
+                // The open step: the one awaiting the caller in their list, else the first still open.
+                let (policy, steps) = r.parts()?;
+                let open = steps.iter().enumerate().filter(|(_, s)| s.is("open"));
+                let step = open
+                    .clone()
+                    .find(|(_, s)| !mine || standing.iter().any(|p| s.may(*p)))
+                    .or(open.clone().next())
+                    .map(|(i, s)| json!({"index": i, "label": policy.steps.get(i).map(|d| d.label.as_str()), "opened_at": s.opened_at}));
                 out.push(json!({
                     "request": r.id, "entity": r.entity, "entity_label": ent.def.label, "record": r.record_id,
                     "title": crate::collab::record_title(ctx, &r.entity, &doc), "action": r.action, "from": r.from_state,
-                    "requester": r.requester, "requested_at": r.created_at,
+                    "requester": r.requester, "requester_name": r.requester.and_then(|u| names.get(&u)), "requested_at": r.created_at,
+                    "step": step,
                 }));
             }
             lists.push(Value::Array(out));
@@ -906,7 +925,8 @@ async fn summary(tx: &mut Tx, tenant: Uuid, ent: &EffEntity, r: &Request) -> Res
         .zip(&policy.steps)
         .map(|(s, d)| {
             json!({"label": d.label, "state": s.state, "need": s.need, "approvers": s.approvers, "escalated": s.escalated,
-                   "opened_at": s.opened_at, "remind_at": s.remind_at, "escalate_at": s.escalate_at})
+                   "opened_at": s.opened_at, "remind_at": s.remind_at, "escalate_at": s.escalate_at,
+                   "reminded_at": s.reminded_at, "escalated_at": s.escalated_at})
         })
         .collect();
     Ok(json!({

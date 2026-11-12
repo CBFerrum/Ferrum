@@ -7,7 +7,7 @@ use crate::error::ApiResult;
 use crate::extract::Auth;
 use crate::state::app_state;
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::{Ctx, Error, Kernel};
 use loco_rs::app::AppContext;
@@ -53,8 +53,12 @@ async fn mentions(k: &Kernel, ctx: &Ctx) -> ferrum_kernel::Result<Vec<Value>> {
 }
 
 async fn work(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
-    let st = app_state(&app)?;
-    let k = &st.kernel;
+    Ok(Json(work_of(&app_state(&app)?.kernel, &ctx).await).into_response())
+}
+
+/// What `GET /api/work` answers (callable without the HTTP layer).
+pub async fn work_of(k: &Kernel, ctx: &Ctx) -> Value {
+    let ctx = ctx.clone();
     let (assigned, approvals, mentioned, requests) =
         tokio::join!(k.my_assignments(&ctx, None), k.my_approvals(&ctx, MOST), mentions(k, &ctx), k.my_approval_requests(&ctx, MOST as i64));
     let mut partial = false;
@@ -106,15 +110,14 @@ async fn work(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Respo
         }))
         .collect();
     let mentioned = ok(mentioned, "mentions");
-    Ok(Json(json!({
+    json!({
         "groups": [
             {"id": "assigned", "title": "Assigned to you", "items": assigned},
             {"id": "approvals", "title": "Waiting for your approval", "items": approvals},
             {"id": "mentions", "title": "Mentions", "items": mentioned},
         ],
         "partial": partial,
-    }))
-    .into_response())
+    })
 }
 
 /// `GET /api/approvals`: the caller's approvals, `to_decide` (theirs, or of whom they stand in for) and
@@ -123,7 +126,37 @@ async fn approvals(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<
     Ok(Json(app_state(&app)?.kernel.my_approval_requests(&ctx, MOST as i64).await?).into_response())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AwayQuery {
+    /// Whose (an administrator's question about someone else); the caller's by default.
+    user: Option<Uuid>,
+    /// `DELETE`: only the period starting that day.
+    starts_on: Option<chrono::NaiveDate>,
+}
+
+/// `GET /api/away`: the caller's away periods today and to come, each with its stand-in (FEO-034); `?user=` for an
+/// administrator. Set at Studio's `POST /api/app/studio/logic/away`.
+async fn away(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<AwayQuery>) -> ApiResult<Response> {
+    Ok(Json(away_of(&app_state(&app)?.kernel, &ctx, q.user).await?).into_response())
+}
+
+/// What `GET /api/away` answers (callable without the HTTP layer).
+pub async fn away_of(k: &Kernel, ctx: &Ctx, user: Option<Uuid>) -> ApiResult<Value> {
+    Ok(json!(k.away_of(ctx, user.unwrap_or(ctx.user)).await?))
+}
+
+/// `DELETE /api/away`: takes them back, all of them or `?starts_on=` the one; `{"cleared": n}`.
+async fn clear_away(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<AwayQuery>) -> ApiResult<Response> {
+    Ok(Json(away_cleared(&app_state(&app)?.kernel, &ctx, q.user, q.starts_on).await?).into_response())
+}
+
+/// What `DELETE /api/away` answers (callable without the HTTP layer).
+pub async fn away_cleared(k: &Kernel, ctx: &Ctx, user: Option<Uuid>, starts_on: Option<chrono::NaiveDate>) -> ApiResult<Value> {
+    Ok(json!({"cleared": k.clear_away(ctx, user.unwrap_or(ctx.user), starts_on).await?}))
+}
+
 pub fn routes() -> Routes {
     use axum::routing::get;
-    Routes::new().add("/api/work", get(work)).add("/api/approvals", get(approvals))
+    Routes::new().add("/api/work", get(work)).add("/api/approvals", get(approvals)).add("/api/away", get(away).delete(clear_away))
 }

@@ -1557,6 +1557,53 @@ impl Kernel {
         Ok(())
     }
 
+    /// `user`'s away periods today and to come, each with who stands in (themselves, or an administrator for anyone):
+    /// `[{starts_on, ends_on, current, substitute, substitute_name, reason}]`, earliest first.
+    pub async fn away_of(&self, ctx: &Ctx, user: Uuid) -> Result<Vec<Value>> {
+        if user != ctx.user && !ctx.is_admin {
+            return Err(Error::Forbidden("you see when you are away, or an administrator does".into()));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<(chrono::NaiveDate, chrono::NaiveDate, bool, Uuid, Option<String>, String)> = sqlx::query_as(
+            "select a.starts_on, a.ends_on, a.starts_on <= current_date, a.substitute, u.full_name, a.reason from person_away a \
+             left join app_user u on u.tenant_id = a.tenant_id and u.id = a.substitute \
+             where a.tenant_id = $1 and a.user_id = $2 and a.ends_on >= current_date order by a.starts_on",
+        )
+        .bind(ctx.tenant)
+        .bind(user)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows
+            .into_iter()
+            .map(|(from, until, current, substitute, name, reason)| {
+                json!({"starts_on": from, "ends_on": until, "current": current, "substitute": substitute, "substitute_name": name, "reason": reason})
+            })
+            .collect())
+    }
+
+    /// Takes back `user`'s away periods today and to come (the one starting on `starts_on` when given): no one stands
+    /// in for them from now. Themselves, or an administrator for anyone. How many went.
+    pub async fn clear_away(&self, ctx: &Ctx, user: Uuid, starts_on: Option<chrono::NaiveDate>) -> Result<u64> {
+        if user != ctx.user && !ctx.is_admin {
+            return Err(Error::Forbidden("you say when you are away, or an administrator does".into()));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let gone =
+            sqlx::query("delete from person_away where tenant_id = $1 and user_id = $2 and ends_on >= current_date and ($3::date is null or starts_on = $3)")
+                .bind(ctx.tenant)
+                .bind(user)
+                .bind(starts_on)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+        if gone > 0 {
+            crate::audit::record(&mut tx, ctx, "User", user, "away:cleared", None, json!({"starts_on": starts_on, "periods": gone})).await?;
+        }
+        tx.commit().await?;
+        Ok(gone)
+    }
+
     /// The open tasks `ctx` may decide.
     pub async fn my_logic_tasks(&self, ctx: &Ctx) -> Result<Vec<Value>> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
