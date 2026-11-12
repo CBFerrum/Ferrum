@@ -1086,6 +1086,135 @@ channel's `refused`).
 5. Say in the app's README that its messages are templates a workspace edits under Settings, and which `values` each
    reads.
 
+## Documents
+
+Templates that render a record into a page, text, CSV or XML (`crates/kernel/src/documents.rs`, decision
+[BD-21](builder/decisions.md)): letters, statements, receipts, labels, bank and filing files.
+
+**A template.** A package declares its defaults in its `package.yaml`; a workspace edits a copy, sees the default
+beside it, resets it, and is told (`default_changed`) when a release changed the default it edited, as with messages.
+A workspace's own template has a key no package's name starts.
+
+```yaml
+documents:
+  - key: hr.offer_letter          # {package}.{name}
+    label: Offer letter
+    entity: Offer                 # the record it renders
+    output: page                  # page (HTML, a PDF where the server makes PDFs) | text | csv | xml
+    default: true                 # what the entity prints with when none is picked (a workspace's wins)
+    roles: [HR Manager]           # who may pick it; none: whoever may print the record
+    values: [joining_bonus]       # what a caller passes, read as values.<name>
+    languages:
+      en:
+        body: "<h1>{{ settings.Company.company_name }}</h1><p>Dear {{ doc.candidate }}, … {{ doc.ctc|amount }} ({{ doc.ctc|words }})</p>"
+        footer: "Page {{ page_number() }} of {{ page_count() }}"
+      hi: {body: "…"}
+  - key: payroll.bank_upload
+    entity: Payroll Run
+    output: text                  # text, csv and xml also take:
+    encoding: iso-8859-1          # utf-8 (default) | iso-8859-1 | ascii; a character it cannot hold is refused
+    crlf: true                    # every line ends CR LF (else LF); the last line ends as the template's does
+    languages:
+      en: {body: "{% for l in doc.lines %}{{ l.account|pad(18) }}{{ l.net|fixed(2)|pad(15, 'right', '0') }}\n{% endfor %}T{{ doc.lines|length|pad(6, 'right', '0') }}{{ doc.lines|total('net') }}\n"}
+```
+
+A body reads `doc` (the record, its lines, `_titles` of its links), `links.<field>` (the record a link field names),
+`settings.<Entity>`, `values`, `entity` (its fields' labels), `language`, `currency` (the record's `currency`),
+`currencies` (the workspace's currency records), `title` (the record's) and `now`. Each output escapes what it prints for
+its own syntax: a page as HTML; CSV quotes a value holding a separator (`,` `;` tab), a quote or a line break, and
+keeps one a spreadsheet would run as a formula as text; XML writes markup characters as entities and leaves out what
+XML cannot hold; text prints as written (use `pad`, `csv`, `xml`). Nothing prints as `none`. A save renders every
+body against a record with every field (one line in each table, a record of each entity it links to) and refuses an
+unknown field, a secret one, an undeclared value, or a body that does not compile (422 on `template`). Bodies are at
+most 256 KB.
+
+**Helpers**, each in the document's `language` and `currency` unless given one:
+
+| Helper | Gives | Example |
+| --- | --- | --- |
+| `number(decimals?, language?)` | a number grouped and marked as the language writes it (lakhs for `hi`, `en-IN`; `1.234,5` for `de`; Arabic-Indic digits for `ar`) | `{{ 1234567.5\|number(2) }}` → `12,34,567.50` in `hi` |
+| `amount(currency?, show?, language?)` | an amount with the currency's decimals (its record's `precision`, else ISO's) and its symbol (`show`: `symbol`, `code`, `none`) | `{{ doc.total\|amount }}` → `₹12,34,567.50` |
+| `words(currency?, language?, names?)` | an amount in words in `en`, `en-IN`, `hi` or `ar`, the units named from the platform's table (`names`: `[unit, units]` or `[[unit, units], [fraction, fractions]]` for one it lacks); another language is refused | `{{ doc.total\|words }}` → `twelve lakh … rupees and fifty paise` |
+| `date(style?, language?)` | `short`, `long` (the month's name in the language) or a `strftime` pattern | `{{ doc.posting_date\|date('long') }}` → `2 नवंबर 2026` |
+| `fixed(places?)` | a number as data files write it: a point, no grouping | `{{ l.net\|fixed(2) }}` → `1234567.50` |
+| `total(attribute?)` | the exact sum of a list or of one attribute of it | `{{ doc.lines\|total('net') }}` |
+| `pad(width, align?, fill?)` | exactly `width` characters, cut or filled (`right` fills on the left); a line break becomes a space | `{{ l.amount\|pad(12, 'right', '0') }}` |
+| `csv` | one CSV field (escaped as HTML on a page) | `{{ doc.name\|csv }}` |
+| `xml` | text or an attribute's value in XML | `<Nm>{{ doc.name\|xml }}</Nm>` |
+| `barcode(value, kind?, module=, height=, text=)` | Code 128 (`code128`, the default) or EAN-13 (`ean13`, 12 digits and its check digit added, or 13 checked) as inline SVG; a wrong check digit or a character it cannot hold is refused | `{{ barcode(doc.item_code) }}` |
+| `qr(text)` | a QR code as inline SVG | `{{ qr(doc.irn_qr) }}` |
+| `page_number()`, `page_count()` | in a page's `header` and `footer`: this page and how many, filled in by the PDF service | `Page {{ page_number() }} of {{ page_count() }}` |
+
+The print formats (`set_print_template`) and message bodies have these helpers too, in English and naming the currency unless told otherwise.
+
+**Pages and PDFs.** A page is HTML; where the server has a PDF service (`FERRUM_PDF_URL`, Gotenberg's Chromium route)
+it is also a PDF: the service lays it out, its `header` and `footer` repeated on every page in margins made room for, a
+page size or margins from the body's own CSS (`@page {size: 100mm 50mm; margin: 2mm}`). Without the service a page
+is HTML, its header and footer left out.
+
+**What it shows.** A person printing gets the record as they may read it (a field group they may not read is not
+there, as on a print). A document generated by the system (the `generate` effect, `generate_document`) is rendered as
+the workspace holds the record, its secret fields left out: it goes to people outside, so who caused it is not who
+reads it.
+
+**Administrators**: `GET /api/admin/documents/templates` → `{templates: [{key, label, entity, output, default, roles,
+languages, source: package|workspace|edited, default_changed}]}`; `GET /api/admin/documents/templates/{key}` →
+`{template, default, edited, default_changed}`; `POST /api/admin/documents/templates` (a template) → `204`, refused
+with a 422 on `template`, `entity` or `key`; `DELETE /api/admin/documents/templates/{key}` → `204` (back to the default;
+a workspace's own one is removed); `POST /api/admin/documents/preview {template: key | a template not saved, language?,
+record_id?}` → `{language, output, content, header, footer, record_id}` (the record as the administrator reads it, else
+the latest; writes nothing). Packs carry the workspace's own and edited templates (`documents`).
+
+**People printing**: `GET /api/documents/choices/{Entity}` → `{templates: [{key, label, output}], default}` (those the
+caller's roles may pick; `default` null when the entity prints with its print format); `GET
+/api/documents/{key}/render/{id}?language=&format=pdf|html` → the document (a page as a PDF where the server makes PDFs
+unless `html` is asked for; a file as an attachment with its charset); `POST /api/documents/{key}/labels {ids, copies?,
+language?, format?}` → one document for many records (items, batches, bins, parcels): each record `copies` times, a
+page's each starting a page (write a label's body as a fragment with its own `@page` size), a file's one after another;
+1 to 200 records, 100 copies, 1000 in all a call, more refused (ask for the next ones). `GET /api/v1/{E}/{id}/print`
+takes `?template=key` (one of the choices) and `language`, and prints with the entity's default template when it has
+one; otherwise it is the print format as before. A page needs read permission; a text, CSV or XML file needs export
+permission and each download is on the record's audit trail (`document:export`, with the file's digest).
+
+**Generating and keeping.** The `generate` effect (configured buttons, transitions, approvals, automations):
+
+```json
+{"type": "generate", "template": "hr.offer_letter", "name": "'Offer ' + doc.candidate", "language": "doc.language",
+ "replace": true, "values": {"joining_bonus": "doc.bonus"}}
+```
+
+`name`, `language` and `values` are expressions. It renders the template for the record, as a PDF where the server
+makes PDFs (HTML otherwise), stores it attached to the record in the run's transaction (gone if the run rolls back;
+the bytes are written first, so a rolled-back run leaves an object no row names), and with `replace` drops the file
+this template made for the record before, except one a queued mail still waits to attach, which stays on the record
+as an ordinary file. It gives `{file, url, name, content_type, size, sha256, template, entity, record}`, which later
+effects read as `results[n]`: a `message` attaches it with `"attachments": ["results[0]"]` (each an id or what
+`generate` gave, a file of the same record only; another's is refused). Apps call `ferrum_kernel::documents::generate(k,
+tx, ctx, &Generate { template, record, name, language, replace, values })` in their own transaction, or
+`Kernel::generate_document(ctx, &Generate)` outside one; the caller must be able to read the record.
+
+**Handing a document to signing.** What `generate` gives is what the Sign app takes: an `invoke` effect after it
+passes `results[0].file` (the stored file) and `results[0].sha256` (its digest, for the signing request to check the
+file it was given is the one generated), with the record's entity and id, to the Sign app's capability. That
+capability's input is the Sign app's to declare; nothing here signs.
+
+### Moving an app's print layout or file to a document template
+
+1. Add a `documents:` entry to the app's `package.yaml`: key `{package}.{name}`, the `entity`, `output` (`page` for a
+   print layout; `text`, `csv` or `xml` for a file, with its `encoding` and `crlf`), `default: true` on the one its
+   entity prints with, `roles` if only some may pick it, and the body in `en` (its `print/<Entity>.html` moved in
+   unchanged: the variables a print format reads are all there).
+2. Replace what the template computed by hand: `money` stays as it was, but an amount with its currency is
+   `amount`, an amount in words `words`, a date in the reader's form `date`; a file's fixed-width fields `pad`, its
+   numbers `fixed`, its totals and counts `total` and `length`; escaping a CSV or XML value is the output's own.
+3. Where the app wrote a file in Rust (a bank file, a filing), render it from the template instead: `render_document`
+   for a person downloading it, `generate` to keep it on the record (and attach it to a mail). Keep the Rust builder
+   until a test renders the template against a fixture record and gets the same bytes.
+4. Remove the `print_formats` entry once the template is the entity's default (a print without `?template=` then
+   uses it); a workspace that customized the print template with `set_print_template` keeps it until it picks a
+   template.
+5. Say in the app's README which documents it ships, their `values`, and that a workspace edits them under Settings.
+
 ## Notifications — `/api/notifications` (the caller's own)
 
 Each notification has a kind: the platform's `mention`, `assignment`, `comment`, `watch`,

@@ -79,6 +79,9 @@ SETTINGS = ("-p", "ferrum-kernel", "--test", "settings_it")
 EFFECTS = ("-p", "ferrum-kernel", "--test", "effects_it")
 MESSAGES = ("-p", "ferrum-kernel", "--test", "messages_it")
 MESSAGES_UNIT = ("-p", "ferrum-kernel", "--lib", "messages::tests")
+DOCUMENTS = ("-p", "ferrum-kernel", "--test", "documents_it")
+DOCUMENTS_UNIT = ("-p", "ferrum-kernel", "--lib", "documents::tests")
+DOCFMT_UNIT = ("-p", "ferrum-kernel", "--lib", "docfmt::tests")
 INVOKE = ("-p", "ferrum-kernel", "--test", "invoke_it")
 TARGETS = ("-p", "ferrum-kernel", "--test", "targets_it")
 META_TARGETS = ("-p", "ferrum-meta", "--lib", "service_targets")
@@ -717,6 +720,20 @@ MUTANTS = [
     ("message-code-verified-twice", "crates/kernel/src/messages.rs", "used_at = case when $3 then now() end where", "used_at = null where", MESSAGES),
     ("message-inbound-unsigned-accepted", "crates/kernel/src/messages.rs", "        if !ok {", "        if false {", MESSAGES),
     ("message-number-guessed", "crates/kernel/src/messages.rs", "let code = s.calling_code.as_deref().ok_or_else(", "let code = s.calling_code.as_deref().or(Some(\"+1\")).ok_or_else(", MESSAGES_UNIT),
+    # Document templates (docs/api.md, Documents; BD-21).
+    ("documents-printed-as-the-workspace-sees-it", "crates/kernel/src/documents.rs", "let view = if reader == Reader::Person { ctx } else { &sys };", "let view = &sys;", DOCUMENTS),
+    ("documents-generated-with-secrets", "crates/kernel/src/documents.rs", "        crate::messages::without_secrets(&ctx.schema, &ent, &mut doc);\n", "", DOCUMENTS),
+    ("documents-template-reads-secrets", "crates/kernel/src/documents.rs", "for f in ent.def.fields.iter().filter(|f| f.ftype != FieldType::Secret) {", "for f in ent.def.fields.iter() {", DOCUMENTS),
+    ("documents-file-without-export", "crates/kernel/src/documents.rs", "let action = if def.output == DocumentOutput::Page { Action::Read } else { Action::Export };", "let action = Action::Read;", DOCUMENTS),
+    ("documents-roles-ignored", "crates/kernel/src/documents.rs", "    def.roles.is_empty() || ctx.is_admin || ctx.roles.iter().any(|r| def.roles.contains(r))", "    true || def.roles.is_empty()", DOCUMENTS),
+    ("documents-labels-unbounded", "crates/kernel/src/documents.rs", " || ids.len() * copies as usize > MAX_LABELS {", " {", DOCUMENTS),
+    ("documents-export-not-audited", "crates/kernel/src/documents.rs", "        for id in ids {\n            audit::record(", "        for id in ids.iter().take(0) {\n            audit::record(", DOCUMENTS),
+    ("documents-replace-drops-a-waiting-attachment", "crates/kernel/src/documents.rs", "and not o.dead and o.payload->'files' ? f.id::text)", "and false)", DOCUMENTS),
+    ("documents-csv-unescaped", "crates/kernel/src/documents.rs", "DocumentOutput::Csv => crate::docfmt::csv(&serde_json::to_value(v).unwrap_or(Value::Null)),", "DocumentOutput::Csv => v.to_string(),", DOCUMENTS_UNIT),
+    ("documents-attachment-of-another-record", "crates/kernel/src/automation.rs", "    if theirs as usize != files.iter().collect::<std::collections::HashSet<_>>().len() {", "    if theirs < 0 {", DOCUMENTS),
+    ("documents-ean13-check-digit-unchecked", "crates/kernel/src/docfmt.rs", "if d.len() == 13 && d[12] != check {", "if false {", DOCFMT_UNIT),
+    ("documents-encoding-replaces-what-it-cannot-hold", "crates/kernel/src/docfmt.rs", ".filter(|b| u32::from(*b) <= limit)", ".filter(|_| true)", DOCFMT_UNIT),
+    ("documents-numbers-grouped-by-thousands-everywhere", "crates/kernel/src/docfmt.rs", "if l.lakh { (left - 3) % 2 == 0 } else { left % 3 == 0 }", "left % 3 == 0", DOCFMT_UNIT),
     ("message-refusal-retried", "crates/kernel/src/messages.rs", "Ok((status, answer)) if temporary.contains(&status) && !last => {", "Ok((status, answer)) if !last => {", MESSAGES),
     ("message-quiet-hours-ignored", "crates/kernel/src/messages.rs", "        if pending[\"promotional\"] == json!(true)", "        if false", MESSAGES),
     ("message-recipient-unlimited", "crates/kernel/src/messages.rs", "} else if theirs >= s.per_recipient_hour.unwrap_or(PER_RECIPIENT_HOUR) {", "} else if false {", MESSAGES),
