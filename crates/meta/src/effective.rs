@@ -268,6 +268,8 @@ pub struct Schema {
     pub shell_v2: bool,
     /// The workspace's published lists (`publish_list`, BD-15), each checked against its entity.
     pub published_lists: Vec<PublishedList>,
+    /// The installed packages' message templates, as they ship them (BD-20).
+    pub messages: Vec<MessageDef>,
 }
 
 impl Schema {
@@ -322,6 +324,7 @@ impl Default for Schema {
             timezone: "UTC".into(),
             shell_v2: false,
             published_lists: vec![],
+            messages: vec![],
         }
     }
 }
@@ -779,6 +782,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let mut handover = Vec::new();
     let mut export_tables = Vec::new();
     let mut merge_links = Vec::new();
+    let mut messages = Vec::new();
     let mut warnings = Vec::new();
 
     for pkg in catalog.packages().filter(|p| set.contains(p.name())) {
@@ -796,6 +800,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         handover.extend(pkg.manifest.handover.iter().cloned());
         export_tables.extend(pkg.manifest.export_tables.iter().cloned());
         merge_links.extend(pkg.manifest.merge_links.iter().cloned());
+        messages.extend(pkg.manifest.messages.iter().cloned());
         if pkg.manifest.personal_data.is_empty() {
             undeclared_personal_data.push(pkg.manifest.package.clone());
         }
@@ -1188,6 +1193,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         timezone: "UTC".into(),
         shell_v2: false,
         published_lists,
+        messages,
     };
     // What expressions read as `settings` is there (BD-17); otherwise it is said, and a customization saying it refused.
     let wrong: Vec<SchemaWarning> = schema

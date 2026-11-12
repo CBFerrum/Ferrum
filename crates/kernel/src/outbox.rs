@@ -96,6 +96,22 @@ impl Kernel {
         files: &[Uuid],
         purpose: crate::retention::Purpose,
     ) -> Result<()> {
+        self.queue_mail_send(tx, tenant, to, subject, html, files, purpose, None).await
+    }
+
+    /// [`queue_mail_for`](Self::queue_mail_for), and the message send it is (messages.rs), told when it goes.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn queue_mail_send(
+        &self,
+        tx: &mut Tx,
+        tenant: Uuid,
+        to: &str,
+        subject: &str,
+        html: &str,
+        files: &[Uuid],
+        purpose: crate::retention::Purpose,
+        send: Option<Uuid>,
+    ) -> Result<()> {
         let to = to.trim();
         check_mail(to, subject)?;
         if !self.may_contact_for(tx, tenant, to, purpose).await? {
@@ -125,8 +141,26 @@ impl Kernel {
                 return Err(Error::field("attachments", "attachments are larger than 20 MB together"));
             }
         }
-        enqueue(tx, tenant, MAIL_TOPIC, None, None, serde_json::json!({"to": to, "subject": subject.trim(), "html": html, "files": files, "purpose": purpose}))
-            .await
+        let mut payload = serde_json::json!({"to": to, "subject": subject.trim(), "html": html, "files": files, "purpose": purpose});
+        if let Some(send) = send {
+            payload["send"] = serde_json::json!(send);
+        }
+        enqueue(tx, tenant, MAIL_TOPIC, None, None, payload).await
+    }
+
+    /// A queued mail's message send, once its mail went or did not.
+    async fn mail_settled(&self, tenant: Uuid, send: Option<Uuid>, state: &str, reason: Option<&str>) -> Result<()> {
+        let Some(send) = send else { return Ok(()) };
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        sqlx::query("update message_send set state = $3, reason = $4, updated_at = now() where tenant_id = $1 and id = $2 and state = 'queued'")
+            .bind(tenant)
+            .bind(send)
+            .bind(state)
+            .bind(reason)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// The files a queued mail attaches, read from storage.
@@ -590,12 +624,14 @@ impl Kernel {
             let mut tx = self.db.tenant_tx(ev.tenant_id).await?;
             let may = self.may_contact_for(&mut tx, ev.tenant_id, field("to"), purpose).await?;
             tx.commit().await?;
+            let send = ev.payload.get("send").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
             if !may {
                 tracing::info!(tenant = %ev.tenant_id, ?purpose, "a queued mail was not sent: its recipient may no longer be contacted for it");
-                return Ok(());
+                return self.mail_settled(ev.tenant_id, send, "skipped", Some("they may no longer be contacted for it")).await;
             }
             let attachments = self.mail_attachments(ev.tenant_id, &ev.payload).await?;
-            return mailer.send_with(field("to"), field("subject"), field("html"), &attachments).await;
+            mailer.send_with(field("to"), field("subject"), field("html"), &attachments).await?;
+            return self.mail_settled(ev.tenant_id, send, "sent", None).await;
         }
         self.queue_deliveries(ev).await?;
         if ev.topic == crate::lifecycle::DEPROVISIONED_TOPIC {

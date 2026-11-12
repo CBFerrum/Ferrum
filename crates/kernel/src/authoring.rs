@@ -676,7 +676,7 @@ impl Kernel {
                         input["id"] = json!(format!("trigger.{link}"));
                         action(format!("{pkg}.{}.update", ferrum_logic::capability::snake(&other)), input, format!("Set fields on the {other} it links to"))
                     }
-                    crate::automation::AutomationAction::Email { to, subject, body, template, purpose } => {
+                    crate::automation::AutomationAction::Email { to, subject, body, template, purpose, .. } => {
                         if template.is_some() {
                             notes.push(format!("{step}: its e-mail template is not carried over; the mail sends the body as text"));
                         }
@@ -689,7 +689,7 @@ impl Kernel {
                             "Send an e-mail".into(),
                         )
                     }
-                    crate::automation::AutomationAction::Notify { to, title, body } => {
+                    crate::automation::AutomationAction::Notify { to, title, body, .. } => {
                         let user = match to.strip_prefix("user:") {
                             Some(u) => json!(format!("\"{u}\"")),
                             None => {
@@ -713,8 +713,9 @@ impl Kernel {
                     }
                     crate::automation::AutomationAction::Find { .. }
                     | crate::automation::AutomationAction::ForEach { .. }
-                    | crate::automation::AutomationAction::CopyLines { .. } => {
-                        notes.push(format!("action {}: a find, loop or copy of lines is not carried over; say what the process does", i + 1));
+                    | crate::automation::AutomationAction::CopyLines { .. }
+                    | crate::automation::AutomationAction::Message { .. } => {
+                        notes.push(format!("action {}: a find, loop, copy of lines or message is not carried over; say what the process does", i + 1));
                         continue;
                     }
                     crate::automation::AutomationAction::AppendLine { table, .. } | crate::automation::AutomationAction::SetLine { table, .. } => {
