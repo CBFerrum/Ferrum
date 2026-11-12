@@ -46,6 +46,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 futures = { workspace = true }
 # Documents edited together (coedit.rs). Patched in the workspace (third_party/yrs/FERRUM.md).
 yrs = "=0.28.0"
+# Rich text from the editor, cleaned on the server (richtext.rs): the version the workspace already builds.
+ammonia = "4.2"
 # Documents as Word files (coedit/docx.rs).
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
