@@ -116,8 +116,68 @@ pub struct DocumentDef {
     /// The names of the values its caller passes (`period`): a body reading another is refused.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<String>,
-    /// Language tag (`en`, `hi`, `pt-BR`) → its bodies.
+    /// Language tag (`en`, `hi`, `pt-BR`) → its bodies. Empty for a layout format.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub languages: std::collections::BTreeMap<String, DocumentBody>,
+    /// A layout format (BD-22): sections, columns and blocks the kernel renders itself. With one: a page, no
+    /// languages, no values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<crate::layout::Layout>,
+    /// A package's only: `print/<name>.layout.json` in the package, read into `layout` when the package loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_file: Option<String>,
+    /// Paper and margins; absent: Print Settings' (a template without one keeps its own `@page`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<crate::layout::PageSetup>,
+    /// `default` (the record's company's letter head, else the workspace's), `none`, or a LetterHead's id.
+    #[serde(default = "default_letterhead", skip_serializing_if = "is_default_letterhead")]
+    pub letterhead: String,
+    /// A disabled format is not offered and not printed; its key stays taken.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub enabled: bool,
+    /// Copy labels offered when printing it (at most 5, each 1 to 60 characters); none: Print Settings'.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copies: Vec<String>,
+    /// The key it was duplicated from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub based_on: Option<String>,
+}
+
+fn default_letterhead() -> String {
+    "default".into()
+}
+fn is_default_letterhead(s: &str) -> bool {
+    s == "default"
+}
+fn yes() -> bool {
+    true
+}
+fn is_yes(b: &bool) -> bool {
+    *b
+}
+
+impl Default for DocumentDef {
+    fn default() -> Self {
+        DocumentDef {
+            key: String::new(),
+            label: None,
+            entity: String::new(),
+            output: DocumentOutput::Page,
+            default: false,
+            roles: vec![],
+            encoding: None,
+            crlf: false,
+            values: vec![],
+            languages: Default::default(),
+            layout: None,
+            layout_file: None,
+            page: None,
+            letterhead: default_letterhead(),
+            enabled: true,
+            copies: vec![],
+            based_on: None,
+        }
+    }
 }
 
 /// A document's bodies in one language: the body, and for a page the header and footer each PDF page repeats (where
@@ -145,8 +205,27 @@ impl DocumentDef {
         if !well_formed {
             return Some(format!("document key '{k}' must be written [a-z][a-z0-9_.]*, at most 100 characters"));
         }
-        if self.languages.is_empty() || self.languages.values().any(|b| b.body.trim().is_empty()) {
+        if self.layout.is_some() || self.layout_file.is_some() {
+            if self.output != DocumentOutput::Page || !self.languages.is_empty() || !self.values.is_empty() {
+                return Some(format!("document {k}: a layout is a page, with no languages and no values"));
+            }
+            if self.layout.is_some() && self.layout_file.is_some() {
+                return Some(format!("document {k}: a layout or a layout file, not both"));
+            }
+        } else if self.languages.is_empty() || self.languages.values().any(|b| b.body.trim().is_empty()) {
             return Some(format!("document {k} has a language without a body, or none"));
+        }
+        if self.letterhead != "default" && self.letterhead != "none" && !crate::layout::is_uuid(&self.letterhead) {
+            return Some(format!("document {k}: letterhead is default, none or a letter head's id"));
+        }
+        if self.copies.len() > 5 || self.copies.iter().any(|c| c.trim().is_empty() || c.chars().count() > 60) {
+            return Some(format!("document {k}: at most 5 copies, each named in 1 to 60 characters"));
+        }
+        if let Some(p) = self.page.as_ref().and_then(|p| p.problem()) {
+            return Some(format!("document {k}: {p}"));
+        }
+        if self.output != DocumentOutput::Page && (self.page.is_some() || !self.copies.is_empty() || self.letterhead != "default") {
+            return Some(format!("document {k}: paper, copies and a letter head are a page's"));
         }
         if let Some(l) = self.languages.keys().find(|l| l.is_empty() || l.len() > 20 || !l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
             return Some(format!("document {k}: '{l}' is not a language tag"));

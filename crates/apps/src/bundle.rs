@@ -114,7 +114,12 @@ enum Kind {
 
 fn is_package_file(file: &str) -> bool {
     let one_level = |dir: &str, ext: &str| file.strip_prefix(dir).is_some_and(|n| !n.contains('/') && n.len() > ext.len() && n.ends_with(ext));
-    file == "package.yaml" || file == "README.md" || one_level("entities/", ".yaml") || one_level("sql/", ".sql") || one_level("print/", ".html")
+    file == "package.yaml"
+        || file == "README.md"
+        || one_level("entities/", ".yaml")
+        || one_level("sql/", ".sql")
+        || one_level("print/", ".html")
+        || one_level("print/", ".layout.json")
 }
 
 /// What a path may hold, or why it has no place in a bundle.
@@ -154,7 +159,7 @@ fn kind(path: &str) -> Result<Kind, AppError> {
     }
     bad(format!(
         "unexpected file {path}: a bundle holds app.yaml, README.md, CHANGELOG.md, LICENSE, plugin.json, plugin.wasm, \
-         packages/<name>/ (package.yaml, README.md, entities/*.yaml, sql/*.sql, print/*.html), images under assets/, screens under ui/ \
+         packages/<name>/ (package.yaml, README.md, entities/*.yaml, sql/*.sql, print/*.html, print/*.layout.json), images under assets/, screens under ui/ \
          and an industrial solution's industrial/profiles/*.yaml and industrial/acceptance/*.yaml"
     ))
 }
