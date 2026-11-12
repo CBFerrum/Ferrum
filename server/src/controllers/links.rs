@@ -20,7 +20,7 @@ use axum::extract::{Form, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
-use ferrum_kernel::action_link::{LinkPage, LinkSpec};
+use ferrum_kernel::action_link::{LinkFile, LinkPage, LinkSpec};
 use ferrum_kernel::{Error, Kernel};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
@@ -103,6 +103,11 @@ fn input(p: &ferrum_meta::ActionParam, id: &str) -> String {
             let opts: String = p.options.iter().map(|o| format!(r#"<option value="{v}">{v}</option>"#, v = esc(o))).collect();
             format!(r#"<select id="{id}" name="{name}"{req}><option value=""></option>{opts}</select>"#)
         }
+        "files" => {
+            let many = if p.max_files.unwrap_or(1) > 1 { " multiple" } else { "" };
+            let accept = if p.accept.is_empty() { String::new() } else { format!(r#" accept="{}""#, esc(&p.accept.join(","))) };
+            format!(r#"<input id="{id}" name="{name}" type="file"{many}{accept}{req}>"#)
+        }
         _ => format!(r#"<input id="{id}" name="{name}" type="text" maxlength="2000"{req}>"#),
     }
 }
@@ -143,8 +148,9 @@ fn page_of(p: &LinkPage, error: Option<&str>, refused: bool) -> Response {
                 inner.push_str(&format!("<p>{}</p>", esc(d)));
             }
         }
+        let enctype = if params.iter().any(|p| p.ptype == "files") { r#" enctype="multipart/form-data""# } else { "" };
         forms.push_str(&format!(
-            r#"<form method="post"><input type="hidden" name="_action" value="{}">{inner}<button type="submit">{}</button></form>"#,
+            r#"<form method="post"{enctype}><input type="hidden" name="_action" value="{}">{inner}<button type="submit">{}</button></form>"#,
             esc(name),
             esc(label)
         ));
@@ -181,12 +187,40 @@ async fn show(State(app): State<AppContext>, Path((workspace, token)): Path<(Str
 }
 
 /// `POST /api/public/{workspace}/links/{token}`: sends the code, or runs an action once.
-async fn act(
-    State(app): State<AppContext>,
-    Path((workspace, token)): Path<(String, String)>,
-    headers: HeaderMap,
-    Form(form): Form<HashMap<String, String>>,
-) -> Response {
+/// What a link's page posts: its fields, and the files a `files` parameter takes (a multipart form, BD-44).
+async fn posted(req: axum::extract::Request) -> Result<(HashMap<String, String>, Vec<LinkFile>), Response> {
+    use axum::extract::FromRequest;
+    let multipart = req.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|c| c.starts_with("multipart/form-data"));
+    if !multipart {
+        return Form::<HashMap<String, String>>::from_request(req, &()).await.map(|Form(f)| (f, vec![])).map_err(IntoResponse::into_response);
+    }
+    let bad = |m: String| (StatusCode::BAD_REQUEST, m).into_response();
+    let mut parts = axum::extract::Multipart::from_request(req, &()).await.map_err(IntoResponse::into_response)?;
+    let (mut form, mut files) = (HashMap::new(), Vec::new());
+    while let Some(part) = parts.next_field().await.map_err(|e| bad(e.to_string()))? {
+        let name = part.name().unwrap_or_default().to_string();
+        match part.file_name().map(str::to_string) {
+            // A file box left empty sends a part without a name or bytes.
+            Some(file_name) => {
+                let content_type = part.content_type().unwrap_or("application/octet-stream").to_string();
+                let data = part.bytes().await.map_err(|e| bad(e.to_string()))?.to_vec();
+                if !file_name.is_empty() || !data.is_empty() {
+                    files.push(LinkFile { param: name, file_name, content_type, data });
+                }
+            }
+            None => {
+                form.insert(name, part.text().await.map_err(|e| bad(e.to_string()))?);
+            }
+        }
+    }
+    Ok((form, files))
+}
+
+/// What one post to a link's page may carry, its uploads included.
+const MAX_POST: usize = 25 << 20;
+
+async fn act(State(app): State<AppContext>, Path((workspace, token)): Path<(String, String)>, req: axum::extract::Request) -> Response {
+    let headers = req.headers().clone();
     let st = match app_state(&app) {
         Ok(st) => st,
         Err(e) => return e.into_response(),
@@ -194,6 +228,10 @@ async fn act(
     if let Err(r) = limited(&st, &headers, &workspace).await {
         return r;
     }
+    let (form, files) = match posted(req).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let k = &st.kernel;
     // Its first POST-back is when it was opened: a preview fetcher or a mail scanner only reads it.
     if let Err(e) = k.link_opened(&workspace, &token).await {
@@ -209,7 +247,7 @@ async fn act(
     let action = form.get("_action").cloned().unwrap_or_default();
     let code = form.get("_code").cloned();
     let params: Map<String, Value> = form.iter().filter(|(n, _)| !n.starts_with('_')).map(|(n, v)| (n.clone(), json!(v))).collect();
-    match k.use_link(&workspace, &token, &action, &params, code.as_deref()).await {
+    match k.use_link_with(&workspace, &token, &action, &params, code.as_deref(), &files).await {
         Ok(Some(_)) => {
             let done = k.link_wording(&workspace, true).await.unwrap_or_else(|_| ("Thank you".into(), None));
             note(StatusCode::OK, &workspace, done)
@@ -257,7 +295,7 @@ async fn revoke(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<U
 pub fn routes() -> Routes {
     use axum::routing::{delete, get};
     Routes::new()
-        .add("/api/public/{tenant}/links/{token}", get(show).post(act))
+        .add("/api/public/{tenant}/links/{token}", get(show).post(act).layer(axum::extract::DefaultBodyLimit::max(MAX_POST)))
         .add("/api/v1/{entity}/{id}/links", get(list).post(issue))
         .add("/api/links/{id}", delete(revoke))
 }
@@ -302,6 +340,9 @@ mod tests {
                     required: true,
                     description: None,
                     secret: false,
+                    max_files: None,
+                    max_bytes: None,
+                    accept: vec![],
                 }],
             )],
             code: Some(("Enter the code".into(), "Send me a code".into())),

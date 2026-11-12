@@ -812,8 +812,46 @@ fn secret_values<'a>(k: &'a Kernel, m: &Message) -> Result<(Vec<String>, Option<
     if masks.is_empty() {
         return Ok((masks, None));
     }
+    let masks = encodings(&masks);
     let key = k.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("a message with a secret value needs the server's secret key".into()))?;
     Ok((masks, Some(key)))
+}
+
+/// Every form each secret value can be printed in (BD-44): as it is, HTML-escaped (an attribute's or a link's
+/// address in an e-mail), percent-encoded (an address a value was put into elsewhere, a channel's request), as JSON,
+/// and what the `qr` and `barcode` helpers draw of it (as their defaults draw it), in both the e-mail's escaping
+/// environment and the plain one; longest first, so a drawing goes before the text inside it. Masking all of these
+/// wherever rendered text is kept or logged leaves none of them readable.
+pub(crate) fn encodings(secrets: &[String]) -> Vec<String> {
+    const FORMS: [&str; 4] = ["{{ v }}", "{{ v|json }}", "{{ qr(v) }}", "{{ barcode(v) }}"];
+    let percent = |v: &str, upper: bool| -> String {
+        v.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+                _ if upper => format!("%{b:02X}"),
+                _ => format!("%{b:02x}"),
+            })
+            .collect()
+    };
+    let mut out: Vec<String> = secrets.to_vec();
+    for v in secrets {
+        out.extend([percent(v, true), percent(v, false), percent(v, true).replace("%20", "+")]);
+    }
+    for html in [true, false] {
+        let env = environment(html, false);
+        for v in secrets {
+            for form in FORMS {
+                if let Ok(r) = env.render_str(form, minijinja::context! { v => v }) {
+                    out.push(r.trim_matches('"').to_string());
+                    out.push(r);
+                }
+            }
+        }
+    }
+    out.retain(|m| m.chars().count() >= 4 || secrets.contains(m));
+    out.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
+    out.dedup();
+    out
 }
 
 async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Vec<Sent>> {
@@ -1949,6 +1987,30 @@ pub(crate) async fn erase_held(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A link carrying a secret token, printed in a link's address, an attribute, text, JSON and drawn as a QR code and a
+    /// barcode: the mail as kept holds none of its forms (BD-44).
+    #[test]
+    fn a_secret_is_masked_in_every_form_a_template_prints_it() {
+        let token = "Tk/9+a&b=c'd <e>";
+        let body = r#"<a href="https://shop.example/accept?t={{ values.token }}" title="{{ values.token }}">Accept</a>
+            <p>{{ values.token }}</p><pre>{{ values.token|json }}</pre>{{ qr(values.token) }}{{ barcode(values.token) }}"#;
+        let html = render(body, true, &json!({"values": {"token": token}}), false).unwrap();
+        let masks = encodings(&[token.to_string()]);
+        let kept = masked(&json!(html), &masks);
+        let kept = kept.as_str().unwrap();
+        for form in ["{{ v }}", "{{ v|json }}"] {
+            for html in [true, false] {
+                let shown = environment(html, false).render_str(form, minijinja::context! { v => token }).unwrap();
+                assert!(!kept.contains(shown.trim_matches('"')), "{form} ({html}) left in: {kept}");
+            }
+        }
+        assert!(!kept.contains("<svg"), "no drawing of it: {kept}");
+        assert!(kept.contains("https://shop.example/accept?t=••••••") && kept.contains("Accept"), "{kept}");
+        // A channel's request percent-encodes what it puts in an address: masked too.
+        let address = format!("https://sms.example/send?text=Tk%2F9%2Ba%26b%3Dc%27d%20%3Ce%3E&to=1");
+        assert_eq!(masked(&json!(address), &masks), json!("https://sms.example/send?text=••••••&to=1"));
+    }
 
     #[test]
     fn numbers_are_international_or_refused() {
