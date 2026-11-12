@@ -2540,7 +2540,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-campaigns"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#542f2c0698aaf4e513a3407a1b13cbaccf4e04a0"
+source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#728eaff30afa0b5d96dec516cb11220b615ad0d2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2594,7 +2594,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-comms"
 version = "0.7.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#469d692e385a788a156c4f0f8a96bfeaf8426ad9"
+source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#18a27a10cb30b718226c140fb98b444f03091bcb"
 dependencies = [
  "ammonia",
  "async-imap",
@@ -2942,7 +2942,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-helpdesk"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-helpdesk?branch=main#444ee3699a907b1712daf935114ab4a6de6b2f5a"
+source = "git+https://github.com/CBFerrum/ferrum-app-helpdesk?branch=main#009ab359a5b6bf00ca40d27f10b0831b15095e04"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3029,7 +3029,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-itsm"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-itsm?branch=main#ea9092c4a00a5ec4b09766ed17b1c6d85b3bcc4c"
+source = "git+https://github.com/CBFerrum/ferrum-app-itsm?branch=main#610ddf4aa45384138a331e00b43722b655c8155d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3046,7 +3046,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-lms"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#674c045c26058d431a3e5a93daf8220bbf1bd6d1"
+source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#499016463f153d1667f31ca12da0920334d9eec8"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
