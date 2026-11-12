@@ -14,7 +14,7 @@ use crate::ctx::{Ctx, PermSet};
 use crate::error::{Error, Result};
 use crate::{Doc, Kernel};
 use ferrum_meta::{ActionDef, EffEntity, FieldType, Schema, Scope};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -167,7 +167,8 @@ pub(crate) async fn run(
     params: &Value,
 ) -> Result<Value> {
     let params = match params {
-        Value::Null | Value::Object(_) => absent_as_null(def, params),
+        Value::Null => json!({}),
+        Value::Object(_) => params.clone(),
         _ => return Err(Error::invalid(format!("'{}' takes its parameters as an object", def.label))),
     };
     refuse_if(k, ctx, tx, ent, def, doc, &params).await?;
@@ -186,23 +187,13 @@ pub(crate) async fn run(
     Ok(Value::Object(answer))
 }
 
-/// `params` with each parameter `def` declares and was not given as null (BD-45), as a transition's are: an
-/// expression asks `params.note == null` or `coalesce(params.note, ...)` of an optional one rather than failing on it.
-pub(crate) fn absent_as_null(def: &ActionDef, params: &Value) -> Value {
-    let mut given = params.as_object().cloned().unwrap_or_default();
-    for p in &def.params {
-        given.entry(p.name.clone()).or_insert(Value::Null);
-    }
-    Value::Object(given)
-}
-
 /// Refuses action `def` on `doc` with `params` as `ctx` where one of its `refuse_if` holds, in its own words.
 pub(crate) async fn refuse_if(k: &Kernel, ctx: &Ctx, tx: &mut crate::db::Tx, ent: &Arc<EffEntity>, def: &ActionDef, doc: &Doc, params: &Value) -> Result<()> {
     let refusals = ent.exprs.action_refusals.get(&def.name).map(Vec::as_slice).unwrap_or_default();
     if refusals.is_empty() {
         return Ok(());
     }
-    let params = &absent_as_null(def, params);
+    let params = if params.is_null() { &json!({}) } else { params };
     let user = ctx.user_value();
     let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
     let links = crate::links::load(k, ctx, tx, ent, &view, &crate::links::used(refusals.iter().map(|(e, _)| e))).await?;

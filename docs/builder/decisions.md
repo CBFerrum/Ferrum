@@ -1254,10 +1254,10 @@ Decided 13 November 2026. ITSM 0.4.0 and CRM 0.13.0 hit each.
   when saved, worked out when the request is made and kept on it (a later change of the record does not move it),
   clamped to at least one and to the approvers found when the step opens. A reset that voids the decisions works it
   out again. A number keeps refusing a step with fewer approvers than it asks; an expression asks for all there are.
-* **An optional action parameter not given reads as null** in the action's effects and `refuse_if`, as a
-  transition's already did, so `coalesce(params.note, doc.title)` and `params.times == null` work (before: "No such
-  key"). Apps' handlers get the parameters as given, unchanged. (`has(params.x)` is now true for a declared one; a
-  `has(...) ? params.x : ''` reads null where it read `''`, both empty.)
+* **An optional action parameter not given stays absent** in the action's effects and `refuse_if`: ask with
+  `has(params.x)`, as packages already do (`when: "has(params.note)"`). Filling absent ones with null was tried and
+  taken back the same day: it made `has(params.x)` true for every declared parameter, so an effect guarded by it
+  would have cleared the field it sets. `coalesce(has(params.x) ? params.x : null, ...)` gives a default.
 * **Service targets follow every engine write**: a save (create, update, submit, cancel, a transition, an action's
   effects, an import), the breach sweep, and now `set_values_tx`, `set_child_values_tx` and `set_child_rows_tx`, which
   work the record's targets out again and write their two fields as they write (no version, no event). Not covered:

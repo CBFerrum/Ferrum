@@ -117,15 +117,14 @@ async fn scenario() {
     absent_params(&k, &w).await;
 }
 
-/// An optional parameter not given reads as null in an action's effects and refusals, and `coalesce` works in an effect
-/// (BD-45).
+/// An optional parameter is asked for with `has()`; given or not, `coalesce` works in an effect (BD-45).
 async fn absent_params(k: &Arc<Kernel>, w: &W) {
     let note = json!({"name": "XNote", "label": "Note", "kind": "master", "fields": [{"name": "title", "type": "data"}, {"name": "said", "type": "data"},
         {"name": "count", "type": "int"}],
         "actions": [{"name": "x_say", "label": "Say", "permission": "write",
             "params": [{"name": "words", "label": "Words", "type": "data"}, {"name": "times", "label": "Times", "type": "int"}],
-            "refuse_if": [{"when": "params.times != null && params.times > 9", "message": "at most nine"}],
-            "effects": [{"type": "set_fields", "values": {"said": "coalesce(params.words, doc.title, 'nothing')", "count": "coalesce(params.times, 1)"}}]}]});
+            "refuse_if": [{"when": "has(params.times) && params.times > 9", "message": "at most nine"}],
+            "effects": [{"type": "set_fields", "values": {"said": "coalesce(has(params.words) ? params.words : null, doc.title, 'nothing')", "count": "coalesce(has(params.times) ? params.times : null, 1)"}}]}]});
     w.batch(vec![define(note)]).await.unwrap();
     let admin = w.admin().await;
     let id = id_of(&k.insert(&admin, "XNote", obj(json!({"title": "Hello"}))).await.unwrap());

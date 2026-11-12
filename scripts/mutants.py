@@ -897,9 +897,8 @@ MUTANTS = [
     ("link-upload-kept-on-refusal", "crates/kernel/src/action_link.rs", "        if !matches!(out, Ok(Some(_))) && !kept.is_empty() {", "        if false {", ACTION_LINKS),
     ("condition-message-ignored", "crates/kernel/src/doc.rs", "                    Some(m) => crate::print::message(m, || told(ctx, &ent, doc.clone(), Some(self))),", "                    Some(_) => String::new(),", ACTION_LINKS),
 
-    # BD-45: a quorum kept as asked; absent parameters as null; targets after an engine write; an app's render asks opt-outs.
+    # BD-45: a quorum kept as asked; targets after an engine write; an app's render asks opt-outs.
     ("quorum-follows-record", "crates/kernel/src/approvals.rs", "ApprovalNeed::Expr(_) => (steps[i].asked.unwrap_or(1).max(1) as usize).min(who.len().max(1)),", "ApprovalNeed::Expr(_) => 1,", APPROVALS),
-    ("absent-param-no-such-key", "crates/kernel/src/actions.rs", "        given.entry(p.name.clone()).or_insert(Value::Null);", "        let _ = p;", ("-p", "ferrum-kernel", "--test", "actions_it")),
     ("engine-write-skips-targets", "crates/kernel/src/doc.rs", "        store::set_values(tx, &ent, ctx.tenant, id, &normalized).await?;\n        self.follow_targets(ctx, tx, &ent, id).await", "        store::set_values(tx, &ent, ctx.tenant, id, &normalized).await", TARGETS),
     ("render-ignores-opt-out", "crates/kernel/src/messages.rs", "    } else if promotional && k.opted_out(tx, ctx.tenant, channel, &address).await? {", "    } else if false {", MESSAGES),
 

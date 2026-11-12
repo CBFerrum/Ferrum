@@ -27,16 +27,16 @@ progress after a lesson changes.
   its parameters) before its handler runs, so what an action's handler then writes directly is
   under that entry.
 
-## The 149 statements, by kind
+## The 151 statements, by kind
 
 | Kind | How many | What keeps them right |
 |---|---|---|
-| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 83 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
+| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 88 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
 | Consequence of an audited document operation (a hook of submit, cancel, save or an action) | 39 | The operation that runs the hook is on the record |
 | A person's action on a public link: opens and clicks, subscribe, confirm, unsubscribe, viewing a shared file | 13 | The record they change carries its evidence (the consent's source and time, the link's views) |
 | Records its own audit or activity entry | 8 | Drive's activity log ("Link Created", "Link Revoked", "Shared With Guest", "Share Expired", "Delete"), Edge's and MES's audit entries |
 
-By app: Campaigns 43, Drive 23, Comms 18, ERP 12, POS 10, CRM 8, Commerce 6, Projects 6, HR 5, LMS 5, Edge 4, Helpdesk 3, Objectives 2,
+By app: Campaigns 43, Drive 23, Comms 18, ERP 11, POS 10, CRM 8, Commerce 6, Projects 6, HR 5, LMS 5, Edge 4, Helpdesk 3, Itsm 3, Objectives 2,
 and one each in Bookings, DAM, Field Service and Forms.
 
 ## Findings
@@ -120,16 +120,16 @@ and one each in Bookings, DAM, Field Service and Forms.
 | comms | `src/calendars.rs:339` | `update e_calendar` | `change` | consequence of an audited document operation (hook) |
 | comms | `src/calendars.rs:363` | `update e_calendar_event` | `change` | consequence of an audited document operation (hook) |
 | comms | `src/chat.rs:741` | `update e_chat_channel` | `post` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/inbound.rs:501` | `update e_email_account` | `poll_account` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/inbound.rs:505` | `update e_email_account` | `poll_account` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/inbound.rs:551` | `update e_email_account` | `poll_account` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/mail.rs:617` | `update e_communication` | `deliver` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/mail.rs:733` | `update e_communication` | `withhold` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/mail.rs:764` | `update e_communication` | `record` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/mail.rs:807` | `update e_communication` | `retry_due` | engine work: statuses, counts, queues, upkeep |
+| comms | `src/inbound.rs:609` | `update e_email_account` | `poll_account` | engine work: statuses, counts, queues, upkeep |
+| comms | `src/inbound.rs:613` | `update e_email_account` | `poll_account` | engine work: statuses, counts, queues, upkeep |
+| comms | `src/inbound.rs:659` | `update e_email_account` | `poll_account` | engine work: statuses, counts, queues, upkeep |
+| comms | `src/mail.rs:662` | `update e_communication` | `deliver` | engine work: statuses, counts, queues, upkeep |
+| comms | `src/mail.rs:788` | `update e_communication` | `withhold` | engine work: statuses, counts, queues, upkeep |
+| comms | `src/mail.rs:819` | `update e_communication` | `record` | engine work: statuses, counts, queues, upkeep |
+| comms | `src/mail.rs:862` | `update e_communication` | `retry_due` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/newsletter.rs:123` | `update e_newsletter` | `run` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/newsletter.rs:147` | `update e_newsletter` | `update_counts` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/newsletter.rs:405` | `update e_email_group_member` | `unsubscribe` | a person's action on a public link (tracking, consent, viewing) |
+| comms | `src/newsletter.rs:407` | `update e_email_group_member` | `unsubscribe` | a person's action on a public link (tracking, consent, viewing) |
 | comms | `src/subscribe.rs:268` | `update e_calendar` | `refresh` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/subscribe.rs:284` | `update e_calendar` | `refresh` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/subscribe.rs:352` | `update e_calendar` | `subscribe` | consequence of an audited document operation (hook) |
@@ -180,7 +180,6 @@ and one each in Bookings, DAM, Field Service and Forms.
 | erp | `addons/wms/src/counts.rs:210` | `update e_storage_bin` | `unfreeze` | engine work: statuses, counts, queues, upkeep |
 | erp | `addons/wms/src/posting.rs:211` | `update e_managed_warehouse` | `start_managing` | engine work: statuses, counts, queues, upkeep |
 | erp | `addons/wms/src/tasks.rs:518` | `update e_handling_unit` | `place_unit` | engine work: statuses, counts, queues, upkeep |
-| erp | `src/shipping.rs:695` | `update e_carrier_connection` | `handle` | engine work: statuses, counts, queues, upkeep |
 | field-service | `src/contract.rs:138` | `update e_service_contract` | `expire` | engine work: statuses, counts, queues, upkeep |
 | forms | `src/form.rs:429` | `update e_form_response` | `after_save` | consequence of an audited document operation (hook) |
 | helpdesk | `src/merge.rs:79` | `update e_ticket__conversation` | `merge` | consequence of an audited document operation (hook) |
@@ -191,6 +190,9 @@ and one each in Bookings, DAM, Field Service and Forms.
 | hr | `src/payroll/mod.rs:358` | `update e_employee_tax_exemption_declaration__declarations` | `action` | consequence of an audited document operation (hook) |
 | hr | `src/talent.rs:68` | `delete from e_training_record` | `on_cancel` | consequence of an audited document operation (hook) |
 | hr | `src/talent.rs:80` | `update e_job_opening` | `close_openings` | engine work: statuses, counts, queues, upkeep |
+| itsm | `src/defaults.rs:117` | `update e_it_change` | `ensure_board` | engine work: statuses, counts, queues, upkeep |
+| itsm | `src/defaults.rs:123` | `update e_configuration_item` | `ensure_board` | engine work: statuses, counts, queues, upkeep |
+| itsm | `src/defaults.rs:128` | `update e_configuration_item__relations` | `ensure_board` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/catalog.rs:316` | `update e_lms_course` | `refresh_course_stats` | consequence of an audited document operation (hook) |
 | lms | `src/certificate.rs:164` | `update e_lms_certificate` | `expire_all` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/enrollment.rs:444` | `update e_lms_enrollment` | `refresh_course` | consequence of an audited document operation (hook) |
