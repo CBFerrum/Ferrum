@@ -86,6 +86,9 @@ body.pf{margin:0;color:var(--pf-color,#111);line-height:var(--pf-lh,1.45);backgr
 .pf-design .pf-block,.pf-design .pf-section,.pf-design .pf-col{outline:1px dashed transparent;min-height:4px}
 .pf-design .pf-slot{min-height:6px}
 .pf-design .pf-hidden{opacity:.35}
+.pf-ghost{height:2.4mm;overflow:hidden;border-top:1px dashed #b8c2cc;font:6.5pt/2.2mm system-ui,sans-serif;color:#8a94a0;white-space:nowrap}
+.pf-ghost span{padding-inline-start:.5mm}
+.pf-table th.pf-ghost-col,.pf-table td.pf-ghost-col{padding:0;border:0;border-inline-start:1px dashed #b8c2cc;overflow:hidden}
 .pf-placeholder{color:#9aa0a6;font-style:italic}
 @media screen{body.pf{padding:var(--pf-screen-pad,0)}}
 "#;
@@ -115,7 +118,10 @@ pub fn rtl(lang: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Print,
+    /// The canvas: what a condition hides on this record is a collapsed ghost the designer can still select.
     Design,
+    /// The canvas showing every part at full size, what a condition hides dimmed ("show hidden parts").
+    DesignAll,
 }
 
 /// Where a layout is rendered: a document's body, a letter head placed in the body, or a letter head the PDF
@@ -361,7 +367,11 @@ impl<'a> Renderer<'a> {
             Value::String(s) => s.clone(),
             other => other.to_string(),
         };
-        let abs = fmt.sign == Some(ferrum_meta::layout::Sign::Abs);
+        let abs = match &fmt.sign {
+            Some(ferrum_meta::layout::Sign::Always(_)) => true,
+            Some(ferrum_meta::layout::Sign::When(w)) => self.when(&Some(w.abs_when.clone())),
+            None => false,
+        };
         let decimal = || crate::value::parse_decimal(&g.v).ok().map(|d| if abs { d.abs() } else { d });
         let places = |d: Decimal| fmt.decimals.map(u32::from).or_else(|| g.field.and_then(|f| f.precision)).unwrap_or_else(|| d.normalize().scale()).min(12);
         let numeric = matches!(auto, As::Number | As::Amount | As::Percent);
@@ -478,7 +488,16 @@ impl<'a> Renderer<'a> {
     }
 
     fn mark(&self, attr: &str, id: &str) -> String {
-        if self.d.mode == Mode::Design { format!(" {attr}=\"{}\"", esc(id)) } else { String::new() }
+        if self.d.mode != Mode::Print { format!(" {attr}=\"{}\"", esc(id)) } else { String::new() }
+    }
+
+    /// A part a condition hides on this record, on the canvas: a thin dashed marker with its id and kind.
+    fn ghost(&self, kind: &str, id: &str) -> String {
+        format!(
+            "<div class=\"pf-ghost\" data-b=\"{id}\" data-ghost=\"{kind}\" aria-hidden=\"true\"><span>{kind} · {id}</span></div>",
+            id = esc(id),
+            kind = esc(kind)
+        )
     }
 
     fn placeholder(&self, text: &str) -> String {
@@ -489,6 +508,10 @@ impl<'a> Renderer<'a> {
         for s in &l.sections {
             let shown = self.when(&s.when);
             if !shown && self.d.mode == Mode::Print {
+                continue;
+            }
+            if !shown && self.d.mode == Mode::Design {
+                out.push_str(&self.ghost("section", &s.id));
                 continue;
             }
             let mut class = String::from("pf-section");
@@ -518,12 +541,12 @@ impl<'a> Renderer<'a> {
             for c in &s.columns {
                 let _ = write!(out, "<div class=\"pf-col\"{}>", self.mark("data-b", &c.id));
                 for (i, b) in c.blocks.iter().enumerate() {
-                    if self.d.mode == Mode::Design {
+                    if self.d.mode != Mode::Print {
                         let _ = write!(out, "<div class=\"pf-slot\" data-slot=\"{}:{i}\"></div>", esc(&c.id));
                     }
                     self.block(b, out);
                 }
-                if self.d.mode == Mode::Design {
+                if self.d.mode != Mode::Print {
                     let _ = write!(out, "<div class=\"pf-slot\" data-slot=\"{}:{}\"></div>", esc(&c.id), c.blocks.len());
                 }
                 out.push_str("</div>");
@@ -534,8 +557,12 @@ impl<'a> Renderer<'a> {
 
     fn block(&mut self, b: &Block, out: &mut String) {
         let shown = self.when(&b.when);
-        let design = self.d.mode == Mode::Design;
+        let design = self.d.mode != Mode::Print;
         if !shown && !design {
+            return;
+        }
+        if !shown && self.d.mode == Mode::Design {
+            out.push_str(&self.ghost(b.kind.name(), &b.id));
             return;
         }
         let align = b.align.map(|a| format!(" pf-a-{}", a.name())).unwrap_or_default();
@@ -781,7 +808,7 @@ impl<'a> Renderer<'a> {
         else {
             return;
         };
-        let design = self.d.mode == Mode::Design;
+        let design = self.d.mode != Mode::Print;
         let schema: &'a Schema = self.d.schema;
         let Some(child) = table_rows_of(schema, self.d.ent, value) else { return };
         // The record's lines as its reader may read them, a linked record's as they may, the company's as the workspace.
@@ -814,8 +841,11 @@ impl<'a> Renderer<'a> {
                 || (matches!(f, None | Some(As::Auto))
                     && c.value.list().first().and_then(|p| p.strip_prefix("row.")).and_then(|n| child.field(n)).is_some_and(|f| f.ftype.is_numeric()))
         };
-        let given: f64 = cols.iter().filter_map(|(c, _)| c.width_pct).sum();
-        let free = cols.iter().filter(|(c, _)| c.width_pct.is_none()).count();
+        // On the canvas a column hidden on this record is a ghost: no width, a hairline in the header.
+        let ghosts = self.d.mode == Mode::Design;
+        let ghost = |on: bool| !on && ghosts;
+        let given: f64 = cols.iter().filter(|(_, on)| !ghost(*on)).filter_map(|(c, _)| c.width_pct).sum();
+        let free = cols.iter().filter(|(c, on)| !ghost(*on) && c.width_pct.is_none()).count();
         let rn = if *row_numbers { 5.0 } else { 0.0 };
         let share = if free > 0 { ((100.0 - rn - given).max(free as f64 * 3.0)) / free as f64 } else { 0.0 };
         let classes = format!(
@@ -832,8 +862,9 @@ impl<'a> Renderer<'a> {
         if *row_numbers {
             out.push_str("<col style=\"width:5%\">");
         }
-        for (c, _) in &cols {
-            let _ = write!(out, "<col style=\"width:{}%\">", num(c.width_pct.unwrap_or(share)));
+        for (c, on) in &cols {
+            let w = if ghost(*on) { 0.0 } else { c.width_pct.unwrap_or(share) };
+            let _ = write!(out, "<col style=\"width:{}%\">", num(w));
         }
         out.push_str("</colgroup>");
         let calign = |c: &ferrum_meta::layout::TableColumn| c.align.map(|a| a.name()).unwrap_or(if numeric(c) { "end" } else { "start" });
@@ -843,6 +874,10 @@ impl<'a> Renderer<'a> {
                 out.push_str("<th class=\"pf-rn\">#</th>");
             }
             for (c, on) in &cols {
+                if ghost(*on) {
+                    let _ = write!(out, "<th class=\"pf-ghost-col\" data-b=\"{}\" data-ghost=\"column\" aria-hidden=\"true\"></th>", esc(&c.id));
+                    continue;
+                }
                 let label = c.label.clone().unwrap_or_else(|| self.label_of(&c.value, Some(child)));
                 let _ =
                     write!(out, "<th class=\"pf-a-{}{}\"{}>{}</th>", calign(c), if *on { "" } else { " pf-hidden" }, self.mark("data-b", &c.id), esc(&label));
@@ -858,6 +893,10 @@ impl<'a> Renderer<'a> {
                 let _ = write!(out, "<td class=\"pf-rn\">{}</td>", esc(&crate::docfmt::number(Decimal::from(i + 1), 0, self.locale())));
             }
             for (j, (c, on)) in cols.iter().enumerate() {
+                if ghost(*on) {
+                    out.push_str("<td class=\"pf-ghost-col\"></td>");
+                    continue;
+                }
                 let got = self.first(&c.value, Some((r, child))).map(|g| Got { v: g.v.clone(), field: g.field, title: g.title.clone(), name: g.name.clone() });
                 if let Some(g) = &got {
                     fields[j] = fields[j].or(g.field);
@@ -896,8 +935,10 @@ impl<'a> Renderer<'a> {
             if *row_numbers {
                 out.push_str("<td></td>");
             }
-            for (j, (c, _)) in cols.iter().enumerate() {
-                if totals.contains(&c.id) {
+            for (j, (c, on)) in cols.iter().enumerate() {
+                if ghost(*on) {
+                    out.push_str("<td class=\"pf-ghost-col\"></td>");
+                } else if totals.contains(&c.id) {
                     let g = Got { v: Value::String(sums[j].to_string()), field: fields[j], title: None, name: c.id.clone() };
                     let v = self.show(&g, c.format.as_ref()).map(|x| x.0).unwrap_or_default();
                     let _ = write!(out, "<td class=\"pf-a-{}\">{v}</td>", calign(c));
@@ -1096,7 +1137,20 @@ pub fn watermark(l: &Layout, d: &Data<'_>) -> Option<String> {
 pub fn page_css(p: &PageSetup) -> String {
     let (w, h) = p.sheet_mm();
     let m = p.margin_mm;
-    format!("@page{{size:{}mm {}mm;margin:{}mm {}mm {}mm {}mm}}", num(w), num(h), m.top, m.right, m.bottom, m.left)
+    // On screen (a preview, the canvas) the page's margins are its padding, so it looks as it prints.
+    format!(
+        "@page{{size:{}mm {}mm;margin:{}mm {}mm {}mm {}mm}}@media screen{{body.pf{{padding:{}mm {}mm {}mm {}mm}}}}",
+        num(w),
+        num(h),
+        m.top,
+        m.right,
+        m.bottom,
+        m.left,
+        m.top,
+        m.right,
+        m.bottom,
+        m.left
+    )
 }
 
 /// The parts of a whole page.
@@ -1273,8 +1327,9 @@ fn describe(f: &FieldDef, path: String) -> Value {
     v
 }
 
+/// A field a format may print: any but a secret (a field the form hides, an e-invoice's signed QR, prints all the same).
 fn printable(f: &FieldDef) -> bool {
-    !f.hidden && f.ftype != FieldType::Secret
+    f.ftype != FieldType::Secret
 }
 
 /// What a designer may place for `ent` (§6.2 `GET /api/admin/documents/fields/{Entity}`): no secret fields.
@@ -1294,7 +1349,11 @@ pub fn catalogue(schema: &Schema, ent: &EffEntity) -> Value {
             })
             .collect()
     };
-    let system: Vec<Value> = SYSTEM.iter().map(|(n, l, t)| json!({"path": format!("doc.{n}"), "label": l, "type": t})).collect();
+    // A record's own fields, then the system's it does not have a field of its own for (`status` once).
+    let system_of = |e: &EffEntity, root: &str| -> Vec<Value> {
+        SYSTEM.iter().filter(|(n, ..)| e.field(n).is_none()).map(|(n, l, t)| json!({"path": format!("{root}.{n}"), "label": l, "type": t})).collect()
+    };
+    let system = system_of(ent, "doc");
     let links: Vec<Value> = ent
         .def
         .fields
@@ -1303,7 +1362,9 @@ pub fn catalogue(schema: &Schema, ent: &EffEntity) -> Value {
         .filter_map(|f| {
             let t = schema.entity(f.to.as_deref()?)?;
             let root = format!("links.{}", f.name);
-            Some(json!({"path": root, "field": f.name, "to": t.def.name, "label": f.label(), "fields": values(t, &root), "tables": tables_of(t, &root)}))
+            let mut fields = values(t, &root);
+            fields.extend(system_of(t, &root));
+            Some(json!({"path": root, "field": f.name, "to": t.def.name, "label": f.label(), "fields": fields, "tables": tables_of(t, &root)}))
         })
         .collect();
     let computed: Vec<Value> = ent
@@ -1332,7 +1393,7 @@ pub fn catalogue(schema: &Schema, ent: &EffEntity) -> Value {
         // What a value's format and a table's column may say, for the designer's pickers.
         "options": {
             "format": {"as": ["auto", "text", "multiline", "number", "amount", "percent", "date", "datetime", "words", "check"],
-                       "show": ["symbol", "code", "none"], "date": ["short", "medium", "long"], "sign": ["abs"]},
+                       "show": ["symbol", "code", "none"], "date": ["short", "medium", "long"], "sign": ["abs", {"abs_when": "<condition>"}]},
             "table_column": {"hide_zero": "a cell whose value is zero is left blank",
                              "secondary": "printed under the value, only when it differs from it"},
             "letter_head_pages": ["print.page", "print.pages"],

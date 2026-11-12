@@ -135,6 +135,7 @@ const ENTITIES: &str = r#"
     - {name: pin, type: secret}
     - {name: photo, type: attach}
     - {name: code, type: data}
+    - {name: signed_qr, type: text, hidden: true}
 "#;
 
 /// Request bodies the stand-in PDF renderer received.
@@ -723,6 +724,16 @@ async fn scenario() {
     assert_eq!(versions.iter().map(|v| v["n"].as_i64().unwrap()).collect::<Vec<_>>(), vec![2, 1]);
     let old: DocumentDef = serde_json::from_value(k.document_template_version(&admin, "my_invoice", 1).await.unwrap()).unwrap();
     assert_eq!(old.label.as_deref(), Some("My invoice"));
+    // A format read back with `default: true` saves without choosing the default again: PUT …/defaults chooses.
+    k.set_document_default(&admin, "SalesInvoice", Some("my_invoice")).await.unwrap();
+    let mut back: DocumentDef = serde_json::from_value(k.document_template(&admin, "shop.invoice").await.unwrap()["template"].clone()).unwrap();
+    assert!(back.default);
+    back.label = Some("Invoice (edited)".into());
+    k.save_document_template(&admin, &back).await.unwrap();
+    assert_eq!(k.print_choices(&clerk, "SalesInvoice", None).await.unwrap()["default"], json!("my_invoice"), "the choice stays");
+    k.set_document_default(&admin, "SalesInvoice", None).await.unwrap();
+    let rows = k.document_templates_of(&admin, Some("SalesInvoice"), None).await.unwrap();
+    assert!(rows.iter().find(|t| t["key"] == "my_invoice").unwrap()["updated_by_name"].is_string(), "who saved it, by name");
     // The paper of the edited package format reaches the PDF service.
     RENDERED.lock().unwrap().clear();
     k.print_record(&clerk, "SalesInvoice", fresh, &PrintAsk { pdf: true, template: Some("shop.invoice".into()), ..Default::default() }).await.unwrap();
@@ -793,7 +804,7 @@ async fn scenario() {
     let bad = one_block(json!({"id": "t", "type": "table", "value": "links.customer.nope", "columns": [{"id": "x", "value": "row.x"}]}));
     assert!(fields_of(&k.save_document_template(&admin, &layout_def("bad_t2", bad)).await.unwrap_err()).iter().any(|(f, _)| f == "layout.t"));
     let cat = k.document_fields(&admin, "SalesInvoice").unwrap();
-    assert!(cat["company_tables"][0]["path"] == json!("company.acc_registrations") && cat["options"]["format"]["sign"] == json!(["abs"]));
+    assert!(cat["company_tables"][0]["path"] == json!("company.acc_registrations") && cat["options"]["format"]["sign"][0] == json!("abs"));
     assert!(cat["print"].as_array().unwrap().iter().any(|p| p["path"] == "print.time"));
 
     // ── a format that prints its own company block only without a letter head; dates by name ──
@@ -853,10 +864,59 @@ async fn scenario() {
             && canvas.contains("data-slot=\"bill:0\"")
             && canvas.contains("data-slot=\"bill:3\"")
     );
-    assert!(canvas.contains("pf-hidden") && canvas.contains("Credit Note"), "a block hidden by its condition is dimmed on the canvas");
-    let (printed_sample, _) =
-        html_of(k.preview_print(&admin, &PreviewAsk { template: json!("shop.invoice"), sample: true, ..Default::default() }).await.unwrap());
+    // What a condition hides on this record is a collapsed ghost (still selectable); `design: all` draws it dimmed.
+    assert!(canvas.contains("<div class=\"pf-ghost\" data-b=\"title_cn\" data-ghost=\"heading\"") && !canvas.contains("Credit Note</h1>"), "{canvas}");
+    assert!(canvas.contains("<th class=\"pf-ghost-col\" data-b=\"c_disc\" data-ghost=\"column\"") && !canvas.contains("Disc %"), "a hidden column: {canvas}");
+    let (all, _) = html_of(
+        k.preview_print(&admin, &PreviewAsk { template: json!("shop.invoice"), sample: true, design: true, design_all: true, ..Default::default() })
+            .await
+            .unwrap(),
+    );
+    assert!(all.contains("pf-hidden") && all.contains("Credit Note</h1>") && all.contains("Disc %") && !all.contains("pf-ghost\""), "everything at full size");
+    let preview = k.preview_print(&admin, &PreviewAsk { template: json!("shop.invoice"), sample: true, ..Default::default() }).await.unwrap();
+    let Preview::Json(answer) = preview else { panic!() };
+    let printed_sample = answer["content"].as_str().unwrap().to_string();
     assert!(!printed_sample.contains("data-b=") && !printed_sample.contains("data-slot="), "no marks outside the canvas");
+    // The sample reads as a document: a number, a customer, three lines that add up, the company's currency.
+    for says in ["SAMPLE-0001", "Sample Customer", "Steel bracket", "Assembly service", "3,000.00", "₹", "Tax 18%"] {
+        assert!(printed_sample.contains(says), "{says}: {printed_sample}");
+    }
+    assert!(!printed_sample.contains(">—<"), "no dashes");
+    assert!(answer["latest_record"]["id"].is_string(), "the latest record is offered: {}", answer["latest_record"]);
+    // On screen the page's margins are its padding (the PDF is told them instead).
+    assert!(printed_sample.contains("@media screen{body.pf{padding:"), "{printed_sample}");
+    // A template using |amount previews on the sample in the company's currency.
+    let amt: DocumentDef =
+        serde_json::from_value(json!({"key": "amt_t", "entity": "SalesInvoice", "languages": {"en": {"body": "<p>{{ doc.total|amount }}</p>"}}})).unwrap();
+    let (a, _) =
+        html_of(k.preview_print(&admin, &PreviewAsk { template: serde_json::to_value(&amt).unwrap(), sample: true, ..Default::default() }).await.unwrap());
+    assert!(a.contains("<p>₹"), "{a}");
+    // A template that fails as it runs says where, as a save does.
+    let late: DocumentDef =
+        serde_json::from_value(json!({"key": "late_t", "entity": "SalesInvoice", "languages": {"en": {"body": "a\n{{ doc.posting_date|date('%Q') }}"}}}))
+            .unwrap();
+    k.save_document_template(&admin, &late).await.unwrap();
+    let e = k.print_record(&clerk, "SalesInvoice", fresh, &PrintAsk { template: Some("late_t".into()), ..Default::default() }).await.unwrap_err();
+    assert!(fields_of(&e)[0].1.starts_with("en body, line 2: "), "{e:?}");
+    // A sign left off on a condition.
+    let cond = one_block(
+        json!({"id": "g", "type": "field", "value": "doc.grand_total", "label": "T", "format": {"as": "amount", "sign": {"abs_when": "doc.grand_total < 0.0"}}}),
+    );
+    let (neg, _) = html_of(
+        k.preview_print(
+            &admin,
+            &PreviewAsk { template: serde_json::to_value(layout_def("cond", cond.clone())).unwrap(), record: Some(crid), ..Default::default() },
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(neg.contains("<span class=\"pf-value\">₹3,186.00</span>"), "{neg}");
+    let bad = one_block(json!({"id": "g", "type": "field", "value": "doc.grand_total", "format": {"sign": {"abs_when": "doc.(("}}}));
+    assert!(
+        fields_of(&k.save_document_template(&admin, &layout_def("bad_sign", bad)).await.unwrap_err())
+            .iter()
+            .any(|(f, m)| f == "layout.g" && m.contains("does not compile"))
+    );
     // A letter head not saved yet, previewed as its form holds it; checked as a save checks it.
     let draft = json!({"header": {"sections": [{"id": "s", "columns": [{"id": "c", "blocks": [{"id": "h", "type": "heading", "text": "Draft head {company.company_name}"}]}]}]}});
     let ask = PreviewAsk { template: json!("shop.invoice"), sample: true, letterhead_draft: Some(draft), ..Default::default() };
@@ -866,6 +926,11 @@ async fn scenario() {
     let ask = PreviewAsk { template: json!("shop.invoice"), sample: true, letterhead_draft: Some(bad), ..Default::default() };
     assert!(matches!(k.preview_print(&admin, &ask).await, Err(Error::Validation(_))));
     let cat = k.document_fields(&admin, "SalesInvoice").unwrap();
+    let every: Vec<&str> = ["fields", "system"].iter().flat_map(|k| cat[k].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap())).collect();
+    assert_eq!(every.iter().filter(|p| **p == "doc.status").count(), 1, "status once");
+    assert!(every.contains(&"doc.signed_qr"), "a field the form hides prints");
+    let customer = cat["links"].as_array().unwrap().iter().find(|l| l["field"] == "customer").unwrap();
+    assert!(customer["fields"].as_array().unwrap().iter().any(|f| f["path"] == "links.customer.number"), "a linked record's number");
     let paths: Vec<&str> = cat["fields"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
     assert!(paths.contains(&"doc.customer") && !paths.contains(&"doc.pin"), "no secret in the catalogue");
     assert_eq!(cat["tables"][0]["columns"][0]["path"], json!("row.item_name"));

@@ -175,16 +175,40 @@ pub struct Format {
     pub date: Option<DateStyle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
-    /// `abs`: a number, amount or amount in words without its sign (a credit note's totals print positive).
+    /// `abs`: a number, amount or amount in words without its sign (a credit note's totals print positive);
+    /// `{abs_when: <condition>}`: without it when the condition holds (`doc.is_return`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sign: Option<Sign>,
 }
 
-/// How a number's sign prints.
+/// How a number's sign prints: always left off (`"abs"`), or left off when a condition holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Sign {
+    Always(SignWord),
+    When(SignWhen),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Sign {
+pub enum SignWord {
     Abs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignWhen {
+    pub abs_when: String,
+}
+
+impl Format {
+    /// The condition under which the sign is left off, when it is a condition.
+    pub fn abs_when(&self) -> Option<&str> {
+        match &self.sign {
+            Some(Sign::When(w)) => Some(&w.abs_when),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -599,6 +623,22 @@ impl Layout {
         self.sections.iter().flat_map(|s| s.columns.iter().flat_map(|c| c.blocks.iter()))
     }
 
+    /// Every value format it holds, with the id of what holds it.
+    pub fn formats(&self) -> Vec<(&str, &Format)> {
+        let mut out = Vec::new();
+        for b in self.blocks() {
+            let id = b.id.as_str();
+            match &b.kind {
+                BlockKind::Field { format: Some(f), .. } => out.push((id, f)),
+                BlockKind::Text { content, .. } => out.extend(content.iter().flat_map(|p| p.spans.iter()).filter_map(|s| s.format.as_ref()).map(|f| (id, f))),
+                BlockKind::Table { columns, .. } => out.extend(columns.iter().filter_map(|c| c.format.as_ref().map(|f| (c.id.as_str(), f)))),
+                BlockKind::Totals { rows, .. } => out.extend(rows.iter().filter_map(|r| r.format.as_ref()).map(|f| (id, f))),
+                _ => {}
+            }
+        }
+        out
+    }
+
     /// The paths, conditions and files it names.
     pub fn named(&self) -> Named<'_> {
         let mut n = Named::default();
@@ -910,6 +950,12 @@ impl Layout {
                         BlockKind::CopyLabel { .. } | BlockKind::PageBreak {} => {}
                     }
                 }
+            }
+        }
+        // A sign left off on a condition is a condition like `when`.
+        for (id, f) in self.formats() {
+            if let Some(c) = f.abs_when() {
+                cel(&mut bad, id, &Some(c.to_string()));
             }
         }
         if blocks > MAX_BLOCKS {

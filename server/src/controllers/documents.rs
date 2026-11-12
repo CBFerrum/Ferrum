@@ -131,6 +131,11 @@ pub fn preview_ask(body: &Value) -> ApiResult<PreviewAsk> {
         None | Some(Value::Null) => vec![],
         Some(v) => serde_json::from_value::<Vec<String>>(v.clone()).map_err(|_| ApiError(Error::field("copies", "a list of copy labels")))?,
     };
+    let design_all = match body.get("design") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(s)) if s == "all" => true,
+        Some(_) => return Err(ApiError(Error::field("design", "\"all\" shows every part at full size; leave it out to collapse what is hidden"))),
+    };
     let design = match text("mode").as_deref() {
         None | Some("print") => false,
         Some("design") => true,
@@ -150,6 +155,7 @@ pub fn preview_ask(body: &Value) -> ApiResult<PreviewAsk> {
         letterhead_draft: body.get("letterhead").filter(|v| v.is_object()).cloned(),
         copies,
         design,
+        design_all,
         pdf,
     })
 }

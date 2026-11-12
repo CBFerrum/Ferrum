@@ -162,6 +162,7 @@ fn render(output: DocumentOutput, src: &str, vars: &Value, strict: bool) -> Resu
     render_x(output, src, vars, strict, &Extras::default())
 }
 
+#[cfg(test)]
 fn render_x(output: DocumentOutput, src: &str, vars: &Value, strict: bool, extras: &Extras) -> Result<String> {
     if src.len() > MAX_BODY {
         return Err(Error::field("template", "a body is larger than 256 KB"));
@@ -176,13 +177,24 @@ struct Pages {
     footer: Option<String>,
 }
 
-fn render_all(def: &DocumentDef, b: &DocumentBody, vars: &Value, strict: bool) -> Result<Pages> {
-    render_all_x(def, b, vars, strict, &Extras::default())
+fn render_all(def: &DocumentDef, b: &DocumentBody, vars: &Value, strict: bool, lang: &str) -> Result<Pages> {
+    render_all_x(def, b, vars, strict, &Extras::default(), lang)
 }
 
-fn render_all_x(def: &DocumentDef, b: &DocumentBody, vars: &Value, strict: bool, x: &Extras) -> Result<Pages> {
-    let part = |s: &Option<String>| s.as_deref().map(|s| render_x(def.output, s, vars, strict, x)).transpose();
-    Ok(Pages { body: render_x(def.output, &b.body, vars, strict, x)?, header: part(&b.header)?, footer: part(&b.footer)? })
+/// A body, its header and its footer rendered; what goes wrong said at its part and line, as a save says it
+/// (`en body, line 5: …`).
+fn render_all_x(def: &DocumentDef, b: &DocumentBody, vars: &Value, strict: bool, x: &Extras, lang: &str) -> Result<Pages> {
+    let one = |part: &str, src: &str| -> Result<String> {
+        if src.len() > MAX_BODY {
+            return Err(Error::field("template", format!("{lang} {part}, line 1: larger than 256 KB")));
+        }
+        render_raw(def.output, src, vars, strict, x).map_err(|e| Error::field("template", format!("{lang} {part}, {}", where_(&e))))
+    };
+    Ok(Pages {
+        body: one("body", &b.body)?,
+        header: b.header.as_deref().map(|s| one("header", s)).transpose()?,
+        footer: b.footer.as_deref().map(|s| one("footer", s)).transpose()?,
+    })
 }
 
 /// The names after `prefix` in a template's text (`settings.Company` → `Company`).
@@ -339,6 +351,115 @@ fn sample(ctx: &Ctx, entity: &str, filled: bool) -> Value {
         .filter_map(|f| Some((f.name.clone(), Value::Object(fields(ctx.schema.entity(f.to.as_deref()?)?, ctx, false, filled)))))
         .collect();
     json!({"doc": fields(ent, ctx, true, filled), "links": links, "entity": crate::print::field_meta(ent, &ctx.schema)})
+}
+
+/// A sample record that reads as a document (a designer's canvas, a preview with no record): every field filled from
+/// its type and name, the same each time: three lines whose amounts add up, a tax line, totals, today's dates, the
+/// company's currency.
+fn rich_sample(ctx: &Ctx, entity: &str, currency: &str) -> Value {
+    use rust_decimal::Decimal;
+    let Some(ent) = ctx.schema.entity(entity) else { return json!({"doc": {}, "links": {}}) };
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let has = |n: &str, words: &[&str]| words.iter().any(|w| n.contains(w));
+    let money = |d: Decimal| json!(d.round_dp(2).to_string());
+    // Three lines of goods and a service, and what they add up to.
+    let (qty, rate) = ([2, 5, 1], [1500, 250, 4000]);
+    let subtotal: Decimal = qty.iter().zip(rate).map(|(q, r)| Decimal::from(q * r)).sum();
+    let tax = subtotal * Decimal::new(18, 2);
+    let names = ["Steel bracket", "Assembly service", "Packing crate"];
+    fn text(f: &ferrum_meta::FieldDef, line: Option<usize>, names: &[&str; 3]) -> Value {
+        let n = f.name.as_str();
+        let has = |w: &[&str]| w.iter().any(|x| n.contains(x));
+        if has(&["email"]) {
+            return json!("accounts@example.com");
+        }
+        if has(&["phone", "mobile"]) {
+            return json!("555 0100");
+        }
+        if has(&["address", "display", "billing", "shipping"]) {
+            return json!("12 Sample Street\nSample City 100001");
+        }
+        if let Some(i) = line.filter(|_| has(&["item", "description", "name"])) {
+            return json!(names[i % 3]);
+        }
+        if has(&["name"]) {
+            return json!(format!("Sample {}", f.label().trim_end_matches(" Name")));
+        }
+        if has(&["uom", "unit"]) {
+            return json!("Nos");
+        }
+        json!(format!("Sample {}", f.label()))
+    }
+    // A line (`line`: its index) or a record (a document, what it links to).
+    let row = |c: &ferrum_meta::EffEntity, i: usize, taxes: bool, line: bool| -> Map<String, Value> {
+        let mut r = Map::new();
+        let mut titles = Map::new();
+        let (q, rt) = (Decimal::from(qty[i]), Decimal::from(rate[i]));
+        for f in c.def.fields.iter().filter(|f| f.ftype != FieldType::Secret && f.ftype != FieldType::Table) {
+            let n = f.name.as_str();
+            let v = match f.ftype {
+                FieldType::Percent if taxes || has(n, &["tax", "gst", "vat"]) => json!("18"),
+                FieldType::Percent => json!("0"),
+                FieldType::Currency | FieldType::Decimal | FieldType::Int if taxes => {
+                    if has(n, &["rate"]) {
+                        json!("18")
+                    } else {
+                        money(tax)
+                    }
+                }
+                FieldType::Int | FieldType::Decimal if has(n, &["qty", "quantity"]) => json!(q.to_string()),
+                FieldType::Currency | FieldType::Decimal if has(n, &["rate", "price"]) => money(rt),
+                FieldType::Currency => money(q * rt),
+                t if t.is_numeric() => json!("0"),
+                FieldType::Date | FieldType::Datetime => json!(today),
+                FieldType::Check => json!(false),
+                FieldType::Select => f.options.first().map(|o| json!(o)).unwrap_or(Value::Null),
+                FieldType::Link => {
+                    let label = f.to.as_deref().and_then(|t| ctx.schema.entity(t)).map(|t| t.def.label.clone()).unwrap_or_default();
+                    titles.insert(f.name.clone(), if f.to.as_deref() == Some("Currency") { json!(currency) } else { json!(format!("Sample {label}")) });
+                    json!("")
+                }
+                FieldType::Attach | FieldType::Json => Value::Null,
+                _ if taxes && has(n, &["description", "account", "name"]) => json!("Tax 18%"),
+                _ => text(f, line.then_some(i), &names),
+            };
+            r.insert(f.name.clone(), v);
+        }
+        r.insert("_titles".into(), Value::Object(titles));
+        r
+    };
+    let mut doc = row(ent, 0, false, false);
+    for (n, v) in [("id", json!("")), ("number", json!("SAMPLE-0001")), ("created_at", json!(today)), ("updated_at", json!(today)), ("docstatus", json!(1))] {
+        doc.insert(n.into(), v);
+    }
+    doc.insert("status".into(), json!(if ent.is_submittable() { "Submitted" } else { "" }));
+    for f in ent.def.fields.iter().filter(|f| f.ftype == FieldType::Currency) {
+        let n = f.name.as_str();
+        let v = if has(n, &["tax"]) {
+            tax
+        } else if has(n, &["grand", "rounded", "outstanding", "balance", "payable", "due", "receivable"]) {
+            subtotal + tax
+        } else if has(n, &["discount", "round", "adjust", "paid", "advance", "change", "write"]) {
+            Decimal::ZERO
+        } else {
+            subtotal
+        };
+        doc.insert(f.name.clone(), money(v));
+    }
+    for f in ent.def.fields.iter().filter(|f| f.ftype == FieldType::Table) {
+        let Some(c) = f.of.as_deref().and_then(|c| ctx.schema.entity(c)) else { continue };
+        let taxes = has(&f.name, &["tax"]);
+        let rows: Vec<Value> = (0..if taxes { 1 } else { 3 }).map(|i| Value::Object(row(c, i, taxes, true))).collect();
+        doc.insert(f.name.clone(), Value::Array(rows));
+    }
+    let links: Map<String, Value> = ent
+        .def
+        .fields
+        .iter()
+        .filter(|f| f.ftype == FieldType::Link)
+        .filter_map(|f| Some((f.name.clone(), Value::Object(row(ctx.schema.entity(f.to.as_deref()?)?, 0, false, false)))))
+        .collect();
+    json!({"doc": doc, "links": links, "entity": crate::print::field_meta(ent, &ctx.schema)})
 }
 
 fn layout_errors(problems: Vec<(String, String)>) -> Error {
@@ -591,7 +712,13 @@ pub(crate) async fn save_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &Docu
     .execute(&mut **tx)
     .await?;
     audit::record(tx, ctx, "DocumentTemplate", Uuid::nil(), "save", None, json!({"key": def.key})).await?;
-    if def.default && def.output == DocumentOutput::Page {
+    // Marking a template the default makes it the workspace's choice; a template read back with its flag as it was
+    // (a package's default, saved again) changes nothing: `PUT …/defaults` is the way to choose.
+    let was_default = match &was {
+        Some(v) => v.get("default").and_then(Value::as_bool).unwrap_or(false),
+        None => ctx.schema.documents.iter().find(|m| m.key == def.key).is_some_and(|m| m.default),
+    };
+    if def.default && !was_default && def.output == DocumentOutput::Page {
         choose_default(tx, ctx, &def.entity, Some(&def.key)).await?;
     }
     Ok(if was.is_some() { "changed" } else { "created" })
@@ -732,7 +859,7 @@ async fn render_record(
     let (theirs, workspace) = languages(tx, ctx, reader == Reader::Person).await?;
     let (tag, body) = bodies(def, &[language, theirs.as_deref(), workspace.as_deref()]);
     let vars = record_vars(k, tx, ctx, reader, def, id, &tag, values).await?;
-    Ok((render_all(def, body, &vars, false)?, vars, tag))
+    Ok((render_all(def, body, &vars, false, &tag)?, vars, tag))
 }
 
 /// Refused unless `ctx` may have this template's output for `entity`: reading it for a page (as the print path asks),
@@ -1009,6 +1136,8 @@ pub struct PrintAsk {
 struct How {
     reader: Reader,
     design: bool,
+    /// The canvas with every part at full size (what a condition hides dimmed), not collapsed.
+    design_all: bool,
 }
 
 /// A page rendered, before it becomes bytes.
@@ -1079,10 +1208,20 @@ async fn render_page(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, id: 
     let mut vars = match id {
         Some(id) => record_vars(k, tx, ctx, how.reader, def, id, &tag, &Map::new()).await?,
         None => {
-            let mut v = sample(ctx, &def.entity, true);
+            // The sample prints in the company's currency (the first company's), else the workspace's first one.
+            let sys = Ctx::system(ctx.tenant, ctx.schema.clone());
+            let currencies = currencies(k, tx, ctx, "amount").await?;
+            let mut code = None;
+            if let Some(cent) = ctx.schema.entity("Company") {
+                let mut first = k.find_tx(&sys, tx, "Company", &[], None, 1).await?;
+                k.add_titles(&sys, tx, cent, &mut first).await?;
+                code = first.first().and_then(|c| c.get("_titles")?.get("default_currency")?.as_str().map(str::to_string));
+            }
+            let code = code.or_else(|| currencies.as_object().and_then(|m| m.keys().next().cloned())).unwrap_or_else(|| "USD".into());
+            let mut v = rich_sample(ctx, &def.entity, &code);
             v["settings"] = crate::settings::load(k, ctx, tx, &named(&all_text(def), "settings.")).await?;
-            v["currencies"] = currencies(k, tx, ctx, "amount").await?;
-            for (n, x) in [("language", json!(tag)), ("currency", Value::Null), ("values", json!({})), ("title", json!("Sample")), ("now", json!(""))] {
+            v["currencies"] = currencies;
+            for (n, x) in [("language", json!(tag)), ("currency", json!(code)), ("values", json!({})), ("title", json!("Sample")), ("now", json!(""))] {
                 v[n] = x;
             }
             v
@@ -1181,7 +1320,11 @@ async fn render_page(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, id: 
     };
     let links = vars["links"].as_object().cloned().unwrap_or_default();
     let currency = vars["currency"].as_str().map(str::to_string);
-    let mode = if how.design { Mode::Design } else { Mode::Print };
+    let mode = match (how.design, how.design_all) {
+        (false, _) => Mode::Print,
+        (true, false) => Mode::Design,
+        (true, true) => Mode::DesignAll,
+    };
     let one = print(None);
     let base = layout::Data {
         schema: &ctx.schema,
@@ -1282,7 +1425,7 @@ async fn render_page(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, id: 
             let mut own = (None, None);
             for c in &copies {
                 vars["print"] = Value::Object(print(c.as_deref()));
-                let pages = render_all_x(def, b, &vars, false, &x)?;
+                let pages = render_all_x(def, b, &vars, false, &x, &tag)?;
                 own = (pages.header, pages.footer);
                 let (h, f) = if names_letterhead { (None, None) } else { (in_head.map(String::as_str), in_foot.map(String::as_str)) };
                 out.push(wear(&pages.body, h, f, watermark.as_deref()));
@@ -1399,7 +1542,7 @@ pub async fn generate(k: &Kernel, tx: &mut Tx, ctx: &Ctx, g: &Generate) -> Resul
     let pdf = k.pdf_enabled();
     let (bytes, content_type, ext, title) = if def.output == DocumentOutput::Page && def.values.is_empty() {
         let ask = PrintAsk { language: g.language.clone(), pdf, ..Default::default() };
-        let p = render_page(k, tx, ctx, &def, Some(g.record), &ask, How { reader: Reader::Outside, design: false }).await?;
+        let p = render_page(k, tx, ctx, &def, Some(g.record), &ask, How { reader: Reader::Outside, design: false, design_all: false }).await?;
         // ponytail: the PDF service is called inside the caller's transaction (up to its 60 s); a job if that ever matters.
         let (b, t, e) = page_bytes(k, p.html, p.header, p.footer, &p.pdf, pdf).await?;
         (b, t, e, p.title)
@@ -1569,7 +1712,7 @@ async fn render_rows(
         "settings": crate::settings::load(k, ctx, tx, &named(&text, "settings.")).await?,
         "currencies": currencies(k, tx, ctx, &text).await?, "now": chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
     });
-    render_all(def, body, &vars, false)
+    render_all(def, body, &vars, false, &tag)
 }
 
 /// The rows by the record their `group_by` column links to, in that record's id order; rows linking to none are in
@@ -1738,6 +1881,8 @@ pub struct PreviewAsk {
     pub letterhead_draft: Option<Value>,
     pub copies: Vec<String>,
     pub design: bool,
+    /// On the canvas, every part at full size (`design: "all"`), not what a condition hides collapsed.
+    pub design_all: bool,
     pub pdf: bool,
 }
 
@@ -1764,9 +1909,15 @@ impl Kernel {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let all = every(&mut tx, ctx).await?;
-        let stamps: Vec<(String, Option<Uuid>, chrono::DateTime<chrono::Utc>)> =
-            sqlx::query_as("select key, updated_by, updated_at from document_template where tenant_id = $1").bind(ctx.tenant).fetch_all(&mut *tx).await?;
-        let stamps: HashMap<String, (Option<Uuid>, chrono::DateTime<chrono::Utc>)> = stamps.into_iter().map(|(k, b, a)| (k, (b, a))).collect();
+        let stamps: Vec<(String, Option<Uuid>, chrono::DateTime<chrono::Utc>, Option<String>)> = sqlx::query_as(
+            "select d.key, d.updated_by, d.updated_at, coalesce(nullif(u.full_name, ''), u.email::text) from document_template d \
+             left join app_user u on u.tenant_id = d.tenant_id and u.id = d.updated_by where d.tenant_id = $1",
+        )
+        .bind(ctx.tenant)
+        .fetch_all(&mut *tx)
+        .await?;
+        let stamps: HashMap<String, (Option<Uuid>, chrono::DateTime<chrono::Utc>, Option<String>)> =
+            stamps.into_iter().map(|(k, b, a, n)| (k, (b, a, n))).collect();
         let mut defaults: HashMap<String, Option<String>> = HashMap::new();
         for e in all.values().map(|(d, ..)| d.entity.clone()).collect::<BTreeSet<_>>() {
             defaults.insert(e.clone(), default_for(&mut tx, ctx, &all, &e).await?.map(|d| d.key.clone()));
@@ -1780,11 +1931,14 @@ impl Kernel {
             .into_values()
             .filter(|(d, ..)| wanted(d))
             .map(|(d, source, changed)| {
-                let (by, at) = stamps.get(&d.key).cloned().unzip();
+                let (by, at, name) = match stamps.get(&d.key).cloned() {
+                    Some((b, a, n)) => (b, Some(a), n),
+                    None => (None, None, None),
+                };
                 json!({"key": d.key, "label": d.label, "entity": d.entity, "output": d.output, "kind": kind(&d), "default": d.default,
                        "is_default": defaults.get(&d.entity).cloned().flatten().as_deref() == Some(d.key.as_str()), "enabled": d.enabled,
                        "roles": d.roles, "languages": d.languages.keys().collect::<Vec<_>>(), "source": source, "default_changed": changed,
-                       "based_on": d.based_on, "updated_by": by.flatten(), "updated_at": at})
+                       "based_on": d.based_on, "updated_by": by, "updated_by_name": name, "updated_at": at})
             })
             .collect())
     }
@@ -1977,6 +2131,10 @@ impl Kernel {
             return Ok(Preview::Json(json!({"output": def.output, "kind": kind(&def), "content": pages.body, "header": pages.header, "footer": pages.footer,
                 "warnings": [], "ms": started.elapsed().as_millis() as u64})));
         }
+        // The latest record the administrator may read, said whatever is previewed, so the canvas may offer it.
+        let q = crate::query::ListQuery { sort: Some("updated_at desc".into()), limit: Some(1), ..Default::default() };
+        let latest = self.list(ctx, &def.entity, &q).await?.rows.into_iter().next();
+        let latest_record = latest.as_ref().map(|d| json!({"id": d.get("id"), "title": crate::collab::record_title(ctx, &def.entity, d)}));
         let id = match (ask.record, ask.sample) {
             (Some(id), _) => Some(id),
             (None, true) if def.output == DocumentOutput::Page => None,
@@ -1998,14 +2156,23 @@ impl Kernel {
             return Ok(Preview::Json(json!({"language": tag, "output": def.output, "kind": kind(&def), "content": pages.body, "header": pages.header,
                 "footer": pages.footer, "record_id": id, "warnings": [], "ms": started.elapsed().as_millis() as u64})));
         }
-        let p = render_page(self, &mut tx, ctx, &def, id, &print, How { reader: Reader::Person, design: ask.design && def.layout.is_some() }).await?;
+        let p = render_page(
+            self,
+            &mut tx,
+            ctx,
+            &def,
+            id,
+            &print,
+            How { reader: Reader::Person, design: ask.design && def.layout.is_some(), design_all: ask.design_all },
+        )
+        .await?;
         tx.commit().await?;
         if ask.pdf {
             let (bytes, ..) = page_bytes(self, p.html, p.header, p.footer, &p.pdf, true).await?;
             return Ok(Preview::Pdf(bytes));
         }
         Ok(Preview::Json(json!({"language": p.language, "output": def.output, "kind": kind(&def), "content": p.html, "header": p.header,
-            "footer": p.footer, "record_id": id, "warnings": p.warnings, "ms": started.elapsed().as_millis() as u64})))
+            "footer": p.footer, "record_id": id, "latest_record": latest_record, "warnings": p.warnings, "ms": started.elapsed().as_millis() as u64})))
     }
 
     // ── documents about a query ──
@@ -2173,7 +2340,7 @@ impl Kernel {
         let doc = Value::Object(self.get_tx(ctx, &mut tx, entity, id, false).await?);
         let settings = print_settings(self, &mut tx, ctx).await?;
         may_print_status(&ent, &doc, &settings).map_err(Error::Forbidden)?;
-        let p = render_page(self, &mut tx, ctx, &def, Some(id), ask, How { reader: Reader::Person, design: false }).await?;
+        let p = render_page(self, &mut tx, ctx, &def, Some(id), ask, How { reader: Reader::Person, design: false, design_all: false }).await?;
         tx.commit().await?;
         let number = doc.get("number").and_then(Value::as_str).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or(p.title.clone());
         let (bytes, content_type, ext) = page_bytes(self, p.html, p.header, p.footer, &p.pdf, ask.pdf).await?;
@@ -2213,7 +2380,7 @@ impl Kernel {
             let mut first: Option<Printed> = None;
             let mut parts = Vec::new();
             for id in ids {
-                let p = render_page(self, &mut tx, ctx, &def, Some(*id), &ask, How { reader: Reader::Person, design: false }).await?;
+                let p = render_page(self, &mut tx, ctx, &def, Some(*id), &ask, How { reader: Reader::Person, design: false, design_all: false }).await?;
                 for _ in 0..copies {
                     parts.extend(p.parts.iter().cloned());
                 }

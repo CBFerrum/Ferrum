@@ -1288,7 +1288,8 @@ in a PDF and nothing in the HTML). A `table` prints `doc.<table>`, `links.<link 
 or `company.<table>` (read as the workspace); a column may say `hide_zero: true` (a zero cell is blank), and its
 `secondary` line prints only when it differs from the cell. A date prints as `29 Oct 2026` (`medium`, the month's name in the print's language) unless a format says `date:
 "short"` (the language's numeric order) or `"long"`. A format may say `sign: "abs"` (a number, amount or amount in
-words without its sign: a credit note's totals print positive). Unknown keys, paths, secret fields, colours other than `#rrggbb`,
+words without its sign: a credit note's totals print positive) or `sign: {abs_when: "<condition>"}` (without it when the
+condition holds, e.g. `doc.is_return`). Unknown keys, paths, secret fields, colours other than `#rrggbb`,
 numbers out of range and every limit (256 KB, 100 sections, 4 columns, 50 blocks a column, 500 in all, 20 table columns,
 100 conditions of ≤ 500 characters, 20 images) are refused when saved (`422`, `field: "layout.<id>"`) and again when it
 renders. A template's error names where it is: `"en body, line 3: …"`.
@@ -1329,7 +1330,8 @@ exactly what `/print?format=pdf` makes with the same choices (the default format
 also come nested as `print: {template, letterhead, language, copies}`.
 
 **Administrators**: `GET /api/admin/documents/templates?entity=&output=` rows also carry `kind`, `is_default`,
-`enabled`, `based_on`, `updated_by`, `updated_at`; `GET …/templates/{key}` also `etag` (and the `ETag` header);
+`enabled`, `based_on`, `updated_by`, `updated_by_name`, `updated_at`; saving a template whose `default` is as it was read
+changes no default (`PUT …/defaults` chooses; marking one `default: true` that was not makes it the choice); `GET …/templates/{key}` also `etag` (and the `ETag` header);
 `POST …/templates` takes `If-Match: "<etag>"` (`409` when someone saved it since; answers `204` with the new `ETag`);
 a package's layout is not edited in place (`422` on `key`: duplicate it; its paper, roles, copies and `enabled` change
 in an edited copy). `POST …/templates/{key}/duplicate {key, label}` → `201 {template}` (the workspace's own key,
@@ -1341,8 +1343,11 @@ in an edited copy). `POST …/templates/{key}/duplicate {key, label}` → `201 {
 {template: key | a template not saved, record_id?, sample?, language?, letterhead?, copies?, mode?: print|design,
 format?: html|pdf}` (`letterhead` may also be a letter head not saved yet, `{id?, company?, header, footer,
 header_height_mm?, footer_height_mm?}`, checked as a save checks it) → `{language, output, kind, content, header, footer, record_id, warnings, ms}` (a layout's `content`
-is the whole page; `mode: design` adds `data-b`/`data-slot` marks, placeholders and dims what a condition hides;
-`sample` renders a record of every field; `format: pdf` answers the PDF). `GET /api/print/layout.css` is the renderer's
+is the whole page; `mode: design` adds `data-b`/`data-slot` marks and placeholders, and draws what a condition hides on the
+record as a collapsed ghost (`<div class="pf-ghost" data-b="<id>" data-ghost="<kind>">`, a table column as
+`<th class="pf-ghost-col" data-b="<id>" data-ghost="column">` with no width), or at full size dimmed with `design: "all"`;
+`sample` renders a sample record that reads as a document (a number, a customer, three lines that add up, a tax line,
+totals in the company's currency, today's dates); the answer also names `latest_record: {id, title}`; `format: pdf` answers the PDF). `GET /api/print/layout.css` is the renderer's
 CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/save|reset|default`). Packs carry the
 workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`. A package that uses any of this
 (`layout_file`, `page`, `letterhead`, `copies`, `enabled`, a LetterHead or PrintSettings record in its seed) needs
