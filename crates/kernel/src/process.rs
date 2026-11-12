@@ -2092,7 +2092,7 @@ impl Kernel {
         Ok(())
     }
 
-    /// Sets a business calendar from what an API was sent (`{zone, weekends, holidays, hours}`), named by
+    /// Sets a business calendar from what an API was sent (`{zone, weekends, holidays, hours, exceptions}`), named by
     /// the path: Studio's route and the administration API both come here.
     pub async fn put_logic_calendar(&self, ctx: &Ctx, name: &str, body: &Value) -> Result<i64> {
         let mut b = if body.is_object() { body.clone() } else { json!({}) };
@@ -2136,12 +2136,14 @@ pub(crate) async fn set_calendar_in(tx: &mut Tx, ctx: &Ctx, cal: &Calendar) -> R
         return Err(Error::field("name", "lower_snake_case, at most 64 characters"));
     }
     if let Some(p) = cal.problem() {
-        return Err(Error::field(if p.starts_with("hours:") { "hours" } else { "calendar" }, p));
+        let field = ["hours", "exceptions"].into_iter().find(|f| p.starts_with(&format!("{f}:"))).unwrap_or("calendar");
+        return Err(Error::field(field, p));
     }
     let holidays: Vec<chrono::NaiveDate> = cal.holidays.iter().copied().collect();
     let revision: i64 = sqlx::query_scalar(
-        "insert into logic_calendar (tenant_id, name, zone, weekends, holidays, updated_by, hours) values ($1, $2, $3, $4, $5, $6, $7) \
-         on conflict (tenant_id, name) do update set zone = $3, weekends = $4, holidays = $5, updated_by = $6, hours = $7, revision = logic_calendar.revision + 1, updated_at = now() \
+        "insert into logic_calendar (tenant_id, name, zone, weekends, holidays, updated_by, hours, exceptions) values ($1, $2, $3, $4, $5, $6, $7, $8) \
+         on conflict (tenant_id, name) do update set zone = $3, weekends = $4, holidays = $5, updated_by = $6, hours = $7, exceptions = $8, \
+         revision = logic_calendar.revision + 1, updated_at = now() \
          returning revision",
     )
     .bind(ctx.tenant)
@@ -2151,6 +2153,7 @@ pub(crate) async fn set_calendar_in(tx: &mut Tx, ctx: &Ctx, cal: &Calendar) -> R
     .bind(&holidays)
     .bind(ctx.user)
     .bind(cal.hours.as_ref().map(|h| json!(h)))
+    .bind(json!(cal.exceptions))
     .fetch_one(&mut **tx)
     .await?;
     Ok(revision)
@@ -2214,13 +2217,14 @@ pub async fn deliver(tx: &mut Tx, tenant: Uuid, run: Uuid, event: &Event) -> Res
 /// that name. The one loader: an app's hook calls it with its own transaction
 /// (`ferrum_kernel::load_calendar(&mut **hc.tx, hc.ctx.tenant, "office")`).
 pub async fn load_calendar(conn: &mut sqlx::PgConnection, tenant: Uuid, name: &str) -> Result<Option<Calendar>> {
-    let row: Option<(String, Vec<String>, Vec<chrono::NaiveDate>, i64, Option<Value>)> =
-        sqlx::query_as("select zone, weekends, holidays, revision, hours from logic_calendar where tenant_id = $1 and name = $2")
+    let row: Option<(String, Vec<String>, Vec<chrono::NaiveDate>, i64, Option<Value>, Value)> =
+        sqlx::query_as("select zone, weekends, holidays, revision, hours, exceptions from logic_calendar where tenant_id = $1 and name = $2")
             .bind(tenant)
             .bind(name)
             .fetch_optional(conn)
             .await?;
-    let Some((zone, weekends, holidays, revision, hours)) = row else { return Ok(None) };
+    let Some((zone, weekends, holidays, revision, hours, exceptions)) = row else { return Ok(None) };
     let hours = hours.map(serde_json::from_value).transpose().map_err(|e| Error::invalid(format!("the calendar {name}'s hours: {e}")))?;
-    Ok(Some(Calendar { name: name.into(), zone, weekends, holidays: holidays.into_iter().collect(), revision, hours }))
+    let exceptions = serde_json::from_value(exceptions).map_err(|e| Error::invalid(format!("the calendar {name}'s exceptions: {e}")))?;
+    Ok(Some(Calendar { name: name.into(), zone, weekends, holidays: holidays.into_iter().collect(), revision, hours, exceptions }))
 }

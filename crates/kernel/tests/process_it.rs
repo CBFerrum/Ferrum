@@ -479,6 +479,7 @@ async fn scenario() {
         holidays: Default::default(),
         revision: 0,
         hours: None,
+        exceptions: Default::default(),
     };
     assert_eq!(k.set_logic_calendar(&admin, &office).await.unwrap(), 1);
     assert_eq!(code(&k.set_logic_calendar(&reviewer, &office).await.unwrap_err()), "forbidden");

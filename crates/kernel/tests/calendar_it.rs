@@ -103,4 +103,20 @@ async fn scenario() {
     assert_eq!(k.put_logic_calendar(&admin, "office", &revised).await.unwrap(), 2);
     let d = k.process_deadline(admin.tenant, &wait, from).await.unwrap();
     assert_eq!((d.at, d.revision), (utc("2026-11-10T11:30:00Z"), Some(2)));
+
+    // Dated exceptions, put and read back as the API takes them: the holiday opens 10:00-12:00 after all, and Monday
+    // closes from 17:00. The same wait from Monday 17:00 then counts two hours on the holiday and six on Wednesday.
+    let mut dated = body.clone();
+    dated["exceptions"] = json!({"2026-11-10": {"open": true, "hours": [["10:00", "12:00"]]}, "2026-11-09": {"open": false, "hours": [["17:00", "24:00"]]}});
+    let bad = k.put_logic_calendar(&admin, "office", &json!({"zone": "Asia/Kolkata", "weekends": ["sun"], "holidays": [], "exceptions": {"2026-11-10": {"open": true, "hours": [["12:00", "10:00"]]}}})).await;
+    assert!(matches!(&bad, Err(ferrum_kernel::Error::Validation(f)) if f[0].field == "exceptions"), "{bad:?}");
+    assert_eq!(k.put_logic_calendar(&admin, "office", &dated).await.unwrap(), 3);
+    let listed = k.logic_calendars(&admin).await.unwrap();
+    assert_eq!(listed[0]["exceptions"], dated["exceptions"], "listed as written");
+    let d = k.process_deadline(admin.tenant, &wait, from).await.unwrap();
+    assert_eq!((d.at, d.revision), (utc("2026-11-11T10:30:00Z"), Some(3)), "Monday's last hour gone, two on the holiday, six on Wednesday");
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let office: Calendar = load_calendar(&mut tx, admin.tenant, "office").await.unwrap().unwrap();
+    tx.commit().await.unwrap();
+    assert!(office.is_open(utc("2026-11-10T05:00:00Z")) && !office.is_open(utc("2026-11-09T11:45:00Z")), "10:30 on the holiday; 17:15 that Monday");
 }

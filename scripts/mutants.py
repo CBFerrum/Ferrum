@@ -667,6 +667,8 @@ MUTANTS = [
     ("document-approval-system-bypasses", "crates/kernel/src/doc.rs", "if ctx.is_system && a.policy.system_bypass {", "if ctx.is_system {", DOCUMENT_APPROVALS),
     ("document-approval-completes-as-system", "crates/kernel/src/approvals.rs", "Some(u) => self.load_ctx(ctx.tenant, u, None, ctx.request_id.clone()).await,", "Some(_) => Ok(crate::actions::system(ctx)),", DOCUMENT_APPROVALS),
     ("document-approval-lock-ignored", "crates/kernel/src/approvals.rs", "        if policy.lock {", "        if false {", DOCUMENT_APPROVALS),
+    ("calendar-exception-ignored", "crates/logic/src/calendar.rs", "        match self.exceptions.get(&d) {\n            Some(x) if x.open => true,", "        match self.exceptions.get(&d).filter(|_| false) {\n            Some(x) if x.open => true,", LOGIC_UNIT),
+    ("calendar-closed-hours-ignored", "crates/logic/src/calendar.rs", "                            if a > cur {\n                                out.push((cur, a));", "                            if a > cur && false {\n                                out.push((cur, a));", LOGIC_UNIT),
     ("transition-approval-names-unchecked", "crates/kernel/src/customize.rs", "        crate::approvals::check_names(tx, ctx.tenant, was, &now).await?;\n", "\n", APPROVALS),
     # Service targets (docs/api.md, Service targets).
     ("target-pause-ignored", "crates/logic/src/target.rs", "        if running && said.pause {", "        if false {", LOGIC_UNIT),
