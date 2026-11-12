@@ -848,6 +848,17 @@ pub(crate) fn add_helpers(env: &mut minijinja::Environment<'static>) {
             Err(_) => JValue::from(""),
         }
     });
+    // A value isolated from the line around it (`<bdi>`), so a phone number or an amount keeps its order in an Arabic
+    // page: `{{ doc.phone|bdi }}`. Numbers stay left to right.
+    env.add_filter("bdi", |v: JValue| -> JValue {
+        let numeric = v.as_i64().is_some() || json(&v).is_number();
+        let text = match json(&v) {
+            Value::Null => return JValue::from(""),
+            Value::String(s) => s,
+            other => other.to_string(),
+        };
+        JValue::from_safe_string(crate::layout::isolate(&crate::layout::esc(&text), numeric))
+    });
     // Where a PDF's header and footer say which page this is, and of how many (the PDF service fills them in).
     env.add_function("page_number", || JValue::from_safe_string(r#"<span class="pageNumber"></span>"#.into()));
     env.add_function("page_count", || JValue::from_safe_string(r#"<span class="totalPages"></span>"#.into()));

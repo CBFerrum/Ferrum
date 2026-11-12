@@ -1356,7 +1356,9 @@ filled in by the PDF service where it repeats the letter head, and a paragraph o
 elsewhere, so a footer text `[{t: "Page "}, {v: "print.page"}, {t: " of "}, {v: "print.pages"}]` prints "Page 2 of 3"
 in a PDF and nothing in the HTML). A `table` prints `doc.<table>`, `links.<link field>.<table>` (read as the person may)
 or `company.<table>` (read as the workspace); a column may say `hide_zero: true` (a zero cell is blank), and its
-`secondary` line prints only when it differs from the cell. A date prints as `29 Oct 2026` (`medium`, the month's name in the print's language) unless a format says `date:
+`secondary` line prints only when it differs from the cell. Every value a layout prints is isolated from the line around it (`<bdi dir="ltr">` for numbers, amounts and text
+with no right-to-left letters, `<bdi dir="auto">` otherwise), so a phone number or an amount keeps its order in an
+Arabic page; in a template write `{{ doc.phone|bdi }}` for the same. A date prints as `29 Oct 2026` (`medium`, the month's name in the print's language) unless a format says `date:
 "short"` (the language's numeric order) or `"long"`. A format may say `sign: "abs"` (a number, amount or amount in
 words without its sign: a credit note's totals print positive) or `sign: {abs_when: "<condition>"}` (without it when the
 condition holds, e.g. `doc.is_return`). Unknown keys, paths, secret fields, colours other than `#rrggbb`,

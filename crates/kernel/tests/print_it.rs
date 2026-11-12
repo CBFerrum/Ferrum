@@ -400,12 +400,12 @@ async fn scenario() {
     assert!(page.contains("<h1>Invoice</h1>") && !page.contains("Credit Note"), "a heading by its condition");
     assert!(page.contains("Bharat Traders") && page.contains("12 MG Road<br>Bengaluru 560001<br>Karnataka"), "the link's record, lines kept");
     assert!(page.contains("<thead><tr><th class=\"pf-rn\">#</th><th class=\"pf-a-start\">Description</th>"), "{page}");
-    assert!(page.contains("Widget 3") && page.contains("<div class=\"pf-secondary\">Blue, steel</div>"));
+    assert!(page.contains("Widget 3") && page.contains("<div class=\"pf-secondary\"><bdi dir=\"ltr\">Blue, steel</bdi></div>"));
     assert!(page.contains("Disc %"), "the discount column shows when a line has one");
     assert!(page.contains("₹3,186.00") && page.contains("three thousand one hundred eighty-six rupees"), "amounts and words: {page}");
     assert!(page.contains("IGST 18%") && !page.contains("Cess"), "a zero tax row is left out");
     assert!(page.contains("<div class=\"pf-watermark\" aria-hidden=\"true\">Draft</div>"), "a draft is watermarked");
-    assert!(page.contains("For Acme &lt;India&gt; Pvt Ltd"), "a token, escaped");
+    assert!(page.contains("For <bdi dir=\"ltr\">Acme &lt;India&gt; Pvt Ltd</bdi>"), "a token, escaped");
     assert!(page.contains("Payment within 30 days.") && page.contains("0011223344"), "company's terms and bank as fallbacks");
     assert!(!page.contains("999.99") && !page.contains("123.45") && !page.contains("4321"), "no field group the clerk may not read, no secret");
     assert!(page.contains("@page{size:210mm 297mm;margin:15mm 12mm 15mm 12mm}"), "Print Settings' paper for the browser");
@@ -580,7 +580,7 @@ async fn scenario() {
     k.update(&admin, "Company", cid, obj(json!({"letter_head": lhid})), None).await.unwrap();
     let page = text(&k.print_record(&clerk, "SalesInvoice", iid, &PrintAsk::default()).await.unwrap().bytes);
     assert!(
-        page.contains("<header class=\"pf-letterhead\">") && page.contains("Acme &lt;India&gt; Pvt Ltd</h2>"),
+        page.contains("<header class=\"pf-letterhead\">") && page.contains("Acme &lt;India&gt; Pvt Ltd</bdi></h2>"),
         "the company's letter head, in the body: {page}"
     );
     assert!(
@@ -790,22 +790,41 @@ async fn scenario() {
         .unwrap(),
     );
     assert!(
-        page.contains("<span class=\"pf-value\">₹3,186.00</span>") && page.contains("three thousand one hundred eighty-six rupees") && !page.contains("minus"),
+        page.contains("<span class=\"pf-value\"><bdi dir=\"ltr\">₹3,186.00</bdi></span>")
+            && page.contains("three thousand one hundred eighty-six rupees")
+            && !page.contains("minus"),
         "{page}"
     );
     assert_eq!(page.matches("Returned widget").count(), 1, "said once: {page}");
     assert!(
-        page.contains("<td class=\"pf-a-end\">1</td>") && page.contains("<td class=\"pf-a-end\"></td>"),
+        page.contains("<td class=\"pf-a-end\"><bdi dir=\"ltr\">1</bdi></td>") && page.contains("<td class=\"pf-a-end\"></td>"),
         "qty without its sign, a zero discount blank: {page}"
     );
     assert!(page.contains("29ABCDE1234F1Z5") && page.contains("Maharashtra"), "the company's own table: {page}");
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    assert!(page.contains(&format!("<span class=\"pf-label\">Printed</span><span class=\"pf-value\">{}", &today[..4])), "the time of printing");
+    assert!(
+        page.contains(&format!("<span class=\"pf-label\">Printed</span><span class=\"pf-value\"><bdi dir=\"ltr\">{}", &today[..4])),
+        "the time of printing"
+    );
     let bad = one_block(json!({"id": "t", "type": "table", "value": "links.customer.nope", "columns": [{"id": "x", "value": "row.x"}]}));
     assert!(fields_of(&k.save_document_template(&admin, &layout_def("bad_t2", bad)).await.unwrap_err()).iter().any(|(f, _)| f == "layout.t"));
     let cat = k.document_fields(&admin, "SalesInvoice").unwrap();
     assert!(cat["company_tables"][0]["path"] == json!("company.acc_registrations") && cat["options"]["format"]["sign"][0] == json!("abs"));
     assert!(cat["print"].as_array().unwrap().iter().any(|p| p["path"] == "print.time"));
+
+    // ── right to left: every value isolated, a phone number and an amount keep their order in an Arabic line ──
+    let mut phone = invoice(1, "شركة التجارة");
+    phone.insert("code".into(), json!("+91 22 4000 1234"));
+    let phid = id_of(&k.insert(&admin, "SalesInvoice", phone).await.unwrap());
+    let rtl = json!({"version": 1, "sections": [{"id": "s", "columns": [{"id": "c", "blocks": [
+        {"id": "p", "type": "field", "value": "doc.code", "label": "هاتف"},
+        {"id": "n", "type": "field", "value": "doc.customer_name", "label": null},
+        {"id": "t", "type": "field", "value": "doc.grand_total", "label": "المجموع"}]}]}]});
+    let ask =
+        PreviewAsk { template: serde_json::to_value(layout_def("rtl", rtl)).unwrap(), record: Some(phid), language: Some("ar".into()), ..Default::default() };
+    let (ar, _) = html_of(k.preview_print(&admin, &ask).await.unwrap());
+    assert!(ar.contains("dir=\"rtl\"") && ar.contains("<bdi dir=\"ltr\">+91 22 4000 1234</bdi>"), "{ar}");
+    assert!(ar.contains("<bdi dir=\"auto\">شركة التجارة</bdi>") && ar.contains("<bdi dir=\"ltr\">٣٬١٨٦٫٠٠"), "{ar}");
 
     // ── a format that prints its own company block only without a letter head; dates by name ──
     let own = json!({"version": 1, "sections": [{"id": "s", "columns": [{"id": "c", "blocks": [
@@ -818,11 +837,14 @@ async fn scenario() {
     let own_def = serde_json::to_value(layout_def("own", own)).unwrap();
     let with = |lh: Option<&str>| PreviewAsk { template: own_def.clone(), record: Some(crid), letterhead: lh.map(str::to_string), ..Default::default() };
     let (worn, _) = html_of(k.preview_print(&admin, &with(None)).await.unwrap());
-    assert!(!worn.contains("OWN COMPANY BLOCK") && worn.contains("<span class=\"pf-value\">Acme India</span>"), "a letter head worn: {worn}");
+    assert!(
+        !worn.contains("OWN COMPANY BLOCK") && worn.contains("<span class=\"pf-value\"><bdi dir=\"ltr\">Acme India</bdi></span>"),
+        "a letter head worn: {worn}"
+    );
     let (bare, _) = html_of(k.preview_print(&admin, &with(Some("none"))).await.unwrap());
     assert!(bare.contains("OWN COMPANY BLOCK") && !bare.contains("Acme India</span>"), "none worn: {bare}");
     assert!(
-        bare.contains(">12 Nov 2026<") && bare.contains(">11/12/2026<") && bare.contains(">November 12, 2026<"),
+        bare.contains("<bdi dir=\"ltr\">12 Nov 2026<") && bare.contains("<bdi dir=\"ltr\">11/12/2026<") && bare.contains("<bdi dir=\"ltr\">November 12, 2026<"),
         "medium by default, short and long when asked: {bare}"
     );
 
@@ -910,7 +932,7 @@ async fn scenario() {
         .await
         .unwrap(),
     );
-    assert!(neg.contains("<span class=\"pf-value\">₹3,186.00</span>"), "{neg}");
+    assert!(neg.contains("<span class=\"pf-value\"><bdi dir=\"ltr\">₹3,186.00</bdi></span>"), "{neg}");
     let bad = one_block(json!({"id": "g", "type": "field", "value": "doc.grand_total", "format": {"sign": {"abs_when": "doc.(("}}}));
     assert!(
         fields_of(&k.save_document_template(&admin, &layout_def("bad_sign", bad)).await.unwrap_err())
