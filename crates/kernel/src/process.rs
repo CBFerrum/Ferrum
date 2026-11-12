@@ -1508,6 +1508,22 @@ impl Kernel {
             .await?)
     }
 
+    /// [`Kernel::set_away`] as `POST /api/away` takes it: `{starts_on, ends_on, substitute (an id or an e-mail), reason,
+    /// user?}` (the caller's own when no `user`).
+    pub async fn set_away_given(&self, ctx: &Ctx, b: &Value) -> Result<()> {
+        let text = |k: &str| b.get(k).and_then(Value::as_str).unwrap_or_default().trim();
+        let day = |k: &str| text(k).parse::<chrono::NaiveDate>().map_err(|_| Error::field(k, "a day, as YYYY-MM-DD"));
+        let user = match b.get("user").and_then(Value::as_str) {
+            Some(u) => Uuid::parse_str(u.trim()).map_err(|_| Error::field("user", "a user id"))?,
+            None => ctx.user,
+        };
+        let substitute = match Uuid::parse_str(text("substitute")) {
+            Ok(u) => u,
+            Err(_) => self.member_by_email(ctx, text("substitute")).await?,
+        };
+        self.set_away(ctx, user, day("starts_on")?, day("ends_on")?, substitute, text("reason")).await
+    }
+
     /// Says who stands in for `user` while they are away, between two days: themselves, or an administrator for
     /// anyone. The substitute is another active member; a task handed to `user` is theirs to decide meanwhile, as
     /// `user` could have, never on their own request (FEO-034).

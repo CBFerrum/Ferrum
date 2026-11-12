@@ -80,7 +80,7 @@ fn generation(b: &Value) -> Option<i64> {
 /// The routes this module answers, or `None` for the caller to go on.
 pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> Option<Result<SiteResponse>> {
     let m = req.method.as_str();
-    let routed = matches!(path.first(), Some(&("solutions" | "runs" | "tasks" | "calendars" | "dependents")));
+    let routed = matches!(path.first(), Some(&("solutions" | "runs" | "tasks" | "calendars" | "dependents" | "away")));
     if !routed {
         return None;
     }
@@ -187,18 +187,9 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
         }
         ("GET", ["tasks"]) => ok(json!(k.my_logic_tasks(ctx).await?)),
         // Who stands in for someone while they are away: themselves, or an administrator for anyone (FEO-034).
+        // Kept for the interface that calls it here; `POST /api/away` beside `GET` and `DELETE` is the same.
         ("POST", ["away"]) => {
-            let b = body(req)?;
-            let day = |key: &str| text(&b, key).trim().parse::<chrono::NaiveDate>().map_err(|_| Error::field(key, "a day, as YYYY-MM-DD"));
-            let user = match b.get("user").and_then(Value::as_str) {
-                Some(u) => Uuid::parse_str(u.trim()).map_err(|_| Error::field("user", "a user id"))?,
-                None => ctx.user,
-            };
-            let substitute = match Uuid::parse_str(text(&b, "substitute").trim()) {
-                Ok(u) => u,
-                Err(_) => k.member_by_email(ctx, text(&b, "substitute")).await?,
-            };
-            k.set_away(ctx, user, day("starts_on")?, day("ends_on")?, substitute, text(&b, "reason")).await?;
+            k.set_away_given(ctx, &body(req)?).await?;
             ok(json!({}))
         }
         ("GET", ["tasks", t]) => ok(k.logic_task(ctx, id(t, "task")?).await?),
