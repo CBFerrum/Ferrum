@@ -718,7 +718,8 @@ impl Kernel {
                     | crate::automation::AutomationAction::ForEach { .. }
                     | crate::automation::AutomationAction::CopyLines { .. }
                     | crate::automation::AutomationAction::Message { .. }
-                    | crate::automation::AutomationAction::Generate { .. } => {
+                    | crate::automation::AutomationAction::Generate { .. }
+                    | crate::automation::AutomationAction::ReportDocuments { .. } => {
                         notes
                             .push(format!("action {}: a find, loop, copy of lines, message or document is not carried over; say what the process does", i + 1));
                         continue;

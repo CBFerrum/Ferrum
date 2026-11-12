@@ -80,6 +80,7 @@ EFFECTS = ("-p", "ferrum-kernel", "--test", "effects_it")
 MESSAGES = ("-p", "ferrum-kernel", "--test", "messages_it")
 MESSAGES_UNIT = ("-p", "ferrum-kernel", "--lib", "messages::tests")
 DOCUMENTS = ("-p", "ferrum-kernel", "--test", "documents_it")
+STUDIO_QUERY_DOCUMENTS = ("-p", "ferrum-studio", "--test", "query_documents_it")
 DOCUMENTS_UNIT = ("-p", "ferrum-kernel", "--lib", "documents::tests")
 DOCFMT_UNIT = ("-p", "ferrum-kernel", "--lib", "docfmt::tests")
 INVOKE = ("-p", "ferrum-kernel", "--test", "invoke_it")
@@ -741,6 +742,9 @@ MUTANTS = [
     # Recipients and loops over a linked record's lines (docs/api.md, Automations).
     ("group-recipients-unbounded", "crates/kernel/src/messages.rs", "        if rows.len() > crate::automation::MAX_ITEMS {", "        if false {", EFFECTS),
     ("group-member-told-twice", "crates/kernel/src/messages.rs", "            && !out.contains(&u)\n", "", EFFECTS),
+    # Documents about a query (docs/api.md, A report as a document; BD-21).
+    ("query-documents-person-unbounded", "crates/kernel/src/documents.rs", "    if person && total > MAX_GROUPS {", "    if false {", STUDIO_QUERY_DOCUMENTS),
+    ("query-documents-cursor-ignored", "crates/kernel/src/documents.rs", "filter(|(id, _)| after.is_none_or(|a| *id > a))", "filter(|_| true)", STUDIO_QUERY_DOCUMENTS),
 
 ]
 

@@ -133,6 +133,20 @@ pub enum AutomationAction {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         values: BTreeMap<String, String>,
     },
+    /// Documents about a query that groups by a link (BD-21): one file per record the report's rows link to, kept on it
+    /// and, with `message`, sent to it attached (each customer their statement). Read and made as the workspace, in
+    /// jobs of [`crate::documents::MAX_GROUPS`] records each, the next queued after the last record done; the first is
+    /// queued in the run's transaction. `params` (the report's `filters`, `from`, `to`) as written; `values` expressions
+    /// the template reads as `values`. Gives `{job}`.
+    ReportDocuments {
+        template: String,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        params: Value,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        values: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<crate::documents::ReportMessage>,
+    },
     /// Another app's step through the capability gate, in the run's transaction (BD-13): `capability` a catalog id,
     /// `input` its inputs as CEL expressions, `key` the effect key as an expression. Without `key`, the run's own:
     /// the same run on the same record version does it once. It gives the receipt's result.
@@ -201,7 +215,7 @@ pub enum AutomationAction {
 }
 
 /// One string or a list of them.
-fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+pub(crate) fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Either {
@@ -256,6 +270,7 @@ fn sources(a: &AutomationAction) -> Vec<&str> {
                 .collect();
         }
         AutomationAction::Generate { name, language, values, .. } => name.iter().chain(language.iter()).chain(values.values()).collect(),
+        AutomationAction::ReportDocuments { values, .. } => values.values().collect(),
         AutomationAction::Invoke { input, key, .. } => input.values().chain(key.iter()).collect(),
     };
     all.into_iter().map(String::as_str).collect()
@@ -322,6 +337,18 @@ pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
         }
         if let Some(c) = channels.iter().find(|c| !ferrum_meta::MESSAGE_CHANNELS.contains(&c.as_str())) {
             return Err(Error::invalid(format!("message: {c} is not one of {}", ferrum_meta::MESSAGE_CHANNELS.join(", "))));
+        }
+    }
+    if let AutomationAction::ReportDocuments { message: Some(m), .. } = a {
+        let fits = |t: &String| {
+            t == "owner"
+                || ["user:", "role:", "field:"].iter().any(|p| t.strip_prefix(p).is_some_and(|r| !r.trim().is_empty()))
+                || t.strip_prefix("links:").is_some_and(|p| crate::messages::lines_path(p).is_some())
+        };
+        if m.to.is_empty() || !m.to.iter().all(fits) {
+            return Err(Error::invalid(
+                "report_documents.message.to is owner, user:<id>, role:<name>, field:<name> or links:<link>.<table>.<field> of each record",
+            ));
         }
     }
     for e in sources(a) {
@@ -618,7 +645,7 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
                 }
                 continue;
             }
-            AutomationAction::Generate { .. } | AutomationAction::Invoke { .. } => continue,
+            AutomationAction::Generate { .. } | AutomationAction::Invoke { .. } | AutomationAction::ReportDocuments { .. } => continue,
         };
         // The platform's own keys are ignored when written, as they always were (a configured action refuses them).
         if let Some(f) = values.keys().find(|f| target.field(f).is_none() && !crate::store::SYSTEM_KEYS.contains(&f.as_str())) {
@@ -1076,6 +1103,14 @@ pub(crate) async fn execute(
             let g = crate::documents::Generate { template, record: id, name: text(name)?, language: text(language)?, replace, values: given };
             let made = Box::pin(crate::documents::generate(k, tx, ctx, &g)).await.map_err(|e| crate::pack::about("generate", e))?;
             return serde_json::to_value(made).map_err(Error::internal);
+        }
+        AutomationAction::ReportDocuments { template, params, values, message } => {
+            let mut given = Map::new();
+            for (n, expr) in values {
+                given.insert(n, eval(&expr)?);
+            }
+            let run = crate::documents::QueryRun { template, params, values: given, language: None };
+            return Ok(serde_json::json!({"job": crate::documents::queue_groups(tx, ctx, run, message).await?}));
         }
         AutomationAction::Notify { to, title, body, message: None } => {
             let title = as_text(eval(&title)?);
