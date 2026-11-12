@@ -12,6 +12,7 @@ use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::{Catalog, MessageDef};
+use ferrum_server::controllers::auth::sign_up_with_code;
 use ferrum_server::controllers::messages::{opt_outs_listed, preview_message};
 use ferrum_server::error::ApiError;
 use serde_json::{Value, json};
@@ -21,6 +22,16 @@ use std::path::Path;
 const PACKAGE: &str = "package: notes\nversion: 0.1.0\ndepends: [core]\nroles:\n  - name: Writer\n    permissions:\n      - {entity: Note, read: true, write: true, create: true}\n\
 messages:\n  - key: notes.hello\n    entity: Note\n    languages:\n      en:\n        email: {subject: 'Hello {{ doc.title }}', body: '<p>{{ doc.title }}</p>'}\n        inapp: {title: 'Hello {{ doc.title }}'}\n";
 const ENTITIES: &str = "name: Note\nlabel: Note\nkind: master\ntitle_field: title\nfields:\n  - {name: title, type: data, required: true}\n";
+
+/// A mailer that sends nowhere, so the server may say it sends mail.
+struct Mailer;
+
+#[async_trait::async_trait]
+impl ferrum_kernel::Mailer for Mailer {
+    async fn send(&self, _to: &str, _subject: &str, _html: &str) -> ferrum_kernel::Result<()> {
+        Ok(())
+    }
+}
 
 async fn answer(e: ApiError) -> (u16, Value) {
     let r = e.into_response();
@@ -60,7 +71,9 @@ async fn scenario() {
         [("package.yaml", PACKAGE), ("entities/note.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let notes = ferrum_meta::catalog::load_package_files(&files).expect("package");
     let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), ..Default::default() };
-    let k = Kernel::boot(db, Catalog::from_packages(vec![core, notes]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
+    let k = Kernel::boot(db, Catalog::from_packages(vec![core, notes]).unwrap(), HookRegistry::default(), settings, Some(std::sync::Arc::new(Mailer)))
+        .await
+        .expect("boot");
     let admin = workspace(&k, "acme").await;
     let writer = k.create_user(&admin, "w@acme.test", "w", None, &["Writer".to_string()], false).await.unwrap();
     let writer = k.load_ctx(admin.tenant, writer, None, "it".into()).await.unwrap();
@@ -126,6 +139,19 @@ async fn scenario() {
     assert!(held.to_string().contains("opted out"), "{held}");
     k.erase_personal_data(&admin, "ann@out.test", "request 7").await.unwrap();
     assert_eq!(list(json!({"q": "ann"})).await.unwrap()["total"], json!(0));
+
+    // Public sign-up to a portal role: off by default (404); on, the same answer for a new address and a member's.
+    let req = |email: &str| -> ferrum_kernel::portal_signup::SignupRequest {
+        serde_json::from_value(json!({"tenant": "acme", "role": "Visitors", "name": "Vi", "email": email})).unwrap()
+    };
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    sqlx::query("insert into role (tenant_id, name) values ($1, 'Visitors')").bind(admin.tenant).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    k.set_role_portal(&admin, "Visitors", true).await.unwrap();
+    assert_eq!(answer(sign_up_with_code(&k, &req("vi@out.test"), "10.1.1.1").await.unwrap_err()).await.0, 404);
+    k.set_portal_signup(&admin, "Visitors", Some(&Default::default())).await.unwrap();
+    assert_eq!(sign_up_with_code(&k, &req("vi@out.test"), "10.1.1.1").await.unwrap(), json!({"sent": true}));
+    assert_eq!(sign_up_with_code(&k, &req("w@acme.test"), "10.1.1.1").await.unwrap(), json!({"sent": true}), "a member's address: the same");
 
     // A pack carries the edited template and the channel's description, never its secret; installed elsewhere, the
     // channel arrives turned off.

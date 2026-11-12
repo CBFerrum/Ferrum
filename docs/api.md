@@ -29,6 +29,7 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `POST /login/second-factor` | `{ticket, code}` (six digits from the authenticator app, or a recovery code) → `{token, …}`. Each app code is accepted once; wrong codes count toward the same lockout as wrong passwords |
 | `POST /code` | `{tenant, email}` → `{sent: true}`: emails a portal person a six-digit code to sign in with ([plan](plan/apps-ui.md) §9.1). The same answer, after the same time (600 ms at least), whether or not the address belongs to anyone, and nothing is sent to members (they sign in with passwords). A code works once, for ten minutes, takes five wrong tries, and only the newest one works; a person is sent at most five an hour. 503 when the server sends no email |
 | `POST /code/sign-in` | `{tenant, email, code, session?}` → as `/login` (with two-factor sign-in on, the second step follows) |
+| `POST /code/sign-up` | public sign-up to a portal role (below, "Public sign-up"): `{tenant, role, name, email, passes?}` → `{"sent": true}`; the code it mails is confirmed at `/code/sign-in` |
 | `GET /me` | → `{tenant, user: {id, email, full_name, is_admin, roles}, default_company, scopes, fiscal_year_start_month, timezone, display_timezone, today, packages, two_factor_setup, accounts}`; `accounts`: in shapes B and C, the accounts host that keeps the person's password, two-factor sign-in and passkeys (their account joined their Ferrum account), else `null` |
 | `GET /2fa` | → `{enabled, pending, recovery_codes_left, required}` |
 | `POST /2fa/begin` | → `{secret, uri (otpauth://), qr_svg}`: a new secret for an authenticator app (TOTP, SHA-1, 6 digits, 30 s); it takes effect once confirmed |
@@ -291,6 +292,20 @@ entity, which has no definition to replace, it answers `{entity, package, approv
 says to whoever may submit or cancel whether each asks for approval first: `approvals: {"submit": {"asks": true,
 "steps": ["Manager"]}, "cancel": {"asks": false, "steps": []}}` (the steps' labels, no approver named; an action the
 caller may not take is left out).
+
+## Public sign-up
+
+Off unless an administrator turns it on for a portal role: `PUT /api/admin/roles/{role}/signup {domains?: [...], passes?:
+[...]}` (`null` turns it off; refused for a role that is not a portal role). Then someone with no account posts `POST
+/api/auth/code/sign-up {tenant, role, name, email, passes?}` and is mailed a code; the code sign-in (`POST
+/api/auth/code/sign-in`) confirms it, and only then are they a portal person of the workspace holding the role, signed
+in. The answer is `{"sent": true}` whether or not the address is someone's: a portal person is sent the usual sign-in
+code instead, anyone else nothing. `domains` (when given) are the e-mail domains it is for; `passes` the names of what a
+sign-up page may pass on (a course, say), each a word, a number or yes/no of at most 200 characters, anything else
+refused. On confirmation `ferrum.portal.signed_up` is raised with `{user, email, name, role, passed}` (an app enrols
+them from it) and the audit trail has `User` `portal_signup`. Requests are limited to 3 an hour per address and 20 an
+hour per network address per workspace (429), counted in the database so the limits hold across replicas; requests
+are kept a day. A code works once, for 10 minutes, five tries; a code sent before sign-up was turned off makes nobody.
 
 ## Collaboration (any record the caller can read)
 
