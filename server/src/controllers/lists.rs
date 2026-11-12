@@ -191,8 +191,10 @@ fn sitemap_of(workspace: &str, addresses: &[(String, String)], origin: &str) -> 
     format!(r#"<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>"#)
 }
 
-/// `GET /api/public/{workspace}/lists/{name}` (or `{name}.csv`).
-pub async fn answer(kernel: &Kernel, limiter: &RateLimiter, headers: &HeaderMap, workspace: &str, name: &str) -> Response {
+/// `GET /api/public/{workspace}/lists/{name}` (or `{name}.csv`), searched and paged as the list's page is (`?q=`,
+/// `?page=`, a list with a slug): the JSON says which page it is (`page`) and what was searched (`q`); a page past the
+/// last is a 404, as on the page.
+pub async fn answer(kernel: &Kernel, limiter: &RateLimiter, headers: &HeaderMap, workspace: &str, name: &str, query: &[(String, String)]) -> Response {
     if let Err(e) = limiter.check(&format!("{}|{}", client_ip(headers), workspace.to_lowercase())).await {
         return crate::error::ApiError(e).into_response();
     }
@@ -200,7 +202,11 @@ pub async fn answer(kernel: &Kernel, limiter: &RateLimiter, headers: &HeaderMap,
         Some(n) => (n, true),
         None => (name, false),
     };
-    let found = match kernel.published_list(workspace, name).await {
+    let asked = |k: &str| query.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    let q = asked("q").map(str::trim).filter(|q| !q.is_empty()).map(str::to_string);
+    let page = asked("page").and_then(|p| p.parse::<u32>().ok()).unwrap_or(1);
+    let find = Find { q: q.clone(), page, address: None };
+    let found = match kernel.published_find(workspace, name, &find).await {
         Ok(f) => f,
         Err(e) => return crate::error::ApiError(e).into_response(),
     };
@@ -216,7 +222,12 @@ pub async fn answer(kernel: &Kernel, limiter: &RateLimiter, headers: &HeaderMap,
             r
         }
         Some(p) if !csv => {
-            let body = p.json().to_string();
+            let mut json = p.json();
+            json["page"] = serde_json::json!(p.page);
+            if let Some(q) = &q {
+                json["q"] = serde_json::json!(q);
+            }
+            let body = json.to_string();
             let mut r = cached(headers, body.clone().into_response(), body.as_bytes());
             r.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
             r
@@ -307,9 +318,14 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
-async fn public(State(app): State<AppContext>, Path((workspace, name)): Path<(String, String)>, headers: HeaderMap) -> Response {
+async fn public(
+    State(app): State<AppContext>,
+    Path((workspace, name)): Path<(String, String)>,
+    axum::extract::Query(query): axum::extract::Query<Vec<(String, String)>>,
+    headers: HeaderMap,
+) -> Response {
     match app_state(&app) {
-        Ok(st) => answer(&st.kernel, &st.public_limiter, &headers, &workspace, &name).await,
+        Ok(st) => answer(&st.kernel, &st.public_limiter, &headers, &workspace, &name, &query).await,
         Err(e) => e.into_response(),
     }
 }

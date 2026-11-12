@@ -153,4 +153,30 @@ async fn scenario() {
     assert!(matches!(k.rerun_backfill(&admin, "notes", "slugs").await, Ok(())));
     k.maintenance().await.unwrap();
     assert!(matches!(k.rerun_backfill(&admin, "notes", "slugs").await, Err(Error::Conflict(_))), "not while it runs");
+
+    // A backfill whose job failed: run again by an administrator, and queued again once by a release of its package.
+    sql("update job set run_at = now() where status = 'queued'").await;
+    k.run_jobs_once(4).await.unwrap();
+    let fail_last = "update job set status = 'failed', last_error = 'boom', finished_at = now() \
+        where id = (select id from job where kind = 'platform.backfill' and tenant_id = (select id from tenant where slug = 'acme') order by created_at desc, id desc limit 1); \
+        update backfill_run set finished_at = null where name = 'slugs'";
+    let queued = "select count(*) from job where kind = 'platform.backfill' and status = 'queued' and tenant_id = (select id from tenant where slug = 'acme')";
+    sql(fail_last).await;
+    assert_eq!(k.backfills(&admin).await.unwrap()[0]["state"], json!("failed"));
+    k.maintenance().await.unwrap();
+    assert_eq!(count(queued).await, 0, "not by itself while its package is as it was");
+    k.rerun_backfill(&admin, "notes", "slugs").await.expect("a failed one runs again when asked");
+    assert_eq!(count(queued).await, 1);
+    k.run_jobs_once(4).await.unwrap();
+    assert_eq!(k.backfills(&admin).await.unwrap()[0]["state"], json!("done"));
+    sql(fail_last).await;
+    k.maintenance().await.unwrap();
+    assert_eq!(count(queued).await, 0);
+    sql("update installed_package set version = '0.1.1' where name = 'notes' and tenant_id = (select id from tenant where slug = 'acme')").await;
+    k.maintenance().await.unwrap();
+    assert_eq!(count(queued).await, 1, "a new release of its package queues it again");
+    k.run_jobs_once(4).await.unwrap();
+    sql(fail_last).await;
+    k.maintenance().await.unwrap();
+    assert_eq!(count(queued).await, 0, "once: the same release failing again waits for an administrator");
 }

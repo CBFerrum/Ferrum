@@ -291,8 +291,8 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
     let sha = hex::encode(Sha256::digest(&data));
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
     sqlx::query(
-        "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by, is_public) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by, is_public, shared) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(ctx.tenant)
     .bind(id)
@@ -305,6 +305,8 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
     .bind(&sha)
     .bind(ctx.user)
     .bind(public)
+    // What an outside person uploads is shared by nature (BD-22), as the kernel's own uploads keep it.
+    .bind(ctx.outside)
     .execute(&mut *tx)
     .await
     .map_err(Error::from)?;
