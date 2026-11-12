@@ -144,6 +144,9 @@ pub struct DocumentDef {
     /// A query's rows in place of one record: `entity` is then the entity the query reads, and bodies read `rows`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<DocumentQuery>,
+    /// `template` or `layout`, derived and said in every answer (BD-22): ignored when a template is read back.
+    #[serde(default, skip_serializing)]
+    pub kind: Option<String>,
 }
 
 fn default_letterhead() -> String {
@@ -180,6 +183,7 @@ impl Default for DocumentDef {
             copies: vec![],
             based_on: None,
             query: None,
+            kind: None,
         }
     }
 }

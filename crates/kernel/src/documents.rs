@@ -808,6 +808,26 @@ async fn letter_head(k: &Kernel, tx: &mut Tx, ctx: &Ctx, id: Uuid) -> Result<Opt
     }))
 }
 
+/// A letter head as its form holds it before it is saved, checked as a save checks it.
+fn draft_letter_head(ctx: &Ctx, d: &Value) -> Result<LetterHead> {
+    let doc = d.as_object().cloned().ok_or_else(|| Error::field("letterhead", "a letter head is {header, footer, …}"))?;
+    let problems = letter_head_problems(&ctx.schema, &doc);
+    if !problems.is_empty() {
+        return Err(Error::Validation(problems));
+    }
+    let part = |f: &str| Layout::from_letterhead(doc.get(f).unwrap_or(&Value::Null)).ok().flatten();
+    let uuid = |f: &str| doc.get(f).and_then(Value::as_str).and_then(|v| v.parse::<Uuid>().ok());
+    let mm = |f: &str, d: f64| doc.get(f).and_then(Value::as_f64).unwrap_or(d).clamp(0.0, 120.0);
+    Ok(LetterHead {
+        id: uuid("id").unwrap_or_default(),
+        company: uuid("company"),
+        header: part("header"),
+        footer: part("footer"),
+        header_mm: mm("header_height_mm", 30.0),
+        footer_mm: mm("footer_height_mm", 15.0),
+    })
+}
+
 /// What a LetterHead record holds wrong, as field errors on `header` and `footer` (`<block id>: …`).
 pub(crate) fn letter_head_problems(schema: &ferrum_meta::Schema, doc: &crate::Doc) -> Vec<FieldError> {
     let mut out = Vec::new();
@@ -949,6 +969,9 @@ pub struct PrintAsk {
     /// One copy per label (at most 5); none: one unlabelled copy.
     pub copies: Vec<String>,
     pub pdf: bool,
+    /// A letter head not saved yet (`{id?, company?, header, footer, header_height_mm?, footer_height_mm?}`), worn in
+    /// place of any other: a designer's preview of their edits.
+    pub letterhead_draft: Option<Value>,
 }
 
 /// How a page renders (beyond [`PrintAsk`]).
@@ -1077,9 +1100,10 @@ async fn render_page(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, id: 
         Some(explicit) => explicit,
         None => company.get("letter_head").and_then(Value::as_str).and_then(|v| v.parse().ok()).or(settings.letter_head),
     };
-    let lh = match chosen {
-        Some(l) => letter_head(k, tx, ctx, l).await?,
-        None => None,
+    let lh = match (&ask.letterhead_draft, chosen) {
+        (Some(d), _) => Some(draft_letter_head(ctx, d)?),
+        (None, Some(l)) => letter_head(k, tx, ctx, l).await?,
+        (None, None) => None,
     };
     if company.is_null()
         && let Some(c) = lh.as_ref().and_then(|l| l.company)
@@ -1668,6 +1692,8 @@ pub struct PreviewAsk {
     pub sample: bool,
     pub language: Option<String>,
     pub letterhead: Option<String>,
+    /// A letter head not saved yet, worn in place of `letterhead`.
+    pub letterhead_draft: Option<Value>,
     pub copies: Vec<String>,
     pub design: bool,
     pub pdf: bool,
@@ -1883,7 +1909,14 @@ impl Kernel {
     pub async fn preview_print(&self, ctx: &Ctx, ask: &PreviewAsk) -> Result<Preview> {
         admin_only(ctx)?;
         let started = std::time::Instant::now();
-        let print = PrintAsk { letterhead: ask.letterhead.clone(), language: ask.language.clone(), copies: ask.copies.clone(), pdf: ask.pdf, template: None };
+        let print = PrintAsk {
+            letterhead: ask.letterhead.clone(),
+            letterhead_draft: ask.letterhead_draft.clone(),
+            language: ask.language.clone(),
+            copies: ask.copies.clone(),
+            pdf: ask.pdf,
+            template: None,
+        };
         check_ask(&print)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let def = match &ask.template {
@@ -2048,7 +2081,8 @@ impl Kernel {
                        "default_for_record": record.is_some() && record_head.as_deref() == Some(id)})
             })
             .collect();
-        Ok(json!({"templates": templates, "standard": {"label": "Standard"}, "default": default, "letterheads": letterheads,
+        Ok(json!({"templates": templates,
+                  "standard": {"label": "Standard", "page": {"size": settings.page.size, "orientation": settings.page.orientation}}, "default": default, "letterheads": letterheads,
                   "languages": words, "copies": settings.copies, "may_print": may_print, "refusal": refusal}))
     }
 
@@ -2250,12 +2284,9 @@ mod tests {
     fn a_letter_head_and_watermark_go_into_a_templates_page() {
         let page = wear("<html><head></head><BODY class=x><p>Hi</p></body></html>", Some("<b>Acme</b>"), Some("f"), Some("Draft"));
         let at = |s: &str| page.find(s).unwrap();
-        assert!(
-            at("<BODY class=x>") < at("pf-watermark")
-                && at("pf-letterhead\">") < at("<p>Hi")
-                && at("<p>Hi") < at("pf-letterhead-foot")
-                && at("pf-letterhead-foot") < at("</body>")
-        );
+        let (body, mark, head, hi, foot) =
+            (at("<BODY class=x>"), at("class=\"pf-watermark\""), at("class=\"pf-letterhead\""), at("<p>Hi"), at("class=\"pf-letterhead-foot\""));
+        assert!(body < mark && mark < head && head < hi && hi < foot && foot < at("</body>"), "{page}");
         assert_eq!(wear("<p>x</p>", None, None, None), "<p>x</p>", "nothing to wear: the page as it was");
     }
 

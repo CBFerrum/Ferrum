@@ -753,6 +753,14 @@ async fn scenario() {
     let (printed_sample, _) =
         html_of(k.preview_print(&admin, &PreviewAsk { template: json!("shop.invoice"), sample: true, ..Default::default() }).await.unwrap());
     assert!(!printed_sample.contains("data-b=") && !printed_sample.contains("data-slot="), "no marks outside the canvas");
+    // A letter head not saved yet, previewed as its form holds it; checked as a save checks it.
+    let draft = json!({"header": {"sections": [{"id": "s", "columns": [{"id": "c", "blocks": [{"id": "h", "type": "heading", "text": "Draft head {company.company_name}"}]}]}]}});
+    let ask = PreviewAsk { template: json!("shop.invoice"), sample: true, letterhead_draft: Some(draft), ..Default::default() };
+    let (with_draft, _) = html_of(k.preview_print(&admin, &ask).await.unwrap());
+    assert!(with_draft.contains("Draft head"), "{with_draft}");
+    let bad = json!({"header": {"sections": [{"id": "s", "columns": [{"id": "c", "blocks": [{"id": "t", "type": "field", "value": "doc.number"}]}]}]}});
+    let ask = PreviewAsk { template: json!("shop.invoice"), sample: true, letterhead_draft: Some(bad), ..Default::default() };
+    assert!(matches!(k.preview_print(&admin, &ask).await, Err(Error::Validation(_))));
     let cat = k.document_fields(&admin, "SalesInvoice").unwrap();
     let paths: Vec<&str> = cat["fields"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
     assert!(paths.contains(&"doc.customer") && !paths.contains(&"doc.pin"), "no secret in the catalogue");
@@ -761,6 +769,7 @@ async fn scenario() {
     assert!(matches!(k.document_fields(&clerk, "SalesInvoice"), Err(Error::Forbidden(_))));
     let choices = k.print_choices(&clerk, "SalesInvoice", Some(fresh)).await.unwrap();
     assert_eq!(choices["letterheads"][0]["default_for_record"], json!(true));
+    assert_eq!(choices["standard"]["page"], json!({"size": "A4", "orientation": "portrait"}), "the print format's paper: Print Settings'");
     assert_eq!(choices["templates"].as_array().unwrap().iter().find(|t| t["key"] == "shop.invoice").unwrap()["copies"], json!(["Original", "Duplicate"]));
 
     // ── T12: what a render costs: the worked example over a 50-line invoice ──
@@ -805,6 +814,29 @@ async fn scenario() {
                     std::fs::write(dir.join(format!("invoice-{name}-{part}.html")), html).unwrap();
                 }
             }
+        }
+        // Page breaks, read back from the real PDF (pdftotext): only what must stay together moves. A 6-line invoice is
+        // one A4 page, its totals and signature with its lines; a 12-line one breaks after its last line, the totals
+        // block (about 42 mm) not fitting in what is left, and nothing of the lines moves with it.
+        if std::process::Command::new("pdftotext").arg("-v").output().is_ok() {
+            let mut a4 = copy.clone();
+            a4.page = Some(serde_json::from_value(json!({"size": "A4"})).unwrap());
+            k.save_document_template(&admin, &a4).await.unwrap();
+            let pages = |pdf: &[u8]| -> Vec<String> {
+                let file = dir.join("break-check.pdf");
+                std::fs::write(&file, pdf).unwrap();
+                let out = std::process::Command::new("pdftotext").arg(&file).arg("-").output().unwrap();
+                let _ = std::fs::remove_file(&file);
+                String::from_utf8_lossy(&out.stdout).split('\u{c}').map(str::to_string).filter(|p| !p.trim().is_empty()).collect()
+            };
+            let ask = PrintAsk { template: Some("my_invoice".into()), pdf: true, ..Default::default() };
+            let six = id_of(&k.insert(&admin, "SalesInvoice", invoice(6, "Six Lines")).await.unwrap());
+            let p = pages(&k.print_record(&clerk, "SalesInvoice", six, &ask).await.unwrap().bytes);
+            assert_eq!(p.len(), 1, "six lines, totals, terms and signature on one page: {p:?}");
+            let p = pages(&k.print_record(&clerk, "SalesInvoice", ten, &ask).await.unwrap().bytes);
+            assert_eq!(p.len(), 2, "{p:?}");
+            assert!(p[0].contains("Widget 12") && !p[0].contains("Subtotal"), "the lines fill page 1: {}", p[0]);
+            assert!(p[1].contains("Subtotal") && p[1].contains("For Acme"), "totals and signature together on page 2: {}", p[1]);
         }
         // The draft, its watermark, two copies, A4.
         let draft = id_of(&k.insert(&admin, "SalesInvoice", invoice(3, "Draft Customer")).await.unwrap());
