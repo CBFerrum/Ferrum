@@ -742,6 +742,8 @@ MUTANTS = [
     # Recipients and loops over a linked record's lines (docs/api.md, Automations).
     ("group-recipients-unbounded", "crates/kernel/src/messages.rs", "        if rows.len() > crate::automation::MAX_ITEMS {", "        if false {", EFFECTS),
     ("group-member-told-twice", "crates/kernel/src/messages.rs", "            && !out.contains(&u)\n", "", EFFECTS),
+    # A pack's own roles there before what names them (a transition's approval).
+    ("pack-roles-after-customizations", "crates/kernel/src/pack.rs", "for role in pack.roles.iter().filter(|r| !here.contains(&r.name)) {", "for role in pack.roles.iter().filter(|_| false) {", PACKS),
     # Documents about a query (docs/api.md, A report as a document; BD-21).
     ("query-documents-person-unbounded", "crates/kernel/src/documents.rs", "    if person && total > MAX_GROUPS {", "    if false {", STUDIO_QUERY_DOCUMENTS),
     ("query-documents-cursor-ignored", "crates/kernel/src/documents.rs", "filter(|(id, _)| after.is_none_or(|a| *id > a))", "filter(|_| true)", STUDIO_QUERY_DOCUMENTS),
