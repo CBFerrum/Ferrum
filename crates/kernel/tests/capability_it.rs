@@ -171,6 +171,7 @@ async fn scenario() {
     assert_eq!(k.capability(&admin, "stockcap.hold.place").unwrap().digest, place.digest, "one capability, one digest, whoever looks");
     let events: Vec<String> = k.events(&clerk).iter().map(|e| e["id"].as_str().unwrap().to_string()).collect();
     assert!(events.contains(&"stockcap.hold.submitted".to_string()) && events.contains(&"stockcap.hold.transitioned".to_string()), "{events:?}");
+    assert!(events.contains(&"stockcap.hold.opened".to_string()), "a link's first use is an event: {events:?}");
 
     // A change needs a key; the same key and input is one change, however often it is asked for.
     let create =

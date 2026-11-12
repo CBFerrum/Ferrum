@@ -1120,3 +1120,161 @@ Decided 14 November 2026 (walk of 12 November, `RESULTS-APPS-3.md` F1 and F3 to 
 * **An expected `503`** is logged once, at WARN where it is answered; the request log's ERROR is for other failures.
 
 Tests: `backfill_it`, `published_lists_it`, `outside_shared_it`, `print_it`, `request_log`'s unit test.
+
+## BD-40. A rule that does not show some fields
+
+Decided 13 November 2026. Field groups hide a field from every role not naming the group, so hiding one field from one
+portal role meant re-granting every other role, and an app could not group a field of an entity it does not own
+(Projects: a customer's portal person read a shared project's internal `notes` and its team).
+
+* **`hide: [field, ...]` on a permission rule** (`PermissionDef.hide`): fields and child tables of the entity the rule
+  neither shows nor accepts. Checked when saved: fields of the entity only; never the title field, a field of a unique
+  key, a field of the rule's own `where` or the first step of its `via` (what names, keys or reaches the record); never
+  on a rule for every entity.
+* **Per record on what reads one record at a time**: a field is left out of a record read (`get`, a list's rows,
+  `fields=`, record pages, prints and templates rendered as the person) when every rule of theirs reaching that record
+  hides it; a rule reaching the same record that shows it brings it back (`ctx::record_hidden`).
+* **Per entity on what reads a set**: a field some rule hides and no rule reading every record shows is unreadable for
+  filters and sorting (refused, as a field group's is, so matching cannot leak it), search, reports, exports, history
+  diffs and the field's description. Why not per record there: a filter or a sort over a set would tell the hidden
+  values of the records reached only through the hiding rule. A rule reaching every record (staff) that shows the field
+  keeps it everywhere.
+* **Never written** by whoever holds a rule hiding it (unless a rule reaching every record shows it): a write naming it
+  is refused, whatever its value (an "unchanged" pass would tell the value).
+* **Packages declare it** in their roles. **A package's rule rows follow its releases**: a row its package wrote is
+  marked `packaged` and rewritten by each install; an administrator's edit through the role editor makes the row theirs
+  (`packaged = false`), never rewritten. Rows written before this release (whose they are is unknown) take only `hide`
+  from the package, while theirs is empty, since nobody could have set it. Before, package rule rows were inserted
+  `on conflict do nothing`: a corrected rule never reached an earlier workspace.
+
+Tests (`rule_hide_it`): refused when saved (five ways); a portal person's three projects (hidden only through the
+client's rule, shown through the sponsor's, shown on the one both reach) through read, list, `fields=`, filter, sort,
+search, a print and writes; staff hiding it everywhere, history included, and staff also holding a showing rule; a
+package's rule following a release, a row from before taking `hide`, an administrator's edit kept.
+
+**Rules out**: a hidden field's value reaching anyone through a filter, a sort or a search; a package release
+overwriting an administrator's rule. **Not yet**: hiding a column of a child table only; per-record answers for sets.
+
+## BD-41. Service targets by record
+
+Decided 13 November 2026. Extends BD-04. A target named one calendar and started at the save that started it: Helpdesk
+dropped per-agreement hours and could not backdate an imported ticket; ITSM the same.
+
+* **`calendar_field`**: where each record names its calendar, a data or select field of the record, or a link and such
+  a field of the record it links to (`agreement.calendar`, read as the workspace, as `links` is). Empty there, the
+  target's `calendar`; neither, plain time. A name the workspace has no calendar for refuses the save, as a missing
+  calendar did.
+* **`start_field`**: a date-time field the clock starts from, so the due moment is the open time after it; empty or
+  still to come, the clock starts at the save, as before. A start already past its due moment is due at once and the
+  sweep marks the breach once.
+* **Worked out again once** (`ferrum_logic::target::reanchor`): each round keeps the calendar and start it was worked
+  out from (`record_target.calendar`, `start_from`). When either changes on an open round, the open time already
+  counted stays as the calendar it ran under counted it, what is left counts on the new calendar from now, and a start
+  moved adds or takes away the open time between the two moments; pauses and a breach already recorded stay. Why not
+  recount everything on the new calendar: a round keeps no list of its pauses, and an agreement changed mid-flight does
+  not rewrite the hours already worked. Rounds from before this release record their anchors at their next save.
+
+Tests (`targets_it` `by_record`, `target` unit tests): a start on a Friday in summer time due on the Monday after the
+clocks went back; no agreement falls back to the target's calendar; a start still to come; a calendar swapped two hours
+in, then a save that changes nothing; a start corrected; a start long past, breached once and still breached after a
+swap.
+
+## BD-42. Public pages count
+
+Decided 13 November 2026. Extends BD-25. A help centre's article page could not count a view or a "was this helpful"
+vote from a visitor who is not signed in.
+
+* **Declared on the published list**: `count_views: <field>` and `votes: {up: <field>, down: <field>}`, whole-number
+  fields of the record (not worked out, in no field group), on a list with a slug. The platform keeps them: what a
+  person, an import or an API call sends for them is ignored, as for a total.
+* **A view is the page's own POST-back**: the record page carries one script, allowed by its digest in the page's
+  policy, posting `do=view` to the page's address; a fetcher or a scanner reading the page counts nothing. A vote is a
+  form posting `do=up` or `do=down`. Only from the page's own origin (`Sec-Fetch-Site`, else `Origin`).
+* **Once per visitor**: a visitor is a first-party cookie holding a random value (`ferrum_visitor`, set at their first
+  post). Kept is only an HMAC under the workspace's own random key: with the day for a view (once a visitor a record a
+  day; one day's digest cannot be matched to another's; kept two days), with the record for a vote (once a visitor a
+  record; a different answer moves the vote).
+* **An address's budget**: 60 counted posts an address an hour a workspace (`MAX_COUNTS_PER_HOUR`), the address kept as
+  a keyed digest with its hour for two hours; past it, `429` and nothing counted; the public limiter as every public
+  request.
+* **No new version, no audit entry, no `updated` event**: the counter is moved by one statement, never below 0.
+
+Tests (`published_lists_it` `counts`, `published` unit tests): the page's beacon and its policy; two GETs count nothing;
+a visitor counted once, a second visitor counted, another site and an unknown value refused; votes once and changeable;
+version and history unchanged; a counter sent by a person ignored; the next day counted again under an unlinkable
+digest, no cookie value kept; a flood from one address counted to the budget; an unpublished record not counted.
+
+## BD-43. Calls apps were missing
+
+Decided 13 November 2026. Helpdesk wrote `record_tag`, `logic_calendar` and `file_object` itself.
+
+* `Kernel::tag_tx(ctx, tx, entity, id, add, remove)`: as the tags route asks (a member who may change the entity and
+  reads the record; the system), tags normalised the same way, at most 20, once each whatever their case.
+* `Kernel::ensure_calendar_tx(ctx, tx, calendar)`: makes a working calendar of that name when the workspace has none,
+  through the calendars route's checks; one there is left as it is (an administrator's edit stands). Administrators and
+  the system.
+* `Kernel::attach_files_tx(ctx, tx, ids, entity, record)`: the files going out with or kept on a record (a reply's
+  attachments): each already on that record, or a loose upload of the caller's (the system's: any loose one), the loose
+  ones attached; asked as attaching asks (whoever may change the record; an outside person whose rule lets them add,
+  their uploads shared). A file not there, not theirs or another record's refuses the call, nothing attached.
+  (`may_attach_tx` is the check in the caller's transaction.)
+* The capability catalog lists `opened` among each entity's event kinds (BD-38).
+
+Tests (`app_calls_it`, `capability_it`).
+
+## BD-44. Secrets in every form, files and own words on a link's page
+
+Decided 13 November 2026. Commerce 0.9.0 hit each.
+
+* **A secret value is masked in every form it can be printed in**, where rendered text is stored or logged (the
+  outbox's mail, a send's log, a channel's request log): as it is, HTML-escaped, percent-encoded, as JSON, and drawn by
+  `qr` and `barcode` (their defaults) (`messages::encodings`), longest first. Before, only the plain form was masked: a
+  token in a link's address or an attribute stayed readable. What is sealed is blanked once handed over, as before.
+* **A link's action may take files**: a parameter `{"type": "files", "max_files": 1-10, "max_bytes": ≤ 10 MB,
+  "accept": ["image/*", "application/pdf"]}` (one file of 10 MB without them). The page's form posts them as
+  multipart (25 MB a post at most); each is held to its parameter, scanned and stored as an outside person's upload
+  (shared), attached to the record in the use's transaction and given to the action as its ids; a refused action or a
+  link not working discards them (rows and bytes). Files are never named by id by a visitor.
+* **An action's own refusal words**: `condition_message` on an action, shown when its `condition` does not hold
+  (to a link's visitor on the page, and to anyone through the API), rendered as a rule's message is (BD-16) over the
+  record as the presser may read it.
+
+Tests (`messages` unit test: a link carrying a secret token in an address, an attribute, text, JSON, a QR code and a
+barcode; `action_links_it` `uploads`: none, too many, too large, the wrong type and a field that takes no files
+refused with nothing stored; two attached and shared; after acceptance the action's own words and the upload gone).
+
+**Not yet**: a barcode drawn with other options than its defaults is not among the masked forms (print a secret with
+`barcode(v)` alone); a link-level refusal message (the action's serves every link to it).
+
+## BD-45. Quorums from the record, absent parameters, targets on every write, rendering for another transport, and the App API 0.3.4
+
+Decided 13 November 2026. ITSM 0.4.0 and CRM 0.13.0 hit each.
+
+* **An approval step's `need` may be an expression** over `doc` and `settings` (`"need": "doc.quorum"`), compiled
+  when saved, worked out when the request is made and kept on it (a later change of the record does not move it),
+  clamped to at least one and to the approvers found when the step opens. A reset that voids the decisions works it
+  out again. A number keeps refusing a step with fewer approvers than it asks; an expression asks for all there are.
+* **An optional action parameter not given stays absent** in the action's effects and `refuse_if`: ask with
+  `has(params.x)`, as packages already do (`when: "has(params.note)"`). Filling absent ones with null was tried and
+  taken back the same day: it made `has(params.x)` true for every declared parameter, so an effect guarded by it
+  would have cleared the field it sets. `coalesce(has(params.x) ? params.x : null, ...)` gives a default.
+* **Service targets follow every engine write**: a save (create, update, submit, cancel, a transition, an action's
+  effects, an import), the breach sweep, and now `set_values_tx`, `set_child_values_tx` and `set_child_rows_tx`, which
+  work the record's targets out again and write their two fields as they write (no version, no event). Not covered:
+  an app's own SQL on an entity's table, and the published counters (BD-42), which no target should watch.
+* **Rendering for another transport**: `messages::render_for(k, tx, ctx, &Message, channel)` renders one recipient's
+  message exactly as `send` would (template, language, record, settings, values) and sends and records nothing: its
+  `subject` and `html`, its `text`, and for a promotional message the opt-out address and the `List-Unsubscribe` /
+  `List-Unsubscribe-Post` values; refused (`403`, `opted out`) for an address that opted out, an erased person's
+  digest included, or whose processing is restricted. `Kernel::opted_out(tx, tenant, channel, address)` asks the same.
+* **The App API is 0.3.4** (`ferrum_apps::PLATFORM_VERSION`); an app using any of the following says
+  `platform: ">=0.3.4, <0.4"`. 0.3.3 (print formats) carried the print fields; 0.3.4 carries: from PR 214,
+  `Kernel::revoke_action_links`, the `link` effect's `until` and `columns`, the `opened` event and `on: {action}`
+  approvals; from this slice, a rule's `hide`, a target's `calendar_field` and `start_field`, a list's `count_views`
+  and `votes`, `tag_tx`, `ensure_calendar_tx`, `attach_files_tx`, `use_link_with` and `files` parameters,
+  `condition_message`, an expression `need`, `render_for` and `opted_out`.
+
+Tests: `approvals_it` (a quorum of two kept when the record changes to one, nine clamped to three, none to one, a
+`need` that does not compile refused), `actions_it` `absent_params`, `targets_it` `engine_writes` (a paused ticket
+resumed by `set_values_tx`), `messages_it` (an erased opt-out refuses the render on both channels; a promotional
+render's link and headers; none on an operational one).

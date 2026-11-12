@@ -277,6 +277,58 @@ impl Kernel {
         Ok(())
     }
 
+    /// The files `ids` going out with, or kept on, record `record` of `entity` (a reply's attachments), in the caller's
+    /// transaction (BD-43): each must already be on that record, or be a loose upload of the caller's (the system's:
+    /// any loose one), and the loose ones are attached to it. Asked as attaching asks (whoever may change the record;
+    /// an outside person whose portal rule lets them add to its conversation). Each file's `{id, file_name,
+    /// content_type, size}`, in the order asked; a file that is not there, not theirs or another record's is refused,
+    /// and nothing is attached.
+    pub async fn attach_files_tx(&self, ctx: &Ctx, tx: &mut Tx, ids: &[Uuid], entity: &str, record: Uuid) -> Result<Vec<Value>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        self.may_attach_tx(ctx, tx, entity, record).await?;
+        type Stored = (Uuid, String, String, i64, Option<String>, Option<Uuid>, Option<Uuid>);
+        let rows: Vec<Stored> = sqlx::query_as(
+            "select id, file_name, content_type, size_bytes, entity, record_id, created_by from file_object where tenant_id = $1 and id = any($2) for update",
+        )
+        .bind(ctx.tenant)
+        .bind(ids)
+        .fetch_all(&mut **tx)
+        .await?;
+        let mut out = Vec::new();
+        let mut loose = Vec::new();
+        for wanted in ids {
+            let usable = rows.iter().find(|r| {
+                r.0 == *wanted
+                    && match (&r.4, r.5) {
+                        (Some(e), Some(rec)) => e == entity && rec == record,
+                        (None, None) => ctx.is_system || r.6 == Some(ctx.user),
+                        _ => false,
+                    }
+            });
+            let Some((id, name, ctype, size, on, ..)) = usable else {
+                return Err(Error::field("files", format!("file {wanted} is not there, is not yours, or belongs to another record")));
+            };
+            if on.is_none() && !loose.contains(id) {
+                loose.push(*id);
+            }
+            out.push(serde_json::json!({"id": id, "file_name": name, "content_type": ctype, "size": size}));
+        }
+        let outside = ctx.outside;
+        sqlx::query(
+            "update file_object set entity = $3, record_id = $4, shared = shared or $5 where tenant_id = $1 and id = any($2) and entity is null and record_id is null",
+        )
+        .bind(ctx.tenant)
+        .bind(&loose)
+        .bind(entity)
+        .bind(record)
+        .bind(outside)
+        .execute(&mut **tx)
+        .await?;
+        Ok(out)
+    }
+
     /// Copies a file the caller can read onto another record (a mail attachment kept on the record
     /// it concerns, a signed PDF filed with its contract). A new object, so deleting either copy
     /// never affects the other.

@@ -81,27 +81,47 @@ impl Kernel {
         if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
-        Ok(self.mask(ctx, &ent, doc))
+        self.mask_record(ctx, tx, &ent, doc).await
+    }
+
+    /// [`Kernel::mask`] for one record the caller reached: a field a rule hides (BD-40) is left out unless another
+    /// rule reaching this record shows it.
+    pub async fn mask_record(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: Doc) -> Result<Doc> {
+        if ctx.perms.hidden(&ent.def.name).is_none() {
+            return Ok(self.mask(ctx, ent, doc));
+        }
+        let hidden = crate::ctx::record_hidden(ctx, tx, ent, &doc).await?;
+        let mut perms = (*ctx.perms).clone();
+        if let Some(e) = perms.entities.get_mut(&ent.def.name) {
+            e.hidden = hidden;
+        }
+        let ctx = Ctx { perms: std::sync::Arc::new(perms), ..ctx.clone() };
+        Ok(self.mask(&ctx, ent, doc))
     }
 
     /// Whether `ctx` may tie a file to record `id` of `entity` (`POST /api/files`, an upload's start): only whoever
     /// may change it, as its write scope admits it; reading it is not enough. Not found when they cannot read it.
     pub async fn may_attach(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<()> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        self.get_tx(ctx, &mut tx, entity, id, false).await?;
+        self.may_attach_tx(ctx, &mut tx, entity, id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// [`Kernel::may_attach`] in the caller's transaction.
+    pub async fn may_attach_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid) -> Result<()> {
+        self.get_tx(ctx, tx, entity, id, false).await?;
         let ent = self.entity(ctx, entity)?;
         // An outside person whose portal rule lets them add to a record's conversation attaches to one they read
         // (BD-22): what they upload is shared by nature.
         if ctx.outside && ctx.perms.shared(entity) == Some(true) {
-            tx.commit().await?;
             return Ok(());
         }
         let scope = row_scope(ctx, &ent, Action::Write)?;
-        let doc = self.load_marked(&mut tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
-        if !scope.admits(&mut tx, ctx.tenant, &doc).await? {
+        let doc = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::Forbidden(format!("only someone who may change this {} attaches files to it", ent.def.label.to_lowercase())));
         }
-        tx.commit().await?;
         Ok(())
     }
 
@@ -197,7 +217,10 @@ impl Kernel {
             let id = r.get("id")?.as_str()?;
             Some(query::encode_cursor(ts, id))
         });
-        let mut docs: Vec<Doc> = rows.into_iter().take(limit as usize).map(|r| self.mask(ctx, &ent, store::row_to_doc(&ent, &ctx.schema, r))).collect();
+        let mut docs: Vec<Doc> = Vec::with_capacity(rows.len());
+        for r in rows.into_iter().take(limit as usize) {
+            docs.push(self.mask_record(ctx, &mut tx, &ent, store::row_to_doc(&ent, &ctx.schema, r)).await?);
+        }
         let total = if q.with_count {
             let mut cq = QueryBuilder::new("select count(*)");
             query::push_from_where_for(&mut cq, ctx, &ent, &scope, &q.filters, q.search.as_deref())?;
@@ -865,7 +888,11 @@ impl Kernel {
             let user = ctx.user_value();
             let links = crate::links::load(self, ctx, tx, &ent, &view, &crate::links::used([expr])).await?;
             if !expr.eval_bool_with(&Scope { doc: &view, old: None, parent: None, user: &user }, &[("links", &links)]).map_err(Error::invalid)? {
-                return Err(Error::invalid(format!("'{}' is not available for this document", def.label)));
+                // Its own words when it has them, over the record as the presser may read it (BD-44).
+                return Err(Error::invalid(match &def.condition_message {
+                    Some(m) => crate::print::message(m, || told(ctx, &ent, doc.clone(), Some(self))),
+                    None => format!("'{}' is not available for this document", def.label),
+                }));
             }
         }
         // Who must agree first: the action waits for them, its parameters kept (secret ones sealed; approvals.rs).
@@ -1116,7 +1143,34 @@ impl Kernel {
             let f = ent.field(&k).ok_or_else(|| Error::Internal(format!("set_values: unknown field {k}")))?;
             normalized.insert(k.clone(), normalize(f, &v).map_err(|m| Error::Internal(format!("set_values {k}: {m}")))?);
         }
-        store::set_values(tx, &ent, ctx.tenant, id, &normalized).await
+        store::set_values(tx, &ent, ctx.tenant, id, &normalized).await?;
+        self.follow_targets(ctx, tx, &ent, id).await
+    }
+
+    /// A record's service targets after an engine's write that is not a save (BD-45): worked out on the record as it
+    /// now stands, their due and state fields written as the write was, with no new version and no event. Every write
+    /// path keeps targets: a save in the pipeline, a breach, and these.
+    async fn follow_targets(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: Uuid) -> Result<()> {
+        if ent.def.targets.is_empty() {
+            return Ok(());
+        }
+        let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(ent)).await?;
+        let ctx: &Ctx = &held;
+        let Some(old) = self.load_marked(tx, ctx, ent, id, true).await? else { return Ok(()) };
+        let mut next = old.clone();
+        crate::targets::keep(self, ctx, tx, ent, id, &mut next).await?;
+        let kept: Doc = ent
+            .def
+            .targets
+            .iter()
+            .flat_map(|t| [&t.due_field, &t.state_field])
+            .filter(|f| next.get(*f) != old.get(*f))
+            .map(|f| (f.clone(), next.get(f).cloned().unwrap_or_default()))
+            .collect();
+        if kept.is_empty() {
+            return Ok(());
+        }
+        store::set_values(tx, ent, ctx.tenant, id, &kept).await
     }
 
     /// Derived-field update on one child row (e.g. delivered/billed quantities on order lines).
@@ -1129,7 +1183,19 @@ impl Kernel {
             let f = cent.field(&k).ok_or_else(|| Error::Internal(format!("set_child_values: unknown field {k}")))?;
             normalized.insert(k.clone(), normalize(f, &v).map_err(|m| Error::Internal(format!("set_child_values {k}: {m}")))?);
         }
-        store::set_values_in(tx, &info.table, &cent, ctx.tenant, row_id, &normalized).await
+        store::set_values_in(tx, &info.table, &cent, ctx.tenant, row_id, &normalized).await?;
+        if !ent.def.targets.is_empty() {
+            let parent_id: Option<Uuid> =
+                sqlx::query_scalar(AssertSqlSafe(format!("select parent_id from {} where tenant_id = $1 and id = $2", crate::ddl::q(&info.table))))
+                    .bind(ctx.tenant)
+                    .bind(row_id)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            if let Some(p) = parent_id {
+                self.follow_targets(ctx, tx, &ent, p).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Engine-kept rows of one child table (a work order's crew taken from its appointments, say):
@@ -1155,7 +1221,8 @@ impl Kernel {
             row.insert("idx".into(), json!(i));
             out.push(Value::Object(row));
         }
-        store::set_child_rows(tx, &info.table, &cent, ctx.tenant, parent_id, out).await
+        store::set_child_rows(tx, &info.table, &cent, ctx.tenant, parent_id, out).await?;
+        self.follow_targets(ctx, tx, &ent, parent_id).await
     }
 
     /// Loads a stored record and marks which of its secret fields are set.
@@ -1210,13 +1277,19 @@ impl Kernel {
                 errors.push(FieldError::new(k, "unknown field"));
                 continue;
             };
-            if f.computed.is_some() || f.rollup.is_some() || ent.target_keeping(k).is_some() {
+            // Fields the platform keeps: a target's, and a published list's counters (BD-42).
+            if f.computed.is_some() || f.rollup.is_some() || ent.target_keeping(k).is_some() || counted(ctx, ent, k) {
                 continue;
             }
             if read_only(ent, f, stored.as_ref(), None, &user) && !ctx.is_system && !trusted {
                 if let Some(m) = refusal(f, v, old.and_then(|o| o.get(k))) {
                     errors.push(FieldError::new(k, m));
                 }
+                continue;
+            }
+            // A field a rule hides (BD-40) is refused whatever is sent: "unchanged" would tell its value.
+            if !trusted && ctx.perms.hidden(&ent.def.name).is_some_and(|h| h.contains(k)) {
+                errors.push(FieldError::new(k, "you are not permitted to change this field"));
                 continue;
             }
             if !trusted && !ctx.perms.can_write_field(&ent.def.name, f) {
@@ -1708,6 +1781,11 @@ fn refusal<'a>(f: &'a FieldDef, sent: &Value, stored: Option<&Value>) -> Option<
     let m = f.read_only_message.as_deref().filter(|_| !f.read_only && !matches!(f.ftype, FieldType::Table | FieldType::Secret))?;
     let stored = normalize(f, stored.unwrap_or(&Value::Null)).ok();
     (normalize(f, sent).ok() != stored).then_some(m)
+}
+
+/// Whether `field` of `ent` is a counter a published list keeps (BD-42): what is sent for it is ignored, as for a total.
+fn counted(ctx: &Ctx, ent: &EffEntity, field: &str) -> bool {
+    ctx.schema.published_lists.iter().any(|l| l.entity == ent.def.name && l.list.counters().any(|c| c == field))
 }
 
 /// A record (or with no kernel, a line) as the person told about it may read it, for a message built from it

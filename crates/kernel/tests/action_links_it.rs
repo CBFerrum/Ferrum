@@ -89,6 +89,11 @@ fn quotation() -> Vec<NewCustomization> {
                 {"type": "link", "actions": ["accept"], "show": ["title", "total"], "days": 3, "recipient": "doc.customer_email"},
                 {"type": "message", "template": "x_quote_link", "to": ["expr:doc.customer_email"], "values": {"url": "results[0].url"}, "secret": ["url"]}
              ]},
+            {"name": "proof", "label": "Send a photo", "permission": "write", "condition": "doc.status == 'Open'",
+             "condition_message": "{{ doc.title }} was accepted already; nothing more is needed",
+             "params": [{"name": "photos", "label": "Photos", "type": "files", "required": true, "max_files": 2, "max_bytes": 1000, "accept": ["image/*"]},
+                        {"name": "note", "label": "Note", "type": "data"}],
+             "effects": [{"type": "set_fields", "values": {"feedback": "coalesce(params.note, 'photo')"}}]},
             {"name": "offer", "label": "Offer until it is valid", "permission": "write",
              "effects": [{"type": "link", "actions": ["accept"], "show": ["title", "lines"], "columns": {"lines": ["item", "qty"]}, "until": "doc.valid_until"}]}
         ]
@@ -390,4 +395,74 @@ async fn scenario() {
     let (title, text) = k.link_gone_wording();
     assert_eq!(title, "This link does not work any more");
     assert!(text.is_some_and(|t| t.contains("Ask whoever sent it")), "the shipped sentence, for a workspace that is not there too");
+
+    uploads(&k, &admin).await;
+}
+
+#[derive(Default)]
+struct MemFiles(std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>);
+
+#[async_trait::async_trait]
+impl ferrum_kernel::files::FileStore for MemFiles {
+    async fn put(&self, key: &str, data: &[u8]) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().insert(key.to_string(), data.to_vec());
+        Ok(())
+    }
+    async fn get(&self, key: &str) -> ferrum_kernel::Result<Vec<u8>> {
+        self.0.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound("object".into()))
+    }
+    async fn delete(&self, key: &str) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
+/// A link whose action takes files (BD-44): held to the parameter's count, size and type, attached on success, gone when
+/// refused; and a condition that no longer holds says the action's own words, from the record.
+async fn uploads(k: &Kernel, admin: &Ctx) {
+    use ferrum_kernel::action_link::LinkFile;
+    let store = std::sync::Arc::new(MemFiles::default());
+    k.set_file_store(store.clone());
+    let admin = k.load_ctx(admin.tenant, admin.user, None, "it".into()).await.unwrap();
+    let q = id_of(&k.insert(&admin, "XQuote", obj(json!({"title": "Q-50 Lamps"}))).await.unwrap());
+    let spec: LinkSpec = serde_json::from_value(json!({"actions": ["proof", "accept"], "uses": 10})).unwrap();
+    let t = token(&k.issue_link_now(&admin, "XQuote", q, &spec).await.unwrap().url);
+    let page = k.link_page("acme", &t).await.unwrap().unwrap();
+    assert!(page.actions.iter().any(|(n, _, ps)| n == "proof" && ps.iter().any(|p| p.ptype == "files")), "the page asks for the files");
+    let file =
+        |name: &str, ctype: &str, size: usize| LinkFile { param: "photos".into(), file_name: name.into(), content_type: ctype.into(), data: vec![7u8; size] };
+    let files_of = || async {
+        let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+        let n: i64 = sqlx::query_scalar("select count(*) from file_object where tenant_id = $1").bind(admin.tenant).fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        n
+    };
+    let before = files_of().await;
+    let use_ = |files: Vec<LinkFile>| {
+        let t = t.clone();
+        async move { k.use_link_with("acme", &t, "proof", &Map::new(), None, &files).await }
+    };
+    for (files, why) in [
+        (vec![], "required"),
+        (vec![file("a.png", "image/png", 10), file("b.png", "image/png", 10), file("c.png", "image/png", 10)], "at most 2"),
+        (vec![file("big.png", "image/png", 2000)], "at most"),
+        (vec![file("a.exe", "application/x-msdownload", 10)], "image/*"),
+        (vec![LinkFile { param: "note".into(), ..file("a.png", "image/png", 10) }], "no files there"),
+    ] {
+        let e = use_(files).await.expect_err(why);
+        assert!(format!("{e:?}").contains(why), "{why}: {e:?}");
+    }
+    assert_eq!(files_of().await, before, "nothing stored for a refused use");
+    // Accepted: attached to the record, shared, given to the action.
+    k.use_link_with("acme", &t, "proof", &Map::new(), None, &[file("a.png", "image/png", 10), file("b.jpg", "image/jpeg; q=1", 20)]).await.unwrap().unwrap();
+    let attached = k.attachments(&admin, "XQuote", q).await.unwrap();
+    assert_eq!(attached.len(), 2, "{attached:?}");
+    assert!(attached.iter().all(|f| f["shared"] == json!(true)));
+    assert_eq!(k.get(&admin, "XQuote", q, false).await.unwrap()["feedback"], json!("photo"));
+    // The record accepted: its own words, from the record; the upload goes.
+    k.use_link("acme", &t, "accept", &given(json!({"signed_by": "Ann"})), None).await.unwrap().unwrap();
+    let stored = store.0.lock().unwrap().len();
+    let e = use_(vec![file("c.png", "image/png", 10)]).await.expect_err("accepted already");
+    assert!(e.to_string().contains("Q-50 Lamps was accepted already"), "{e}");
+    assert_eq!((files_of().await, store.0.lock().unwrap().len()), (before + 2, stored), "a refused action's upload is discarded");
 }

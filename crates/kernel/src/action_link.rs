@@ -78,6 +78,15 @@ pub struct LinkSpec {
     pub columns: BTreeMap<String, Vec<String>>,
 }
 
+/// A file a link's visitor uploaded for one of the action's `files` parameters.
+#[derive(Debug, Clone)]
+pub struct LinkFile {
+    pub param: String,
+    pub file_name: String,
+    pub content_type: String,
+    pub data: Vec<u8>,
+}
+
 /// A link as issued: its address holds the token, given only now.
 #[derive(Debug, Clone, Serialize)]
 pub struct Issued {
@@ -165,6 +174,10 @@ fn checked_params(declared: &[ActionParam], given: &Map<String, Value>, fixed: &
             continue;
         }
         let p = declared.iter().find(|p| &p.name == name).ok_or_else(|| Error::field(name, "this link asks for no such value"))?;
+        if p.ptype == "files" {
+            // Files come as uploads (BD-44), never as text naming stored ones.
+            return Err(Error::field(name, "files are uploaded, not named"));
+        }
         let text = match v {
             Value::Null => continue,
             Value::String(s) => s.trim().to_string(),
@@ -188,7 +201,7 @@ fn checked_params(declared: &[ActionParam], given: &Map<String, Value>, fixed: &
         };
         out.insert(name.clone(), value);
     }
-    for p in declared.iter().filter(|p| p.required && !fixed.contains_key(&p.name)) {
+    for p in declared.iter().filter(|p| p.required && p.ptype != "files" && !fixed.contains_key(&p.name)) {
         if !out.contains_key(&p.name) {
             return Err(Error::field(&p.name, format!("{} is required", p.label)));
         }
@@ -581,6 +594,67 @@ impl Kernel {
     /// one transaction that counts the use. `Ok(None)` for a link not working, the same whatever the reason; a wrong
     /// code or a refused action is an error and uses nothing.
     pub async fn use_link(&self, slug: &str, token: &str, action: &str, params: &Map<String, Value>, code: Option<&str>) -> Result<Option<Value>> {
+        self.use_link_with(slug, token, action, params, code, &[]).await
+    }
+
+    /// [`Kernel::use_link`] with the files the visitor uploaded for the action's `files` parameters (BD-44): each held
+    /// to its parameter's count, size and type, scanned and stored as an outside person's upload is (shared), given to
+    /// the action as their ids and attached to the record in the use's transaction; discarded when the action is
+    /// refused or the link does not work.
+    pub async fn use_link_with(
+        &self,
+        slug: &str,
+        token: &str,
+        action: &str,
+        params: &Map<String, Value>,
+        code: Option<&str>,
+        files: &[LinkFile],
+    ) -> Result<Option<Value>> {
+        let mut kept: Vec<(Uuid, String)> = Vec::new();
+        let out = self.use_link_files(slug, token, action, params, code, files, &mut kept).await;
+        if !matches!(out, Ok(Some(_))) && !kept.is_empty() {
+            self.discard_files(&kept).await;
+        }
+        out
+    }
+
+    /// Stored files a refused use leaves behind: their rows and their bytes go.
+    async fn discard_files(&self, kept: &[(Uuid, String)]) {
+        let Some(tenant) = kept.first().and_then(|(_, key)| key.split('/').nth(1)).and_then(|t| t.parse::<Uuid>().ok()) else { return };
+        let ids: Vec<Uuid> = kept.iter().map(|(id, _)| *id).collect();
+        let gone = async {
+            let mut tx = self.db.system_tenant_tx(tenant).await?;
+            sqlx::query("delete from file_object where tenant_id = $1 and id = any($2) and record_id is null")
+                .bind(tenant)
+                .bind(&ids)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<_, Error>(())
+        };
+        if let Err(e) = gone.await {
+            tracing::warn!("a refused link's uploads were not removed: {e}");
+        }
+        if let Ok(store) = self.file_store() {
+            for (_, key) in kept {
+                if let Err(e) = store.delete(key).await {
+                    tracing::warn!(%key, "a refused link's upload was not deleted: {e}");
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn use_link_files(
+        &self,
+        slug: &str,
+        token: &str,
+        action: &str,
+        params: &Map<String, Value>,
+        code: Option<&str>,
+        files: &[LinkFile],
+        kept: &mut Vec<(Uuid, String)>,
+    ) -> Result<Option<Value>> {
         let Some((tenant, ..)) = self.link_workspace(slug).await? else { return Ok(None) };
         let schema = self.registry.schema(tenant).await?;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
@@ -601,8 +675,42 @@ impl Kernel {
         let ent = schema.entity(&link.entity).cloned().ok_or_else(|| Error::NotFound("link".into()))?;
         let def = ent.def.actions.iter().find(|d| d.name == action).ok_or_else(|| Error::invalid("this link does not do that"))?;
         let fixed = link.params.as_object().cloned().unwrap_or_default();
-        let params = checked_params(&def.params, params, &fixed)?;
+        let mut params = checked_params(&def.params, params, &fixed)?;
         let guest = guest(schema.clone(), tenant, &link.entity, link.record_id, &link.actions, link.recipient.as_deref());
+        // The uploads, each held to its parameter, scanned and stored before the use; attached in it.
+        if let Some(f) = files.iter().find(|f| !def.params.iter().any(|p| p.name == f.param && p.ptype == "files" && !fixed.contains_key(&p.name))) {
+            return Err(Error::field(&f.param, "this link takes no files there"));
+        }
+        for p in def.params.iter().filter(|p| p.ptype == "files" && !fixed.contains_key(&p.name)) {
+            let given: Vec<&LinkFile> = files.iter().filter(|f| f.param == p.name).collect();
+            if p.required && given.is_empty() {
+                return Err(Error::field(&p.name, format!("{} is required", p.label)));
+            }
+            for (i, f) in given.iter().enumerate() {
+                if let Some(why) = p.file_problem(i + 1, &f.content_type, f.data.len() as u64) {
+                    return Err(Error::field(&p.name, why));
+                }
+            }
+            let mut ids = Vec::new();
+            for f in given {
+                self.check_storage_quota(tenant, f.data.len() as u64).await?;
+                let scanned = self.scan_stream(&guest, &f.file_name, f.data.len() as u64, futures::stream::iter([Ok::<_, Error>(f.data.as_slice())])).await?;
+                let stored = self.keep_file(&guest, None, &f.file_name, &f.content_type, &f.data, scanned).await?;
+                let id: Uuid = stored["id"].as_str().and_then(|s| s.parse().ok()).ok_or_else(|| Error::internal("a stored file without its id"))?;
+                kept.push((id, format!("tenants/{tenant}/{id}")));
+                ids.push(id);
+            }
+            if !ids.is_empty() {
+                params[&p.name] = json!(ids);
+                sqlx::query("update file_object set entity = $3, record_id = $4, shared = true where tenant_id = $1 and id = any($2) and record_id is null")
+                    .bind(tenant)
+                    .bind(&ids)
+                    .bind(&link.entity)
+                    .bind(link.record_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
         // The use is counted in the transaction that runs it: both happen, or neither.
         sqlx::query("update action_link set uses = uses + 1 where tenant_id = $1 and id = $2").bind(tenant).bind(link.id).execute(&mut *tx).await?;
         let out = self.run_action_tx(&guest, &mut tx, &link.entity, link.record_id, action, &params).await?;
@@ -670,6 +778,9 @@ mod tests {
             required,
             description: None,
             secret: false,
+            max_files: None,
+            max_bytes: None,
+            accept: vec![],
         };
         let declared = [p("rating", "int", true), p("note", "text", false), p("price", "data", false)];
         let fixed = Map::from_iter([("price".to_string(), json!("100"))]);

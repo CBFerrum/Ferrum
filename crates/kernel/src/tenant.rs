@@ -147,8 +147,24 @@ impl Kernel {
                 for p in &role.permissions {
                     sqlx::query(
                         "insert into role_permission (tenant_id, role, entity, can_read, can_write, can_create, can_delete, can_submit, \
-                         can_cancel, can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key, via, actions, shared) \
-                         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) on conflict do nothing",
+                         can_cancel, can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key, via, actions, shared, hide, packaged) \
+                         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, true) \
+                         on conflict (tenant_id, role, entity, if_owner, rule_key) do update set \
+                         can_read = case when role_permission.packaged then excluded.can_read else role_permission.can_read end, \
+                         can_write = case when role_permission.packaged then excluded.can_write else role_permission.can_write end, \
+                         can_create = case when role_permission.packaged then excluded.can_create else role_permission.can_create end, \
+                         can_delete = case when role_permission.packaged then excluded.can_delete else role_permission.can_delete end, \
+                         can_submit = case when role_permission.packaged then excluded.can_submit else role_permission.can_submit end, \
+                         can_cancel = case when role_permission.packaged then excluded.can_cancel else role_permission.can_cancel end, \
+                         can_export = case when role_permission.packaged then excluded.can_export else role_permission.can_export end, \
+                         can_import = case when role_permission.packaged then excluded.can_import else role_permission.can_import end, \
+                         read_groups = case when role_permission.packaged then excluded.read_groups else role_permission.read_groups end, \
+                         write_groups = case when role_permission.packaged then excluded.write_groups else role_permission.write_groups end, \
+                         match_rule = case when role_permission.packaged then excluded.match_rule else role_permission.match_rule end, \
+                         via = case when role_permission.packaged then excluded.via else role_permission.via end, \
+                         actions = case when role_permission.packaged then excluded.actions else role_permission.actions end, \
+                         shared = case when role_permission.packaged then excluded.shared else role_permission.shared end, \
+                         hide = case when role_permission.packaged or (role_permission.packaged is null and role_permission.hide = '{}') then excluded.hide else role_permission.hide end",
                     )
                     .bind(tenant)
                     .bind(&role.name)
@@ -169,6 +185,7 @@ impl Kernel {
                     .bind(&p.via)
                     .bind(&p.actions)
                     .bind(&p.shared)
+                    .bind(&p.hide)
                     .execute(&mut *tx)
                     .await?;
                 }

@@ -31,11 +31,22 @@ header p{margin:.25rem 0;color:#555}h1{margin:.25rem 0 .5rem;font-size:1.5rem}\
 th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #ddd;vertical-align:top}th{background:#f5f5f7}\
 @media (prefers-color-scheme:dark){body{color:#eee;background:#161618}header p{color:#aaa}th{background:#26262a}th,td{border-color:#333}a{color:#8ab4ff}}";
 
-/// No script, nothing fetched: only the page's own style; forms only to itself (the search); framed only by
-/// `frames` (BD-24).
-fn policy(frames: &[String]) -> String {
-    let hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(STYLE.as_bytes()));
-    format!("default-src 'none'; style-src 'sha256-{hash}'; base-uri 'none'; form-action 'self'; {}", super::links::frame_policy(frames))
+/// A record page's one script, on a list counting views (BD-42): it posts the view back to the page's own address once
+/// the page is shown, so a fetcher or a scanner that reads the page without running it counts nothing.
+const BEACON: &str = r#"navigator.sendBeacon(location.pathname,new Blob(["do=view"],{type:"application/x-www-form-urlencoded"}))"#;
+
+/// The cookie a visitor's views and votes are told apart by: a random value, nothing about them (BD-42).
+pub const VISITOR: &str = "ferrum_visitor";
+
+fn sha(s: &str) -> String {
+    base64::engine::general_purpose::STANDARD.encode(Sha256::digest(s.as_bytes()))
+}
+
+/// Nothing fetched: only the page's own style and, on a page counting views, its beacon (posting to itself); forms
+/// only to itself (the search, a vote); framed only by `frames` (BD-24).
+fn policy(frames: &[String], beacon: bool) -> String {
+    let script = if beacon { format!(" script-src 'sha256-{}'; connect-src 'self';", sha(BEACON)) } else { String::new() };
+    format!("default-src 'none'; style-src 'sha256-{}';{script} base-uri 'none'; form-action 'self'; {}", sha(STYLE), super::links::frame_policy(frames))
 }
 
 /// What anything not published answers, the same for every reason.
@@ -44,16 +55,16 @@ fn not_found(page: bool) -> Response {
         let html = format!(
             r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>Not found</title><style>{STYLE}</style></head><body><h1>There is no such list</h1></body></html>"#
         );
-        return html_response(StatusCode::NOT_FOUND, html, false, &[]);
+        return html_response(StatusCode::NOT_FOUND, html, false, &[], false);
     }
     (StatusCode::NOT_FOUND, Json(json!({"error": "not_found", "message": "there is no such list"}))).into_response()
 }
 
-fn html_response(status: StatusCode, html: String, indexed: bool, frames: &[String]) -> Response {
+fn html_response(status: StatusCode, html: String, indexed: bool, frames: &[String], beacon: bool) -> Response {
     let mut r = (status, html).into_response();
     let h = r.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
-    if let Ok(p) = HeaderValue::from_str(&policy(frames)) {
+    if let Ok(p) = HeaderValue::from_str(&policy(frames, beacon)) {
         h.insert(header::CONTENT_SECURITY_POLICY, p);
     }
     super::links::frame_headers(h, frames);
@@ -175,8 +186,16 @@ fn detail_of(p: &Published, workspace: &str, name: &str, address: &str, origin: 
     let summary = p.summary.as_deref().and_then(|s| row.get(s)).map(text).filter(|s| !s.is_empty());
     let meta = summary.map(|d| format!(r#"<meta name="description" content="{}">"#, d.chars().take(300).collect::<String>())).unwrap_or_default();
     let canonical = origin.map(|o| format!(r#"<link rel="canonical" href="{}{base}/{}">"#, esc(o), esc(&seg(address)))).unwrap_or_default();
+    let votes = if p.counts_votes {
+        let button =
+            |v: &str, label: &str| format!(r#"<form method="post"><input type="hidden" name="do" value="{v}"><button type="submit">{label}</button></form>"#);
+        format!(r#"<section aria-label="Was this helpful?"><p>Was this helpful?</p>{}{}</section>"#, button("up", "Yes"), button("down", "No"))
+    } else {
+        String::new()
+    };
+    let beacon = if p.counts_views { format!("<script>{BEACON}</script>") } else { String::new() };
     format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="index, follow">{meta}{canonical}<title>{title} · {ws}</title><style>{STYLE}</style></head><body><header><p><a href="{base}">{label}</a> · {ws}</p><h1>{title}</h1></header><main><dl>{items}</dl></main></body></html>"#,
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="index, follow">{meta}{canonical}<title>{title} · {ws}</title><style>{STYLE}</style></head><body><header><p><a href="{base}">{label}</a> · {ws}</p><h1>{title}</h1></header><main><dl>{items}</dl>{votes}</main>{beacon}</body></html>"#,
         label = esc(&p.label),
         ws = esc(&p.workspace),
     )
@@ -290,12 +309,64 @@ pub async fn page(
     match found {
         Ok(Some((html, p))) if bound.is_none_or(|t| t == p.tenant) => {
             let indexed = p.indexed && !html.contains(r#"content="noindex""#);
-            let r = html_response(StatusCode::OK, html.clone(), indexed, &p.frame_origins);
+            let beacon = html.contains("<script>");
+            let r = html_response(StatusCode::OK, html.clone(), indexed, &p.frame_origins, beacon);
             cached(headers, r, html.as_bytes())
         }
         Ok(_) => not_found(true),
         Err(e) => crate::error::ApiError(e).into_response(),
     }
+}
+
+/// A POST-back to a record page, `/public/{workspace}/lists/{name}/{address}` with `do=view`, `do=up` or `do=down`
+/// (BD-42): counted for the visitor its cookie names (a new random one set when there is none), from this page's own
+/// origin only, never a GET. A view answers `204`; a vote goes back to the page (`303`). What is not published, or
+/// not counted by its list, is the one 404; too many from one address are not counted (`429`).
+pub async fn count(kernel: &Kernel, limiter: &RateLimiter, headers: &HeaderMap, rest: &str, body: &[u8], secure: bool) -> Response {
+    let parts: Vec<&str> = rest.split('/').collect();
+    let ["lists", ..] = parts.get(1..).unwrap_or_default() else { return not_found(true) };
+    let (Some(workspace), Some(name), Some(address), 4) = (parts.first(), parts.get(2), parts.get(3), parts.len()) else { return not_found(true) };
+    if let Err(e) = limiter.check(&format!("{}|{}", client_ip(headers), workspace.to_lowercase())).await {
+        return crate::error::ApiError(e).into_response();
+    }
+    if !crate::shell::may_change(&axum::http::Method::POST, headers) {
+        return (StatusCode::FORBIDDEN, "only the page itself counts").into_response();
+    }
+    let said = std::str::from_utf8(body).unwrap_or_default();
+    let what = match said.split('&').find_map(|kv| kv.strip_prefix("do=")) {
+        Some("view") => ferrum_kernel::published::Count::View,
+        Some("up") => ferrum_kernel::published::Count::Vote(true),
+        Some("down") => ferrum_kernel::published::Count::Vote(false),
+        _ => return not_found(true),
+    };
+    let cookie = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|c| c.trim().split_once('='))
+        .find(|(k, v)| *k == VISITOR && !v.is_empty() && v.len() <= 64 && v.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .map(|(_, v)| v.to_string());
+    let visitor = cookie.clone().unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+    let address = percent_decode(address);
+    let mut r = match kernel.published_count(&workspace.to_lowercase(), name, &address, &visitor, &client_ip(headers), what).await {
+        Ok(Some(ferrum_kernel::published::Counted::TooMany)) => (StatusCode::TOO_MANY_REQUESTS, "too many from this address; slow down").into_response(),
+        Ok(Some(_)) if what == ferrum_kernel::published::Count::View => StatusCode::NO_CONTENT.into_response(),
+        Ok(Some(_)) => {
+            let back = format!("/public/{}/lists/{}/{}", seg(workspace), seg(name), seg(&address));
+            axum::response::Redirect::to(&back).into_response()
+        }
+        Ok(None) => return not_found(true),
+        Err(e) => return crate::error::ApiError(e).into_response(),
+    };
+    if cookie.is_none() {
+        let set = format!("{VISITOR}={visitor}; Path=/public/; Max-Age=31536000; HttpOnly; SameSite=Lax{}", if secure { "; Secure" } else { "" });
+        if let Ok(v) = HeaderValue::from_str(&set) {
+            r.headers_mut().insert(header::SET_COOKIE, v);
+        }
+    }
+    r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    r
 }
 
 /// A path segment as typed (`%20` a space); one that does not decode is taken as it is.
@@ -353,6 +424,8 @@ mod tests {
             summary: Some("body".into()),
             frame_origins: vec![],
             indexed,
+            counts_views: false,
+            counts_votes: false,
         }
     }
 
@@ -364,8 +437,23 @@ mod tests {
         assert!(html.contains("&lt;img src=x onerror=alert(1)&gt;") && html.contains("A &amp; B &lt;Co&gt;") && html.contains("&quot;quoted&quot;"));
         assert!(html.contains(r#"href="/api/public/acme/lists/permits.csv""#) && html.contains("noindex"));
         assert!(!html.contains("canonical") && !html.contains("<form"), "a list without a slug is kept from search engines, as before");
-        let csp = policy(&[]);
+        let csp = policy(&[], false);
         assert!(csp.starts_with("default-src 'none'; style-src 'sha256-") && !csp.contains("script-src") && !csp.contains("unsafe"), "{csp}");
+    }
+
+    /// A record page counting views runs its one beacon, allowed by its digest alone, posting to the page itself; one
+    /// counting votes has the two answers as forms (BD-42).
+    #[test]
+    fn a_counting_page_runs_its_beacon_only() {
+        let mut p = published(true);
+        (p.counts_views, p.counts_votes) = (true, true);
+        let html = detail_of(&p, "acme", "help", "reset password", None);
+        assert!(html.contains(&format!("<script>{BEACON}</script>")) && html.matches("<script").count() == 1, "{html}");
+        assert!(html.contains(r#"name="do" value="up""#) && html.contains(r#"name="do" value="down""#), "{html}");
+        let csp = policy(&[], true);
+        assert!(csp.contains(&format!("script-src 'sha256-{}'", sha(BEACON))) && csp.contains("connect-src 'self'") && !csp.contains("unsafe"), "{csp}");
+        p.counts_views = false;
+        assert!(!detail_of(&p, "acme", "help", "reset password", None).contains("<script"));
     }
 
     #[test]
@@ -388,10 +476,10 @@ mod tests {
 
     #[test]
     fn a_page_is_framed_only_by_the_origins_it_names() {
-        let denied = html_response(StatusCode::OK, String::new(), false, &[]);
+        let denied = html_response(StatusCode::OK, String::new(), false, &[], false);
         let csp = denied.headers().get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap().to_string();
         assert!(csp.ends_with("frame-ancestors 'none'") && denied.headers().get(header::X_FRAME_OPTIONS).unwrap() == "DENY", "{csp}");
-        let allowed = html_response(StatusCode::OK, String::new(), false, &["https://shop.example".into()]);
+        let allowed = html_response(StatusCode::OK, String::new(), false, &["https://shop.example".into()], false);
         let csp = allowed.headers().get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap().to_string();
         assert!(csp.ends_with("frame-ancestors https://shop.example") && allowed.headers().get(header::X_FRAME_OPTIONS).is_none(), "{csp}");
     }

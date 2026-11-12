@@ -380,6 +380,34 @@ record's valid-until say; with `days` too the sooner; never past 90 days; one al
 `Kernel::issue_link(ctx, tx, entity, id, &LinkSpec)` in its own transaction, and ends a record's links in it with
 `Kernel::revoke_action_links(tx, ctx, entity, record, Some(action) | None)` (how many it ended).
 
+**Files and own words** ([BD-44](builder/decisions.md#bd-44-secrets-in-every-form-files-and-own-words-on-a-links-page)).
+An action's parameter `{"name": "photos", "label": "Photos", "type": "files", "max_files"?: 1-10, "max_bytes"?: ≤ 10485760,
+"accept"?: ["image/*", "application/pdf"]}` (one file of 10 MB without them) is a file box on the page, whose form then
+posts as `multipart/form-data` (25 MB a post at most): each file is held to the parameter (`422` naming it), scanned and
+stored as an outside person's upload, attached to the record, shared, in the use's transaction, and given to the action
+as the files' ids; a refused action discards them. An app calls `Kernel::use_link_with(…, &[LinkFile])`. An action's
+`condition_message` (`"{{ doc.title }} was accepted already"`, rendered as a rule's message over the record as its
+reader may read it) is what a refusal for its `condition` says, on the page and through the API, instead of the
+general words.
+
+**A secret value in a message** (`"secret": ["url"]`) is masked, wherever rendered text is kept or logged, in each form
+it may be printed in: as it is, HTML-escaped, percent-encoded, as JSON, and drawn by `qr` or `barcode` with their
+defaults.
+
+**Rendering for another transport** ([BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034)):
+`messages::render_for(k, tx, ctx, &Message, "email" | "text" | "chat")` → `{channel, address, language, subject, html,
+text, opt_out, list_unsubscribe: (List-Unsubscribe, List-Unsubscribe-Post)}`, as `send` would render it for its one
+recipient, nothing sent; `403 opted out` for an address that opted out (an erased one's digest included).
+`Kernel::opted_out(tx, tenant, channel, address)` asks the same. An approval step's `need` may be an expression over
+the record (`"doc.quorum"`), kept on the request when it is made, between one and the approvers found. An optional
+action parameter not given stays absent in its effects and refusals: ask with `has(params.x)`.
+
+**Calls for apps** ([BD-43](builder/decisions.md#bd-43-calls-apps-were-missing)), each in the app's own transaction and
+asking what its route asks: `Kernel::tag_tx(ctx, tx, entity, id, add, remove)` → the record's tags;
+`Kernel::ensure_calendar_tx(ctx, tx, &Calendar)` → whether it made the working calendar (one of the name is left as it
+is); `Kernel::attach_files_tx(ctx, tx, ids, entity, record)` → each file's `{id, file_name, content_type, size}`, the
+caller's loose uploads attached, files already on the record passing, anything else refused.
+
 ### Replacing an app's own guest link with a signed action link
 
 Eight apps keep guest links of their own (a token table, a hash, a page that checks it). To move one:
@@ -674,7 +702,8 @@ say `app.isolated` when the interface will run isolated);
 `/api/admin/users` (GET, POST `{email, full_name, password?, roles[], is_admin, kind?}` → `{id, kind}`; `kind` is `member` (the default), `portal`, `guest` or `service`; guests take no roles, portal people only portal roles, and neither is an administrator), `/api/admin/users/{id}/kind` (PUT `{kind}`: signs the person out everywhere), `/api/admin/users/{id}/roles` (PUT `{roles, until?}`: `until` maps a role given to the moment it ends, a moment still to come; the list gives `role_until` the same way),
 `/scopes` (PUT `{entity, ids[], default?}`), `/active` (PUT `{active}`), `/password` (PUT `{password}`), `/two-factor/reset` (POST: turns the person's two-factor sign-in off, lifts a lockout and signs them out everywhere — for a lost phone), `/sso/unlink` (POST: forgets the identity at a single sign-on provider the account is linked to); the user list shows `kind`, `two_factor`, `sso` and `locked`;
 `/api/admin/personal-data?email=&phone=&name=` (GET: every record the installed packages declare as the person's — `personal_data` in package manifests, `{entity, match: <email field; the phone field where records hold no address; a link to a record another declaration finds; or `table.field`, people held in a child table's rows, whose copy and erasure are those rows alone>, phone?: <phone field>, name?: <name field>, erase: [fields], where?: {field: value}}` — with its data (for one matched by a table's rows, `table` and `rows`, and those rows alone), and their login account; with `phone`, also the records whose phone field has the same digits however written; with `name`, the records holding that name, whole or as one of the names a field lists, are listed apart under `possibly`, for a person to judge, as are, with `phone`, those whose number differs from it only by a country code) and `/api/admin/personal-data/erase` (POST `{email, phone?, reason}`, reaching what the phone number reaches too, never what a name alone does: blanks the declared fields, a placeholder where a value is required, and empties declared child tables and JSON fields; redacts those fields in the records' audit history, each event keeping its hash and recording the redaction; anonymizes and closes the login account; deletes the workspace's stored exports, and an export being made starts again; refused for administrators and oneself) → `{erased: [{entity, id}], retained, held, account_erased, audit_events_redacted, files_deleted, exports_deleted, apps: [{app, erased}], not_searched}` (what apps keep in tables of their own is under `apps` in the copy as well);
-`/api/admin/roles` (GET; each role with `portal`), `/api/admin/roles/{role}/portal` (PUT `{portal}`: marks a role for the portal, refused while a rule of it reaches every entity, deletes, cancels, exports or imports, or reaches every record other than to read reference data, an entity holding no personal data; portal people hold only such roles), `/api/admin/roles/{role}/permissions` (PUT PermissionDef `{entity, read, write, create, delete, submit, cancel, export, import, if_owner, read_groups[], write_groups[], where?, via?, actions?}`);
+`/api/admin/roles` (GET; each role with `portal`), `/api/admin/roles/{role}/portal` (PUT `{portal}`: marks a role for the portal, refused while a rule of it reaches every entity, deletes, cancels, exports or imports, or reaches every record other than to read reference data, an entity holding no personal data; portal people hold only such roles), `/api/admin/roles/{role}/permissions` (PUT PermissionDef `{entity, read, write, create, delete, submit, cancel, export, import, if_owner, read_groups[], write_groups[], where?, via?, actions?, shared?, hide?}`; the role list gives each rule back with `hide` and `packaged`, whether its package still rewrites it);
+`hide` ([BD-40](builder/decisions.md#bd-40-a-rule-that-does-not-show-some-fields)) names fields and child tables the rule neither shows nor accepts: a record read (one record, a list's rows, `fields=`, a record page, a print) leaves out a field every rule reaching that record hides, and shows it when another rule reaching it does; filters and sorting on a field some rule hides and no rule reading every record shows are refused (`403`), and search, reports, exports and history leave it out; a write naming it is refused (`422` on the field) whatever its value. Refused when saved: a field the entity lacks, its title field, a field of a unique key, a field of the rule's `where` or its `via`'s first step, and any `hide` on `*`. A package's role may carry it; its rule rows follow the package's releases until an administrator edits them here;
 `via` makes a rule reach the holder's own records through a path to their email (`patient.email`, `student.guardians.email`: at most two links, then optionally a child table, then an email or text field), checked against the entities it crosses when saved and on every use; `actions` names the entity's actions its holders may run on the records it reaches, whatever the action's own permission asks (its condition and its app's checks still apply);
 `where` limits a rule to records whose fields hold given values, all of them: `{"customer_type": ["Individual"], "disabled": false}` (data, select, check, link, email and int fields; links by record id, an unset checkbox reads as `false`; up to 10 fields and 50 values each). A role can hold several rules for one entity with different conditions (and `if_owner`), and a record is reachable through any of them, in lists, reads, filters, reports and live updates alike;
 `/api/admin/packages` (GET, POST `{packages[]}` → `{installed, kept_newer: [{name, version, build}]}`: a package the workspace holds newer than this build's (a server rolled back) is left as it is, its version, roles and seed data untouched, and listed in `kept_newer`; the others install; `ferrum task doctor` reports it as `packages.newer`); `/api/admin/webhooks` (GET, POST `{name, url, topics[]}` → `{id, secret}`, DELETE `/{id}`; a workspace's own webhook receives a record event's payload with `doc` and, on a change, `was` next to it; an app's webhook receives neither, only which record);
@@ -809,6 +838,7 @@ A workspace's own menu gives a business built by configuration what an app's man
 ```
 
 * `calendar` names a business calendar (above): time counts only in its open hours. Without one it is plain elapsed time. The calendar must be there when the target is saved, and deleting a calendar a target names is refused (409, naming the entity and the target).
+* **By record** ([BD-41](builder/decisions.md#bd-41-service-targets-by-record)): `"calendar_field": "agreement.calendar"` (a data or select field of the record, or a link and such a field of the linked record, read as the workspace) names each record's calendar, the target's `calendar` when it is empty; `"start_field": "opened_at"` (a date-time field) starts the clock at that moment rather than at the save, unless it is empty or still to come, so an imported ticket is due by its own opening (and breached at once, once, when that is long past). A change of either on a running round works its due moment out again once: time counted so far stays as it was counted, the rest counts on the new calendar from the change, a start moved adds or takes away the open time between; pauses and a breach stay. A calendar a record names that the workspace lacks refuses the save.
 * The expressions see `doc` as it will be stored (after defaults, fetched values, computed fields, Logic derivations and rules), `user`, `today` and `now`. `start_when` (optional) starts the clock at the first save on which it holds; without it the clock starts when the record is created. `within` gives seconds or an ISO 8601 duration (`PT8H`, `P2D`; at most a year); null or empty means the record has no such target. `pause_when` (optional) stops the clock while it holds. `met_when` meets the target.
 * `due_field` is a date-time field and `state_field` a data or select field (a select offering `running`, `paused`, `met`, `met_late` and `breached`); neither is required, computed, rolled up or fetched, and no two targets share one. On an entity that comes with a package both are fields the workspace added (`x_…`). At most 8 targets on an entity.
 * Both fields are the platform's to write, as a total is: what a person, an import, an effect or an API call sends for them is ignored, and an effect may not name them. `GET /api/meta/{Entity}` lists the entity's `targets` and marks each such field `kept_by_target: <name>`; the entity's JSON Schema marks it `readOnly`.
@@ -869,6 +899,16 @@ and `q` when searched; a page past the last is a `404` there too). It is offered
   page; a list without a slug stays `noindex`. Every answer carries an `ETag` of its content (`304` when unchanged) and
   `Cache-Control: public, max-age=60`. A draft, cancelled or filtered-out record, a list without a slug and a page past
   the last are the same 404.
+* **Views and votes** ([BD-42](builder/decisions.md#bd-42-public-pages-count)): `"count_views": "views"` and `"votes":
+  {"up": "helpful", "down": "unhelpful"}` (whole-number fields of the entity, on a list with a slug) count, on each
+  record page, the visitors who saw it and their "was this helpful" answers. The page posts `do=view` back to its own
+  address from one script its policy allows by digest (a fetcher reading the page counts nothing), and its two answers
+  post `do=up` or `do=down`: `POST /public/{workspace}/lists/{name}/{value}`, from the page's own origin only (`403`
+  otherwise), `204` for a view and `303` back to the page for a vote, the one `404` for anything not counted. A view
+  counts once a visitor a record a day, a vote once a visitor a record (another answer moves it); a visitor is a
+  random first-party cookie (`ferrum_visitor`), kept only as a keyed digest; an address counts at most 60 times an hour
+  a workspace (`429` past it). The counters change without a new version, an audit entry or an `updated` event, and
+  what anyone sends for them is ignored.
 * **Framing** ([BD-24](builder/decisions.md#bd-24-frame-headers-per-page)). `"frame_origins": ["https://town.example"]`
   (at most 10, `https://host[:port]`) lets those sites frame the list's pages; without it they send `frame-ancestors
   'none'` and `X-Frame-Options: DENY`. An action link takes `frame_origins` alike, and an app's public page gets them
@@ -1591,7 +1631,8 @@ CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/s
 workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`. A package that uses any of this
 (`layout_file`, `page`, `letterhead`, `copies`, `enabled`, a LetterHead or PrintSettings record in its seed) needs
 the app API version 0.3.3: its app says `platform: ">=0.3.3, <0.4"` (an older server refuses the fields it does not
-know).
+know). The app API is 0.3.4 now: what each version carries is in
+[BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034).
 
 ### Moving an app's print layout or file to a document template
 
