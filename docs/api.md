@@ -1279,7 +1279,13 @@ border?, background?, padding_mm?, keep_together?, break_before?, margin_top_mm?
 `divider`, `spacer`, `page_break`, each with `id`, `when` (CEL over `doc`, `links`, `company`, `settings`, `print`),
 `align`, `margin_top_mm`. Paths: `doc.<field>`, `links.<link field>.<field>`, `company.<field>` (the record's company,
 read as the workspace), `settings.<Entity>.<field>`, `row.<field>` (a table's columns), `print.copy|now|language|title|
-entity` (`print.page`/`print.pages` in a letter head). Unknown keys, paths, secret fields, colours other than `#rrggbb`,
+entity|time` (`time`: when it was printed, in the workspace's time zone; `print.page`/`print.pages` in a letter head:
+filled in by the PDF service where it repeats the letter head, and a paragraph or heading that names them is left out
+elsewhere, so a footer text `[{t: "Page "}, {v: "print.page"}, {t: " of "}, {v: "print.pages"}]` prints "Page 2 of 3"
+in a PDF and nothing in the HTML). A `table` prints `doc.<table>`, `links.<link field>.<table>` (read as the person may)
+or `company.<table>` (read as the workspace); a column may say `hide_zero: true` (a zero cell is blank), and its
+`secondary` line prints only when it differs from the cell. A format may say `sign: "abs"` (a number, amount or amount in
+words without its sign: a credit note's totals print positive). Unknown keys, paths, secret fields, colours other than `#rrggbb`,
 numbers out of range and every limit (256 KB, 100 sections, 4 columns, 50 blocks a column, 500 in all, 20 table columns,
 100 conditions of ≤ 500 characters, 20 images) are refused when saved (`422`, `field: "layout.<id>"`) and again when it
 renders. A template's error names where it is: `"en body, line 3: …"`.
@@ -1308,12 +1314,15 @@ printing either (`403`; an administrator's preview still renders).
 languages, letterhead, copies, page: {size, orientation}}], standard: {label}, default, letterheads: [{id, name,
 company, default_for_record}], languages, copies, may_print, refusal}` (enabled formats the caller may use; `default`
 is the workspace's choice, else a workspace template flagged default, else a package's, each only when enabled and
-the caller may use it; null: the print format, offered as `standard`). `GET /api/v1/{E}/{id}/print?template=<key|
+the caller may use it; among packages' defaults, the default of a package that depends, directly or not, on the other's
+package wins (an add-on over what it extends), then the first by key; null: the print format, offered as `standard`
+with Print Settings' `page`). `GET /api/v1/{E}/{id}/print?template=<key|
 standard>&letterhead=<none|id>&language=&copy=<label>&copy=…&format=pdf|html` → the page (HTML with the sandboxing
 policy, or `application/pdf` named `<label> <number>.pdf` on the format's paper); `403` roles or a refused draft,
 `404` an unknown format, `422` a disabled one or a bad parameter (`fields: [{field: template|letterhead|copy|language}]`).
 `POST /api/v1/{E}/{id}/email {to, subject?, message?, pdf?, template?, letterhead?, language?, copies?}` attaches
-exactly what `/print?format=pdf` makes with the same choices (the default format when none is named).
+exactly what `/print?format=pdf` makes with the same choices (the default format when none is named); the choices may
+also come nested as `print: {template, letterhead, language, copies}`.
 
 **Administrators**: `GET /api/admin/documents/templates?entity=&output=` rows also carry `kind`, `is_default`,
 `enabled`, `based_on`, `updated_by`, `updated_at`; `GET …/templates/{key}` also `etag` (and the `ETag` header);
@@ -1326,11 +1335,15 @@ in an edited copy). `POST …/templates/{key}/duplicate {key, label}` → `201 {
 `GET /api/admin/documents/fields/{Entity}` → the designer's catalogue (`fields`, `system`, `tables` with `columns`,
 `links` with their `fields`, `company`, `computed`, `print`, `settings`; no secret). `POST /api/admin/documents/preview
 {template: key | a template not saved, record_id?, sample?, language?, letterhead?, copies?, mode?: print|design,
-format?: html|pdf}` → `{language, output, kind, content, header, footer, record_id, warnings, ms}` (a layout's `content`
+format?: html|pdf}` (`letterhead` may also be a letter head not saved yet, `{id?, company?, header, footer,
+header_height_mm?, footer_height_mm?}`, checked as a save checks it) → `{language, output, kind, content, header, footer, record_id, warnings, ms}` (a layout's `content`
 is the whole page; `mode: design` adds `data-b`/`data-slot` marks, placeholders and dims what a condition hides;
 `sample` renders a record of every field; `format: pdf` answers the PDF). `GET /api/print/layout.css` is the renderer's
 CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/save|reset|default`). Packs carry the
-workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`.
+workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`. A package that uses any of this
+(`layout_file`, `page`, `letterhead`, `copies`, `enabled`, a LetterHead or PrintSettings record in its seed) needs
+the app API version 0.3.3: its app says `platform: ">=0.3.3, <0.4"` (an older server refuses the fields it does not
+know).
 
 ### Moving an app's print layout or file to a document template
 

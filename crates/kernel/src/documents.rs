@@ -381,7 +381,7 @@ async fn check_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef) -
         ("now", json!("")),
         ("title", json!("")),
         ("checking", json!(true)),
-        ("print", json!({"copy": "", "language": "en", "title": "", "entity": "", "now": ""})),
+        ("print", json!({"copy": "", "language": "en", "title": "", "entity": "", "now": "", "time": ""})),
         ("company", ctx.schema.entity("Company").map(|c| Value::Object(sample_of(c, ctx))).unwrap_or(json!({}))),
     ] {
         vars[name] = v;
@@ -507,7 +507,8 @@ fn may_use(ctx: &Ctx, def: &DocumentDef) -> bool {
 }
 
 /// The entity's default for `ctx` (D9): the workspace's choice (`document_default`), a workspace template flagged
-/// `default`, a package's `default`; each only when it is enabled and `ctx` may use it. None: the print format.
+/// `default`, a package's `default` (an add-on's over the package it depends on, then by key); each only when it is
+/// enabled and `ctx` may use it. None: the print format.
 async fn default_for<'a>(tx: &mut Tx, ctx: &Ctx, all: &'a All, entity: &str) -> Result<Option<&'a DocumentDef>> {
     let chosen: Option<String> = sqlx::query_scalar("select key from document_default where tenant_id = $1 and entity = $2")
         .bind(ctx.tenant)
@@ -519,7 +520,12 @@ async fn default_for<'a>(tx: &mut Tx, ctx: &Ctx, all: &'a All, entity: &str) -> 
         return Ok(Some(d));
     }
     let flagged = || all.values().filter(|(d, ..)| d.default && ok(d));
-    Ok(flagged().find(|(_, source, _)| *source != "package").or_else(|| flagged().next()).map(|t| &t.0))
+    if let Some((d, ..)) = flagged().find(|(_, source, _)| *source == "workspace") {
+        return Ok(Some(d));
+    }
+    // Among packages' (and their edited copies'), an add-on's beats what it extends: the default of a package that
+    // depends, directly or not, on another's package wins; otherwise the first by key.
+    Ok(shipped_default(&ctx.schema, &flagged().map(|t| &t.0).collect::<Vec<_>>()))
 }
 
 /// [`Kernel::save_document_template`] in the caller's transaction: `created`, `changed` or `unchanged`.
@@ -577,6 +583,14 @@ pub(crate) async fn save_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &Docu
         choose_default(tx, ctx, &def.entity, Some(&def.key)).await?;
     }
     Ok(if was.is_some() { "changed" } else { "created" })
+}
+
+/// Among packages' default documents for one entity (in key order), the one that prints: a package's whose package no
+/// other's depends on, directly or not (an add-on's over what it extends), the first by key among those.
+fn shipped_default<'a>(schema: &ferrum_meta::Schema, shipped: &[&'a DocumentDef]) -> Option<&'a DocumentDef> {
+    let owner = |key: &str| schema.packages.iter().find(|p| key.strip_prefix(p.as_str()).is_some_and(|r| r.starts_with('.'))).cloned().unwrap_or_default();
+    let beaten = |d: &DocumentDef| shipped.iter().any(|o| owner(&o.key) != owner(&d.key) && schema.package_depends_on(&owner(&o.key), &owner(&d.key)));
+    shipped.iter().find(|d| !beaten(d)).or(shipped.first()).copied()
 }
 
 /// Sets (or with `None` removes) the workspace's default for `entity`. Audited.
@@ -1137,10 +1151,16 @@ async fn render_page(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, id: 
     warnings.extend(missing);
     let page = def.page.clone().unwrap_or_else(|| settings.page.clone());
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
+    // The time of printing where the workspace is.
+    let zone: chrono_tz::Tz = ctx.schema.timezone.parse().unwrap_or(chrono_tz::UTC);
+    let local = chrono::Utc::now().with_timezone(&zone).format("%Y-%m-%d %H:%M").to_string();
     let title = vars["title"].as_str().unwrap_or_default().to_string();
     let doc_title = format!("{} {}", ent.def.label, vars["doc"].get("number").and_then(Value::as_str).filter(|n| !n.is_empty()).unwrap_or(&title));
     let print = |copy: Option<&str>| -> Map<String, Value> {
-        json!({"copy": copy.unwrap_or(""), "now": now, "language": tag, "title": title, "entity": ent.def.label}).as_object().cloned().unwrap_or_default()
+        json!({"copy": copy.unwrap_or(""), "now": now, "time": local, "language": tag, "title": title, "entity": ent.def.label})
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
     };
     let links = vars["links"].as_object().cloned().unwrap_or_default();
     let currency = vars["currency"].as_str().map(str::to_string);
@@ -2288,6 +2308,23 @@ mod tests {
             (at("<BODY class=x>"), at("class=\"pf-watermark\""), at("class=\"pf-letterhead\""), at("<p>Hi"), at("class=\"pf-letterhead-foot\""));
         assert!(body < mark && mark < head && head < hi && hi < foot && foot < at("</body>"), "{page}");
         assert_eq!(wear("<p>x</p>", None, None, None), "<p>x</p>", "nothing to wear: the page as it was");
+    }
+
+    #[test]
+    fn an_add_ons_default_beats_what_it_extends() {
+        let mut schema = ferrum_meta::Schema { packages: vec!["selling".into(), "zindia".into(), "other".into()], ..Default::default() };
+        schema.package_depends = BTreeMap::from([
+            ("zindia".to_string(), vec!["accounting".to_string()]),
+            ("accounting".to_string(), vec!["selling".to_string()]),
+            ("selling".to_string(), vec![]),
+            ("other".to_string(), vec![]),
+        ]);
+        let d = |k: &str| DocumentDef { key: k.into(), ..Default::default() };
+        let (other, selling, india) = (d("other.invoice"), d("selling.sales_invoice"), d("zindia.gst_invoice"));
+        // In key order, as the defaults come.
+        assert_eq!(shipped_default(&schema, &[&selling, &india]).unwrap().key, "zindia.gst_invoice", "through accounting, not by key");
+        assert_eq!(shipped_default(&schema, &[&other, &selling, &india]).unwrap().key, "other.invoice", "unrelated: the first by key");
+        assert_eq!(shipped_default(&schema, &[&selling]).unwrap().key, "selling.sales_invoice");
     }
 
     #[test]

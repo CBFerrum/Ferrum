@@ -199,8 +199,16 @@ const SYSTEM: [(&str, &str, FieldType); 6] = [
     ("updated_at", "Updated", FieldType::Datetime),
     ("created_by", "Created By", FieldType::Data),
 ];
-const PRINT: [(&str, &str); 7] =
-    [("copy", "Copy"), ("now", "Printed at"), ("language", "Language"), ("title", "Title"), ("entity", "Document type"), ("page", "Page"), ("pages", "Pages")];
+const PRINT: [(&str, &str); 8] = [
+    ("copy", "Copy"),
+    ("now", "Printed at"),
+    ("time", "Printed at, the workspace's time"),
+    ("language", "Language"),
+    ("title", "Title"),
+    ("entity", "Document type"),
+    ("page", "Page"),
+    ("pages", "Pages"),
+];
 
 struct Renderer<'a> {
     d: &'a Data<'a>,
@@ -302,6 +310,11 @@ impl<'a> Renderer<'a> {
         l.unwrap_or_else(|| ferrum_meta::humanize(parts.last().copied().unwrap_or_default()))
     }
 
+    /// Whether `print.page` and `print.pages` say nothing here: anywhere but a part the PDF service repeats.
+    fn no_page_numbers(&self) -> bool {
+        self.d.part != Part::Margin
+    }
+
     fn locale(&self) -> &'static crate::docfmt::Locale {
         crate::docfmt::locale(self.d.language)
     }
@@ -346,7 +359,8 @@ impl<'a> Renderer<'a> {
             Value::String(s) => s.clone(),
             other => other.to_string(),
         };
-        let decimal = || crate::value::parse_decimal(&g.v).ok();
+        let abs = fmt.sign == Some(ferrum_meta::layout::Sign::Abs);
+        let decimal = || crate::value::parse_decimal(&g.v).ok().map(|d| if abs { d.abs() } else { d });
         let places = |d: Decimal| fmt.decimals.map(u32::from).or_else(|| g.field.and_then(|f| f.precision)).unwrap_or_else(|| d.normalize().scale()).min(12);
         let numeric = matches!(auto, As::Number | As::Amount | As::Percent);
         let s = match auto {
@@ -550,6 +564,10 @@ impl<'a> Renderer<'a> {
                 let _ = write!(out, "<span class=\"pf-value\">{v}</span></div>");
             }
             BlockKind::Heading { text, level, size, color } => {
+                // "Page {print.page} of {print.pages}" says something only where the PDF service numbers pages.
+                if self.no_page_numbers() && TOKEN.captures_iter(text).any(|c| is_page(&c[1])) {
+                    return;
+                }
                 let lv = level.unwrap_or(1).clamp(1, 3);
                 let s = size.map(|s| format!(" style=\"font-size:{}pt\"", pt(s))).unwrap_or_default();
                 let t = self.tokens(text);
@@ -563,6 +581,11 @@ impl<'a> Renderer<'a> {
                 let s = size.map(|s| format!(" pf-s-{}", s.name())).unwrap_or_default();
                 let _ = write!(out, "<div class=\"pf-block pf-text{align}{s}{hidden}\"{data}{}>", Self::style(b.margin_top_mm, color.as_deref()));
                 for p in content {
+                    // A paragraph numbering pages is left out where pages are not numbered (the HTML, a letter head in
+                    // the body), never printed half ("Page  of ").
+                    if self.no_page_numbers() && p.spans.iter().flat_map(|sp| sp.v.iter().flat_map(|v| v.list())).any(|v| is_page(v)) {
+                        continue;
+                    }
                     let a = p.align.map(|a| a.name()).unwrap_or("start");
                     let _ = write!(out, "<p class=\"pf-a-{a}\">");
                     for sp in &p.spans {
@@ -752,13 +775,17 @@ impl<'a> Renderer<'a> {
             return;
         };
         let design = self.d.mode == Mode::Design;
-        let name = value.strip_prefix("doc.").unwrap_or_default();
         let schema: &'a Schema = self.d.schema;
-        let Some(child) = self.d.ent.field(name).filter(|f| f.ftype == FieldType::Table).and_then(|f| f.of.as_deref()).and_then(|c| schema.entity(c)) else {
-            return;
+        let Some(child) = table_rows_of(schema, self.d.ent, value) else { return };
+        // The record's lines as its reader may read them, a linked record's as they may, the company's as the workspace.
+        let parts: Vec<&str> = value.split('.').collect();
+        let holder = match parts.as_slice() {
+            ["doc", t] => self.d.doc.get(*t),
+            ["links", l, t] => self.d.links.get(*l).and_then(|r| r.get(*t)),
+            ["company", t] => self.d.company.get(*t),
+            _ => None,
         };
-        let child: &'a EffEntity = child;
-        let all: Vec<Value> = self.d.doc.get(name).and_then(Value::as_array).cloned().unwrap_or_default();
+        let all: Vec<Value> = holder.and_then(Value::as_array).cloned().unwrap_or_default();
         let rows: Vec<&Value> = all
             .iter()
             .filter(|r| match hide_zero_rows {
@@ -833,12 +860,16 @@ impl<'a> Renderer<'a> {
                         sums[j] += d;
                     }
                 }
-                let v = got.and_then(|g| self.show(&g, c.format.as_ref())).map(|x| x.0).unwrap_or_default();
+                let zero = c.hide_zero && got.as_ref().is_some_and(|g| crate::value::parse_decimal(&g.v).is_ok_and(|d| d.is_zero()));
+                let v = got.filter(|_| !zero).and_then(|g| self.show(&g, c.format.as_ref())).map(|x| x.0).unwrap_or_default();
+                // A second line only when it says something the first does not (an item's name falling back to its
+                // description prints it once).
                 let second = c
                     .secondary
                     .as_ref()
                     .and_then(|s| self.first(s, Some((r, child))).map(|g| Got { v: g.v.clone(), field: g.field, title: g.title.clone(), name: g.name.clone() }))
                     .and_then(|g| self.show(&g, None))
+                    .filter(|x| x.0 != v)
                     .map(|x| format!("<div class=\"pf-secondary\">{}</div>", x.0))
                     .unwrap_or_default();
                 let _ = write!(out, "<td class=\"pf-a-{}{}\">{v}{second}</td>", calign(c), if *on { "" } else { " pf-hidden" });
@@ -883,6 +914,23 @@ pub fn pt(s: Size) -> &'static str {
         Size::Xl => "14",
         Size::Xxl => "18",
     }
+}
+
+fn is_page(path: &str) -> bool {
+    path == "print.page" || path == "print.pages"
+}
+
+/// The entity of the rows a table block prints (`doc.<table>`, `links.<link>.<table>`, `company.<table>`), when its
+/// path names a table field there.
+pub fn table_rows_of<'a>(schema: &'a Schema, ent: &'a EffEntity, value: &str) -> Option<&'a EffEntity> {
+    let parts: Vec<&str> = value.split('.').collect();
+    let (parent, name): (&EffEntity, &str) = match parts.as_slice() {
+        ["doc", t] => (ent, t),
+        ["links", l, t] => (ent.field(l).filter(|f| f.ftype == FieldType::Link).and_then(|f| f.to.as_deref()).and_then(|e| schema.entity(e))?, t),
+        ["company", t] => (schema.entity("Company")?, t),
+        _ => return None,
+    };
+    parent.field(name).filter(|f| f.ftype == FieldType::Table).and_then(|f| f.of.as_deref()).and_then(|c| schema.entity(c)).map(|c| &**c)
 }
 
 /// A number written for CSS: at most two decimals, no exponent.
@@ -1032,10 +1080,8 @@ pub fn check(schema: &Schema, ent: Option<&EffEntity>, l: &Layout) -> Vec<(Strin
     }
     for b in l.blocks() {
         if let BlockKind::Table { value, columns, hide_zero_rows, .. } = &b.kind {
-            let name = value.strip_prefix("doc.").unwrap_or_default();
-            let child = ent.and_then(|e| e.field(name)).filter(|f| f.ftype == FieldType::Table).and_then(|f| f.of.as_deref()).and_then(|c| schema.entity(c));
-            let Some(child) = child else {
-                out.push((b.id.clone(), format!("{value} is not one of the record's tables")));
+            let Some(child) = ent.and_then(|e| table_rows_of(schema, e, value)) else {
+                out.push((b.id.clone(), format!("{value} is not a table of the record, of a record it links to or of the company")));
                 continue;
             };
             for (id, p) in columns
@@ -1094,17 +1140,19 @@ pub fn catalogue(schema: &Schema, ent: &EffEntity) -> Value {
     let values = |e: &EffEntity, root: &str| -> Vec<Value> {
         e.def.fields.iter().filter(|f| printable(f) && f.ftype != FieldType::Table).map(|f| describe(f, format!("{root}.{}", f.name))).collect()
     };
+    // The tables of `e` a table block may print, at `root.<table>`, each with its columns as `row.*`.
+    let tables_of = |e: &EffEntity, root: &str| -> Vec<Value> {
+        e.def
+            .fields
+            .iter()
+            .filter(|f| printable(f) && f.ftype == FieldType::Table)
+            .filter_map(|f| {
+                let c = schema.entity(f.of.as_deref()?)?;
+                Some(json!({"path": format!("{root}.{}", f.name), "label": f.label(), "of": c.def.name, "columns": values(c, "row")}))
+            })
+            .collect()
+    };
     let system: Vec<Value> = SYSTEM.iter().map(|(n, l, t)| json!({"path": format!("doc.{n}"), "label": l, "type": t})).collect();
-    let tables: Vec<Value> = ent
-        .def
-        .fields
-        .iter()
-        .filter(|f| printable(f) && f.ftype == FieldType::Table)
-        .filter_map(|f| {
-            let c = schema.entity(f.of.as_deref()?)?;
-            Some(json!({"path": format!("doc.{}", f.name), "label": f.label(), "of": c.def.name, "columns": values(c, "row")}))
-        })
-        .collect();
     let links: Vec<Value> = ent
         .def
         .fields
@@ -1113,7 +1161,7 @@ pub fn catalogue(schema: &Schema, ent: &EffEntity) -> Value {
         .filter_map(|f| {
             let t = schema.entity(f.to.as_deref()?)?;
             let root = format!("links.{}", f.name);
-            Some(json!({"path": root, "field": f.name, "to": t.def.name, "label": f.label(), "fields": values(t, &root)}))
+            Some(json!({"path": root, "field": f.name, "to": t.def.name, "label": f.label(), "fields": values(t, &root), "tables": tables_of(t, &root)}))
         })
         .collect();
     let computed: Vec<Value> = ent
@@ -1124,11 +1172,11 @@ pub fn catalogue(schema: &Schema, ent: &EffEntity) -> Value {
         .map(|f| json!({"path": format!("doc.{}", f.name), "format": "words", "label": format!("{} in words", f.label())}))
         .collect();
     let links_company = ent.def.fields.iter().any(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some("Company")) || ent.def.name == "Company";
-    let company = match schema.entity("Company") {
-        Some(c) if links_company => values(c, "company"),
-        _ => vec![],
+    let (company, company_tables) = match schema.entity("Company") {
+        Some(c) if links_company => (values(c, "company"), tables_of(c, "company")),
+        _ => (vec![], vec![]),
     };
-    let print: Vec<Value> = PRINT.iter().take(5).map(|(n, l)| json!({"path": format!("print.{n}"), "label": l})).collect();
+    let print: Vec<Value> = PRINT.iter().take(6).map(|(n, l)| json!({"path": format!("print.{n}"), "label": l})).collect();
     let settings: Vec<Value> = schema
         .entities
         .values()
@@ -1137,8 +1185,16 @@ pub fn catalogue(schema: &Schema, ent: &EffEntity) -> Value {
         .collect();
     json!({
         "entity": {"name": ent.def.name, "label": ent.def.label, "submittable": ent.def.submittable},
-        "fields": values(ent, "doc"), "system": system, "tables": tables, "links": links, "company": company,
-        "computed": computed, "print": print, "settings": settings,
+        "fields": values(ent, "doc"), "system": system, "tables": tables_of(ent, "doc"), "links": links, "company": company,
+        "company_tables": company_tables, "computed": computed, "print": print, "settings": settings,
+        // What a value's format and a table's column may say, for the designer's pickers.
+        "options": {
+            "format": {"as": ["auto", "text", "multiline", "number", "amount", "percent", "date", "datetime", "words", "check"],
+                       "show": ["symbol", "code", "none"], "date": ["short", "long"], "sign": ["abs"]},
+            "table_column": {"hide_zero": "a cell whose value is zero is left blank",
+                             "secondary": "printed under the value, only when it differs from it"},
+            "letter_head_pages": ["print.page", "print.pages"],
+        },
     })
 }
 

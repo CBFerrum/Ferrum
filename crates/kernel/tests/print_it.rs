@@ -37,6 +37,7 @@ overlays:
       - {op: add_field, field: {name: acc_bank_name, type: data}}
       - {op: add_field, field: {name: acc_bank_account_no, type: data}}
       - {op: add_field, field: {name: acc_bank_branch_code, type: data}}
+      - {op: add_field, field: {name: acc_registrations, type: table, of: AccRegistration}}
 documents:
   - key: shop.invoice
     label: Invoice
@@ -67,6 +68,12 @@ const ENTITIES: &str = r#"
     - {name: customer_name, type: data, required: true}
     - {name: billing_address, type: text}
     - {name: in_gstin, type: data}
+- name: AccRegistration
+  label: Registration
+  kind: child
+  fields:
+    - {name: region, type: data}
+    - {name: reg_no, type: data}
 - name: Vault
   label: Vault
   kind: master
@@ -356,7 +363,8 @@ async fn scenario() {
             "Company",
             obj(json!({"company_name": "Acme <India> Pvt Ltd", "abbr": "ACME", "default_currency": id_of(&inr), "acc_logo": logo_url,
                        "acc_print_terms": "Payment within 30 days.", "acc_bank_name": "State Bank", "acc_bank_account_no": "0011223344",
-                       "acc_bank_branch_code": "SBIN0001"})),
+                       "acc_bank_branch_code": "SBIN0001",
+                       "acc_registrations": [{"region": "Karnataka", "reg_no": "29ABCDE1234F1Z5"}, {"region": "Maharashtra", "reg_no": "27ABCDE1234F1Z9"}]})),
         )
         .await
         .unwrap();
@@ -447,7 +455,7 @@ async fn scenario() {
         (json!({"id": "f", "type": "field", "value": "doc.number", "when": "doc.(("}), "layout.f", "does not compile"),
         (json!({"id": "f", "type": "field", "value": "doc.number", "color": "red;background:url(x)"}), "layout.f", "#rrggbb"),
         (json!({"id": "t", "type": "table", "value": "doc.items", "columns": [{"id": "c1", "value": "doc.total"}]}), "layout.c1", "row.*, not doc.*"),
-        (json!({"id": "t", "type": "table", "value": "doc.nope", "columns": [{"id": "c1", "value": "row.qty"}]}), "layout.t", "not one of the record's tables"),
+        (json!({"id": "t", "type": "table", "value": "doc.nope", "columns": [{"id": "c1", "value": "row.qty"}]}), "layout.t", "is not a table of the record"),
         (json!({"id": "i", "type": "image", "src": {"file": "https://evil.test/x.png"}}), "layout.i", "this workspace's files"),
         (json!({"id": "s2", "type": "spacer", "height_mm": 500}), "layout.s2", "1 to 100"),
     ] {
@@ -574,7 +582,10 @@ async fn scenario() {
         page.contains("<header class=\"pf-letterhead\">") && page.contains("Acme &lt;India&gt; Pvt Ltd</h2>"),
         "the company's letter head, in the body: {page}"
     );
-    assert!(page.contains("<footer class=\"pf-letterhead-foot\">") && page.contains("Page  of "), "no page numbers outside the PDF");
+    assert!(
+        page.contains("<footer class=\"pf-letterhead-foot\">") && !page.contains("Page  of") && !page.contains(">Page "),
+        "no half page numbers outside the PDF: {page}"
+    );
     let none = text(&k.print_record(&clerk, "SalesInvoice", iid, &PrintAsk { letterhead: Some("none".into()), ..Default::default() }).await.unwrap().bytes);
     assert!(!none.contains("<header class=\"pf-letterhead\""), "letterhead=none");
     RENDERED.lock().unwrap().clear();
@@ -739,6 +750,51 @@ async fn scenario() {
     );
     assert_eq!(page.matches("<div class=\"pf-block pf-barcode").count(), 3, "code128, ean13, qr: {page}");
     assert!(warnings.iter().any(|w| w.starts_with("badean:")) && warnings.iter().any(|w| w.starts_with("bigqr:") && w.contains("1000 bytes")), "{warnings:?}");
+
+    // ── what the ERP's formats needed: a sign left off, a zero cell blank, a company's table, one line said once, the
+    // time of printing ──
+    let mut credit = invoice(1, "Credit");
+    credit.insert("grand_total".into(), json!("-3186"));
+    credit.insert(
+        "items".into(),
+        json!([{"item_name": "", "description": "Returned widget", "qty": "-1", "rate": "500", "discount_percent": "0", "amount": "-500"}]),
+    );
+    let crid = id_of(&k.insert(&admin, "SalesInvoice", credit).await.unwrap());
+    let extras = json!({"version": 1, "sections": [{"id": "s", "columns": [{"id": "c", "blocks": [
+        {"id": "gt", "type": "field", "value": "doc.grand_total", "label": "Total", "format": {"as": "amount", "sign": "abs"}},
+        {"id": "gw", "type": "field", "value": "doc.grand_total", "label": "Words", "format": {"as": "words", "sign": "abs"}},
+        {"id": "lines", "type": "table", "value": "doc.items", "columns": [
+            {"id": "d", "value": ["row.item_name", "row.description"], "secondary": "row.description"},
+            {"id": "q", "value": "row.qty", "format": {"as": "number", "sign": "abs"}},
+            {"id": "z", "value": "row.discount_percent", "label": "Disc", "hide_zero": true}]},
+        {"id": "regs", "type": "table", "value": "company.acc_registrations", "columns": [{"id": "r", "value": "row.region"}, {"id": "n", "value": "row.reg_no"}]},
+        {"id": "at", "type": "field", "value": "print.time", "label": "Printed"}
+    ]}]}]});
+    let (page, _) = html_of(
+        k.preview_print(
+            &admin,
+            &PreviewAsk { template: serde_json::to_value(layout_def("extras", extras)).unwrap(), record: Some(crid), ..Default::default() },
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(
+        page.contains("<span class=\"pf-value\">₹3,186.00</span>") && page.contains("three thousand one hundred eighty-six rupees") && !page.contains("minus"),
+        "{page}"
+    );
+    assert_eq!(page.matches("Returned widget").count(), 1, "said once: {page}");
+    assert!(
+        page.contains("<td class=\"pf-a-end\">1</td>") && page.contains("<td class=\"pf-a-end\"></td>"),
+        "qty without its sign, a zero discount blank: {page}"
+    );
+    assert!(page.contains("29ABCDE1234F1Z5") && page.contains("Maharashtra"), "the company's own table: {page}");
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    assert!(page.contains(&format!("<span class=\"pf-label\">Printed</span><span class=\"pf-value\">{}", &today[..4])), "the time of printing");
+    let bad = one_block(json!({"id": "t", "type": "table", "value": "links.customer.nope", "columns": [{"id": "x", "value": "row.x"}]}));
+    assert!(fields_of(&k.save_document_template(&admin, &layout_def("bad_t2", bad)).await.unwrap_err()).iter().any(|(f, _)| f == "layout.t"));
+    let cat = k.document_fields(&admin, "SalesInvoice").unwrap();
+    assert!(cat["company_tables"][0]["path"] == json!("company.acc_registrations") && cat["options"]["format"]["sign"] == json!(["abs"]));
+    assert!(cat["print"].as_array().unwrap().iter().any(|p| p["path"] == "print.time"));
 
     // ── the designer's canvas, the sample record, the catalogue ──
     let (canvas, _) =
