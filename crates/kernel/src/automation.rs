@@ -1352,7 +1352,7 @@ pub(crate) async fn execute(
                 actions,
                 show,
                 params: fixed,
-                expires_at: link_expiry(days, until.as_deref().map(|u| eval(u)).transpose()?.as_ref())?,
+                expires_at: link_expiry(days, until.as_deref().map(&eval).transpose()?.as_ref())?,
                 uses,
                 code_to: text(&code_to)?,
                 recipient: text(&recipient)?,

@@ -455,7 +455,7 @@ impl Kernel {
         let fields = link
             .show
             .iter()
-            .filter(|n| !link.columns.get(n.as_str()).is_some())
+            .filter(|n| link.columns.get(n.as_str()).is_none())
             .filter_map(|n| {
                 ent.field(n).map(|f| {
                     (f.label().to_string(), if f.ftype == FieldType::Link { shown(doc.get("_titles").and_then(|t| t.get(n))) } else { shown(doc.get(n)) })
