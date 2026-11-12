@@ -1146,8 +1146,17 @@ portal role meant re-granting every other role, and an app could not group a fie
   (`packaged = false`), never rewritten. Rows written before this release (whose they are is unknown) take only `hide`
   from the package, while theirs is empty, since nobody could have set it. Before, package rule rows were inserted
   `on conflict do nothing`: a corrected rule never reached an earlier workspace.
+* **A packaged row follows its own package only** (corrected 13 November 2026). The row keeps the package that wrote
+  it (`role_permission.package`): a release rewrites the row only when that package wrote it. Two packages declaring a
+  rule for the same role and entity (several apps add rules to shared roles) leave the first row as it is, as before
+  this decision: as first shipped, each overwrote the other's in install order, and CRM's `Lead.convert_to_customer`
+  lost its grant on Address. A row written as packaged by the two releases before the correction carries no package:
+  its origin is unknown, so no package claims it (its grants stay; its `hide` is taken only while empty, as a row from
+  before this decision). Another package's row never takes this package's `hide`.
 
-Tests (`rule_hide_it`): refused when saved (five ways); a portal person's three projects (hidden only through the
+Tests (`packaged_rules_it`: two packages' rules for one role and entity in both install orders, the first kept and
+the second changing nothing; the first package's corrected grant and `hide` reaching the workspace; a row of unknown
+origin claimed by neither; an administrator's edit kept through both). (`rule_hide_it`): refused when saved (five ways); a portal person's three projects (hidden only through the
 client's rule, shown through the sponsor's, shown on the one both reach) through read, list, `fields=`, filter, sort,
 search, a print and writes; staff hiding it everywhere, history included, and staff also holding a showing rule; a
 package's rule following a release, a row from before taking `hide`, an administrator's edit kept.
@@ -1278,3 +1287,141 @@ Tests: `approvals_it` (a quorum of two kept when the record changes to one, nine
 `need` that does not compile refused), `actions_it` `absent_params`, `targets_it` `engine_writes` (a paused ticket
 resumed by `set_values_tx`), `messages_it` (an erased opt-out refuses the render on both channels; a promotional
 render's link and headers; none on an operational one).
+
+## BD-46. Answers beyond a JSON body
+
+Decided 13 November 2026. Four apps moved onto connections (BD-29) and listed what a description could not say; Social
+and CRM hit these.
+
+* **A value read from an answer is a pick**: an operation's `result` value is a JSON pointer, as before, or an object
+  (`{at}`, `{header: "Location"}`, `{link: "next"}` for the target of the `Link` header entry whose `rel` holds that
+  word, made absolute against the answer's address, or `{expr}`), with `required: true` for one that must be there.
+  A pointer whose key is not there reads as null; a required one that reads null fails the call (`the answer has no
+  <name>`). An expression is the platform's (sums, text joins, `coalesce`) over `answer`, `headers` (lower-case names),
+  `inputs` and `connection` (`{name, id}`); never `secret`.
+* **In a mapping too** (inbound and pulls): a value is a pointer into the item (`/a/b`, null when not there), an
+  expression as before (a string that is not a pointer, which still fails the item on a missing key, as CEL does),
+  or `{at | expr, required}`; `connection` is bound. Why read the values first and hand the `find` effect only what
+  they gave (`picked`): one evaluation, and `required` judged before anything is written.
+* **Why the object is kept as text in `result`**: ERP builds `Operation` in code, so its fields keep their types; an
+  object value is stored as `connections::SPEC` and its JSON (`connections::spec(&json!(…))` from Rust) and written
+  back as the object. A pointer never starts with that character.
+* **A pull pages by `next_at`**, now a pick: a pointer, a header, or `{link: "next"}`, whose address is asked as it is
+  for the next page (the operation's headers and credentials, the guard checking its host like any address).
+* **Retry-After**: a temporary answer's `Retry-After` (seconds or an HTTP date; at least 1 s, at most an hour) sets when
+  a queued call's job and a pull's retry come back instead of the backoff, each still an attempt
+  (`Error::RetryAfter`, a 503 like `Unavailable`). An app's own `connections::call` still sees `Unavailable`.
+
+Tests (`connections_it` `answers`, unit tests): a post's id and address from headers, a sum and the connection's name
+from expressions, a missing pointer null, a required one failing; an answer's expression cannot read a secret; a 429
+with `Retry-After: 120` queued again ~120 s on; a feed paged by its `Link` header, and one whose `Link` names another
+host refused by the guard; an item without its required key failing the payload, an optional one null; links and
+`Retry-After` dates parsed and capped.
+
+## BD-47. Bodies beyond JSON
+
+Decided 13 November 2026. Social uploads media; ERP fetched carriers' labels from addresses in answers outside
+connections.
+
+* **A stored file sent**: a `form` value may be `{file, name?, content_type?, max_bytes?}` (templates giving the file's
+  id and its name), which makes the form `multipart/form-data` (as does a `content-type: multipart/form-data` header);
+  `body` may be the same object, the file then the whole body with its type. The caller must be able to read the file
+  as downloading asks (a queued call reads as the system); each file at most its `max_bytes` (10 MB, at most 25 MB) and
+  one request's files 25 MB in all; checked before anything is sent. Names in a part are the description's; a file
+  name's quotes and line breaks are percent-encoded and a type's control characters dropped, so no part adds a header.
+  Not streamed: the object store's interface reads a file whole (`FileStore::get`); the limits keep that small.
+* **A file an answer gives**: a `result` value `{file: {from?, name?, max_bytes?}}`. Without `from` the answer itself is
+  the file (the operation's answer limit is then the file's); with `from`, the address at that pointer is fetched
+  through the guard, within the connection's own hosts, without its credentials (a signed address needs none; sending
+  them to an address an answer chose is what this refuses). Stored as uploads are (scanned, counted against the
+  workspace's storage), attached to the record the call names, the value its id. A test connection fetches nothing.
+
+Tests (`connections_it` `files`, unit test): a multipart form with a caption and a photo, a photo as the whole body; a
+file over the operation's limit and another person's upload refused with nothing sent; a label fetched from the
+address in the answer, stored, attached to the parcel, no credentials sent; an address off the connection's hosts and
+a file over its limit refused; an image answer stored; a part's name and type cannot break their lines.
+
+## BD-48. Sign-in that is not the authorisation-code flow
+
+Decided 13 November 2026. Social's networks with app-password sessions; the broker's proof-of-possession and
+registration.
+
+* **`auth: session`**: `{login, refresh?, token_at, refresh_at?, expires_at?, header?, prefix?}`. The `login`
+  operation (templates over the connection's `secret`) gives a token at `token_at`; `refresh` (given
+  `inputs.refresh_token`) renews it, else the login is made again. The expiry is seconds from now, a Unix time (past
+  10^9) or a moment. The workspace's account (`conn_token`, nil user), sealed, refreshed a minute ahead by a call and
+  ten minutes ahead by the job, once again after a 401, under a lock per connection so that two calls never both log
+  in. A login or a refresh the service refuses marks it `needs_reconnecting` and tells the administrators once (who
+  connected it, else every administrator): a wrong password is tried once, not on every call (an account lockout).
+  Saving or merging its secrets, or `POST /api/admin/connections/{id}/session`, signs in afresh.
+* **The login and refresh are never operations**: an app, a person, an effect, the gate, a pull and "try this" are
+  refused them (their answer is a token), they are made without credentials of their own and never captured.
+* **DPoP (RFC 9449)**: `provider.dpop: true` binds tokens to an ES256 key pair of the connection's own, made with
+  `ring` (already the workspace's) and sealed among its secrets (`_dpop_key`, so `reseal_secrets` moves it): a proof on
+  the token request and on every call (`Authorization: DPoP`, `ath` the token's digest), the nonce a server asks for
+  (`use_dpop_nonce`, at the token address a 400, at a service a 401) kept per connection and server and the request
+  made once more. Not done: `dpop_jkt` on the authorisation request, and pushed authorisation requests.
+* **Dynamic client registration (RFC 7591)**: `provider.registration_url` (its metadata's `registration_endpoint`; the
+  platform does not fetch discovery documents) with no `client_id`: the first sign-in registers the platform's client
+  (the exact callback, `client_secret_basic`, the scopes, `dpop_bound_access_tokens`), once, under the connection's
+  lock, and keeps it sealed (`_client_id`, `_client_secret`). Names starting with `_` are the platform's: never listed,
+  set or dropped by an administrator.
+
+Tests (`connections_it` `sessions`): signed in on first use, once; the login and refresh refused as operations, to
+"try" and to a pull; refreshed by its operation when expiring and after a 401; a refused refresh telling the
+administrators once over two calls without another login; reconnected; a wrong password tried once over two calls; a
+provider that registers its client (once, with the exact callback) and binds tokens: the token request asked again
+with its nonce, a call's proof under the same key with the token's digest and the service's nonce; the client secret,
+tokens and password at rest nowhere.
+
+## BD-49. Inbound without a timestamp
+
+Decided 13 November 2026. ERP's carriers sign the raw body only, so their tracking stopped arriving.
+
+* `verify: signature` without `timestamp_header` signs the raw body alone, and is saved only when the inbound names the
+  caller's delivery id (`delivery_header` or `delivery_at`). The replay guard is the delivery id and the digest of the
+  body, each taken once while the delivery is kept (90 days once processed): a header is not signed, so a captured body
+  sent again under a new delivery id is a replay too. Refusals are the same 401 as every other.
+
+Tests (`connections_it`, unit tests): refused when saved without a delivery id; a body sent again under a new id, an id
+again with another body and a wrong signature refused alike and counted; a new delivery taken; a signature over a
+timestamp not taken for one over the body.
+
+## BD-50. Operating a connection
+
+Decided 13 November 2026. ERP, Social and CRM.
+
+* **Secrets merged**: `PATCH /api/admin/connections/{id}/secrets {set, remove}` sets or replaces the named secrets and
+  removes others, keeping the rest; the audit trail names them (`secrets: {set, removed}`), never their values.
+* **`meta`** on a description: an object (16 KB at most) kept and given back, never read by the platform.
+* **A pull on a person's own connection** (`owner: person`) runs as each person connected: one row, cursor and failure
+  streak each (`conn_pull.user_id`), made when they connect, run with their sign-in and their rights for the mapping
+  (the `find` effect as them). Their account closed: their pulls go. Their sign-in needing reconnecting: the pull waits
+  (the broker told them once), and connecting again runs it at once. A failed run tells them, not the administrators.
+* **Fetched from outside**: a mapping's `outside: true` writes as a context whose `origin` is `outside`
+  (`Ctx::origin`). The change's events carry `origin`; an automation's condition and effects read `origin` (empty for
+  any other change). What apps must check: an automation or effect a package declares for new records that reaches
+  people (invitations, notifications) adds `origin != 'outside'` to its condition; an app's hook reads `ctx.origin`;
+  an app's event subscriber reads the event's `origin`. The platform cannot tell an outbound effect from another, so
+  it does not skip any by itself.
+
+Tests (`connections_it` `operating`): a secret added and removed by name, the rest kept, refused to a non-administrator,
+audited without its value; `meta` kept, a text and an oversized one refused; nothing pulled before anyone connects; a
+person's pull making a record as her, passed by an automation for new records that greets one made here; waiting while
+her sign-in needs reconnecting with nothing more told, running again once she connects; gone when her account closes.
+
+## BD-51. The connector hub's instances move, and the App API 0.3.5
+
+Decided 13 November 2026.
+
+* **Two controllers mounted `/api/admin/connections`**: the older connector hub (`connect.rs`, docs/connectors.md) and
+  connections (BD-29). axum panics on a path and method mounted twice, so a server built from main did not start. The
+  hub's instance routes move under `/api/admin/connector-instances` (`GET`/`POST`, `/{id}` `PUT`/`DELETE`, `/{id}/test`,
+  `/{id}/schema`, `/{id}/sync`, `/{id}/reconcile`, `/{id}/drift`, `/{id}/activity`); `/api/admin/connectors`,
+  `/api/admin/connection-drift/{id}/resolve` and `/api/connect/{id}/webhook` keep theirs. `routes_it` builds the whole
+  application's router as the binary does and lists each controller's paths once.
+* **The App API is 0.3.5**; an app using any of this says `platform: ">=0.3.5, <0.4"`. 0.3.5 carries: result and
+  mapping picks (`header`, `link`, `expr`, `required`, null for a missing pointer, `connections::spec`), `next_at` as a
+  pick, `Retry-After` and `Error::RetryAfter`; file parts, file bodies and file results; `auth: session`,
+  `provider.dpop`, `provider.registration_url` and `connect_session`; `verify: signature` without a timestamp;
+  `merge_connection_secrets`, `meta`, per-person pulls, a mapping's `outside` and `Ctx::origin`.

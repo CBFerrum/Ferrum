@@ -1679,6 +1679,9 @@ impl Kernel {
             "depth": ctx.depth,
             "request_id": ctx.request_id,
         });
+        if let Some(o) = &ctx.origin {
+            payload["origin"] = json!(o);
+        }
         // A transition says which, from and to (BD-19): what an automation on `transitioned` reads as `transition`.
         if let (Some(a), Some(o), Some(n)) = (audit_action.strip_prefix("workflow:"), old, new) {
             payload["transition"] = json!({"action": a, "from": o.get("workflow_state"), "to": n.get("workflow_state"), "by": payload["actor"]});
@@ -1727,6 +1730,9 @@ impl Kernel {
         let actor = (!ctx.user.is_nil()).then_some(ctx.user);
         let mut payload =
             json!({"entity": ent.def.name, "id": id, "event": event, "actor": actor, "depth": ctx.depth, "request_id": ctx.request_id, key: about});
+        if let Some(o) = &ctx.origin {
+            payload["origin"] = json!(o);
+        }
         let v = Value::Object(doc.clone());
         if serde_json::to_vec(&v).map(|b| b.len()).unwrap_or(usize::MAX) <= MAX_EVENT_DOC_BYTES {
             payload["doc"] = v;

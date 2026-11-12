@@ -356,7 +356,11 @@ impl Kernel {
                 .bind(job.lease_token)
                 .bind(last)
                 .bind(shown(e))
-                .bind(backoff(job.attempts))
+                // A service that said when to come back is asked then, not on the backoff.
+                .bind(match e {
+                    Error::RetryAfter(_, secs) => *secs as f64,
+                    _ => backoff(job.attempts),
+                })
                 .execute(&mut *tx)
                 .await?;
                 if last && failed.rows_affected() > 0 && job.created_by.is_some() {

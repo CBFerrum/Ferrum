@@ -5,7 +5,7 @@
 //!
 //! Unknown, unsigned, wrongly signed, stale, too large and replayed calls are answered alike, and counted.
 
-use super::{Encoding, Loaded, at};
+use super::{Encoding, Loaded, Pick, at};
 use crate::Kernel;
 use crate::automation::{AutomationAction, Step};
 use crate::ctx::Ctx;
@@ -68,11 +68,14 @@ pub struct Inbound {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Verify {
     /// HMAC-SHA256 under the secret of `<timestamp>.<raw body>`, in `header` as `<prefix><hex or base64>`; the Unix time
-    /// in `timestamp_header`, within `window_secs` (300) of now.
+    /// in `timestamp_header`, within `window_secs` (300) of now. Without a timestamp, of the raw body alone: the inbound
+    /// then names the caller's delivery id (`delivery_header` or `delivery_at`), and a delivery id or a body taken once
+    /// is refused again while the call is kept.
     Signature {
         header: String,
         secret: String,
-        timestamp_header: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp_header: Option<String>,
         #[serde(default)]
         encoding: Encoding,
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -85,21 +88,28 @@ pub enum Verify {
 }
 
 /// A payload, or each item of it, onto records: the one record of `entity` whose `by` fields hold the values given is
-/// changed with `set`; none, and one is made with `by`, `set` and `create` (unless `update_only`). Each value an
-/// expression over `payload` (all of it) and `item` (the item, or all of it).
+/// changed with `set`; none, and one is made with `by`, `set` and `create` (unless `update_only`). Each value a
+/// [`Pick`] of the item: a pointer (`/a/b`, null when the key is not there), or an expression over `payload` (all of it),
+/// `item` (the item, or all of it) and `connection` (`{name, id}`); `{"at" | "expr": …, "required": true}` fails the
+/// item when it gives null.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mapping {
     pub entity: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items_at: Option<String>,
-    pub by: BTreeMap<String, String>,
+    pub by: BTreeMap<String, Pick>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub set: BTreeMap<String, String>,
+    pub set: BTreeMap<String, Pick>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub create: BTreeMap<String, String>,
+    pub create: BTreeMap<String, Pick>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub update_only: bool,
+    /// The records it writes are fetched from outside: their changes carry `origin: outside` (BD-50), which a hook
+    /// reads as `ctx.origin` and an automation as `origin`, so that what a new record sets going (an invitation, a
+    /// notification) is not sent for one that came from another system.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside: bool,
 }
 
 /// An app's code for what a connection accepts. Runs in the transaction that marks the call processed: what it changes
@@ -109,19 +119,53 @@ pub trait InboundHandler: Send + Sync {
     async fn handle(&self, k: &Kernel, tx: &mut Tx, ctx: &Ctx, connection: &str, payload: &Value) -> Result<()>;
 }
 
+/// The three parts of a mapping, by the name its values are bound under.
+const PARTS: [&str; 3] = ["by", "set", "create"];
+
 impl Mapping {
-    /// The effect it is: a `find` that changes or makes.
+    fn parts(&self) -> [&BTreeMap<String, Pick>; 3] {
+        [&self.by, &self.set, &self.create]
+    }
+
+    /// The effect it is: a `find` that changes or makes, each value read from `picked` (what [`Mapping::pick`] gave).
     fn step(&self) -> Step {
-        let mut create = self.by.clone();
-        create.extend(self.set.clone());
-        create.extend(self.create.clone());
+        let bound = |part: &str, m: &BTreeMap<String, Pick>| -> BTreeMap<String, String> {
+            m.keys().map(|f| (f.clone(), format!("picked[\"{part}\"][\"{f}\"]"))).collect()
+        };
+        let (by, set) = (bound("by", &self.by), bound("set", &self.set));
+        let mut create = by.clone();
+        create.extend(set.clone());
+        create.extend(bound("create", &self.create));
         let action = AutomationAction::Find {
             entity: self.entity.clone(),
-            by: self.by.clone(),
+            by,
             create: (!self.update_only).then_some(create),
-            update: (!self.set.is_empty()).then(|| self.set.clone()),
+            update: (!self.set.is_empty()).then_some(set),
         };
         Step { when: None, action }
+    }
+
+    /// Each value read from `item` (`vars` bound for an expression), by part and field; one `required` and null is
+    /// refused, naming it.
+    fn pick(&self, item: &Value, vars: &[(&str, &Value)]) -> Result<Value> {
+        let mut out = serde_json::Map::new();
+        for (part, m) in PARTS.iter().zip(self.parts()) {
+            let mut got = serde_json::Map::new();
+            for (field, pick) in m {
+                let p = pick.spec(true);
+                let v = match (&p.at, &p.expr) {
+                    (Some(at), _) => item.pointer(at).cloned().unwrap_or(Value::Null),
+                    (None, Some(e)) => crate::automation::eval_with(e, &Value::Null, &Value::Null, vars)?,
+                    _ => Value::Null,
+                };
+                if p.required && v.is_null() {
+                    return Err(Error::invalid(format!("{field} is required and the item gives none")));
+                }
+                got.insert(field.clone(), v);
+            }
+            out.insert(part.to_string(), Value::Object(got));
+        }
+        Ok(Value::Object(out))
     }
 
     pub(crate) fn problem(&self, schema: &ferrum_meta::Schema) -> Option<String> {
@@ -134,6 +178,11 @@ impl Mapping {
         if let Some(p) = self.items_at.as_deref().and_then(super::pointer_problem) {
             return Some(p);
         }
+        for (part, m) in PARTS.iter().zip(self.parts()) {
+            if let Some((f, p)) = m.iter().find_map(|(f, p)| Some((f, p.problem(false)?))) {
+                return Some(format!("map.{part}.{f}: {p}"));
+            }
+        }
         crate::automation::check_step(&self.step()).err().map(|e| format!("map: {e}"))
     }
 }
@@ -142,8 +191,11 @@ impl Inbound {
     pub(crate) fn problem(&self, apps: &[String]) -> Option<String> {
         let (header, secret) = match &self.verify {
             Verify::Signature { header, secret, timestamp_header, window_secs, .. } => {
-                if let Some(p) = super::header_problem(timestamp_header) {
+                if let Some(p) = timestamp_header.as_deref().and_then(super::header_problem) {
                     return Some(p);
+                }
+                if timestamp_header.is_none() && self.delivery_header.is_none() && self.delivery_at.is_none() {
+                    return Some("inbound: a signature without a timestamp names the caller's delivery id (delivery_header or delivery_at)".into());
                 }
                 if window_secs.is_some_and(|w| !(1..=MAX_WINDOW_SECS).contains(&w)) {
                     return Some(format!("inbound.verify.window_secs is 1 to {MAX_WINDOW_SECS}"));
@@ -196,17 +248,23 @@ fn verified(conn: &Loaded, inbound: &Inbound, header: &dyn Fn(&str) -> Option<St
     let stands_for = match &inbound.verify {
         Verify::Signature { header: h, secret: s, timestamp_header, encoding, prefix, window_secs } => {
             let secret = secret(s)?;
-            let ts = header(timestamp_header)?;
-            let when: i64 = ts.trim().parse().ok()?;
-            if (now - when).abs() > window_secs.unwrap_or(DEFAULT_WINDOW_SECS) {
-                return None;
-            }
+            let what = match timestamp_header {
+                Some(th) => {
+                    let ts = header(th)?.trim().to_string();
+                    let when: i64 = ts.parse().ok()?;
+                    if (now - when).abs() > window_secs.unwrap_or(DEFAULT_WINDOW_SECS) {
+                        return None;
+                    }
+                    [ts.as_bytes(), b".", body].concat()
+                }
+                None => body.to_vec(),
+            };
             let given = header(h)?;
             let given = given.strip_prefix(prefix.as_str()).unwrap_or(&given).to_string();
-            if !signed(&secret, &[ts.trim().as_bytes(), b".", body], &given, *encoding) {
+            if !signed(&secret, &[&what], &given, *encoding) {
                 return None;
             }
-            hex::encode(Sha256::digest([ts.trim().as_bytes(), b".", body].concat()))
+            hex::encode(Sha256::digest(&what))
         }
         Verify::Token { header: h, secret: s } => {
             let secret = secret(s)?;
@@ -254,16 +312,20 @@ impl Kernel {
             .or_else(|| at(&payload, inbound.delivery_at.as_deref()))
             .filter(|d| !d.is_empty() && d.len() <= 200)
             .unwrap_or(stands_for);
+        // Signed without a timestamp: the body is taken once too, whatever delivery id comes beside it.
+        let untimed = matches!(inbound.verify, Verify::Signature { timestamp_header: None, .. });
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
-        let fresh = sqlx::query("insert into conn_inbound (tenant_id, conn_id, delivery, payload) values ($1, $2, $3, $4) on conflict do nothing")
-            .bind(conn.tenant)
-            .bind(conn.id)
-            .bind(&delivery)
-            .bind(&payload)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected()
-            == 1;
+        let fresh =
+            sqlx::query("insert into conn_inbound (tenant_id, conn_id, delivery, payload, body_digest) values ($1, $2, $3, $4, $5) on conflict do nothing")
+                .bind(conn.tenant)
+                .bind(conn.id)
+                .bind(&delivery)
+                .bind(&payload)
+                .bind(untimed.then(|| hex::encode(Sha256::digest(body))))
+                .execute(&mut *tx)
+                .await?
+                .rows_affected()
+                == 1;
         if !fresh {
             tx.rollback().await?;
             return self.refuse_inbound(&conn).await;
@@ -282,8 +344,8 @@ impl Kernel {
         Err(refused())
     }
 
-    /// Maps `payload` (each item at `items_at`, or all of it) onto records in `tx`. How many items.
-    pub(crate) async fn apply_mapping(&self, ctx: &Ctx, tx: &mut Tx, map: &Mapping, payload: &Value) -> Result<usize> {
+    /// Maps `payload` (each item at `items_at`, or all of it) onto records in `tx`, for connection `conn`. How many items.
+    pub(crate) async fn apply_mapping(&self, ctx: &Ctx, tx: &mut Tx, map: &Mapping, payload: &Value, conn: &Loaded) -> Result<usize> {
         let items = match map.items_at.as_deref() {
             Some(p) => payload.pointer(p).and_then(Value::as_array).cloned().unwrap_or_default(),
             None => vec![payload.clone()],
@@ -292,11 +354,19 @@ impl Kernel {
             return Err(Error::invalid(format!("{} items, more than the {MAX_ITEMS} one call maps", items.len())));
         }
         let empty = json!({});
+        let connection = json!({"name": conn.name, "id": conn.id});
+        let outside;
+        let ctx = if map.outside {
+            outside = Ctx { origin: Some("outside".into()), ..ctx.clone() };
+            &outside
+        } else {
+            ctx
+        };
         for (i, item) in items.iter().enumerate() {
-            let extra = [("payload", payload), ("item", item)];
-            crate::automation::run_step(self, ctx, tx, &map.entity, None, (&empty, &empty), &empty, &extra, "inbound", map.step())
-                .await
-                .map_err(|e| crate::pack::about(&format!("item {}", i + 1), e))?;
+            let at = |e| crate::pack::about(&format!("item {}", i + 1), e);
+            let picked = map.pick(item, &[("payload", payload), ("item", item), ("connection", &connection)]).map_err(at)?;
+            let extra = [("payload", payload), ("item", item), ("picked", &picked), ("connection", &connection)];
+            crate::automation::run_step(self, ctx, tx, &map.entity, None, (&empty, &empty), &empty, &extra, "inbound", map.step()).await.map_err(at)?;
         }
         Ok(items.len())
     }
@@ -321,7 +391,7 @@ impl Kernel {
                 .flatten();
         let Some(payload) = payload else { return Ok(json!({"done": "already"})) };
         let done = match (&inbound.map, &inbound.handler) {
-            (Some(map), _) => self.apply_mapping(&ctx, &mut tx, map, &payload).await.map(|n| json!({"items": n})),
+            (Some(map), _) => self.apply_mapping(&ctx, &mut tx, map, &payload, &conn).await.map(|n| json!({"items": n})),
             (None, Some(app)) if conn.desc.apps.contains(app) => match self.hooks.inbound_handler(app) {
                 Some(h) => h.handle(self, &mut tx, &ctx, &conn.name, &payload).await.map(|()| json!({"handled": app})),
                 None => Err(Error::invalid(format!("{app} has not registered for calls"))),
@@ -441,6 +511,19 @@ mod tests {
         assert!(verified(&c, &i, &with(now, sign(now, br#"{"a":2}"#)), body, now).is_none(), "another body");
         assert!(verified(&c, &i, &with(now, sign(now - 1, body)), body, now).is_none(), "another time");
         assert!(verified(&c, &i, &|_: &str| None, body, now).is_none(), "unsigned");
+        // Without a timestamp: the body alone.
+        let (c, i) = conn(json!({"test": true, "inbound": {"verify": {"type": "signature", "header": "x-sig", "secret": "hook", "encoding": "base64"},
+                                  "delivery_header": "x-id", "map": {"entity": "X", "by": {"a": "item.a"}}}}));
+        let body_sig = |b: &[u8]| {
+            use base64::Engine as _;
+            let mut mac = hmac::Hmac::<Sha256>::new_from_slice(b"whsec-1234").unwrap();
+            mac.update(b);
+            base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+        };
+        let sig = body_sig(body);
+        assert!(verified(&c, &i, &|h: &str| (h == "x-sig").then(|| sig.clone()), body, now).is_some());
+        assert!(verified(&c, &i, &|h: &str| (h == "x-sig").then(|| sig.clone()), br#"{"a":2}"#, now).is_none(), "another body");
+        assert!(verified(&c, &i, &|h: &str| (h == "x-sig").then(|| body_sig(b"1.{\"a\":1}")), body, now).is_none(), "a timestamped signature");
         let (c, i) = conn(
             json!({"test": true, "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "hook"}, "map": {"entity": "X", "by": {"a": "item.a"}}}}),
         );
@@ -456,7 +539,10 @@ mod tests {
         assert_eq!(p(json!({"verify": token, "handler": "app"})), None);
         assert!(p(json!({"verify": token, "handler": "other"})).is_some(), "an app the connection does not list");
         assert!(p(json!({"verify": token})).is_some(), "nothing to do");
-        assert!(p(json!({"verify": {"type": "signature", "header": "x-sig", "secret": "hook"}, "handler": "app"})).is_some(), "a signature has a timestamp");
+        let untimed = json!({"type": "signature", "header": "x-sig", "secret": "hook"});
+        assert!(p(json!({"verify": untimed, "handler": "app"})).is_some_and(|e| e.contains("delivery id")), "a timestamp or a delivery id");
+        assert_eq!(p(json!({"verify": untimed, "delivery_header": "x-id", "handler": "app"})), None);
+        assert_eq!(p(json!({"verify": untimed, "delivery_at": "/id", "handler": "app"})), None);
         assert!(p(json!({"verify": token, "handler": "app", "max_bytes": 1 << 30})).is_some());
         assert!(p(json!({"verify": {"type": "none"}, "handler": "app"})).is_some(), "every call is verified");
     }

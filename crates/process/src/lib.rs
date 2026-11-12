@@ -176,7 +176,9 @@ impl Acts {
 /// What may be tried again (the database or a dependency away) is retried; anything else stops the attempt.
 fn failed(e: KernelError) -> ActivityError {
     match e {
-        KernelError::Unavailable(_) | KernelError::Retryable(_) | KernelError::Db(_) => ApplicationFailure::new(e.to_string()).into(),
+        KernelError::Unavailable(_) | KernelError::RetryAfter(..) | KernelError::Retryable(_) | KernelError::Db(_) => {
+            ApplicationFailure::new(e.to_string()).into()
+        }
         other => ApplicationFailure::non_retryable(format!("{}: {other}", other.code())).into(),
     }
 }

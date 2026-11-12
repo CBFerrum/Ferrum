@@ -1342,6 +1342,41 @@ let it.
   room's guest link (Invite guests on the room's page). Removing a guest from the event, or turning
   the room's link off, stops the link. Guests need nothing but the link; there is no waiting room.
 
+## Live video
+
+The Live app (`ferrum-app-live`) sends one presenter's video to a large audience at low delay through a
+[Media over QUIC](https://github.com/moq-dev/moq) relay (`moq-relay` 0.17.16, Apache-2.0 or MIT) that you run beside
+Ferrum. It is optional: without a relay the server starts and Live's records work, and broadcasts cannot go live.
+Sound and pictures never pass through Ferrum; Ferrum signs short-lived tokens (HS256) that the relay's auth server
+checks, and counts viewers from their token renewals. The app's `docs/deploy.md` has the whole story.
+
+| Part | Image | Listens on |
+|---|---|---|
+| Relay | `moqdev/moq-relay:0.17.16` | UDP 443 (QUIC, WebTransport) and TCP 443 (HTTPS, WebSocket fallback), the only ports the internet reaches; plain HTTP 8080 for `/health`, inside the network |
+| Auth server | `moqdev/moq:0.14.16` (`moq auth serve`) | `127.0.0.1:4440` in the relay's own network namespace, published nowhere (the relay accepts `http://` for loopback only) |
+
+**Compose.** `deploy/live.yml` adds both:
+
+    docker compose -f deploy/docker-compose.yml -f deploy/live.yml --env-file deploy/.env up -d
+
+* Before the first start, in `deploy/live/` (beside `relay.toml`): `cert.pem` and `key.pem`, a publicly trusted
+  certificate for `FERRUM_LIVE_HOST` (browsers refuse a self-signed one for WebTransport), and `keys/<kid>.jwk`:
+  `docker run --rm -v "$PWD/deploy/live/keys:/out" moqdev/moq:0.14.16 auth generate --id ferrum-1 --out-dir /out`.
+  None of them is committed (`.gitignore`).
+* In the app's Live Settings: *Relay Address* `https://<FERRUM_LIVE_HOST>`, *Relay Health Address*
+  `http://live-relay:8080/health`, then *Set Signing Key* with the key file's text (sealed, never shown again); the
+  app's setting *Relay address for browsers* to the same `https://` address, so its pages may connect there.
+* Raise the Docker host's UDP buffers (`net.core.rmem_max` and `wmem_max` = 8388608).
+* Rotating the key: add a new `<kid>.jwk` beside the old one, *Set Signing Key* with it, remove the old file once
+  tokens signed with it have run out (60 minutes at most).
+
+**Kubernetes.** The app's `deploy/k8s/live.yaml`: relay and auth server in one pod, a LoadBalancer with UDP and TCP
+on 443, the secrets `live-relay-tls` and `live-relay-keys`. The platform's chart has no component for it, as for
+meetings.
+
+**Health.** Live's doctor check (the support report, `ferrum task doctor`) says when Live Settings names no relay,
+holds no usable key, or the relay's `/health` does not answer. Nothing here was run against a real relay.
+
 ## The assistant
 
 The bar's Assistant (the sparkles button; `/assistant/` on a phone) answers questions about the

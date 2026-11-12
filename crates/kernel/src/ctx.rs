@@ -415,6 +415,11 @@ pub struct Ctx {
     /// The workspace's settings the expressions at hand read (BD-17), loaded where they are evaluated
     /// (`crate::settings::with`) and seen by them as `settings`; none elsewhere.
     pub settings: Option<Arc<Value>>,
+    /// Where the change being made came from, when not from a person here: `outside` for a record a connection's
+    /// mapping fetched from another system (BD-50). Hooks read it here; the change's events carry it as `origin`, and
+    /// automations' conditions and effects read it as `origin`, so that what a new record sets going (invitations,
+    /// notifications) is not set going for one fetched from outside.
+    pub origin: Option<String>,
 }
 
 /// What may leave for an AI provider. Being able to read something does not make it yours to send:
@@ -469,6 +474,7 @@ impl Ctx {
             perms: Arc::new(PermSet { admin: true, entities: BTreeMap::new() }),
             depth: 0,
             settings: None,
+            origin: None,
         }
     }
 

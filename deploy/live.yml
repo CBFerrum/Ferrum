@@ -1,0 +1,49 @@
+# Live video (docs/operations.md, "Live video"; copied from ferrum-app-live's deploy/live.yml): a Media over QUIC relay
+# beside the stack, as deploy/meet.yml runs LiveKit. Optional: the server starts and runs without it. Start it with
+# the stack:
+#   docker compose -f deploy/docker-compose.yml -f deploy/live.yml --env-file deploy/.env up -d
+# In deploy/.env: FERRUM_LIVE_HOST (the relay's public name, whose certificate you give it below). Before the
+# first start, put in deploy/live/: cert.pem and key.pem (a publicly trusted certificate for that name, UDP 443
+# and TCP 443 open to the internet), and keys/<kid>.jwk (the signing key: `moq auth generate --out keys/<kid>.jwk`
+# with a kid; see docs/deploy.md). Then in Live Settings (in the app): the relay address https://<host> and the
+# same key, with Set Signing Key.
+services:
+  live-relay:
+    image: moqdev/moq-relay:0.17.16
+    restart: unless-stopped
+    command: ["/app/relay.toml"]
+    volumes:
+      - ./live/relay.toml:/app/relay.toml:ro
+      - ./live/cert.pem:/certs/cert.pem:ro
+      - ./live/key.pem:/certs/key.pem:ro
+    ports:
+      # QUIC and WebTransport on UDP, HTTPS and the WebSocket fallback on TCP: both on 443.
+      - "443:443/udp"
+      - "443:443/tcp"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    # No health check here: the image holds the relay and nothing to ask it with. The relay answers GET /health
+    # on its plain-HTTP listener (8080, inside the stack's network); Live's doctor check asks it there.
+
+  # The relay asks this server who may do what (--auth-url). It must be on the relay's own loopback (the relay
+  # accepts http:// for a loopback host only), so it shares the relay's network and is published nowhere.
+  live-auth:
+    image: moqdev/moq:0.14.16
+    restart: unless-stopped
+    network_mode: "service:live-relay"
+    command: ["auth", "serve", "--listen", "127.0.0.1:4440", "--key-dir", "/keys"]
+    volumes:
+      - ./live/keys:/keys:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on: [live-relay]
+
+  ferrum:
+    environment:
+      # Nothing to set: the relay's address and key are Live Settings, kept in the workspace. The server
+      # reaches the relay's health check at the address in Live Settings ("Relay Health Address"):
+      # http://live-relay:8080/health inside this network.
+      FERRUM_LIVE_HOST: ${FERRUM_LIVE_HOST:-}

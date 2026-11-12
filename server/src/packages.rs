@@ -304,6 +304,8 @@ macro_rules! apps {
             out.push(("lms", ferrum_app_lms::UI));
             #[cfg(feature = "sign")]
             out.push(("sign", ferrum_app_sign::UI));
+            #[cfg(feature = "live")]
+            out.push(("live", ferrum_app_live::UI));
             #[cfg(feature = "forms")]
             out.push(("forms", ferrum_app_forms::UI));
             #[cfg(feature = "assets")]
@@ -417,6 +419,7 @@ apps! {
         "docs" => ferrum_app_docs,
         "campaigns" => ferrum_app_campaigns,
         "sign" => ferrum_app_sign,
+        "live" => ferrum_app_live,
         "developers" => ferrum_app_developers,
         "intranet" => ferrum_app_intranet,
         "website" => ferrum_app_website,
