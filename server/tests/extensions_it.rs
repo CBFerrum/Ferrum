@@ -68,7 +68,7 @@ fn an_app_built_in_elsewhere_reaches_the_server() {
     assert!(ferrum_server::packages::native_uis().iter().any(|(id, files)| *id == "elsewhere" && files.len() == 1), "its interface");
 
     let mut hooks = HookRegistry::default();
-    ferrum_server::packages::register(&mut hooks);
+    ferrum_server::packages::register(&mut hooks).unwrap();
     let scoped: Vec<_> = hooks.scopes().into_iter().filter(|(entity, _)| entity == "ElsewhereNote").collect();
     assert_eq!(scoped, vec![("ElsewhereNote".to_string(), Some(vec!["elsewhere".to_string()]))], "its hooks, for workspaces that install it");
 

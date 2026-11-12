@@ -52,6 +52,9 @@ pub trait QueryRows: Send + Sync {
     /// The rows of the saved report labelled `report`, with `params` (`filters`, `from`, `to`, `limit`), read as `ctx`
     /// may read them: `{columns: [{name, type, to?}], rows: [{..}], meta: {entity, truncated}}`.
     async fn rows(&self, k: &Kernel, ctx: &Ctx, report: &str, params: &Value) -> Result<Value>;
+    /// What a template about `report` is checked against, read in the caller's transaction (a pack's install, which
+    /// may have just made the report) as `ctx` may run it: `{columns, meta: {entity}}`, however many rows it has.
+    async fn shape(&self, k: &Kernel, tx: &mut Tx, ctx: &Ctx, report: &str) -> Result<Value>;
 }
 
 /// What separates two records' pages when a page template renders several (each starts a page).
@@ -286,7 +289,7 @@ async fn check_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef) -
         return Err(Error::field("key", format!("{p} has no document {}; a workspace's own template has a key no package's name starts", def.key)));
     }
     let mut vars = match &def.query {
-        Some(q) => query_sample(k, ctx, def, q).await?,
+        Some(q) => query_sample(k, tx, ctx, def, q).await?,
         None => sample(ctx, &def.entity),
     };
     vars["settings"] = crate::settings::load(k, ctx, tx, &named(&all_text(def), "settings.")).await?;
@@ -315,8 +318,11 @@ async fn check_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef) -
 
 /// What a document about a query is checked against: the report's columns as one row, and a record of the entity its
 /// grouping column links to as `group`. The report is run once, as whoever saves it, to learn them.
-async fn query_sample(k: &Kernel, ctx: &Ctx, def: &DocumentDef, q: &DocumentQuery) -> Result<Value> {
-    let (columns, _) = query_rows(k, ctx, def, q, &json!({"limit": 1})).await?;
+async fn query_sample(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &DocumentDef, q: &DocumentQuery) -> Result<Value> {
+    let source = k.hooks.query_rows().ok_or_else(|| Error::invalid("documents about a query need the analytics engine, which this server does not have"))?;
+    // In the caller's transaction, and however many rows there are: that is no matter of the template's.
+    let out = source.shape(k, tx, ctx, &q.report).await?;
+    let columns = reads(def, q, &out)?;
     let row: Map<String, Value> = columns
         .iter()
         .filter_map(|c| {
@@ -353,9 +359,7 @@ async fn query_rows(k: &Kernel, ctx: &Ctx, def: &DocumentDef, q: &DocumentQuery,
     let mut params = if params.is_object() { params.clone() } else { json!({}) };
     params.as_object_mut().map(|m| m.entry("limit").or_insert(json!(MAX_QUERY_ROWS)));
     let out = source.rows(k, ctx, &q.report, &params).await?;
-    if out["meta"]["entity"].as_str() != Some(def.entity.as_str()) {
-        return Err(Error::field("entity", format!("report {} reads {}, not {}", q.report, out["meta"]["entity"].as_str().unwrap_or("nothing"), def.entity)));
-    }
+    let columns = reads(def, q, &out)?;
     let rows: Vec<Map<String, Value>> = out["rows"].as_array().into_iter().flatten().filter_map(|r| r.as_object().cloned()).collect();
     if out["meta"]["truncated"] == json!(true) || rows.len() > MAX_QUERY_ROWS {
         return Err(Error::invalid(format!(
@@ -363,7 +367,15 @@ async fn query_rows(k: &Kernel, ctx: &Ctx, def: &DocumentDef, q: &DocumentQuery,
             q.report
         )));
     }
-    Ok((out["columns"].as_array().cloned().unwrap_or_default(), rows))
+    Ok((columns, rows))
+}
+
+/// A report's columns, refused when it reads another entity than the template says.
+fn reads(def: &DocumentDef, q: &DocumentQuery, out: &Value) -> Result<Vec<Value>> {
+    if out["meta"]["entity"].as_str() != Some(def.entity.as_str()) {
+        return Err(Error::field("entity", format!("report {} reads {}, not {}", q.report, out["meta"]["entity"].as_str().unwrap_or("nothing"), def.entity)));
+    }
+    Ok(out["columns"].as_array().cloned().unwrap_or_default())
 }
 
 fn plain(e: &Error) -> String {

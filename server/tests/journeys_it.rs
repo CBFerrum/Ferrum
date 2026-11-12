@@ -97,7 +97,7 @@ async fn kernel() -> Arc<Kernel> {
     let catalog = ferrum_server::packages::base_catalog(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/no-extra-packages")).expect("catalog");
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
-    ferrum_server::packages::register(&mut hooks);
+    ferrum_server::packages::register(&mut hooks).unwrap();
     let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), Some(Arc::new(Captured))).await.expect("boot");
     ferrum_domain::maintenance(&k).await.expect("maintenance");
     ferrum_app_erp::maintenance(&k).await.expect("partitions");

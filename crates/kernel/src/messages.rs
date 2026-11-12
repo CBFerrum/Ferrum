@@ -647,6 +647,9 @@ pub struct Message {
     pub values: Map<String, Value>,
     /// Stored files an e-mail attaches.
     pub attachments: Vec<Uuid>,
+    /// Names of `values` that are secret (a gift card's code, a one-time code): rendered into what goes out, sealed
+    /// while it waits, and a placeholder in what is kept once it has been handed to the transport. Never left in the app.
+    pub secret: Vec<String>,
 }
 
 /// One send, as recorded.
@@ -665,7 +668,7 @@ pub struct Sent {
 /// error; a body that fails to render is too (it was checked when saved).
 pub async fn send(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Vec<Sent>> {
     // Boxed: callers deep in an action's or an approval's future need not carry its size.
-    Box::pin(send_with(k, tx, ctx, m, None)).await
+    Box::pin(send_with(k, tx, ctx, m)).await
 }
 
 /// One recipient, completed: a user's address, language and zone from their account.
@@ -781,8 +784,29 @@ async fn record(
     Ok(Sent { id, channel: channel.into(), state: state.into(), reason: reason.map(str::to_string) })
 }
 
-/// [`send`], `secret` a value never kept in the log (a one-time code).
-async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message, secret: Option<&str>) -> Result<Vec<Sent>> {
+/// What the outbox and the delivery log hold of a message with secret values: sealed under this label while it waits.
+fn sealed_message(tenant: Uuid) -> String {
+    format!("{tenant}/message")
+}
+
+/// The text of `m`'s secret values, and the server's key that seals them while they wait.
+fn secret_values<'a>(k: &'a Kernel, m: &Message) -> Result<(Vec<String>, Option<&'a crate::secret::SecretKey>)> {
+    let masks: Vec<String> = m
+        .secret
+        .iter()
+        .filter_map(|n| m.values.get(n))
+        .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
+        .filter(|v| !v.is_empty() && v != "null")
+        .collect();
+    if masks.is_empty() {
+        return Ok((masks, None));
+    }
+    let key = k.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("a message with a secret value needs the server's secret key".into()))?;
+    Ok((masks, Some(key)))
+}
+
+async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Vec<Sent>> {
+    let (masks, key) = secret_values(k, m)?;
     let def = effective(tx, ctx, &m.template).await?;
     if let Some(e) = &def.entity
         && m.entity.as_ref().is_some_and(|me| me != e)
@@ -811,6 +835,7 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message, secret: Opti
         for ch in order.iter().filter(|c| b.has(c)) {
             // Where it goes on this channel, or why it cannot.
             let reach: std::result::Result<(Option<String>, Option<Uuid>), String> = match ch.as_str() {
+                "inapp" if !masks.is_empty() => Err("a secret value is not left in the app".to_string()),
                 "inapp" => r.user.map(|u| (None, Some(u))).ok_or_else(|| "no user to tell in the app".to_string()),
                 "email" => match &r.email {
                     None => Err("no e-mail address".into()),
@@ -840,11 +865,7 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message, secret: Opti
                 (Some(a), true, Some(base), Some(key)) => format!("{base}/api/messages/opt-out?token={}", opt_out_token(key, ctx.tenant, ch, a)),
                 _ => String::new(),
             };
-            let mut values = m.values.clone();
-            if let Some(code) = secret {
-                values.insert("code".into(), json!(code));
-            }
-            let vars = variables(doc.clone(), settings.clone(), Value::Object(values), &opt_out);
+            let vars = variables(doc.clone(), settings.clone(), Value::Object(m.values.clone()), &opt_out);
             let message = render_channel(b, ch, &vars, false)?;
             let to = (address.as_deref(), user);
             let sent = match ch.as_str() {
@@ -870,6 +891,7 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message, secret: Opti
                         &m.attachments,
                         purpose,
                         Some(sent.id),
+                        &masks,
                     )
                     .await?;
                     sent
@@ -890,7 +912,12 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message, secret: Opti
                     }
                     let zone = r.time_zone.clone().unwrap_or_else(|| ctx.schema.timezone.clone());
                     let held = promotional && quiet_for(cfg.quiet_hours.as_ref(), &zone, Utc::now()).is_some();
-                    let pending = json!({"message": message, "to": address, "promotional": promotional, "zone": zone, "language": language, "mask": secret});
+                    let mut pending = json!({"message": message, "to": address, "promotional": promotional, "zone": zone, "language": language});
+                    if let Some(key) = key {
+                        let plain = json!({"message": message, "mask": masks}).to_string();
+                        pending["message"] = Value::Null;
+                        pending["sealed"] = json!(key.seal(&sealed_message(ctx.tenant), &plain)?);
+                    }
                     let sent = record(tx, ctx, m, ch, to, language, if held { "held" } else { "queued" }, None, Some(pending), channel_id).await?;
                     let mut job = NewJob::new(DELIVER_KIND, json!({"send": sent.id}));
                     job.max_attempts = DELIVERY_ATTEMPTS;
@@ -1189,12 +1216,27 @@ pub fn test_deliveries(tenant: Uuid) -> Vec<(String, Value)> {
 }
 
 /// `{a}` with each of `mask` written as dots.
-fn masked(v: &Value, mask: Option<&str>) -> Value {
-    match (v, mask) {
-        (Value::String(s), Some(m)) if !m.is_empty() => Value::String(s.replace(m, "••••••")),
-        (Value::Array(a), _) => Value::Array(a.iter().map(|x| masked(x, mask)).collect()),
-        (Value::Object(o), _) => Value::Object(o.iter().map(|(k, x)| (k.clone(), masked(x, mask))).collect()),
+pub(crate) fn masked(v: &Value, mask: &[String]) -> Value {
+    match v {
+        Value::String(s) => Value::String(mask.iter().filter(|m| !m.is_empty()).fold(s.clone(), |s, m| s.replace(m.as_str(), "••••••"))),
+        Value::Array(a) => Value::Array(a.iter().map(|x| masked(x, mask)).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), masked(x, mask))).collect()),
         _ => v.clone(),
+    }
+}
+
+impl Kernel {
+    /// What a message with secret values holds sealed (`{message, mask}`, or a mail's `{subject, html, mask}`), opened.
+    pub(crate) fn open_message(&self, tenant: Uuid, sealed: &Value) -> Result<(Value, Vec<String>)> {
+        let open: Value = serde_json::from_str(&self.open_sealed(&sealed_message(tenant), sealed.as_str().unwrap_or_default())?).map_err(Error::internal)?;
+        let mask = open["mask"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+        Ok((open, mask))
+    }
+
+    /// `plain` sealed as a message with secret values is.
+    pub(crate) fn seal_message(&self, tenant: Uuid, plain: &Value) -> Result<String> {
+        let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("a message with a secret value needs the server's secret key".into()))?;
+        key.seal(&sealed_message(tenant), &plain.to_string())
     }
 }
 
@@ -1288,10 +1330,17 @@ impl Kernel {
             return Ok(json!({"failed": "no channel"}));
         };
         let desc: ChannelDesc = serde_json::from_value(desc).map_err(Error::internal)?;
-        let message = &pending["message"];
+        let (message, mask) = match pending.get("sealed") {
+            Some(sealed) => {
+                let (open, mask) = self.open_message(tenant, sealed)?;
+                (open["message"].clone(), mask)
+            }
+            None => (pending["message"].clone(), vec![]),
+        };
+        let message = &message;
         let to = pending["to"].as_str().unwrap_or_default();
         if desc.test {
-            let content = masked(message, pending["mask"].as_str());
+            let content = masked(message, &mask);
             {
                 let mut sink = TEST_SINK.lock().unwrap_or_else(|p| p.into_inner());
                 if sink.len() >= 500 {
@@ -1342,13 +1391,15 @@ impl Kernel {
             }
             Ok((status, answer)) => {
                 let why = format!("{status}: {}", at(&answer, desc.error_at.as_deref()).unwrap_or_else(|| answer.to_string().chars().take(300).collect()));
-                self.settle(tenant, id, "failed", None, Some(&why), None).await?;
+                let why = masked(&Value::String(why), &mask);
+                self.settle(tenant, id, "failed", None, why.as_str(), None).await?;
                 Ok(json!({"failed": status}))
             }
             Err(e @ Error::Unavailable(_)) if !last => Err(e),
             Err(e) => {
-                self.settle(tenant, id, "failed", None, Some(&e.to_string()), None).await?;
-                Ok(json!({"failed": e.to_string()}))
+                let why = masked(&Value::String(e.to_string()), &mask);
+                self.settle(tenant, id, "failed", None, why.as_str(), None).await?;
+                Ok(json!({"failed": why}))
             }
         }
     }
@@ -1697,12 +1748,15 @@ impl Kernel {
         .bind(CODE_MINUTES as i32)
         .execute(&mut **tx)
         .await?;
-        let m = Message { template: template.into(), to: vec![to.clone()], channels: vec![channel.into()], ..Default::default() };
-        let sent = Box::pin(send_with(self, tx, ctx, &m, Some(&code)))
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::invalid("there is no one to send the code to"))?;
+        let m = Message {
+            template: template.into(),
+            to: vec![to.clone()],
+            channels: vec![channel.into()],
+            values: Map::from_iter([("code".to_string(), json!(code))]),
+            secret: vec!["code".into()],
+            ..Default::default()
+        };
+        let sent = Box::pin(send_with(self, tx, ctx, &m)).await?.into_iter().next().ok_or_else(|| Error::invalid("there is no one to send the code to"))?;
         if sent.state == "skipped" {
             return Err(Error::invalid(format!("the code cannot be sent: {}", sent.reason.unwrap_or_default())));
         }
@@ -1925,8 +1979,8 @@ mod tests {
     #[test]
     fn a_code_is_masked_where_it_is_logged() {
         let v = json!({"text": "Your code is 123456", "values": ["123456", "x"]});
-        assert_eq!(masked(&v, Some("123456")), json!({"text": "Your code is ••••••", "values": ["••••••", "x"]}));
-        assert_eq!(masked(&v, None), v);
+        assert_eq!(masked(&v, &["123456".into()]), json!({"text": "Your code is ••••••", "values": ["••••••", "x"]}));
+        assert_eq!(masked(&v, &[]), v);
     }
 
     #[test]

@@ -115,6 +115,9 @@ pub enum AutomationAction {
         /// (`results[0]`). One that gives nothing (a step that did not run) attaches nothing.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<String>,
+        /// Names of `values` that are secret: sent, but kept nowhere once handed over (`messages::Message::secret`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        secret: Vec<String>,
     },
     /// A document from a template (BD-21) for the record, rendered as the workspace holds it, its secret fields left
     /// out; stored on the record in the run's transaction, named by `name` (an expression; else the template's label
@@ -132,16 +135,23 @@ pub enum AutomationAction {
         replace: bool,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         values: BTreeMap<String, String>,
+        /// An expression giving the record it is for, of the template's entity: the run's own (the default) or, in a
+        /// `for_each`, the item's (`item.id`); any other is refused when it runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        record: Option<String>,
     },
     /// Documents about a query that groups by a link (BD-21): one file per record the report's rows link to, kept on it
     /// and, with `message`, sent to it attached (each customer their statement). Read and made as the workspace, in
     /// jobs of [`crate::documents::MAX_GROUPS`] records each, the next queued after the last record done; the first is
-    /// queued in the run's transaction. `params` (the report's `filters`, `from`, `to`) as written; `values` expressions
-    /// the template reads as `values`. Gives `{job}`.
+    /// queued in the run's transaction. `params` (the report's `filters`, `from`, `to`) as written, each of
+    /// `params_from` an expression over what other values see (an action's own `params`) put over them; `values`
+    /// expressions the template reads as `values`. Gives `{job}`.
     ReportDocuments {
         template: String,
         #[serde(default, skip_serializing_if = "Value::is_null")]
         params: Value,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        params_from: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         values: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -269,8 +279,10 @@ fn sources(a: &AutomationAction) -> Vec<&str> {
                 .chain(attachments.iter().map(String::as_str))
                 .collect();
         }
-        AutomationAction::Generate { name, language, values, .. } => name.iter().chain(language.iter()).chain(values.values()).collect(),
-        AutomationAction::ReportDocuments { values, .. } => values.values().collect(),
+        AutomationAction::Generate { name, language, values, record, .. } => {
+            name.iter().chain(language.iter()).chain(values.values()).chain(record.iter()).collect()
+        }
+        AutomationAction::ReportDocuments { values, params_from, .. } => values.values().chain(params_from.values()).collect(),
         AutomationAction::Invoke { input, key, .. } => input.values().chain(key.iter()).collect(),
     };
     all.into_iter().map(String::as_str).collect()
@@ -325,6 +337,11 @@ pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
     }
     if let AutomationAction::Email { template: Some(t), .. } = a {
         mail_template(t)?;
+    }
+    if let AutomationAction::Message { values, secret, .. } = a
+        && let Some(n) = secret.iter().find(|n| !values.contains_key(*n))
+    {
+        return Err(Error::invalid(format!("message: secret names {n}, which is not one of its values")));
     }
     if let AutomationAction::Message { to, channels, .. } = a {
         let fits = |t: &String| {
@@ -1121,7 +1138,7 @@ pub(crate) async fn execute(
             };
             return Ok(serde_json::json!(crate::messages::send(k, tx, ctx, &m).await?));
         }
-        AutomationAction::Message { template, to, channels, all, values, attachments } => {
+        AutomationAction::Message { template, to, channels, all, values, attachments, secret } => {
             let mut given = Map::new();
             for (name, expr) in values {
                 given.insert(name, eval(&expr)?);
@@ -1144,11 +1161,23 @@ pub(crate) async fn execute(
                 all,
                 values: given,
                 attachments: files,
+                secret,
             };
             return Ok(serde_json::json!(crate::messages::send(k, tx, ctx, &m).await?));
         }
-        AutomationAction::Generate { template, name, language, replace, values } => {
-            let id = record.ok_or_else(|| Error::invalid("generate needs a record"))?;
+        AutomationAction::Generate { template, name, language, replace, values, record: named } => {
+            let id = match named {
+                None => record.ok_or_else(|| Error::invalid("generate needs a record"))?,
+                // The run's own record, or the item a loop is on: nothing else this run did not reach.
+                Some(src) => {
+                    let id = crate::doc::uuid_of(Some(&eval(&src)?)).ok_or_else(|| Error::invalid(format!("generate: {src} gives no record")))?;
+                    let item = extra.iter().find(|(n, _)| *n == "item").and_then(|(_, v)| crate::doc::uuid_of(v.get("id")));
+                    if Some(id) != record && Some(id) != item {
+                        return Err(Error::invalid(format!("generate: {src} names neither this record nor the item of its loop")));
+                    }
+                    id
+                }
+            };
             let mut given = Map::new();
             for (n, expr) in values {
                 given.insert(n, eval(&expr)?);
@@ -1158,10 +1187,16 @@ pub(crate) async fn execute(
             let made = Box::pin(crate::documents::generate(k, tx, ctx, &g)).await.map_err(|e| crate::pack::about("generate", e))?;
             return serde_json::to_value(made).map_err(Error::internal);
         }
-        AutomationAction::ReportDocuments { template, params, values, message } => {
+        AutomationAction::ReportDocuments { template, mut params, params_from, values, message } => {
             let mut given = Map::new();
             for (n, expr) in values {
                 given.insert(n, eval(&expr)?);
+            }
+            if !params_from.is_empty() && !params.is_object() {
+                params = Value::Object(Map::new());
+            }
+            for (n, expr) in params_from {
+                params[n] = eval(&expr)?;
             }
             let run = crate::documents::QueryRun { template, params, values: given, language: None };
             return Ok(serde_json::json!({"job": crate::documents::queue_groups(tx, ctx, run, message).await?}));
@@ -1644,6 +1679,58 @@ pub(crate) async fn save_in(ctx: &Ctx, tx: &mut crate::db::Tx, input: &Map<Strin
     .execute(&mut **tx)
     .await?;
     Ok(id)
+}
+
+/// An automation row as a package's default is compared with it ([`ferrum_meta::PackageAutomation::definition`]).
+const DEFINITION: &str = "jsonb_build_object('name', name, 'entity', entity, 'event', event, 'condition', condition, 'schedule', schedule, \
+                          'actions', actions)";
+
+/// Installs package `package`'s automation `a` in `ctx`'s workspace, as the system: new, it is added, turned on; one the
+/// workspace has not edited takes the package's definition as it now is, staying on or off as the workspace left it;
+/// an edited one is the workspace's and is kept (and flagged when the default changed, [`package_marks`]).
+pub(crate) async fn install_default(ctx: &Ctx, tx: &mut crate::db::Tx, package: &str, a: &ferrum_meta::PackageAutomation) -> Result<()> {
+    let default = a.definition();
+    let found: Option<(Uuid, bool, Option<Value>, Value)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select id, is_active, base, {DEFINITION} from automation where tenant_id = $1 and package = $2 and package_key = $3 for update"
+    )))
+    .bind(ctx.tenant)
+    .bind(package)
+    .bind(&a.name)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (id, active) = match found {
+        // Edited here, or already as the package says.
+        Some((_, _, base, now)) if base.as_ref() != Some(&now) || now == default => return Ok(()),
+        Some((id, active, ..)) => (id, active),
+        None => (Uuid::now_v7(), true),
+    };
+    let mut input = default.as_object().cloned().unwrap_or_default();
+    input.insert("id".into(), Value::String(id.to_string()));
+    input.insert("is_active".into(), Value::Bool(active));
+    save_in(ctx, tx, &input).await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "update automation set package = $3, package_key = $4, base = {DEFINITION}, created_by = null where tenant_id = $1 and id = $2"
+    )))
+    .bind(ctx.tenant)
+    .bind(id)
+    .bind(package)
+    .bind(&a.name)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Marks each of `rows` (automations as listed, `to_jsonb` of their rows) that a package ships: `edited` when the
+/// workspace changed it, `default_changed` when a release changed the default since it was installed or edited.
+pub fn package_marks(catalog: &ferrum_meta::Catalog, rows: &mut [Value]) {
+    for r in rows.iter_mut() {
+        let (Some(p), Some(key)) = (r["package"].as_str(), r["package_key"].as_str()) else { continue };
+        let default = catalog.package(p).and_then(|p| p.manifest.automations.iter().find(|a| a.name == key)).map(|a| a.definition());
+        let now = serde_json::json!({"name": r["name"], "entity": r["entity"], "event": r["event"], "condition": r["condition"],
+            "schedule": r["schedule"], "actions": r["actions"]});
+        r["edited"] = Value::Bool(r["base"] != now);
+        r["default_changed"] = Value::Bool(default.is_some_and(|d| d != r["base"]));
+    }
 }
 
 #[cfg(test)]
