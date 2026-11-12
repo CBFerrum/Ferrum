@@ -181,6 +181,111 @@ async fn scenario() {
     reminders(&k).await;
     submitted(&k).await;
     travel(&k).await;
+    by_record(&k).await;
+}
+
+/// A target counting on the calendar a record's agreement names and from the moment the record says it opened
+/// (docs/builder/decisions.md BD-41).
+async fn by_record(k: &Arc<Kernel>) {
+    let w = set_up(k, "byrecord").await;
+    let admin = w.admin().await;
+    let day = json!([["09:00", "17:00"]]);
+    k.put_logic_calendar(
+        &admin,
+        "berlin",
+        &json!({"zone": "Europe/Berlin", "weekends": ["sat", "sun"], "holidays": [],
+        "hours": {"mon": day, "tue": day, "wed": day, "thu": day, "fri": day}}),
+    )
+    .await
+    .unwrap();
+    k.put_logic_calendar(&admin, "round", &json!({"zone": "UTC", "weekends": [], "holidays": []})).await.unwrap();
+    let field = |name: &str, f: Value| {
+        let mut f = f;
+        f["name"] = json!(name);
+        op("Ticket", json!({"op": "add_field", "field": f}))
+    };
+    let target = |extra: Value| {
+        let mut t = json!({"name": "agreed", "label": "Agreed", "calendar": "office", "within": "'PT4H'", "met_when": "doc.status == 'Closed'",
+            "due_field": "x_agreed_by", "state_field": "x_agreed_state"});
+        t.as_object_mut().unwrap().extend(obj(extra));
+        op("Ticket", json!({"op": "add_target", "target": t}))
+    };
+    let base = vec![
+        op(
+            "XAgreement",
+            json!({"op": "define_entity", "entity": {"name": "XAgreement", "label": "Agreement", "kind": "master", "title_field": "title",
+            "fields": [{"name": "title", "type": "data", "required": true}, {"name": "hours", "type": "data"}]}}),
+        ),
+        field("x_agreement", json!({"type": "link", "to": "XAgreement"})),
+        field("x_opened", json!({"type": "datetime"})),
+        field("x_note", json!({"type": "data"})),
+        field("x_agreed_by", json!({"type": "datetime"})),
+        field("x_agreed_state", json!({"type": "data"})),
+    ];
+    // Checked when saved.
+    for (bad, why) in [
+        (json!({"calendar_field": "x_note.hours"}), "calendar_field"),
+        (json!({"calendar_field": "nothing"}), "calendar_field"),
+        (json!({"start_field": "x_note"}), "start_field"),
+    ] {
+        let mut ops = base.clone();
+        ops.push(target(bad.clone()));
+        let r = k.batch_customizations(&admin, ops, false).await;
+        assert!(matches!(&r, Err((_, e)) if e.to_string().contains(why)), "{bad}: {r:?}");
+    }
+    let mut ops = base.clone();
+    ops.push(target(json!({"calendar_field": "x_agreement.hours", "start_field": "x_opened"})));
+    k.batch_customizations(&admin, ops, false).await.map_err(|(i, e)| format!("{i:?}: {e}")).unwrap();
+    let admin = w.admin().await;
+    let agreement = |hours: &str| {
+        let (k, admin) = (k.clone(), admin.clone());
+        let hours = hours.to_string();
+        async move { id_of(&k.insert(&admin, "XAgreement", obj(json!({"title": hours, "hours": hours}))).await.unwrap()) }
+    };
+    let (berlin, round) = (agreement("berlin").await, agreement("round").await);
+    let agreed = |d: &Doc| kept(d, "agreed");
+
+    // Opened Friday 23 October 15:00 in Berlin's summer time, imported on Saturday: two hours that Friday, two on
+    // Monday after the clocks went back, to 11:00 there (10:00 UTC).
+    let t = w.ticket("2026-10-24T09:00:00Z", json!({"x_agreement": berlin, "x_opened": "2026-10-23T13:00:00Z"})).await;
+    assert_eq!(agreed(&t), running("2026-10-26T10:00:00Z"));
+    // No agreement: the target's own calendar, the office in Kolkata from the save (Monday 10:00 there to 15:00).
+    let t = w.ticket("2026-11-02T04:30:00Z", json!({})).await;
+    assert_eq!(agreed(&t), running("2026-11-02T09:30:00Z"));
+    // A start still to come starts at the save.
+    let t = w.ticket("2026-11-02T04:30:00Z", json!({"x_agreement": round, "x_opened": "2026-11-03T00:00:00Z"})).await;
+    assert_eq!(agreed(&t), running("2026-11-02T08:30:00Z"));
+
+    // Swapped mid-flight: two hours on the round-the-clock agreement, then Berlin's hours for the two left, from
+    // 07:30 there, which opens at 09:00: due 11:00 there (10:00 UTC). Once: a later save leaves it.
+    let t = w.ticket("2026-11-02T04:30:00Z", json!({"x_agreement": round})).await;
+    let id = id_of(&t);
+    assert_eq!(agreed(&t), running("2026-11-02T08:30:00Z"));
+    let t = w.set("2026-11-02T06:30:00Z", id, json!({"x_agreement": berlin})).await;
+    assert_eq!(agreed(&t), running("2026-11-02T10:00:00Z"));
+    let t = w.set("2026-11-02T07:00:00Z", id, json!({"x_note": "still"})).await;
+    assert_eq!(agreed(&t), running("2026-11-02T10:00:00Z"));
+    // The opening moment corrected to Friday 16:00 in Berlin: the open hour between counted, on Berlin's hours.
+    let t = w.set("2026-11-02T07:00:00Z", id, json!({"x_opened": "2026-11-02T03:30:00Z"})).await;
+    assert_eq!(agreed(&t), running("2026-11-02T10:00:00Z"), "a start first given is recorded, not worked out again");
+    let t = w.set("2026-11-02T07:00:00Z", id, json!({"x_opened": "2026-10-30T15:00:00Z"})).await;
+    assert_eq!(agreed(&t), running("2026-11-02T09:00:00Z"));
+
+    // Opened long ago: past due at once, breached once by the sweep, and still breached after a swap.
+    let t = w.ticket("2026-11-02T10:00:00Z", json!({"x_agreement": round, "x_opened": "2026-11-01T00:00:00Z"})).await;
+    let id = id_of(&t);
+    assert_eq!(agreed(&t), running("2026-11-01T04:00:00Z"));
+    let now = at("2026-11-02T10:00:30Z");
+    assert!(k.sweep_targets_at(now).await.unwrap() >= 1);
+    assert_eq!(k.sweep_targets_at(now).await.unwrap(), 0);
+    assert_eq!(agreed(&w.get(id).await).1.as_deref(), Some("breached"));
+    let t = w.set("2026-11-02T10:05:00Z", id, json!({"x_agreement": berlin})).await;
+    assert_eq!(agreed(&t).1.as_deref(), Some("breached"));
+    let breaches = w.count("select count(*) from record_target where record_id = $1 and breached_at is not null", id).await;
+    assert_eq!(breaches, 1);
+    k.sweep_targets_at(at("2026-11-03T10:00:00Z")).await.unwrap();
+    let first = w.count("select count(*) from record_target where record_id = $1 and breached_at = '2026-11-02T10:00:30Z'", id).await;
+    assert_eq!(first, 1, "recorded once, at the first sweep");
 }
 
 /// A target names a calendar that is there, and the calendar stays while a target names it.

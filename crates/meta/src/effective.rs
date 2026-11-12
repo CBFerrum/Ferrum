@@ -1366,6 +1366,22 @@ pub(crate) fn validate_targets(def: &EntityDef) -> Result<(), String> {
         {
             return Err(at(format!("{c} is not a calendar's name")));
         }
+        if let Some(path) = &t.calendar_field {
+            let (head, tail) = path.split_once('.').map_or((path.as_str(), None), |(h, t)| (h, Some(t)));
+            let f = def.fields.iter().find(|f| f.name == head).ok_or_else(|| at(format!("calendar_field {head} is not a field of {}", def.name)))?;
+            let fits = match tail {
+                None => matches!(f.ftype, FieldType::Data | FieldType::Select),
+                Some(t) => f.ftype == FieldType::Link && crate::is_ident(t),
+            };
+            if !fits {
+                return Err(at(format!("calendar_field {path} is a data or select field, or a link and a field of the record it links to")));
+            }
+        }
+        if let Some(name) = &t.start_field
+            && !def.fields.iter().any(|f| &f.name == name && f.ftype == FieldType::Datetime)
+        {
+            return Err(at(format!("start_field {name} is not a date-time field of {}", def.name)));
+        }
         for (role, name) in [("due_field", &t.due_field), ("state_field", &t.state_field)] {
             let f = def.fields.iter().find(|f| &f.name == name).ok_or_else(|| at(format!("{role} {name} is not a field of {}", def.name)))?;
             let (fits, what) = match role {
