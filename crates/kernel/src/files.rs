@@ -144,11 +144,12 @@ impl Kernel {
         Ok(FileInfo { name, content_type, size, key })
     }
 
-    /// Whether `ctx` may download a file: one tied to a record, whoever may read the record; one tied to none, its
+    /// Whether `ctx` may download a file: one tied to a record, whoever may read the record (an approver too, while it
+    /// awaits them: BD-19); one tied to none, its
     /// uploader and administrators (`by`: who uploaded it). Not found otherwise.
     pub async fn may_download(&self, ctx: &Ctx, entity: Option<&str>, record: Option<Uuid>, by: Option<Uuid>) -> Result<()> {
         match (entity, record) {
-            (Some(e), Some(r)) => self.get(ctx, e, r, false).await.map(drop),
+            (Some(e), Some(r)) => self.read_record(ctx, e, r, false).await.map(drop),
             _ if owns_loose(ctx, by) => Ok(()),
             _ => Err(Error::NotFound("file".into())),
         }

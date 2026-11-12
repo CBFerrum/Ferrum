@@ -1086,7 +1086,7 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
             return Err(format!("transition {}: parameter '{}' is unnamed or named twice", t.action, p.name));
         }
         if let Some(p) = &t.approval {
-            validate_approval(e, wf, t, p)?;
+            validate_approval(e, &format!("transition {}: approval", t.action), Some((wf, &t.from)), p)?;
         }
         for path in &t.not_creator_of {
             let link = |fields: &[crate::types::FieldDef], name: &str| fields.iter().any(|f| f.name == name && f.ftype == FieldType::Link && f.to.is_some());
@@ -1111,21 +1111,28 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
 /// Steps one approval policy holds.
 pub const MAX_APPROVAL_STEPS: usize = 10;
 
-/// An approval policy on transition `t` (BD-19): what it names is there, what it says compiles, each fault said with
-/// its step's place. Roles and business calendars are the workspace's, checked by the kernel when it is saved.
-fn validate_approval(e: &EntityDef, wf: &WorkflowDef, t: &crate::types::WorkflowTransition, p: &crate::types::ApprovalPolicy) -> Result<(), String> {
-    let what = format!("transition {}: approval", t.action);
+/// An approval policy (`what` says where) on a transition of `wf` from a state, or else on a document's submit or
+/// cancel (BD-19): what it names is there, what it says compiles, each fault said with its step's place. Roles and
+/// business calendars are the workspace's, checked by the kernel when it is saved.
+pub(crate) fn validate_approval(e: &EntityDef, what: &str, wf: Option<(&WorkflowDef, &str)>, p: &crate::types::ApprovalPolicy) -> Result<(), String> {
     if p.steps.is_empty() || p.steps.len() > MAX_APPROVAL_STEPS {
         return Err(format!("{what}: 1 to {MAX_APPROVAL_STEPS} steps"));
     }
     if let Some(f) = p.reset_on.iter().find(|f| !e.fields.iter().any(|x| &x.name == *f)) {
         return Err(format!("{what}: reset_on: {f} is not a field"));
     }
-    if let Some(s) = &p.on_reject {
-        let status = |name: &str| wf.states.iter().find(|x| x.name == name).map(|x| x.docstatus);
-        if status(s).is_none() || status(s) != status(&t.from) {
-            return Err(format!("{what}: on_reject: {s} is not a state of the same document status as {}", t.from));
+    if let Some(f) = p.show.iter().find(|f| !e.fields.iter().any(|x| &x.name == *f)) {
+        return Err(format!("{what}: show: {f} is not a field"));
+    }
+    match (&p.on_reject, wf) {
+        (Some(s), Some((wf, from))) => {
+            let status = |name: &str| wf.states.iter().find(|x| x.name == name).map(|x| x.docstatus);
+            if status(s).is_none() || status(s) != status(from) {
+                return Err(format!("{what}: on_reject: {s} is not a state of the same document status as {from}"));
+            }
         }
+        (Some(_), None) => return Err(format!("{what}: on_reject: a rejected submit or cancel leaves the document as it is")),
+        _ => {}
     }
     let who = |at: &str, a: &crate::types::Approvers| -> Result<(), String> {
         if [&a.role, &a.field, &a.expr].iter().filter(|x| x.is_some()).count() != 1 {
@@ -1158,7 +1165,7 @@ fn validate_approval(e: &EntityDef, wf: &WorkflowDef, t: &crate::types::Workflow
                 _ => return Err(format!("{at}: {d} is not a time (seconds or an ISO 8601 duration such as PT48H)")),
             }
         }
-        if let Some(a) = s.not_who_took.iter().find(|a| !wf.transitions.iter().any(|x| &x.action == *a)) {
+        if let Some(a) = s.not_who_took.iter().find(|a| !wf.is_some_and(|(wf, _)| wf.transitions.iter().any(|x| &x.action == *a))) {
             return Err(format!("{at}: not_who_took: {a} is not a transition of this workflow"));
         }
     }

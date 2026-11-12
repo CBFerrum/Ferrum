@@ -250,6 +250,43 @@ Everything is checked when the customization is saved, each fault naming the tra
 role, field, state, transition, business calendar or time, or an expression that does not compile. Packs carry
 policies as part of the workflow; `GET /api/customize/definition/{Entity}` returns the workflow with them.
 
+* **Approvers read the record**: while an open step awaits someone's decision (or their stand-in's), they read that
+  record (`GET /api/v1/{E}/{id}`), its lines, its history and its files even without a right to the entity; their
+  field groups still apply unless the policy lists the field in `show` (`"show": ["salary"]`, none by default). Lists
+  and searches do not show it to them, and they may do nothing else to it.
+* **`lock: true`** refuses edits while a request is pending, but for `reset_on` fields.
+* **Reminders and escalations made**: each step of `GET …/approval` carries `remind_at`, `escalate_at` (due) and
+  `reminded_at`, `escalated_at` (done, else null). Each Item of `GET /api/approvals` also carries `requester_name`
+  and `step` `{index, label, opened_at}`: the open step awaiting the caller in `to_decide`, the first open one in
+  `awaiting_others` (`index` into `steps`, from 0).
+* **Away**: `GET /api/away` → `[{starts_on, ends_on, current, substitute, substitute_name, reason}]`, the caller's
+  periods today and to come; `DELETE /api/away` → `{cleared: n}` takes them back (`?starts_on=` one of them). An
+  administrator adds `?user=` for anyone; anyone else gets 403 for another person.
+
+### Approval before a document is submitted or cancelled
+
+A workspace attaches a policy of the same shape to a submittable entity's submit, and separately its cancel, where no
+workflow submits it (decisions.md BD-19, amended):
+
+```json
+{"entity": "PurchaseOrder", "op": {"op": "set_approval", "on": "submit", "approval": {
+  "steps": [{"label": "Buyer's manager", "approvers": {"role": "Purchase Manager"}, "need": 1,
+             "when": "doc.grand_total > 50000", "remind_after": "PT8H"}],
+  "reset_on": ["grand_total", "supplier"], "lock": true, "system_bypass": false, "show": []}}}
+{"entity": "PurchaseOrder", "op": {"op": "set_approval", "on": "cancel", "approval": {
+  "steps": [{"label": "Finance", "approvers": {"role": "Accounts Manager"}}]}}}
+{"entity": "PurchaseOrder", "op": {"op": "set_approval", "on": "cancel", "approval": null}}
+```
+
+`approval: null` takes it away. Every submit or cancel but a workflow's asks (`POST …/submit`, create-and-submit,
+MCP, an app's hook, an automation): the caller must be able to do it now and, for a submit, the document must pass its
+rules and the app's validation; the answer is the document as it is with `_approval` (`document: true`, `action:
+"submit"`). When the policy is satisfied it completes once, **as the requester at that moment**: their right is
+checked again and the app's hooks run as theirs. Refused then, nothing is submitted and the request's `status` is
+`failed` with `failure` saying why (history `approval:failed`). `on_reject` and `not_who_took` are refused here (no
+states, no transitions); `system_bypass` lets the system go ahead without asking. `GET
+/api/customize/definition/{Entity}` returns them as `approvals: {submit, cancel}`.
+
 ## Collaboration (any record the caller can read)
 
 | Method & path | Notes |
@@ -829,10 +866,15 @@ webhook, webhook_name, topic, attempts, response_code, last_error, created_at, u
 
 Business calendars ([processes](logic/processes.md)): `GET /api/admin/calendars` → `{calendars: [{name,
 zone, weekends, holidays, hours, revision, updated_by, updated_at}]}`; `GET /api/admin/calendars/{name}` →
-one of them; `PUT /api/admin/calendars/{name}` `{zone, weekends, holidays, hours?}` → `{revision}`, each
+one of them; `PUT /api/admin/calendars/{name}` `{zone, weekends, holidays, hours?, exceptions?}` → `{revision}`, each
 change a new revision; `DELETE /api/admin/calendars/{name}`. `hours` is windows per weekday in the zone,
 `{"mon": [["09:00", "13:00"], ["14:00", "18:00"]]}`; left out, every hour of a business day is open. Bad
-hours are a field error on `hours`. These are the functions Studio's `/calendars` route calls. Deleting a
+hours are a field error on `hours`. `exceptions` say what given local dates are, whatever their weekday and
+holidays say: `{"2026-12-24": {"open": false, "hours": [["12:00", "24:00"]]}, "2026-12-27": {"open": true,
+"hours": [["10:00", "14:00"]]}, "2026-12-31": {"open": false}}`. Open, with windows (all day without them), opens a
+holiday or a weekend day and replaces a weekday's hours; closed, all day, or only those hours of the day's own
+windows. A date opened is a business day, one closed all day is not. At most 1,000; bad ones are a field error on
+`exceptions`. Every calendar function, wait, service target and approval step's time counts them; packs carry them. These are the functions Studio's `/calendars` route calls. Deleting a
 calendar a release's waits name is not refused: deadlines already worked out stay, and a wait that starts
 later on it fails as one naming a calendar the workspace never had.
 

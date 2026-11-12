@@ -493,8 +493,35 @@ gap report (BL-25, BL-26, BL-29, BL-30, BL-32, BL-33, BL-34): eleven apps decide
 **Rules out**: deciding by e-mail reply or link; a chain of stand-ins; approvals that skip the transition's own
 gates, rules or effects; an approver reading a record they may not read (see below).
 
-**Not yet**: an approver without read access to the record sees the request (its steps, decisions and the record's
-title) but not the record; reading it through the request, as portal roles read by path, is not built. A packaged
-document's own submit and cancel take a policy only through a workflow set on it (`set_workflow`), which then refuses
-a direct submit by a person; a policy on the plain submit is not built.
+**Not yet** (both built the same day, in the amendment below): an approver reading the record they decide; a policy on a packaged document's own submit and cancel.
+
+*Amended 12 November 2026 (approvals, part two):*
+
+* **An approver reads the one record awaiting them.** While an open step awaits their decision (theirs, or for whom
+  they stand in) and they have not decided it, someone with no right to the entity reads that record, its lines, its
+  history and its files' downloads, and nothing else of the entity: lists, searches, writes and every other action
+  still refuse them. It ends when they decide, the step closes, or the request completes, is recalled or ends; a
+  reset that opens the step again asks them again, so they read again. Their own field groups still hide what they
+  hide, unless the policy's `show` lists the field (none by default); a hidden field stays hidden in the history's
+  diffs even when shown. Portal paths (`RowScope::admits`) did not fit: approvers are on the request, not on a path
+  from the record, so the request is the grant (`Kernel::read_record`), and `get` is unchanged for every other caller.
+* **Approval before a document is submitted or cancelled** (`set_approval`, `on: submit | cancel`): the same policy,
+  on a submittable entity no workflow submits, without replacing the app's lifecycle. Every submit or cancel but a
+  workflow's goes through `submit_tx`/`cancel_tx` (the API, create-and-submit, MCP, apps' hooks, automations), and
+  there it asks: whoever presses it must be able to do it now and, for a submit, the document must pass its rules and
+  the app's validation; the document stays as it is with `_approval`. Nothing the app writes on submit runs then.
+* **A completed submit runs as its requester, at that moment**, never as the system: their context is loaded when the
+  policy is satisfied, their right to submit (cancel) checked again, and the app's `before_submit`, `on_submit` and
+  checks run as theirs, so hooks see the person who pressed it and records it writes are theirs. Why: an approval
+  agrees to what someone asked; it lends them no rights, and the system's would let a submit through that its
+  requester could no longer make. Refused then (their right gone, an app's check), nothing of the submit stays (a
+  savepoint) and the request ends `failed`, with `failure` saying why, the requester told; the decision is kept.
+  Only the system asks with no requester; its request completes as the system.
+* **While pending**: a `reset_on` change voids the decisions; `lock: true` refuses any other edit (fields the server
+  works out are not counted); otherwise edits are allowed. `lock` applies to transitions' policies too.
+* **The system** (an automation, another app's engine) is asked like anyone unless the policy says `system_bypass`;
+  a bypassing submit ends a request pending on the document.
+
+**Still not built**: approval on a document's delete or amend; `show` on lines' fields; a policy on a submit whose
+entity has a workflow (it goes on the transition, and is refused there with that said).
 

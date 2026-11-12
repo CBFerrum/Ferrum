@@ -95,6 +95,25 @@ impl CompiledWorkflow {
     }
 }
 
+/// An approval policy on submitting or cancelling an entity's documents (`set_approval`, BD-19), with what its
+/// expressions say (the settings they read are loaded).
+#[derive(Debug, Clone)]
+pub struct DocumentApproval {
+    pub policy: ApprovalPolicy,
+    pub exprs: Vec<Expr>,
+}
+
+/// What an approval policy's expressions say: each step's `when`, its approvers' and its escalation's `expr`.
+fn policy_exprs(p: &ApprovalPolicy) -> Result<Vec<Expr>, MetaError> {
+    let mut out = Vec::new();
+    for s in &p.steps {
+        for x in [&s.when, &s.approvers.expr].into_iter().chain(s.escalate_to.as_ref().map(|e| &e.expr)).flatten() {
+            out.push(Expr::compile(x).map_err(MetaError::Invalid)?);
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone)]
 pub struct EffEntity {
     pub def: EntityDef,
@@ -109,6 +128,8 @@ pub struct EffEntity {
     pub exprs: Exprs,
     pub workflow: Option<CompiledWorkflow>,
     pub print_template: Option<String>,
+    /// Approval before its documents are submitted or cancelled, outside a workflow (BD-19).
+    pub document_approvals: BTreeMap<DocumentAction, DocumentApproval>,
 }
 
 impl EffEntity {
@@ -332,7 +353,7 @@ impl Schema {
         let mut out = BTreeSet::new();
         let mut next = vec![ent];
         while let Some(e) = next.pop() {
-            let guards = e.workflow.iter().flat_map(|w| w.exprs());
+            let guards = e.workflow.iter().flat_map(|w| w.exprs()).chain(e.document_approvals.values().flat_map(|a| &a.exprs));
             out.extend(e.exprs.all().chain(guards).flat_map(|x| x.settings().iter().map(|(n, _)| n.clone())));
             next.extend(e.children.values().filter_map(|c| self.entity(&c.entity)).map(|c| &**c));
         }
@@ -370,6 +391,7 @@ pub fn replaced_value(e: &EffEntity, op: &OverlayOp) -> Option<Value> {
         OverlayOp::SetEntityProperty { property, .. } => Some(serde_json::to_value(def).ok()?.get(property).cloned().unwrap_or(Value::Null)),
         OverlayOp::SetWorkflow { .. } => Some(e.workflow.as_ref().and_then(|w| serde_json::to_value(&w.def).ok()).unwrap_or(Value::Null)),
         OverlayOp::SetPrintTemplate { .. } => Some(e.print_template.clone().map_or(Value::Null, Value::String)),
+        OverlayOp::SetApproval { on, .. } => Some(e.document_approvals.get(on).and_then(|a| serde_json::to_value(&a.policy).ok()).unwrap_or(Value::Null)),
         _ => None,
     }
 }
@@ -575,6 +597,7 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
         | OverlayOp::RedefineEntity { .. }
         | OverlayOp::SetWorkflow { .. }
         | OverlayOp::SetPrintTemplate { .. }
+        | OverlayOp::SetApproval { .. }
         | OverlayOp::DefineModule { .. }
         | OverlayOp::RemoveModule { .. }
         | OverlayOp::PublishList { .. }
@@ -647,6 +670,7 @@ struct Building {
     custom: bool,
     workflow: Option<WorkflowDef>,
     print_template: Option<String>,
+    approvals: BTreeMap<DocumentAction, ApprovalPolicy>,
 }
 
 fn validate_custom_entity(e: &EntityDef) -> Result<(), String> {
@@ -720,6 +744,7 @@ pub fn replaced_by_redefinition(op: &OverlayOp, at: usize, r: usize) -> bool {
             op,
             OverlayOp::SetWorkflow { .. }
                 | OverlayOp::SetPrintTemplate { .. }
+                | OverlayOp::SetApproval { .. }
                 | OverlayOp::DefineEntity { .. }
                 | OverlayOp::PublishList { .. }
                 | OverlayOp::UnpublishList { .. }
@@ -760,7 +785,10 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         for e in &pkg.entities {
             let storage = e.fields.iter().filter(|f| f.ftype.is_stored()).map(|f| (f.name.clone(), Storage::Column)).collect();
             let print_template = pkg.print_formats.iter().find(|(n, _)| n == &e.name).map(|(_, t)| t.clone());
-            building.insert(e.name.clone(), Building { package: pkg.name().into(), def: e.clone(), storage, custom: false, workflow: None, print_template });
+            building.insert(
+                e.name.clone(),
+                Building { package: pkg.name().into(), def: e.clone(), storage, custom: false, workflow: None, print_template, approvals: BTreeMap::new() },
+            );
         }
         modules.extend(pkg.manifest.modules.iter().map(|m| ModuleDef { package: pkg.name().into(), ..m.clone() }));
         roles.extend(pkg.manifest.roles.iter().cloned());
@@ -847,7 +875,15 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                             let storage = entity.fields.iter().map(|f| (f.name.clone(), Storage::Ext)).collect();
                             building.insert(
                                 entity.name.clone(),
-                                Building { package: "tenant".into(), def: (**entity).clone(), storage, custom: true, workflow: None, print_template: None },
+                                Building {
+                                    package: "tenant".into(),
+                                    def: (**entity).clone(),
+                                    storage,
+                                    custom: true,
+                                    workflow: None,
+                                    print_template: None,
+                                    approvals: BTreeMap::new(),
+                                },
                             );
                         }
                         Err(m) => warnings.push(SchemaWarning { entity: entity.name.clone(), message: m }),
@@ -931,6 +967,13 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                         b.workflow = Some(workflow.clone());
                         Ok(None)
                     }
+                }
+                OverlayOp::SetApproval { on, approval } => {
+                    match approval {
+                        Some(p) => b.approvals.insert(*on, p.clone()),
+                        None => b.approvals.remove(on),
+                    };
+                    Ok(None)
                 }
                 OverlayOp::SetPrintTemplate { template } => {
                     if template.len() > 512 * 1024 {
@@ -1035,6 +1078,25 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
             warnings.push(SchemaWarning { entity: name.clone(), message: format!("workflow ignored: {m}") });
             b.workflow = None;
         }
+        // Approval before a document is submitted or cancelled: on a submittable entity no workflow submits.
+        let mut ignored = Vec::new();
+        for (on, p) in &b.approvals {
+            let what = format!("{}: approval", on.as_str());
+            let checked = if !b.def.submittable {
+                Err(format!("{what}: {} is not submittable", b.def.label))
+            } else if b.workflow.is_some() {
+                Err(format!("{what}: its workflow submits and cancels it, so the approval goes on the workflow's transition"))
+            } else {
+                crate::catalog::validate_approval(&b.def, &what, None, p)
+            };
+            if let Err(m) = checked {
+                warnings.push(SchemaWarning { entity: name.clone(), message: format!("approval ignored: {m}") });
+                ignored.push(*on);
+            }
+        }
+        for on in ignored {
+            b.approvals.remove(&on);
+        }
     }
 
     // Each published list as its entity now stands: one that cannot stand goes, and a field that may no
@@ -1081,10 +1143,8 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                     if let Some(c) = &t.condition {
                         guards.insert((t.action.clone(), t.from.clone()), Expr::compile(c).map_err(MetaError::Invalid)?);
                     }
-                    for s in t.approval.iter().flat_map(|p| &p.steps) {
-                        for x in [&s.when, &s.approvers.expr].into_iter().chain(s.escalate_to.as_ref().map(|e| &e.expr)).flatten() {
-                            approvals.push(Expr::compile(x).map_err(MetaError::Invalid)?);
-                        }
+                    if let Some(p) = &t.approval {
+                        approvals.extend(policy_exprs(p)?);
                     }
                 }
                 Some(CompiledWorkflow { def, guards, approvals })
@@ -1103,6 +1163,11 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                 exprs,
                 workflow,
                 print_template: b.print_template,
+                document_approvals: b
+                    .approvals
+                    .into_iter()
+                    .map(|(on, policy)| Ok((on, DocumentApproval { exprs: policy_exprs(&policy)?, policy })))
+                    .collect::<Result<_, MetaError>>()?,
             }),
         );
     }
@@ -1128,7 +1193,10 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let wrong: Vec<SchemaWarning> = schema
         .entities
         .values()
-        .flat_map(|e| e.exprs.all().chain(e.workflow.iter().flat_map(|w| w.exprs())).map(move |x| (e, x)))
+        .flat_map(|e| {
+            let approvals = e.document_approvals.values().flat_map(|a| &a.exprs);
+            e.exprs.all().chain(e.workflow.iter().flat_map(|w| w.exprs())).chain(approvals).map(move |x| (e, x))
+        })
         .filter_map(|(e, x)| schema.settings_problem(x).map(|m| SchemaWarning { entity: e.def.name.clone(), message: m }))
         .collect();
     schema.warnings.extend(wrong);
