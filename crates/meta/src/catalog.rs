@@ -56,7 +56,7 @@ pub fn load_package_dir(dir: &Path) -> Result<Package, MetaError> {
 pub fn load_package_files(files: &BTreeMap<String, String>) -> Result<Package, MetaError> {
     let manifest_text = files.get("package.yaml").ok_or_else(|| MetaError::Invalid("package.yaml is missing".into()))?;
     let mut manifest: PackageManifest = serde_yaml::from_str(manifest_text).map_err(|e| MetaError::Yaml { path: "package.yaml".into(), msg: e.to_string() })?;
-    // A layout format's file (`print/<name>.layout.json`) read into its document (BD-22).
+    // A layout format's file (`print/<name>.layout.json`) read into its document (BD-28).
     for d in manifest.documents.iter_mut() {
         let Some(file) = d.layout_file.take() else { continue };
         if !file.starts_with("print/") || !file.ends_with(".layout.json") || file[6..].contains('/') {

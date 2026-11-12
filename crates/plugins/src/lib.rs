@@ -54,7 +54,7 @@ use wasmtime::{Config, Engine, ExternType, Module};
 pub const STAGES: &[&str] = &["before_validate", "validate", "before_submit", "on_submit", "before_cancel", "on_cancel", "before_delete"];
 const MAX_WASM: usize = 8 << 20;
 /// Names no plugin takes: their place under `/api/public/{workspace}/` is the platform's.
-pub const RESERVED_NAMES: &[&str] = &["lists"];
+pub const RESERVED_NAMES: &[&str] = &["lists", "links"];
 const CACHE_TTL: Duration = Duration::from_secs(10);
 /// Compiled modules kept in memory (each is a few MB of machine code).
 const MAX_MODULES: usize = 256;

@@ -193,7 +193,9 @@ async fn scenario() {
 
     // ── templates: the package's defaults, an edited copy, what is refused, reset ──
     let list = k.message_templates(&admin).await.unwrap();
-    assert_eq!(list.iter().filter(|t| t["source"] == "package").count(), 3);
+    // The package's three, beside the platform's own wording for outside people (core.*, BD-22, BD-23).
+    let own = |t: &&Value| t["source"] == "package" && !t["key"].as_str().unwrap_or_default().starts_with("core.");
+    assert_eq!(list.iter().filter(own).count(), 3);
     let read = k.message_template(&admin, "notes.welcome").await.unwrap();
     let mut def: MessageDef = serde_json::from_value(read["template"].clone()).unwrap();
     def.languages.get_mut("en").unwrap().email.as_mut().unwrap().subject = "Hi {{ doc.title }}".into();

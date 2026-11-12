@@ -18,7 +18,7 @@
 //!   who asks, or as the workspace when an effect or a schedule runs it (as generated documents are, above). At most
 //!   [`MAX_QUERY_ROWS`] rows and [`MAX_GROUPS`] files a run: a person asking for more is refused with the numbers; an
 //!   effect's run goes on in a job of its own after the last record it did, never dropping the rest.
-//! * **Print formats** (BD-22). A page is a template or a layout ([`crate::layout`]); it has paper and margins, a
+//! * **Print formats** (BD-28). A page is a template or a layout ([`crate::layout`]); it has paper and margins, a
 //!   letter head (the record's company's, else the workspace's), copies with labels, a watermark on drafts and
 //!   cancelled records; the workspace picks each entity's default (`document_default`); images are the workspace's own
 //!   files, inlined as `data:` URLs. One path renders every page ([`render_page`]), for a person printing and for a
@@ -1039,21 +1039,22 @@ async fn inline(k: &Kernel, tx: &mut Tx, ctx: &Ctx, wants: Vec<Want>) -> Result<
             warn.push(format!("{}: at most {} images print", w.url, ferrum_meta::layout::MAX_IMAGES));
             continue;
         }
-        let row: Option<(Option<String>, Option<Uuid>, Option<Uuid>, i64, String)> =
-            sqlx::query_as("select entity, record_id, created_by, size_bytes, storage_key from file_object where tenant_id = $1 and id = $2")
+        let row: Option<(Option<String>, Option<Uuid>, Option<Uuid>, i64, String, bool)> =
+            sqlx::query_as("select entity, record_id, created_by, size_bytes, storage_key, shared from file_object where tenant_id = $1 and id = $2")
                 .bind(ctx.tenant)
                 .bind(id)
                 .fetch_optional(&mut **tx)
                 .await?;
-        let Some((entity, record, by, size, key)) = row else {
+        let Some((entity, record, by, size, key, shared)) = row else {
             warn.push(format!("{}: no such file here", w.url));
             continue;
         };
         let allowed = match (w.on, &entity, record) {
             (Some((e, r)), Some(fe), Some(fr)) => fe == e && fr == r,
             (Some(_), ..) => false,
-            (None, Some(e), Some(r)) if w.by == ReadAs::Person => k.get_tx(ctx, tx, e, r, false).await.is_ok(),
-            (None, ..) if w.by == ReadAs::Person => ctx.is_admin || (!ctx.user.is_nil() && by == Some(ctx.user)),
+            // As the person would download it: the same rule, an outside person's included (shared, their own, or
+            // named in a field of its record as they read it: BD-22).
+            (None, ..) if w.by == ReadAs::Person => k.may_download_file(ctx, id, entity.as_deref(), record, by, shared).await.is_ok(),
             (None, ..) => true,
         };
         if !allowed {

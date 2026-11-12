@@ -718,6 +718,7 @@ impl Kernel {
                     | crate::automation::AutomationAction::ForEach { .. }
                     | crate::automation::AutomationAction::CopyLines { .. }
                     | crate::automation::AutomationAction::Message { .. }
+                    | crate::automation::AutomationAction::Link { .. }
                     | crate::automation::AutomationAction::Generate { .. }
                     | crate::automation::AutomationAction::ReportDocuments { .. } => {
                         notes

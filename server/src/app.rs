@@ -496,6 +496,7 @@ impl Hooks for App {
             .add_route(controllers::oauth::routes())
             .add_route(controllers::legacy::routes())
             .add_route(controllers::lists::routes())
+            .add_route(controllers::links::routes())
             .add_route(controllers::plugins::routes())
             .add_route(crate::live::routes())
             .add_route(crate::coedit::routes())

@@ -48,7 +48,7 @@ async fn version(State(app): State<AppContext>) -> ApiResult<Response> {
         "mail_attachments": st.kernel.mailer.as_ref().is_some_and(|m| m.can_attach()),
         // `POST /api/v1/{E}/{id}/email` takes `message_html` (rich text, cleaned here).
         "mail_html": true,
-        // Print formats (BD-22): 1 formats, letter heads, settings and the print dialog; 2 layouts, the designer's
+        // Print formats (BD-28): 1 formats, letter heads, settings and the print dialog; 2 layouts, the designer's
         // canvas, barcodes, versions.
         "print": 2,
     }))
@@ -401,16 +401,16 @@ async fn complete_upload(Auth(ctx): Auth, State(app): State<AppContext>, Path(id
 async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
-    let row: Option<(String, String, String, Option<String>, Option<Uuid>, Option<Uuid>)> =
-        sqlx::query_as("select file_name, content_type, storage_key, entity, record_id, created_by from file_object where tenant_id = $1 and id = $2")
+    let row: Option<(String, String, String, Option<String>, Option<Uuid>, Option<Uuid>, bool)> =
+        sqlx::query_as("select file_name, content_type, storage_key, entity, record_id, created_by, shared from file_object where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)
             .bind(id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
-    let (name, ctype, key, entity, record, by) = row.ok_or_else(|| ApiError(Error::NotFound("file".into())))?;
-    st.kernel.may_download(&ctx, entity.as_deref(), record, by).await?;
+    let (name, ctype, key, entity, record, by, shared) = row.ok_or_else(|| ApiError(Error::NotFound("file".into())))?;
+    st.kernel.may_download_file(&ctx, id, entity.as_deref(), record, by, shared).await?;
     let mut resp = streamed(&st, &key, &headers).await?;
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&ctype).unwrap_or(HeaderValue::from_static("application/octet-stream")));

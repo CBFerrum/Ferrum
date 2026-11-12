@@ -1,4 +1,4 @@
--- Print formats (crates/kernel/src/documents.rs and layout.rs, docs/builder/decisions.md BD-22).
+-- Print formats (crates/kernel/src/documents.rs and layout.rs, docs/builder/decisions.md BD-28).
 
 -- The workspace's chosen default document per entity: a choice of its own, so that making a package's format the
 -- default does not make an edited copy of it.

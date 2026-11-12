@@ -157,6 +157,28 @@ pub enum AutomationAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<crate::documents::ReportMessage>,
     },
+    /// A signed action link to the record (BD-23): a person holding it may run `actions` (the entity's, or `view`) on
+    /// this record alone, seeing the fields `show` lists, with `params` (expressions) fixed, for `days` (7 unless said,
+    /// at most 90), `uses` times (1 unless said), after a one-time code sent to what `code_to` gives (an expression),
+    /// named in the record's history as what `recipient` gives. Issued as the system, in the run's transaction. Gives
+    /// `{id, url, expires_at}`: a later `message` sends `results[i].url`, naming it among its `secret` values.
+    Link {
+        actions: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        show: Vec<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        params: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        days: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uses: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code_to: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recipient: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        frame_origins: Vec<String>,
+    },
     /// Another app's step through the capability gate, in the run's transaction (BD-13): `capability` a catalog id,
     /// `input` its inputs as CEL expressions, `key` the effect key as an expression. Without `key`, the run's own:
     /// the same run on the same record version does it once. It gives the receipt's result.
@@ -284,6 +306,7 @@ fn sources(a: &AutomationAction) -> Vec<&str> {
         }
         AutomationAction::ReportDocuments { values, params_from, .. } => values.values().chain(params_from.values()).collect(),
         AutomationAction::Invoke { input, key, .. } => input.values().chain(key.iter()).collect(),
+        AutomationAction::Link { params, code_to, recipient, .. } => params.values().chain(code_to.iter()).chain(recipient.iter()).collect(),
     };
     all.into_iter().map(String::as_str).collect()
 }
@@ -666,6 +689,16 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
                 continue;
             }
             AutomationAction::Generate { .. } | AutomationAction::Invoke { .. } | AutomationAction::ReportDocuments { .. } => continue,
+            AutomationAction::Link { actions, show, .. } => {
+                let ent = schema.entity(entity).ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
+                if let Some(a) = actions.iter().find(|a| *a != crate::action_link::VIEW && !ent.def.actions.iter().any(|d| &d.name == *a)) {
+                    return Err(at(format!("link: {} has no action {a}", ent.def.label)));
+                }
+                if let Some(f) = show.iter().find(|f| ent.field(f).is_none()) {
+                    return Err(at(format!("link: {f} is not a field of {}", ent.def.label)));
+                }
+                continue;
+            }
         };
         // The platform's own keys are ignored when written, as they always were (a configured action refuses them).
         if let Some(f) = values.keys().find(|f| target.field(f).is_none() && !crate::store::SYSTEM_KEYS.contains(&f.as_str())) {
@@ -1256,6 +1289,26 @@ pub(crate) async fn execute(
             for to in to {
                 k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;
             }
+        }
+        AutomationAction::Link { actions, show, params, days, uses, code_to, recipient, frame_origins } => {
+            let id = record.ok_or_else(|| Error::invalid("link needs a record"))?;
+            let text = |src: &Option<String>| -> Result<Option<String>> { src.as_deref().map(|s| eval(s).map(as_text)).transpose() };
+            let mut fixed = Map::new();
+            for (name, expr) in params {
+                fixed.insert(name, eval(&expr)?);
+            }
+            let spec = crate::action_link::LinkSpec {
+                actions,
+                show,
+                params: fixed,
+                expires_at: days.map(|d| chrono::Utc::now() + chrono::Duration::days(d)),
+                uses,
+                code_to: text(&code_to)?,
+                recipient: text(&recipient)?,
+                frame_origins,
+            };
+            let issued = k.issue_link(ctx, tx, entity, id, &spec).await.map_err(|e| crate::pack::about("link", e))?;
+            return Ok(serde_json::json!(issued));
         }
         AutomationAction::Invoke { capability, input, key: named } => {
             // Checked again as it runs: the capability's app may have gone since, or its action been configured.

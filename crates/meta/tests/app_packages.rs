@@ -1,4 +1,4 @@
-//! Every app's packages still load with print formats' new template fields (BD-22): each package under
+//! Every app's packages still load with print formats' new template fields (BD-28): each package under
 //! `$FERRUM_APPS_DIR/ferrum-app-*/packages/*` and `…/addons/*/packages/*` is read, each document checked, and all of
 //! them together with the platform's packages make a catalog. Skipped when `FERRUM_APPS_DIR` is not set.
 

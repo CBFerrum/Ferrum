@@ -1,4 +1,4 @@
-# Letter heads and print settings (docs/builder/decisions.md BD-22): what every printed page of the workspace wears,
+# Letter heads and print settings (docs/builder/decisions.md BD-28): what every printed page of the workspace wears,
 # and how it prints. A letter head's header and footer are layout sections ({"sections": [...]}) of the blocks a
 # letter head may hold (field, text, heading, image, divider, spacer) over company.*, settings.* and print.*.
 - name: LetterHead
