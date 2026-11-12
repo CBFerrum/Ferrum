@@ -206,6 +206,24 @@ impl Catalog {
         Ok(())
     }
 
+    /// The entities packages `deps` add fields to, with those fields (in dependency order, as a workspace has them).
+    fn seen_by(&self, deps: &[String]) -> HashMap<String, EntityDef> {
+        let mut out: HashMap<String, EntityDef> = HashMap::new();
+        for p in self.order.iter().filter(|n| deps.contains(n)).filter_map(|n| self.packages.get(n)) {
+            for ov in &p.manifest.overlays {
+                for op in &ov.ops {
+                    let OverlayOp::AddField { field, .. } = op else { continue };
+                    let Some((_, base)) = self.entities.get(&ov.entity) else { continue };
+                    let e = out.entry(ov.entity.clone()).or_insert_with(|| base.clone());
+                    if !e.fields.iter().any(|f| f.name == field.name) {
+                        e.fields.push(field.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn validate_packages(&self) -> Result<(), MetaError> {
         // Fields added to an entity, and by whom: two packages adding the same one would break
         // every workspace that installs both.
@@ -295,6 +313,9 @@ impl Catalog {
                     }
                 }
             }
+            // Entities as this package sees them: with the fields it and the packages it depends on add to them.
+            let seen = self.seen_by(&deps);
+            let entity = |e: &str| seen.get(e).or_else(|| self.entities.get(e).map(|(_, d)| d));
             for role in &p.manifest.roles {
                 if role.name.trim().is_empty() {
                     return invalid(format!("{name}: role without a name"));
@@ -303,11 +324,11 @@ impl Catalog {
                     if perm.entity != "*" && !self.entities.contains_key(&perm.entity) {
                         return invalid(format!("{name}: role {} references unknown entity {}", role.name, perm.entity));
                     }
-                    let def = self.entities.get(&perm.entity).map(|(_, e)| e);
+                    let def = entity(&perm.entity);
                     perm.check_condition(|f| def.and_then(|e| e.fields.iter().find(|x| x.name == f)))
                         .map_err(|m| MetaError::Invalid(format!("{name}: role {} on {}: {m}", role.name, perm.entity)))?;
                     if let Some(via) = &perm.via {
-                        crate::via::resolve(&perm.entity, via, |e| self.entities.get(e).map(|(_, d)| d))
+                        crate::via::resolve(&perm.entity, via, entity)
                             .map_err(|m| MetaError::Invalid(format!("{name}: role {} on {}: {m}", role.name, perm.entity)))?;
                     }
                     if let Some(why) = perm.unknown_action(def) {
@@ -326,7 +347,7 @@ impl Catalog {
             }
             self.validate_defaults(name, p, &deps)?;
             for pd in &p.manifest.personal_data {
-                let Some((_, e)) = self.entities.get(&pd.entity) else {
+                let Some(e) = entity(&pd.entity) else {
                     return invalid(format!("{name}: personal data of unknown entity {}", pd.entity));
                 };
                 if e.kind == EntityKind::Child {

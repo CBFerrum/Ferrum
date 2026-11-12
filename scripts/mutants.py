@@ -113,6 +113,7 @@ META_LINKS = ("-p", "ferrum-meta", "--lib", "linked_records")
 STREAMED = ("-p", "ferrum-server", "--test", "streamed_files_it")
 SECRET_VALUES = ("-p", "ferrum-kernel", "--test", "secrets_it")
 PACKAGE_DEFAULTS = ("-p", "ferrum-kernel", "--test", "package_defaults_it")
+OVERLAY_RULES = ("-p", "ferrum-kernel", "--test", "overlay_rules_it")
 REPORTS_ONCE = ("-p", "ferrum-server", "--lib", "packages::tests::reports_are_listed_once")
 REPORTS_UNIT = ("-p", "ferrum-domain", "--lib", "reports::tests")
 # Generous enough to compile and run; passing it means the mutant hung the test.
@@ -768,6 +769,7 @@ MUTANTS = [
     ("package-default-names-unchecked", "crates/meta/src/catalog.rs", "match foreign(v, &roles, &templates, &settings) {", "match None::<String> {", PACKAGE_DEFAULTS),
     ("package-automation-edit-overwritten", "crates/kernel/src/automation.rs", "if base.as_ref() != Some(&now) || now == default => return Ok(()),", "if now == default => return Ok(()),", PACKAGE_DEFAULTS),
     ("package-approval-ignored", "crates/meta/src/effective.rs", "b.approvals.insert(a.on, a.policy.clone());", "let _ = a;", PACKAGE_DEFAULTS),
+    ("rules-blind-to-own-fields", "crates/meta/src/catalog.rs", "seen.get(e).or_else(|| self.entities.get(e).map(|(_, d)| d))", "seen.get(e).filter(|_| false).or_else(|| self.entities.get(e).map(|(_, d)| d))", OVERLAY_RULES),
     # A report is registered by one app, and listed once however often the apps register.
     ("reports-added-again", "crates/domain/src/reports.rs", "*SOURCES.write().map_err(|_| \"the report sources are poisoned\".to_string())? = sources.into_iter().map(|(_, s)| s).collect();", "SOURCES.write().map_err(|_| \"the report sources are poisoned\".to_string())?.extend(sources.into_iter().map(|(_, s)| s));", REPORTS_ONCE),
     ("report-name-twice", "crates/domain/src/reports.rs", "if let Some(other) = by.insert(name.to_string(), who) {", "if let Some(other) = by.insert(name.to_string(), who).filter(|_| false) {", REPORTS_UNIT),
