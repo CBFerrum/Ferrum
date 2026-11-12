@@ -78,6 +78,7 @@ ACTIONS = ("-p", "ferrum-kernel", "--test", "actions_it")
 SETTINGS = ("-p", "ferrum-kernel", "--test", "settings_it")
 EFFECTS = ("-p", "ferrum-kernel", "--test", "effects_it")
 MESSAGES = ("-p", "ferrum-kernel", "--test", "messages_it")
+MESSAGES_API = ("-p", "ferrum-server", "--test", "messages_api_it")
 MESSAGES_UNIT = ("-p", "ferrum-kernel", "--lib", "messages::tests")
 DOCUMENTS = ("-p", "ferrum-kernel", "--test", "documents_it")
 STUDIO_QUERY_DOCUMENTS = ("-p", "ferrum-studio", "--test", "query_documents_it")
@@ -747,6 +748,7 @@ MUTANTS = [
     ("away-route-unreachable", "crates/studio/src/logic.rs", "\"dependents\" | \"away\"", "\"dependents\"", STUDIO_SOLUTIONS),
     ("effect-template-unchecked", "crates/kernel/src/automation.rs", "        match (message.filter(|m| !messages.contains(*m)), document.filter(|d| !documents.contains(*d))) {", "        match (None::<&String>, None::<&String>) {", EFFECTS),
     ("effect-refusal-unplaced", "crates/kernel/src/actions.rs", "            .map_err(|e| automation::at_effect(i, &what, e))?;", "            ?;", EFFECTS),
+    ("opt-out-outlives-erasure", "crates/kernel/src/messages.rs", "        \"delete from contact_consent where tenant_id = $1", "        \"delete from contact_consent where false and tenant_id = $1", MESSAGES_API),
     # Documents about a query (docs/api.md, A report as a document; BD-21).
     ("query-documents-person-unbounded", "crates/kernel/src/documents.rs", "    if person && total > MAX_GROUPS {", "    if false {", STUDIO_QUERY_DOCUMENTS),
     ("query-documents-cursor-ignored", "crates/kernel/src/documents.rs", "filter(|(id, _)| after.is_none_or(|a| *id > a))", "filter(|_| true)", STUDIO_QUERY_DOCUMENTS),

@@ -12,7 +12,7 @@ use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::{Catalog, MessageDef};
-use ferrum_server::controllers::messages::preview_message;
+use ferrum_server::controllers::messages::{opt_outs_listed, preview_message};
 use ferrum_server::error::ApiError;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -95,6 +95,37 @@ async fn scenario() {
     let log = k.message_log(&writer, Some(("Note", id.parse().unwrap())), None, 10).await.unwrap();
     assert_eq!(log.len(), 1);
     assert!(k.message_log(&writer, None, Some("admin@acme.test"), 10).await.is_err(), "by recipient: administrators only");
+
+    // Opt-outs listed: by part of an address or number, by channel, paged, with who recorded each and when.
+    for (address, channel) in [("ann@out.test", "email"), ("bob@out.test", "email"), ("+15550100", "text"), ("+15550199", "chat")] {
+        k.set_message_opt_out(&admin, address, channel, true).await.unwrap();
+    }
+    k.set_message_opt_out(&admin, "bob@out.test", "email", false).await.unwrap();
+    let list = |q: Value| {
+        let (k, admin) = (k.clone(), admin.clone());
+        async move { opt_outs_listed(&k, &admin, &serde_json::from_value(q).unwrap()).await }
+    };
+    let all = list(json!({})).await.unwrap();
+    assert_eq!(all["total"], json!(3), "bob took his back: {all}");
+    assert_eq!(
+        (all["opt_outs"][0]["recorded_by"].as_str(), all["opt_outs"][0]["recorded_by_name"].as_str()),
+        (Some(admin.user.to_string().as_str()), Some("Administrator")),
+        "{all}"
+    );
+    assert!(all["opt_outs"][0]["recorded_at"].is_string(), "{all}");
+    let addresses = |v: &Value| v["opt_outs"].as_array().unwrap().iter().map(|r| r["address"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(addresses(&list(json!({"q": "ANN"})).await.unwrap()), ["ann@out.test"]);
+    assert_eq!(addresses(&list(json!({"channel": "text"})).await.unwrap()), ["+15550100"]);
+    assert_eq!(list(json!({"q": "5550"})).await.unwrap()["total"], json!(2));
+    let page = list(json!({"limit": 1, "offset": 1})).await.unwrap();
+    assert_eq!((page["opt_outs"].as_array().unwrap().len(), page["total"].clone()), (1, json!(3)));
+    assert_eq!(answer(list(json!({"limit": 0})).await.unwrap_err()).await.0, 422);
+    assert_eq!(answer(opt_outs_listed(&k, &writer, &Default::default()).await.unwrap_err()).await.0, 403, "administrators only");
+    // Erasing the person takes their opt-out too, and says it held it before.
+    let held = k.personal_data(&admin, "ann@out.test").await.unwrap();
+    assert!(held.to_string().contains("opted out"), "{held}");
+    k.erase_personal_data(&admin, "ann@out.test", "request 7").await.unwrap();
+    assert_eq!(list(json!({"q": "ann"})).await.unwrap()["total"], json!(0));
 
     // A pack carries the edited template and the channel's description, never its secret; installed elsewhere, the
     // channel arrives turned off.

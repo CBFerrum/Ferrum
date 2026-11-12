@@ -92,6 +92,23 @@ async fn opt_out_by_staff(Auth(ctx): Auth, State(app): State<AppContext>, Json(b
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+#[derive(Deserialize, Default)]
+pub struct OptOutQuery {
+    pub q: Option<String>,
+    pub channel: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// `GET /api/admin/messages/opt-outs?q=&channel=&limit=&offset=`: who opted out of what, who recorded it and when.
+pub async fn opt_outs_listed(k: &Kernel, ctx: &Ctx, q: &OptOutQuery) -> ApiResult<Value> {
+    Ok(k.message_opt_outs(ctx, q.q.as_deref(), q.channel.as_deref(), q.limit.unwrap_or(50), q.offset.unwrap_or(0)).await?)
+}
+
+async fn opt_outs(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<OptOutQuery>) -> ApiResult<Response> {
+    Ok(Json(opt_outs_listed(&app_state(&app)?.kernel, &ctx, &q).await?).into_response())
+}
+
 async fn channels(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
     Ok(Json(json!({"channels": app_state(&app)?.kernel.message_channels(&ctx).await?})).into_response())
 }
@@ -176,7 +193,7 @@ pub fn routes() -> Routes {
         .add("/admin/messages/templates/{key}", get(read).delete(reset))
         .add("/admin/messages/preview", post(preview))
         .add("/admin/messages/test", post(test))
-        .add("/admin/messages/opt-outs", put(opt_out_by_staff))
+        .add("/admin/messages/opt-outs", get(opt_outs).put(opt_out_by_staff))
         .add("/admin/messages/channels", get(channels).post(add_channel))
         .add("/admin/messages/channels/{id}", put(change_channel).delete(remove_channel))
         .add("/messages/log", get(log))

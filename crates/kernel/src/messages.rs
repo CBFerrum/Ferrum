@@ -1507,6 +1507,42 @@ impl Kernel {
         Ok(())
     }
 
+    /// The opt-outs there are, newest first, each with who recorded it and when (`GET /api/admin/messages/opt-outs`):
+    /// `{opt_outs: [{address, channel, source, recorded_at, recorded_by, recorded_by_name}], total}`. `q` finds part
+    /// of an address or a number, `channel` one channel; `limit` 1 to 200.
+    pub async fn message_opt_outs(&self, ctx: &Ctx, q: Option<&str>, channel: Option<&str>, limit: i64, offset: i64) -> Result<Value> {
+        admin_only(ctx)?;
+        if !(1..=200).contains(&limit) || offset < 0 {
+            return Err(Error::field("limit", "1 to 200, from an offset of 0 or more"));
+        }
+        let q = q.map(str::trim).filter(|q| !q.is_empty()).map(|q| q.replace(['%', '_', '\\'], ""));
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('address', c.email::text, 'channel', c.channel, 'source', c.source, 'recorded_at', c.recorded_at, \
+               'recorded_by', c.recorded_by, 'recorded_by_name', coalesce(nullif(u.full_name, ''), u.email::text), 'total', count(*) over ()) \
+             from contact_consent c left join app_user u on u.tenant_id = c.tenant_id and u.id = c.recorded_by \
+             where c.tenant_id = $1 and c.purpose = 'marketing' and not c.granted and ($2::text is null or c.channel = $2) \
+               and ($3::text is null or c.email::text ilike '%' || $3 || '%') order by c.recorded_at desc, c.email limit $4 offset $5",
+        )
+        .bind(ctx.tenant)
+        .bind(channel)
+        .bind(q)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let total = rows.first().and_then(|r| r["total"].as_i64()).unwrap_or(0);
+        let rows: Vec<Value> = rows
+            .into_iter()
+            .map(|mut r| {
+                r.as_object_mut().map(|m| m.remove("total"));
+                r
+            })
+            .collect();
+        Ok(json!({"opt_outs": rows, "total": total}))
+    }
+
     /// The recipient following a signed link (`POST /api/messages/opt-out?token=`): no session. Returns the channel.
     pub async fn opt_out_by_link(&self, token: &str) -> Result<String> {
         use base64::Engine as _;
@@ -1666,9 +1702,12 @@ impl Kernel {
 /// The sends and codes of a person (their addresses, their account, their number's digits), for their report.
 pub(crate) async fn held_report(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, emails: &[String], digits: Option<&str>) -> Result<Vec<Value>> {
     Ok(sqlx::query_scalar(
-        "select jsonb_build_object('template', template, 'channel', channel, 'recipient', recipient, 'state', state, 'created_at', created_at) \
+        "select v from (select jsonb_build_object('template', template, 'channel', channel, 'recipient', recipient, 'state', state, 'created_at', created_at) v, created_at \
          from message_send where tenant_id = $1 and (lower(recipient) = any($2) or user_id = $3 \
-           or ($4::text is not null and regexp_replace(recipient, '\\D', '', 'g') like '%' || ltrim($4, '0'))) order by created_at",
+           or ($4::text is not null and regexp_replace(recipient, '\\D', '', 'g') like '%' || ltrim($4, '0'))) \
+         union all select jsonb_build_object('choice', case when granted then 'consented' else 'opted out' end, 'purpose', purpose, 'channel', channel, \
+           'recipient', email::text, 'created_at', recorded_at), recorded_at from contact_consent where tenant_id = $1 and (lower(email::text) = any($2) \
+           or ($4::text is not null and channel <> 'email' and regexp_replace(email::text, '\\D', '', 'g') like '%' || ltrim($4, '0')))) h order by created_at",
     )
     .bind(tenant)
     .bind(emails)
@@ -1678,8 +1717,18 @@ pub(crate) async fn held_report(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>
     .await?)
 }
 
-/// Erases a person's sends and codes; returns the sends' ids, for the erasure's journal.
+/// Erases a person's sends, codes and the choices recorded for their addresses and number (an opt-out among them);
+/// returns the sends' ids, for the erasure's journal.
 pub(crate) async fn erase_held(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, emails: &[String], digits: Option<&str>) -> Result<Vec<Uuid>> {
+    sqlx::query(
+        "delete from contact_consent where tenant_id = $1 and (lower(email::text) = any($2) \
+           or ($3::text is not null and channel <> 'email' and regexp_replace(email::text, '\\D', '', 'g') like '%' || ltrim($3, '0')))",
+    )
+    .bind(tenant)
+    .bind(emails)
+    .bind(digits)
+    .execute(&mut **tx)
+    .await?;
     sqlx::query(
         "delete from message_code where tenant_id = $1 and (lower(recipient) = any($2) \
            or ($3::text is not null and regexp_replace(recipient, '\\D', '', 'g') like '%' || ltrim($3, '0')))",
