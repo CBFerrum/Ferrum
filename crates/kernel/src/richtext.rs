@@ -207,7 +207,7 @@ pub fn html_to_text(html: &str) -> String {
             out.push_str(&"> ".repeat(quote));
         }
     };
-    let mut text = |out: &mut String, s: &str, pre: bool| {
+    let text = |out: &mut String, s: &str, pre: bool| {
         let s = decode(s);
         if pre {
             out.push_str(&s);
@@ -247,6 +247,9 @@ pub fn html_to_text(html: &str) -> String {
         if skip > 0 {
             continue;
         }
+        // The list-item arm must stay its own arm: folded into a guard, a paragraph inside a list that
+        // needs no break would fall through to the arm below and get one.
+        #[allow(clippy::collapsible_match)]
         match (name.as_str(), closing) {
             ("br", _) => newline(&mut out, quote, 1),
             // A list item's paragraph is the item's line: no break after its marker, none of its own at its end.
