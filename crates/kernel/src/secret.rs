@@ -228,7 +228,7 @@ impl Kernel {
     }
 
     /// The server's key, then those being rotated out.
-    fn secret_keys(&self) -> impl Iterator<Item = &SecretKey> {
+    pub(crate) fn secret_keys(&self) -> impl Iterator<Item = &SecretKey> {
         self.settings.secret_key.iter().chain(&self.settings.retired_secret_keys)
     }
 

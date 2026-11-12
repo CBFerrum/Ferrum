@@ -9,9 +9,10 @@ use axum::Json;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use ferrum_kernel::portal_signup::PortalSignup;
 use ferrum_kernel::retention::RetentionInput;
 use ferrum_kernel::support::GrantInput;
-use ferrum_kernel::{Ctx, Error};
+use ferrum_kernel::{Ctx, Error, Kernel};
 use ferrum_meta::{OverlayOp, PermissionDef};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
@@ -213,6 +214,12 @@ struct Portal {
 /// Marks a role for the portal or not (docs/builder/decisions.md BD-02).
 async fn set_role_portal(Auth(ctx): Auth, State(app): State<AppContext>, Path(role): Path<String>, Json(p): Json<Portal>) -> ApiResult<Response> {
     app_state(&app)?.kernel.set_role_portal(&ctx, role.trim(), p.portal).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `PUT /api/admin/roles/{role}/signup {domains?, passes?}` turns a portal role's public sign-up on; `null` turns it off.
+async fn set_role_signup(Auth(ctx): Auth, State(app): State<AppContext>, Path(role): Path<String>, Json(s): Json<Option<PortalSignup>>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.set_portal_signup(&ctx, role.trim(), s.as_ref()).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -425,8 +432,19 @@ async fn export_custom(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiRes
 }
 
 /// `GET /api/customize/definition/{Entity}`: a custom entity's definition as it is now, for a designer to start from.
+/// A package's entity, which has no definition to replace, answers the approval policies its packages declare
+/// (`{entity, package, approvals: [{on, policy, source: "package", package}]}`); a custom entity's answer carries them as
+/// `package_approvals`.
 async fn custom_definition(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path<String>) -> ApiResult<Response> {
-    Ok(Json(app_state(&app)?.kernel.custom_definition(&ctx, &entity)?).into_response())
+    Ok(Json(definition_of(&app_state(&app)?.kernel, &ctx, &entity)?).into_response())
+}
+
+/// What `GET /api/customize/definition/{Entity}` answers (callable without the HTTP layer).
+pub fn definition_of(k: &Kernel, ctx: &Ctx, entity: &str) -> ApiResult<Value> {
+    match ctx.schema.entity(entity) {
+        Some(e) if !e.custom && ctx.is_admin => Ok(k.package_approvals_of(ctx, entity)?),
+        _ => Ok(k.custom_definition(ctx, entity)?),
+    }
 }
 
 async fn import_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(bundle): Json<Value>) -> ApiResult<Response> {
@@ -919,6 +937,7 @@ pub fn routes() -> Routes {
         .add("/admin/roles", get(list_roles))
         .add("/admin/roles/{role}/permissions", put(set_permission))
         .add("/admin/roles/{role}/portal", put(set_role_portal))
+        .add("/admin/roles/{role}/signup", put(set_role_signup))
         .add("/admin/personal-data", get(personal_data))
         .add("/admin/personal-data/erase", post(erase_personal_data))
         .add("/admin/packages", get(list_packages).post(install))

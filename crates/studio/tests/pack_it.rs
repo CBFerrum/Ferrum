@@ -200,16 +200,18 @@ async fn scenario() {
         json!({"op": "add_rule", "rule": {"name": "affordable", "check": "doc.total <= 1000.0", "message": "A membership costs at most 1000"}}),
     )
     .await;
-    src.customize(
-        "XMembership",
-        json!({"op": "set_workflow", "workflow": {"name": "Membership", "entity": "XMembership", "initial_state": "Draft",
-        "states": [{"name": "Draft"}, {"name": "Active"}], "transitions": [{"action": "Activate", "from": "Draft", "to": "Active", "roles": ["Coach"]}]}}),
-    )
-    .await;
     let admin = src.admin().await;
     let rule = |v: Value| -> PermissionDef { serde_json::from_value(v).unwrap() };
     k.set_role_permission(&admin, "Coach", &rule(json!({"entity": "XMembership", "read": true, "write": true, "create": true}))).await.unwrap();
     k.set_role_permission(&admin, "Coach", &rule(json!({"entity": "XPlan", "read": true}))).await.unwrap();
+    // Its approval names the role the pack carries: a workspace without it gets it with the pack.
+    src.customize(
+        "XMembership",
+        json!({"op": "set_workflow", "workflow": {"name": "Membership", "entity": "XMembership", "initial_state": "Draft",
+        "states": [{"name": "Draft"}, {"name": "Active"}], "transitions": [{"action": "Activate", "from": "Draft", "to": "Active", "roles": ["Coach"],
+            "approval": {"steps": [{"label": "Head coach", "approvers": {"role": "Coach"}}]}}]}}),
+    )
+    .await;
     k.set_role_portal(&admin, "Members", true).await.expect_err("no such role yet");
     k.set_role_permission(&admin, "Members", &rule(json!({"entity": "XPlan", "read": true}))).await.unwrap();
     k.set_role_portal(&admin, "Members", true).await.unwrap();
@@ -430,7 +432,10 @@ async fn scenario() {
     // The workflow, for a user holding the role.
     k.set_user_roles_until(&target, coach_there, &["Coach".into()], &Default::default()).await.unwrap();
     let coach = dst.ctx(coach_there).await;
-    assert_eq!(k.transition(&coach, "XMembership", id_of(&m1), "Activate", None).await.expect("the coach activates")["workflow_state"], json!("Active"));
+    let asked = k.transition(&target, "XMembership", id_of(&m1), "Activate", None).await.expect("asked");
+    assert_eq!((&asked["workflow_state"], &asked["_approval"]["status"]), (&json!("Draft"), &json!("pending")), "{asked:?}");
+    k.decide_approval(&coach, "XMembership", id_of(&m1), true, None).await.expect("the coach approves");
+    assert_eq!(k.get(&coach, "XMembership", id_of(&m1), false).await.unwrap()["workflow_state"], json!("Active"));
     // The portal role sees its holder's own.
     dst.insert(&target, "XMembership", json!({"code": "M-2", "member_email": "nora@home.test"})).await;
     let lena = k.create_user(&target, "lena@home.test", "Lena", None, &[], false).await.unwrap();
