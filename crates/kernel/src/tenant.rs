@@ -147,8 +147,8 @@ impl Kernel {
                 for p in &role.permissions {
                     sqlx::query(
                         "insert into role_permission (tenant_id, role, entity, can_read, can_write, can_create, can_delete, can_submit, \
-                         can_cancel, can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key, via, actions) \
-                         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) on conflict do nothing",
+                         can_cancel, can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key, via, actions, shared) \
+                         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) on conflict do nothing",
                     )
                     .bind(tenant)
                     .bind(&role.name)
@@ -168,6 +168,7 @@ impl Kernel {
                     .bind(p.condition_key())
                     .bind(&p.via)
                     .bind(&p.actions)
+                    .bind(&p.shared)
                     .execute(&mut *tx)
                     .await?;
                 }

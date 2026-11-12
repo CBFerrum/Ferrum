@@ -1,4 +1,4 @@
-//! The one renderer of print layouts (docs/builder/decisions.md BD-22; the contract is `tools/PRINT-FORMATS-SPEC.md`
+//! The one renderer of print layouts (docs/builder/decisions.md BD-28; the contract is `tools/PRINT-FORMATS-SPEC.md`
 //! §4-5): a layout's sections, columns and blocks over a record become HTML, every string escaped by [`esc`], the
 //! only inline styles numbers and colours the layout's check accepted, images only `data:` URLs the caller inlined
 //! from the workspace's own files. It runs no template a tenant wrote. Letter heads' headers and footers are layouts

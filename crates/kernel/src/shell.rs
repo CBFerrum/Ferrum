@@ -106,6 +106,55 @@ pub fn normalize_host(raw: &str) -> Option<String> {
 }
 
 impl Kernel {
+    /// Sets the origins that may frame app `app`'s public page at `path` (`forms/f/{form}`: the page's path with the
+    /// workspace's slug left out), or none (BD-24): an administrator, or an app's code as the system (Forms, when a form
+    /// is saved with the sites that embed it). Each origin `https://host[:port]`, at most ten.
+    pub async fn set_public_frame(&self, ctx: &Ctx, app: &str, path: &str, origins: &[String]) -> Result<()> {
+        if !ctx.is_admin {
+            return Err(Error::Forbidden("administrator access required".into()));
+        }
+        let origins = crate::action_link::frame_origins(origins)?;
+        let path = path.trim().trim_matches('/');
+        if path.is_empty() || path.len() > 300 {
+            return Err(Error::field("path", "a public page's path, as its address has it after the workspace"));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        if origins.is_empty() {
+            sqlx::query("delete from public_frame where tenant_id = $1 and app = $2 and path = $3")
+                .bind(ctx.tenant)
+                .bind(app)
+                .bind(path)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            sqlx::query(
+                "insert into public_frame (tenant_id, app, path, origins) values ($1, $2, $3, $4) \
+                 on conflict (tenant_id, app, path) do update set origins = excluded.origins",
+            )
+            .bind(ctx.tenant)
+            .bind(app)
+            .bind(path)
+            .bind(&origins)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The origins that may frame app `app`'s public page at `path` in workspace `tenant`: none unless set.
+    pub async fn public_frame(&self, tenant: Uuid, app: &str, path: &str) -> Result<Vec<String>> {
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        let found: Option<Vec<String>> = sqlx::query_scalar("select origins from public_frame where tenant_id = $1 and app = $2 and path = $3")
+            .bind(tenant)
+            .bind(app)
+            .bind(path.trim_matches('/'))
+            .fetch_optional(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(found.unwrap_or_default())
+    }
+
     // ── sessions ──
 
     /// Records a new browser session for `s` (acted in by `actor` when someone else acts as the

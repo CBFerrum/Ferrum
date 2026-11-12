@@ -1,4 +1,4 @@
-//! Print layouts (docs/builder/decisions.md BD-22; the contract is `tools/PRINT-FORMATS-SPEC.md` §4): a format built
+//! Print layouts (docs/builder/decisions.md BD-28; the contract is `tools/PRINT-FORMATS-SPEC.md` §4): a format built
 //! from sections, columns and blocks that the kernel's one renderer (`ferrum_kernel::layout`) turns into HTML. Nothing
 //! in a layout is markup, CSS or a URL: every string is text, every number is checked to a range, every colour is
 //! `#rrggbb`. Here: the types (unknown keys refused) and the checks that need no schema; the kernel checks the paths

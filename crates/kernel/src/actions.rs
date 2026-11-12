@@ -104,6 +104,7 @@ fn check_effect<'a>(k: &Kernel, system: &dyn Fn() -> &'a Ctx, schema: &Schema, e
         AutomationAction::Notify { .. }
         | AutomationAction::Email { .. }
         | AutomationAction::Message { .. }
+        | AutomationAction::Link { .. }
         | AutomationAction::Generate { .. }
         | AutomationAction::ReportDocuments { .. }
         | AutomationAction::AppendLine { .. }

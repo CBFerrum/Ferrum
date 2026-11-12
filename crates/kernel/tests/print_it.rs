@@ -1,4 +1,4 @@
-//! Print formats (docs/builder/decisions.md BD-22; `tools/PRINT-FORMATS-SPEC.md` §8.2 T1-T14), against a real
+//! Print formats (docs/builder/decisions.md BD-28; `tools/PRINT-FORMATS-SPEC.md` §8.2 T1-T14), against a real
 //! PostgreSQL (`FERRUM_TEST_DATABASE_URL`; the database is reset first) and a stand-in for the PDF service that keeps
 //! each form it is sent. With `FERRUM_PRINT_GOTENBERG` set (a real Gotenberg's address) the stand-in also forwards
 //! each form there and answers with the real PDF; with `FERRUM_PRINT_EVIDENCE` set (a directory) the worked example's

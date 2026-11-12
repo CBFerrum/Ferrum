@@ -1002,6 +1002,14 @@ impl Kernel {
         if let Some(why) = p.unknown_action(ent.as_ref().map(|e| &e.def)) {
             return Err(Error::field("actions", why));
         }
+        if let Some(s) = &p.shared {
+            if !ferrum_meta::SHARED_REACH.contains(&s.as_str()) {
+                return Err(Error::field("shared", "read (the comments and files staff share) or add (and their own)"));
+            }
+            if !p.read || p.entity == "*" {
+                return Err(Error::field("shared", "a rule that reads one entity says what its holders see of its records' comments and files"));
+            }
+        }
         let p = &PermissionDef { if_owner: p.if_owner || via.is_some(), via, ..p.clone() };
         let condition = (!p.condition.is_empty()).then(|| serde_json::to_value(&p.condition).unwrap_or_default());
         sqlx::query("insert into role (tenant_id, name) values ($1, $2) on conflict do nothing").bind(ctx.tenant).bind(role).execute(&mut **tx).await?;
@@ -1012,12 +1020,12 @@ impl Kernel {
         }
         sqlx::query(
             "insert into role_permission (tenant_id, role, entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, \
-             can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key, via, actions) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
+             can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key, via, actions, shared) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) \
              on conflict (tenant_id, role, entity, if_owner, rule_key) do update set can_read = excluded.can_read, can_write = excluded.can_write, \
              can_create = excluded.can_create, can_delete = excluded.can_delete, can_submit = excluded.can_submit, can_cancel = excluded.can_cancel, \
              can_export = excluded.can_export, can_import = excluded.can_import, read_groups = excluded.read_groups, write_groups = excluded.write_groups, \
-             via = excluded.via, actions = excluded.actions",
+             via = excluded.via, actions = excluded.actions, shared = excluded.shared",
         )
         .bind(ctx.tenant)
         .bind(role)
@@ -1037,6 +1045,7 @@ impl Kernel {
         .bind(p.condition_key())
         .bind(&p.via)
         .bind(&p.actions)
+        .bind(&p.shared)
         .execute(&mut **tx)
         .await?;
         notify_users(tx, ctx.tenant, None).await
@@ -1065,8 +1074,8 @@ impl Kernel {
         }
         if portal {
             #[allow(clippy::type_complexity)]
-            let rules: Vec<(String, bool, bool, bool, bool, bool, Option<String>, bool, bool, bool, Vec<String>, Vec<String>)> = sqlx::query_as(
-                "select entity, if_owner, can_delete, can_cancel, can_export, can_import, via, can_write, can_create, can_submit, actions, write_groups \
+            let rules: Vec<(String, bool, bool, bool, bool, bool, Option<String>, bool, bool, bool, Vec<String>, Vec<String>, Option<String>)> = sqlx::query_as(
+                "select entity, if_owner, can_delete, can_cancel, can_export, can_import, via, can_write, can_create, can_submit, actions, write_groups, shared \
                  from role_permission where tenant_id = $1 and role = $2 order by entity",
             )
             .bind(ctx.tenant)
@@ -1075,10 +1084,25 @@ impl Kernel {
             .await?;
             let problems: Vec<String> = rules
                 .into_iter()
-                .filter_map(|(entity, if_owner, delete, cancel, export, import, via, write, create, submit, actions, write_groups)| {
+                .filter_map(|(entity, if_owner, delete, cancel, export, import, via, write, create, submit, actions, write_groups, shared)| {
                     let personal = holds_personal(ctx, &entity);
-                    PermissionDef { entity, if_owner, delete, cancel, export, import, via, write, create, submit, actions, write_groups, ..Default::default() }
-                        .portal_problem(personal)
+                    PermissionDef {
+                        entity,
+                        if_owner,
+                        delete,
+                        cancel,
+                        export,
+                        import,
+                        via,
+                        write,
+                        create,
+                        submit,
+                        actions,
+                        write_groups,
+                        shared,
+                        ..Default::default()
+                    }
+                    .portal_problem(personal)
                 })
                 .collect();
             if !problems.is_empty() {

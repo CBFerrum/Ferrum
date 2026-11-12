@@ -329,7 +329,7 @@ fn query_pairs(q: Option<&str>) -> Vec<(String, String)> {
 }
 
 /// `GET /api/v1/{E}/{id}/print?template=&letterhead=&language=&copy=…&format=pdf|html`: the record printed as the
-/// caller may read it, with the format, letter head, language and copies asked for (BD-22).
+/// caller may read it, with the format, letter head, language and copies asked for (BD-28).
 async fn print(
     Auth(ctx): Auth,
     State(app): State<AppContext>,

@@ -4,8 +4,9 @@
 //! - `{"relative": {"field", "offset"?, "at"?, "repeat"?, "until"?}}`: a moment of each record, its date or
 //!   datetime field plus a signed offset (a date field's moment is at `at` in the workspace's zone), then
 //!   every `repeat` after that up to the record's `until`;
-//! - `{"every": {"period", "at", "on"?, "filter"?}}`: each day, week or month at `at`, every record that passes
-//!   the filter.
+//! - `{"every": {"period", "at", "on"?, "filter"?, "absent"?}}`: each day, week or month at `at`, every record that
+//!   passes the filter; with `absent` (BD-27), only those that no record of another entity linking to them matches in
+//!   a period relative to the run (this week, this month, the last N days), once a period for each record.
 //!
 //! A loop on every replica looks once a minute at each scheduled automation's window from `scanned_until` to
 //! now. One SQL statement per page of the entity's records finds the (record, due moment) pairs in the
@@ -90,7 +91,60 @@ impl Repeat {
 #[derive(Debug, Clone)]
 pub(crate) enum Plan {
     Relative { field: String, datetime: bool, days: i32, mins: i32, at: NaiveTime, repeat: Option<Repeat>, until: Option<(String, bool)> },
-    Every { at: NaiveTime, rule: String, filters: Vec<Filter> },
+    Every { at: NaiveTime, rule: String, filters: Vec<Filter>, absent: Option<Absent> },
+}
+
+/// What must be missing for a record to be due (BD-27): no record of `entity` whose link field `link` names it, passing
+/// `filters`, with its date field `date` in the period `within` of the run.
+#[derive(Debug, Clone)]
+pub(crate) struct Absent {
+    entity: String,
+    link: String,
+    date: String,
+    datetime: bool,
+    filters: Vec<Filter>,
+    within: Within,
+}
+
+/// The period a run looks back over; its start keys the occurrence, so a record is due once a period.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Within {
+    Week,
+    Month,
+    /// The last N days, today included; once each N days counted from 1 January 1970.
+    Days(i32),
+}
+
+/// The longest period an absence looks back over.
+const MAX_WITHIN_DAYS: i32 = 366;
+
+impl Within {
+    fn parse(s: &str) -> Option<Within> {
+        match s {
+            "week" => Some(Within::Week),
+            "month" => Some(Within::Month),
+            _ => {
+                let n = s.strip_prefix('P')?.strip_suffix('D')?;
+                let n: i32 = n.parse().ok().filter(|_| n.bytes().all(|b| b.is_ascii_digit()))?;
+                (1..=MAX_WITHIN_DAYS).contains(&n).then_some(Within::Days(n))
+            }
+        }
+    }
+
+    /// SQL of the period's start, end (not included) and key, as local timestamps, around the local moment `l`.
+    fn sql(self, l: &str) -> (String, String, String) {
+        match self {
+            Within::Week => (format!("date_trunc('week', {l})"), format!("(date_trunc('week', {l}) + interval '1 week')"), format!("date_trunc('week', {l})")),
+            Within::Month => {
+                (format!("date_trunc('month', {l})"), format!("(date_trunc('month', {l}) + interval '1 month')"), format!("date_trunc('month', {l})"))
+            }
+            Within::Days(n) => (
+                format!("(({l})::date - {})::timestamp", n - 1),
+                format!("(({l})::date + 1)::timestamp"),
+                format!("(date '1970-01-01' + ((({l})::date - date '1970-01-01') / {n}) * {n})::timestamp"),
+            ),
+        }
+    }
 }
 
 /// A signed ISO-8601 duration of days, hours and minutes (`-P3D`, `PT2H`, `P1DT30M`): (days, minutes).
@@ -138,18 +192,70 @@ fn date_field(ent: &EffEntity, name: &str, at: &str) -> Result<bool> {
 }
 
 fn filters(schema: &Schema, ent: &EffEntity, v: &Value) -> Result<Vec<Filter>> {
-    let list = parse_filters(v).map_err(|e| bad(format!("every.filter: {e}")))?;
+    filters_at(schema, ent, v, "every.filter")
+}
+
+fn filters_at(schema: &Schema, ent: &EffEntity, v: &Value, at: &str) -> Result<Vec<Filter>> {
+    let list = parse_filters(v).map_err(|e| bad(format!("{at}: {e}")))?;
     if list.len() > MAX_FILTERS {
-        return Err(bad(format!("every.filter has at most {MAX_FILTERS} conditions")));
+        return Err(bad(format!("{at} has at most {MAX_FILTERS} conditions")));
     }
     for f in &list {
         if !(SYSTEM_KEYS.contains(&f.field.as_str()) || ent.field(&f.field).is_some_and(|d| d.ftype != FieldType::Table)) {
-            return Err(bad(format!("every.filter: {} has no field {}", ent.def.name, f.field)));
+            return Err(bad(format!("{at}: {} has no field {}", ent.def.name, f.field)));
         }
         // Built once to see that the operator and the value fit the field.
-        push_filter(&mut QueryBuilder::<Postgres>::new(""), schema, ent, "a", f).map_err(|e| bad(format!("every.filter on {}: {e}", f.field)))?;
+        push_filter(&mut QueryBuilder::<Postgres>::new(""), schema, ent, "a", f).map_err(|e| bad(format!("{at} on {}: {e}", f.field)))?;
     }
     Ok(list)
+}
+
+/// Checks `every.absent` against the entity the schedule is on (`ent`) and the one that must be missing.
+fn absent(schema: &Schema, ent: &EffEntity, v: &Value) -> Result<Absent> {
+    let body = v.as_object().ok_or_else(|| bad("every.absent is {\"entity\", \"link\", \"date\", \"within\", \"filter\"?}"))?;
+    if let Some(k) = body.keys().find(|k| !["entity", "link", "date", "within", "filter"].contains(&k.as_str())) {
+        return Err(bad(format!("every.absent.{k} is not a setting of this schedule")));
+    }
+    let text = |k: &str| body.get(k).and_then(Value::as_str).ok_or_else(|| bad(format!("every.absent.{k} is required")));
+    let entity = text("entity")?;
+    let other = schema.entity(entity).ok_or_else(|| bad(format!("every.absent.entity: there is no entity {entity}")))?;
+    if other.table.is_empty() {
+        return Err(bad(format!("every.absent.entity: {entity} keeps no records of its own")));
+    }
+    let link = text("link")?;
+    if !other.field(link).is_some_and(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(ent.def.name.as_str())) {
+        return Err(bad(format!("every.absent.link: {link} is not a field of {entity} linking to {}", ent.def.name)));
+    }
+    let date = text("date")?;
+    let datetime = date_field(other, date, "every.absent.date")?;
+    let within = Within::parse(text("within")?).ok_or_else(|| bad(format!("every.absent.within is week, month or P1D to P{MAX_WITHIN_DAYS}D")))?;
+    let filters = match body.get("filter") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(f) => filters_at(schema, other, f, "every.absent.filter")?,
+    };
+    Ok(Absent { entity: entity.into(), link: link.into(), date: date.into(), datetime, filters, within })
+}
+
+/// Pushes ` and not exists (…)`: no record of `a.entity` linking to the record `id` (SQL) passes its filter with its
+/// date in the period around the local moment `l` (SQL), in zone `tz` (SQL).
+fn push_absent(qb: &mut QueryBuilder<Postgres>, schema: &Schema, tenant: Uuid, a: &Absent, id: &str, l: &str, tz: &str) -> Result<()> {
+    let other = schema.entity(&a.entity).ok_or_else(|| bad(format!("{} is not installed", a.entity)))?;
+    let link = field_expr(other, &a.link, "b").ok_or_else(|| bad(format!("{} has no field {}", a.entity, a.link)))?;
+    let date = field_expr(other, &a.date, "b").ok_or_else(|| bad(format!("{} has no field {}", a.entity, a.date)))?;
+    let (start, end, _) = a.within.sql(l);
+    let range = if a.datetime {
+        format!("({date}) >= ({start}) at time zone {tz} and ({date}) < ({end}) at time zone {tz}")
+    } else {
+        format!("({date}) >= ({start})::date and ({date}) < ({end})::date")
+    };
+    qb.push(format!(" and not exists (select 1 from {} b where b.tenant_id = ", crate::ddl::q(&other.table)));
+    qb.push_bind(tenant);
+    qb.push(format!("{} and ({link})::text = ({id})::text and {range}", crate::store::entity_predicate(other, "b")));
+    for f in &a.filters {
+        push_filter(qb, schema, other, "b", f)?;
+    }
+    qb.push(")");
+    Ok(())
 }
 
 /// Checks a schedule against the entity it is on.
@@ -190,7 +296,7 @@ pub(crate) fn plan(schema: &Schema, ent: &EffEntity, v: &Value) -> Result<Plan> 
             Ok(Plan::Relative { field: field.to_string(), datetime, days: days as i32, mins: mins as i32, at, repeat, until })
         }
         "every" => {
-            known(&["period", "at", "on", "filter"])?;
+            known(&["period", "at", "on", "filter", "absent"])?;
             let period = text("period")?.ok_or_else(|| bad("every.period is required: day, week or month"))?;
             let at = time(text("at")?.ok_or_else(|| bad("every.at is required: a time of day such as 09:00"))?, "every.at")?;
             let on = body.get("on").filter(|v| !v.is_null());
@@ -207,7 +313,11 @@ pub(crate) fn plan(schema: &Schema, ent: &EffEntity, v: &Value) -> Result<Plan> 
                 None | Some(Value::Null) => Vec::new(),
                 Some(f) => filters(schema, ent, f)?,
             };
-            Ok(Plan::Every { at, rule, filters })
+            let absent = match body.get("absent") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(absent(schema, ent, v)?),
+            };
+            Ok(Plan::Every { at, rule, filters, absent })
         }
         _ => Err(shape()),
     }
@@ -292,7 +402,16 @@ fn push_dues(
     if let Some(n) = limit {
         qb.push(" limit ").push_bind(n);
     }
-    qb.push("), dues as (select p.id, m.due from page p cross join prm cross join lateral (");
+    let absent = match plan {
+        Plan::Every { absent: Some(a), .. } => Some(a),
+        _ => None,
+    };
+    // Absence keys a moment by its period's start: one occurrence a period for each record.
+    match absent {
+        Some(a) => qb.push(format!("), dues as (select p.id, ({}) at time zone prm.tz as due", a.within.sql("(m.due at time zone prm.tz)").2)),
+        None => qb.push("), dues as (select p.id, m.due"),
+    };
+    qb.push(" from page p cross join prm cross join lateral (");
     match (relative, plan) {
         (Some(None), _) => {
             qb.push("select p.base at time zone prm.tz as due");
@@ -314,7 +433,11 @@ fn push_dues(
         }
         (None, Plan::Relative { .. }) => unreachable!("a relative plan sets `relative`"),
     }
-    qb.push(") m where m.due > prm.lo and m.due <= prm.hi and (p.until is null or m.due < p.until))");
+    qb.push(") m where m.due > prm.lo and m.due <= prm.hi and (p.until is null or m.due < p.until)");
+    if let Some(a) = absent {
+        push_absent(qb, schema, tenant, a, "p.id", "(m.due at time zone prm.tz)", "prm.tz")?;
+    }
+    qb.push(")");
     Ok(())
 }
 
@@ -350,6 +473,23 @@ async fn worth_a_look(tx: &mut crate::db::Tx, plan: &Plan, tz: &str, lo: DateTim
 /// moved since the scan, or a record that no longer passes the filter, is not due.
 pub(crate) async fn still_due(k: &Kernel, tenant: Uuid, schema: &Schema, ent: &EffEntity, plan: &Plan, record: Uuid, due: DateTime<Utc>) -> Result<bool> {
     let mut tx = k.db.tenant_tx(tenant).await?;
+    if let Plan::Every { filters, absent: Some(a), .. } = plan {
+        // `due` keys a period: the record still passes the filter, and still misses what it missed, over the period
+        // that key starts (the last N days: those before the run).
+        let mut qb = QueryBuilder::<Postgres>::new("with prm as (select ");
+        qb.push_bind(due).push("::timestamptz as k, ").push_bind(schema.timezone.clone()).push("::text as tz) select exists (select 1");
+        push_from_where(&mut qb, schema, ent, tenant, &RowScope::default(), filters, None)?;
+        qb.push(" and a.id = ").push_bind(record);
+        let l = match a.within {
+            Within::Days(_) => "(now() at time zone (select tz from prm))",
+            _ => "((select k from prm) at time zone (select tz from prm))",
+        };
+        push_absent(&mut qb, schema, tenant, a, "a.id", l, "(select tz from prm)")?;
+        qb.push(")");
+        let yes: bool = qb.build_query_scalar().fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(yes);
+    }
     let mut qb = QueryBuilder::<Postgres>::new("");
     push_dues(&mut qb, schema, ent, tenant, plan, &schema.timezone, (due - chrono::Duration::seconds(1), due), None, Some(record), None)?;
     qb.push(" select exists (select 1 from dues where due = ").push_bind(due).push(")");
@@ -540,11 +680,17 @@ impl Kernel {
     /// Hourly: occurrences older than [`KEEP_DAYS`]; no scan looks back further than [`CATCH_UP_DAYS`].
     pub async fn prune_occurrences(&self) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
-        let n = sqlx::query("delete from automation_occurrence where due_at < now() - make_interval(days => $1)")
-            .bind(KEEP_DAYS as i32)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        // An absence's occurrence keys its period (BD-27): kept while the period may still be running.
+        let n = sqlx::query(
+            "delete from automation_occurrence o where o.due_at < now() - make_interval(days => $1) \
+             and (o.due_at < now() - make_interval(days => $2) or not exists (select 1 from automation a \
+               where a.tenant_id = o.tenant_id and a.id = o.automation_id and a.schedule->'every' ? 'absent'))",
+        )
+        .bind(KEEP_DAYS as i32)
+        .bind(MAX_WITHIN_DAYS + 1)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
         tx.commit().await?;
         Ok(n)
     }

@@ -3,6 +3,57 @@ version: 0.3.0
 label: Core
 description: What every app needs — companies, currencies with their exchange rates, units, letter heads and print settings.
 
+# The platform's own wording for people outside the workspace (docs/builder/decisions.md BD-22, BD-23): a workspace
+# edits each like any message template.
+messages:
+  - key: core.comment_shared
+    label: Staff shared a comment with someone outside
+    channels: [email, inapp]
+    values: [record, comment]
+    languages:
+      en:
+        email:
+          subject: "A new note on {{ values.record }}"
+          body: "<p>There is a new note for you on {{ values.record }}:</p><blockquote>{{ values.comment }}</blockquote>"
+        inapp:
+          title: "A new note on {{ values.record }}"
+          text: "{{ values.comment }}"
+  - key: core.link_page
+    label: The page a signed action link opens
+    values: [record, kind]
+    languages:
+      en:
+        inapp:
+          title: "{{ values.kind }} {{ values.record }}"
+          text: "Choose what to do below."
+  - key: core.link_done
+    label: What a signed action link says once used
+    languages:
+      en:
+        inapp:
+          title: "Thank you"
+          text: "We have recorded your answer."
+  - key: core.link_gone
+    label: What a link that no longer works says
+    languages:
+      en:
+        inapp:
+          title: "This link does not work any more"
+          text: "It may have expired, been used already or been withdrawn. Ask whoever sent it for a new one."
+  - key: core.link_code
+    label: The one-time code a signed action link asks for
+    values: [code, record, kind]
+    languages:
+      en:
+        email:
+          subject: "Your code: {{ values.code }}"
+          body: "<p>Your code is <strong>{{ values.code }}</strong>. It works for ten minutes.</p>"
+        text:
+          text: "Your code is {{ values.code }}. It works for ten minutes."
+        inapp:
+          title: "Enter the code we sent you"
+          text: "Send me a code"
+
 seed:
   - entity: Currency
     key: [code]

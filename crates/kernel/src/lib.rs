@@ -6,6 +6,7 @@
 
 pub mod access;
 pub mod account;
+pub mod action_link;
 pub mod actions;
 pub mod approvals;
 pub mod apps;
