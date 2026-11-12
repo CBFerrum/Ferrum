@@ -322,6 +322,54 @@ are kept a day. A code works once, for 10 minutes, five tries; a code sent befor
 | `GET /api/v1/{E}/{id}/attachments` | → `{attachments: [{id, file_name, content_type, size_bytes, created_by, created_at, url}]}`; `DELETE /api/files/{id}` removes one (an attachment only by someone who can edit its record; a loose upload by its uploader) |
 | `GET /api/users` | directory of active users `[{id, full_name, email}]` for mentions and assignment |
 
+**Shared with outside people** ([BD-22](builder/decisions.md#bd-22-comments-and-files-shared-with-outside-people)).
+Comments and attachments carry `shared` (false unless staff choose). `POST /api/v1/{E}/{id}/comments` takes `shared:
+true`; `PUT /api/comments/{id}/shared` and `PUT /api/files/{id}/shared` `{shared}` change it (a member who can read the
+record; `204`). A portal role's rule says per entity what its holders see: `{"entity": "Ticket", "read": true, "via":
+"email", "shared": "read" | "add"}`. With it, a portal person's `GET …/comments` and `…/attachments` list the shared ones
+(and, for files, their own), without the authors' addresses; with `add` they comment and attach (`POST …/comments`,
+`POST /api/files` with the record), always shared. Without it they are refused (`403`), as before. A download of a file
+not shared with them answers `404`, as a file that is not there. Sharing a comment tells the portal people who may see it
+with the template `core.comment_shared` (`values.record`, `values.comment`); an outside person's comment notifies the
+record's followers.
+
+## Signed action links
+
+"A person with this link may do this one thing to this one record" ([BD-23](builder/decisions.md#bd-23-signed-action-links)).
+
+| Method & path | Notes |
+|---|---|
+| `POST /api/v1/{E}/{id}/links` | staff: `{actions: [name] \| ["view"], show?: [field], params?: {name: value}, expires_at?, uses?: 1-100, code_to?: address or number, recipient?, frame_origins?: [origin]}` → `201 {id, url, expires_at}`; the `url` holds the token and is shown only now |
+| `GET /api/v1/{E}/{id}/links` | `{links: [{id, actions, show, uses, max_uses, expires_at, recipient, code, revoked_at, created_at, issued_by}]}`, never a token |
+| `DELETE /api/links/{id}` | revokes it (`204`) |
+| `GET /api/public/{workspace}/links/{token}` | the page, no session: the record's kind and title, the fields `show` lists, one form per action asking its own parameters (not those fixed), and the code step when the link has one |
+| `POST /api/public/{workspace}/links/{token}` | a form: `_send=1` sends the code; `_action`, the action's parameters and `_code` run it once. The answer is a page: done (`core.link_done`), the form again with what was wrong (`422`), or gone |
+
+A link that does not work (unknown, expired, revoked, used up, another workspace's) answers `404` with the page
+`core.link_gone`, whatever the reason. Pages are never cached and send no referrer. Every request counts against the
+public limiter (per address and workspace, kept in the database).
+
+The effect `{"type": "link", "actions": [...], "show"?: [...], "params"?: {name: expression}, "days"?: n, "uses"?: n,
+"code_to"?: expression, "recipient"?: expression, "frame_origins"?: [...]}` issues one on the record as the system and
+gives `{id, url, expires_at}`; send it with a `message` effect: `"values": {"url": "results[0].url"}, "secret": ["url"]`.
+An app calls `Kernel::issue_link(ctx, tx, entity, id, &LinkSpec)` in its own transaction.
+
+### Replacing an app's own guest link with a signed action link
+
+Eight apps keep guest links of their own (a token table, a hash, a page that checks it). To move one:
+
+1. Make what the guest does an action of the entity (`actions:` in the package's YAML) with its `params`, its
+   `condition` and, where needed, `refuse_if`. Keep its handler in the app's hook, or give it `effects`. It must not be
+   limited to `roles`.
+2. Where the app minted its token, call `kernel.issue_link(ctx, tx, entity, id, &LinkSpec { actions, show, params,
+   expires_at, uses, recipient, .. })` in the same transaction, and put the returned `url` in the message's values,
+   naming it secret.
+3. Move the page's wording to the templates `core.link_page`, `core.link_done`, `core.link_gone` (a workspace edits
+   them) and the fields it showed to `show`.
+4. Keep the old route answering the links already sent until the longest of them expires (Bookings: 30 days after a
+   booking), then delete it, its token table and its tests' token cases; the platform's are in `action_links_it`.
+5. Say it in the app's changelog: links sent before keep working until they expire; new ones are the platform's.
+
 ## Shared views — `/api/views/{Entity}`
 
 A list view a team shares: a question, not an answer, so what each person gets from it is still what
@@ -609,6 +657,13 @@ An automation's `condition` (CEL) sees the record as `doc`; on a change of an ex
 An automation fires on a record's event, or on time: with `event: "scheduled"` it carries a `schedule` (and only then), in one of two forms.
 `{"relative": {"field": F, "offset"?: "-P3D", "at"?: "09:00", "repeat"?: "P1D"|"P1W"|"P1M"|"P1Y", "until"?: G}}` fires for each record at its date or datetime field `F` plus `offset` (a signed ISO-8601 duration of days, hours and minutes: `-P3D`, `PT2H`, `-P1DT30M`; at most five years either way); a date field's moment is at `at` (default 09:00) in the workspace's time zone, a datetime field's at its own time. With `repeat` it fires again every day, week, month or year after that (a month after 31 January is 28 February, then 31 March), up to the record's date or datetime field `G` (`until`, a date counting whole) when given.
 `{"every": {"period": "day"|"week"|"month", "at": "HH:MM", "on"?: 1-7 (a week, Monday 1, default 1) | 1-28 or "last" (a month, default 1), "filter"?: [[field, op, value], ...]}}` fires at each period's moment for every record that passes `filter` (list-filter form over the entity's own fields, literal values, at most 8 conditions, all of them).
+
+**By absence** ([BD-27](builder/decisions.md#bd-27-schedules-by-absence)): `"absent": {"entity": "XTimesheet", "link":
+"person", "date": "work_date", "within": "week" | "month" | "P{n}D" (1 to 366), "filter"?: [...]}` in `every` fires only
+for the records that no record of `entity` whose `link` field names them, passing its `filter`, has a `date` in the
+period around the run (the week or month it falls in, or its last n days, today included), and at most once a period
+for each record (the occurrence is keyed by the period's start; n days are counted in blocks from 1 January 1970). At
+the run the record is judged again: one that passes no more, or now has what it missed, is skipped.
 Moments are found within a minute by a scan on every server, and each (record, moment) fires once however many look. A new automation, or one whose schedule or entity changes, or one switched on again, starts from now: no moment already past fires. A moment fires with the record as it is then, read with the rights of whoever saved the automation: it does not fire if the record is gone, its date has moved away or been cleared, or it no longer passes the filter, and `condition` is judged on it then. A date moved to a new moment fires again for that moment; one moved into the past does not. After the scan has been stopped for more than seven days, the older moments are skipped (logged with how many), not fired late. A scheduled run's changes count one step in an event chain, as an event's do. Each moment queues an `<Entity>.scheduled` event carrying `{automation, record, due_at}`, which webhooks subscribed to the entity's events also receive.
 Automation actions: `{"type":"set_fields","values":{field: CEL}}`, `{"type":"create_document","entity":E,"values":{field: CEL}}`, `{"type":"update_linked","link":F,"values":{field: CEL}}`, `{"type":"notify","to":"owner|role:<name>|user:<id>|field:<name>|links:<link>.<table>.<field>","title":CEL,"body"?:CEL}`, `{"type":"email","to":CEL,"subject":CEL,"body":CEL,"template"?:"<jinja html>"}` (or `"message":KEY` in place of `subject` and `body`, and `"message":KEY` in place of `notify`'s `title`: a [message template](#messages)), `{"type":"message","template":KEY,"to":[…],"channels"?:[…],"all"?:bool,"values"?:{name: CEL}}` ([messages](#messages)), `{"type":"invoke","capability":ID,"input":{name: CEL},"key"?:CEL}` (another app's step through the capability gate, below, "Calling another app's steps").
 Each action after the first sees what the ones before it gave as `results` (as a configured action's effects do, below).
@@ -777,6 +832,21 @@ POST /api/admin/automations
 * `fields` is everything that is sent, in that order: the entity's own stored fields and `number`. Never the record's id, owner or timestamps. A listed link field shows the linked record's title (its title field, or its number), never its id.
 * Refused when saved, each with why: a field of type email, phone, secret or attach; a table field; a field in a permission group (some of the workspace's own people may not read it); a field marked `no_export`; a field a package declares as people's personal data; any list of an entity whose records a package declares as people's personal data (a workspace's own entity is never declared, so there the administrator's choice stands with the rules above); a link to an entity that names itself only to those who may read it (`reference: restricted`), to one whose records are declared personal data, or whose title field could not be published itself; a field that is not there.
 * `filter` (`[[field, op, value], …]`, the operators of list queries) and `sort` (`[field, "asc" | "desc"]`, newest first without it) may use any stored field of the entity, and `number`, `docstatus`, `workflow_state`, `created_at` and `updated_at`: they decide which rows show and in what order, and their values are not sent unless listed. A filter whose value does not fit its field is refused when saved.
+* **Record pages, search and paging** ([BD-25](builder/decisions.md#bd-25-public-pages-for-published-records)). `"slug":
+  "path"` (a text field, held to the rules above) gives each published record a page at
+  `/public/{workspace}/lists/{name}/{value}`; `"detail": [...]` (the same rules, at most 12) are fields only that page
+  shows; `"summary"` (one of the fields shown) is its description for search engines. A list with a slug takes `?q=`
+  (its own text fields, any case) and `?page=` (rows a page: its `limit`; at most 100 pages), on the page and on
+  `GET /api/public/{workspace}/lists/{name}` (which then adds `addresses`, each row's slug, and `page`). It is offered to
+  search engines: `index, follow`, a canonical link, and `/public/{workspace}/sitemap.xml` of every published record's
+  page; a list without a slug stays `noindex`. Every answer carries an `ETag` of its content (`304` when unchanged) and
+  `Cache-Control: public, max-age=60`. A draft, cancelled or filtered-out record, a list without a slug and a page past
+  the last are the same 404.
+* **Framing** ([BD-24](builder/decisions.md#bd-24-frame-headers-per-page)). `"frame_origins": ["https://town.example"]`
+  (at most 10, `https://host[:port]`) lets those sites frame the list's pages; without it they send `frame-ancestors
+  'none'` and `X-Frame-Options: DENY`. An action link takes `frame_origins` alike, and an app's public page gets them
+  from `Kernel::set_public_frame(ctx, app, "forms/f/{form}", origins)` (an administrator or the app as the system), or a
+  site page from its answer's `x-ferrum-frame-ancestors` header; every other page stays unframeable.
 * Later changes: a field that goes from the entity (its `add_field` switched off, a package upgrade), or may no longer be published, drops out of the list with a schema warning and the list stands (a customization that would do it, such as a `redefine_entity` without the field, is refused while the list names the field); a field added to the entity shows only once listed. A list whose filter or order names a field that went is taken down with a warning instead, as it would show more than was chosen. Switching the list's customization off takes it down.
 * Served, read as the workspace, for an active workspace only:
   * `GET /api/public/{workspace}/lists/{name}` → `{"label", "description", "fields": [{"name", "label", "type"}], "rows": [{…the listed fields…}], "more": bool}`: the first `limit` rows, and whether there are more. There is no next page: a cursor would carry the last record's id and time, which the list does not show.
