@@ -13,6 +13,7 @@ pub mod documents;
 pub mod domains;
 pub mod jobs;
 pub mod legacy;
+pub mod links;
 pub mod lists;
 pub mod mcp;
 pub mod messages;

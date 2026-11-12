@@ -16,7 +16,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use ferrum_kernel::Kernel;
-use ferrum_kernel::published::Published;
+use ferrum_kernel::published::{Find, Published};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde_json::json;
@@ -31,10 +31,11 @@ header p{margin:.25rem 0;color:#555}h1{margin:.25rem 0 .5rem;font-size:1.5rem}\
 th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #ddd;vertical-align:top}th{background:#f5f5f7}\
 @media (prefers-color-scheme:dark){body{color:#eee;background:#161618}header p{color:#aaa}th{background:#26262a}th,td{border-color:#333}a{color:#8ab4ff}}";
 
-/// No script, nothing fetched: only the page's own style.
-fn policy() -> String {
+/// No script, nothing fetched: only the page's own style; forms only to itself (the search); framed only by
+/// `frames` (BD-24).
+fn policy(frames: &[String]) -> String {
     let hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(STYLE.as_bytes()));
-    format!("default-src 'none'; style-src 'sha256-{hash}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+    format!("default-src 'none'; style-src 'sha256-{hash}'; base-uri 'none'; form-action 'self'; {}", super::links::frame_policy(frames))
 }
 
 /// What anything not published answers, the same for every reason.
@@ -43,54 +44,151 @@ fn not_found(page: bool) -> Response {
         let html = format!(
             r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>Not found</title><style>{STYLE}</style></head><body><h1>There is no such list</h1></body></html>"#
         );
-        return html_response(StatusCode::NOT_FOUND, html);
+        return html_response(StatusCode::NOT_FOUND, html, false, &[]);
     }
     (StatusCode::NOT_FOUND, Json(json!({"error": "not_found", "message": "there is no such list"}))).into_response()
 }
 
-fn html_response(status: StatusCode, html: String) -> Response {
+fn html_response(status: StatusCode, html: String, indexed: bool, frames: &[String]) -> Response {
     let mut r = (status, html).into_response();
     let h = r.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
-    if let Ok(p) = HeaderValue::from_str(&policy()) {
+    if let Ok(p) = HeaderValue::from_str(&policy(frames)) {
         h.insert(header::CONTENT_SECURITY_POLICY, p);
     }
+    super::links::frame_headers(h, frames);
     h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
-    h.insert("x-robots-tag", HeaderValue::from_static("noindex"));
+    if !indexed {
+        h.insert("x-robots-tag", HeaderValue::from_static("noindex"));
+    }
     r
 }
 
-fn cached(mut r: Response) -> Response {
-    r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(CACHE));
+/// Kept a minute by a browser or a cache in between, and told apart by its content: a list changed or taken down is
+/// a new answer (or a 404) at once for whoever asks again, and a page unchanged a 304.
+fn cached(headers: &HeaderMap, mut r: Response, body: &[u8]) -> Response {
+    let tag = format!("\"{}\"", &hex::encode(Sha256::digest(body))[..32]);
+    if headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|t| t.trim() == tag)) {
+        r = StatusCode::NOT_MODIFIED.into_response();
+    }
+    let h = r.headers_mut();
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static(CACHE));
+    if let Ok(v) = HeaderValue::from_str(&tag) {
+        h.insert(header::ETAG, v);
+    }
     r
 }
 
-/// The list as a page: the workspace, the list's label and description, a table, and the CSV when
-/// offered. Every value is escaped.
-fn page_of(p: &Published, workspace: &str, name: &str) -> String {
-    let text = |v: &serde_json::Value| match v {
+fn text(v: &serde_json::Value) -> String {
+    match v {
         serde_json::Value::Null => String::new(),
         serde_json::Value::String(s) => esc(s),
         serde_json::Value::Bool(b) => if *b { "Yes" } else { "No" }.into(),
         other => esc(&other.to_string()),
-    };
+    }
+}
+
+/// A path segment, as a URL holds it.
+fn seg(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// The list as a page: the workspace, the list's label and description, a search box and pages when it has a slug, a
+/// table (each row's first cell its detail page's link when it has one), and the CSV when offered. Every value is
+/// escaped. `origin` makes its canonical address.
+fn page_of(p: &Published, workspace: &str, name: &str, q: Option<&str>, origin: Option<&str>) -> String {
     let names: Vec<&str> = p.fields.iter().map(|f| f["name"].as_str().unwrap_or_default()).collect();
     let head: String = p.fields.iter().map(|f| format!("<th scope=\"col\">{}</th>", text(&f["label"]))).collect();
+    let base = format!("/public/{}/lists/{}", seg(workspace), seg(name));
     let rows: String = p
         .rows
         .iter()
-        .map(|r| format!("<tr>{}</tr>", names.iter().map(|n| format!("<td>{}</td>", text(r.get(*n).unwrap_or(&serde_json::Value::Null)))).collect::<String>()))
+        .enumerate()
+        .map(|(i, r)| {
+            let cells: String = names
+                .iter()
+                .enumerate()
+                .map(|(j, n)| {
+                    let v = text(r.get(*n).unwrap_or(&serde_json::Value::Null));
+                    match p.addresses.get(i).filter(|a| j == 0 && !a.is_empty()) {
+                        Some(a) => format!(r#"<td><a href="{base}/{}">{v}</a></td>"#, esc(&seg(a))),
+                        None => format!("<td>{v}</td>"),
+                    }
+                })
+                .collect();
+            format!("<tr>{cells}</tr>")
+        })
         .collect();
     let description = p.description.as_deref().map(|d| format!("<p>{}</p>", esc(d))).unwrap_or_default();
-    let more = if p.more { "<p>Only the first records are shown.</p>" } else { "" };
+    let more = match (p.more, p.indexed) {
+        (true, true) => format!(
+            r#"<p><a href="{base}?page={}{}" rel="next">Next page</a></p>"#,
+            p.page + 1,
+            q.map(|q| format!("&amp;q={}", esc(&seg(q)))).unwrap_or_default()
+        ),
+        (true, false) => "<p>Only the first records are shown.</p>".into(),
+        _ => String::new(),
+    };
+    let search = if p.indexed {
+        format!(
+            r#"<form method="get" action="{base}" role="search"><label for="q">Search</label> <input id="q" name="q" type="search" maxlength="100" value="{}"> <button type="submit">Search</button></form>"#,
+            esc(q.unwrap_or_default())
+        )
+    } else {
+        String::new()
+    };
     let csv =
         if p.csv { format!(r#"<p><a href="/api/public/{}/lists/{}.csv" download>Download as CSV</a></p>"#, esc(workspace), esc(name)) } else { String::new() };
+    let robots = if p.indexed && q.is_none() && p.page == 1 { "index, follow" } else { "noindex" };
+    let canonical = match origin.filter(|_| p.indexed) {
+        Some(o) => format!(r#"<link rel="canonical" href="{}{base}">"#, esc(o)),
+        None => String::new(),
+    };
+    let meta = p.description.as_deref().map(|d| format!(r#"<meta name="description" content="{}">"#, esc(d))).unwrap_or_default();
     format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>{label} · {ws}</title><style>{STYLE}</style></head><body><header><p>{ws}</p><h1>{label}</h1>{description}</header><main><div class="wrap"><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>{more}{csv}</main></body></html>"#,
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="{robots}">{meta}{canonical}<title>{label} · {ws}</title><style>{STYLE}</style></head><body><header><p>{ws}</p><h1>{label}</h1>{description}</header><main>{search}<div class="wrap"><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>{more}{csv}</main></body></html>"#,
         label = esc(&p.label),
         ws = esc(&p.workspace),
     )
+}
+
+/// One published record's page: its title (the first field), each field the list and its detail show, link tags for
+/// search engines (title, description from `summary`, canonical address).
+fn detail_of(p: &Published, workspace: &str, name: &str, address: &str, origin: Option<&str>) -> String {
+    let row = p.rows.first().cloned().unwrap_or_default();
+    let names: Vec<&str> = p.fields.iter().map(|f| f["name"].as_str().unwrap_or_default()).collect();
+    let title = names.first().map(|n| text(row.get(*n).unwrap_or(&serde_json::Value::Null))).unwrap_or_default();
+    let items: String = p
+        .fields
+        .iter()
+        .zip(&names)
+        .skip(1)
+        .map(|(f, n)| format!("<dt>{}</dt><dd>{}</dd>", text(&f["label"]), text(row.get(*n).unwrap_or(&serde_json::Value::Null))))
+        .collect();
+    let base = format!("/public/{}/lists/{}", seg(workspace), seg(name));
+    let summary = p.summary.as_deref().and_then(|s| row.get(s)).map(text).filter(|s| !s.is_empty());
+    let meta = summary.map(|d| format!(r#"<meta name="description" content="{}">"#, d.chars().take(300).collect::<String>())).unwrap_or_default();
+    let canonical = origin.map(|o| format!(r#"<link rel="canonical" href="{}{base}/{}">"#, esc(o), esc(&seg(address)))).unwrap_or_default();
+    format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="index, follow">{meta}{canonical}<title>{title} · {ws}</title><style>{STYLE}</style></head><body><header><p><a href="{base}">{label}</a> · {ws}</p><h1>{title}</h1></header><main><dl>{items}</dl></main></body></html>"#,
+        label = esc(&p.label),
+        ws = esc(&p.workspace),
+    )
+}
+
+/// The workspace's sitemap: each published record's detail page, nothing else.
+fn sitemap_of(workspace: &str, addresses: &[(String, String)], origin: &str) -> String {
+    let urls: String = addresses
+        .iter()
+        .map(|(list, a)| format!("<url><loc>{}/public/{}/lists/{}/{}</loc></url>", esc(origin), seg(workspace), seg(list), esc(&seg(a))))
+        .collect();
+    format!(r#"<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>"#)
 }
 
 /// `GET /api/public/{workspace}/lists/{name}` (or `{name}.csv`).
@@ -108,7 +206,8 @@ pub async fn answer(kernel: &Kernel, limiter: &RateLimiter, headers: &HeaderMap,
     };
     match found {
         Some(p) if csv && p.csv => {
-            let mut r = cached(p.csv().into_response());
+            let body = p.csv();
+            let mut r = cached(headers, body.clone().into_response(), body.as_bytes());
             let h = r.headers_mut();
             h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"));
             if let Ok(d) = HeaderValue::from_str(&format!("attachment; filename=\"{name}.csv\"")) {
@@ -116,24 +215,96 @@ pub async fn answer(kernel: &Kernel, limiter: &RateLimiter, headers: &HeaderMap,
             }
             r
         }
-        Some(p) if !csv => cached(Json(p.json()).into_response()),
+        Some(p) if !csv => {
+            let body = p.json().to_string();
+            let mut r = cached(headers, body.clone().into_response(), body.as_bytes());
+            r.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            r
+        }
         _ => not_found(false),
     }
 }
 
-/// `/public/{workspace}/lists/{name}`: `rest` is what follows `/public/`. A host that serves one
-/// workspace (`bound`) shows only that workspace's lists.
-pub async fn page(kernel: &Kernel, limiter: &RateLimiter, headers: &HeaderMap, rest: &str, bound: Option<uuid::Uuid>) -> Response {
-    let mut parts = rest.split('/');
-    let (Some(workspace), Some("lists"), Some(name), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else { return not_found(true) };
+/// `/public/{workspace}/lists/{name}` (with `?q=` and `?page=` when the list has a slug), a record's
+/// `/public/{workspace}/lists/{name}/{address}`, and `/public/{workspace}/sitemap.xml`: `rest` is what follows
+/// `/public/`. A host that serves one workspace (`bound`) shows only that workspace's lists; `origin` is the address
+/// the visitor came to, for canonical addresses and the sitemap.
+pub async fn page(
+    kernel: &Kernel,
+    limiter: &RateLimiter,
+    headers: &HeaderMap,
+    rest: &str,
+    bound: Option<uuid::Uuid>,
+    query: &[(String, String)],
+    origin: Option<&str>,
+) -> Response {
+    let parts: Vec<&str> = rest.split('/').collect();
+    let Some(workspace) = parts.first().copied().filter(|w| !w.is_empty()) else { return not_found(true) };
     if let Err(e) = limiter.check(&format!("{}|{}", client_ip(headers), workspace.to_lowercase())).await {
         return crate::error::ApiError(e).into_response();
     }
-    match kernel.published_list(workspace, name).await {
-        Ok(Some(p)) if bound.is_none_or(|t| t == p.tenant) => cached(html_response(StatusCode::OK, page_of(&p, &workspace.to_lowercase(), name))),
+    let ws = workspace.to_lowercase();
+    let tenant = kernel.tenant_by_slug(&ws).await.ok().map(|(t, _)| t);
+    let origin = match tenant {
+        Some(t) => kernel.link_base(t).await.or(origin.map(str::to_string)),
+        None => origin.map(str::to_string),
+    };
+    let asked = |k: &str| query.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    let found = match parts[1..] {
+        ["sitemap.xml"] => {
+            return match (kernel.published_addresses(&ws).await, &origin) {
+                (Ok(Some(a)), Some(o)) if bound.is_none_or(|b| tenant == Some(b)) => {
+                    let body = sitemap_of(&ws, &a, o);
+                    let mut r = cached(headers, body.clone().into_response(), body.as_bytes());
+                    r.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/xml; charset=utf-8"));
+                    r
+                }
+                (Err(e), _) => crate::error::ApiError(e).into_response(),
+                _ => not_found(true),
+            };
+        }
+        ["lists", name] => {
+            let q = asked("q").map(str::trim).filter(|q| !q.is_empty()).map(str::to_string);
+            let page = asked("page").and_then(|p| p.parse::<u32>().ok()).unwrap_or(1);
+            let find = Find { q: q.clone(), page, address: None };
+            kernel.published_find(&ws, name, &find).await.map(|p| p.map(|p| (page_of(&p, &ws, name, q.as_deref(), origin.as_deref()), p)))
+        }
+        ["lists", name, address] if !address.is_empty() => {
+            let address = percent_decode(address);
+            let find = Find { address: Some(address.clone()), ..Default::default() };
+            kernel.published_find(&ws, name, &find).await.map(|p| p.map(|p| (detail_of(&p, &ws, name, &address, origin.as_deref()), p)))
+        }
+        _ => return not_found(true),
+    };
+    match found {
+        Ok(Some((html, p))) if bound.is_none_or(|t| t == p.tenant) => {
+            let indexed = p.indexed && !html.contains(r#"content="noindex""#);
+            let r = html_response(StatusCode::OK, html.clone(), indexed, &p.frame_origins);
+            cached(headers, r, html.as_bytes())
+        }
         Ok(_) => not_found(true),
         Err(e) => crate::error::ApiError(e).into_response(),
     }
+}
+
+/// A path segment as typed (`%20` a space); one that does not decode is taken as it is.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("zz"), 16)
+        {
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 async fn public(State(app): State<AppContext>, Path((workspace, name)): Path<(String, String)>, headers: HeaderMap) -> Response {
@@ -151,23 +322,71 @@ pub fn routes() -> Routes {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_page_runs_nothing_and_escapes_everything() {
-        let p = Published {
+    fn published(indexed: bool) -> Published {
+        Published {
             tenant: uuid::Uuid::nil(),
             workspace: "A & B <Co>".into(),
             label: "<script>alert(1)</script>".into(),
             description: Some("\"quoted\"".into()),
-            fields: vec![json!({"name": "holder", "label": "Holder", "type": "data"})],
-            rows: vec![serde_json::from_value(json!({"holder": "<img src=x onerror=alert(1)>"})).unwrap()],
+            fields: vec![json!({"name": "holder", "label": "Holder", "type": "data"}), json!({"name": "body", "label": "Body", "type": "text"})],
+            rows: vec![serde_json::from_value(json!({"holder": "<img src=x onerror=alert(1)>", "body": "How to <b>reset</b>"})).unwrap()],
             more: true,
             csv: true,
-        };
-        let html = page_of(&p, "acme", "permits");
+            page: 1,
+            addresses: if indexed { vec!["reset password".into()] } else { vec![] },
+            summary: Some("body".into()),
+            frame_origins: vec![],
+            indexed,
+        }
+    }
+
+    #[test]
+    fn the_page_runs_nothing_and_escapes_everything() {
+        let p = published(false);
+        let html = page_of(&p, "acme", "permits", None, Some("https://acme.example"));
         assert!(!html.contains("<script") && !html.contains("<img"), "{html}");
         assert!(html.contains("&lt;img src=x onerror=alert(1)&gt;") && html.contains("A &amp; B &lt;Co&gt;") && html.contains("&quot;quoted&quot;"));
         assert!(html.contains(r#"href="/api/public/acme/lists/permits.csv""#) && html.contains("noindex"));
-        let csp = policy();
+        assert!(!html.contains("canonical") && !html.contains("<form"), "a list without a slug is kept from search engines, as before");
+        let csp = policy(&[]);
         assert!(csp.starts_with("default-src 'none'; style-src 'sha256-") && !csp.contains("script-src") && !csp.contains("unsafe"), "{csp}");
+    }
+
+    #[test]
+    fn a_list_with_a_slug_links_each_record_and_is_offered_to_search_engines() {
+        let p = published(true);
+        let html = page_of(&p, "acme", "help", None, Some("https://acme.example"));
+        assert!(html.contains(r#"<a href="/public/acme/lists/help/reset%20password">"#), "{html}");
+        assert!(html.contains(r#"<link rel="canonical" href="https://acme.example/public/acme/lists/help">"#) && html.contains("index, follow"));
+        assert!(html.contains(r#"<label for="q">Search</label>"#) && html.contains(r#"?page=2" rel="next""#));
+        let searched = page_of(&p, "acme", "help", Some("x\"><script>"), Some("https://acme.example"));
+        assert!(!searched.contains("<script>") && searched.contains(r#"content="noindex""#), "a search is not indexed: {searched}");
+        let detail = detail_of(&p, "acme", "help", "reset password", Some("https://acme.example"));
+        assert!(detail.contains(r#"<link rel="canonical" href="https://acme.example/public/acme/lists/help/reset%20password">"#), "{detail}");
+        assert!(detail.contains(r#"<meta name="description" content="How to &lt;b&gt;reset&lt;/b&gt;">"#) && !detail.contains("<b>"), "{detail}");
+        let map = sitemap_of("acme", &[("help".into(), "reset password".into())], "https://acme.example");
+        assert!(map.contains("<loc>https://acme.example/public/acme/lists/help/reset%20password</loc>"), "{map}");
+        assert_eq!(percent_decode("reset%20password"), "reset password");
+        assert_eq!(percent_decode("100%"), "100%");
+    }
+
+    #[test]
+    fn a_page_is_framed_only_by_the_origins_it_names() {
+        let denied = html_response(StatusCode::OK, String::new(), false, &[]);
+        let csp = denied.headers().get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap().to_string();
+        assert!(csp.ends_with("frame-ancestors 'none'") && denied.headers().get(header::X_FRAME_OPTIONS).unwrap() == "DENY", "{csp}");
+        let allowed = html_response(StatusCode::OK, String::new(), false, &["https://shop.example".into()]);
+        let csp = allowed.headers().get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap().to_string();
+        assert!(csp.ends_with("frame-ancestors https://shop.example") && allowed.headers().get(header::X_FRAME_OPTIONS).is_none(), "{csp}");
+    }
+
+    #[test]
+    fn an_unchanged_answer_is_not_sent_again() {
+        let first = cached(&HeaderMap::new(), "body".into_response(), b"body");
+        let tag = first.headers().get(header::ETAG).unwrap().clone();
+        let mut h = HeaderMap::new();
+        h.insert(header::IF_NONE_MATCH, tag.clone());
+        assert_eq!(cached(&h, "body".into_response(), b"body").status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(cached(&h, "changed".into_response(), b"changed").status(), StatusCode::OK, "a change is a new answer");
     }
 }

@@ -872,9 +872,23 @@ pub struct PublishedListDef {
     /// Also offered as CSV.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub csv: bool,
-    /// Rows at most (200 without it, 1000 at most).
+    /// Rows at most (200 without it, 1000 at most); with paging, rows a page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// A text field whose value is each record's stable public address (`…/lists/{name}/{value}`): with it, each
+    /// record has a detail page, and the list is offered to search engines (a sitemap, link tags) rather than kept
+    /// from them. Held to the same rules as `fields`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// Fields only a record's detail page shows (an article's body), after `fields`; the same rules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detail: Vec<String>,
+    /// The field a detail page gives search engines as its description; one of `fields` or `detail`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Origins that may show its pages in a frame (`https://host[:port]`); none by default (BD-24).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1256,7 +1270,15 @@ pub struct PermissionDef {
     /// action's condition and its app's checks still apply.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<String>,
+    /// What a portal role's holders see of the conversation on the records this rule lets them read: `read`, the
+    /// comments and files staff marked shared with outside people; `add`, those and their own beside them. None:
+    /// nothing of it (the default). Members read every comment and file of a record they read, whatever this says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<String>,
 }
+
+/// What a rule's `shared` may say.
+pub const SHARED_REACH: &[&str] = &["read", "add"];
 
 /// Whether records of `e` hold personal data: a package declares them its people's (`declared`), or
 /// they keep an email or a phone number. A portal role reads such records only as its holders' own.
@@ -1426,7 +1448,7 @@ impl PermissionDef {
         }
         if !self.if_owner && self.via.is_none() {
             // Reference data (consent forms, appointment types) may be read whole, to pick from.
-            let reads_only = !(self.write || self.create || self.submit || !self.actions.is_empty() || !self.write_groups.is_empty());
+            let reads_only = !(self.write || self.create || self.submit || !self.actions.is_empty() || !self.write_groups.is_empty() || self.shared.is_some());
             if personal || !reads_only {
                 return Some(format!(
                     "a portal role reaches only its holders' own {}: make the rule own records only, or give the path they are reached by \
