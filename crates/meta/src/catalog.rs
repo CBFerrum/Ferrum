@@ -197,6 +197,18 @@ impl Catalog {
                     return invalid(format!("{name}: message {} is about {entity}, which is not this package's or a dependency's", m.key));
                 }
             }
+            let mut documents = HashSet::new();
+            for d in &p.manifest.documents {
+                if let Some(problem) = d.problem() {
+                    return invalid(format!("{name}: {problem}"));
+                }
+                if !d.key.strip_prefix(name.as_str()).is_some_and(|r| r.starts_with('.')) || !documents.insert(d.key.as_str()) {
+                    return invalid(format!("{name}: document {} must be unique and start with '{name}.'", d.key));
+                }
+                if !self.entities.get(&d.entity).is_some_and(|(owner, _)| deps.contains(owner)) {
+                    return invalid(format!("{name}: document {} is for {}, which is not this package's or a dependency's", d.key, d.entity));
+                }
+            }
             for ov in &p.manifest.overlays {
                 let Some((owner, _)) = self.entities.get(&ov.entity) else {
                     return invalid(format!("{name}: overlay targets unknown entity {}", ov.entity));

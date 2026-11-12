@@ -133,7 +133,7 @@ pub fn international(number: &str, s: &Settings) -> std::result::Result<String, 
 }
 
 /// The workspace's `messages` setting and language.
-async fn workspace(tx: &mut Tx, tenant: Uuid) -> Result<(Settings, Option<String>)> {
+pub(crate) async fn workspace(tx: &mut Tx, tenant: Uuid) -> Result<(Settings, Option<String>)> {
     let (s, language): (Option<Value>, Option<String>) =
         sqlx::query_as("select settings->'messages', settings->>'language' from tenant where id = $1").bind(tenant).fetch_one(&mut **tx).await?;
     Ok((s.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(), language))
@@ -227,18 +227,23 @@ async fn record_view(k: &Kernel, tx: &mut Tx, ctx: &Ctx, entity: Option<&str>, r
     let sys = Ctx::system(ctx.tenant, ctx.schema.clone());
     let ent = k.entity(&sys, entity)?;
     let mut doc = k.get_tx(&sys, tx, entity, id, false).await?;
+    without_secrets(&ctx.schema, &ent, &mut doc);
+    Ok(Value::Object(doc))
+}
+
+/// `doc` with its secret fields, and its lines', left out.
+pub(crate) fn without_secrets(schema: &ferrum_meta::Schema, ent: &ferrum_meta::EffEntity, doc: &mut crate::Doc) {
     for s in ent.secret_fields() {
         doc.remove(&s.name);
     }
     for t in ent.table_fields() {
-        let (Some(cent), Some(Value::Array(rows))) = (t.of.as_deref().and_then(|c| ctx.schema.entity(c)), doc.get_mut(&t.name)) else { continue };
+        let (Some(cent), Some(Value::Array(rows))) = (t.of.as_deref().and_then(|c| schema.entity(c)), doc.get_mut(&t.name)) else { continue };
         for r in rows.iter_mut().filter_map(Value::as_object_mut) {
             for s in cent.secret_fields() {
                 r.remove(&s.name);
             }
         }
     }
-    Ok(Value::Object(doc))
 }
 
 /// A record of `entity` with every field there, for checking a template: an unknown field is refused.

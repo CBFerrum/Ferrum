@@ -86,6 +86,9 @@ pub struct Pack {
     /// Its text and chat-app channel connections, described, never with their secrets; installed turned off.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<crate::messages::PackChannel>,
+    /// The workspace's own document templates and its edited copies of packages' defaults (BD-21).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<ferrum_meta::DocumentDef>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -593,6 +596,7 @@ impl Kernel {
         let automations = export_automations(ctx, &mut tx).await?;
         let studio = self.export_studio(ctx, &mut tx).await?;
         let (messages, channels) = crate::messages::for_pack(&mut tx, ctx.tenant).await?;
+        let documents = crate::documents::for_pack(&mut tx, ctx.tenant).await?;
         let mut records = Vec::new();
         let mut asked: Vec<&String> = Vec::new();
         for e in &o.records {
@@ -628,6 +632,7 @@ impl Kernel {
             records,
             messages,
             channels,
+            documents,
         };
         pack.requires.packages = requirements(ctx, &pack, &role_packages, &installed);
         let out = serde_json::to_value(&pack).map_err(Error::internal)?;
@@ -917,6 +922,10 @@ impl Kernel {
         for m in &pack.messages {
             let status = crate::messages::save_template(self, tx, ctx, m).await.map_err(|e| about(&format!("message {}", m.key), e))?;
             summary.entry("messages").or_default().add(m.key.clone(), status);
+        }
+        for d in &pack.documents {
+            let status = crate::documents::save_template(self, tx, ctx, d).await.map_err(|e| about(&format!("document {}", d.key), e))?;
+            summary.entry("documents").or_default().add(d.key.clone(), status);
         }
         for c in &pack.channels {
             let status = crate::messages::install_channel(self, tx, ctx, c).await.map_err(|e| about(&format!("channel {}", c.name), e))?;
