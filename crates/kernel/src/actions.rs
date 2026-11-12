@@ -85,6 +85,7 @@ fn check_effect<'a>(k: &Kernel, system: &dyn Fn() -> &'a Ctx, schema: &Schema, e
         AutomationAction::Notify { .. }
         | AutomationAction::Email { .. }
         | AutomationAction::Message { .. }
+        | AutomationAction::Generate { .. }
         | AutomationAction::AppendLine { .. }
         | AutomationAction::SetLine { .. } => {
             return Ok(());

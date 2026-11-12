@@ -270,6 +270,8 @@ pub struct Schema {
     pub published_lists: Vec<PublishedList>,
     /// The installed packages' message templates, as they ship them (BD-20).
     pub messages: Vec<MessageDef>,
+    /// The installed packages' document templates, as they ship them (BD-21).
+    pub documents: Vec<DocumentDef>,
 }
 
 impl Schema {
@@ -325,6 +327,7 @@ impl Default for Schema {
             shell_v2: false,
             published_lists: vec![],
             messages: vec![],
+            documents: vec![],
         }
     }
 }
@@ -783,6 +786,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let mut export_tables = Vec::new();
     let mut merge_links = Vec::new();
     let mut messages = Vec::new();
+    let mut documents = Vec::new();
     let mut warnings = Vec::new();
 
     for pkg in catalog.packages().filter(|p| set.contains(p.name())) {
@@ -801,6 +805,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         export_tables.extend(pkg.manifest.export_tables.iter().cloned());
         merge_links.extend(pkg.manifest.merge_links.iter().cloned());
         messages.extend(pkg.manifest.messages.iter().cloned());
+        documents.extend(pkg.manifest.documents.iter().cloned());
         if pkg.manifest.personal_data.is_empty() {
             undeclared_personal_data.push(pkg.manifest.package.clone());
         }
@@ -1194,6 +1199,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         shell_v2: false,
         published_lists,
         messages,
+        documents,
     };
     // What expressions read as `settings` is there (BD-17); otherwise it is said, and a customization saying it refused.
     let wrong: Vec<SchemaWarning> = schema

@@ -109,6 +109,27 @@ pub enum AutomationAction {
         all: bool,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         values: BTreeMap<String, String>,
+        /// Expressions each giving a file of this record to attach to its e-mail: an id, or what `generate` gave
+        /// (`results[0]`). One that gives nothing (a step that did not run) attaches nothing.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<String>,
+    },
+    /// A document from a template (BD-21) for the record, rendered as the workspace holds it, its secret fields left
+    /// out; stored on the record in the run's transaction, named by `name` (an expression; else the template's label
+    /// and the record's number), in `language` (an expression; else the workspace's), the one the template made before
+    /// dropped with `replace`. `values` are expressions the template reads as `values`. Gives `{file, url, name,
+    /// content_type, size, sha256, template, entity, record}`: a later `message` attaches it, an `invoke` hands on its
+    /// file and digest.
+    Generate {
+        template: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replace: bool,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        values: BTreeMap<String, String>,
     },
     /// Another app's step through the capability gate, in the run's transaction (BD-13): `capability` a catalog id,
     /// `input` its inputs as CEL expressions, `key` the effect key as an expression. Without `key`, the run's own:
@@ -221,9 +242,15 @@ fn sources(a: &AutomationAction) -> Vec<&str> {
         AutomationAction::Notify { title, body, .. } => std::iter::once(title).chain(body.iter()).collect(),
         AutomationAction::Email { to, message: Some(_), .. } => vec![to],
         AutomationAction::Email { to, subject, body, .. } => vec![to, subject, body],
-        AutomationAction::Message { to, values, .. } => {
-            return to.iter().filter_map(|t| t.strip_prefix("expr:")).chain(values.values().map(String::as_str)).collect();
+        AutomationAction::Message { to, values, attachments, .. } => {
+            return to
+                .iter()
+                .filter_map(|t| t.strip_prefix("expr:"))
+                .chain(values.values().map(String::as_str))
+                .chain(attachments.iter().map(String::as_str))
+                .collect();
         }
+        AutomationAction::Generate { name, language, values, .. } => name.iter().chain(language.iter()).chain(values.values()).collect(),
         AutomationAction::Invoke { input, key, .. } => input.values().chain(key.iter()).collect(),
     };
     all.into_iter().map(String::as_str).collect()
@@ -556,7 +583,11 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
                 }
                 continue;
             }
-            AutomationAction::Notify { .. } | AutomationAction::Email { .. } | AutomationAction::Message { .. } | AutomationAction::Invoke { .. } => continue,
+            AutomationAction::Notify { .. }
+            | AutomationAction::Email { .. }
+            | AutomationAction::Message { .. }
+            | AutomationAction::Generate { .. }
+            | AutomationAction::Invoke { .. } => continue,
         };
         // The platform's own keys are ignored when written, as they always were (a configured action refuses them).
         if let Some(f) = values.keys().find(|f| target.field(f).is_none() && !crate::store::SYSTEM_KEYS.contains(&f.as_str())) {
@@ -975,11 +1006,13 @@ pub(crate) async fn execute(
             };
             return Ok(serde_json::json!(crate::messages::send(k, tx, ctx, &m).await?));
         }
-        AutomationAction::Message { template, to, channels, all, values } => {
+        AutomationAction::Message { template, to, channels, all, values, attachments } => {
             let mut given = Map::new();
             for (name, expr) in values {
                 given.insert(name, eval(&expr)?);
             }
+            let given_files = attachments.iter().map(|src| eval(src).map(|v| (src.clone(), v))).collect::<Result<Vec<_>>>()?;
+            let files = attached(tx, ctx, entity, record, given_files).await?;
             let mut people = Vec::new();
             for spec in &to {
                 match spec.strip_prefix("expr:") {
@@ -995,9 +1028,20 @@ pub(crate) async fn execute(
                 channels,
                 all,
                 values: given,
-                attachments: vec![],
+                attachments: files,
             };
             return Ok(serde_json::json!(crate::messages::send(k, tx, ctx, &m).await?));
+        }
+        AutomationAction::Generate { template, name, language, replace, values } => {
+            let id = record.ok_or_else(|| Error::invalid("generate needs a record"))?;
+            let mut given = Map::new();
+            for (n, expr) in values {
+                given.insert(n, eval(&expr)?);
+            }
+            let text = |src: Option<String>| src.map(|s| eval(&s).map(as_text)).transpose();
+            let g = crate::documents::Generate { template, record: id, name: text(name)?, language: text(language)?, replace, values: given };
+            let made = Box::pin(crate::documents::generate(k, tx, ctx, &g)).await.map_err(|e| crate::pack::about("generate", e))?;
+            return serde_json::to_value(made).map_err(Error::internal);
         }
         AutomationAction::Notify { to, title, body, message: None } => {
             let title = as_text(eval(&title)?);
@@ -1128,6 +1172,36 @@ pub(crate) async fn execute(
         }
     }
     Ok(Value::Null)
+}
+
+/// The files a `message` attaches: what each expression gave (an id, or `{file}` as `generate` gives it), each a file
+/// of the run's record. Naming another's file is refused: an expression is no way to mail a file out.
+async fn attached(tx: &mut crate::db::Tx, ctx: &Ctx, entity: &str, record: Option<Uuid>, given: Vec<(String, Value)>) -> Result<Vec<Uuid>> {
+    let mut files = Vec::new();
+    for (src, v) in given {
+        let id = match v.get("file").unwrap_or(&v) {
+            Value::Null => continue,
+            Value::String(s) => {
+                s.trim_start_matches("/files/").parse::<Uuid>().map_err(|_| Error::invalid(format!("message.attachments: {src} gives no file")))?
+            }
+            _ => return Err(Error::invalid(format!("message.attachments: {src} gives no file"))),
+        };
+        files.push(id);
+    }
+    if files.is_empty() {
+        return Ok(files);
+    }
+    let theirs: i64 = sqlx::query_scalar("select count(distinct id) from file_object where tenant_id = $1 and id = any($2) and entity = $3 and record_id = $4")
+        .bind(ctx.tenant)
+        .bind(&files)
+        .bind(entity)
+        .bind(record)
+        .fetch_one(&mut **tx)
+        .await?;
+    if theirs as usize != files.iter().collect::<std::collections::HashSet<_>>().len() {
+        return Err(Error::invalid("message.attachments: a file to attach is not this record's"));
+    }
+    Ok(files)
 }
 
 /// What `find` does (see [`AutomationAction::Find`]).

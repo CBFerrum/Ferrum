@@ -54,6 +54,120 @@ pub struct PackageManifest {
     /// `{package}.{name}`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<MessageDef>,
+    /// The documents and files this package renders from its records, each a template a workspace may edit (BD-21).
+    /// Key `{package}.{name}`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<DocumentDef>,
+}
+
+/// What a document template makes: a page (HTML, a PDF where the server makes PDFs), text (fixed-width, a label
+/// printer's language), CSV, or XML. Each escapes what it prints for its own syntax.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentOutput {
+    #[default]
+    Page,
+    Text,
+    Csv,
+    Xml,
+}
+
+impl DocumentOutput {
+    /// The file extension and content type of what it makes, as text.
+    pub fn file_type(self) -> (&'static str, &'static str) {
+        match self {
+            DocumentOutput::Page => ("html", "text/html"),
+            DocumentOutput::Text => ("txt", "text/plain"),
+            DocumentOutput::Csv => ("csv", "text/csv"),
+            DocumentOutput::Xml => ("xml", "application/xml"),
+        }
+    }
+}
+
+/// The encodings a text, CSV or XML file is written in. A character the encoding has no place for is refused, never
+/// replaced.
+pub const DOCUMENT_ENCODINGS: [&str; 3] = ["utf-8", "iso-8859-1", "ascii"];
+
+/// A document template (docs/builder/decisions.md BD-21): a package's default, or a workspace's own or edited copy.
+/// Bodies are MiniJinja over `doc` (the record with its lines), `links`, `settings`, `values`, `entity`, `language`,
+/// `currency` and `now`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentDef {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The entity whose record it renders.
+    pub entity: String,
+    #[serde(default)]
+    pub output: DocumentOutput,
+    /// The one its entity prints with when no template is picked. A workspace's default wins over a package's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
+    /// The roles that may pick it; none: whoever may print the record.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+    /// For text, CSV and XML: one of [`DOCUMENT_ENCODINGS`] (UTF-8 when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    /// For text, CSV and XML: every line ends in CR LF (a bank's or a filing's format), else LF.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub crlf: bool,
+    /// The names of the values its caller passes (`period`): a body reading another is refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    /// Language tag (`en`, `hi`, `pt-BR`) → its bodies.
+    pub languages: std::collections::BTreeMap<String, DocumentBody>,
+}
+
+/// A document's bodies in one language: the body, and for a page the header and footer each PDF page repeats (where
+/// they may say `page_number()` and `page_count()`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentBody {
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer: Option<String>,
+}
+
+impl DocumentDef {
+    /// What is wrong with its shape (its bodies are the kernel's to check): a key as a message's, a language with a
+    /// body, a header or footer only on a page, an encoding there is, values that are names, roles that have one.
+    pub fn problem(&self) -> Option<String> {
+        let k = &self.key;
+        let well_formed = k.len() <= 100
+            && k.starts_with(|c: char| c.is_ascii_lowercase())
+            && k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.')
+            && !k.ends_with('.')
+            && !k.contains("..");
+        if !well_formed {
+            return Some(format!("document key '{k}' must be written [a-z][a-z0-9_.]*, at most 100 characters"));
+        }
+        if self.languages.is_empty() || self.languages.values().any(|b| b.body.trim().is_empty()) {
+            return Some(format!("document {k} has a language without a body, or none"));
+        }
+        if let Some(l) = self.languages.keys().find(|l| l.is_empty() || l.len() > 20 || !l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
+            return Some(format!("document {k}: '{l}' is not a language tag"));
+        }
+        if self.output != DocumentOutput::Page && self.languages.values().any(|b| b.header.is_some() || b.footer.is_some()) {
+            return Some(format!("document {k}: only a page has a header and a footer"));
+        }
+        if self.output == DocumentOutput::Page && (self.encoding.is_some() || self.crlf) {
+            return Some(format!("document {k}: a page is UTF-8 with its own line ends; encoding and crlf are for files"));
+        }
+        if let Some(e) = self.encoding.as_deref().filter(|e| !DOCUMENT_ENCODINGS.contains(e)) {
+            return Some(format!("document {k}: encoding '{e}' is not one of {}", DOCUMENT_ENCODINGS.join(", ")));
+        }
+        if self.roles.iter().any(|r| r.trim().is_empty()) {
+            return Some(format!("document {k}: a role has a name"));
+        }
+        if let Some(v) = self.values.iter().find(|v| !crate::is_ident(v)) {
+            return Some(format!("document {k}: '{v}' is not a name"));
+        }
+        None
+    }
 }
 
 /// The channels a message can go on, in the order tried when a template names none.
