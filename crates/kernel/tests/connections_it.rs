@@ -3,7 +3,9 @@
 //! tried: addresses that are not public, schemes, redirects, time and size limits, retries only for "later", one call
 //! per key, who may use a connection, and secrets resting nowhere, with the debug capture on.
 
+use async_trait::async_trait;
 use ferrum_kernel::capability::Invocation;
+use ferrum_kernel::connections::inbound::InboundHandler;
 use ferrum_kernel::connections::{self, Call, ConnectionInput};
 use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::secret::SecretKey;
@@ -20,6 +22,8 @@ use uuid::Uuid;
 
 const SECRET: &str = "sk-Zq81-connection-secret";
 const SIGNING: &str = "whsec-Pm42-signing-secret";
+const INBOUND: &str = "whsec-In77-inbound-secret";
+const TOKEN: &str = "tok-Qq19-shared-inbound";
 
 const PACKAGE: &str = "package: depot\nversion: 0.1.0\ndepends: [core]\n";
 const ENTITIES: &str = r#"
@@ -30,6 +34,13 @@ const ENTITIES: &str = r#"
     - {name: label, type: data}
     - {name: weight, type: int}
     - {name: tracking, type: data}
+- name: Alert
+  label: Alert
+  kind: master
+  fields:
+    - {name: external_id, type: data}
+    - {name: title, type: data, required: true}
+    - {name: state, type: data}
 "#;
 
 fn obj(v: Value) -> Doc {
@@ -143,6 +154,108 @@ fn call(conn: &str, op: &str, inputs: Value, key: Option<&str>) -> Call {
     Call { connection: conn.into(), operation: op.into(), inputs, key: key.map(Into::into), ..Default::default() }
 }
 
+/// The app's own code for what a connection accepts: a parcel per call.
+struct Depot;
+
+#[async_trait]
+impl InboundHandler for Depot {
+    async fn handle(&self, k: &Kernel, tx: &mut ferrum_kernel::db::Tx, ctx: &Ctx, connection: &str, payload: &Value) -> ferrum_kernel::Result<()> {
+        let label = format!("{connection}:{}", payload["ref"].as_str().unwrap_or_default());
+        k.insert_tx(ctx, tx, "Parcel", obj(json!({"label": label}))).await?;
+        Ok(())
+    }
+}
+
+fn sign(secret: &str, ts: i64, body: &str) -> String {
+    use hmac::Mac;
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(format!("{ts}.{body}").as_bytes());
+    format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+}
+
+fn headers(pairs: &[(&str, String)]) -> BTreeMap<String, String> {
+    pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+}
+
+async fn count(k: &Kernel, tenant: Uuid, sql: &str) -> i64 {
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let n = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_string())).bind(tenant).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    n
+}
+
+/// Being called: verified, recorded once, processed once, onto records or by the app.
+async fn being_called(k: &Kernel, admin: &Ctx) {
+    let tenant = admin.tenant;
+    let (alert, parcel) = (admin.schema.entity("Alert").unwrap().table.clone(), admin.schema.entity("Parcel").unwrap().table.clone());
+    let alerts = json!({"test": true, "inbound": {
+        "verify": {"type": "signature", "header": "x-signature", "secret": "hook", "timestamp_header": "x-timestamp", "prefix": "sha256="},
+        "delivery_header": "x-delivery",
+        "map": {"entity": "Alert", "items_at": "/alerts", "by": {"external_id": "item.id"}, "set": {"title": "item.summary", "state": "item.state"}}}});
+    let id = k.save_connection_def(admin, None, &input("monitor", alerts, Some(json!({"hook": INBOUND})))).await.unwrap();
+    let now = chrono::Utc::now().timestamp();
+    let post = |delivery: &str, ts: i64, body: &str, secret: &str| {
+        let h = headers(&[("X-Signature", sign(secret, ts, body)), ("X-Timestamp", ts.to_string()), ("X-Delivery", delivery.to_string())]);
+        let body = body.to_string();
+        async move { k.connection_inbound(id, &h, body.as_bytes()).await }
+    };
+    let one = r#"{"alerts": [{"id": "A-1", "summary": "Disk full", "state": "firing"}, {"id": "A-2", "summary": "CPU hot", "state": "firing"}]}"#;
+    assert_eq!(post("d-1", now, one, INBOUND).await.unwrap(), json!({"accepted": true}));
+    drain(k).await;
+    assert_eq!(count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and state = 'firing'")).await, 2, "an alert per item, no app code");
+    let resolved = r#"{"alerts": [{"id": "A-1", "summary": "Disk full", "state": "resolved"}]}"#;
+    post("d-2", now, resolved, INBOUND).await.unwrap();
+    drain(k).await;
+    assert_eq!(count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1")).await, 2, "found by its key and changed, not made again");
+    assert_eq!(count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'A-1' and state = 'resolved'")).await, 1);
+    assert_eq!(
+        count(k, tenant, "select count(*) from conn_inbound where tenant_id = $1 and state = 'done' and payload is null").await,
+        2,
+        "processed, its payload dropped"
+    );
+
+    // Every refusal is the same answer, and counted: a replay, a wrong signature, a stale one, an unsigned one, one too large, an unknown address.
+    let alike = Error::Unauthorized("this call was not accepted".into()).to_string();
+    let refusals = [
+        post("d-1", now, one, INBOUND).await.unwrap_err(),
+        post("d-3", now, one, "whsec-wrong").await.unwrap_err(),
+        post("d-4", now - 3600, one, INBOUND).await.unwrap_err(),
+        k.connection_inbound(id, &headers(&[("X-Delivery", "d-5".into())]), one.as_bytes()).await.unwrap_err(),
+        post("d-6", now, &json!({"alerts": [], "pad": "x".repeat(300 << 10)}).to_string(), INBOUND).await.unwrap_err(),
+    ];
+    assert!(refusals.iter().all(|e| e.to_string() == alike), "{refusals:?}");
+    let unknown_before = ferrum_kernel::connections::inbound::refused_unknown();
+    assert_eq!(k.connection_inbound(Uuid::now_v7(), &BTreeMap::new(), b"{}").await.unwrap_err().to_string(), alike);
+    assert_eq!(ferrum_kernel::connections::inbound::refused_unknown(), unknown_before + 1);
+    let refused = k.connection_defs(admin).await.unwrap().into_iter().find(|c| c["name"] == "monitor").unwrap()["refused"].clone();
+    assert_eq!(refused, json!(5));
+    // Without a delivery id, what was signed stands for it: the same call again is a replay.
+    let h = headers(&[("X-Signature", sign(INBOUND, now, one)), ("X-Timestamp", now.to_string())]);
+    k.connection_inbound(id, &h, one.as_bytes()).await.unwrap();
+    assert_eq!(k.connection_inbound(id, &h, one.as_bytes()).await.unwrap_err().to_string(), alike);
+    // A payload the mapping cannot take is marked failed, saying why, and not tried again.
+    let blank = r#"{"alerts": [{"id": "A-9", "state": "firing"}]}"#;
+    post("d-7", now, blank, INBOUND).await.unwrap();
+    drain(k).await;
+    let failed = k.connection_inbound_log(admin, id, 10).await.unwrap().into_iter().find(|r| r["delivery"] == "d-7").unwrap();
+    assert!(failed["state"] == "failed" && failed["error"].as_str().unwrap().contains("item 1"), "{failed}");
+
+    // A form, a shared token, and the app that registered for the connection.
+    let shop = json!({"test": true, "apps": ["depot"], "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "token"}, "delivery_at": "/order", "handler": "depot"}});
+    let shop = k.save_connection_def(admin, None, &input("shop", shop, Some(json!({"token": TOKEN})))).await.unwrap();
+    let form = headers(&[("X-Token", TOKEN.into()), ("Content-Type", "application/x-www-form-urlencoded".into())]);
+    k.connection_inbound(shop, &form, b"order=O-1&ref=web").await.unwrap();
+    assert_eq!(k.connection_inbound(shop, &form, b"order=O-1&ref=web").await.unwrap_err().to_string(), alike, "the same order again");
+    let wrong = headers(&[("X-Token", "tok-Qq19-shared-inbounD".into())]);
+    assert_eq!(k.connection_inbound(shop, &wrong, b"{}").await.unwrap_err().to_string(), alike);
+    drain(k).await;
+    assert_eq!(count(k, tenant, &format!("select count(*) from {parcel} where tenant_id = $1 and label = 'shop:web'")).await, 1, "handed to the app, once");
+    let other_app =
+        json!({"test": true, "apps": ["depot"], "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "token"}, "handler": "crm"}});
+    let e = k.save_connection_def(admin, None, &input("crm", other_app, None)).await.unwrap_err();
+    assert!(e.to_string().contains("not one of the apps"), "{e}");
+}
+
 #[test]
 fn connections_call_out_safely() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -158,7 +271,9 @@ async fn boot() -> (Arc<Kernel>, Ctx) {
         [("package.yaml", PACKAGE), ("entities/parcel.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let depot = ferrum_meta::catalog::load_package_files(&files).expect("package");
     let settings = KernelSettings { secret_key: Some(SecretKey::new([9u8; 32])), connection_hosts: vec!["127.0.0.1".into()], ..Default::default() };
-    let k = Kernel::boot(db, Catalog::from_packages(vec![core, depot]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
+    let mut hooks = HookRegistry::default();
+    hooks.add_inbound_handler("depot", Arc::new(Depot));
+    let k = Kernel::boot(db, Catalog::from_packages(vec![core, depot]).unwrap(), hooks, settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {
             slug: "depot".into(),
@@ -373,6 +488,8 @@ async fn scenario() {
     assert_eq!(captured["debug"]["request"]["headers"]["authorization"], "••••••");
     assert!(log.iter().all(|l| !l.to_string().contains(SECRET)));
 
+    being_called(&k, &admin).await;
+
     // ── secrets rest nowhere: not the log, the capture, the audit trail, the jobs ──
-    assert_eq!(rests(&k, &[SECRET, SIGNING]).await, nowhere);
+    assert_eq!(rests(&k, &[SECRET, SIGNING, INBOUND, TOKEN]).await, nowhere);
 }
