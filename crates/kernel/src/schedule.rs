@@ -521,6 +521,10 @@ impl Kernel {
                             false
                         }
                     };
+                // Connections' pulls that are due (connections/pull.rs).
+                if let Err(e) = k.sweep_pulls_at(Utc::now()).await {
+                    tracing::warn!("connection pulls: {e}");
+                }
                 // Approvals owed a reminder or an escalation (approvals.rs); a full pass looks again at once.
                 let more = more
                     | match k.sweep_approvals_at(Utc::now()).await {

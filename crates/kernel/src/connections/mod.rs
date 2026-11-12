@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 pub mod inbound;
+pub mod pull;
 
 pub const CALL_KIND: &str = "platform.connection.call";
 /// Attempts at a queued call while the service says "later".
@@ -101,6 +102,9 @@ pub struct Description {
     /// What it takes from outside, on its inbound address (BD-29).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound: Option<inbound::Inbound>,
+    /// Schedules that pull from it (BD-30).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pulls: Vec<pull::Pull>,
 }
 
 /// How a call proves who makes it. Each `secret` names one of the connection's sealed values.
@@ -273,6 +277,15 @@ impl Description {
         }
         if let Some(p) = self.inbound.as_ref().and_then(|i| i.problem(&self.apps)) {
             return Some(p);
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for p in &self.pulls {
+            if !names.insert(&p.name) {
+                return Some(format!("two pulls are named {}", p.name));
+            }
+            if let Some(m) = p.problem(self) {
+                return Some(m);
+            }
         }
         None
     }
@@ -959,12 +972,14 @@ impl Kernel {
 
     /// What is wrong with a description, its mappings read against the workspace's entities.
     pub(crate) fn description_problem(&self, schema: &ferrum_meta::Schema, d: &Description) -> Option<String> {
-        d.problem().or_else(|| d.inbound.as_ref().and_then(|i| i.map.as_ref()).and_then(|m| m.problem(schema)))
+        d.problem()
+            .or_else(|| d.inbound.as_ref().and_then(|i| i.map.as_ref()).and_then(|m| m.problem(schema)))
+            .or_else(|| d.pulls.iter().filter_map(|p| p.map.as_ref()).find_map(|m| m.problem(schema)))
     }
 
     /// What a saved description sets going (pulls' schedules).
-    pub(crate) async fn after_save(&self, _tx: &mut Tx, _tenant: Uuid, _id: Uuid, _d: &Description) -> Result<()> {
-        Ok(())
+    pub(crate) async fn after_save(&self, tx: &mut Tx, tenant: Uuid, id: Uuid, d: &Description) -> Result<()> {
+        pull::keep(tx, tenant, id, d).await
     }
 
     /// The connections, never a secret: `{id, name, label, description, enabled, secrets (names), source, refused, debug_until, inbound}`.
@@ -1126,7 +1141,7 @@ impl JobHandler for Queued {
 }
 
 pub(crate) fn handler(kind: &str) -> Option<Arc<dyn JobHandler>> {
-    (kind == CALL_KIND).then(|| Arc::new(Queued) as Arc<dyn JobHandler>).or_else(|| inbound::handler(kind))
+    (kind == CALL_KIND).then(|| Arc::new(Queued) as Arc<dyn JobHandler>).or_else(|| inbound::handler(kind)).or_else(|| pull::handler(kind))
 }
 
 #[cfg(test)]
