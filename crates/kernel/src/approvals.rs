@@ -231,6 +231,29 @@ async fn standing_for(tx: &mut Tx, ctx: &Ctx) -> Result<Vec<Uuid>> {
         .await?)
 }
 
+/// The policy of the request pending on record `id` of `entity` when an open step of it awaits `ctx`'s decision (as
+/// one of its approvers, or for whom they stand in) and they have not decided it yet: what lets an approver read
+/// that one record (BD-19). `None` once the step closes, they decide, or the request ends.
+async fn awaiting(tx: &mut Tx, ctx: &Ctx, entity: &str, id: Uuid) -> Result<Option<ApprovalPolicy>> {
+    let mut people: Vec<String> = standing_for(tx, ctx).await?.iter().map(Uuid::to_string).collect();
+    people.push(ctx.user.to_string());
+    let policy: Option<Value> = sqlx::query_scalar(
+        "select policy from approval_request r where tenant_id = $1 and entity = $2 and record_id = $3 and status = 'pending' and exists ( \
+           select 1 from jsonb_array_elements(r.steps) with ordinality s(v, n) where v ->> 'state' = 'open' \
+             and ((v -> 'approvers') ?| $4 or (v -> 'escalated') ?| $4) \
+             and not exists (select 1 from approval_decision d where d.tenant_id = r.tenant_id and d.request_id = r.id \
+               and d.step = n - 1 and not d.void and d.decider = $5))",
+    )
+    .bind(ctx.tenant)
+    .bind(entity)
+    .bind(id)
+    .bind(&people)
+    .bind(ctx.user)
+    .fetch_optional(&mut **tx)
+    .await?;
+    policy.map(|p| serde_json::from_value(p).map_err(|e| Error::internal(format!("approval policy: {e}")))).transpose()
+}
+
 /// Tells `users`, and whoever stands in for those of them away today, in the way each chose for approvals.
 async fn tell(tx: &mut Tx, ctx: &Ctx, users: &[Uuid], title: &str, entity: &str, record: Uuid) -> Result<()> {
     let away: Vec<Uuid> =
@@ -592,6 +615,38 @@ impl Kernel {
         .execute(&mut **tx)
         .await?;
         Ok(())
+    }
+
+    /// Record `id` as `ctx` reads it ([`Kernel::get`]), or, where that is refused, as an approver reads the one record
+    /// awaiting their decision (BD-19): with its lines, its fields as their own field groups allow and those the
+    /// policy's `show` lists. Only this read, the record's history and its files' downloads go through here; lists,
+    /// searches, writes and other actions still refuse them.
+    pub async fn read_record(&self, ctx: &Ctx, entity: &str, id: Uuid, with_titles: bool) -> Result<Doc> {
+        let refused = match self.get(ctx, entity, id, with_titles).await {
+            Err(e @ (Error::NotFound(_) | Error::Forbidden(_))) => e,
+            other => return other,
+        };
+        // Approvers are the workspace's members; what goes on to an AI provider is read as the person reads.
+        if ctx.outside || ctx.egress.is_some() || ctx.is_system {
+            return Err(refused);
+        }
+        let ent = self.entity(ctx, entity)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let Some(policy) = awaiting(&mut tx, ctx, entity, id).await? else {
+            return Err(refused);
+        };
+        let full = self.get_tx(&crate::actions::system(ctx), &mut tx, entity, id, false).await?;
+        let mut doc = self.mask(ctx, &ent, full.clone());
+        for f in &policy.show {
+            if let Some(v) = full.get(f) {
+                doc.insert(f.clone(), v.clone());
+            }
+        }
+        if with_titles {
+            self.add_titles(ctx, &mut tx, &ent, std::slice::from_mut(&mut doc)).await?;
+        }
+        tx.commit().await?;
+        Ok(doc)
     }
 
     /// The latest approval request on record `id`, with its steps and decisions (null when there has been none), for

@@ -659,6 +659,9 @@ MUTANTS = [
     ("transition-approval-not-rechecked", "crates/kernel/src/approvals.rs", "        if !still {", "        if false {", APPROVALS),
     ("transition-approval-stand-in-requester", "crates/kernel/src/approvals.rs", "if out.contains(&ctx.user) || out.contains(&person) {", "if out.contains(&person) {", APPROVALS),
     ("transition-approval-reject-without-reason", "crates/kernel/src/approvals.rs", "if !approve && comment.is_none() {", "if false {", APPROVALS),
+    ("approver-reads-after-deciding", "crates/kernel/src/approvals.rs", "and d.decider = $5))", "and false))", APPROVALS),
+    ("approver-reads-any-record", "crates/kernel/src/approvals.rs", "and entity = $2 and record_id = $3 and status = 'pending' and exists (", "and entity = $2 and ($3::uuid is not null) and status = 'pending' and exists (", APPROVALS),
+    ("approver-sees-hidden-fields", "crates/kernel/src/approvals.rs", "let mut doc = self.mask(ctx, &ent, full.clone());", "let mut doc = full.clone();", APPROVALS),
     ("transition-approval-names-unchecked", "crates/kernel/src/customize.rs", "        crate::approvals::check_names(tx, ctx.tenant, was, &now).await?;\n", "\n", APPROVALS),
     # Service targets (docs/api.md, Service targets).
     ("target-pause-ignored", "crates/logic/src/target.rs", "        if running && said.pause {", "        if false {", LOGIC_UNIT),
