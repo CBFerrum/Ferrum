@@ -343,6 +343,11 @@ async fn scenario() {
     refused(approve(dirc.clone(), late).await, "not yours to decide");
     let (a, b) = tokio::join!(k.sweep_approvals_at(t0 + Duration::minutes(121)), k.sweep_approvals_at(t0 + Duration::minutes(121)));
     assert_eq!(a.unwrap() + b.unwrap(), 1, "escalated once, however many passes");
+    // A pass that found the request before another marked it (its due moment read earlier) does nothing again.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update approval_request set next_due = $1 where record_id = $2 and status = 'pending'").bind(t0).bind(late).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(k.sweep_approvals_at(t0 + Duration::minutes(122)).await.unwrap(), 0, "each threshold once, under the request's lock");
     let s = k.approval_of(&annc, "XOrder", late).await.unwrap();
     assert_eq!(s["steps"][1]["escalated"], json!([dir]));
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
