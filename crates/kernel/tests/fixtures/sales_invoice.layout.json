@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "style": {"font": "sans", "size": "md", "color": "#111111", "accent": "#1f2937", "line_height": 1.45},
+  "sections": [
+    {"id": "head", "columns": [
+      {"id": "head_l", "blocks": [
+        {"id": "title", "type": "heading", "text": "Invoice", "level": 1, "when": "!doc.is_return"},
+        {"id": "title_cn", "type": "heading", "text": "Credit Note", "level": 1, "when": "doc.is_return"},
+        {"id": "status", "type": "field", "value": "doc.status", "label": null, "size": "sm", "color": "#555555"}
+      ]},
+      {"id": "head_r", "blocks": [
+        {"id": "copy", "type": "copy_label", "align": "end", "size": "sm", "weight": "bold"},
+        {"id": "number", "type": "field", "value": "doc.number", "label": "Invoice no", "align": "end", "weight": "bold"},
+        {"id": "date", "type": "field", "value": "doc.posting_date", "label": "Date", "align": "end", "format": {"as": "date", "date": "long"}},
+        {"id": "due", "type": "field", "value": "doc.due_date", "label": "Due", "align": "end", "format": {"as": "date", "date": "long"}},
+        {"id": "against", "type": "field", "value": "doc.return_against", "label": "Against", "align": "end"}
+      ]}
+    ], "widths": [7, 5]},
+    {"id": "parties", "columns": [
+      {"id": "bill", "blocks": [
+        {"id": "bill_h", "type": "heading", "text": "Bill to", "level": 3},
+        {"id": "cust", "type": "field", "value": ["links.customer.customer_name", "doc.customer_name"], "label": null, "weight": "bold"},
+        {"id": "addr", "type": "field", "value": ["links.customer_address.display", "links.customer.billing_address"], "label": null, "format": {"as": "multiline"}}
+      ]},
+      {"id": "ship", "blocks": [
+        {"id": "ship_h", "type": "heading", "text": "Ship to", "level": 3, "when": "doc.ship_to != \"\""},
+        {"id": "ship_a", "type": "field", "value": "links.ship_to.display", "label": null, "format": {"as": "multiline"}}
+      ]},
+      {"id": "ref", "blocks": [
+        {"id": "po", "type": "field", "value": "doc.po_no", "label": "Your order"},
+        {"id": "project", "type": "field", "value": "doc.project", "label": "Project"},
+        {"id": "cur", "type": "field", "value": "doc.currency", "label": "Currency"}
+      ]}
+    ], "widths": [5, 4, 3], "margin_top_mm": 6},
+    {"id": "lines", "columns": [{"id": "lines_c", "blocks": [
+      {"id": "items", "type": "table", "value": "doc.items", "row_numbers": true, "borders": "rows", "columns": [
+        {"id": "c_item", "value": ["row.item_name", "row.item"], "label": "Description", "width_pct": 44, "secondary": "row.description"},
+        {"id": "c_qty", "value": "row.qty", "label": "Qty", "width_pct": 9, "format": {"as": "number"}},
+        {"id": "c_uom", "value": "row.uom", "label": "Unit", "width_pct": 8},
+        {"id": "c_rate", "value": "row.rate", "label": "Rate", "width_pct": 12, "format": {"as": "amount", "show": "none"}},
+        {"id": "c_disc", "value": "row.discount_percent", "label": "Disc %", "width_pct": 8, "format": {"as": "percent"}, "when": "doc.items.exists(r, r.discount_percent > 0)"},
+        {"id": "c_amt", "value": ["row.net_amount", "row.amount"], "label": "Amount", "width_pct": 15, "format": {"as": "amount", "show": "none"}}
+      ]}
+    ]}], "margin_top_mm": 6},
+    {"id": "sums", "columns": [
+      {"id": "sums_l", "blocks": [
+        {"id": "taxes", "type": "table", "value": "doc.taxes", "borders": "none", "size": "sm", "hide_zero_rows": "row.tax_amount", "columns": [
+          {"id": "t_desc", "value": ["row.description", "row.account"], "label": "Tax"},
+          {"id": "t_rate", "value": "row.rate", "label": "Rate %", "format": {"as": "percent"}},
+          {"id": "t_amt", "value": "row.tax_amount", "label": "Amount", "format": {"as": "amount", "show": "none"}}
+        ]}
+      ]},
+      {"id": "sums_r", "blocks": [
+        {"id": "totals", "type": "totals", "width_pct": 100, "rows": [
+          {"label": "Subtotal", "value": "doc.total", "format": {"as": "amount"}},
+          {"label": "Discount", "value": "doc.discount_amount", "format": {"as": "amount"}, "hide_zero": true},
+          {"label": "Net total", "value": "doc.net_total", "format": {"as": "amount"}},
+          {"label": "Taxes", "value": "doc.total_taxes", "format": {"as": "amount"}, "hide_zero": true},
+          {"label": "Rounding", "value": "doc.rounding_adjustment", "format": {"as": "amount"}, "hide_zero": true},
+          {"label": "Total", "value": ["doc.rounded_total", "doc.grand_total"], "format": {"as": "amount"}, "emphasis": true}
+        ]},
+        {"id": "words", "type": "field", "value": ["doc.rounded_total", "doc.grand_total"], "label": "In words", "label_position": "above", "size": "sm", "format": {"as": "words"}}
+      ]}
+    ], "widths": [7, 5], "keep_together": true, "margin_top_mm": 4},
+    {"id": "foot", "columns": [
+      {"id": "foot_l", "blocks": [
+        {"id": "terms_h", "type": "heading", "text": "Terms", "level": 3, "when": "doc.terms != \"\" || company.acc_print_terms != \"\""},
+        {"id": "terms", "type": "field", "value": ["doc.terms", "company.acc_print_terms"], "label": null, "size": "sm", "format": {"as": "multiline"}},
+        {"id": "bank_h", "type": "heading", "text": "Bank details", "level": 3, "when": "company.acc_bank_account_no != \"\" && !doc.is_return"},
+        {"id": "bank_name", "type": "field", "value": "company.acc_bank_name", "label": "Bank", "size": "sm", "when": "!doc.is_return"},
+        {"id": "bank_acct", "type": "field", "value": "company.acc_bank_account_no", "label": "Account", "size": "sm", "when": "!doc.is_return"},
+        {"id": "bank_code", "type": "field", "value": "company.acc_bank_branch_code", "label": "Branch / SWIFT", "size": "sm", "when": "!doc.is_return"}
+      ]},
+      {"id": "foot_r", "blocks": [
+        {"id": "sign", "type": "signature", "label": "For {company.company_name}", "align": "end", "line": true, "width_mm": 60}
+      ]}
+    ], "widths": [7, 5], "keep_together": true, "margin_top_mm": 8}
+  ]
+}

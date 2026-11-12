@@ -38,7 +38,7 @@ fn sorted_files(dir: &Path, ext: &str) -> Result<Vec<std::path::PathBuf>, MetaEr
 pub fn load_package_dir(dir: &Path) -> Result<Package, MetaError> {
     let mut files = BTreeMap::new();
     files.insert("package.yaml".to_string(), read(&dir.join("package.yaml"))?);
-    for (sub, ext) in [("entities", "yaml"), ("sql", "sql"), ("print", "html")] {
+    for (sub, ext) in [("entities", "yaml"), ("sql", "sql"), ("print", "html"), ("print", "json")] {
         for f in sorted_files(&dir.join(sub), ext)? {
             let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             files.insert(format!("{sub}/{name}"), read(&f)?);
@@ -55,7 +55,23 @@ pub fn load_package_dir(dir: &Path) -> Result<Package, MetaError> {
 /// in the database or embedded in native apps. Other paths are ignored.
 pub fn load_package_files(files: &BTreeMap<String, String>) -> Result<Package, MetaError> {
     let manifest_text = files.get("package.yaml").ok_or_else(|| MetaError::Invalid("package.yaml is missing".into()))?;
-    let manifest: PackageManifest = serde_yaml::from_str(manifest_text).map_err(|e| MetaError::Yaml { path: "package.yaml".into(), msg: e.to_string() })?;
+    let mut manifest: PackageManifest = serde_yaml::from_str(manifest_text).map_err(|e| MetaError::Yaml { path: "package.yaml".into(), msg: e.to_string() })?;
+    // A layout format's file (`print/<name>.layout.json`) read into its document (BD-28).
+    for d in manifest.documents.iter_mut() {
+        let Some(file) = d.layout_file.take() else { continue };
+        if !file.starts_with("print/") || !file.ends_with(".layout.json") || file[6..].contains('/') {
+            return invalid(format!("document {}: layout_file is print/<name>.layout.json, not {file}", d.key));
+        }
+        let text = files.get(&file).ok_or_else(|| MetaError::Invalid(format!("document {}: {file} is not in the package", d.key)))?;
+        if text.len() > crate::layout::MAX_LAYOUT_BYTES {
+            return invalid(format!("document {}: {file} is larger than 256 KB", d.key));
+        }
+        let layout: crate::layout::Layout = serde_json::from_str(text).map_err(|e| MetaError::Yaml { path: file.clone(), msg: e.to_string() })?;
+        if let Some((id, msg)) = layout.problems(false).into_iter().next() {
+            return invalid(format!("document {}: {file}: {}{msg}", d.key, if id.is_empty() { String::new() } else { format!("{id}: ") }));
+        }
+        d.layout = Some(layout);
+    }
     let (mut entities, mut sql, mut print_formats) = (Vec::new(), Vec::new(), Vec::new());
     for (path, text) in files {
         if let Some(name) = path.strip_prefix("entities/").filter(|n| n.ends_with(".yaml") && !n.contains('/')) {

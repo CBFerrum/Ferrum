@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod effective;
 pub mod expr;
 mod expr_fns;
+pub mod layout;
 pub mod published;
 pub mod types;
 pub mod via;
