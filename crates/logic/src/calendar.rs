@@ -757,8 +757,11 @@ mod tests {
         // Checked like hours, and read and written as the API takes it.
         assert!(with(json!({"2026-11-13": {"open": false, "hours": [["13:00", "12:00"]]}})).problem().unwrap().starts_with("exceptions:"));
         assert!(with(json!({"2026-11-13": {"open": true, "hours": [["09:00", "12:00"], ["11:00", "13:00"]]}})).problem().unwrap().contains("overlap"));
-        assert!(serde_json::from_value::<Calendar>(json!({"name": "x", "zone": "UTC", "weekends": [], "holidays": [], "revision": 1,
-            "exceptions": {"2026-11-13": {"closed": true}}})).is_err());
+        assert!(
+            serde_json::from_value::<Calendar>(json!({"name": "x", "zone": "UTC", "weekends": [], "holidays": [], "revision": 1,
+            "exceptions": {"2026-11-13": {"closed": true}}}))
+            .is_err()
+        );
         assert_eq!(serde_json::from_value::<Calendar>(serde_json::to_value(&c).unwrap()).unwrap(), c);
         assert!(!serde_json::to_value(office()).unwrap().as_object().unwrap().contains_key("exceptions"), "none: as before");
     }
