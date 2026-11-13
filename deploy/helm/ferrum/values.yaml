@@ -34,6 +34,16 @@ storage:
 #   FERRUM_RETIRED_SECRET_KEYS.
 secrets:
   existingSecret: ferrum-secrets
+  # Optional: have the External Secrets Operator (installed separately) make that Secret from your
+  # secret store (Vault, AWS Secrets Manager, Google Secret Manager, ...). Off: create it yourself.
+  externalSecret:
+    enabled: false
+    secretStoreRef: {name: "", kind: ClusterSecretStore}
+    refreshInterval: 1h
+    # Every key at once, from one entry holding them all:
+    dataFrom: []   # - extract: {key: ferrum/production}
+    # Or key by key:
+    data: []       # - {secretKey: JWT_SECRET, remoteRef: {key: ferrum/production, property: JWT_SECRET}}
 
 # Settings the chart does not know yet: entries of a container's `env`, added to the server.
 extraEnv: []

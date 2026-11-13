@@ -96,4 +96,11 @@ assert env.get("FERRUM_MIGRATE_AT_START") == "false", env
 PY
 ! tpl -f "$tmp/digest.yaml" | grep -q FERRUM_MIGRATE_AT_START
 
+echo "an ExternalSecret makes the server's Secret only when asked, and needs its store"
+! tpl -f "$tmp/digest.yaml" | grep -q 'kind: ExternalSecret'
+tpl -f "$tmp/digest.yaml" --set secrets.externalSecret.enabled=true --set secrets.externalSecret.secretStoreRef.name=vault \
+  --set-json 'secrets.externalSecret.dataFrom=[{"extract":{"key":"ferrum"}}]' | grep -A10 'kind: ExternalSecret' | grep -q 'name: ferrum-secrets'
+if err=$(tpl -f "$tmp/digest.yaml" --set secrets.externalSecret.enabled=true 2>&1); then echo "rendered an ExternalSecret without a store"; exit 1; fi
+grep -q 'secretStoreRef.name' <<<"$err"
+
 echo "ok"
