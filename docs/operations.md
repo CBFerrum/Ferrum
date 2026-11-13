@@ -78,6 +78,9 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_OFFICE_ORIGIN` | with online editing | The editor server as browsers reach it (`https://office.example.com`), when that is not `FERRUM_OFFICE_URL`: Drive's pages frame it and post to it, and their Content-Security-Policy names it (the Compose stack sets it from `OFFICE_PUBLIC_URL`, the Helm chart from `office.host`) |
 | `FERRUM_APPS_BASE` | no | A domain under which isolated apps get origins of their own, `{app}--{workspace}.{base}` (`example-apps.net`); see "Apps with interfaces of their own". Empty (the default): isolated apps run in sandboxed frames. `localhost` works in development |
 | `FERRUM_UI_SOURCE` | no | Development: a server listing built interfaces (`index.json`, as Ferrum-Frontend's `npm run build:apps` writes `dist-apps/`), fetched at start-up and every ten minutes, files checked against their digests |
+| `FERRUM_DATABASE_DIRECT_URL` | with a pooler | PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler* |
+| `FERRUM_DATABASE_READ_URL` | no | A replica that reports and the reading of exports may use, while it is within the lag limit and has replayed what the primary had committed when the read began; otherwise they read from the primary. Empty (the default): none. See "Deployment shapes", *Read address* |
+| `FERRUM_DATABASE_READ_MAX_LAG_SECS` | no | The replay lag past which those reads go to the primary (default 10) |
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
@@ -85,17 +88,46 @@ isolation, so the server refuses to start with them. CloudNativePG's `ferrum` ap
 the Compose setup (`deploy/postgres-init`) are already set up this way. The role needs to create the
 trusted extensions `btree_gist`, `citext` and `pg_trgm`, which a database owner can do.
 
-Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 4 for short side writes
-(document numbering). Give the role a connection limit at least 20 below the database's
+Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 6: 4 for short side writes
+(document numbering) and 2 of Loco's own. Give the role a connection limit at least 20 below the database's
 `max_connections`, so that however far things scale there are connections left for an administrator,
 replication and a migration: PostgreSQL enforces that one, and `ferrum task doctor` warns without it.
 
+What one replica holds, with the defaults (counted from the code on 14 November 2026 and seen in
+`pg_stat_activity` with the server running):
+
+| What | Connects to | At the most | When |
+|---|---|---|---|
+| The pool | `DATABASE_URL` | `FERRUM_DB_MAX_CONNECTIONS` (30) | Requests, background work. Without a direct address the listeners and session locks below come out of it |
+| The side pool | `DATABASE_URL` | 4 | Short writes while a request's own transaction is open (numbering); idle ones close after a minute |
+| Loco's own pool | `DATABASE_URL` | 2 | Opened at start to check Loco's migrations (there are none); nothing else uses it. Safe through a pooler: it keeps no session |
+| Listeners: metadata, users, plugin sockets, live updates, co-editing | the direct address | 5 | One each, for as long as the replica runs |
+| Session locks: apps' upkeep, app stores' revocations | the direct address | 3 | One per app whose upkeep runs (`FERRUM_UPKEEP_CONCURRENCY`, 2), one for revocations, while each runs |
+| At start: the two-version window's lock, then the migrations', the schema sync's and the upgrade steps' locks | the direct address | 2 | Before the replica serves or works: the window's lock is a connection outside every pool, the others one at a time |
+| The first of Loco's two set-ups (`ferrum start` sets up twice and keeps the first) | `DATABASE_URL` | its own pools | Until the set-up that serves is ready; then closed |
+| The Temporal worker (`TEMPORAL_ADDRESS`) | none: it talks to Temporal | 0 | |
+| The region witness (`FERRUM_AUTHORITY_WITNESS_URL`) | another database | 2 there | When set |
+
+So, without a pooler (the direct address is `DATABASE_URL`, the default), a replica holds at most
+`FERRUM_DB_MAX_CONNECTIONS` + 6 = 36: the listeners and locks are inside its pool, and while it starts it
+holds a few connections of its pool and the window's lock, far fewer. With a pooler (`FERRUM_DATABASE_DIRECT_URL`
+set, see "Deployment shapes"), PostgreSQL sees 8 direct connections from each replica (5 listeners, 1 lock,
+2 upkeep: 6 + `FERRUM_UPKEEP_CONCURRENCY`; at most 3 while it starts), and the pool, the side pool and Loco's
+pool are the pooler's clients. `ferrum task migrate` (the chart's migrate Job) is one process with a pool of
+its own, counted like a replica.
+
 | Who | Connections at the most, in the manifests |
 |---|---|
-| API, 10 replicas × (30 + 4) | 340 |
+| API, 9 replicas and 1 more during a rollout (`maxSurge`) × (30 + 6) | 360 |
 | Cloud's controller, 2 replicas × (6 + 4), if deployed | 20 |
-| The role's limit | 370 |
-| Left for administration and replication | 30 |
+| The role's limit | 380 |
+| Left of `max_connections` (400): an administrator, the standbys' replication, CloudNativePG's checks and monitoring | 20 |
+
+Until 14 November the manifests counted 4 beside the pool, no pod a rollout adds, and allowed 10 replicas:
+(10 + 1) × 36 + 20 = 416, above the role's limit of 370. The autoscaler's maximum is now 9 and the role's
+limit 380. CloudNativePG applies a managed role's `connectionLimit` with `ALTER ROLE … CONNECTION LIMIT` on
+the primary, so changing it restarts nothing; raising `max_connections` would restart PostgreSQL. Past 9, put
+the pooler in front.
 
 `python3 scripts/check_manifests.py` fails when those stop adding up, and when a workload sets `replicas`
 under an autoscaler: every apply would put the count back. The Helm chart's migrate Job is a process of its own
@@ -415,7 +447,8 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   migrated as it starts, or, with `FERRUM_MIGRATE_AT_START=false`, refused as before. Several builds starting at once
   each end right: deciding, migrating and syncing hold one advisory lock, and the start-up writes hold it shared.
   Session advisory locks need a direct database connection, not one through a transaction-pooling proxy such as
-  PgBouncer: this window lock (`crates/kernel/src/window.rs`), the schema sync's (`crates/kernel/src/ddl.rs`), the
+  PgBouncer, and take theirs from `FERRUM_DATABASE_DIRECT_URL` (`Db::direct`): this window lock
+  (`crates/kernel/src/window.rs`), the migrations' (sqlx's own), the schema sync's (`crates/kernel/src/ddl.rs`), the
   upgrade steps' (`server/src/upgrade.rs`), apps' upkeep (`server/src/packages.rs`) and app revocations
   (`server/src/appmgr.rs`). Leases on events and jobs are rows, not locks.
 * **What a guest does not do.** It does not migrate, does not sync the schema (nor make an app with packages
@@ -871,7 +904,7 @@ Logs are JSON. Clients may send an `x-request-id` header to correlate their call
 
 ## Scaling
 
-* API: the HPA scales 3–10 replicas on CPU (the connection budget above); replicas are interchangeable.
+* API: the HPA scales 3–9 replicas on CPU (the connection budget above); replicas are interchangeable.
 * Database: scale vertically first; add a PgBouncer pooler (`database.pooler.enabled` in the Helm chart,
   "Deployment shapes") when connections become the limit. Change the number of instances or the size of their
   volumes with `deploy/scale-database.sh --instances N` or `--storage 200Gi` (`--wait 600` to wait for
@@ -932,14 +965,15 @@ worker pool is deleted at once and background work waits until the first new `we
 `zones` changes where staff work: after it, staff use the private host, and the public host admits no staff.
 The exact commands, what each move replaces and what to watch are in "Moving from one shape to another".
 
-**Connection budget.** Every replica may open `dbMaxConnections + 4` connections, and the migrate Job (when
-it runs) as many again. With pools, the chart adds up every pool at its most replicas (`maxReplicas`, or
-`replicas` without an autoscaler), the migrate Job and 20 for other users of the role (as
+**Connection budget.** Every replica may open `dbMaxConnections + 6` connections ("Database role" above), and the
+migrate Job (when it runs) as many again. With pools, the chart adds up every pool at its most replicas (`maxReplicas`, or
+`replicas` without an autoscaler) plus the pod a rollout adds (`maxSurge`, 1; `check_manifests.py` reads each
+Deployment's own, a percentage rounded up against its most replicas), the migrate Job and 20 for other users of the role (as
 `scripts/check_manifests.py` does), and refuses to render when the sum is above `database.connectionLimit`.
 Each preset says its sum. Without pools the chart refuses nothing new: check it with
 `helm template ... | python3 scripts/check_manifests.py -`, which adds up every server Deployment and Job it
-is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With today's defaults and `migrate.enabled`, that is 394 of 370: lower `autoscaling.maxReplicas`
-to 9 when you turn the Job on.)
+is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With today's defaults and `migrate.enabled`, that is 416 of 380: lower `autoscaling.maxReplicas`
+to 8 when you turn the Job on.)
 
 **Connection pooler.** `database.pooler.enabled` puts PgBouncer (CloudNativePG's `Pooler`, `ferrum-db-pooler`,
 `database.pooler.instances` of them, at most one down at a time) in front of the primary, in transaction mode
@@ -951,9 +985,56 @@ and migrations; the migrate Job always connects directly. Turn it on only with a
 do not hold. Only the server's pods may reach the pooler, and Prometheus its metrics (`ferrum-db-pooler`
 PodMonitor). With the pooler, PostgreSQL sees `instances x poolSize` connections from it (plus
 `reserve_pool_size` if you set it in `database.pooler.parameters`) and `directConnectionsPerReplica`
-(default 8: listeners and locks, to be confirmed by the server change) from each replica, and the budget
-below counts that instead of `dbMaxConnections + 4`. `dbMaxConnections` is then what each replica opens to the
+(default 8: 5 listeners, 1 session lock and 2 apps' upkeep; 6 + `FERRUM_UPKEEP_CONCURRENCY` if you change
+that) from each replica, and the budget counts that instead of `dbMaxConnections + 6`. `dbMaxConnections` is then what each replica opens to the
 pooler; keep the sum over every replica under `maxClientConnections` times `instances`.
+
+*What goes direct, and why.* In transaction mode PgBouncer gives each transaction whichever server connection
+is free, so anything that lives in one session longer than a transaction breaks through it: a LISTEN hears
+nothing, a session lock stays on a server connection another client then gets (in a test run through PgBouncer
+without the direct address, a start's lock was left held and the next start waited on it for good), and
+startup settings are refused. So, when `FERRUM_DATABASE_DIRECT_URL` names another address than `DATABASE_URL`:
+
+| Through the pooler (`DATABASE_URL`) | Direct (`FERRUM_DATABASE_DIRECT_URL`) |
+|---|---|
+| Every transaction: requests, background work, reports. Each sets its own workspace, statement timeout, `lock_timeout` (10 s) and `idle_in_transaction_session_timeout` (60 s) in its first statement, and none counts on the server connection of the one before | The 5 listeners (metadata, users, plugin sockets, live updates, co-editing) |
+| The side pool and Loco's own pool (neither keeps a session) | Session advisory locks: the two-version window's, the migrations', the schema sync's (whose `create index concurrently` runs outside a transaction), the upgrade steps', apps' upkeep, app revocations |
+| Statements outside a transaction (`pg_notify`, rate-limit counters): they get the database's own `lock_timeout`, not 10 s | |
+
+The server sends no startup `options` and no `extra_float_digits` through the pooler (PgBouncer refuses
+parameters it does not track), so PgBouncer needs no `ignore_startup_parameters`. It needs: version 1.21 or
+later, `pool_mode = transaction`, `max_prepared_statements` above 0 (sqlx prepares every statement), and
+the server's role and database. Checked with PgBouncer 1.26.1 on 14 November 2026 (README, *Testing*).
+
+*When a connection fails.* A direct address that does not answer at start stops the start, saying
+`FERRUM_DATABASE_DIRECT_URL`; Kubernetes starts the pod again. One that drops later: each listener notices
+(it is never quietly reconnected), connects again with a back-off (metadata from 250 ms doubling to 10 s,
+the others every 2 s) and recovers as before: metadata and users drop every cached copy, co-editing reads every
+open document again, and live updates and plugin sockets are best effort (a page refreshes later). A session
+lock whose connection drops is let go by PostgreSQL; its work is tried again in the next round. A pooler that
+restarts in the middle of a transaction ends it: PostgreSQL rolls it back, the request fails (503, or retried
+like any lost connection), and nothing half done stays.
+
+**Read address.** `database.readReplicas.enabled` sets `FERRUM_DATABASE_READ_URL` to CloudNativePG's
+read-only service (`ferrum-db-ro`, the standbys), and the chart refuses it with one instance, which has no
+standby. Reports (`/api/reports`, apps' reports, Studio's queries and dashboards) and the reading of a
+workspace's export then read there, in read-only transactions that set the workspace as on the primary,
+when three things hold: the address is a replica (it is replaying), its lag, looked at every 2 seconds on
+each replica of the server, is within `FERRUM_DATABASE_READ_MAX_LAG_SECS` (10), and it has replayed
+everything the primary had committed when the read began (it may wait half a second for it). So whoever has
+just written sees it in the next report. Otherwise the read goes to the primary, and
+`ferrum_db_reads_total{to="primary",why=…}` says why (`down`, `lagging`, `not_replica`, `behind`, and the
+replica failures below;
+`{to="replica"}` counts the others). An address that is not a replica (the primary, or another database) is
+never read from: the server warns once and reads from the primary. A report read from a replica says how far
+behind it was in `X-Ferrum-Replica-Lag-Ms`. The read pool holds up to 10 connections per replica of the
+server, on the standby, not the primary. A report, a Studio query or an export whose read fails on the
+standby for any reason (the connection lost, a statement cancelled or timed out, the standby's replay
+cancelling it with a conflict, PostgreSQL's `max_standby_streaming_delay`) runs once more on the primary,
+never a third time, counted as `why="replica_conflict"`, `replica_cancelled`, `replica_lost` or
+`replica_failed`; an export first deletes what it had stored. A read that is wrong in itself (a bad report, a
+refusal) fails the same way on the primary, so its error is the one the caller gets. Not tried against a real lagging standby: the
+choice was tested with an injected lag, and the reading with the read address on the same test database.
 
 **Worker scaling on waiting work.** A pool with `background: only` can scale with KEDA (installed
 separately): `keda: {enabled: true}` on the pool, `autoscaling: {enabled: false}` beside it, and the rest from

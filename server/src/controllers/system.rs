@@ -175,6 +175,15 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     let (conn_on, conn_failing, conn_waiting, conn_stale, drift_open) = st.kernel.connection_gauges().await?;
     let (held, fenced) = (u8::from(st.kernel.holding().await?), u8::from(st.kernel.db.fenced()));
     let pool = &st.kernel.db.pool;
+    let mut reads = String::from(
+        "# HELP ferrum_db_reads_total Reads a replica may answer (reports, exports) on this replica of the server: where they went, and why not to the replica.\n# TYPE ferrum_db_reads_total counter\n",
+    );
+    for (served, n) in st.kernel.db.read.as_ref().map(|r| r.counts()).unwrap_or_default() {
+        match served {
+            ferrum_kernel::replica::Served::Replica => reads.push_str(&format!("ferrum_db_reads_total{{to=\"replica\"}} {n}\n")),
+            why => reads.push_str(&format!("ferrum_db_reads_total{{to=\"primary\",why=\"{}\"}} {n}\n", why.label())),
+        }
+    }
     let (socket_dropped, socket_closed_slow) = st.plugins.sockets.overflow_counts();
     let socket_queued = st.plugins.sockets.queued_bytes();
     let mut apps = String::new();
@@ -184,6 +193,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     apps.push_str(&failures_text(&st.kernel.failures()));
     apps.push_str(&crate::zone::metrics_text());
     apps.push_str(&logic);
+    apps.push_str(&reads);
     let body = format!(
         "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n{apps}\
          # TYPE ferrum_restore_held gauge\nferrum_restore_held {held}\n\
@@ -250,7 +260,13 @@ async fn report(
     Query(params): Query<HashMap<String, String>>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    Ok(Json(ferrum_domain::reports::run(&st.kernel, &ctx, &name, &params).await?).into_response())
+    let (out, lag) = ferrum_kernel::replica::noting(ferrum_domain::reports::run(&st.kernel, &ctx, &name, &params)).await;
+    let mut resp = Json(out?).into_response();
+    // Read from a replica: how far behind it was (it had replayed everything committed before the request).
+    if let Some(lag) = lag {
+        resp.headers_mut().insert("x-ferrum-replica-lag-ms", lag.as_millis().to_string().parse().expect("digits"));
+    }
+    Ok(resp)
 }
 
 async fn list_reports(Auth(ctx): Auth) -> ApiResult<Response> {

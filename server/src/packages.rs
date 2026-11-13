@@ -514,8 +514,13 @@ pub async fn round(pool: &PgPool, mut jobs: Vec<Upkeep>, concurrency: usize, eve
     while running.join_next().await.is_some() {}
 }
 
+/// How many apps' upkeep one replica runs at once (`FERRUM_UPKEEP_CONCURRENCY`): each holds a direct connection.
+pub fn upkeep_concurrency() -> usize {
+    std::env::var("FERRUM_UPKEEP_CONCURRENCY").ok().and_then(|v| v.trim().parse().ok()).filter(|n| *n > 0).unwrap_or(DEFAULT_CONCURRENCY)
+}
+
 pub fn spawn(k: Arc<Kernel>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
-    let concurrency = std::env::var("FERRUM_UPKEEP_CONCURRENCY").ok().and_then(|v| v.trim().parse().ok()).filter(|n| *n > 0).unwrap_or(DEFAULT_CONCURRENCY);
+    let concurrency = upkeep_concurrency();
     tokio::spawn(async move {
         loop {
             let mut jobs = upkeep_jobs(&k);
@@ -528,7 +533,8 @@ pub fn spawn(k: Arc<Kernel>, mut shutdown: watch::Receiver<bool>) -> tokio::task
                     Box::pin(async move { k.check_hosts().await.map(|_| ()).map_err(|e| e.to_string()) })
                 }),
             ));
-            round(&k.db.pool, jobs, concurrency, EVERY).await;
+            // Each running app's lock is a session's: on the direct address.
+            round(&k.db.direct, jobs, concurrency, EVERY).await;
             tokio::select! {
                 _ = shutdown.changed() => return,
                 _ = tokio::time::sleep(EVERY) => {}
@@ -674,7 +680,11 @@ mod tests {
     /// with a limit of one run one app after another.
     #[tokio::test]
     async fn replicas_share_upkeep_app_by_app() {
-        let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+        // The locks are sessions': on the direct address, as `spawn` gives them (`FERRUM_TEST_DATABASE_DIRECT_URL` when the
+        // suite runs through a pooler).
+        let url = std::env::var("FERRUM_TEST_DATABASE_DIRECT_URL")
+            .or_else(|_| std::env::var("FERRUM_TEST_DATABASE_URL"))
+            .unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
         let pool = || sqlx::postgres::PgPoolOptions::new().max_connections(8).connect(&url);
         let (one, two) = (pool().await.expect("connect"), pool().await.expect("connect"));
         let spans: Spans = Default::default();

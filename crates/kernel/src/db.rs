@@ -1,7 +1,7 @@
 //! Connection pool, tenant-scoped transactions and retry on transient conflicts.
 
 use crate::error::{Error, Result};
-use sqlx::postgres::{PgArguments, PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::{PgArguments, PgConnectOptions, PgListener, PgNotification, PgPoolOptions};
 use sqlx::query::Query;
 use sqlx::{AssertSqlSafe, Postgres, Transaction};
 use std::future::Future;
@@ -15,6 +15,21 @@ pub type Tx = Transaction<'static, Postgres>;
 
 /// Connections in the side pool (see [`Db::side`]); count them in the database's connection budget.
 pub const SIDE_CONNECTIONS: u32 = 4;
+
+/// The server's LISTEN loops, each holding one connection of [`Db::direct`] for as long as it runs: metadata and users
+/// (kernel), plugin sockets, live updates and co-editing (server).
+pub const LISTENERS: u32 = 5;
+
+/// What [`Db::direct`] holds besides the listeners and apps' upkeep: one session lock at a time (app revocations; at
+/// start the migrations, the schema sync and the upgrade steps, one after another). Its own pool, when the direct address
+/// differs from the main one, opens at most `LISTENERS + DIRECT_LOCKS + upkeep at once` ([`DbConfig::direct_connections`]).
+pub const DIRECT_LOCKS: u32 = 1;
+
+/// Session settings every kernel transaction sets for itself (the `options` a direct connection also starts with): a
+/// connection pooler in transaction mode gives each transaction whichever server connection is free, so nothing set on
+/// one session reaches the next transaction.
+const LOCK_TIMEOUT: &str = "10s";
+const IDLE_IN_TRANSACTION: &str = "60s";
 
 /// What the work in progress belongs to. Every transaction opened inside [`Trace::scope`] carries
 /// it, and the events written there record it (the columns of `outbox` default to these settings),
@@ -67,14 +82,16 @@ impl Trace {
     }
 }
 
-/// `settings` (their parameters start at `$5`) with the current [`Trace`] set beside them.
+/// `settings` (their parameters start at `$5`) with the current [`Trace`] and the transaction's lock and idle timeouts
+/// set beside them, in one round trip.
 fn carrying(settings: &str) -> Query<'static, Postgres, PgArguments> {
     let t = TRACE.try_with(Trace::clone).unwrap_or_default();
     // The depth is a number, written in place, so the settings' parameters still start at $5.
     sqlx::query(AssertSqlSafe(format!(
         "select set_config('ferrum.correlation', $1, true), set_config('ferrum.causation', $2, true), \
          set_config('ferrum.traceparent', $3, true), set_config('ferrum.priority', $4, true), \
-         set_config('ferrum.depth', '{}', true), {settings}",
+         set_config('ferrum.depth', '{}', true), set_config('lock_timeout', '{LOCK_TIMEOUT}', true), \
+         set_config('idle_in_transaction_session_timeout', '{IDLE_IN_TRANSACTION}', true), {settings}",
         t.depth
     )))
     .bind(t.correlation)
@@ -93,6 +110,17 @@ pub struct DbConfig {
     pub statement_timeout_ms: u64,
     /// Report/list queries may run longer than writes.
     pub report_timeout_ms: u64,
+    /// `FERRUM_DATABASE_DIRECT_URL`: where whatever needs one session for longer than a transaction connects (LISTEN,
+    /// session advisory locks, migrations and the schema sync), when `url` is a connection pooler in transaction mode.
+    /// `None`: `FERRUM_TEST_DATABASE_DIRECT_URL` when a test sets it, else `url` itself (the server always says).
+    pub direct_url: Option<String>,
+    /// The most connections the direct side opens when it is a pool of its own:
+    /// [`LISTENERS`] + [`DIRECT_LOCKS`] + apps' upkeep at once (`FERRUM_UPKEEP_CONCURRENCY`, default 2).
+    pub direct_connections: u32,
+    /// `FERRUM_DATABASE_READ_URL`: a replica that reports and exports may read from ([`Db::read_tx`]). `None`: none.
+    pub read_url: Option<String>,
+    /// `FERRUM_DATABASE_READ_MAX_LAG_SECS`: past this replay lag those reads go to the primary.
+    pub read_max_lag: Duration,
 }
 
 impl Default for DbConfig {
@@ -106,6 +134,10 @@ impl Default for DbConfig {
             acquire_timeout: Duration::from_secs(20),
             statement_timeout_ms: 15_000,
             report_timeout_ms: 60_000,
+            direct_url: None,
+            direct_connections: LISTENERS + DIRECT_LOCKS + 2,
+            read_url: None,
+            read_max_lag: Duration::from_secs(10),
         }
     }
 }
@@ -117,10 +149,17 @@ pub struct Db {
     /// open (non-gapless numbering). Taking them from `pool` could deadlock the pool under load:
     /// every connection held by a transaction that waits for a second one.
     pub side: sqlx::PgPool,
+    /// Connections that keep one session (LISTEN, session advisory locks, migrations, the schema sync): `pool` itself,
+    /// unless `FERRUM_DATABASE_DIRECT_URL` names another address than `DATABASE_URL` (a pooler's), and then a small pool
+    /// of its own there ([`DbConfig::direct_connections`]).
+    pub direct: sqlx::PgPool,
+    /// The read address's pool and what it last found ([`Db::read_tx`]), when one is set.
+    pub read: Option<Arc<crate::replica::Reads>>,
     pub config: DbConfig,
     /// This region does not hold the right to write (`recovery`): every transaction is read-only, so
     /// nothing has to remember to check.
     fenced: Arc<AtomicBool>,
+    pooled: bool,
 }
 
 impl Db {
@@ -142,17 +181,31 @@ impl Db {
     }
 
     pub async fn connect(config: DbConfig) -> Result<Db> {
-        let opts = PgConnectOptions::from_str(&config.url)
-            .map_err(|e| Error::Invalid(format!("invalid database url: {e}")))?
-            .application_name("ferrum")
-            .options([("timezone", "UTC"), ("lock_timeout", "10s"), ("idle_in_transaction_session_timeout", "60s")]);
+        let url = |u: &str, what: &str| {
+            PgConnectOptions::from_str(u).map(|o| o.application_name("ferrum")).map_err(|e| Error::Invalid(format!("invalid {what}: {e}")))
+        };
+        // A direct connection starts with its session settings; one through a pooler must not send them (PgBouncer
+        // refuses startup parameters it does not track) and gets them from each transaction instead (`carrying`).
+        let session = |o: PgConnectOptions| {
+            o.options([("timezone", "UTC"), ("lock_timeout", LOCK_TIMEOUT), ("idle_in_transaction_session_timeout", IDLE_IN_TRANSACTION)])
+        };
+        let direct_url = config
+            .direct_url
+            .clone()
+            .or_else(|| std::env::var("FERRUM_TEST_DATABASE_DIRECT_URL").ok())
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty() && *u != config.url);
+        let main = url(&config.url, "database url")?;
+        // `extra_float_digits` is a startup parameter PgBouncer refuses too; PostgreSQL 12 and later print floats exactly
+        // without it.
+        let main = if direct_url.is_some() { main.extra_float_digits(None) } else { session(main) };
         let side = PgPoolOptions::new()
             .max_connections(SIDE_CONNECTIONS)
             .min_connections(0)
             .acquire_timeout(config.acquire_timeout)
             .idle_timeout(Some(Duration::from_secs(60)))
             .max_lifetime(Some(Duration::from_secs(1800)))
-            .connect_lazy_with(opts.clone());
+            .connect_lazy_with(main.clone());
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .min_connections(config.min_connections)
@@ -160,14 +213,59 @@ impl Db {
             .idle_timeout(Some(Duration::from_secs(300)))
             .max_lifetime(Some(Duration::from_secs(1800)))
             .test_before_acquire(true)
-            .connect_with(opts)
+            .connect_with(main)
             .await?;
-        Ok(Db { pool, side, config, fenced: Arc::default() })
+        let direct = match &direct_url {
+            None => pool.clone(),
+            Some(d) => PgPoolOptions::new()
+                .max_connections(config.direct_connections.max(LISTENERS + DIRECT_LOCKS))
+                .min_connections(0)
+                .acquire_timeout(config.acquire_timeout)
+                .idle_timeout(Some(Duration::from_secs(60)))
+                .max_lifetime(Some(Duration::from_secs(1800)))
+                .test_before_acquire(true)
+                // Connected now, so a start with a direct address that does not answer fails at once, saying which.
+                .connect_with(session(url(d, "direct database url (FERRUM_DATABASE_DIRECT_URL)")?))
+                .await
+                .map_err(|e| Error::Internal(format!("the direct database address (FERRUM_DATABASE_DIRECT_URL) does not answer: {e}")))?,
+        };
+        // Connected when first used: a read address that does not answer sends reads to the primary, it stops nothing.
+        let read = match config.read_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+            None => None,
+            Some(r) => Some(Arc::new(crate::replica::Reads::new(
+                PgPoolOptions::new()
+                    .max_connections(crate::replica::READ_CONNECTIONS)
+                    .min_connections(0)
+                    .acquire_timeout(crate::replica::CHECKED_FOR)
+                    .idle_timeout(Some(Duration::from_secs(60)))
+                    .max_lifetime(Some(Duration::from_secs(1800)))
+                    .test_before_acquire(true)
+                    // Like the main pool through a pooler: each transaction sets what it needs.
+                    .connect_lazy_with(url(r, "read database url (FERRUM_DATABASE_READ_URL)")?.extra_float_digits(None)),
+                config.read_max_lag,
+            ))),
+        };
+        Ok(Db { pooled: direct_url.is_some(), pool, side, direct, read, config, fenced: Arc::default() })
     }
 
-    /// Applies the kernel's own SQL migrations (idempotent; safe with several replicas).
+    /// Whether `direct` is a pool of its own: the main pool then goes through a pooler.
+    pub fn pooled(&self) -> bool {
+        self.pooled
+    }
+
+    /// LISTENs on `channel` over a connection of [`Db::direct`], held until the listener is dropped.
+    pub async fn listen(&self, channel: &str) -> Result<PgListener> {
+        let mut l = PgListener::connect_with(&self.direct).await?;
+        // A lost connection is reported (see `notification`), never quietly replaced.
+        l.eager_reconnect(false);
+        l.listen(channel).await?;
+        Ok(l)
+    }
+
+    /// Applies the kernel's own SQL migrations (idempotent; safe with several replicas: sqlx holds a session lock while
+    /// it migrates, so on the direct address).
     pub async fn migrate(&self) -> Result<()> {
-        sqlx::migrate!("./migrations").run(&self.pool).await.map_err(|e| Error::Internal(format!("kernel migration failed: {e}")))
+        sqlx::migrate!("./migrations").run(&self.direct).await.map_err(|e| Error::Internal(format!("kernel migration failed: {e}")))
     }
 
     /// Versions of the kernel's SQL migrations this database has applied (none for a database no migration has touched).
@@ -232,12 +330,61 @@ impl Db {
 
     pub async fn tenant_tx_with_timeout(&self, tenant: Uuid, timeout_ms: u64) -> Result<Tx> {
         let mut tx = self.pool.begin().await?;
-        carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)")
-            .bind(tenant.to_string())
-            .bind(timeout_ms.to_string())
-            .execute(&mut *tx)
-            .await?;
+        as_tenant(&mut tx, tenant, timeout_ms).await?;
         self.stay_fenced(&mut tx).await?;
+        Ok(tx)
+    }
+
+    /// Runs a whole read (its transactions opened with [`Db::read_tx`]) and, when it failed after reading from the read
+    /// address, once more on the primary ([`crate::replica::once_more_on_primary`]).
+    pub async fn reading<T, F, Fut>(&self, read: F) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        let mut read = read;
+        match &self.read {
+            Some(r) => crate::replica::once_more_on_primary(r, read).await,
+            None => read().await,
+        }
+    }
+
+    /// A read-only tenant transaction for reading only: reports, and the reading of a workspace's export. On the read
+    /// address (`FERRUM_DATABASE_READ_URL`) when it is a replica within its lag limit that has replayed everything the
+    /// primary had committed when this began, so that whoever has just written sees it; otherwise on the primary.
+    /// Never for a read that a write in the same transaction must see.
+    pub async fn read_tx(&self, tenant: Uuid, timeout_ms: u64) -> Result<Tx> {
+        use crate::replica::{Health, Served};
+        if let Some(r) = self.read.as_ref().filter(|_| !crate::replica::primary_only()) {
+            let why = match r.health().await {
+                Health::Fresh(lag) => {
+                    // Where the primary is now: the replica must have replayed that far.
+                    let at: String =
+                        sqlx::query_scalar("select (case when pg_is_in_recovery() then pg_last_wal_replay_lsn() else pg_current_wal_lsn() end)::text")
+                            .fetch_one(&self.pool)
+                            .await?;
+                    match on_replica(r, tenant, timeout_ms, &at).await {
+                        Ok(Some(tx)) => {
+                            r.served(Served::Replica);
+                            crate::replica::note(lag);
+                            return Ok(tx);
+                        }
+                        Ok(None) => Served::Behind,
+                        Err(e) => {
+                            tracing::warn!("the read address (FERRUM_DATABASE_READ_URL) failed, reading from the primary: {e}");
+                            r.seen(Health::Down);
+                            Served::Down
+                        }
+                    }
+                }
+                Health::Lagging => Served::Lagging,
+                Health::NotReplica => Served::NotReplica,
+                Health::Down => Served::Down,
+            };
+            r.served(why);
+        }
+        let mut tx = self.tenant_tx_with_timeout(tenant, timeout_ms).await?;
+        sqlx::query("set transaction read only").execute(&mut *tx).await?;
         Ok(tx)
     }
 
@@ -265,10 +412,60 @@ impl Db {
         Ok(tx)
     }
 
+    /// Closes every pool, waiting for the connections in use to come back.
+    pub async fn close(&self) {
+        self.pool.close().await;
+        self.side.close().await;
+        self.direct.close().await;
+        if let Some(r) = &self.read {
+            r.pool.close().await;
+        }
+    }
+
     pub async fn ping(&self) -> Result<()> {
         sqlx::query("select 1").execute(&self.pool).await?;
         Ok(())
     }
+}
+
+/// Sets the workspace and the statement timeout on a transaction, as every tenant transaction does.
+async fn as_tenant(tx: &mut Tx, tenant: Uuid, timeout_ms: u64) -> Result<()> {
+    carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)")
+        .bind(tenant.to_string())
+        .bind(timeout_ms.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// A read-only tenant transaction on the read address, once it has replayed up to `at` (within
+/// [`crate::replica::CATCH_UP`]; `None` past it).
+async fn on_replica(r: &crate::replica::Reads, tenant: Uuid, timeout_ms: u64, at: &str) -> Result<Option<Tx>> {
+    let mut tx = r.pool.begin().await?;
+    as_tenant(&mut tx, tenant, timeout_ms).await?;
+    sqlx::query("set transaction read only").execute(&mut *tx).await?;
+    let started = std::time::Instant::now();
+    loop {
+        // A primary standing in for a replica (tests) is always caught up with itself.
+        let caught: bool =
+            sqlx::query_scalar("select (case when pg_is_in_recovery() then pg_last_wal_replay_lsn() else pg_current_wal_lsn() end) >= $1::pg_lsn")
+                .bind(at)
+                .fetch_one(&mut *tx)
+                .await?;
+        if caught {
+            return Ok(Some(tx));
+        }
+        if started.elapsed() >= crate::replica::CATCH_UP {
+            return Ok(None);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// The next notification on `l`; an error when its connection was lost, so that the caller recovers what it may have
+/// missed. (sqlx's own `recv` would open a new connection and go on as if nothing had been missed.)
+pub async fn notification(l: &mut PgListener) -> std::result::Result<PgNotification, sqlx::Error> {
+    l.try_recv().await?.ok_or_else(|| sqlx::Error::Io(std::io::ErrorKind::ConnectionAborted.into()))
 }
 
 /// Runs `f` again (with jittered exponential backoff) when Postgres reports a serialization

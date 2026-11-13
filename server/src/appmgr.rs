@@ -960,8 +960,11 @@ impl AppManager {
 
     async fn lock(&self, tenant: Uuid) -> Result<WorkspaceLock> {
         let mut tx = self.kernel.db.pool.begin().await?;
-        // Store downloads and table creation may take a while; keep the lock meanwhile.
-        sqlx::query("select set_config('idle_in_transaction_session_timeout', '900000', true)").execute(&mut *tx).await?;
+        // Store downloads and table creation may take a while; keep the lock meanwhile. (Set here, not taken from the
+        // session: through a pooler a transaction has none of its own.)
+        sqlx::query("select set_config('idle_in_transaction_session_timeout', '900000', true), set_config('lock_timeout', '10s', true)")
+            .execute(&mut *tx)
+            .await?;
         let got: bool =
             sqlx::query_scalar("select pg_try_advisory_xact_lock(hashtextextended($1, 0))").bind(format!("ferrum:apps:{tenant}")).fetch_one(&mut *tx).await?;
         if !got {
@@ -2498,7 +2501,7 @@ impl AppManager {
     }
 
     async fn revocation_round(&self) -> Result<usize> {
-        let mut conn = self.kernel.db.pool.acquire().await?;
+        let mut conn = self.kernel.db.direct.acquire().await?;
         let got: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)").bind(REVOCATIONS_LOCK).fetch_one(&mut *conn).await?;
         if !got {
             return Ok(0);

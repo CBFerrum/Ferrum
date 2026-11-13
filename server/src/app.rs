@@ -171,9 +171,18 @@ impl Hooks for App {
                 ferrum_kernel::doctor::POOL_FLOOR
             );
         }
-        let db = Db::connect(DbConfig { url: ctx.config.database.uri.clone(), max_connections: settings.db_max_connections, ..Default::default() })
-            .await
-            .map_err(|e| Error::Message(format!("database: {e}")))?;
+        let db = Db::connect(DbConfig {
+            url: ctx.config.database.uri.clone(),
+            max_connections: settings.db_max_connections,
+            // Unset: the same address as DATABASE_URL, one pool for everything as before.
+            direct_url: Some(Some(settings.database_direct_url.trim()).filter(|u| !u.is_empty()).unwrap_or(&ctx.config.database.uri).to_string()),
+            direct_connections: ferrum_kernel::db::LISTENERS + ferrum_kernel::db::DIRECT_LOCKS + crate::packages::upkeep_concurrency() as u32,
+            read_url: Some(settings.database_read_url.trim().to_string()).filter(|u| !u.is_empty()),
+            read_max_lag: Duration::from_secs(settings.database_read_max_lag_secs),
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| Error::Message(format!("database: {e}")))?;
         let catalog = crate::packages::base_catalog(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
         let missing = crate::packages::missing_logic(&catalog);
         if !missing.is_empty() {
@@ -324,6 +333,18 @@ impl Hooks for App {
                 Ok(0) => {}
                 Ok(added) => tracing::info!(added, %base, "workspaces got their subdomains"),
                 Err(e) => tracing::error!("workspaces' subdomains: {e}"),
+            }
+        }
+        // `ferrum start`: Loco sets up a context only to read the configuration, then the one that serves, and keeps the
+        // first as long as the process runs. Once this one is ready, the earlier one's pools are closed, so that they hold
+        // no connections (docs/operations.md, "Database role").
+        if is_start(std::env::args()) {
+            let earlier = EARLIER_SET_UP.lock().ok().and_then(|mut e| e.replace((kernel.db.clone(), ctx.db.clone())));
+            if let Some((db, loco)) = earlier {
+                tokio::spawn(async move {
+                    db.close().await;
+                    let _ = loco.close_by_ref().await;
+                });
             }
         }
         let (tx, _rx) = watch::channel(false);
@@ -489,8 +510,7 @@ impl Hooks for App {
             if tokio::time::timeout(Duration::from_secs(10), futures_util::future::join_all(handles)).await.is_err() {
                 tracing::warn!("background loops still busy after 10 s: stopping anyway");
             }
-            state.kernel.db.pool.close().await;
-            state.kernel.db.side.close().await;
+            state.kernel.db.close().await;
             crate::telemetry::shutdown();
             tracing::info!("shutdown complete");
         }
@@ -776,6 +796,26 @@ fn signup_settings(
     Ok((plans, policy))
 }
 
+/// The pools of the last set-up of this process (see `is_start`).
+static EARLIER_SET_UP: std::sync::Mutex<Option<(Db, sea_orm::DatabaseConnection)>> = std::sync::Mutex::new(None);
+
+/// `ferrum start` (the server binary, not a test's): the command whose set-up Loco does twice.
+fn is_start(args: impl IntoIterator<Item = String>) -> bool {
+    let args: Vec<String> = args.into_iter().collect();
+    let server = args.first().and_then(|a| Path::new(a).file_name()).is_some_and(|n| n == "ferrum");
+    let mut rest = args.iter().skip(1);
+    let command = loop {
+        match rest.next() {
+            Some(a) if a == "-e" || a == "--environment" => {
+                rest.next();
+            }
+            Some(a) if a.starts_with('-') => {}
+            other => break other,
+        }
+    };
+    server && command.is_some_and(|c| c == "start")
+}
+
 /// Whether the command line runs `ferrum task migrate`.
 fn is_migrate_task(args: impl IntoIterator<Item = String>) -> bool {
     let args: Vec<String> = args.into_iter().collect();
@@ -828,6 +868,18 @@ mod tests {
         assert!(args(&["ferrum", "--environment", "production", "task", "migrate"]));
         assert!(!args(&["ferrum", "start"]));
         assert!(!args(&["ferrum", "task", "doctor", "migrate"]));
+    }
+
+    #[test]
+    fn the_start_command_is_the_server_binarys() {
+        let args = |a: &[&str]| super::is_start(a.iter().map(|s| s.to_string()));
+        assert!(args(&["/app/ferrum", "start"]));
+        assert!(args(&["ferrum", "--environment", "production", "start", "--no-banner"]));
+        assert!(args(&["ferrum", "-e", "production", "start"]));
+        assert!(!args(&["ferrum", "task", "start"]));
+        assert!(!args(&["ferrum", "task", "migrate"]));
+        // A test binary given `start` as its filter: its set-ups are each a test's own.
+        assert!(!args(&["/target/debug/deps/apps_api-0123abcd", "start"]));
     }
 
     use super::*;

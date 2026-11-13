@@ -1,10 +1,11 @@
 # Two pools: `web` answers requests and runs no background work; `worker` runs only background work
 # (outbox, webhooks, jobs, upkeep) and takes no requests. `web` keeps today's names, so moving here from
-# single.yaml is an in-place upgrade. Connections: 8 x (30 + 4) + 2 x (20 + 4) + 20 = 340 of 370.
+# single.yaml is an in-place upgrade. Connections, each pool with one more pod in a rollout: (6 + 1) x (30 + 6) + (2 + 1) x (20 + 6) + 20
+# = 350 of 380.
 pools:
   - name: web
     background: "off"
-    autoscaling: {minReplicas: 3, maxReplicas: 8}
+    autoscaling: {minReplicas: 3, maxReplicas: 6}
   - name: worker
     background: only
     autoscaling: {enabled: false}

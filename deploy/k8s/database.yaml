@@ -25,14 +25,16 @@ spec:
     initdb:
       database: ferrum
       owner: ferrum
-  # What the application may hold, so that however far it scales, 30 connections are left for an
-  # administrator, replication and a migration. scripts/check_manifests.py keeps the budget honest.
+  # What the application may hold, so that however far it scales, 20 of max_connections are left: an
+  # administrator's psql, the standbys' replication and CloudNativePG's own checks and monitoring (the
+  # migrate Job counts inside the limit). scripts/check_manifests.py keeps the budget honest. CloudNativePG
+  # applies a change here with ALTER ROLE ... CONNECTION LIMIT: no restart.
   managed:
     roles:
       - name: ferrum
         ensure: present
         login: true
-        connectionLimit: 370
+        connectionLimit: 380
   postgresql:
     parameters:
       max_connections: "400"

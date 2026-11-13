@@ -4,7 +4,6 @@ use crate::db::{Db, Tx};
 use crate::error::{Error, Result};
 use dashmap::DashMap;
 use ferrum_meta::{Catalog, Overlay, OverlayOp, Schema, SchemaWarning, effective};
-use sqlx::postgres::PgListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -198,34 +197,30 @@ impl Registry {
                 if *shutdown.borrow() {
                     return;
                 }
-                match PgListener::connect_with(&me.db.pool).await {
+                match me.db.listen(META_CHANNEL).await {
                     Ok(mut listener) => {
-                        if let Err(e) = listener.listen(META_CHANNEL).await {
-                            tracing::warn!("metadata listener failed to subscribe: {e}");
-                        } else {
-                            backoff = Duration::from_millis(250);
-                            if let Err(e) = me.reload_catalog().await {
-                                tracing::error!("reloading the app catalog failed: {e}");
-                            }
-                            me.invalidate_all();
-                            loop {
-                                tokio::select! {
-                                    _ = shutdown.changed() => return,
-                                    msg = listener.recv() => match msg {
-                                        Ok(n) if n.payload() == CATALOG_CHANGED => {
-                                            if let Err(e) = me.reload_catalog().await {
-                                                tracing::error!("reloading the app catalog failed: {e}");
-                                            }
+                        backoff = Duration::from_millis(250);
+                        if let Err(e) = me.reload_catalog().await {
+                            tracing::error!("reloading the app catalog failed: {e}");
+                        }
+                        me.invalidate_all();
+                        loop {
+                            tokio::select! {
+                                _ = shutdown.changed() => return,
+                                msg = crate::db::notification(&mut listener) => match msg {
+                                    Ok(n) if n.payload() == CATALOG_CHANGED => {
+                                        if let Err(e) = me.reload_catalog().await {
+                                            tracing::error!("reloading the app catalog failed: {e}");
                                         }
-                                        Ok(n) => match n.payload().parse::<Uuid>() {
-                                            Ok(t) => me.invalidate(t),
-                                            Err(_) => me.invalidate_all(),
-                                        },
-                                        Err(e) => {
-                                            tracing::warn!("metadata listener lost connection: {e}");
-                                            me.invalidate_all();
-                                            break;
-                                        }
+                                    }
+                                    Ok(n) => match n.payload().parse::<Uuid>() {
+                                        Ok(t) => me.invalidate(t),
+                                        Err(_) => me.invalidate_all(),
+                                    },
+                                    Err(e) => {
+                                        tracing::warn!("metadata listener lost connection: {e}");
+                                        me.invalidate_all();
+                                        break;
                                     }
                                 }
                             }

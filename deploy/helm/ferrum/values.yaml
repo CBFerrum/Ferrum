@@ -23,8 +23,8 @@ names:
   passkeyRp: ""      # FERRUM_PASSKEY_RP: the passkeys' relying party
   linkHost: ""       # FERRUM_LINK_HOST: every mailed or printed link goes through it
 logLevel: info
-# Connections each replica may open (plus 4 on the side). Autoscaling's maxReplicas x (this + 4)
-# must fit the database's connectionLimit.
+# Connections each replica may open (plus 6 beside them: 4 on the side, 2 of Loco's own). Autoscaling's
+# maxReplicas x (this + 6) must fit the database's connectionLimit.
 dbMaxConnections: 30
 
 # Attachments must be shared by all replicas: object storage. The credentials are
@@ -61,9 +61,10 @@ replicas: 3     # used only when autoscaling.enabled is false
 autoscaling:
   enabled: true
   minReplicas: 3
-  # Each replica may open dbMaxConnections + 4 connections; 10 x 34 fits max_connections 400.
+  # Each replica may open dbMaxConnections + 6 connections; (9 + 1 in a rollout) x 36 and 20 for others fit
+  # connectionLimit 380.
   # Add a PgBouncer pooler before raising this.
-  maxReplicas: 10
+  maxReplicas: 9
   cpuUtilization: 70
   scaleDownStabilizationSeconds: 300
 
@@ -84,7 +85,7 @@ pools: []
 # - name: web                  # lower-case letters, digits and dashes; unique
 #   background: both           # both | off (FERRUM_RUN_BACKGROUND=false: API only) | only (no Service, no routes)
 #   replicas: 3                # used when autoscaling.enabled is false
-#   autoscaling: {enabled: true, minReplicas: 3, maxReplicas: 10}
+#   autoscaling: {enabled: true, minReplicas: 3, maxReplicas: 9}
 #   keda: {enabled: false}       # background: only pools: scale on waiting work (`keda` below)
 #   resources: {requests: {cpu: 250m, memory: 256Mi}}
 #   dbMaxConnections: 30       # FERRUM_DB_MAX_CONNECTIONS for this pool
@@ -193,9 +194,9 @@ database:
   imageName: ghcr.io/cloudnative-pg/postgresql:17
   storageSize: 100Gi
   walStorageSize: 20Gi
-  # What the application role may hold; max_connections minus 30 for administration,
-  # replication and a migration.
-  connectionLimit: 370
+  # What the application role may hold: max_connections minus 20 for an administrator, the standbys'
+  # replication and CloudNativePG's checks and monitoring. Changed with ALTER ROLE: no restart.
+  connectionLimit: 380
   parameters:
     max_connections: "400"
     shared_buffers: 2GB
@@ -233,11 +234,18 @@ database:
     maxClientConnections: 1000    # max_client_conn: each instance's connections from server replicas
     maxPreparedStatements: 200    # max_prepared_statements; 0 turns prepared statements off
     parameters: {}                # other PgBouncer settings CloudNativePG allows
-    # Each replica's direct connections: listeners and locks. To be confirmed by the server change.
+    # Each replica's direct connections: its 5 listeners, 1 session lock at a time, and apps' upkeep at once
+    # (FERRUM_UPKEEP_CONCURRENCY, default 2). Raise it with that setting.
     directConnectionsPerReplica: 8
     resources:
       requests: {cpu: 100m, memory: 64Mi}
       limits: {memory: 256Mi}
+  # Reports and the reading of exports from the standbys (CloudNativePG's read-only service, `-ro`): sets
+  # FERRUM_DATABASE_READ_URL. Each read goes there only while the standby is within maxLagSeconds and has
+  # replayed what the primary had committed when the read began; otherwise to the primary. Needs instances >= 2.
+  readReplicas:
+    enabled: false
+    maxLagSeconds: 10
   # How the database starts, read once when the Cluster is created (docs/operations.md, "Moving from one
   # shape to another"). Keep the same values on later upgrades.
   #   empty     a new, empty database

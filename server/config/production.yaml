@@ -88,6 +88,9 @@ settings:
   zone_mode: "<%= get_env(name="FERRUM_ZONE_MODE", default="") %>"
   packages_dir: <%= get_env(name="FERRUM_PACKAGES_DIR", default="packages") %>
   db_max_connections: <%= get_env(name="FERRUM_DB_MAX_CONNECTIONS", default="30") %>
+  database_direct_url: "<%= get_env(name="FERRUM_DATABASE_DIRECT_URL", default="") %>"
+  database_read_url: "<%= get_env(name="FERRUM_DATABASE_READ_URL", default="") %>"
+  database_read_max_lag_secs: <%= get_env(name="FERRUM_DATABASE_READ_MAX_LAG_SECS", default="10") %>
   bootstrap_token: "<%= get_env(name="FERRUM_BOOTSTRAP_TOKEN", default="") %>"
   webhooks_allow_private: false
   sso_allow_private: <%= get_env(name="FERRUM_SSO_ALLOW_PRIVATE", default="false") %>

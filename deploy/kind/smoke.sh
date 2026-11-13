@@ -180,7 +180,7 @@ for attempt in $(seq 1 60); do
   [ "$attempt" -lt 60 ] || fail "the autoscaler has no CPU figures"
   sleep 5
 done
-echo "    the API uses $cpu % of its CPU request; the autoscaler keeps 3 to 10 replicas"
+echo "    the API uses $cpu % of its CPU request; the autoscaler keeps 3 to 9 replicas"
 
 step "creating and seeding a workspace"
 k exec deploy/ferrum -- ferrum task create_tenant slug:cluster name:"Cluster Co" email:ops@cluster.test password:"$PASSWORD" \

@@ -2,7 +2,8 @@
 # staff (portal, guest and service accounts, signed callbacks and public pages); staff work through the
 # private gateway, inside your network, where `general` (today's names), `finance` and `worker` are.
 # Point the public host (and the portal host) at the public gateway and erp.internal.example.com at the
-# private one. Connections: 4 x 34 + 3 x 24 + 2 x 34 + 2 x 24 + 20 = 344 of 370.
+# private one. Connections: every pool 18 + 6 each, one more pod each in a
+# rollout: (4 + 1 + 3 + 1 + 2 + 1 + 2 + 1) x 24 + 20 = 380 of 380.
 zones:
   public: {staff: none}
   office: {staff: all}
@@ -12,6 +13,8 @@ privateGateway:
   enabled: true
   hostnames: [erp.internal.example.com]
   defaultPool: general
+# Four pools need smaller ones than the default 30 to fit the role without a pooler.
+dbMaxConnections: 18
 pools:
   - name: general
     zone: office
@@ -21,7 +24,6 @@ pools:
     zone: public
     background: "off"     # required: a zone that admits no staff runs no background work
     autoscaling: {minReplicas: 2, maxReplicas: 3}
-    dbMaxConnections: 20
     routes:
       - {gateway: public, hostnames: [portal.example.com]}
   - name: finance
@@ -35,4 +37,3 @@ pools:
     background: only
     autoscaling: {enabled: false}
     replicas: 2
-    dbMaxConnections: 20

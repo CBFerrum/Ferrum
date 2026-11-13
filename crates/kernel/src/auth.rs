@@ -742,37 +742,34 @@ impl Kernel {
         let k = self.clone();
         tokio::spawn(async move {
             loop {
-                match sqlx::postgres::PgListener::connect_with(&k.db.pool).await {
-                    Ok(mut listener) => match listener.listen(USERS_CHANNEL).await {
-                        Ok(()) => {
-                            // Anything may have changed while we were not listening.
-                            k.users.clear();
-                            loop {
-                                tokio::select! {
-                                    _ = shutdown.changed() => return,
-                                    msg = listener.recv() => match msg {
-                                        Ok(n) => match n.payload().split_once(':') {
-                                            Some((t, u)) => {
-                                                if let (Ok(t), Ok(u)) = (t.parse(), u.parse()) {
-                                                    k.invalidate_user(t, u);
-                                                }
+                match k.db.listen(USERS_CHANNEL).await {
+                    Ok(mut listener) => {
+                        // Anything may have changed while we were not listening.
+                        k.users.clear();
+                        loop {
+                            tokio::select! {
+                                _ = shutdown.changed() => return,
+                                msg = crate::db::notification(&mut listener) => match msg {
+                                    Ok(n) => match n.payload().split_once(':') {
+                                        Some((t, u)) => {
+                                            if let (Ok(t), Ok(u)) = (t.parse(), u.parse()) {
+                                                k.invalidate_user(t, u);
                                             }
-                                            None => match n.payload().parse() {
-                                                Ok(t) => k.invalidate_tenant_users(t),
-                                                Err(_) => k.users.clear(),
-                                            },
-                                        },
-                                        Err(e) => {
-                                            tracing::warn!("user listener lost its connection: {e}");
-                                            break;
                                         }
+                                        None => match n.payload().parse() {
+                                            Ok(t) => k.invalidate_tenant_users(t),
+                                            Err(_) => k.users.clear(),
+                                        },
                                     },
-                                }
+                                    Err(e) => {
+                                        tracing::warn!("user listener lost its connection: {e}");
+                                        break;
+                                    }
+                                },
                             }
                         }
-                        Err(e) => tracing::warn!("user listener failed to subscribe: {e}"),
-                    },
-                    Err(e) => tracing::warn!("user listener cannot connect: {e}"),
+                    }
+                    Err(e) => tracing::warn!("user listener cannot connect or subscribe: {e}"),
                 }
                 tokio::select! {
                     _ = shutdown.changed() => return,

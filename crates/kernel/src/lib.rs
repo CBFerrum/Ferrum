@@ -63,6 +63,7 @@ pub mod query;
 pub mod receipt;
 pub mod recovery;
 pub mod registry;
+pub mod replica;
 pub mod resources;
 pub mod retention;
 pub mod richtext;

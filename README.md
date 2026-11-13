@@ -475,6 +475,22 @@ cd web && npm test
 > `FERRUM_TEST_DATABASE_URL`, `FERRUM_MCP_TEST_DATABASE_URL`); the object storage test runs
 > when `FERRUM_TEST_S3_ENDPOINT` points at an S3-compatible endpoint.
 
+**Through a connection pooler.** To run suites the way a server behind PgBouncer runs, start PgBouncer
+(1.21 or later) in transaction mode with `max_prepared_statements` above 0 in front of a test database, point
+that suite's `FERRUM_*_TEST_DATABASE_URL` at PgBouncer and `FERRUM_TEST_DATABASE_DIRECT_URL` at the database
+itself (kernel-built tests read it; tests that start the server through Loco read `FERRUM_DATABASE_DIRECT_URL`,
+as the server does). `crates/kernel/tests/database_urls_it.rs` checks the pooler itself when
+`FERRUM_TEST_POOLER_URL` names PgBouncer in front of `FERRUM_TEST_DATABASE_URL`'s database, and says it skipped
+that part otherwise:
+
+```bash
+FERRUM_TEST_POOLER_URL=postgres://ferrum:ferrum@127.0.0.1:6432/ferrum_test \
+  cargo test -p ferrum-kernel --test database_urls_it -- --nocapture
+FERRUM_TEST_DATABASE_URL=postgres://ferrum:ferrum@127.0.0.1:6432/ferrum_test \
+FERRUM_TEST_DATABASE_DIRECT_URL=postgres://ferrum:ferrum@localhost:5432/ferrum_test \
+  cargo test -p ferrum-kernel --test version_window_it --test outbox_it --test jobs_it
+```
+
 `scripts/smoke.py` is a post-deploy check against a running server (readiness, login, reports,
 idempotency, optimistic locking, and 60 concurrent stock issues racing for 100 units).
 

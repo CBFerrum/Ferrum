@@ -25,7 +25,6 @@ use futures_util::{SinkExt, StreamExt};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde_json::{Value, json};
-use sqlx::postgres::PgListener;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -148,21 +147,17 @@ impl LiveHub {
         let hub = self.clone();
         tokio::spawn(async move {
             loop {
-                let mut listener = match PgListener::connect_with(&k.db.pool).await {
+                let mut listener = match k.db.listen(LIVE_CHANNEL).await {
                     Ok(l) => l,
                     Err(e) => {
                         tracing::warn!("live listener: {e}");
                         tokio::select! { _ = shutdown.changed() => return, _ = tokio::time::sleep(Duration::from_secs(2)) => continue }
                     }
                 };
-                if let Err(e) = listener.listen(LIVE_CHANNEL).await {
-                    tracing::warn!("live listener: {e}");
-                    tokio::select! { _ = shutdown.changed() => return, _ = tokio::time::sleep(Duration::from_secs(2)) => continue }
-                }
                 loop {
                     tokio::select! {
                         _ = shutdown.changed() => return,
-                        n = listener.recv() => match n {
+                        n = ferrum_kernel::db::notification(&mut listener) => match n {
                             Ok(n) => hub.dispatch(&k, n.payload()).await,
                             Err(e) => {
                                 tracing::warn!("live listener lost its connection: {e}");
