@@ -90,7 +90,8 @@ replication and a migration: PostgreSQL enforces that one, and `ferrum task doct
 | Left for administration and replication | 30 |
 
 `python3 scripts/check_manifests.py` fails when those stop adding up, and when a workload sets `replicas`
-under an autoscaler: every apply would put the count back. A migration runs on a replica's own connections.
+under an autoscaler: every apply would put the count back. The Helm chart's migrate Job is a process of its own
+with as many connections as a replica; the check counts it (see *Deployment shapes*).
 Past the limit a request waits for its pool and answers 503; nothing queues without bound.
 
 ## First deployment (Kubernetes)
@@ -107,7 +108,7 @@ Past the limit a request waits for its pool and answers 503; nothing queues with
    Optionally expire objects under `uploads/` after a day as a backstop; the server already deletes
    abandoned uploads.
 3. Create the secrets as shown in `deploy/k8s/secret.example.yaml`.
-4. Edit `deploy/k8s/kustomization.yaml` (the images' tag: a commit's, see *Images* below), `deployment.yaml` (`PUBLIC_URL`, bucket, region),
+4. Edit `deploy/k8s/kustomization.yaml` (the images' tag: a commit's, see *Images* below; until it is set the pods fail to pull), `deployment.yaml` (`PUBLIC_URL`, bucket, region),
    `gateway.yaml` (host; `gatewayClassName` if not Envoy Gateway's `eg`) and `database.yaml` (the
    `ObjectStore`'s backup bucket, sizes). `envoy-proxy.yaml` runs two of Envoy Gateway's proxies on
    different nodes and keeps the client's address (`externalTrafficPolicy: Local`), which the
@@ -165,8 +166,10 @@ helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
 * *Migrations.* Off by default: every pod migrates itself as it starts. `migrate.enabled` adds a Helm hook Job that runs
   `ferrum task migrate` before an install or upgrade (`migrate.args`) and sets `FERRUM_MIGRATE_AT_START=false` on the
   server (`migrate.serverEnv`), so the pods only check that the database is ready and refuse to start, naming the
-  command, when it is not. On a first install with `database.enabled` the hook runs before the database exists and
-  fails: use it for upgrades, or with a database of your own (`database.urlSecret`).
+  command, when it is not. On a first install with `database.enabled` the database does not exist yet when hooks run,
+  so that one install has no Job and the pods migrate themselves; every `helm upgrade` after it uses the Job. (Tools
+  that render with `helm template` and never mark an upgrade, such as some GitOps setups, then never get the Job:
+  the pods keep migrating themselves, which is safe.)
 
 `bash deploy/helm/test.sh` (CI runs it) fails when the chart and `deploy/k8s` differ in resources, environment variables,
 ports, probes, security context or resources.
@@ -814,6 +817,103 @@ Logs are JSON. Clients may send an `x-request-id` header to correlate their call
   next year are created automatically); stock and audit tables are append-only.
 * Very large tenants or many tenants: shard on `tenant_id` (Citus), which the schema already
   allows (every key starts with `tenant_id`).
+
+## Deployment shapes
+
+The Helm chart can run the server as several **pools**. A pool is one Deployment of the same server image;
+pools differ only in settings (how many replicas, how many database connections, whether they run
+background work, which zone they are in, which requests reach them). Every pool holds every app, and no pool
+keeps anything of its own: the state is the database, the files and the keys. The decisions are in
+[docs/plan/topology.md](plan/topology.md).
+
+**Pools.** `pools:` in the chart's values. Empty (the default): one Deployment, rendered exactly as before.
+The first pool keeps today's names and selector (`ferrum`), so an existing release upgrades in place; every
+other pool is `ferrum-<name>`, with its own Deployment, autoscaler (or fixed `replicas`), disruption budget,
+network policy and Service. A pool takes every setting it leaves out from the top-level values. Per pool:
+`background` (`both`; `off`, which sets `FERRUM_RUN_BACKGROUND=false`, API only; `only`, which has no Service
+and no routes and runs only background work), `zone`, `replicas`, `autoscaling`, `resources`,
+`dbMaxConnections`, `pdb`, `env` (a name already set is replaced), `nodeSelector`, `tolerations`,
+`priorityClassName` and `routes`. Each pool's pods carry the labels `ferrum.dev/pool` and `ferrum.dev/zone`
+(never in a selector); the `ServiceMonitor` covers every pool with a Service and passes both labels on to
+the metrics, and a `PodMonitor` (`ferrum-background`) scrapes the `only` pools.
+
+**Presets.** Values files in `deploy/helm/ferrum/presets/`, given before your own values:
+
+| Preset | Pools |
+|---|---|
+| `single.yaml` | One pool, as before |
+| `split.yaml` | `web` (requests, no background work) and `worker` (background work only) |
+| `pools.yaml` | `general` (the rest), `public` (the portal host), `finance` (the API calls of the apps it names), `worker` |
+| `zones.yaml` | As `pools.yaml`, in two zones: the public gateway reaches only `public`, in a zone that admits no staff; staff work through a private gateway inside your network, where `general`, `finance` and `worker` are |
+
+```bash
+helm upgrade ferrum deploy/helm/ferrum -n ferrum -f deploy/helm/ferrum/presets/split.yaml -f my-values.yaml
+```
+
+**Moving between shapes.** `helm upgrade` with another preset, in either direction. The first pool's
+Deployment, selector and Service stay, so its pods are replaced one at a time (none down before its
+replacement is ready) and requests keep being answered; Helm creates the pools that are new and deletes the
+ones that are gone. Background work is claimed through the database, so for a moment old and new pods may
+both run it, which is safe, and nothing is lost when it pauses: going from `split` back to `single`, the
+worker pool is deleted at once and background work waits until the first new `web` pod is ready. Moving to
+`zones` changes where staff work: after it, staff use the private host, and the public host admits no staff.
+
+**Connection budget.** Every replica may open `dbMaxConnections + 4` connections, and the migrate Job (when
+it runs) as many again. With pools, the chart adds up every pool at its most replicas (`maxReplicas`, or
+`replicas` without an autoscaler), the migrate Job and 20 for other users of the role (as
+`scripts/check_manifests.py` does), and refuses to render when the sum is above `database.connectionLimit`.
+Each preset says its sum. Without pools the chart refuses nothing new: check it with
+`helm template ... | python3 scripts/check_manifests.py -`, which adds up every server Deployment and Job it
+is given. (With today's defaults and `migrate.enabled`, that is 394 of 370: lower `autoscaling.maxReplicas`
+to 9 when you turn the Job on.)
+
+**What the chart refuses, and why:**
+
+| Message | Meaning |
+|---|---|
+| `two pools are named …` | Each pool needs a name of its own: its objects are named after it |
+| `… is the name of another part of the chart` | `pdf`, `db`, `office`, `editors`, `metrics-engine`, `migrate`, `background` and `private` are taken |
+| `the first pool … cannot be background: only` | The first pool keeps today's Service, which the gateway and the online editor call |
+| `zone … is not in zones` | A pool's `zone` must be one of `zones` |
+| `its zone … admits no staff, so it must not run background work` | A pool in a zone with `staff: none` needs `background: off`; the server refuses to start such a replica anyway |
+| `names the gateway …, which is not enabled` | A route names `public` or `private`, and that gateway must be on |
+| `defaultPool … is not a pool` / `… has background: only` | A gateway's default pool must exist and take requests |
+| `a pool with background: only … has no routes` | It has no Service to route to |
+| `… takes all of the gateway's own hosts` | A route with no hosts, paths or apps: make that pool the gateway's `defaultPool` |
+| `pools … both take all of host …` | Two pools cannot both answer the whole of one host |
+| `the pools may open … database connections` | The connection budget above |
+
+**Two gateways.** The public Gateway is as before (`gateway`). `privateGateway.enabled` adds a second one,
+`ferrum-private`, with its own class, hosts, certificate and Envoy proxies; `privateGateway.envoyProxy.envoyService`
+holds the proxies' Service settings, where your cloud's annotation for an internal load balancer goes (examples
+in `values.yaml`). A pool's `routes` say which gateway reaches it and by what: whole `hostnames` (added to that
+gateway's listeners, with its certificate), path prefixes (`paths`), or `apps`, matched on the `X-Ferrum-UI`
+header (`{app}@{version}`, which every API call carries) with an anchored regular expression. What no route
+takes goes to the gateway's `defaultPool` (the first pool unless set). WebSockets, files and MCP keep their own
+routes and time limits on every gateway; they carry no app, so they follow the host or the gateway's default.
+
+**Network policies.** With pools, each pool admits only the Envoy proxies of the gateways whose routes lead to
+it (Envoy Gateway's `gateway.envoyproxy.io/owning-gateway-name` and `…-namespace` labels, in
+`networkPolicy.gatewayNamespace`), Prometheus (`networkPolicy.monitoringNamespaces`) and, for the first pool,
+the online editor. A `background: only` pool admits no gateway. This relies on Envoy Gateway running its
+proxies in its own namespace, its default. `networkPolicy.egressAnyHost: false` replaces "any host on 443 and
+587" with the networks in `networkPolicy.egressCIDRs`; list object storage, mail and every service your
+connections call.
+
+**Zones.** `zones` becomes `FERRUM_ZONES`, `zoneDefault` `FERRUM_ZONE_DEFAULT`, `zoneMode` `FERRUM_ZONE_MODE`,
+and a pool's `zone` its `FERRUM_ZONE` (the zone every request to that pool is in). What the server does with
+them is in [docs/plan/topology.md](plan/topology.md), D4.
+
+**Secrets from a secret store.** `secrets.externalSecret.enabled` makes the server's Secret
+(`secrets.existingSecret`) with the External Secrets Operator, from `dataFrom` or `data` in the store
+`secretStoreRef`. The operator is yours to install. Pods read the Secret as they start: restart them after a
+value changes.
+
+**Not proven.** The chart has only been rendered and checked (`deploy/helm/test.sh`,
+`deploy/helm/test_pools.sh`); none of these shapes has been installed on a cluster. Whether Envoy Gateway
+orders the app routes over the default ones as the Gateway API says, whether the network policies admit
+exactly the private gateway's proxies, the internal load balancer annotations, a move between presets under
+traffic, and the External Secrets Operator have not been run.
 
 ## Capacity
 

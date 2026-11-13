@@ -34,6 +34,16 @@ storage:
 #   FERRUM_RETIRED_SECRET_KEYS.
 secrets:
   existingSecret: ferrum-secrets
+  # Optional: have the External Secrets Operator (installed separately) make that Secret from your
+  # secret store (Vault, AWS Secrets Manager, Google Secret Manager, ...). Off: create it yourself.
+  externalSecret:
+    enabled: false
+    secretStoreRef: {name: "", kind: ClusterSecretStore}
+    refreshInterval: 1h
+    # Every key at once, from one entry holding them all:
+    dataFrom: []   # - extract: {key: ferrum/production}
+    # Or key by key:
+    data: []       # - {secretKey: JWT_SECRET, remoteRef: {key: ferrum/production, property: JWT_SECRET}}
 
 # Settings the chart does not know yet: entries of a container's `env`, added to the server.
 extraEnv: []
@@ -58,11 +68,52 @@ pdb:
   enabled: true
   maxUnavailable: 1
 
+# Pools: several Deployments of the same server image that differ only in settings (docs/operations.md,
+# "Deployment shapes"; ready-made shapes in presets/). Empty: one Deployment, as above. The first pool keeps
+# today's names and selector (so a release upgrades in place); every other pool is "<fullname>-<name>" with
+# its own Deployment, autoscaler (or fixed replicas), disruption budget, network policy and, unless
+# `background: only`, Service. A pool takes every setting it leaves out from the top-level values above.
+pools: []
+# - name: web                  # lower-case letters, digits and dashes; unique
+#   background: both           # both | off (FERRUM_RUN_BACKGROUND=false: API only) | only (no Service, no routes)
+#   replicas: 3                # used when autoscaling.enabled is false
+#   autoscaling: {enabled: true, minReplicas: 3, maxReplicas: 10}
+#   resources: {requests: {cpu: 250m, memory: 256Mi}}
+#   dbMaxConnections: 30       # FERRUM_DB_MAX_CONNECTIONS for this pool
+#   pdb: {enabled: true, maxUnavailable: 1}
+#   env: []                    # entries of `env`; a name already set is replaced
+#   nodeSelector: {}
+#   tolerations: []
+#   priorityClassName: ""
+#   zone: ""                   # a name from `zones`: FERRUM_ZONE, and the pod label ferrum.dev/zone
+#   routes:                    # what reaches this pool; the rest goes to each gateway's defaultPool
+#     - gateway: public        # public | private
+#       hostnames: []          # whole hosts (with no paths or apps); empty: the gateway's own hosts
+#       paths: []              # path prefixes
+#       apps: []               # app ids, matched on the X-Ferrum-UI header ({app}@{version})
+
+# Zones (docs/plan/topology.md, D4): name -> rule, given to every pool as FERRUM_ZONES (JSON). A rule:
+# {staff: all | none | [app, ...], admin: true|false, scim: true|false, networks: [cidr, ...]}.
+# Empty: one unnamed zone admitting everyone, as before.
+zones: {}
+# public: {staff: none}
+# office: {staff: all}
+zoneDefault: ""   # FERRUM_ZONE_DEFAULT: the zone of a request no host or network places
+zoneMode: ""      # FERRUM_ZONE_MODE: enforce (the server's default) or report
+
 # Only the Gateway's proxies and Prometheus may reach the server; it may reach the database, the
 # PDF renderer, DNS and HTTPS/SMTP endpoints.
 networkPolicy:
   enabled: true
   ingressNamespaces: [envoy-gateway-system, monitoring]   # the Gateway's proxies; Prometheus
+  # With pools, each pool admits only the Envoy proxies of the gateways whose routes lead to it (Envoy
+  # Gateway's owning-gateway labels, in this namespace), Prometheus, and, for the first pool, the editor.
+  gatewayNamespace: envoy-gateway-system
+  monitoringNamespaces: [monitoring]
+  # The server may reach any host on 443 (HTTPS) and 587 (mail). false: only the networks in egressCIDRs
+  # (include object storage, mail, and every service your connections call).
+  egressAnyHost: true
+  egressCIDRs: []
 
 # Needs the Prometheus operator. Also scrapes the database's exporter when database.enabled.
 serviceMonitor:
@@ -78,9 +129,33 @@ gateway:
   hostname: erp.example.com
   clusterIssuer: letsencrypt
   tlsSecretName: ferrum-tls
+  # With pools: the pool that answers what no pool's route takes (empty: the first pool). Hosts that
+  # pools' routes name get listeners here, with the same certificate.
+  defaultPool: ""
 envoyProxy:
   enabled: true
   replicas: 2
+
+# A second Gateway, for traffic from inside your network: its own hosts, certificate and Envoy proxies,
+# behind an internal load balancer (envoyService: Envoy Gateway's Service settings, where your cloud's
+# annotation for an internal load balancer goes). Pools say in `routes` which gateway reaches them.
+privateGateway:
+  enabled: false
+  name: ""                         # empty: "<fullname>-private"
+  gatewayClassName: eg
+  hostnames: [erp.internal.example.com]
+  clusterIssuer: ""                # empty: no cert-manager annotation; create tlsSecretName yourself
+  tlsSecretName: ferrum-private-tls
+  defaultPool: ""                  # what no pool's route takes (empty: the first pool)
+  envoyProxy:
+    enabled: true
+    replicas: 2
+    envoyService:
+      externalTrafficPolicy: Local
+      annotations: {}
+      # AWS:   service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+      # GCP:   networking.gke.io/load-balancer-type: Internal
+      # Azure: service.beta.kubernetes.io/azure-load-balancer-internal: "true"
 
 # A CloudNativePG Cluster with continuous backups (Barman Cloud plugin). Off: bring your own
 # database and name the Secret holding its connection URI in urlSecret.
@@ -180,8 +255,8 @@ metricsEngine:
 # server's pods also get `serverEnv`, FERRUM_MIGRATE_AT_START=false: they no longer migrate as they
 # start, only check that the Job did, and refuse to start (naming the command) when it has not.
 # Off, each pod migrates itself at start, as the Compose files do.
-# With database.enabled the Cluster does not exist yet on the first install (hooks run first), so
-# the Job would fail: enable it for upgrades, or for a database of your own (database.urlSecret).
+# With database.enabled the Cluster does not exist yet on the first install (hooks run first), so on
+# that install the chart renders no Job and the pods migrate themselves; every upgrade after uses the Job.
 migrate:
   enabled: false
   args: ["task", "migrate"]

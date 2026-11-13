@@ -70,6 +70,15 @@ app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
 {{- end }}
 - {name: FERRUM_DB_MAX_CONNECTIONS, value: {{ .Values.dbMaxConnections | quote }}}
 - {name: LOG_LEVEL, value: {{ .Values.logLevel | quote }}}
+{{- with .Values.zones }}
+- {name: FERRUM_ZONES, value: {{ toJson . | quote }}}
+{{- end }}
+{{- with .Values.zoneDefault }}
+- {name: FERRUM_ZONE_DEFAULT, value: {{ . | quote }}}
+{{- end }}
+{{- with .Values.zoneMode }}
+- {name: FERRUM_ZONE_MODE, value: {{ . | quote }}}
+{{- end }}
 {{- if .Values.editors.enabled }}
 - {name: FERRUM_EDITORS_URL, value: "https://{{ .Values.editors.host }}"}
 {{- end }}
