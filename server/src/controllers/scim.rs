@@ -73,7 +73,8 @@ async fn signed_in(app: &AppContext, headers: &HeaderMap) -> ferrum_kernel::Resu
             return Err(refused());
         }
         st.user_limiter.check_local(&format!("{}|{}", session.tenant, session.user))?;
-        st.kernel.load_ctx(session.tenant, session.user, Some(session.token_version), request_id(headers)).await
+        let entry = crate::zone::entry(&st, headers, ferrum_kernel::zones::Credential::Scim).await;
+        st.kernel.request_ctx(session.tenant, session.user, Some(session.token_version), request_id(headers), &entry).await
     };
     match attempt.await {
         Ok(ctx) if ctx.is_admin => Ok((st.kernel.clone(), ctx)),

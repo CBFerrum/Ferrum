@@ -79,6 +79,14 @@ fn failures_text(failures: &[(String, String, String, &'static str, u64)]) -> St
     out
 }
 
+/// `GET /_zone` (crate::zone::answer).
+async fn zone(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let mut res = Json(crate::zone::answer(&st, &headers).await?).into_response();
+    res.headers_mut().insert(header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
+    Ok(res)
+}
+
 async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let expected = st.settings.metrics_token.as_str();
@@ -174,6 +182,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
         apps.push_str(&(app.metrics)(&st).await?);
     }
     apps.push_str(&failures_text(&st.kernel.failures()));
+    apps.push_str(&crate::zone::metrics_text());
     apps.push_str(&logic);
     let body = format!(
         "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n{apps}\
@@ -481,6 +490,7 @@ pub fn routes() -> Routes {
         .add("/api/ready", get(ready))
         .add("/api/version", get(version))
         .add("/metrics", get(metrics))
+        .add("/_zone", get(zone))
         .add("/api/tenants", post(create_tenant))
         .add("/api/reports", get(list_reports))
         .add("/api/reports/{name}", get(report))

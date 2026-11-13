@@ -359,6 +359,12 @@ impl Kernel {
     /// device's counter moved on (a copied key would not). A verified passkey is two factors in
     /// one: no authenticator code follows. `tenant`: the workspace this host serves, when it serves one.
     pub async fn passkey_sign_in(&self, request: Uuid, origins: &[String], credential: &Value, tenant: Option<Uuid>) -> Result<Session> {
+        self.passkey_sign_in_at(request, origins, credential, tenant, false).await
+    }
+
+    /// [`Kernel::passkey_sign_in`] where staff are refused (crate::zones): a staff account's passkey
+    /// is then one not known here, before its signature is checked.
+    pub async fn passkey_sign_in_at(&self, request: Uuid, origins: &[String], credential: &Value, tenant: Option<Uuid>, refuse_staff: bool) -> Result<Session> {
         let (challenge, _, _, rp_id) = self.take_challenge(request, "sign_in").await?;
         origins_may_use(origins, &rp_id)?;
         let res = &credential["response"];
@@ -387,18 +393,19 @@ impl Kernel {
             token_version: i32,
             tenant_active: bool,
             sso_only: bool,
+            kind: String,
         }
         let mut tx = self.db.system_tx().await?;
         let row: Option<Row> = sqlx::query_as(
             "select p.tenant_id, p.id, p.user_id, p.rp_id, p.public_key, p.alg, p.sign_count, u.is_active, u.token_version, \
-             t.status = 'active' as tenant_active, (coalesce(t.settings->'require_sso' = 'true'::jsonb, false) and not u.is_admin) as sso_only \
+             t.status = 'active' as tenant_active, (coalesce(t.settings->'require_sso' = 'true'::jsonb, false) and not u.is_admin) as sso_only, u.kind \
              from passkey p join app_user u on u.tenant_id = p.tenant_id and u.id = p.user_id join tenant t on t.id = p.tenant_id \
              where p.credential_id = $1 for update of p",
         )
         .bind(&id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(p) = row else { return Err(refused("it is not known here")) };
+        let Some(p) = row.filter(|p| !(refuse_staff && crate::zones::is_staff(&p.kind))) else { return Err(refused("it is not known here")) };
         if p.rp_id != rp_id || tenant.is_some_and(|t| t != p.tenant_id) {
             return Err(refused("it belongs to another address"));
         }

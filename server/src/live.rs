@@ -194,8 +194,9 @@ impl EventSink for LiveEvents {
 
 async fn live(State(app): State<AppContext>, headers: HeaderMap, upgrade: WebSocketUpgrade) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    let pre = crate::extract::socket_credential(&st, &headers).await?;
-    Ok(upgrade.max_message_size(16 << 10).on_upgrade(move |ws| serve(st, pre, ws)))
+    let entry = crate::extract::socket_entry(&st, &headers).await;
+    let pre = crate::extract::socket_credential(&st, &headers, &entry).await?;
+    Ok(upgrade.max_message_size(16 << 10).on_upgrade(move |ws| serve(st, pre, entry, ws)))
 }
 
 fn close(code: u16, reason: &str) -> Message {
@@ -206,7 +207,7 @@ fn names(v: Option<&Value>) -> Vec<String> {
     v.and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default()
 }
 
-async fn serve(st: AppState, pre: Option<(String, Ctx)>, ws: WebSocket) {
+async fn serve(st: AppState, pre: Option<(String, Ctx)>, entry: std::sync::Arc<ferrum_kernel::zones::Entry>, ws: WebSocket) {
     let (mut sink, mut stream) = ws.split();
     let (token, ctx) = match pre {
         Some(p) => p,
@@ -222,7 +223,7 @@ async fn serve(st: AppState, pre: Option<(String, Ctx)>, ws: WebSocket) {
                 let _ = sink.send(close(4401, "send {\"auth\": token} first")).await;
                 return;
             };
-            match ctx_from_token(&st, &token, Uuid::now_v7().to_string()).await {
+            match ctx_from_token(&st, &token, Uuid::now_v7().to_string(), &entry).await {
                 Ok(ctx) => (token, ctx),
                 Err(ApiError(e)) => {
                     // Close reasons are limited to 123 bytes.
@@ -289,7 +290,7 @@ async fn serve(st: AppState, pre: Option<(String, Ctx)>, ws: WebSocket) {
                     break;
                 }
             }
-            _ = recheck.tick() => match ctx_from_token(&st, &token, Uuid::now_v7().to_string()).await {
+            _ = recheck.tick() => match ctx_from_token(&st, &token, Uuid::now_v7().to_string(), &entry).await {
                 Ok(ctx) => st.live.set_ctx(id, ctx),
                 Err(_) => {
                     let _ = sink.send(close(4401, "session expired")).await;

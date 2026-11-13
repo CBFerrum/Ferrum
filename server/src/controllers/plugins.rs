@@ -119,9 +119,10 @@ async fn socket(
     } else {
         // Browsers cannot set headers on WebSockets: accept the token as `access_token` too, or
         // the browser's session cookie from a page of this site.
+        let entry = crate::extract::socket_entry(&st, &headers).await;
         let ctx = match bearer(&headers).or_else(|| query.get("access_token").cloned()) {
-            Some(token) => ctx_from_token(&st, &token, request_id(&headers)).await?,
-            None => crate::extract::socket_credential(&st, &headers)
+            Some(token) => ctx_from_token(&st, &token, request_id(&headers), &entry).await?,
+            None => crate::extract::socket_credential(&st, &headers, &entry)
                 .await?
                 .map(|(_, ctx)| ctx)
                 .ok_or_else(|| ApiError(Error::Unauthorized("sign in required".into())))?,

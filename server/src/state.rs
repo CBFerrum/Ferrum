@@ -198,6 +198,19 @@ pub struct Settings {
     /// or `https:`). Empty: the server's address when it is https.
     #[serde(default)]
     pub push_contact: String,
+    /// Zones (`FERRUM_ZONES`, docs/operations.md, "Zones"): JSON, zone name → rule. Empty: one
+    /// unnamed zone admitting everyone, as before.
+    #[serde(default)]
+    pub zones: String,
+    /// The zone this replica is pinned to (`FERRUM_ZONE`). Empty: decided per request.
+    #[serde(default)]
+    pub zone: String,
+    /// The zone of a request no host or network places (`FERRUM_ZONE_DEFAULT`). Empty: none.
+    #[serde(default)]
+    pub zone_default: String,
+    /// `enforce` (empty) or `report` (`FERRUM_ZONE_MODE`).
+    #[serde(default)]
+    pub zone_mode: String,
 }
 
 fn default_session_days() -> u32 {
@@ -380,6 +393,8 @@ pub struct AppState {
     pub shell: Arc<crate::shell::Shell>,
     /// The assistant's turns under way on this replica, and the operator's settings for it.
     pub assistant: Arc<crate::assistant::Assistant>,
+    /// The zone settings, checked at start (crate::zone).
+    pub zones: Arc<ferrum_kernel::zones::Zones>,
 }
 
 pub fn app_state(ctx: &AppContext) -> Result<AppState, ApiError> {

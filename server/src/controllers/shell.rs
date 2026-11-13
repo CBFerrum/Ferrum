@@ -97,9 +97,13 @@ async fn auth_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)
         Ok(s) if s.tenant == tenant => s,
         _ => return Ok(failed("The link has expired or was used already. Sign in again.")),
     };
+    // A code made on the accounts host becomes no staff session where the zone admits no staff.
+    let Ok(entry) = crate::zone::sign_in(st, headers, s.tenant, s.user).await else {
+        return Ok(failed("The link has expired or was used already. Sign in again."));
+    };
     let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
     let ttl = st.shell.session_ttl;
-    let sid = st.kernel.open_session(&s, ttl, ua, &crate::extract::client_ip(headers), None).await?;
+    let sid = st.kernel.open_session_in(&s, ttl, ua, &crate::extract::client_ip(headers), None, entry.name()).await?;
     let mut res = Redirect::to(&shell::safe_next(&next)).into_response();
     let h = res.headers_mut();
     h.append(header::SET_COOKIE, shell::set_cookie(secure, &super::auth::device_token(st, &s, ttl.as_secs(), "sid", sid)?, ttl));
@@ -209,7 +213,11 @@ async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query
     if let Some(res) = super::origins::serve_app_host(&st, &headers, "").await? {
         return Ok(res);
     }
-    match st.shell.place(&headers).await? {
+    let place = st.shell.place(&headers).await?;
+    if let Some(res) = walled(&st, &headers, &place, "", false, &q).await? {
+        return Ok(res);
+    }
+    match place {
         Place::Site(tenant, app_id) => return site_page(&st, tenant, &app_id, &headers, &uri, "", q).await,
         Place::Portal(_) => return Ok(Redirect::to("/portal/").into_response()),
         Place::Accounts => return super::accounts::home(&st, &headers).await,
@@ -375,7 +383,11 @@ async fn page(
     let mut parts = path.splitn(2, '/');
     let first = parts.next().unwrap_or_default();
     let rest = parts.next();
-    match st.shell.place(&headers).await? {
+    let place = st.shell.place(&headers).await?;
+    if let Some(res) = walled(&st, &headers, &place, first, shell::public_page(&path).is_some(), &q).await? {
+        return Ok(res);
+    }
+    match place {
         Place::Site(tenant, app_id) => return site_page(&st, tenant, &app_id, &headers, &uri, &path, q).await,
         // The portal's host has the portal, signing in and links to records; the rest leads to the portal.
         Place::Portal(_) if !matches!(first, "portal" | "login" | "open" | "_ui" | "_shell" | "favicon.ico") => {
@@ -1063,6 +1075,60 @@ async fn go(st: &AppState, headers: &HeaderMap, uri: &Uri) -> ApiResult<Response
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     Ok(res)
+}
+
+/// Where the zone admits no staff (docs/operations.md, "Zones"), a staff page (the shell, an app's
+/// page, administration, `/login` for staff, the accounts host) is a plain page that says this part
+/// of the workspace is opened at its staff address, and offers the portal's sign-in when there is a
+/// portal. What outside people and the internet use is served as anywhere: the portal and its
+/// sign-in, public pages and sites, published lists, `/open/` links, `/_auth/callback` (refused for
+/// staff on its own), and the interface's files. `public`: the path is an app's public page.
+async fn walled(st: &AppState, headers: &HeaderMap, place: &Place, first: &str, public: bool, q: &[(String, String)]) -> ApiResult<Option<Response>> {
+    let tenant = match place {
+        Place::Workspace(t) => Some(*t),
+        Place::Any | Place::Accounts => None,
+        _ => return Ok(None),
+    };
+    let outside = matches!(first, "_ui" | "_isolated" | "_shell" | "sw.js" | "manifest.webmanifest" | "favicon.ico")
+        || (!matches!(place, Place::Accounts) && (matches!(first, "portal" | "public" | "open" | "app" | "_auth") || public))
+        || (first == "login" && query(q, "next").is_some_and(|n| n.starts_with("/portal/")));
+    if outside || !crate::zone::refuses_staff(st, headers).await {
+        return Ok(None);
+    }
+    // Someone signed in whom the zone admits (a portal person, a guest) gets the page as anywhere.
+    if shell::session_cookie(headers, st.shell.secure).is_some() && caller_on(st, &Method::GET, headers).await.is_ok() {
+        return Ok(None);
+    }
+    let address = match tenant {
+        Some(t) => st.kernel.staff_address(t, &st.zones.admitting_staff()).await.unwrap_or_else(|e| {
+            tracing::warn!("the staff address of a workspace: {e}");
+            None
+        }),
+        None => None,
+    };
+    let scheme = if st.shell.secure { "https" } else { "http" };
+    let staff_url = address.as_ref().map(|h| format!("{scheme}://{h}/"));
+    let message = match &address {
+        Some(h) => format!("This part of the workspace is opened at its staff address, {h}."),
+        None => "This part of the workspace is opened at its staff address, not here.".to_string(),
+    };
+    let mut actions: Vec<(&str, &str)> = vec![];
+    if let Some(url) = &staff_url {
+        actions.push(("Go to the staff address", url));
+    }
+    let portal = match tenant {
+        Some(t) => match st.kernel.primary_host(t, "portal").await? {
+            Some(h) => Some(format!("{scheme}://{h}/portal/")),
+            None => (!shell::portal_pages(&st.apps.shell_apps(t).await?).is_empty()).then(|| "/login?next=/portal/".to_string()),
+        },
+        None => None,
+    };
+    if let Some(p) = &portal {
+        actions.push(("Sign in to the portal", p));
+    }
+    let mut res = status_page(StatusCode::FORBIDDEN, "Not opened here", &message, &actions, None);
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(Some(res))
 }
 
 /// `/login?next=…`: the sign-in page; someone already signed in goes on.

@@ -421,13 +421,14 @@ async fn token(State(app): State<AppContext>, headers: HeaderMap, Form(req): For
         }
         other => return oauth_error(StatusCode::BAD_REQUEST, "unsupported_grant_type", &format!("grant_type {other} is not supported")),
     };
+    let invalid = || oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "the code or refresh token is invalid, expired or already used");
     let g = match grant {
         Ok(g) => g,
-        Err(Error::Invalid(_)) | Err(Error::NotFound(_)) => {
-            return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "the code or refresh token is invalid, expired or already used");
-        }
+        Err(Error::Invalid(_)) | Err(Error::NotFound(_)) => return invalid(),
         Err(e) => return ApiError(e).into_response(),
     };
+    // Staff get no token where the zone admits no staff: answered as a bad code is (crate::zone).
+    let Ok(entry) = crate::zone::sign_in(&st, &headers, g.tenant, g.user).await else { return invalid() };
     // An app's own page (shape D) gets app tokens: narrowed to the app, a few minutes long.
     let (minted, ttl) = match client_id.strip_prefix("app:").and_then(|r| r.split_once(':')) {
         Some((app, _)) => (app_access_token(&st.jwt_secret, &g, client_id, app), super::auth::APP_TOKEN_SECS),
@@ -446,7 +447,8 @@ async fn token(State(app): State<AppContext>, headers: HeaderMap, Form(req): For
     // An app's page: only while the person may still use the app, and it greets them (it can
     // read nothing else about them).
     if let Some((app, slug)) = client_id.strip_prefix("app:").and_then(|r| r.split_once(':')) {
-        let ctx = match st.kernel.load_ctx(g.tenant, g.user, Some(g.token_version), String::new()).await {
+        let entry = std::sync::Arc::new(ferrum_kernel::zones::Entry { credential: ferrum_kernel::zones::Credential::OAuth, ..(*entry).clone() });
+        let ctx = match st.kernel.request_ctx(g.tenant, g.user, Some(g.token_version), String::new(), &entry).await {
             Ok(ctx) => ctx,
             Err(e) => return ApiError(e).into_response(),
         };

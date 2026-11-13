@@ -420,6 +420,9 @@ pub struct Ctx {
     /// automations' conditions and effects read it as `origin`, so that what a new record sets going (invitations,
     /// notifications) is not set going for one fetched from outside.
     pub origin: Option<String>,
+    /// How the request behind this context came in (crate::zones): its zone, the caller's address
+    /// and its credential. None for work with no request behind it, and for the system.
+    pub zone: Option<Arc<crate::zones::Entry>>,
 }
 
 /// What may leave for an AI provider. Being able to read something does not make it yours to send:
@@ -475,6 +478,7 @@ impl Ctx {
             depth: 0,
             settings: None,
             origin: None,
+            zone: None,
         }
     }
 
