@@ -36,6 +36,16 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 
 ## Controls
 
+**Zones** ([operations](operations.md#zones))
+* Where a zone admits no staff, a staff credential of any kind is refused where the request's context is
+  built, on every request, and the decision is never cached by person. The zone comes from the replica's
+  pin, the host's row (set only by the operator), the caller's address as the configured proxies report it,
+  or the default; nothing else the client sends. An error deciding it refuses staff.
+* A staff sign-in there fails as a wrong password does, before the password is read, without counting
+  toward lockout, and in the time an unknown address takes. Refusals of signed-in credentials say only
+  that the credential works elsewhere, and where.
+* Zones do not protect against a compromised replica: it reaches the whole database.
+
 **Sites and devices** ([threat model](registry/threat-model.md), [authority](operations-authority.md))
 * Ferrum never replaces a safety system, and a safety function never depends on it.
 * Each device signs its requests with its own Ed25519 key. The server keeps public keys only. Enrollment

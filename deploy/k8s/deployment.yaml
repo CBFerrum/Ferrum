@@ -86,6 +86,11 @@ spec:
             # - {name: FERRUM_HOOKS_HOST, value: "hooks.example.com"}
             # - {name: FERRUM_PASSKEY_RP, value: "example.com"}
             # - {name: FERRUM_LINK_HOST, value: "go.example.com"}
+            # Zones (docs/operations.md, "Zones"), each empty by default (everyone admitted everywhere):
+            # - {name: FERRUM_ZONES, value: '{"public":{"staff":"none"},"office":{"staff":"all"}}'}
+            # - {name: FERRUM_ZONE, value: "office"}
+            # - {name: FERRUM_ZONE_DEFAULT, value: ""}
+            # - {name: FERRUM_ZONE_MODE, value: "report"}
             - {name: FERRUM_PDF_URL, value: "http://ferrum-pdf:3000"}
             # Online editing of Word, Excel and PowerPoint files (office/): the editor as the server
             # reaches it, the server as the editor reaches it, and the editor as browsers reach it.
