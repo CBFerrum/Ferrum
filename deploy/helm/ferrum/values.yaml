@@ -58,6 +58,24 @@ pdb:
   enabled: true
   maxUnavailable: 1
 
+# Pools: several Deployments of the same server image that differ only in settings (docs/operations.md,
+# "Deployment shapes"; ready-made shapes in presets/). Empty: one Deployment, as above. The first pool keeps
+# today's names and selector (so a release upgrades in place); every other pool is "<fullname>-<name>" with
+# its own Deployment, autoscaler (or fixed replicas), disruption budget, network policy and, unless
+# `background: only`, Service. A pool takes every setting it leaves out from the top-level values above.
+pools: []
+# - name: web                  # lower-case letters, digits and dashes; unique
+#   background: both           # both | off (FERRUM_RUN_BACKGROUND=false: API only) | only (no Service, no routes)
+#   replicas: 3                # used when autoscaling.enabled is false
+#   autoscaling: {enabled: true, minReplicas: 3, maxReplicas: 10}
+#   resources: {requests: {cpu: 250m, memory: 256Mi}}
+#   dbMaxConnections: 30       # FERRUM_DB_MAX_CONNECTIONS for this pool
+#   pdb: {enabled: true, maxUnavailable: 1}
+#   env: []                    # entries of `env`; a name already set is replaced
+#   nodeSelector: {}
+#   tolerations: []
+#   priorityClassName: ""
+
 # Only the Gateway's proxies and Prometheus may reach the server; it may reach the database, the
 # PDF renderer, DNS and HTTPS/SMTP endpoints.
 networkPolicy:
