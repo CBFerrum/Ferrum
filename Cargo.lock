@@ -3297,16 +3297,18 @@ dependencies = [
 [[package]]
 name = "ferrum-app-social"
 version = "0.2.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-social?branch=main#ccfb3af76085fde7c896e57fa41967b83e2feb9d"
+source = "git+https://github.com/CBFerrum/ferrum-app-social?branch=main#2e9d67475de233921d29e589c7f42345de267937"
 dependencies = [
  "async-trait",
  "chrono",
+ "chrono-tz 0.10.4",
  "ferrum-domain",
  "ferrum-kernel",
  "ferrum-meta",
  "hex",
  "reqwest 0.12.28",
  "rust_decimal",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
