@@ -1890,3 +1890,15 @@ Decided 13 November 2026.
   said; a comma, a plus or a semicolon). `params` still cannot set what the flow sets, the renamed parameter included.
   A client proving itself with basic authentication is unchanged.
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-73. A token's scheme for one operation
+
+Decided 13 November 2026.
+
+* **The gap**: some services take their token as `Bearer` on most calls and another way on some (`OAuth <token>`, the
+  token alone); the scheme was the auth's, for every operation.
+* **On the operation**: `auth_scheme` replaces the scheme in `Authorization` for that operation's requests (a page of a
+  pull's `Link` too); empty sends the token alone. Only where the auth is a token sent in `Authorization` (bearer,
+  OAuth without DPoP, a session's default header): with basic, a header secret, a signature or DPoP the scheme is part
+  of what proves the call, and the description is refused. The token stays masked as before.
+* Part of the App API 0.3.8 (BD-63).

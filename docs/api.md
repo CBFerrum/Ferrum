@@ -1399,6 +1399,10 @@ pointer) or `error` (an expression, `"answer.errors[0].message"`) then gives its
 says which refusals are "later" (`"answer.errors[0].extensions.code == 'THROTTLED'"`), besides the statuses in
 `temporary`. An expression that cannot be worked out (a key the answer lacks) counts as false; use `has()`.
 
+**Another scheme for one operation** ([BD-73](builder/decisions.md#bd-73-a-tokens-scheme-for-one-operation)):
+`auth_scheme: "OAuth"` sends the connection's token as `Authorization: OAuth <token>` for that operation (`""`: the
+token alone), where the auth is a token (bearer, OAuth without DPoP, a session in `authorization`); refused otherwise.
+
 **A stored file's public address** ([BD-64](builder/decisions.md#bd-64-a-stored-files-short-lived-public-address-for-a-service-that-pulls-it)),
 for a service that pulls media by address instead of taking bytes. An operation's `public_files` names them; its
 templates read `public_files.<name>`, and a step's `inputs` too (pass it on to the step that sends it):

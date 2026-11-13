@@ -934,6 +934,22 @@ async fn scenario() {
     any_host(&k, &admin, port).await;
     refusals(&k, &admin, &base).await;
     provider_words(&k, &admin, &base).await;
+    schemes(&k, &admin, &base).await;
+}
+
+/// BD-73: an operation that sends the token under another scheme, or alone.
+async fn schemes(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let ops = json!({"plain": {"path": "/who/U-9"}, "oauth": {"path": "/who/U-9", "auth_scheme": "OAuth"}, "alone": {"path": "/who/U-9", "auth_scheme": ""}});
+    let desc = json!({"base": base, "auth": {"type": "bearer", "secret": "token"}, "operations": ops});
+    k.save_connection_def(admin, None, &input("schemes", desc, Some(json!({"token": SECRET})))).await.unwrap();
+    for (op, sent) in [("plain", "Bearer "), ("oauth", "OAuth "), ("alone", "")] {
+        connections::call(k, admin, None, &call("schemes", op, json!({}), None)).await.unwrap();
+        assert!(last("GET /v1/who/U-9").contains(&format!("authorization: {sent}{SECRET}\r\n")), "{op}: {}", last("GET /v1/who/U-9"));
+    }
+    let basic =
+        json!({"base": base, "auth": {"type": "basic", "username": "u", "secret": "token"}, "operations": {"x": {"path": "/x", "auth_scheme": "OAuth"}}});
+    let e = k.save_connection_def(admin, None, &input("schemes2", basic, None)).await.unwrap_err();
+    assert!(e.to_string().contains("auth_scheme"), "{e}");
 }
 
 /// BD-72: a provider that calls the client's id `client_key` and joins scopes with commas.
