@@ -1,7 +1,8 @@
 {{- if .Values.migrate.enabled }}
 {{- $n := include "ferrum.fullname" . }}
 # Runs `ferrum task migrate` before the install or upgrade is applied; the server's pods then start with
-# FERRUM_MIGRATE_AT_START=false (migrate.serverEnv) and only check that it ran.
+# FERRUM_MIGRATE_AT_START=false (migrate.serverEnv) and only check that it ran. Pods of the release before
+# still start on the migrated database, as guests, while its COMPATIBLE_FROM lets them in (docs/operations.md).
 apiVersion: batch/v1
 kind: Job
 metadata:

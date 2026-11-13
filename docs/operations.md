@@ -42,7 +42,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_FILES_DIR` | no | Local attachment directory (default `/var/lib/ferrum/files`) |
 | `FERRUM_DB_MAX_CONNECTIONS` | no | Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so |
 | `FERRUM_RUN_BACKGROUND` | no | `false` turns a replica into API-only |
-| `FERRUM_MIGRATE_AT_START` | no | Default `true`: the server migrates the database, syncs the schema and runs the upgrade steps as it starts. `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe |
+| `FERRUM_MIGRATE_AT_START` | no | Default `true`: the server migrates the database, syncs the schema and runs the upgrade steps as it starts. `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe. Either way, on a database a newer build migrated, the server starts as a guest that changes nothing, or refuses (*Rolling back and the two-version window*) |
 | `FERRUM_UPKEEP_CONCURRENCY` | no | How many apps' periodic upkeep one replica runs at once (default 2). Each app's upkeep has a lock of its own across replicas, so replicas share the apps between them; each running app holds one database connection |
 | `PUBLIC_URL` | recommended | The address people open, scheme and port included (`https://erp.example.com`). Apps' screens name it in their Content Security Policy, which Safari needs when a proxy in front rewrites the host, and links mailed to people outside the workspace (Drive guests) are built on it, as are the short-lived addresses services pull files from (`/files/pull/…`, BD-64; without it such calls are refused) |
 | `PORT`, `BINDING`, `LOG_LEVEL` | no | Usual meanings; logs are JSON on stdout |
@@ -165,7 +165,8 @@ helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
 * *Migrations.* Off by default: every pod migrates itself as it starts. `migrate.enabled` adds a Helm hook Job that runs
   `ferrum task migrate` before an install or upgrade (`migrate.args`) and sets `FERRUM_MIGRATE_AT_START=false` on the
   server (`migrate.serverEnv`), so the pods only check that the database is ready and refuse to start, naming the
-  command, when it is not. On a first install with `database.enabled` the hook runs before the database exists and
+  command, when it is not. Pods of the release before still start on the migrated database, as guests (*Rolling back
+  and the two-version window*), so a paused or failed rollout keeps its capacity. On a first install with `database.enabled` the hook runs before the database exists and
   fails: use it for upgrades, or with a database of your own (`database.urlSecret`).
 
 `bash deploy/helm/test.sh` (CI runs it) fails when the chart and `deploy/k8s` differ in resources, environment variables,
@@ -318,14 +319,15 @@ the operators' install from one has not run on a cluster without internet.
   advisory locks, so rolling several replicas at once is safe. Where migrating is a step of its own
   (`FERRUM_MIGRATE_AT_START=false`, as the Helm chart's migrate Job sets it), `ferrum task migrate` runs them, with the
   one-time steps below, and the servers only check. Upgrades only add tables, columns
-  and indexes; nothing is dropped automatically (orphaned columns are reported in the logs).
+  and indexes; nothing is dropped automatically (orphaned columns are reported in the logs). Servers of the release
+  before keep running and restarting on the migrated database (*Rolling back and the two-version window*).
 * Indexes the sync adds to entity tables are built concurrently, so writes carry on, and a build that
   failed is dropped and built again at the next start. The release that gave lists an index in their
   default order adds one per entity: on large tables the first start after it takes a while.
 * Roll forward with the image tag (`kubectl -n ferrum set image deploy/ferrum ferrum=<image>`);
   `maxUnavailable: 0` keeps capacity during the rollout.
-* Rolling back the image is safe while the newer migrations are additive (the norm). If a release
-  notes a data migration, take an on-demand backup first (below).
+* Rolling back the image is safe within the two-version window (*Rolling back and the two-version window*, below). If a release notes a data migration, take an
+  on-demand backup first (below).
 * Some releases move existing workspaces onto a new package layout with a one-time step at start-up
   (one replica runs it; it is recorded per workspace). The first, `core-split`
   ([plan](plan/apps-ui.md) §13), comes with the release that split `core` into `core`, `parties`
@@ -383,7 +385,45 @@ the operators' install from one has not run on a cluster without internet.
   `GET /api/admin/backfills` reports, per backfill, its state, the rows it changed, those it could
   not, and those that need it now; `POST /api/admin/backfills/{package}/{name}/rerun` runs a finished
   one again (after the rows it could not change were put right). Contract (drop what the backfill
-  replaced) only once every workspace reports none remaining.
+  replaced) only once every workspace reports none remaining, a release later, moving `COMPATIBLE_FROM` with it.
+
+### Rolling back and the two-version window
+
+The build before the one that migrated the database starts and runs on it. Each build carries the date of the commit it
+was made from, and `COMPATIBLE_FROM` (`crates/kernel/src/window.rs`), the date of the oldest build that may run on its
+schema. The build that migrates or syncs the schema records both in `cluster_state` (`schema_build_date`,
+`schema_compatible_from`); a record only ever moves forward. `ferrum --version` prints the build's date.
+
+* **What starts where.** A server that finds the database ahead of it (a newer build's record, or migrations it does not
+  know) starts when its date is not before the recorded `COMPATIBLE_FROM`, whatever `FERRUM_MIGRATE_AT_START` says, and
+  runs as a **guest**. Otherwise it refuses, saying the date of the build to start. A database behind the build is
+  migrated as it starts, or, with `FERRUM_MIGRATE_AT_START=false`, refused as before. Several builds starting at once
+  each end right: deciding, migrating and syncing hold one advisory lock, and the start-up writes hold it shared.
+* **What a guest does not do.** It does not migrate, does not sync the schema (nor make an app with packages
+  available), and skips the start-up writes that would put its older things back: the one-time upgrade steps and
+  their record, apps recorded at its versions, interfaces registered for them, customizations' baselines. It serves
+  requests on everything it knows, and runs the background work, but takes no event or job a newer build wrote (each
+  says which build wrote it): those wait for a newer replica, never failed or dropped. A scheduled automation or a
+  service target it cannot read is left as it is. `ferrum task migrate` with an older image prints that there is
+  nothing to do and succeeds, so a rollback that runs it goes on.
+* **How long the window is.** From one release to the next, for as long as `COMPATIBLE_FROM` stays where it is: in
+  practice the release before is always let in, and usually several before it. A rollback to a build from before
+  `COMPATIBLE_FROM` is refused; restore a backup instead (*Backups and restore*).
+* **How a removal ships.** A release first stops using what is to go and keeps it (columns, tables, fields, topics).
+  The removal ships in a later release and moves `COMPATIBLE_FROM` to the date of the release that stopped using it,
+  in the same commit. The same holds for a rename, a changed type, a column made required and a tightened constraint
+  (a new unique index or check on an existing table). CI (`scripts/window.py`) fails a change whose new migration or
+  entity does any of these without moving `COMPATIBLE_FROM`; a statement that is safe all the same says so with a
+  `-- window: safe, <why>` comment. The schema sync itself only adds: it never drops, retypes or renames a column, and
+  a column it adds is optional (a check box gets `default false`).
+* **Rolling back.** Set the previous image (`kubectl -n ferrum rollout undo deploy/ferrum`, `helm rollback`, or the
+  previous tag in Compose). The database stays as the newer build left it; roll forward again the same way. A one-time
+  upgrade step the newer build ran stays done: to go back to before one, use `ferrum task upgrade_back` (above).
+* **Images.** The image build takes the commit's date as a build argument, `BUILD_DATE` (`git log -1 --format=%ct`;
+  CI passes it), and labels the image `io.ferrum.build-date`. A build without git or `BUILD_DATE` takes a fixed date
+  that is never later than its own, so it may be refused as a guest where a dated build of the same commit is let in.
+  `deploy/smoke.sh` starts the previous image again on the database the new one migrated, when the previous image has
+  the label.
 
 ## Backups and restore
 

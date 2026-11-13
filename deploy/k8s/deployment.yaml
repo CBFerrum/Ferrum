@@ -11,6 +11,8 @@ spec:
   revisionHistoryLimit: 5
   selector:
     matchLabels: {app.kubernetes.io/name: ferrum}
+  # During a rollout, pods of the release before keep running and restarting on the database the new one
+  # migrated: the two-version window (docs/operations.md, Rolling back).
   strategy:
     type: RollingUpdate
     rollingUpdate: {maxSurge: 1, maxUnavailable: 0}

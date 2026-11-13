@@ -179,6 +179,9 @@ metricsEngine:
 # runs the one-time upgrade steps, and fails the release when one fails. While it is enabled the
 # server's pods also get `serverEnv`, FERRUM_MIGRATE_AT_START=false: they no longer migrate as they
 # start, only check that the Job did, and refuse to start (naming the command) when it has not.
+# Pods of the release before keep starting once the Job has run: on a database a newer build migrated,
+# a build its COMPATIBLE_FROM lets in runs as a guest that changes nothing (docs/operations.md, Rolling
+# back), so a paused or failed rollout keeps its capacity and `helm rollback` needs no Job.
 # Off, each pod migrates itself at start, as the Compose files do.
 # With database.enabled the Cluster does not exist yet on the first install (hooks run first), so
 # the Job would fail: enable it for upgrades, or for a database of your own (database.urlSecret).
