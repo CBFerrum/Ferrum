@@ -17,6 +17,13 @@ pub trait FileStore: Send + Sync {
     async fn put(&self, key: &str, data: &[u8]) -> Result<()>;
     async fn get(&self, key: &str) -> Result<Vec<u8>>;
     async fn delete(&self, key: &str) -> Result<()>;
+    /// The bytes of `range` of an object (a connection's upload in chunks, BD-55). By default it reads the whole object
+    /// and keeps the range (ponytail: a store that can read a range should, so a large file is never held whole).
+    async fn get_range(&self, key: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        let all = self.get(key).await?;
+        let end = (range.end as usize).min(all.len());
+        Ok(all.get(range.start as usize..end).unwrap_or_default().to_vec())
+    }
     /// Whether an object is there. By default it reads it; a store that can ask without reading may say
     /// so more cheaply.
     async fn exists(&self, key: &str) -> Result<bool> {

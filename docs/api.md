@@ -1292,6 +1292,28 @@ the step's names). It fails when `fail_if` holds, after `attempts` asks or `with
 A call waits in place 20 s at most, then answers "later" after `every_secs` (`RetryAfter`); the same key again carries
 on from the wait.
 
+**Loops** ([BD-55](builder/decisions.md#bd-55-loops-over-items-and-chunks)): `"for_each": "inputs.texts"` makes a step for
+each item, in order, each under `<key>:<step>:<index>`, binding `item`, `index`, `previous` (the result before) and
+`results`; the step's result is the list (at most 100 items). With `"range": {"file", "offset", "size"}` (expressions)
+each item sends that range of a stored file (parts the service names, each with its own address). `"chunks": {"file":
+"inputs.video", "bytes": 8388608, "remainder": "own" | "last", "offset_from": {"operation": "probe", "inputs": {…}},
+"restart_from": "init"}` sends a stored file a chunk at a time, read from storage a range at a time, binding `chunk:
+{index, offset, end, size, total, count, last}`, each chunk under `<key>:<step>@<offset>`; the result is the last
+chunk's. A chunked upload of a resumable session:
+
+```json
+{"name": "upload", "operation": "put_chunk", "chunks": {"file": "inputs.file", "bytes": 8388608,
+   "offset_from": {"operation": "probe", "inputs": {"url": "steps.start.url", "total": "chunk.total"}}},
+ "inputs": {"url": "steps.start.url", "file": "inputs.file",
+            "range": "'bytes ' ~ chunk.offset ~ '-' ~ chunk.end ~ '/' ~ chunk.total"}}
+```
+
+with `put_chunk` a `PUT` to `{{ inputs.url }}` with `content-range: {{ inputs.range }}` and `"success": [308]` (statuses
+that also mean it worked). A chunk whose answer was lost goes on from what `offset_from`'s `offset` result says the
+service holds (a number, or `bytes=0-<last>`; none with a 2xx: the upload is complete, that answer the result), or
+starts the upload again from the step `restart_from` names under new keys (at most twice), or stops, saying so. Files
+sent in chunks may be up to `FERRUM_CONNECTION_UPLOAD_MB` (25 MB unless the operator says); a chunk is at most 25 MB.
+
 ### Moving an app's own HTTP client onto a connection
 
 Social, ERP's carriers and the service apps each build requests themselves. To move one:

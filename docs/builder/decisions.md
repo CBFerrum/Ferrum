@@ -1480,6 +1480,12 @@ that names the post it answers: two or three requests, a later one reading an ea
   against the base's host and `allowed_hosts` like a redirect; `credentials: false` for an address signed already
   (an S3 form refuses a second authentication); `form_fields` for a signed form's fields, in their order.
 * Bounded: at most 12 steps; a step's operation has no steps of its own; pulls take an operation of one request.
+* **Kept beside `Operation`, written on it**: ERP builds `connections::Operation` in code with every field named, so a
+  new field would stop it compiling. The keys this part adds to an operation (`steps`, `url`, `success`,
+  `credentials`, `form_fields`, `answer`, `lists`) are `connections::More`, kept in `Description::more` by operation
+  name: a description reads and writes them on the operation like any other key (unknown keys still refused), and an
+  app's `Operation { … }` is unchanged. (`Description` is built with `..Default::default()`, so its new fields are
+  safe.)
 
 Tests (`connections_steps_it` `steps`): register, put the bytes to the address the answer gave, post; the post
 answered "later" once and resumed without the register or the upload again; the same key answered from the log, other
@@ -1506,4 +1512,35 @@ Tests (`connections_steps_it` `waiting`): a container processed after three asks
 the service's status and publishes nothing; past its patience the call answers "later" after its own delay and the
 next calls carry on from the wait without a second container; a wait bounded in time; a wait on an operation that
 changes something refused.
+
+## BD-55. Loops over items and chunks
+
+Decided 13 November 2026. Several pictures, threads, communities; videos in chunks (YouTube's resumable 8 MB,
+X's 1 MB APPEND, TikTok's chunks with the remainder in the last, LinkedIn's parts the service names).
+
+* **`for_each`**: a step made for each item of a list, in order, each its own call under `<key>:<step>:<index>`; a
+  retry goes on at the first item without a result. `previous` and `results` let each item answer the one before (a
+  thread). `range: {file, offset, size}` sends that part of a stored file for each item (parts whose addresses and byte
+  ranges the service gives). At most 100 items.
+* **`chunks`**: a stored file sent `bytes` at a time; `chunk` gives the index, offsets, size, total, count and whether
+  it is the last, so headers like `Content-Range` and commands like `segment_index` are templates. Each chunk is a call
+  under `<key>:<step>@<offset>`, and the loop's place is kept, so a retry goes on at the first chunk not sent.
+  `remainder: last` puts what is left over in the last chunk (TikTok's rule) instead of a short chunk of its own.
+* **Streamed from storage**: `FileStore::get_range` reads one chunk's bytes; the server's store reads that range from
+  disk or S3 (OpenDAL), so a 500 MB video is never held whole; a store that cannot read a range reads the whole and
+  keeps the range (the default, tests). At most 25 MB a chunk; the file at most `FERRUM_CONNECTION_UPLOAD_MB` (25 MB
+  unless the operator raises it, since a chunked file is never held whole); at most 10,000 chunks.
+* **A lost chunk** is settled, in this order: by its operation's `idempotency_header`; by `offset_from`, a reading
+  operation whose `offset` says how many bytes the service holds (a number, or `bytes=0-<last>` as a `Range` header
+  says; no offset with a 2xx means the upload is complete and that answer is the result), and the loop goes on from
+  there (less than was sent before is refused: the earlier chunks are not sent twice); by `restart_from`, which starts
+  that upload again from the step it names (its first command), the steps from there under new keys (`<step>~<n>`, at
+  most twice), so the old, broken upload is left and nothing published; otherwise the call stops and says so.
+* **`success`**: statuses besides 2xx that mean it worked (308, "resume incomplete").
+
+Tests (`connections_steps_it` `loops`): a thread of three, the second answered "later" once, resumed without the first
+again, each answering the one before; a resumable upload whose second chunk's answer is lost, resumed from the
+service's offset, each byte sent once and in order, read only as ranges; INIT/APPEND/FINALIZE whose second APPEND's
+answer is lost, started again from INIT under new keys, finalised once; parts the service names, each its range,
+their ETags collected for the finish; a file over the operator's cap; loops that cannot be refused when saved.
 
