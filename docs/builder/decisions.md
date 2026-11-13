@@ -1612,3 +1612,24 @@ read-only fields ignore her input.
 Tests (`connections_steps_it` `as_system`): Ana's own pull making a post with the read-only id set, made as her; her
 other pull without it leaving that field empty; her own write not setting it; her save of a description refused.
 
+## BD-59. XML and form answers
+
+Decided 13 November 2026. Social's feeds (autopost) read RSS and Atom; some sign-ins and older APIs answer forms.
+
+* **`answer: xml`** (with `lists`) on an operation: the answer is read into JSON's shape and everything that reads an
+  answer reads that (results, `next_at`, `items_at`, mappings). The shape: `{<root>: <element>}`; an element with
+  neither attributes nor children is its text; otherwise `@name` for each attribute, each child by its name with its
+  prefix as written (`dc:creator`, `media:content`; an element in a default namespace by its local name), and `#text`.
+  A child that comes twice becomes a list; `lists` names those that are lists even once (a feed with one item), so a
+  pointer does not change with the count. Why this shape rather than a feed model: one rule for RSS, Atom and plain
+  XML, and nothing named for a format.
+* **Safe by default**: `roxmltree` (already locked in the workspace) without document types, so no entity of the
+  document's own is expanded and nothing outside is fetched; at most 64 levels deep; the size is the answer's, already
+  bounded. Only an answer that worked must be XML; an error page is kept as it came, so `error_at` still sees its text.
+* **`answer: form`**: `a=1&b=2` as an object of texts; `text` keeps the text as it is; `json`, or nothing, is the old
+  rule (JSON, else its text). An existing description reads its answers as before.
+
+Tests (`connections_steps_it` `xml_answers`, unit test): an RSS feed with `&amp;`, a CDATA title and a prefixed element,
+and an Atom feed of one entry, pulled into posts; a prefixed element and an element's text beside its attribute read
+by pointers; a form answer; a document type refused; an unknown kind refused; a document nested too deep refused.
+

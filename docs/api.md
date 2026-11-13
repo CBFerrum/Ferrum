@@ -1335,6 +1335,14 @@ an app's `connections::call`, the `call` effect and the gate get `RetryAfter(why
 "every": 900, "concurrent": 2}` on a description: at most `per` requests in each window of `every` seconds and
 `concurrent` at once, counted in the database so every worker shares them; a request past them is not sent.
 
+**XML and forms** ([BD-59](builder/decisions.md#bd-59-xml-and-form-answers)): `"answer": "xml"` reads the answer as
+XML into JSON's shape, so pointers, picks, `items_at` and mappings work on it: `{<root>: …}`, an element its text when
+it has neither attributes nor children, else `@attribute`s, children by name as written (`dc:creator`) and `#text`; a
+child given twice is a list, and so is one named in `"lists": ["item", "entry"]`. An RSS pull: `"items_at":
+"/rss/channel/item"`, values `"/title"`, `"/link"`; an Atom one: `"/feed/entry"`, `"/title/#text"`,
+`"/link/0/@href"`. No document type is read. `"answer": "form"` reads `a=1&b=2` as `{"a": "1", "b": "2"}`, `"text"` as
+the text; `json` (the default) as before.
+
 ### Moving an app's own HTTP client onto a connection
 
 Social, ERP's carriers and the service apps each build requests themselves. To move one:

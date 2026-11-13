@@ -73,6 +73,68 @@ fn moment(v: &str) -> Result<chrono::DateTime<chrono::Utc>, JError> {
     chrono::DateTime::parse_from_rfc3339(v.trim()).map(|t| t.to_utc()).map_err(|_| bad(format!("{v} is not a moment (RFC 3339)")))
 }
 
+/// The deepest an XML answer is read.
+const XML_DEPTH: usize = 64;
+
+/// An XML answer in JSON's shape (BD-59): `{<root>: <element>}`; an element is its text when it has neither attributes
+/// nor children, else an object of `@attribute`s, children by name (prefixed as written: `dc:creator`) and its text as
+/// `#text`. A child that comes more than once, or whose name is in `lists`, is a list. No document type (so no
+/// entities of its own) is read.
+pub(crate) fn xml_value(raw: &[u8], lists: &[String]) -> Result<serde_json::Value, String> {
+    fn name(n: roxmltree::Node, local: &str, ns: Option<&str>) -> String {
+        match ns.and_then(|ns| n.lookup_prefix(ns)).filter(|p| !p.is_empty()) {
+            Some(p) => format!("{p}:{local}"),
+            None => local.to_string(),
+        }
+    }
+    fn element(n: roxmltree::Node, lists: &[String], depth: usize) -> Result<serde_json::Value, String> {
+        use serde_json::Value;
+        if depth > XML_DEPTH {
+            return Err(format!("it is nested deeper than {XML_DEPTH}"));
+        }
+        let mut obj = serde_json::Map::new();
+        for a in n.attributes() {
+            obj.insert(format!("@{}", name(n, a.name(), a.namespace())), Value::String(a.value().to_string()));
+        }
+        let mut text = String::new();
+        for c in n.children() {
+            if c.is_element() {
+                let k = name(c, c.tag_name().name(), c.tag_name().namespace());
+                let v = element(c, lists, depth + 1)?;
+                match obj.get_mut(&k) {
+                    Some(Value::Array(a)) => a.push(v),
+                    Some(one) => *one = Value::Array(vec![one.take(), v]),
+                    None if lists.contains(&k) => drop(obj.insert(k, Value::Array(vec![v]))),
+                    None => drop(obj.insert(k, v)),
+                }
+            } else if c.is_text() {
+                text.push_str(c.text().unwrap_or_default());
+            }
+        }
+        let text = text.trim();
+        if obj.is_empty() {
+            return Ok(Value::String(text.to_string()));
+        }
+        if !text.is_empty() {
+            obj.insert("#text".into(), Value::String(text.to_string()));
+        }
+        Ok(Value::Object(obj))
+    }
+    let text = std::str::from_utf8(raw).map_err(|_| "it is not UTF-8".to_string())?;
+    let doc = roxmltree::Document::parse(text).map_err(|e| e.to_string())?;
+    let root = doc.root_element();
+    let mut out = serde_json::Map::new();
+    out.insert(name(root, root.tag_name().name(), root.tag_name().namespace()), element(root, lists, 0)?);
+    Ok(serde_json::Value::Object(out))
+}
+
+/// A form-encoded answer (`a=1&b=2`) as an object of texts (a name given twice: the last).
+pub(crate) fn form_value(raw: &[u8]) -> serde_json::Value {
+    let mut url = reqwest::Url::parse("http://form/").expect("an address");
+    url.set_query(Some(String::from_utf8_lossy(raw).trim()));
+    serde_json::Value::Object(url.query_pairs().map(|(k, v)| (k.into_owned(), serde_json::Value::String(v.into_owned()))).collect())
+}
+
 /// Adds the functions to a template environment.
 pub(crate) fn add(env: &mut Environment<'static>) {
     env.add_filter("sha256", |v: String| hex::encode(Sha256::digest(v.as_bytes())));
@@ -155,6 +217,15 @@ mod tests {
         assert_eq!(a.len(), 13);
         assert!(a.starts_with(|c: char| "234567abcdefghij".contains(c)), "the top bit is 0: {a}");
         assert_eq!(render("{{ key | tid }}", serde_json::json!({"key": "k1", "now": "2023-11-14T22:13:20Z"})), a);
+    }
+
+    #[test]
+    fn xml_reads_as_json() {
+        let v = xml_value(br#"<a x="1"><b>t</b><b>u</b><c>v<d/></c></a>"#, &[]).unwrap();
+        assert_eq!(v, serde_json::json!({"a": {"@x": "1", "b": ["t", "u"], "c": {"d": "", "#text": "v"}}}));
+        let deep = format!("{}{}", "<a>".repeat(70), "</a>".repeat(70));
+        assert!(xml_value(deep.as_bytes(), &[]).unwrap_err().contains("nested deeper"));
+        assert_eq!(form_value(b"a=1&b=x+y"), serde_json::json!({"a": "1", "b": "x y"}));
     }
 
     #[test]
