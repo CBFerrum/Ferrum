@@ -1796,3 +1796,22 @@ Decided 13 November 2026.
   error (serialization, deadlock) is passed on: `decide_approval` retries the whole decision, so a hook runs once for
   the decision that commits. A hook that must not miss an outcome reads the request again from its own job.
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-67. Expressions that nest run on a stack of their own
+
+Decided 13 November 2026.
+
+* **The fault**: saving Social's Telegram description overflowed a 2 MiB thread (the size of a server's worker) in a
+  debug build; its tests passed only on 16 MiB. The cause: its `publish` result is one CEL expression picking among a
+  dozen answers by nested `?:`, and CEL's parser goes through a dozen grammar rules for each level, with large frames.
+  Compiling it took between 2 and 4 MiB; evaluating it recurses as deep. Nothing else in the 33 network descriptions
+  came near (templates, serde of nested steps and the rest of validation were measured on 2 MiB).
+* **The fix, where every expression goes through**: `ferrum_meta::Expr` compiles, and runs, an expression with more
+  than four levels of `?`, `(` or `[` on a stack of its own (`stacker::grow`, 16 MiB of address space, of which only
+  the pages touched are used; `stacker` was already in the tree through `pest`). Every place an expression is checked
+  or run (rules, conditions, a description's results and mappings, steps) is covered, on any thread. Flat expressions
+  run where they are, as before. The limits (`MAX_NESTING` 32, `MAX_OPERATORS` 512) stay, and the deepest nesting
+  they allow compiles on 2 MiB.
+* Tests: `ferrum-meta` compiles and runs a dozen nested `?:` and the deepest allowed nesting on a 2 MiB thread (it aborts
+  with a stack overflow without the fix); `ferrum-kernel`'s `descriptions_small_stack` loads, validates and works out
+  the result of the Telegram description (a fixture) on 2 MiB.
