@@ -37,6 +37,10 @@ struct Service {
     asked: BTreeMap<String, usize>,
     /// Paths that fail once each with the status given, or hang (0) past the connection's time limit.
     fail_once: BTreeMap<String, u16>,
+    /// Paths that fail at their n-th ask, as `fail_once` says.
+    fail_at: BTreeMap<String, (usize, u16)>,
+    /// What each upload session holds.
+    sessions: BTreeMap<String, String>,
 }
 
 static SERVICE: Mutex<Option<Service>> = Mutex::new(None);
@@ -51,6 +55,10 @@ fn asked(path: &str) -> usize {
 
 fn fail_once(path: &str, status: u16) {
     with(|s| s.fail_once.insert(path.to_string(), status));
+}
+
+fn fail_at(path: &str, nth: usize, status: u16) {
+    with(|s| s.fail_at.insert(path.to_string(), (nth, status)));
 }
 
 fn last(prefix: &str) -> String {
@@ -102,6 +110,47 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
             (200, String::new(), json!({"id": p.trim_start_matches("/v1/containers/"), "status_code": status}).to_string())
         }
         ("POST", p) if p.starts_with("/v1/publish/") => (200, String::new(), json!({"id": format!("M-{}", p.trim_start_matches("/v1/publish/"))}).to_string()),
+        // A thread: each item answers the one before.
+        ("POST", "/v1/thread") => (200, String::new(), json!({"id": format!("T-{}", asked(bare)), "reply_to": body["reply_to"]}).to_string()),
+        // Shaped like a resumable upload: a session address, chunks with Content-Range, 308 until complete, a probe.
+        ("POST", "/v1/resumable") => (200, format!("location: http://127.0.0.1:{port}/v1/session/{}\r\n", asked(bare)), "{}".into()),
+        ("PUT", p) if p.starts_with("/v1/session/") => {
+            let range = raw.lines().find_map(|l| l.strip_prefix("content-range: bytes ")).unwrap_or_default().to_string();
+            let held = with(|s| s.sessions.get(p).cloned().unwrap_or_default());
+            let (held, total) = if let Some(total) = range.strip_prefix("*/") {
+                (held, total.parse::<usize>().unwrap_or(0))
+            } else {
+                let (span, total) = range.split_once('/').unwrap_or_default();
+                if span.split('-').next().and_then(|o| o.parse::<usize>().ok()) != Some(held.len()) {
+                    return (400, String::new(), json!({"error": "wrong offset"}).to_string());
+                }
+                let held = held + raw.split("\r\n\r\n").nth(1).unwrap_or_default();
+                with(|s| s.sessions.insert(p.to_string(), held.clone()));
+                (held, total.parse().unwrap_or(0))
+            };
+            if held.len() == total && !range.starts_with('*') {
+                (200, String::new(), json!({"id": "V-1"}).to_string())
+            } else if held.is_empty() {
+                (308, String::new(), String::new())
+            } else {
+                (308, format!("range: bytes=0-{}\r\n", held.len() - 1), String::new())
+            }
+        }
+        // Shaped like an upload in INIT, APPEND, FINALIZE commands.
+        ("POST", "/v1/media/init") => (200, String::new(), json!({"media_id": format!("X-{}", asked(bare))}).to_string()),
+        ("POST", "/v1/media/append") => (204, String::new(), String::new()),
+        ("POST", "/v1/media/finalize") => (200, String::new(), json!({"media_id": body["media_id"]}).to_string()),
+        // Shaped like an upload whose parts the service names, each with its own address and byte range.
+        ("POST", "/v1/videos:init") => (
+            200,
+            String::new(),
+            json!({"instructions": [
+            {"uploadUrl": format!("http://127.0.0.1:{port}/v1/part/0"), "firstByte": 0, "lastByte": 5},
+            {"uploadUrl": format!("http://127.0.0.1:{port}/v1/part/1"), "firstByte": 6, "lastByte": 9}]})
+            .to_string(),
+        ),
+        ("PUT", p) if p.starts_with("/v1/part/") => (200, format!("etag: E-{}\r\n", p.trim_start_matches("/v1/part/")), String::new()),
+        ("POST", "/v1/videos:finalize") => (200, String::new(), body.to_string()),
         _ => (404, String::new(), json!({"error": "no such route"}).to_string()),
     }
 }
@@ -138,15 +187,18 @@ async fn service() -> u16 {
                 let bare = path.split('?').next().unwrap_or_default().to_string();
                 let failing = with(|s| {
                     s.seen.push(raw.clone());
-                    *s.asked.entry(bare.clone()).or_default() += 1;
-                    s.fail_once.remove(&bare)
+                    let n = *s.asked.entry(bare.clone()).or_default() + 1;
+                    s.asked.insert(bare.clone(), n);
+                    let at = s.fail_at.get(&bare).filter(|(nth, _)| *nth == n).map(|f| f.1);
+                    s.fail_once.remove(&bare).or(at)
                 });
                 if bare == "/v1/slow-step" {
                     tokio::time::sleep(Duration::from_millis(700)).await;
                 }
                 let (status, extra, body) = match failing {
                     Some(0) => {
-                        // Received, and its answer lost: the connection gives up waiting.
+                        // Received and taken, and its answer lost: the connection gives up waiting.
+                        route(&method, &path, &raw, port);
                         tokio::time::sleep(Duration::from_secs(3)).await;
                         return;
                     }
@@ -169,6 +221,7 @@ async fn service() -> u16 {
 struct Memory {
     files: Mutex<BTreeMap<String, Vec<u8>>>,
     whole: Mutex<usize>,
+    ranges: Mutex<Vec<(u64, u64)>>,
 }
 
 #[async_trait]
@@ -180,6 +233,11 @@ impl FileStore for Memory {
     async fn get(&self, key: &str) -> ferrum_kernel::Result<Vec<u8>> {
         *self.whole.lock().unwrap() += 1;
         self.files.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound(key.into()))
+    }
+    async fn get_range(&self, key: &str, range: std::ops::Range<u64>) -> ferrum_kernel::Result<Vec<u8>> {
+        self.ranges.lock().unwrap().push((range.start, range.end));
+        let f = self.files.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound(key.into()))?;
+        Ok(f[range.start as usize..(range.end as usize).min(f.len())].to_vec())
     }
     async fn delete(&self, key: &str) -> ferrum_kernel::Result<()> {
         self.files.lock().unwrap().remove(key);
@@ -371,6 +429,111 @@ async fn waiting(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("waits only on an operation that reads"));
 }
 
+/// The form fields of a multipart body, by name.
+fn parts(raw: &str) -> BTreeMap<String, String> {
+    raw.split("Content-Disposition: form-data; name=\"")
+        .skip(1)
+        .filter_map(|p| {
+            let (name, rest) = p.split_once('"')?;
+            let value = rest.split_once("\r\n\r\n")?.1.split("\r\n--").next()?;
+            Some((name.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+/// P3: a step for each item of a list, and for each chunk of a stored file, read a range at a time.
+async fn loops(k: &Arc<Kernel>, admin: &Ctx, base: &str, store: &Memory) {
+    let video = k.store_file(admin, None, "clip.mp4", "video/mp4", b"0123456789").await.unwrap()["id"].as_str().unwrap().to_string();
+    let big = k.store_file(admin, None, "long.mp4", "video/mp4", &[b'z'; 20]).await.unwrap()["id"].as_str().unwrap().to_string();
+    let ops = json!({
+        "post_item": {"method": "POST", "path": "/thread", "body": "{\"text\": {{ inputs.text | json }}, \"reply_to\": {{ inputs.reply_to | json }}}", "result": {"id": "/id"}},
+        "thread": {"result": {"ids": "/items"}, "steps": [
+            {"name": "items", "operation": "post_item", "for_each": "inputs.texts", "inputs": {"text": "item", "reply_to": "previous.id if previous else none"}}]},
+        "start_upload": {"method": "POST", "path": "/resumable", "body": "{}", "result": {"url": {"header": "location"}}},
+        "put_chunk": {"method": "PUT", "url": "{{ inputs.url }}", "headers": {"content-range": "{{ inputs.range }}"}, "body": {"file": "{{ inputs.file }}"},
+                      "success": [308], "result": {"id": "/id"}},
+        "probe": {"method": "PUT", "url": "{{ inputs.url }}", "headers": {"content-range": "bytes */{{ inputs.total }}"}, "changes": false, "success": [308],
+                  "result": {"offset": {"header": "range"}}},
+        "video": {"result": {"id": "/upload/id"}, "steps": [
+            {"name": "start", "operation": "start_upload"},
+            {"name": "upload", "operation": "put_chunk", "chunks": {"file": "inputs.file", "bytes": 4,
+                                                                 "offset_from": {"operation": "probe", "inputs": {"url": "steps.start.url", "total": "chunk.total"}}},
+             "inputs": {"url": "steps.start.url", "file": "inputs.file", "range": "'bytes ' ~ chunk.offset ~ '-' ~ chunk.end ~ '/' ~ chunk.total"}}]},
+        "init": {"method": "POST", "path": "/media/init", "body": "{}", "result": {"media_id": "/media_id"}},
+        "append": {"method": "POST", "path": "/media/append", "form": {"media_id": "{{ inputs.media_id }}", "segment_index": "{{ inputs.index }}",
+                                                                       "media": {"file": "{{ inputs.file }}"}}},
+        "finalize": {"method": "POST", "path": "/media/finalize", "body": "{\"media_id\": {{ inputs.media_id | json }}}", "result": {"media_id": "/media_id"}},
+        "commands": {"result": {"media_id": "/finalize/media_id"}, "steps": [
+            {"name": "init", "operation": "init"},
+            {"name": "append", "operation": "append", "chunks": {"file": "inputs.file", "bytes": 4, "restart_from": "init"},
+             "inputs": {"media_id": "steps.init.media_id", "index": "chunk.index", "file": "inputs.file"}},
+            {"name": "finalize", "operation": "finalize", "inputs": {"media_id": "steps.init.media_id"}}]},
+        "init_parts": {"method": "POST", "path": "/videos:init", "body": "{}", "result": {"instructions": "/instructions"}},
+        "put_part": {"method": "PUT", "url": "{{ inputs.url }}", "body": {"file": "{{ inputs.file }}"}, "result": {"etag": {"header": "etag"}}},
+        "finalize_parts": {"method": "POST", "path": "/videos:finalize", "body": "{\"parts\": {{ inputs.parts | json }}}"},
+        "parts": {"result": {"parts": "/finalize/parts"}, "steps": [
+            {"name": "init", "operation": "init_parts"},
+            {"name": "put", "operation": "put_part", "for_each": "steps.init.instructions", "inputs": {"url": "item.uploadUrl", "file": "inputs.file"},
+             "range": {"file": "inputs.file", "offset": "item.firstByte", "size": "item.lastByte - item.firstByte + 1"}},
+            {"name": "finalize", "operation": "finalize_parts", "inputs": {"parts": "steps.put | map(attribute='etag') | list"}}]}
+    });
+    k.save_connection_def(admin, None, &input("tube", json!({"base": base, "timeout_ms": 1000, "operations": ops}), None)).await.unwrap();
+
+    // Each item a request of its own, answering the one before; resumed at the item that did not go.
+    fail_at("/v1/thread", 2, 503);
+    let thread = || call("tube", "thread", json!({"texts": ["one", "two", "three"]}), Some("t-1"));
+    assert!(connections::call(k, admin, None, &thread()).await.is_err());
+    let r = connections::call(k, admin, None, &thread()).await.unwrap();
+    assert_eq!(r["ids"].as_array().unwrap().iter().map(|i| i["id"].clone()).collect::<Vec<_>>(), vec![json!("T-1"), json!("T-3"), json!("T-4")]);
+    assert_eq!(asked("/v1/thread"), 4, "the first item once");
+    assert_eq!(body_of(&last("POST /v1/thread"))["reply_to"], "T-3", "each answers the one before");
+
+    // A file in chunks, a range read at a time (never the whole file); a chunk whose answer is lost is resumed where
+    // the service says it holds the upload.
+    let whole = *store.whole.lock().unwrap();
+    fail_at("/v1/session/1", 2, 0);
+    let upload = || call("tube", "video", json!({"file": video}), Some("v-1"));
+    assert!(connections::call(k, admin, None, &upload()).await.is_err(), "the second chunk's answer lost");
+    assert_eq!(connections::call(k, admin, None, &upload()).await.unwrap(), json!({"id": "V-1"}));
+    assert_eq!(with(|s| s.sessions["/v1/session/1"].clone()), "0123456789", "each byte once, in order");
+    assert_eq!(asked("/v1/session/1"), 4, "two chunks, the probe, the last chunk");
+    assert!(last("PUT /v1/session/1").contains("content-range: bytes 8-9/10"));
+    assert_eq!(*store.whole.lock().unwrap(), whole, "never read whole");
+    assert_eq!(store.ranges.lock().unwrap().clone(), vec![(0, 4), (4, 8), (8, 10)]);
+
+    // Where the service reports no offset, a lost chunk restarts that upload, from its first command, and only it.
+    fail_at("/v1/media/append", 2, 0);
+    let commands = || call("tube", "commands", json!({"file": video}), Some("x-1"));
+    assert!(connections::call(k, admin, None, &commands()).await.is_err());
+    assert_eq!(connections::call(k, admin, None, &commands()).await.unwrap(), json!({"media_id": "X-2"}));
+    let appended: Vec<(String, String)> = with(|s| s.seen.iter().filter(|r| r.starts_with("POST /v1/media/append")).map(|r| parts(r)).collect::<Vec<_>>())
+        .into_iter()
+        .map(|p| (p["media_id"].clone(), p["segment_index"].clone()))
+        .collect();
+    let want: Vec<(String, String)> =
+        [("X-1", "0"), ("X-1", "1"), ("X-2", "0"), ("X-2", "1"), ("X-2", "2")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+    assert_eq!(appended, want);
+    assert_eq!(asked("/v1/media/finalize"), 1);
+
+    // Parts the service names, each its own range and address; their answers' headers collected.
+    let r = connections::call(k, admin, None, &call("tube", "parts", json!({"file": video}), Some("l-1"))).await.unwrap();
+    assert_eq!(r, json!({"parts": ["E-0", "E-1"]}));
+    assert!(last("PUT /v1/part/0").ends_with("\r\n\r\n012345") && last("PUT /v1/part/1").ends_with("\r\n\r\n6789"));
+
+    // Bounded: a file over the configured cap for chunked sends; chunks and items both, or none, refused when saved.
+    let e = connections::call(k, admin, None, &call("tube", "video", json!({"file": big}), Some("v-2"))).await.unwrap_err().to_string();
+    assert!(e.contains("larger than the 16 bytes"), "{e}");
+    let bad = |step: Value| json!({"base": base, "operations": {"a": {"method": "PUT", "path": "/a"}, "b": {"steps": [step]}}});
+    for (step, says) in [
+        (json!({"name": "x", "operation": "a", "for_each": "inputs.l", "chunks": {"file": "inputs.f", "bytes": 4}}), "for_each or chunks"),
+        (json!({"name": "x", "operation": "a", "chunks": {"file": "inputs.f", "bytes": 0}}), "chunks.bytes"),
+        (json!({"name": "x", "operation": "a", "chunks": {"file": "inputs.f", "bytes": 4, "restart_from": "nowhere"}}), "restart_from"),
+    ] {
+        let e = k.save_connection_def(admin, None, &input("bad", bad(step), None)).await.unwrap_err().to_string();
+        assert!(e.contains(says), "{says}: {e}");
+    }
+}
+
 #[test]
 fn connections_run_steps_safely() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -389,6 +552,7 @@ async fn boot() -> (Arc<Kernel>, Ctx) {
         secret_key: Some(SecretKey::new([7u8; 32])),
         connection_hosts: vec!["127.0.0.1".into()],
         public_url: Some("https://ferrum.example.test".into()),
+        connection_upload_bytes: 16,
         ..Default::default()
     };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, social]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
@@ -417,4 +581,5 @@ async fn scenario() {
     let base = format!("http://127.0.0.1:{port}/v1");
     steps(&k, &admin, &base, &store).await;
     waiting(&k, &admin, &base).await;
+    loops(&k, &admin, &base, &store).await;
 }

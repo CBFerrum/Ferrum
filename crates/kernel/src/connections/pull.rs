@@ -76,7 +76,7 @@ impl Pull {
             return at("its name and cursor_input are lower case letters, digits and _".into());
         }
         let Some(op) = desc.operations.get(&self.operation) else { return at(format!("there is no operation {}", self.operation)) };
-        if op.changes() || !op.steps.is_empty() {
+        if desc.changes(&self.operation) || !desc.more(&self.operation).steps.is_empty() {
             return at(format!("{} changes something or has steps; a pull only reads, one request a page", self.operation));
         }
         if desc.signs_in_with(&self.operation) {
