@@ -215,6 +215,7 @@ impl Hooks for App {
                     .map(|h| h.trim().to_ascii_lowercase())
                     .filter(|h| !h.is_empty())
                     .collect(),
+                connection_upload_bytes: std::env::var("FERRUM_CONNECTION_UPLOAD_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(25) << 20,
                 sso_allow_private: settings.sso_allow_private,
                 secret_key: Some(secret_key),
                 retired_secret_keys: retired,
@@ -326,7 +327,7 @@ impl Hooks for App {
             shell,
             assistant: crate::assistant::Assistant::new(crate::assistant::Config::from_env()),
         };
-        state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone())));
+        state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone(), state.objects.clone())));
         let ctx = ctx.into_builder().storage(storage).build();
         ctx.shared_store.insert(state);
         Ok(ctx)

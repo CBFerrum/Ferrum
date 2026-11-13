@@ -33,10 +33,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+mod fns;
 pub mod inbound;
 pub mod oauth;
 pub(crate) mod personal;
 pub mod pull;
+pub mod steps;
 
 pub const CALL_KIND: &str = "platform.connection.call";
 /// Attempts at a queued call while the service says "later".
@@ -51,7 +53,7 @@ pub(crate) const MAX_RETRY_AFTER: u64 = 3600;
 /// A stored file a call sends or an answer gives: 10 MB unless the operation says, at most 25 MB; what one request
 /// sends of files, at most 25 MB in all.
 const DEFAULT_FILE_BYTES: u64 = 10 << 20;
-const MAX_FILE_BYTES: u64 = 25 << 20;
+pub(crate) const MAX_FILE_BYTES: u64 = 25 << 20;
 /// The statuses that mean "try again later", when a description says none.
 pub(crate) const TEMPORARY: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
 /// The longest a debug capture stays on, and how much of a body it keeps.
@@ -79,7 +81,7 @@ pub(crate) fn is_name(s: &str) -> bool {
 
 /// How a connection is called (stored as `conn.description`). See the module documentation and docs/api.md.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, remote = "Self")]
 pub struct Description {
     /// Answers each operation from its `fixture` and calls nobody.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -117,6 +119,122 @@ pub struct Description {
     /// never read by the platform; at most [`MAX_META`] bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<Value>,
+    /// How much the service takes (BD-57): at most `per` requests each `every` seconds and `concurrent` at once,
+    /// counted across workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<Limit>,
+    /// What each operation says besides [`Operation`]'s own fields, by operation (written on the operation itself).
+    #[serde(skip)]
+    pub more: BTreeMap<String, More>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Limit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrent: Option<u32>,
+}
+
+/// How long a call waits for its turn among a connection's `concurrent` before it answers "later".
+const TURN_WAIT: Duration = Duration::from_secs(10);
+
+/// The keys of an operation that are [`More`]'s.
+const MORE: [&str; 7] = ["steps", "url", "success", "credentials", "form_fields", "answer", "lists"];
+
+/// Read as derived, each operation's [`More`] keys taken apart first.
+impl<'de> Deserialize<'de> for Description {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let mut v = Value::deserialize(d)?;
+        let mut more = BTreeMap::new();
+        if let Some(ops) = v.get_mut("operations").and_then(Value::as_object_mut) {
+            for (name, op) in ops.iter_mut() {
+                let Some(op) = op.as_object_mut() else { continue };
+                let taken: Map<String, Value> = MORE.iter().filter_map(|k| Some((k.to_string(), op.remove(*k)?))).collect();
+                if !taken.is_empty() {
+                    let m: More = serde_json::from_value(Value::Object(taken)).map_err(|e| D::Error::custom(format!("operation {name}: {e}")))?;
+                    more.insert(name.clone(), m);
+                }
+            }
+        }
+        let mut desc = Description::deserialize(v).map_err(D::Error::custom)?;
+        desc.more = more;
+        Ok(desc)
+    }
+}
+
+/// Written as derived, each operation's [`More`] written back on it.
+impl Serialize for Description {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::Error as _;
+        let mut v = Description::serialize(self, serde_json::value::Serializer).map_err(S::Error::custom)?;
+        for (name, m) in &self.more {
+            if let (Some(op), Value::Object(extra)) =
+                (v.pointer_mut(&format!("/operations/{}", name.replace('~', "~0").replace('/', "~1"))), serde_json::to_value(m).map_err(S::Error::custom)?)
+                && let Some(op) = op.as_object_mut()
+            {
+                op.extend(extra);
+            }
+        }
+        v.serialize(s)
+    }
+}
+
+/// What an operation says besides [`Operation`]'s fields (BD-53 onwards). Kept apart so that an app that builds an
+/// `Operation` in code is not changed by them; a description writes them on the operation like any other key.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct More {
+    /// Several requests in order, each another operation (BD-53); the operation then sends nothing itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<steps::Step>,
+    /// A template giving the whole address, in place of the base and `path` (one an earlier answer gave): the guard
+    /// holds it to the connection's hosts like any other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Statuses besides 2xx that mean it worked (`308` for an upload still going on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<Vec<u16>>,
+    /// `false`: sent without the connection's credentials (an address that is signed already).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<bool>,
+    /// A template giving more form fields, as JSON (an object, or a list of `{name, value}`), sent before `form`'s in
+    /// their order (a signed upload form an earlier answer gave).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form_fields: Option<String>,
+    /// How the answer is read (BD-59): `json` (else its text, as without this), `xml`, `form` or `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<AnswerKind>,
+    /// In an XML answer, the elements that are always lists (`item`, `entry`), even when there is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lists: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerKind {
+    Json,
+    Xml,
+    Form,
+    Text,
+}
+
+static NO_MORE: More = More { steps: Vec::new(), url: None, success: None, credentials: None, form_fields: None, answer: None, lists: Vec::new() };
+
+impl More {
+    fn problem(&self, op: &Operation) -> Option<String> {
+        if !op.path.is_empty() && self.url.is_some() {
+            return Some("a request has a path or a url, not both".into());
+        }
+        if self.success.as_ref().is_some_and(|s| s.iter().any(|c| !(100..=599).contains(c))) {
+            return Some("success lists statuses, 100 to 599".into());
+        }
+        self.url.iter().chain(self.form_fields.iter()).find_map(|t| template_problem(t))
+    }
 }
 
 /// The most a description's `meta` holds, as JSON.
@@ -178,6 +296,9 @@ pub enum Auth {
         header: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prefix: Option<String>,
+        /// Fields of the login's answer kept with the tokens: `auth.<name>` (BD-61).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<String>,
     },
 }
 
@@ -242,10 +363,6 @@ impl Operation {
             None if self.body.is_some() || !self.form.is_empty() => "POST",
             None => "GET",
         }
-    }
-
-    pub(crate) fn changes(&self) -> bool {
-        self.changes.unwrap_or(self.method() != "GET")
     }
 
     /// Whether its form goes as `multipart/form-data`: it sends a file, or its headers say so.
@@ -483,7 +600,21 @@ pub(crate) fn retry_after(v: &str, now: DateTime<Utc>) -> Option<u64> {
 
 /// What is wrong with a template, if anything.
 fn template_problem(t: &str) -> Option<String> {
-    crate::print::environment().template_from_str(t).err().map(|e| format!("'{t}': {e}"))
+    environment().template_from_str(t).err().map(|e| format!("'{t}': {e}"))
+}
+
+/// The template engine of connections: the print formats' (fuel-limited), printing values as they are.
+pub(crate) fn environment() -> minijinja::Environment<'static> {
+    let mut env = crate::print::environment();
+    env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
+    env.add_filter("json", |v: minijinja::Value| serde_json::to_string(&v).unwrap_or_default());
+    fns::add(&mut env);
+    env
+}
+
+/// The clock as templates and expressions read it: `now` (RFC 3339, milliseconds, UTC) and `today`.
+pub(crate) fn clock_vars(now: DateTime<Utc>) -> (Value, Value) {
+    (json!(now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)), json!(now.date_naive().to_string()))
 }
 
 pub(crate) fn pointer_problem(p: &str) -> Option<String> {
@@ -495,10 +626,27 @@ pub(crate) fn header_problem(h: &str) -> Option<String> {
 }
 
 impl Description {
+    /// What operation `name` says besides its [`Operation`] fields.
+    pub(crate) fn more(&self, name: &str) -> &More {
+        self.more.get(name).unwrap_or(&NO_MORE)
+    }
+
+    /// Whether operation `name` changes something at the service (then it needs a key): unless it says, every method
+    /// but GET, and every operation of steps.
+    pub(crate) fn changes(&self, name: &str) -> bool {
+        self.operations.get(name).is_some_and(|op| op.changes.unwrap_or(!self.more(name).steps.is_empty() || op.method() != "GET"))
+    }
+
     /// Whether operation `name` is how the connection signs in (a session's login or refresh): never called as an
     /// operation, by an app, a person, an effect, a pull or "try this", since its answer is a token.
     pub(crate) fn signs_in_with(&self, name: &str) -> bool {
-        matches!(&self.auth, Auth::Session { login, refresh, .. } if login == name || refresh.as_deref() == Some(name))
+        match &self.auth {
+            Auth::Session { login, refresh, .. } => login == name || refresh.as_deref() == Some(name),
+            Auth::Oauth { provider, .. } => {
+                provider.after.iter().any(|a| a == name) || provider.refresh.as_deref() == Some(name) || provider.registration.as_deref() == Some(name)
+            }
+            _ => false,
+        }
     }
 
     /// What is wrong with it, said plainly; `None` when it may be saved.
@@ -524,6 +672,14 @@ impl Description {
         if self.meta.as_ref().is_some_and(|m| !m.is_object() || m.to_string().len() > MAX_META) {
             return Some(format!("meta is an object of at most {MAX_META} bytes"));
         }
+        if let Some(l) = &self.limit
+            && (l.per.is_some() != l.every.is_some()
+                || l.per.is_some_and(|n| n == 0)
+                || l.every.is_some_and(|n| !(1..=86_400).contains(&n))
+                || l.concurrent.is_some_and(|n| !(1..=64).contains(&n)))
+        {
+            return Some("limit is {per, every} (calls, and seconds up to a day) and concurrent (1 to 64)".into());
+        }
         if self.roles.iter().chain(&self.apps).any(|r| r.trim().is_empty()) {
             return Some("roles and apps are names".into());
         }
@@ -544,6 +700,11 @@ impl Description {
             Auth::Oauth { provider, .. } => {
                 if let Some(p) = provider.problem() {
                     return Some(p);
+                }
+                if let Some(op) =
+                    provider.after.iter().chain(provider.refresh.iter()).chain(provider.registration.iter()).find(|o| !self.operations.contains_key(*o))
+                {
+                    return Some(format!("auth: there is no operation {op}"));
                 }
             }
             Auth::Session { login, refresh, token_at, refresh_at, expires_at, header, .. } => {
@@ -573,7 +734,8 @@ impl Description {
             }
         }
         for (name, op) in &self.operations {
-            if let Some(p) = op.problem() {
+            let more = self.more(name);
+            if let Some(p) = op.problem().or_else(|| more.problem(op)).or_else(|| (!more.steps.is_empty()).then(|| steps::problem(self, op, more)).flatten()) {
                 return Some(format!("operation {name}: {p}"));
             }
             if !is_name(name) {
@@ -604,6 +766,7 @@ impl Operation {
         if !self.path.is_empty() && !self.path.starts_with('/') {
             return Some("path starts with /".into());
         }
+
         if self.body.is_some() && !self.form.is_empty() {
             return Some("a request has a body or a form, not both".into());
         }
@@ -824,15 +987,12 @@ fn pct(s: &str) -> String {
 
 /// `src` over `vars`, as text (no HTML escaping; the print formats' engine, fuel-limited).
 pub(crate) fn render(src: &str, vars: &Value) -> Result<String> {
-    let mut env = crate::print::environment();
-    env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
-    env.add_filter("json", |v: minijinja::Value| serde_json::to_string(&v).unwrap_or_default());
-    env.render_str(src, minijinja::Value::from_serialize(vars)).map_err(|e| Error::invalid(format!("a template failed: {e}")))
+    environment().render_str(src, minijinja::Value::from_serialize(vars)).map_err(|e| Error::invalid(format!("a template failed: {e}")))
 }
 
 /// A path template: each value it prints percent-encoded, so an input cannot add a segment, a query or a host.
 fn render_path(src: &str, vars: &Value) -> Result<String> {
-    let mut env = crate::print::environment();
+    let mut env = environment();
     env.set_formatter(|out, _state, value| {
         let text = if value.is_none() || value.is_undefined() { String::new() } else { value.to_string() };
         out.write_str(&pct(&text)).map_err(|_| minijinja::Error::new(minijinja::ErrorKind::WriteFailure, "path"))
@@ -864,7 +1024,7 @@ pub(crate) fn masked_text(s: &str, mask: &[String]) -> String {
 }
 
 /// A digest of a call's inputs, to tell the same request from another under one key.
-fn digest(v: &Value) -> String {
+pub(crate) fn digest(v: &Value) -> String {
     hex::encode(Sha256::digest(v.to_string().as_bytes()))
 }
 
@@ -873,7 +1033,8 @@ fn digest(v: &Value) -> String {
 /// A connection's secrets, open, its row locked for the rest of `tx` (to change them).
 pub(crate) async fn lock_secrets(tx: &mut Tx, k: &Kernel, tenant: Uuid, id: Uuid) -> Result<BTreeMap<String, String>> {
     let sealed: Option<Option<String>> =
-        sqlx::query_scalar("select sealed from conn where tenant_id = $1 and id = $2 for update").bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
+        // Not a key's lock: a call logged meanwhile (its row refers to this one) is not held up by it.
+        sqlx::query_scalar("select sealed from conn where tenant_id = $1 and id = $2 for no key update").bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
     match sealed.ok_or_else(|| Error::NotFound("connection".into()))? {
         Some(s) => serde_json::from_str(&k.open_sealed(&sealed_label(tenant, id), &s)?).map_err(Error::internal),
         None => Ok(BTreeMap::new()),
@@ -1024,9 +1185,20 @@ pub(crate) struct Page<'a> {
     pub address: Option<&'a str>,
 }
 
+/// What a request is made with besides its inputs: a pull's page, the clock its templates read.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Extra<'a> {
+    pub page: Option<Page<'a>>,
+    /// The moment fixed at the first attempt of the call's key; else now.
+    pub now: Option<DateTime<Utc>>,
+    /// The part of a stored file its file part sends: the file, the first byte, how many.
+    pub range: Option<(Uuid, u64, u64)>,
+}
+
 /// Calls an operation of a connection and gives its mapped result: for apps (docs/api.md, "Connections"). `app` is the
 /// calling package, which the connection must list; `None` is a person's own call (an administrator, or one holding a
-/// role the connection lists) or the system's. A temporary failure is `Unavailable`; any other, `Invalid`.
+/// role the connection lists) or the system's. A temporary failure is `RetryAfter` with the seconds the service (or
+/// the connection's `limit`) asked to wait, else `Unavailable`; any other, `Invalid`.
 pub async fn call(k: &Kernel, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
     k.call_connection(ctx, app, c).await
 }
@@ -1041,13 +1213,13 @@ pub(crate) fn may_use(ctx: &Ctx, app: Option<&str>, desc: &Description) -> Resul
 }
 
 impl Kernel {
+    /// A temporary failure is `RetryAfter` when the service (or the connection's limit) said when to come back, else
+    /// `Unavailable` (BD-57).
     pub async fn call_connection(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
-        self.call_waiting(ctx, app, c, false).await
+        self.call_waiting(ctx, app, c).await
     }
 
-    /// [`Kernel::call_connection`]; `waits`: a "later" with the service's `Retry-After` is `RetryAfter` (a queued call's
-    /// job then comes back when it said) rather than `Unavailable`.
-    async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call, waits: bool) -> Result<Value> {
+    async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
         let conn = self.load_connection(ctx.tenant, &c.connection).await?;
         if !conn.enabled {
             return Err(Error::invalid(format!("the connection {} is turned off", conn.name)));
@@ -1068,26 +1240,47 @@ impl Kernel {
             _ => return Err(Error::invalid("inputs are an object")),
         };
         let key = c.key.as_deref().filter(|k| !k.trim().is_empty());
-        if op.changes() && key.is_none() {
+        let (changes, more) = (conn.desc.changes(&c.operation), conn.desc.more(&c.operation));
+        if changes && key.is_none() {
             return Err(Error::invalid(format!("{} changes something at the service, so it needs a key", c.operation)));
         }
         let given = digest(&inputs);
-        if let Some(key) = key.filter(|_| op.changes())
-            && let Some((was, result)) = self.done_before(&conn, &c.operation, key).await?
-        {
-            return if was == given {
-                Ok(result)
-            } else {
-                Err(Error::Conflict(format!("the key {key} was used for {} with other inputs: a new request needs a new key", c.operation)))
-            };
+        // One worker makes a key at a time, and a key that went through answers what it gave; its clock is fixed at
+        // its first attempt.
+        let (mut held, mut clock) = (None, Utc::now());
+        if let Some(key) = key.filter(|_| changes) {
+            held = Some(self.hold_key(&conn, &c.operation, key).await?.ok_or_else(|| Error::RetryAfter(format!("the call {key} is being made"), 5))?);
+            if let Some((was, result)) = self.done_before(&conn, &c.operation, key).await? {
+                return if was == given {
+                    Ok(result)
+                } else {
+                    Err(Error::Conflict(format!("the key {key} was used for {} with other inputs: a new request needs a new key", c.operation)))
+                };
+            }
+            let a = self.key_attempt(&conn, &c.operation, key, &given).await?;
+            if !more.steps.is_empty() && a.digest != given {
+                return Err(Error::Conflict(format!("the key {key} was used for {} with other inputs: a new request needs a new key", c.operation)));
+            }
+            clock = a.clock;
         }
         let about = c.entity.clone().zip(c.record);
-        let outcome = self
-            .perform(ctx, &conn, &c.operation, &inputs, key, None, about.as_ref().map(|(e, r)| (e.as_str(), *r)), op.changes().then_some(given.as_str()))
-            .await?;
+        let about = about.as_ref().map(|(e, r)| (e.as_str(), *r));
+        let outcome = if more.steps.is_empty() {
+            let extra = Extra { now: Some(clock), ..Default::default() };
+            self.perform(ctx, &conn, &c.operation, &inputs, key, extra, about, changes.then_some(given.as_str())).await?
+        } else {
+            let o = Box::pin(self.perform_steps(ctx, &conn, &c.operation, &inputs, key, clock, about)).await?;
+            if let (Outcome::Ok(result, _), Some(key)) = (&o, key) {
+                self.remember(ctx, &conn, &c.operation, key, &given, result).await?;
+            }
+            o
+        };
+        if let Some(tx) = held {
+            tx.commit().await?;
+        }
         match outcome {
             Outcome::Ok(result, _) => Ok(result),
-            Outcome::Later(why, Some(secs)) if waits => Err(Error::RetryAfter(why, secs)),
+            Outcome::Later(why, Some(secs)) => Err(Error::RetryAfter(why, secs)),
             Outcome::Later(why, _) => Err(Error::Unavailable(why)),
             Outcome::No(why) => Err(Error::invalid(why)),
         }
@@ -1109,7 +1302,7 @@ impl Kernel {
         Ok(row.map(|(d, r)| (d.unwrap_or_default(), r.unwrap_or(Value::Null))))
     }
 
-    /// One operation, made and logged. `page`: a pull's page (its `cursor` a template variable).
+    /// One operation, made and logged. `extra`: a pull's page (its `cursor` a template variable), the clock.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn perform(
         &self,
@@ -1118,11 +1311,33 @@ impl Kernel {
         name: &str,
         inputs: &Value,
         key: Option<&str>,
-        page: Option<Page<'_>>,
+        extra: Extra<'_>,
         about: Option<(&str, Uuid)>,
         keep: Option<&str>,
     ) -> Result<Outcome> {
+        // Boxed: an app's future that awaits a call stays within the compiler's depth for layouts.
+        Ok(Box::pin(self.perform_full(ctx, conn, name, inputs, key, extra, about, keep)).await?.0)
+    }
+
+    /// [`Kernel::perform`], and the status the service answered and whether a request went out at all.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn perform_full(
+        &self,
+        ctx: &Ctx,
+        conn: &Loaded,
+        name: &str,
+        inputs: &Value,
+        key: Option<&str>,
+        extra: Extra<'_>,
+        about: Option<(&str, Uuid)>,
+        keep: Option<&str>,
+    ) -> Result<(Outcome, Option<u16>, bool)> {
         let op = conn.desc.operations.get(name).ok_or_else(|| Error::invalid(format!("{} has no operation {name}", conn.name)))?;
+        let more = conn.desc.more(name);
+        if !more.steps.is_empty() {
+            return Err(Error::invalid(format!("{name} is made of steps: it is called by itself, not inside another")));
+        }
+        let mut sent = conn.desc.test;
         // Signing in: made without credentials of its own, never captured (its answer is a token), never refreshed.
         let bare = conn.desc.signs_in_with(name);
         let started = Instant::now();
@@ -1147,8 +1362,14 @@ impl Kernel {
             let mut tries = 0;
             let got = loop {
                 tries += 1;
-                let got = match self.build_request(ctx, conn, op, inputs, key, page, bare).await {
-                    Ok((req, more)) => {
+                let got = match self.build_request(ctx, conn, (op, more), inputs, key, extra, bare).await {
+                    Ok((req, more)) => 'made: {
+                        // The description's limits, across workers: nothing is sent past them.
+                        let turn = match self.take_turn(conn).await {
+                            Ok(t) => t,
+                            Err(e) => break 'made Err(e),
+                        };
+                        sent = true;
                         mask.extend(more);
                         if conn.debug && !bare {
                             debug = Some(json!({"request": captured(&req, &mask)}));
@@ -1163,6 +1384,9 @@ impl Kernel {
                         }
                         if let (Some(d), Ok(a)) = (debug.as_mut(), &got) {
                             d["answer"] = json!({"status": a.status, "body": clipped(&masked(&a.body, &mask))});
+                        }
+                        if let Some(t) = turn {
+                            t.commit().await?;
                         }
                         got
                     }
@@ -1188,6 +1412,7 @@ impl Kernel {
             };
             got.map_err(|e| match e {
                 Error::Unavailable(m) => Error::Unavailable(masked_text(&m, &mask)),
+                Error::RetryAfter(m, s) => Error::RetryAfter(m, s),
                 other => Error::invalid(masked_text(&other.to_string(), &mask)),
             })
         };
@@ -1196,8 +1421,29 @@ impl Kernel {
             let said = at(&a.body, op.error_at.as_deref()).unwrap_or_else(|| a.body.to_string().chars().take(300).collect());
             masked_text(&format!("{}: {said}", a.status), &mask)
         };
+        // An answer read as the operation says (XML, a form, text): what pointers, picks and mappings then read.
+        let answered = match (answered, more.answer) {
+            (Ok(mut a), Some(kind)) if kind != AnswerKind::Json => {
+                let body = match kind {
+                    AnswerKind::Xml => fns::xml_value(&a.raw, &more.lists),
+                    AnswerKind::Form => Ok(fns::form_value(&a.raw)),
+                    _ => Ok(Value::String(String::from_utf8_lossy(&a.raw).into_owned())),
+                };
+                match body {
+                    Ok(b) => {
+                        a.body = b;
+                        Ok(a)
+                    }
+                    // Only an answer that worked must be XML; an error page is read as it came.
+                    Err(e) if (200..300).contains(&a.status) => Err(Error::invalid(format!("the answer is not XML: {e}"))),
+                    Err(_) => Ok(a),
+                }
+            }
+            (other, _) => other,
+        };
+        let worked = |s: u16| (200..300).contains(&s) || more.success.as_ref().is_some_and(|ok| ok.contains(&s));
         let (outcome, status, row_outcome) = match answered {
-            Ok(a) if (200..300).contains(&a.status) => {
+            Ok(a) if worked(a.status) => {
                 let status = a.status;
                 match self.mapped(ctx, conn, op, inputs, &a, about).await {
                     Ok(result) => (Outcome::Ok(masked(&result, &mask), Box::new(a)), Some(status), "ok"),
@@ -1208,6 +1454,7 @@ impl Kernel {
             Ok(a) if temporary.contains(&a.status) => (Outcome::Later(error_of(&a), a.wait()), Some(a.status), "temporary"),
             Ok(a) => (Outcome::No(error_of(&a)), Some(a.status), "failed"),
             Err(Error::Unavailable(m)) => (Outcome::Later(m, None), None, "temporary"),
+            Err(Error::RetryAfter(m, s)) => (Outcome::Later(m, Some(s)), None, "temporary"),
             Err(e) => (Outcome::No(e.to_string()), None, "refused"),
         };
         let error = match &outcome {
@@ -1241,7 +1488,51 @@ impl Kernel {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(outcome)
+        Ok((outcome, status, sent))
+    }
+
+    /// A request's turn under the connection's [`Limit`]: counted in its window (none left: `RetryAfter` until the next
+    /// window), and one of its `concurrent` places, held until the transaction given back ends (none free within
+    /// [`TURN_WAIT`]: `RetryAfter`).
+    async fn take_turn(&self, conn: &Loaded) -> Result<Option<Tx>> {
+        let Some(limit) = &conn.desc.limit else { return Ok(None) };
+        if let (Some(per), Some(every)) = (limit.per, limit.every) {
+            let now = Utc::now().timestamp();
+            let slot = now - now.rem_euclid(every as i64);
+            let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
+            let n: i32 = sqlx::query_scalar(
+                "insert into conn_rate (tenant_id, conn_id, slot, n) values ($1, $2, $3, 1)                  on conflict (tenant_id, conn_id, slot) do update set n = conn_rate.n + 1 returning n",
+            )
+            .bind(conn.tenant)
+            .bind(conn.id)
+            .bind(slot)
+            .fetch_one(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            if n as u32 > per {
+                let wait = (slot + every as i64 - now).max(1) as u64;
+                return Err(Error::RetryAfter(format!("{} takes {per} calls each {every} s", conn.name), wait));
+            }
+        }
+        let Some(places) = limit.concurrent else { return Ok(None) };
+        let started = Instant::now();
+        loop {
+            let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
+            for place in 0..places {
+                let held: bool = sqlx::query_scalar("select pg_try_advisory_xact_lock(hashtextextended($1, 0))")
+                    .bind(format!("conn_turn:{}:{place}", conn.id))
+                    .fetch_one(&mut *tx)
+                    .await?;
+                if held {
+                    return Ok(Some(tx));
+                }
+            }
+            tx.rollback().await?;
+            if started.elapsed() > TURN_WAIT {
+                return Err(Error::RetryAfter(format!("{} takes {places} calls at once", conn.name), 1));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// The mapped result of an answer that worked: each of the operation's `result` read as its [`Pick`] says (none: the
@@ -1252,7 +1543,8 @@ impl Kernel {
         }
         let headers = Value::Object(a.headers.iter().map(|(h, v)| (h.clone(), Value::String(v.clone()))).collect());
         let connection = json!({"name": conn.name, "id": conn.id});
-        let vars = [("answer", &a.body), ("headers", &headers), ("inputs", inputs), ("connection", &connection)];
+        let (now, today) = clock_vars(Utc::now());
+        let vars = [("answer", &a.body), ("headers", &headers), ("inputs", inputs), ("connection", &connection), ("now", &now), ("today", &today)];
         let mut out = Map::new();
         for (name, pick) in &op.result {
             let p = Pick::of(pick).map_err(Error::invalid)?.spec(false);
@@ -1302,15 +1594,29 @@ impl Kernel {
 
     /// A stored file a request sends, as the caller reads it: its name, type and bytes, within `budget` (what the
     /// request may still send) and the part's own limit.
-    async fn sent_file(&self, ctx: &Ctx, part: &FilePart, vars: &Value, budget: &mut u64) -> Result<(String, String, Vec<u8>)> {
+    async fn sent_file(
+        &self,
+        ctx: &Ctx,
+        part: &FilePart,
+        vars: &Value,
+        budget: &mut u64,
+        range: Option<(Uuid, u64, u64)>,
+    ) -> Result<(String, String, Vec<u8>)> {
         let given = render(&part.file, vars)?;
         let id: Uuid = given.trim().parse().map_err(|_| Error::invalid(format!("{given} is not a stored file")))?;
         let info = self.file_info(ctx, id).await.map_err(|_| Error::invalid(format!("the file {id} is not one you may send")))?;
         let cap = part.max_bytes.unwrap_or(DEFAULT_FILE_BYTES).min(*budget);
-        if info.size < 0 || info.size as u64 > cap {
+        // A chunk of it (a step's range): only that range is read, whatever the file's size.
+        let range = range.filter(|r| r.0 == id);
+        let size = range.map_or(info.size, |r| r.2 as i64);
+        if size < 0 || size as u64 > cap {
             return Err(Error::invalid(format!("{} is larger than the {cap} bytes this call may send", info.name)));
         }
-        let bytes = self.file_store()?.get(&info.key).await?;
+        let bytes = match range {
+            Some((_, offset, len)) if offset.saturating_add(len) <= info.size as u64 => self.file_store()?.get_range(&info.key, offset..offset + len).await?,
+            Some(_) => return Err(Error::invalid(format!("the range is beyond the end of {}", info.name))),
+            None => self.file_store()?.get(&info.key).await?,
+        };
         if bytes.len() as u64 > cap {
             return Err(Error::invalid(format!("{} is larger than the {cap} bytes this call may send", info.name)));
         }
@@ -1327,13 +1633,22 @@ impl Kernel {
         &self,
         ctx: &Ctx,
         conn: &Loaded,
-        op: &Operation,
+        (op, more): (&Operation, &More),
         inputs: &Value,
         key: Option<&str>,
-        page: Option<Page<'_>>,
+        extra: Extra<'_>,
         bare: bool,
     ) -> Result<(Request, Vec<String>)> {
-        let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key});
+        let page = extra.page;
+        let (now, today) = clock_vars(extra.now.unwrap_or_else(Utc::now));
+        let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key, "now": now, "today": today});
+        // The signed-in account and what its sign-in kept, read only when the operation's words name them.
+        let said = serde_json::to_string(op).unwrap_or_default() + &serde_json::to_string(more).unwrap_or_default();
+        if !bare && (said.contains("account") || said.contains("auth.")) {
+            let (account, auth) = self.account_vars(conn, ctx).await?;
+            vars["account"] = account;
+            vars["auth"] = auth;
+        }
         if let Some(p) = page {
             vars["cursor"] = p.cursor.clone();
         }
@@ -1348,8 +1663,12 @@ impl Kernel {
             let more = self.authenticate(ctx, conn, &mut headers, None, &reqwest::Method::GET, &url).await?;
             return Ok((Request { method: reqwest::Method::GET, url, headers, body: None }, more));
         }
-        let mut url = reqwest::Url::parse(&format!("{}{}", conn.desc.base.trim_end_matches('/'), render_path(&op.path, &vars)?))
-            .map_err(|_| Error::invalid("the operation's address is not an address"))?;
+        // A whole address (one an earlier answer gave) is taken as it is: the guard holds it to the connection's hosts.
+        let address = match &more.url {
+            Some(t) => r(t)?.trim().to_string(),
+            None => format!("{}{}", conn.desc.base.trim_end_matches('/'), render_path(&op.path, &vars)?),
+        };
+        let mut url = reqwest::Url::parse(&address).map_err(|_| Error::invalid("the operation's address is not an address"))?;
         if !op.query.is_empty() {
             let pairs = op.query.iter().map(|(k, v)| Ok((k.clone(), r(v)?))).collect::<Result<Vec<_>>>()?;
             url.query_pairs_mut().extend_pairs(pairs);
@@ -1369,7 +1688,7 @@ impl Kernel {
         let body = match &op.body {
             Some(b) => match spec_of::<FilePart>(b) {
                 Some(part) => {
-                    let (_, kind, bytes) = self.sent_file(ctx, &part.map_err(Error::invalid)?, &vars, &mut budget).await?;
+                    let (_, kind, bytes) = self.sent_file(ctx, &part.map_err(Error::invalid)?, &vars, &mut budget, extra.range).await?;
                     Some((bytes, kind))
                 }
                 None => {
@@ -1380,10 +1699,13 @@ impl Kernel {
             },
             None if multipart => {
                 let mut parts = Vec::new();
+                for (k, v) in form_fields(more, &vars)? {
+                    parts.push((k, None, v.into_bytes()));
+                }
                 for (k, v) in &op.form {
                     parts.push(match spec_of::<FilePart>(v) {
                         Some(part) => {
-                            let (name, kind, bytes) = self.sent_file(ctx, &part.map_err(Error::invalid)?, &vars, &mut budget).await?;
+                            let (name, kind, bytes) = self.sent_file(ctx, &part.map_err(Error::invalid)?, &vars, &mut budget, extra.range).await?;
                             (k.clone(), Some((name, kind)), bytes)
                         }
                         None => (k.clone(), None, r(v)?.into_bytes()),
@@ -1391,8 +1713,11 @@ impl Kernel {
                 }
                 Some(form_data(&parts))
             }
-            None if !op.form.is_empty() => {
+            None if !op.form.is_empty() || more.form_fields.is_some() => {
                 let mut f = reqwest::Url::parse("http://form/").map_err(Error::internal)?;
+                for (k, v) in form_fields(more, &vars)? {
+                    f.query_pairs_mut().append_pair(&k, &v);
+                }
                 for (k, v) in &op.form {
                     f.query_pairs_mut().append_pair(k, &r(v)?);
                 }
@@ -1401,8 +1726,12 @@ impl Kernel {
             None => None,
         };
         let method = reqwest::Method::from_bytes(op.method().as_bytes()).map_err(Error::internal)?;
-        let more = if bare { vec![] } else { self.authenticate(ctx, conn, &mut headers, body.as_ref().map(|b| b.0.as_slice()), &method, &url).await? };
-        Ok((Request { method, url, headers, body }, more))
+        let hidden = if bare || more.credentials == Some(false) {
+            vec![]
+        } else {
+            self.authenticate(ctx, conn, &mut headers, body.as_ref().map(|b| b.0.as_slice()), &method, &url).await?
+        };
+        Ok((Request { method, url, headers, body }, hidden))
     }
 
     /// Adds what proves who calls; what more it must never show.
@@ -1459,6 +1788,29 @@ impl Kernel {
             }
         }
         Ok(vec![])
+    }
+}
+
+/// An operation's `form_fields`, rendered: an object's entries, or a list's `{name, value}`, in their order.
+fn form_fields(more: &More, vars: &Value) -> Result<Vec<(String, String)>> {
+    let Some(t) = &more.form_fields else { return Ok(vec![]) };
+    let text = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    let given: Value = serde_json::from_str(&render(t, vars)?).map_err(|e| Error::invalid(format!("form_fields is not JSON: {e}")))?;
+    match given {
+        Value::Object(o) => Ok(o.iter().map(|(k, v)| (k.clone(), text(v))).collect()),
+        Value::Array(a) => a
+            .iter()
+            .map(|p| match (p.get("name").and_then(Value::as_str), p.get("value")) {
+                (Some(n), Some(v)) => Ok((n.to_string(), text(v))),
+                _ => Err(Error::invalid("form_fields is a list of {name, value}")),
+            })
+            .collect(),
+        Value::Null => Ok(vec![]),
+        _ => Err(Error::invalid("form_fields is an object or a list of {name, value}")),
     }
 }
 
@@ -1691,15 +2043,22 @@ impl Kernel {
     pub async fn try_connection(&self, ctx: &Ctx, id: Uuid, operation: &str, inputs: &Value, key: Option<&str>) -> Result<Value> {
         admin_only(ctx)?;
         let conn = self.load_connection(ctx.tenant, &id.to_string()).await?;
-        let op = conn.desc.operations.get(operation).ok_or_else(|| Error::invalid(format!("{} has no operation {operation}", conn.name)))?;
+        if !conn.desc.operations.contains_key(operation) {
+            return Err(Error::invalid(format!("{} has no operation {operation}", conn.name)));
+        }
         if conn.desc.signs_in_with(operation) {
             return Err(Error::invalid(format!("{operation} is how {} signs in: it is not tried", conn.name)));
         }
-        if op.changes() && key.is_none_or(|k| k.trim().is_empty()) {
+        if conn.desc.changes(operation) && key.is_none_or(|k| k.trim().is_empty()) {
             return Err(Error::invalid(format!("{operation} changes something at the service, so trying it needs a key")));
         }
         let inputs = if inputs.is_null() { json!({}) } else { inputs.clone() };
-        Ok(match self.perform(ctx, &conn, operation, &inputs, key, None, None, None).await? {
+        let outcome = if conn.desc.more(operation).steps.is_empty() {
+            self.perform(ctx, &conn, operation, &inputs, key, Extra::default(), None, None).await?
+        } else {
+            Box::pin(self.perform_steps(ctx, &conn, operation, &inputs, key, Utc::now(), None)).await?
+        };
+        Ok(match outcome {
             Outcome::Ok(result, answer) => json!({"ok": true, "result": result, "answer": masked(&answer.body, &conn.mask())}),
             Outcome::Later(why, _) => json!({"ok": false, "temporary": true, "error": why}),
             Outcome::No(why) => json!({"ok": false, "temporary": false, "error": why}),
@@ -1767,6 +2126,8 @@ impl Kernel {
             .await?
             .rows_affected();
         n += sqlx::query("delete from conn_signin where expires_at < now()").execute(&mut *tx).await?.rows_affected();
+        n += sqlx::query("delete from conn_rate where slot < extract(epoch from now())::bigint - 86400").execute(&mut *tx).await?.rows_affected();
+        n += sqlx::query("delete from conn_attempt where at < now() - make_interval(days => $1::int)").bind(LOG_DAYS).execute(&mut *tx).await?.rows_affected();
         tx.commit().await?;
         Ok(n)
     }
@@ -1865,7 +2226,7 @@ impl JobHandler for Queued {
             ctx.user = u;
         }
         // A "later" with the service's own Retry-After comes back when it said, capped.
-        let result = k.call_waiting(&ctx, None, &c, true).await?;
+        let result = k.call_waiting(&ctx, None, &c).await?;
         Ok(json!({"result": result}))
     }
 
@@ -2009,6 +2370,21 @@ mod tests {
                 .problem()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn keys_beyond_an_operation_are_kept_on_it() {
+        let v = json!({"test": true, "operations": {
+            "put": {"method": "PUT", "url": "{{ inputs.url }}", "success": [308], "credentials": false},
+            "go": {"steps": [{"name": "a", "operation": "put", "inputs": {"url": "inputs.u"}}]}}});
+        let d: Description = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(d.more("put").success, Some(vec![308]));
+        assert!(d.changes("go") && d.changes("put"));
+        assert_eq!(d.problem(), None);
+        assert_eq!(serde_json::to_value(&d).unwrap()["operations"], v["operations"], "written back on the operation");
+        let typo = json!({"test": true, "operations": {"a": {"method": "GET", "colour": 1}}});
+        assert!(serde_json::from_value::<Description>(typo).is_err(), "an unknown key is still refused");
+        assert!(serde_json::from_value::<Description>(json!({"operations": {"a": {"url": 5}}})).is_err());
     }
 
     #[test]

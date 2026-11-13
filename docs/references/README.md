@@ -16,6 +16,7 @@ claim pointing at a file. Nothing here was run, so "does" means "the code does".
 | [campaigns.md](campaigns.md) | listmonk, Mautic |
 | [commerce.md](commerce.md) | Medusa |
 | [pos.md](pos.md) | POS Awesome |
+| [social.md](social.md) | Postiz, Mixpost (what connections part three answers) |
 | [bookings.md](bookings.md) | Cal.com |
 | [forms.md](forms.md) | Formbricks |
 | [sign.md](sign.md) | Documenso, DocuSeal |

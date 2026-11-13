@@ -138,6 +138,9 @@ pub struct KernelSettings {
     /// Hosts the operator lets connections reach on a private address or over plain http
     /// (`FERRUM_CONNECTION_HOSTS`, comma-separated): a service inside the operator's own network.
     pub connection_hosts: Vec<String>,
+    /// The largest stored file a connection sends in chunks (`FERRUM_CONNECTION_UPLOAD_MB`; 25 MB unless the operator
+    /// says): read a chunk at a time, never whole.
+    pub connection_upload_bytes: u64,
     /// Allow single sign-on providers on private addresses, and over plain http (an identity
     /// provider inside the operator's own network; development).
     pub sso_allow_private: bool,
@@ -193,6 +196,7 @@ impl Default for KernelSettings {
         KernelSettings {
             webhooks_allow_private: false,
             connection_hosts: Vec::new(),
+            connection_upload_bytes: 25 << 20,
             sso_allow_private: false,
             ctx_ttl: Duration::from_secs(30),
             event_retention_days: 30,
