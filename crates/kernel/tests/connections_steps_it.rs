@@ -139,7 +139,7 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
         ("GET", "/v1/dtd") => (200, String::new(), r#"<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>"#.into()),
         ("GET", "/v1/form") => (200, String::new(), "a=1&b=x%20y&token=tok-Ww2".into()),
         ("POST", "/v1/oauth/token-key") if body_of(raw).is_null() && raw.contains("client_key=ck-1") && !raw.contains("client_id=") => {
-            (200, String::new(), json!({"access_token": "AT-Kk1", "expires_in": 3600}).to_string())
+            (200, String::new(), json!({"access_token": "AT-Kk1", "expires_in": 3600, "open_id": "OPEN-Hh2-1", "handle": "ana.example"}).to_string())
         }
         ("POST", "/v1/oauth/token2") => (200, String::new(), json!({"access_token": "AT-Uu8-access", "account": {"id": "U-7"}}).to_string()),
         ("GET", "/v1/users/U-7/posts") => (200, String::new(), json!({"items": [{"id": "P-1"}, {"id": "P-2"}]}).to_string()),
@@ -1026,9 +1026,13 @@ async fn schemes(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
 /// BD-72: a provider that calls the client's id `client_key` and joins scopes with commas.
 async fn provider_words(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     let provider = json!({"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/oauth/token-key"), "client_id": "ck-1",
-                          "client_id_param": "client_key", "scope_separator": ",", "scopes": ["user.info.basic", "video.publish"]});
+                          "client_id_param": "client_key", "scope_separator": ",", "scopes": ["user.info.basic", "video.publish"],
+                          "keep": ["open_id", "handle"], "not_secret": ["handle"]});
+    // BD-77: what the sign-in kept, in a result; a value not said to be no secret is hidden there.
+    let ops = json!({"post": {"path": "/ok-true", "result": {"id": "/id", "link": {"expr": "'https://x.example/@' + auth.handle + '/' + answer.id"},
+                     "open": {"expr": "auth.open_id"}}}});
     let id = k
-        .save_connection_def(admin, None, &input("keyed", json!({"base": base, "auth": {"type": "oauth", "provider": provider}, "operations": {}}), None))
+        .save_connection_def(admin, None, &input("keyed", json!({"base": base, "auth": {"type": "oauth", "provider": provider}, "operations": ops}), None))
         .await
         .unwrap();
     let session = Uuid::now_v7();
@@ -1036,6 +1040,11 @@ async fn provider_words(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     assert_eq!((asked.get("client_key").map(String::as_str), asked.get("scope").map(String::as_str)), (Some("ck-1"), Some("user.info.basic,video.publish")));
     assert!(!asked.contains_key("client_id"), "{asked:?}");
     k.connect_finish(admin, session, &asked["state"], Some("CODE-K"), None).await.expect("exchanged with client_key");
+    let r = connections::call(k, admin, None, &call("keyed", "post", json!({}), None)).await.unwrap();
+    assert_eq!(r, json!({"id": "M-9", "link": "https://x.example/@ana.example/M-9", "open": "••••••"}));
+    let mut wrong = provider.clone();
+    wrong["not_secret"] = json!(["nope"]);
+    assert!(k.save_connection_def(admin, Some(id), &input("keyed", json!({"base": base, "auth": {"type": "oauth", "provider": wrong}}), None)).await.is_err());
     let mut bad = json!({"authorize_url": "https://id.example.test/a", "token_url": "https://id.example.test/t", "client_id": "x", "scope_separator": "|"});
     let e = k
         .save_connection_def(admin, None, &input("keyed2", json!({"base": base, "auth": {"type": "oauth", "provider": bad.clone()}}), None))

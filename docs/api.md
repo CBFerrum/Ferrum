@@ -1408,7 +1408,10 @@ platform's client at this server with an operation of its own (given `inputs.red
 its result's `client_id` and `client_secret` kept, once), for a server whose registration is not RFC 7591's;
 `never_expires: true` ignores the answer's expiry; `client_id_param: "client_key"` names the client's id as the
 provider does on the authorisation address and token requests, and `scope_separator: ","` joins scopes with commas
-([BD-72](builder/decisions.md#bd-72-a-providers-own-names-for-the-client-and-its-scopes)). These operations sign in:
+([BD-72](builder/decisions.md#bd-72-a-providers-own-names-for-the-client-and-its-scopes)). A `result` expression reads
+`auth.<kept>` and `account` too; kept values are hidden in a result unless named in `not_secret` (a handle a permalink
+is made from: `"not_secret": ["handle"]`, on the provider or a session;
+[BD-77](builder/decisions.md#bd-77-kept-sign-in-values-in-results)). These operations sign in:
 they are never called as operations.
 
 **A 2xx answer that is a refusal** ([BD-68](builder/decisions.md#bd-68-a-2xx-answer-that-is-a-refusal-in-the-services-words)):
