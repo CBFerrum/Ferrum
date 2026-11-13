@@ -89,6 +89,7 @@ if [ -n "${FERRUM_PREVIOUS_IMAGE:-}" ]; then
   fi
 fi
 
+first_image=$FERRUM_IMAGE
 step "starting the stack from $FERRUM_IMAGE"
 compose up -d --no-build db ferrum pdf office ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet}
 wait_up "$API/_health" "the server"
@@ -114,6 +115,41 @@ wait_up "$API/_health" "the server"
 # On the new image: the one before may not have what this checks.
 FERRUM_URL=$API FERRUM_TENANT=smoke FERRUM_EMAIL=smoke@smoke.test FERRUM_PASSWORD=$PASSWORD python3 ../scripts/support_check.py \
   || fail "support access reaches more than it was given"
+
+# The two-version window (docs/operations.md, Upgrades and rollbacks): the image before this one starts again on the
+# database this one migrated and serves, as a rollback does, unless this one's COMPATIBLE_FROM shuts it out, when it
+# must refuse saying what to start. Only an image that has the window carries its build date; an older one is skipped.
+if [ "$first_image" != "$NEW_IMAGE" ]; then
+  previous_date=$(docker image inspect -f '{{ index .Config.Labels "io.ferrum.build-date" }}' "$first_image" 2>/dev/null || true)
+  if [ -z "$previous_date" ] || [ "$previous_date" = "<no value>" ]; then
+    echo "    rollback skipped: $first_image carries no build date (it is from before the two-version window)"
+  else
+    compatible_from=$(compose exec -T db psql -U postgres -d ferrum -tAc "select value from cluster_state where key = 'schema_compatible_from'" | tr -d '[:space:]')
+    [ -n "$compatible_from" ] || fail "$NEW_IMAGE recorded no COMPATIBLE_FROM"
+    let_in=$(python3 -c 'import sys, datetime as d; print(int(sys.argv[1]) >= int(d.datetime.fromisoformat(sys.argv[2].replace("Z", "+00:00")).timestamp()))' "$previous_date" "$compatible_from")
+    export FERRUM_IMAGE=$first_image
+    if [ "$let_in" = True ]; then
+      step "starting $first_image again on the database $NEW_IMAGE migrated, as a rollback does"
+      compose up -d --no-build --no-deps --force-recreate ferrum
+      wait_up "$API/_health" "the previous server on the migrated database"
+      [ "$(curl -fsS "${auth[@]}" "$API/api/auth/me" | json 'd["user"]["email"]')" = "smoke@smoke.test" ] || fail "the session on the previous server"
+      [ "$(curl -fsS "${auth[@]}" "$API/api/v1/SalesInvoice/$before" | json 'd["docstatus"]')" = "1" ] || fail "the invoice on the previous server"
+      invoice rollback >/dev/null || fail "invoicing on the previous server, on the migrated database"
+    else
+      step "starting $first_image again: shut out by COMPATIBLE_FROM $compatible_from, it must refuse"
+      compose up -d --no-build --no-deps --force-recreate ferrum
+      for _ in $(seq 1 30); do
+        compose logs ferrum 2>&1 | grep -q "Start a build from $compatible_from or newer" && break
+        sleep 2
+      done
+      compose logs ferrum 2>&1 | grep -q "Start a build from $compatible_from or newer" || fail "the previous server did not refuse, naming what to start"
+    fi
+    step "and $NEW_IMAGE once more"
+    export FERRUM_IMAGE=$NEW_IMAGE
+    compose up -d --no-build --no-deps --force-recreate ferrum
+    wait_up "$API/_health" "the server"
+  fi
+fi
 
 step "SAML's signatures checked on the image (xmlsec1 and its OpenSSL backend load)"
 # The report exits non-zero for blockers this stack has on purpose (plain http); only its SAML line counts here.

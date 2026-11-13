@@ -437,6 +437,12 @@ impl Task for Migrate {
     }
     async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
+        // A newer build migrated the database (crates/kernel/src/window.rs): there is nothing for this one to do, and a
+        // rollback that runs this task with the previous image goes on.
+        if let Some(newer) = k.booted.guest {
+            println!("nothing to do: a newer build (of {}) has migrated this database, and this build runs on it as it is", newer.build);
+            return Ok(());
+        }
         // The kernel did the first two as this task started.
         match &k.booted.migrations[..] {
             [] => println!("migrations: none to apply"),
@@ -450,7 +456,14 @@ impl Task for Migrate {
         } else {
             println!("schema: synced ({} statements, {} warnings)", schema.statements, schema.warnings.len());
         }
-        let steps = crate::upgrade::run(&k).await.map_err(|e| Error::Message(format!("upgrade steps: {e}")))?;
+        // Held as a server's start holds it; None when a newer build has migrated since this task started.
+        let Some(hold) = k.hold_start().await.map_err(refused)? else {
+            println!("upgrade steps: left to the newer build that has migrated this database meanwhile");
+            return Ok(());
+        };
+        let steps = crate::upgrade::run(&k).await.map_err(|e| Error::Message(format!("upgrade steps: {e}")));
+        hold.release().await;
+        let steps = steps?;
         for (step, n) in steps.iter().filter(|(_, n)| *n > 0) {
             println!("upgrade {step}: {n} workspaces");
         }

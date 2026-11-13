@@ -2,7 +2,7 @@
 """compare.py KUSTOMIZE.yaml CHART.yaml: fail when the chart's output and deploy/k8s drift apart.
 
 Same kinds and names on both sides, and the same spec for each (images aside: the chart
-requires a digest or tag, the base uses `latest`). For the server, the environment variable
+requires a digest or tag, the base a placeholder to set). For the server, the environment variable
 names are checked first so a setting missing from one side is named in the message.
 """
 import sys

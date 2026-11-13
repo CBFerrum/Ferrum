@@ -1,0 +1,38 @@
+# The pools of pools.yaml in two zones. The public gateway reaches only `public`, whose zone admits no
+# staff (portal, guest and service accounts, signed callbacks and public pages); staff work through the
+# private gateway, inside your network, where `general` (today's names), `finance` and `worker` are.
+# Point the public host (and the portal host) at the public gateway and erp.internal.example.com at the
+# private one. Connections: 4 x 34 + 3 x 24 + 2 x 34 + 2 x 24 + 20 = 344 of 370.
+zones:
+  public: {staff: none}
+  office: {staff: all}
+gateway:
+  defaultPool: public
+privateGateway:
+  enabled: true
+  hostnames: [erp.internal.example.com]
+  defaultPool: general
+pools:
+  - name: general
+    zone: office
+    background: "off"
+    autoscaling: {minReplicas: 2, maxReplicas: 4}
+  - name: public
+    zone: public
+    background: "off"     # required: a zone that admits no staff runs no background work
+    autoscaling: {minReplicas: 2, maxReplicas: 3}
+    dbMaxConnections: 20
+    routes:
+      - {gateway: public, hostnames: [portal.example.com]}
+  - name: finance
+    zone: office
+    background: "off"
+    autoscaling: {minReplicas: 2, maxReplicas: 2}
+    routes:
+      - {gateway: private, apps: [erp, books]}
+  - name: worker
+    zone: office
+    background: only
+    autoscaling: {enabled: false}
+    replicas: 2
+    dbMaxConnections: 20
