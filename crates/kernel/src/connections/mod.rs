@@ -37,6 +37,7 @@ pub mod inbound;
 pub mod oauth;
 pub(crate) mod personal;
 pub mod pull;
+pub mod steps;
 
 pub const CALL_KIND: &str = "platform.connection.call";
 /// Attempts at a queued call while the service says "later".
@@ -233,6 +234,20 @@ pub struct Operation {
     /// A test connection's answer: `{status, body}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixture: Option<Value>,
+    /// Several requests in order, each another operation (BD-53); the operation then sends nothing itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<steps::Step>,
+    /// A template giving the whole address, in place of the base and `path` (one an earlier answer gave): the guard
+    /// holds it to the connection's hosts like any other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// `false`: sent without the connection's credentials (an address that is signed already).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<bool>,
+    /// A template giving more form fields, as JSON (an object, or a list of `{name, value}`), sent before `form`'s in
+    /// their order (a signed upload form an earlier answer gave).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form_fields: Option<String>,
 }
 
 impl Operation {
@@ -245,7 +260,7 @@ impl Operation {
     }
 
     pub(crate) fn changes(&self) -> bool {
-        self.changes.unwrap_or(self.method() != "GET")
+        self.changes.unwrap_or(!self.steps.is_empty() || self.method() != "GET")
     }
 
     /// Whether its form goes as `multipart/form-data`: it sends a file, or its headers say so.
@@ -483,7 +498,15 @@ pub(crate) fn retry_after(v: &str, now: DateTime<Utc>) -> Option<u64> {
 
 /// What is wrong with a template, if anything.
 fn template_problem(t: &str) -> Option<String> {
-    crate::print::environment().template_from_str(t).err().map(|e| format!("'{t}': {e}"))
+    environment().template_from_str(t).err().map(|e| format!("'{t}': {e}"))
+}
+
+/// The template engine of connections: the print formats' (fuel-limited), printing values as they are.
+pub(crate) fn environment() -> minijinja::Environment<'static> {
+    let mut env = crate::print::environment();
+    env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
+    env.add_filter("json", |v: minijinja::Value| serde_json::to_string(&v).unwrap_or_default());
+    env
 }
 
 pub(crate) fn pointer_problem(p: &str) -> Option<String> {
@@ -573,7 +596,7 @@ impl Description {
             }
         }
         for (name, op) in &self.operations {
-            if let Some(p) = op.problem() {
+            if let Some(p) = op.problem().or_else(|| (!op.steps.is_empty()).then(|| steps::problem(self, op)).flatten()) {
                 return Some(format!("operation {name}: {p}"));
             }
             if !is_name(name) {
@@ -604,11 +627,16 @@ impl Operation {
         if !self.path.is_empty() && !self.path.starts_with('/') {
             return Some("path starts with /".into());
         }
+        if !self.path.is_empty() && self.url.is_some() {
+            return Some("a request has a path or a url, not both".into());
+        }
         if self.body.is_some() && !self.form.is_empty() {
             return Some("a request has a body or a form, not both".into());
         }
         let plain = |v: &&String| !v.starts_with(SPEC);
         let templates = std::iter::once(&self.path)
+            .chain(self.url.iter())
+            .chain(self.form_fields.iter())
             .chain(self.query.values())
             .chain(self.headers.values())
             .chain(self.body.iter().filter(plain))
@@ -824,15 +852,12 @@ fn pct(s: &str) -> String {
 
 /// `src` over `vars`, as text (no HTML escaping; the print formats' engine, fuel-limited).
 pub(crate) fn render(src: &str, vars: &Value) -> Result<String> {
-    let mut env = crate::print::environment();
-    env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
-    env.add_filter("json", |v: minijinja::Value| serde_json::to_string(&v).unwrap_or_default());
-    env.render_str(src, minijinja::Value::from_serialize(vars)).map_err(|e| Error::invalid(format!("a template failed: {e}")))
+    environment().render_str(src, minijinja::Value::from_serialize(vars)).map_err(|e| Error::invalid(format!("a template failed: {e}")))
 }
 
 /// A path template: each value it prints percent-encoded, so an input cannot add a segment, a query or a host.
 fn render_path(src: &str, vars: &Value) -> Result<String> {
-    let mut env = crate::print::environment();
+    let mut env = environment();
     env.set_formatter(|out, _state, value| {
         let text = if value.is_none() || value.is_undefined() { String::new() } else { value.to_string() };
         out.write_str(&pct(&text)).map_err(|_| minijinja::Error::new(minijinja::ErrorKind::WriteFailure, "path"))
@@ -864,7 +889,7 @@ pub(crate) fn masked_text(s: &str, mask: &[String]) -> String {
 }
 
 /// A digest of a call's inputs, to tell the same request from another under one key.
-fn digest(v: &Value) -> String {
+pub(crate) fn digest(v: &Value) -> String {
     hex::encode(Sha256::digest(v.to_string().as_bytes()))
 }
 
@@ -1024,6 +1049,14 @@ pub(crate) struct Page<'a> {
     pub address: Option<&'a str>,
 }
 
+/// What a request is made with besides its inputs: a pull's page, the clock its templates read.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Extra<'a> {
+    pub page: Option<Page<'a>>,
+    /// The moment fixed at the first attempt of the call's key; else now.
+    pub now: Option<DateTime<Utc>>,
+}
+
 /// Calls an operation of a connection and gives its mapped result: for apps (docs/api.md, "Connections"). `app` is the
 /// calling package, which the connection must list; `None` is a person's own call (an administrator, or one holding a
 /// role the connection lists) or the system's. A temporary failure is `Unavailable`; any other, `Invalid`.
@@ -1081,10 +1114,34 @@ impl Kernel {
                 Err(Error::Conflict(format!("the key {key} was used for {} with other inputs: a new request needs a new key", c.operation)))
             };
         }
+        // One worker makes a key at a time; its clock is fixed at its first attempt.
+        let (mut held, mut clock) = (None, Utc::now());
+        if let Some(key) = key.filter(|_| op.changes()) {
+            held = Some(self.hold_key(&conn, &c.operation, key).await?.ok_or_else(|| Error::RetryAfter(format!("the call {key} is being made"), 5))?);
+            if let Some((was, result)) = self.done_before(&conn, &c.operation, key).await? {
+                return if was == given { Ok(result) } else { Err(Error::Conflict(format!("the key {key} was used for {} with other inputs", c.operation))) };
+            }
+            let a = self.key_attempt(&conn, &c.operation, key, &given).await?;
+            if !op.steps.is_empty() && a.digest != given {
+                return Err(Error::Conflict(format!("the key {key} was used for {} with other inputs: a new request needs a new key", c.operation)));
+            }
+            clock = a.clock;
+        }
         let about = c.entity.clone().zip(c.record);
-        let outcome = self
-            .perform(ctx, &conn, &c.operation, &inputs, key, None, about.as_ref().map(|(e, r)| (e.as_str(), *r)), op.changes().then_some(given.as_str()))
-            .await?;
+        let about = about.as_ref().map(|(e, r)| (e.as_str(), *r));
+        let outcome = if op.steps.is_empty() {
+            let extra = Extra { now: Some(clock), ..Default::default() };
+            self.perform(ctx, &conn, &c.operation, &inputs, key, extra, about, op.changes().then_some(given.as_str())).await?
+        } else {
+            let o = self.perform_steps(ctx, &conn, &c.operation, &inputs, key, clock, about).await?;
+            if let (Outcome::Ok(result, _), Some(key)) = (&o, key) {
+                self.remember(ctx, &conn, &c.operation, key, &given, result).await?;
+            }
+            o
+        };
+        if let Some(tx) = held {
+            tx.commit().await?;
+        }
         match outcome {
             Outcome::Ok(result, _) => Ok(result),
             Outcome::Later(why, Some(secs)) if waits => Err(Error::RetryAfter(why, secs)),
@@ -1109,7 +1166,7 @@ impl Kernel {
         Ok(row.map(|(d, r)| (d.unwrap_or_default(), r.unwrap_or(Value::Null))))
     }
 
-    /// One operation, made and logged. `page`: a pull's page (its `cursor` a template variable).
+    /// One operation, made and logged. `extra`: a pull's page (its `cursor` a template variable), the clock.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn perform(
         &self,
@@ -1118,11 +1175,31 @@ impl Kernel {
         name: &str,
         inputs: &Value,
         key: Option<&str>,
-        page: Option<Page<'_>>,
+        extra: Extra<'_>,
         about: Option<(&str, Uuid)>,
         keep: Option<&str>,
     ) -> Result<Outcome> {
+        Ok(self.perform_full(ctx, conn, name, inputs, key, extra, about, keep).await?.0)
+    }
+
+    /// [`Kernel::perform`], and the status the service answered and whether a request went out at all.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn perform_full(
+        &self,
+        ctx: &Ctx,
+        conn: &Loaded,
+        name: &str,
+        inputs: &Value,
+        key: Option<&str>,
+        extra: Extra<'_>,
+        about: Option<(&str, Uuid)>,
+        keep: Option<&str>,
+    ) -> Result<(Outcome, Option<u16>, bool)> {
         let op = conn.desc.operations.get(name).ok_or_else(|| Error::invalid(format!("{} has no operation {name}", conn.name)))?;
+        if !op.steps.is_empty() {
+            return Err(Error::invalid(format!("{name} is made of steps: it is called by itself, not inside another")));
+        }
+        let mut sent = conn.desc.test;
         // Signing in: made without credentials of its own, never captured (its answer is a token), never refreshed.
         let bare = conn.desc.signs_in_with(name);
         let started = Instant::now();
@@ -1147,8 +1224,9 @@ impl Kernel {
             let mut tries = 0;
             let got = loop {
                 tries += 1;
-                let got = match self.build_request(ctx, conn, op, inputs, key, page, bare).await {
+                let got = match self.build_request(ctx, conn, op, inputs, key, extra, bare).await {
                     Ok((req, more)) => {
+                        sent = true;
                         mask.extend(more);
                         if conn.debug && !bare {
                             debug = Some(json!({"request": captured(&req, &mask)}));
@@ -1241,7 +1319,7 @@ impl Kernel {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(outcome)
+        Ok((outcome, status, sent))
     }
 
     /// The mapped result of an answer that worked: each of the operation's `result` read as its [`Pick`] says (none: the
@@ -1330,10 +1408,13 @@ impl Kernel {
         op: &Operation,
         inputs: &Value,
         key: Option<&str>,
-        page: Option<Page<'_>>,
+        extra: Extra<'_>,
         bare: bool,
     ) -> Result<(Request, Vec<String>)> {
-        let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key});
+        let page = extra.page;
+        let now = extra.now.unwrap_or_else(Utc::now);
+        let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key, "now": now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                              "today": now.date_naive().to_string()});
         if let Some(p) = page {
             vars["cursor"] = p.cursor.clone();
         }
@@ -1348,8 +1429,12 @@ impl Kernel {
             let more = self.authenticate(ctx, conn, &mut headers, None, &reqwest::Method::GET, &url).await?;
             return Ok((Request { method: reqwest::Method::GET, url, headers, body: None }, more));
         }
-        let mut url = reqwest::Url::parse(&format!("{}{}", conn.desc.base.trim_end_matches('/'), render_path(&op.path, &vars)?))
-            .map_err(|_| Error::invalid("the operation's address is not an address"))?;
+        // A whole address (one an earlier answer gave) is taken as it is: the guard holds it to the connection's hosts.
+        let address = match &op.url {
+            Some(t) => r(t)?.trim().to_string(),
+            None => format!("{}{}", conn.desc.base.trim_end_matches('/'), render_path(&op.path, &vars)?),
+        };
+        let mut url = reqwest::Url::parse(&address).map_err(|_| Error::invalid("the operation's address is not an address"))?;
         if !op.query.is_empty() {
             let pairs = op.query.iter().map(|(k, v)| Ok((k.clone(), r(v)?))).collect::<Result<Vec<_>>>()?;
             url.query_pairs_mut().extend_pairs(pairs);
@@ -1380,6 +1465,9 @@ impl Kernel {
             },
             None if multipart => {
                 let mut parts = Vec::new();
+                for (k, v) in form_fields(op, &vars)? {
+                    parts.push((k, None, v.into_bytes()));
+                }
                 for (k, v) in &op.form {
                     parts.push(match spec_of::<FilePart>(v) {
                         Some(part) => {
@@ -1391,8 +1479,11 @@ impl Kernel {
                 }
                 Some(form_data(&parts))
             }
-            None if !op.form.is_empty() => {
+            None if !op.form.is_empty() || op.form_fields.is_some() => {
                 let mut f = reqwest::Url::parse("http://form/").map_err(Error::internal)?;
+                for (k, v) in form_fields(op, &vars)? {
+                    f.query_pairs_mut().append_pair(&k, &v);
+                }
                 for (k, v) in &op.form {
                     f.query_pairs_mut().append_pair(k, &r(v)?);
                 }
@@ -1401,7 +1492,11 @@ impl Kernel {
             None => None,
         };
         let method = reqwest::Method::from_bytes(op.method().as_bytes()).map_err(Error::internal)?;
-        let more = if bare { vec![] } else { self.authenticate(ctx, conn, &mut headers, body.as_ref().map(|b| b.0.as_slice()), &method, &url).await? };
+        let more = if bare || op.credentials == Some(false) {
+            vec![]
+        } else {
+            self.authenticate(ctx, conn, &mut headers, body.as_ref().map(|b| b.0.as_slice()), &method, &url).await?
+        };
         Ok((Request { method, url, headers, body }, more))
     }
 
@@ -1459,6 +1554,29 @@ impl Kernel {
             }
         }
         Ok(vec![])
+    }
+}
+
+/// An operation's `form_fields`, rendered: an object's entries, or a list's `{name, value}`, in their order.
+fn form_fields(op: &Operation, vars: &Value) -> Result<Vec<(String, String)>> {
+    let Some(t) = &op.form_fields else { return Ok(vec![]) };
+    let text = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    let given: Value = serde_json::from_str(&render(t, vars)?).map_err(|e| Error::invalid(format!("form_fields is not JSON: {e}")))?;
+    match given {
+        Value::Object(o) => Ok(o.iter().map(|(k, v)| (k.clone(), text(v))).collect()),
+        Value::Array(a) => a
+            .iter()
+            .map(|p| match (p.get("name").and_then(Value::as_str), p.get("value")) {
+                (Some(n), Some(v)) => Ok((n.to_string(), text(v))),
+                _ => Err(Error::invalid("form_fields is a list of {name, value}")),
+            })
+            .collect(),
+        Value::Null => Ok(vec![]),
+        _ => Err(Error::invalid("form_fields is an object or a list of {name, value}")),
     }
 }
 
@@ -1699,7 +1817,12 @@ impl Kernel {
             return Err(Error::invalid(format!("{operation} changes something at the service, so trying it needs a key")));
         }
         let inputs = if inputs.is_null() { json!({}) } else { inputs.clone() };
-        Ok(match self.perform(ctx, &conn, operation, &inputs, key, None, None, None).await? {
+        let outcome = if op.steps.is_empty() {
+            self.perform(ctx, &conn, operation, &inputs, key, Extra::default(), None, None).await?
+        } else {
+            self.perform_steps(ctx, &conn, operation, &inputs, key, Utc::now(), None).await?
+        };
+        Ok(match outcome {
             Outcome::Ok(result, answer) => json!({"ok": true, "result": result, "answer": masked(&answer.body, &conn.mask())}),
             Outcome::Later(why, _) => json!({"ok": false, "temporary": true, "error": why}),
             Outcome::No(why) => json!({"ok": false, "temporary": false, "error": why}),

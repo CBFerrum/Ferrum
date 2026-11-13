@@ -1259,6 +1259,32 @@ made as them uses theirs. The second is the organisation's page (`owner: workspa
 **Packs and packages** carry `connections: [{name, label, description}]`, never a secret or a token; they arrive turned
 off.
 
+### Steps, waits, loops and the clock
+
+**Steps** ([BD-53](builder/decisions.md#bd-53-an-operation-of-steps)): an operation may be several requests in order,
+each another operation of the connection; it then sends nothing itself. A step's `inputs` are expressions (the
+templates' language without braces) over `inputs`, `steps` (the earlier steps' results by name) and `key`; `when`
+makes it only when true. A register-upload, put-bytes, post shape:
+
+```json
+"publish": {"inputs": ["owner", "text", "file"], "result": {"id": "/post/id"}, "steps": [
+  {"name": "register", "operation": "register_upload", "inputs": {"owner": "inputs.owner"}},
+  {"name": "upload", "operation": "put_bytes", "inputs": {"url": "steps.register.upload_url", "file": "inputs.file"}},
+  {"name": "post", "operation": "create_post", "inputs": {"text": "inputs.text", "asset": "steps.register.asset"},
+   "confirm": {"operation": "find_post", "inputs": {"asset": "sent.asset"}, "proves": "result.id"}}]},
+"put_bytes": {"method": "PUT", "url": "{{ inputs.url }}", "body": {"file": "{{ inputs.file }}"}}
+```
+
+The operation's `result` reads `{<step>: <its result>}` (none: all of it). Under a key each step is a call of its own
+under `<key>:<step>`, its answer kept with the call (masked): the same key again resumes after the last step that
+finished, and other inputs under it are a 409. A step whose answer was lost (no answer, a 5xx but 503, an answer that
+could not be read) may have happened: it is sent again only when its operation has an `idempotency_header`, or after
+its `confirm` (a reading operation; `sent` is the step's own inputs) does not prove it; otherwise the call fails
+saying so. One worker makes a key at a time: another gets `RetryAfter` (5 s). An operation may give a whole address
+in `url` (a template; one an earlier answer gave), held to the connection's hosts like any other; `credentials: false`
+sends it without the connection's credentials (an address signed already); `form_fields` (a template giving an
+object, or a list of `{name, value}`) adds a signed upload form's fields before `form`'s.
+
 ### Moving an app's own HTTP client onto a connection
 
 Social, ERP's carriers and the service apps each build requests themselves. To move one:

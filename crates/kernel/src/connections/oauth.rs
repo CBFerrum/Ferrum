@@ -751,7 +751,7 @@ impl Kernel {
             quiet.secrets.insert("\u{0}refresh".into(), r.to_string());
         }
         let ctx = Ctx::system(conn.tenant, self.registry.schema(conn.tenant).await?);
-        Ok(match Box::pin(self.perform(&ctx, &quiet, op, &inputs, None, None, None, None)).await? {
+        Ok(match Box::pin(self.perform(&ctx, &quiet, op, &inputs, None, super::Extra::default(), None, None)).await? {
             Outcome::Ok(_, a) => match super::at(&a.body, Some(token_at)).filter(|t| !t.is_empty()) {
                 Some(token) => {
                     let mut out = json!({"access_token": token});
