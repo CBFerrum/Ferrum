@@ -565,10 +565,20 @@ pub struct FilePart {
     /// (`FERRUM_CONNECTION_UPLOAD_MB`, BD-71).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<u64>,
+    /// In a form, the part repeated for each item of a list (BD-75): an expression (`inputs.media`); `file`, `name` and
+    /// the part's own name, a template (`files[{{ index }}]`), read `item` and `index` (from 0). At most [`MAX_EACH`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub each: Option<String>,
 }
+
+/// The most parts one repeated part makes.
+const MAX_EACH: usize = 50;
 
 impl FilePart {
     fn problem(&self) -> Option<String> {
+        if let Some(p) = self.each.as_deref().and_then(steps::expression_problem) {
+            return Some(p);
+        }
         if self.max_bytes.is_some_and(|b| b == 0 || b > DECLARED_FILE_BYTES) {
             return Some(format!("a file part's max_bytes is 1 to {DECLARED_FILE_BYTES}"));
         }
@@ -1882,13 +1892,33 @@ impl Kernel {
                     parts.push((k, None, v.into_bytes()));
                 }
                 for (k, v) in &op.form {
-                    parts.push(match spec_of::<FilePart>(v) {
+                    match spec_of::<FilePart>(v) {
                         Some(part) => {
-                            let (name, kind, bytes) = self.sent_file(ctx, &part.map_err(Error::invalid)?, &vars, &mut budget, extra.range).await?;
-                            (k.clone(), Some((name, kind)), bytes)
+                            let part = part.map_err(Error::invalid)?;
+                            let Some(each) = &part.each else {
+                                let (name, kind, bytes) = self.sent_file(ctx, &part, &vars, &mut budget, extra.range).await?;
+                                parts.push((k.clone(), Some((name, kind)), bytes));
+                                continue;
+                            };
+                            // A part for each item of the list, named by its template (BD-75).
+                            let items = match steps::evaluate(each, &vars)? {
+                                Value::Array(a) => a,
+                                Value::Null => vec![],
+                                _ => return Err(Error::invalid(format!("{k}: each gives no list"))),
+                            };
+                            if items.len() > MAX_EACH {
+                                return Err(Error::invalid(format!("{k}: at most {MAX_EACH} parts")));
+                            }
+                            for (i, item) in items.into_iter().enumerate() {
+                                let mut at = vars.clone();
+                                at["item"] = item;
+                                at["index"] = json!(i);
+                                let (name, kind, bytes) = self.sent_file(ctx, &part, &at, &mut budget, extra.range).await?;
+                                parts.push((render(k, &at)?, Some((name, kind)), bytes));
+                            }
                         }
-                        None => (k.clone(), None, r(v)?.into_bytes()),
-                    });
+                        None => parts.push((k.clone(), None, r(v)?.into_bytes())),
+                    }
                 }
                 Some(form_data(&parts))
             }

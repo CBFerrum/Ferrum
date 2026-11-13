@@ -127,6 +127,7 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
         ),
         ("GET", "/v1/ok-false") => (200, String::new(), json!({"ok": false, "error": "channel_not_found"}).to_string()),
         ("GET", "/v1/ok-true") => (200, String::new(), json!({"ok": true, "id": "M-9"}).to_string()),
+        ("POST", "/v1/album") => (200, String::new(), json!({"ok": true}).to_string()),
         ("POST", "/v1/graphql") => (200, String::new(), json!({"errors": [{"message": "slow down", "extensions": {"code": "THROTTLED"}}]}).to_string()),
         ("GET", "/v1/to-private") => (302, "location: https://10.0.0.1/feed\r\n".into(), String::new()),
         ("GET", "/v1/to-local") => (302, format!("location: http://localhost:{port}/v1/rss\r\n"), String::new()),
@@ -948,6 +949,29 @@ async fn scenario() {
     refusals(&k, &admin, &base).await;
     provider_words(&k, &admin, &base).await;
     schemes(&k, &admin, &base).await;
+    repeated_parts(&k, &admin, &base).await;
+}
+
+/// BD-75: one multipart request carrying a part for each file of a list, and a value for each, from the same list.
+async fn repeated_parts(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let mut files = vec![];
+    for (i, body) in ["AAA", "BBB", "CCC"].into_iter().enumerate() {
+        files.push(k.store_file(admin, None, &format!("p{i}.jpg"), "image/jpeg", body.as_bytes()).await.unwrap()["id"].as_str().unwrap().to_string());
+    }
+    let op = json!({"method": "POST", "path": "/album", "changes": false,
+        "headers": {"content-type": "multipart/form-data"},
+        "form_fields": "[{% for f in inputs.media %}{\"name\": \"caption{{ loop.index0 }}\", \"value\": \"#{{ loop.index }}\"}{% if not loop.last %},{% endif %}{% endfor %}]",
+        "form": {"files[{{ index }}]": {"file": "{{ item }}", "each": "inputs.media", "name": "f{{ index }}.jpg"}}});
+    k.save_connection_def(admin, None, &input("album", json!({"base": base, "operations": {"send": op}}), None)).await.unwrap();
+    connections::call(k, admin, None, &call("album", "send", json!({"media": files}), None)).await.unwrap();
+    let sent = parts(&last("POST /v1/album"));
+    assert_eq!(
+        sent.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
+        ["caption0=#1", "caption1=#2", "caption2=#3", "files[0]=AAA", "files[1]=BBB", "files[2]=CCC"]
+    );
+    assert!(last("POST /v1/album").contains("filename=\"f2.jpg\""));
+    let bad = json!({"base": base, "operations": {"x": {"method": "POST", "path": "/x", "form": {"f": {"file": "x", "each": "inputs.(("}}}}});
+    assert!(k.save_connection_def(admin, None, &input("album2", bad, None)).await.is_err(), "checked when saved");
 }
 
 /// BD-73: an operation that sends the token under another scheme, or alone.
