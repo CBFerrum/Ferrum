@@ -450,6 +450,14 @@ impl Bundle {
         }
         let packages = self.packages()?;
         check_namespaces(m, &packages)?;
+        // A menu row joins a module of the app's own packages (BD-63).
+        for item in m.contributes.get("shell.menu").into_iter().flatten() {
+            let module = item.get("module").and_then(serde_json::Value::as_str).unwrap_or_default();
+            if !packages.iter().any(|p| p.manifest.modules.iter().any(|x| x.name == module)) {
+                let id = item.get("id").and_then(serde_json::Value::as_str).unwrap_or_default();
+                return bad(format!("contributes.shell.menu.{id}: module {module} is not one of this app's packages' modules"));
+            }
+        }
         if m.runtime == Runtime::Wasm {
             PluginManifest::parse(self.file(PLUGIN_JSON).unwrap_or_default())?.validate(m)?;
         }
@@ -615,6 +623,19 @@ mod tests {
         let mut sources = built;
         sources.insert("ui/src/main.js".into(), b"export {};".to_vec());
         refused(sources, "ui/src/main.js: native apps carry only their built interface");
+    }
+
+    #[test]
+    fn a_menu_row_joins_one_of_the_apps_own_modules() {
+        let mut files = meta_app();
+        let yaml = String::from_utf8(files["app.yaml"].clone()).unwrap()
+            + "ui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {id: kit, route: kit, title: Kit}\n  shell.menu:\n    - {id: board, module: kit, path: kit/board, label: Board}\n";
+        files.insert("app.yaml".into(), yaml.into_bytes());
+        files.insert("ui/dist/index.html".into(), b"<!doctype html><html><head><title>Kit</title></head><body></body></html>".to_vec());
+        refused(files.clone(), "module kit is not one of this app's packages' modules");
+        let pkg = String::from_utf8(files["packages/kit/package.yaml"].clone()).unwrap() + "modules:\n  - {name: kit, label: Kit, items: [KtThing]}\n";
+        files.insert("packages/kit/package.yaml".into(), pkg.into_bytes());
+        Bundle::from_files(files).expect("its own module");
     }
 
     fn refused(files: BTreeMap<String, Vec<u8>>, needle: &str) {

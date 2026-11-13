@@ -26,6 +26,7 @@ pub const SHELL_POINTS: &[&str] = &[
     "shell.public",
     "shell.portal",
     "shell.assistant",
+    "shell.menu",
 ];
 
 /// First path segments the core keeps for itself. The core only ever adds names starting with
@@ -141,6 +142,12 @@ pub(crate) fn contract(point: &str) -> Value {
         // What the assistant should know while the person is in the app's pages, and questions it
         // suggests there: the app's own words about its records, never the person's.
         "shell.assistant" => (json!({"title": text(60), "instructions": text(2000), "suggestions": list(6, text(160))}), vec!["title", "instructions"]),
+        // A row of a module's left menu leading to a page of the app's own interface (BD-63):
+        // `module`, one of its packages' modules; `after`, the item it follows (first without one).
+        "shell.menu" => (
+            json!({"module": text(40), "path": text(200), "label": text(60), "icon": text(40), "roles": list(30, text(60)), "after": text(110)}),
+            vec!["module", "path", "label"],
+        ),
         _ => (json!({}), vec![]),
     };
     json!({"type": "object", "additionalProperties": false, "required": required, "properties": props})
@@ -344,6 +351,23 @@ pub(crate) fn check(m: &AppManifest) -> Result<(), AppError> {
                     return bad(format!("{at}: '{path}' must name a page below one of this app's routes, such as {}/s", path.trim_end_matches('/')));
                 }
             }
+            if *point == "shell.menu" {
+                if !field(item, "module").is_some_and(ferrum_meta::is_ident) {
+                    return bad(format!("{at}.module must name one of the app's modules"));
+                }
+                if field(item, "icon").is_some_and(|i| i.is_empty() || !i.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')) {
+                    return bad(format!("{at}.icon must be an icon name such as square-pen"));
+                }
+                if field(item, "after").is_some_and(|a| a.is_empty() || !a.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))) {
+                    return bad(format!("{at}.after must name an item of the module (an entity, report:<name> or another row's id)"));
+                }
+                for role in item.get("roles").and_then(Value::as_array).into_iter().flatten() {
+                    let r = role.as_str().unwrap_or_default();
+                    if r.trim().is_empty() || r.chars().any(char::is_control) {
+                        return bad(format!("{at}.roles: role names are single lines of text"));
+                    }
+                }
+            }
             if *point == "shell.portal" {
                 if m.ui.is_none() {
                     return bad(format!("{at}: a portal page is drawn by the app's own interface (a ui section)"));
@@ -521,6 +545,24 @@ mod tests {
         refused(&format!("{app}  shell.portal:\n    - {{id: tickets, title: T, entity: Ticket, open: \"../t/{{id}}\"}}\n"), "plain path segments");
         refused(&format!("{app}  shell.portal:\n    - {{id: tickets, title: T, entity: Ticket, open: \"/t/{{id}}\"}}\n"), "plain path segments");
         refused(&format!("{app}  shell.portal:\n    - {{id: tickets}}\n"), "title");
+    }
+
+    #[test]
+    fn menu_rows_for_the_apps_own_pages() {
+        let app = format!("{UI}contributes:\n  shell.app:\n    - {{id: social, route: social, title: Social}}\n");
+        let row = |extra: &str| format!("{app}  shell.menu:\n    - {{id: compose, module: social, path: social/compose, label: Compose{extra}}}\n");
+        let m = parse(&row(", icon: square-pen, roles: [Social Author], after: SocialPost")).expect("a page row");
+        assert_eq!(m.contributes["shell.menu"][0]["path"], "social/compose");
+        parse(&row("")).expect("icon, roles and place are optional");
+        refused(&row("").replace("social/compose", "https://evil.example/x"), "must start with one of this app's routes");
+        refused(&row("").replace("social/compose", "chat/compose"), "must start with one of this app's routes");
+        refused(&row("").replace("social/compose", "social/../admin"), "plain path segments");
+        refused(&row("").replace("module: social", "module: Social"), "module");
+        refused(&row(", icon: assets/x.svg"), "icon must be an icon name");
+        refused(&row(", after: \"a b\""), "after");
+        refused(&row(", roles: [\"\"]"), "single lines");
+        refused(&row("").replace("label: Compose", "label: \" \""), "single line");
+        refused("contributes:\n  shell.menu:\n    - {id: compose, module: social, path: social/compose, label: Compose}\n", "needs the app's own interface");
     }
 
     #[test]

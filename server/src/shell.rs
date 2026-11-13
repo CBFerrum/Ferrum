@@ -898,6 +898,25 @@ pub fn menu_entries(ctx: &Ctx) -> (Vec<Value>, Vec<Value>) {
     (tiles, create)
 }
 
+/// The rows of the apps' own pages (`shell.menu`, BD-63) the person sees, by module: a member who may
+/// use the app and holds one of the row's roles (none: every such member; administrators: all), for a
+/// module the app's own packages define. In the apps' order, then the order declared.
+pub fn menu_pages(apps: &[ShellApp], ctx: &Ctx, kind: &str) -> BTreeMap<String, Vec<Value>> {
+    let mut out: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for a in apps.iter().filter(|a| a.items("shell.app").any(|i| may_use(ctx, kind, i))) {
+        for item in a.items("shell.menu").filter(|i| may_use(ctx, kind, i)) {
+            let module = item.get("module").and_then(Value::as_str).unwrap_or_default();
+            if !ctx.schema.modules.iter().any(|m| m.name == module && a.manifest.packages.contains(&m.package)) {
+                continue;
+            }
+            out.entry(module.to_string()).or_default().push(json!({
+                "app": a.id, "id": item.get("id"), "path": item.get("path"), "label": item.get("label"), "icon": item.get("icon"), "after": item.get("after"),
+            }));
+        }
+    }
+    out
+}
+
 /// Whether an app's Create row is offered: one naming an entity only where the workspace has it (its package
 /// installed) and the person may create it, so the menu never leads to "Not available here".
 pub fn create_offered(ctx: &Ctx, item: &Value) -> bool {
@@ -1978,6 +1997,42 @@ mod tests {
         assert_eq!(tiles.len(), 2, "{tiles:?}");
         assert_eq!((tiles[0]["icon"].as_str(), tiles[0]["color"].as_str()), (Some("circle-help"), None));
         assert_eq!(tiles[1]["icon"], Value::Null, "no module declares one: the letter stays");
+    }
+
+    #[test]
+    fn an_apps_page_rows_in_its_module() {
+        let pkg: ferrum_meta::Package = serde_json::from_value(json!({"package": "social", "version": "1",
+            "entities": [{"name": "SocialPost", "label": "Post", "kind": "master", "fields": [{"name": "t", "type": "data"}]}],
+            "modules": [{"name": "social", "label": "Social", "items": ["SocialPost"]}]}))
+        .unwrap();
+        let catalog = ferrum_meta::Catalog::from_packages(vec![pkg]).unwrap();
+        let schema = Arc::new(ferrum_meta::effective::build(&catalog, &["social".into()], &[], 1).unwrap());
+        let social = app(&manifest(
+            "social",
+            "packages: [social]\nui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {id: social, route: social, title: Social, roles: [Social Author, Social Manager]}\n\
+             \x20 shell.menu:\n    - {id: compose, module: social, path: social/compose, label: Compose, icon: square-pen, roles: [Social Author]}\n\
+             \x20   - {id: calendar, module: social, path: social/calendar, label: Calendar, icon: calendar, after: SocialPost}\n\
+             \x20   - {id: elsewhere, module: selling, path: social/x, label: X}\n",
+        ));
+        let person = |roles: &[&str]| {
+            let mut ctx = Ctx::system(Uuid::nil(), schema.clone());
+            ctx.is_admin = false;
+            ctx.roles = roles.iter().map(|r| r.to_string()).collect();
+            ctx
+        };
+        let ids =
+            |rows: &BTreeMap<String, Vec<Value>>| rows.get("social").into_iter().flatten().map(|r| r["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let author = menu_pages(std::slice::from_ref(&social), &person(&["Social Author"]), "member");
+        assert_eq!(ids(&author), ["compose", "calendar"], "a module the app's packages do not define gets none");
+        assert_eq!(
+            author["social"][0],
+            json!({"app": "social", "id": "compose", "path": "social/compose", "label": "Compose", "icon": "square-pen", "after": null})
+        );
+        assert_eq!(author["social"][1]["after"], "SocialPost");
+        assert_eq!(ids(&menu_pages(std::slice::from_ref(&social), &person(&["Social Manager"]), "member")), ["calendar"], "Compose is the author's");
+        assert!(menu_pages(std::slice::from_ref(&social), &person(&["Clerk"]), "member").is_empty(), "nor the app's");
+        assert!(menu_pages(std::slice::from_ref(&social), &person(&["Social Author"]), "portal").is_empty(), "members' only");
+        assert_eq!(ids(&menu_pages(std::slice::from_ref(&social), &Ctx::system(Uuid::nil(), schema.clone()), "member")), ["compose", "calendar"]);
     }
 
     #[test]

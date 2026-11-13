@@ -1706,3 +1706,27 @@ Decided 13 November 2026.
   `..Default::default()`. Every stored description, call and pull reads as before.
 * Reference products read for this part, and which of their mechanisms each answers: docs/references/social.md.
 
+
+## BD-63. A left-menu row for an app's own page, and the App API 0.3.8
+
+Decided 13 November 2026.
+
+* **The gap**: a package's module lists entities and `report:<name>` only, and the records frame drops anything else,
+  so an app's own pages (Social's composer, calendar, accounts, media, inbox, numbers) had no row in the left menu;
+  the only page rows (the till, Chat, Calendar, Meet, Documents) are written into the frame.
+* **In the manifest, not the package**: a new shell point `shell.menu`, item `{id, module, path, label, icon?, roles?,
+  after?}`. A page is the app's interface, which only the manifest knows (its routes, its `ui`); its `path` is checked
+  as every other point's path is (it starts with one of the app's routes, plain segments only, so nothing outside the
+  app), `roles` mean what they mean on `shell.app`, and a workspace's own menus (`define_module`) cannot have one,
+  having no interface. `module` must be a module of the app's own packages (checked in the bundle; at serving, a row
+  whose module is not there is left out). `icon` is a name (`square-pen`); one the menu does not draw falls back to a
+  page's icon, as other rows fall back. `label` is the app's English, shown in the page's words as entity names are.
+* **Served with the modules**: `GET /api/meta` gives each module `pages`, the rows this person sees (a member who may
+  use the app and holds one of the row's roles; administrators all; portal people none). `after` names the module's
+  item a row follows (an entity, `report:<name>` or another row's id); without one, or naming one not shown, rows come
+  first in the order declared.
+* **Drawn as other rows**: the frame's left menu and Home's module cards. Inside the app's own page under its own route
+  a row is a client-side route (`/compose`, with the active state); anywhere else (another app's frame, the classic
+  web app) a link that loads `/{path}`.
+* **The App API is 0.3.8**; an app using `shell.menu` says `platform: ">=0.3.8, <0.4"`. 0.3.8 also carries BD-64 to
+  BD-66.
