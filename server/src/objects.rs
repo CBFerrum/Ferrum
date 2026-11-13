@@ -127,6 +127,15 @@ impl Objects {
         Ok((size, part, Body::from_stream(stream)))
     }
 
+    /// The bytes of `range` of an object, read as that range only (a connection's upload in chunks).
+    pub async fn range(&self, key: &str, range: Range<u64>) -> Result<Vec<u8>> {
+        let read = self.op.read_with(key).range(range).await.map_err(|e| match e.kind() {
+            opendal::ErrorKind::NotFound => Error::NotFound(format!("stored object {key}")),
+            _ => storage_err(e),
+        })?;
+        Ok(read.to_vec())
+    }
+
     /// Size and SHA-256 of an object, read once as a stream; `None` when nothing is stored there.
     async fn digest(&self, key: &str) -> Result<Option<(u64, String)>> {
         let reader = match self.op.reader(key).await {

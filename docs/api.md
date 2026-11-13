@@ -1215,7 +1215,7 @@ connect again) or their account is closed. `GET …/pulls` gives each row's `use
 in a mapping over `payload`, `item`, `connection`), each with `"required": true` to fail the call or the item when it
 is null. In a mapping a plain string that is not a pointer is an expression, as before. From Rust, an object value in
 `Operation.result`, `form` or `body` is `connections::spec(&json!({…}))`. A temporary answer's `Retry-After` sets when
-a queued call or a pull's retry comes back (capped at an hour).
+a queued call or a pull's retry comes back (capped at an hour), and reaches an app's own call as `RetryAfter`.
 
 **Files** ([BD-47](builder/decisions.md#bd-47-bodies-beyond-json)): `"form": {"caption": "{{ inputs.text }}", "media":
 {"file": "{{ inputs.photo }}", "max_bytes": 5000000}}` sends `multipart/form-data`; `"body": {"file": "{{ inputs.video
@@ -1235,7 +1235,9 @@ connection's own key (DPoP), and `provider.registration_url` without `client_id`
 **Operating**: `meta` on a description is an object (16 KB at most) the platform keeps and gives back without reading.
 A mapping's `"outside": true` marks what it writes as fetched from outside: the change's events carry `origin:
 "outside"`, automations read `origin` (empty otherwise), hooks `ctx.origin`; an app's effect for new records that
-reaches people checks it ([BD-50](builder/decisions.md#bd-50-operating-a-connection)).
+reaches people checks it ([BD-50](builder/decisions.md#bd-50-operating-a-connection)). A mapping's `"as": "system"` writes
+as the system ([BD-58](builder/decisions.md#bd-58-a-mapping-that-writes-as-the-system)), so fields only the system
+sets (read-only ones, such as an id the other system gave) are set; on a person's own pull the records stay hers.
 
 **Signing in to an account**: `"auth": {"type": "oauth", "owner": "workspace" | "person", "provider": {…}}`, the
 redirect address registered at the provider being `{PUBLIC_URL}/api/connections/callback`. Two worked descriptions, with
@@ -1258,6 +1260,106 @@ made as them uses theirs. The second is the organisation's page (`owner: workspa
 
 **Packs and packages** carry `connections: [{name, label, description}]`, never a secret or a token; they arrive turned
 off.
+
+### Steps, waits, loops and the clock
+
+**Steps** ([BD-53](builder/decisions.md#bd-53-an-operation-of-steps)): an operation may be several requests in order,
+each another operation of the connection; it then sends nothing itself. A step's `inputs` are expressions (the
+templates' language without braces) over `inputs`, `steps` (the earlier steps' results by name) and `key`; `when`
+makes it only when true. A register-upload, put-bytes, post shape:
+
+```json
+"publish": {"inputs": ["owner", "text", "file"], "result": {"id": "/post/id"}, "steps": [
+  {"name": "register", "operation": "register_upload", "inputs": {"owner": "inputs.owner"}},
+  {"name": "upload", "operation": "put_bytes", "inputs": {"url": "steps.register.upload_url", "file": "inputs.file"}},
+  {"name": "post", "operation": "create_post", "inputs": {"text": "inputs.text", "asset": "steps.register.asset"},
+   "confirm": {"operation": "find_post", "inputs": {"asset": "sent.asset"}, "proves": "result.id"}}]},
+"put_bytes": {"method": "PUT", "url": "{{ inputs.url }}", "body": {"file": "{{ inputs.file }}"}}
+```
+
+The operation's `result` reads `{<step>: <its result>}` (none: all of it). Under a key each step is a call of its own
+under `<key>:<step>`, its answer kept with the call (masked): the same key again resumes after the last step that
+finished, and other inputs under it are a 409. A step whose answer was lost (no answer, a 5xx but 503, an answer that
+could not be read) may have happened: it is sent again only when its operation has an `idempotency_header`, or after
+its `confirm` (a reading operation; `sent` is the step's own inputs) does not prove it; otherwise the call fails
+saying so. One worker makes a key at a time: another gets `RetryAfter` (5 s). An operation may give a whole address
+in `url` (a template; one an earlier answer gave), held to the connection's hosts like any other; `credentials: false`
+sends it without the connection's credentials (an address signed already); `form_fields` (a template giving an
+object, or a list of `{name, value}`) adds a signed upload form's fields before `form`'s.
+
+**Waiting** ([BD-54](builder/decisions.md#bd-54-a-step-that-waits)): a step on a reading operation may wait until its
+answer says it is ready: `"wait": {"until": "result.status == 'FINISHED'", "fail_if": "result.status in ['ERROR',
+'EXPIRED']", "every_secs": 5, "within_secs": 600, "attempts": 100}` (expressions over `result`, `answer`, `headers` and
+the step's names). It fails when `fail_if` holds, after `attempts` asks or `within_secs` after the key's first attempt.
+A call waits in place 20 s at most, then answers "later" after `every_secs` (`RetryAfter`); the same key again carries
+on from the wait.
+
+**Loops** ([BD-55](builder/decisions.md#bd-55-loops-over-items-and-chunks)): `"for_each": "inputs.texts"` makes a step for
+each item, in order, each under `<key>:<step>:<index>`, binding `item`, `index`, `previous` (the result before) and
+`results`; the step's result is the list (at most 100 items). With `"range": {"file", "offset", "size"}` (expressions)
+each item sends that range of a stored file (parts the service names, each with its own address). `"chunks": {"file":
+"inputs.video", "bytes": 8388608, "remainder": "own" | "last", "offset_from": {"operation": "probe", "inputs": {…}},
+"restart_from": "init"}` sends a stored file a chunk at a time, read from storage a range at a time, binding `chunk:
+{index, offset, end, size, total, count, last}`, each chunk under `<key>:<step>@<offset>`; the result is the last
+chunk's. A chunked upload of a resumable session:
+
+```json
+{"name": "upload", "operation": "put_chunk", "chunks": {"file": "inputs.file", "bytes": 8388608,
+   "offset_from": {"operation": "probe", "inputs": {"url": "steps.start.url", "total": "chunk.total"}}},
+ "inputs": {"url": "steps.start.url", "file": "inputs.file",
+            "range": "'bytes ' ~ chunk.offset ~ '-' ~ chunk.end ~ '/' ~ chunk.total"}}
+```
+
+with `put_chunk` a `PUT` to `{{ inputs.url }}` with `content-range: {{ inputs.range }}` and `"success": [308]` (statuses
+that also mean it worked). A chunk whose answer was lost goes on from what `offset_from`'s `offset` result says the
+service holds (a number, or `bytes=0-<last>`; none with a 2xx: the upload is complete, that answer the result), or
+starts the upload again from the step `restart_from` names under new keys (at most twice), or stops, saying so. Files
+sent in chunks may be up to `FERRUM_CONNECTION_UPLOAD_MB` (25 MB unless the operator says); a chunk is at most 25 MB.
+
+**Functions and the clock** ([BD-56](builder/decisions.md#bd-56-template-functions-and-the-clock)): templates and step
+expressions have `now` (RFC 3339, UTC, milliseconds) and `today`, fixed at the first attempt of the call's key, so a
+retry sends the same moment; answers' and mappings' expressions have them too (the moment they run). Filters: `sha256`
+(hex), `hmac(key, "hex" | "base64" | "base64url")` (SHA-256), `base64`, `base64url`, `base32`, `urlencode`, `tid` (a
+13-character id that sorts by time, from the key and its clock: `{{ key | tid }}`), `length_in("chars" | "graphemes" |
+"utf16" | "bytes")`, `entities(unit)` (the links, mentions and tags in a text: `[{type, text, value, start, end}]`,
+offsets in that unit), `truncate(n, end?)` (by graphemes), `strftime(format)` (of a moment), besides the template
+language's own (`replace`, `split`, `join`, `default`, `json`, …). A record keyed from the call and a facet in bytes:
+
+```json
+"body": "{\"rkey\": {{ key | tid | json }}, \"createdAt\": {{ now | json }}, \"facets\": {{ inputs.text | entities('bytes') | json }}}"
+```
+
+**Waiting for the service** ([BD-57](builder/decisions.md#bd-57-retry-after-for-every-caller-and-a-descriptions-limits)):
+an app's `connections::call`, the `call` effect and the gate get `RetryAfter(why, seconds)` when the service's
+`Retry-After` (or the connection's limit) says when to come back, `Unavailable` when nothing does. `"limit": {"per": 300,
+"every": 900, "concurrent": 2}` on a description: at most `per` requests in each window of `every` seconds and
+`concurrent` at once, counted in the database so every worker shares them; a request past them is not sent.
+
+**XML and forms** ([BD-59](builder/decisions.md#bd-59-xml-and-form-answers)): `"answer": "xml"` reads the answer as
+XML into JSON's shape, so pointers, picks, `items_at` and mappings work on it: `{<root>: …}`, an element its text when
+it has neither attributes nor children, else `@attribute`s, children by name as written (`dc:creator`) and `#text`; a
+child given twice is a list, and so is one named in `"lists": ["item", "entry"]`. An RSS pull: `"items_at":
+"/rss/channel/item"`, values `"/title"`, `"/link"`; an Atom one: `"/feed/entry"`, `"/title/#text"`,
+`"/link/0/@href"`. No document type is read. `"answer": "form"` reads `a=1&b=2` as `{"a": "1", "b": "2"}`, `"text"` as
+the text; `json` (the default) as before.
+
+**A pull that asks per item, and the account** ([BD-60](builder/decisions.md#bd-60-a-pull-that-asks-for-each-item-and-the-signed-in-account)):
+a pull's `"inputs": {"user": "account"}` gives its operation inputs as expressions over `account` (what the sign-in
+named: `provider.account_at`), `auth` (what it kept, BD-61), `now` and `today`; `"each": {"operation": "numbers",
+"inputs": {"id": "item.id"}, "as": "numbers", "max": 10}` asks a reading operation for each item of a page and puts its
+result in the item before it is mapped (`item.numbers.likes`); a page with more than `max` items (10; at most 50)
+fails the run, saying so, and asks nothing. An operation's templates read `account` and `auth` too:
+`"path": "/users/{{ account }}/posts"`.
+
+**Sign-in extras** ([BD-61](builder/decisions.md#bd-61-sign-in-extras)): on `provider`, `keep: ["user_id"]` keeps fields
+of the token answer, sealed with the tokens, for templates and pulls as `auth.user_id` (a session's `keep` names fields
+of its login's answer); a token answer written as a form is read as one; `after: ["exchange"]` makes operations after
+the code is exchanged (given `inputs.access_token`, `refresh_token`, `client_id`), each result's names replacing the
+answer's (a long-lived token for a short one); `refresh: "refresh_long"` refreshes with an operation (a GET with the token
+itself) instead of the token address, with or without a refresh token; `registration: "register_app"` registers the
+platform's client at this server with an operation of its own (given `inputs.redirect_uri`, `scopes`, `client_name`;
+its result's `client_id` and `client_secret` kept, once), for a server whose registration is not RFC 7591's;
+`never_expires: true` ignores the answer's expiry. These operations sign in: they are never called as operations.
 
 ### Moving an app's own HTTP client onto a connection
 
@@ -1669,10 +1771,11 @@ CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/s
 workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`. A package that uses any of this
 (`layout_file`, `page`, `letterhead`, `copies`, `enabled`, a LetterHead or PrintSettings record in its seed) needs
 the app API version 0.3.3: its app says `platform: ">=0.3.3, <0.4"` (an older server refuses the fields it does not
-know). The app API is 0.3.6 now: what each version carries is in
+know). The app API is 0.3.7 now: what each version carries is in
 [BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034)
 (0.3.4), [BD-51](builder/decisions.md#bd-51-the-connector-hubs-instances-move-and-the-app-api-035) (0.3.5) and
-[BD-52](builder/decisions.md#bd-52-a-link-limited-by-another-field-of-the-record-and-the-app-api-036) (0.3.6).
+[BD-52](builder/decisions.md#bd-52-a-link-limited-by-another-field-of-the-record-and-the-app-api-036) (0.3.6) and
+[BD-62](builder/decisions.md#bd-62-connections-part-three-and-the-app-api-037) (0.3.7).
 
 ### Moving an app's print layout or file to a document template
 

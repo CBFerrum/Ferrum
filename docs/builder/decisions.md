@@ -1451,3 +1451,258 @@ Decided 13 November 2026.
   none for that key.
 * **The App API is 0.3.6**; an app using `from` says `platform: ">=0.3.6, <0.4"`. 0.3.6 carries `{from: …}` in
   `link_filters`.
+
+## BD-53. An operation of steps
+
+Decided 13 November 2026. Social needs uploads registered before their bytes, containers before publishing, a reply
+that names the post it answers: two or three requests, a later one reading an earlier answer
+(docs/references/social.md).
+
+* **A step is another operation** of the same connection, called with inputs that are expressions over `inputs`,
+  `steps` and `key`. Why not requests written inside the step: everything an operation already says (files, picks,
+  `error_at`, `temporary`, `idempotency_header`) works for a step unchanged, and each step can be tried on its own.
+  Why expressions and not templates: a step passes values (an object, a list, a number) to the next, which a template
+  would turn to text. The expressions are minijinja's, the templates' own language, so the template functions (BD-56)
+  work in both.
+* **Kept per key**: each step is a call under `<key>:<step>` whose result is kept with the call log's entry, masked
+  like every result, and the operation's own result under its key. A step that finished is never made again under
+  that key. Why the call log and not a new store: it already keeps a keyed call for good (`conn_call_once`), and its
+  90-day upkeep spares those.
+* **A lost answer** (`conn_attempt.sending` still set): the request may have been delivered. Clear when the service
+  answered 4xx or 503 (it did nothing) or the call was never sent. Otherwise the step is sent again only with an
+  `idempotency_header` (the service takes the key once) or after its `confirm` read-back does not prove it; with
+  neither, the call fails and says so. Why fail rather than guess: publishing twice is the fault Postiz needed twelve
+  workflow versions to remove (`postiz.md` 3.6-3.7); a person can look, and a new key starts again.
+* **One worker per key**: every keyed call that changes something takes `pg_try_advisory_xact_lock` on its key for
+  its length; another worker is told `RetryAfter` 5 s, and then finds the stored answer. The lock holds one database
+  connection while the call runs (ponytail: one connection per call in flight; a lease row if pools run short).
+* **An address from an answer**: `url` in place of `path` (a template, not percent-encoded), checked by the guard
+  against the base's host and `allowed_hosts` like a redirect; `credentials: false` for an address signed already
+  (an S3 form refuses a second authentication); `form_fields` for a signed form's fields, in their order.
+* Bounded: at most 12 steps; a step's operation has no steps of its own; pulls take an operation of one request.
+* **Kept beside `Operation`, written on it**: ERP builds `connections::Operation` in code with every field named, so a
+  new field would stop it compiling. The keys this part adds to an operation (`steps`, `url`, `success`,
+  `credentials`, `form_fields`, `answer`, `lists`) are `connections::More`, kept in `Description::more` by operation
+  name: a description reads and writes them on the operation like any other key (unknown keys still refused), and an
+  app's `Operation { … }` is unchanged. (`Description` is built with `..Default::default()`, so its new fields are
+  safe.)
+
+Tests (`connections_steps_it` `steps`): register, put the bytes to the address the answer gave, post; the post
+answered "later" once and resumed without the register or the upload again; the same key answered from the log, other
+inputs refused; each step's answer kept, the token resting nowhere; a lost answer not sent again, proved by reading
+back, sent again under its own key with an idempotency header; an address off the connection's hosts refused; two
+workers on one key, one sending; wrong steps refused when saved.
+
+## BD-54. A step that waits
+
+Decided 13 November 2026. Containers, videos and uploads are processed before they can be published (Instagram,
+Threads, TikTok, YouTube, Mastodon, LinkedIn): the publish waits for a status.
+
+* `wait: {until, fail_if?, every_secs (5), within_secs (600), attempts (1000)}` on a step whose operation only reads.
+  Each ask is logged; one the service answers "later" counts as not ready. `fail_if` stops the call with the service's
+  words; `within_secs` is counted from the key's first attempt (its clock, BD-56), so a wait carried over many calls
+  is still bounded; the asks are counted in the key's attempt.
+* **Patience**: a call waits in place at most 20 s, then answers "later" after `every_secs`; for a queued call or an
+  app's call that is `RetryAfter`, so the job comes back when the service should be asked again rather than holding a
+  worker for minutes. Why not sleep inside the job: a worker held for a ten-minute transcode is a worker no other
+  workspace gets.
+* Once ready, the step's result is kept under its key like any step's, so the next call goes straight on.
+
+Tests (`connections_steps_it` `waiting`): a container processed after three asks, published once; one that fails says
+the service's status and publishes nothing; past its patience the call answers "later" after its own delay and the
+next calls carry on from the wait without a second container; a wait bounded in time; a wait on an operation that
+changes something refused.
+
+## BD-55. Loops over items and chunks
+
+Decided 13 November 2026. Several pictures, threads, communities; videos in chunks (YouTube's resumable 8 MB,
+X's 1 MB APPEND, TikTok's chunks with the remainder in the last, LinkedIn's parts the service names).
+
+* **`for_each`**: a step made for each item of a list, in order, each its own call under `<key>:<step>:<index>`; a
+  retry goes on at the first item without a result. `previous` and `results` let each item answer the one before (a
+  thread). `range: {file, offset, size}` sends that part of a stored file for each item (parts whose addresses and byte
+  ranges the service gives). At most 100 items.
+* **`chunks`**: a stored file sent `bytes` at a time; `chunk` gives the index, offsets, size, total, count and whether
+  it is the last, so headers like `Content-Range` and commands like `segment_index` are templates. Each chunk is a call
+  under `<key>:<step>@<offset>`, and the loop's place is kept, so a retry goes on at the first chunk not sent.
+  `remainder: last` puts what is left over in the last chunk (TikTok's rule) instead of a short chunk of its own.
+* **Streamed from storage**: `FileStore::get_range` reads one chunk's bytes; the server's store reads that range from
+  disk or S3 (OpenDAL), so a 500 MB video is never held whole; a store that cannot read a range reads the whole and
+  keeps the range (the default, tests). At most 25 MB a chunk; the file at most `FERRUM_CONNECTION_UPLOAD_MB` (25 MB
+  unless the operator raises it, since a chunked file is never held whole); at most 10,000 chunks.
+* **A lost chunk** is settled, in this order: by its operation's `idempotency_header`; by `offset_from`, a reading
+  operation whose `offset` says how many bytes the service holds (a number, or `bytes=0-<last>` as a `Range` header
+  says; no offset with a 2xx means the upload is complete and that answer is the result), and the loop goes on from
+  there (less than was sent before is refused: the earlier chunks are not sent twice); by `restart_from`, which starts
+  that upload again from the step it names (its first command), the steps from there under new keys (`<step>~<n>`, at
+  most twice), so the old, broken upload is left and nothing published; otherwise the call stops and says so.
+* **`success`**: statuses besides 2xx that mean it worked (308, "resume incomplete").
+
+Tests (`connections_steps_it` `loops`): a thread of three, the second answered "later" once, resumed without the first
+again, each answering the one before; a resumable upload whose second chunk's answer is lost, resumed from the
+service's offset, each byte sent once and in order, read only as ranges; INIT/APPEND/FINALIZE whose second APPEND's
+answer is lost, started again from INIT under new keys, finalised once; parts the service names, each its range,
+their ETags collected for the finish; a file over the operator's cap; loops that cannot be refused when saved.
+
+## BD-56. Template functions and the clock
+
+Decided 13 November 2026. A record key made from the delivery's key (so a lost answer cannot post twice), rich-text
+facets counted in bytes, lengths counted as a service counts them, a creation moment that a retry repeats.
+
+* **The clock is the key's**: `now` and `today` are the moment of the key's first attempt (`conn_attempt.clock`), for
+  an operation of steps and for a single keyed call alike, so a retry sends the same `createdAt` and the same record
+  key. A call without a key (a read) has the moment it is made. Answers' and mappings' expressions bind `now` and
+  `today` as the moment they run (BD-17 keeps the clock out of the expression language itself: it is a value given to
+  it, as `user.now` is).
+* **Filters, not a language of our own**: minijinja's filters, in the connections' environment only (print formats are
+  unchanged): `sha256`, `hmac`, `base64`, `base64url`, `base32`, `urlencode`, `tid`, `length_in`, `entities`,
+  `truncate`, `strftime`. `tid` is 53 bits of microseconds and 10 bits of a digest of the key in the sortable base32
+  alphabet, 13 characters: the same key gives the same id, a later first attempt a larger one. `entities` finds links
+  (`http(s)://…`, trailing punctuation left out), mentions (`@handle`, `@user@host`) and tags (`#word`, not a bare
+  number), never inside a link, with offsets in bytes, characters, UTF-16 units or graphemes. A mention's account id
+  (a service's own lookup) is a `for_each` step over the mentions, not a function.
+* Not done: a weighted length (a service that counts some characters double and every link as 23): its weights are
+  that service's rules, which a description cannot name yet; `length_in` and `entities` give the parts.
+
+Tests (`connections_steps_it` `functions`, unit tests): a record's key, moment and day the same on a retry; a later
+key sorting after; facets' byte offsets around an emoji with a tone; a grapheme count; a signature in hex that does not
+send its key; truncate, split, join, default, urlencode, strftime; a pull's mapping reading `today`; RFC 4231's HMAC
+vector; offsets in each unit.
+
+## BD-57. Retry-After for every caller, and a description's limits
+
+Decided 13 November 2026. Social's publish job saw only "later" and fell back on the jobs' backoff; Postiz caps each
+network's concurrent jobs (`maxConcurrentJob`), and networks count requests per window.
+
+* **`RetryAfter` reaches `connections::call`** (and the `call` effect inline, and the gate): a temporary answer with
+  `Retry-After`, a wait past its patience (BD-54), a key another worker holds (BD-53) and a limit below are
+  `Error::RetryAfter(why, seconds)`, a 503 like `Unavailable`; without a time it stays `Unavailable`. What apps must do:
+  treat `RetryAfter` as `Unavailable` that says when (Social's job matched only `Unavailable` and `Wait`). This is why
+  the App API moves (BD-62).
+* **`limit: {per, every, concurrent}`** on a description. The window is counted in `conn_rate` (one row per
+  connection and window, an atomic upsert), so every worker and replica shares it; a request past `per` is not sent and
+  answers `RetryAfter` until the next window. `concurrent` places are advisory locks (`conn_turn:<connection>:<n>`)
+  held for the request; one that finds none free waits up to 10 s, then answers `RetryAfter` 1 s. Every request
+  counts: steps, chunks, waits' asks, pulls' pages, sign-in operations (those run before the request that needed them
+  takes its place, so a session's login never waits on itself).
+* Why per connection, not per account: a description is one service for one workspace's account, and a person's own
+  connection is usually limited per application as well; a per-person limit is left until a description needs it.
+* Upkeep drops windows older than a day, and attempts (`conn_attempt`) older than 90 days.
+
+Tests (`connections_steps_it` `limits`): a 429 with `Retry-After: 7` reaching an app's call as seven seconds; two
+requests a minute, the third not sent and told when; two workers' calls under `concurrent: 1` never overlapping, the
+second waiting its turn; a limit without its window refused.
+
+## BD-58. A mapping that writes as the system
+
+Decided 13 November 2026. Social made `external_id` writable because a person's pull (BD-50) runs as that person and
+read-only fields ignore her input.
+
+* `as: system` on a mapping (inbound or a pull's): its writes run as the system (`is_system`, every permission), so
+  read-only fields and fields she could not write are set; the person a pull runs for stays the records' maker
+  (`created_by`), `origin: outside` still applies when the mapping says `outside`. Workspace pulls and inbound calls
+  already ran as the system; this changes only a person's own pulls.
+* **How it is enforced**: a mapping lives only in a connection's description, and a description is written only by
+  `save_connection_def` and a pack's install, both administrators' (`admin_only`), or offered by a package and taken
+  up by an administrator's save. No app call, effect, gate call or person's request carries a mapping or changes one;
+  every save is audited. So `as: system` is what an administrator or a package declared, never what a caller asks.
+* Why not a list of fields the mapping may set past read-only: the mapping already names every field it writes, and
+  the person who could write it is the administrator; a second list would say the same thing twice.
+
+Tests (`connections_steps_it` `as_system`): Ana's own pull making a post with the read-only id set, made as her; her
+other pull without it leaving that field empty; her own write not setting it; her save of a description refused.
+
+## BD-59. XML and form answers
+
+Decided 13 November 2026. Social's feeds (autopost) read RSS and Atom; some sign-ins and older APIs answer forms.
+
+* **`answer: xml`** (with `lists`) on an operation: the answer is read into JSON's shape and everything that reads an
+  answer reads that (results, `next_at`, `items_at`, mappings). The shape: `{<root>: <element>}`; an element with
+  neither attributes nor children is its text; otherwise `@name` for each attribute, each child by its name with its
+  prefix as written (`dc:creator`, `media:content`; an element in a default namespace by its local name), and `#text`.
+  A child that comes twice becomes a list; `lists` names those that are lists even once (a feed with one item), so a
+  pointer does not change with the count. Why this shape rather than a feed model: one rule for RSS, Atom and plain
+  XML, and nothing named for a format.
+* **Safe by default**: `roxmltree` (already locked in the workspace) without document types, so no entity of the
+  document's own is expanded and nothing outside is fetched; at most 64 levels deep; the size is the answer's, already
+  bounded. Only an answer that worked must be XML; an error page is kept as it came, so `error_at` still sees its text.
+* **`answer: form`**: `a=1&b=2` as an object of texts; `text` keeps the text as it is; `json`, or nothing, is the old
+  rule (JSON, else its text). An existing description reads its answers as before.
+
+Tests (`connections_steps_it` `xml_answers`, unit test): an RSS feed with `&amp;`, a CDATA title and a prefixed element,
+and an Atom feed of one entry, pulled into posts; a prefixed element and an element's text beside its attribute read
+by pointers; a form answer; a document type refused; an unknown kind refused; a document nested too deep refused.
+
+## BD-60. A pull that asks for each item, and the signed-in account
+
+Decided 13 November 2026. Reading back an account's own posts needs the account's id in the path (from its sign-in),
+and each post's numbers are another request.
+
+* **`each`** on a pull: a reading operation (one request, not a sign-in) asked once for each item of a page, its inputs
+  expressions over `item`; its result is put in the item under `as`, so the mapping reads it. Bounded: `max` items a
+  page (10, at most 50; a page with more fails the run before asking anything, so a description sets its page size to
+  fit), and each ask is a request counted by the connection's `limit` (BD-57). A "later" from one carries the page
+  over to the pull's retry, as a page's own "later" does (the page and its cursor are not committed).
+* **Inputs from the account**: a pull's `inputs` are expressions over `account` (the account its sign-in named, the
+  person's own on a person's pull), `auth` (what the sign-in kept, BD-61), `now` and `today`, evaluated once a run. An
+  operation's templates read `account` and `auth` as well, loaded only when its words name them (one read of the
+  sealed tokens). Why the account and not "the caller's record": a call already passes what a record holds as its
+  inputs (an effect's expressions over `doc`); what a call could not reach was its own sign-in's facts.
+
+Tests (`connections_steps_it` `pull_each`): an account's own posts read by its id from the sign-in, each post's likes
+asked once and mapped; an operation's path from the account; a page over `max` failing the run without asking; `each`
+on an operation that changes something refused.
+
+## BD-61. Sign-in extras
+
+Decided 13 November 2026. Found while describing networks for Social: Meta's long-lived tokens, Instagram's and
+Threads' refresh by a GET with the token itself, VK's and TikTok's extra fields in the token answer, a Mastodon
+instance's own client registration, tokens that never expire.
+
+* **`keep`** (provider, or session): named fields of the token answer (an account's id, an instance's address) are
+  sealed with the tokens as `kept`, and read as `auth.<name>` by templates and pull expressions (BD-60); a refresh that
+  does not repeat them keeps the earlier ones. Not the tokens themselves; a kept field is shown where a template puts it
+  (it is not a secret), unlike the tokens, which stay masked.
+* **A token answer written as a form** (`access_token=…&expires_in=…`) is read as one, at the token address and in
+  revocation.
+* **`after`**: operations of the connection made, in order, after the code is exchanged, given the tokens and the
+  client's id (the client secret is `secret.<name>` in their templates); each result's names replace the answer's. Why
+  operations: the exchange is a request like any other (a GET with a query), and describing it keeps the platform
+  free of any network's grant names.
+* **`refresh`**: an operation that refreshes in place of the token address, given the same inputs; used even without
+  a refresh token (the access token is its own). Its result is read as a token answer; a refusal marks the sign-in
+  needing reconnecting, as a refused refresh does.
+* **`registration`**: an operation that registers the platform's client at this server (Mastodon's `POST /api/v1/apps`
+  takes `redirect_uris` and `scopes` as its own words, not RFC 7591's), given the exact callback, the scopes and the
+  connection's name; its `client_id` and `client_secret` are sealed as RFC 7591's are (`_client_id`), once, under the
+  connection's lock; the client then proves itself with basic authentication, as a registered one does. One connection
+  is one server: a person's instance is a connection of its own (its base and addresses), registered on first use.
+* **`never_expires`**: the answer's expiry is ignored; the token is never refreshed ahead (a 401 still asks once).
+* All these operations sign in (`signs_in_with`): never called by an app, an effect, a pull or "try"; made without
+  credentials of their own, never captured, the tokens they are given masked like secrets.
+* The connection's secrets are now locked `for no key update` while they change, so a call logged meanwhile (whose row
+  refers to the connection) is not held up; a registration made by an operation is logged like any call.
+
+Tests (`connections_steps_it` `signing_in`): a form-encoded token answer, exchanged after the sign-in for a long-lived
+token, the account's id kept and read in a path; refreshed by its GET without a refresh token, the id still kept;
+the short and long tokens and the client secret at rest nowhere; the exchange refused as an operation; a client
+registered at the server by its own request once over two sign-ins, with the exact callback and the scopes; the token
+asked with the registered client; a token kept without an expiry.
+
+## BD-62. Connections, part three, and the App API 0.3.7
+
+Decided 13 November 2026.
+
+* **The App API is 0.3.7**; an app using any of this says `platform: ">=0.3.7, <0.4"`. 0.3.7 carries: an operation's
+  `steps` (with `when`, `confirm`, `wait`, `for_each`, `range`, `chunks`), `url`, `credentials`, `form_fields`,
+  `success`, `answer`, `lists` (BD-53 to BD-55, BD-59); `connections::More` and `Description::more` (an app that builds
+  descriptions in code sets them there); `FileStore::get_range` (a store an app supplies may read a range); the clock and
+  the template functions (BD-56); `RetryAfter` from `connections::call` and a description's `limit` (BD-57); a mapping's
+  `as: system` (BD-58); a pull's `inputs` and `each`, and `account`/`auth` in templates (BD-60); `provider.keep`,
+  `after`, `refresh`, `registration`, `never_expires` and a session's `keep` (BD-61).
+* **What an app must change**: only an app that matches `connections::call`'s errors: `RetryAfter` is "later" with a
+  time (Social's publish job matched `Unavailable` and `Wait` only). An app that builds an `Operation`, an `Inbound` or
+  a `Description` in code compiles unchanged: no field was added to the first two, and the third is built with
+  `..Default::default()`. Every stored description, call and pull reads as before.
+* Reference products read for this part, and which of their mechanisms each answers: docs/references/social.md.
+

@@ -75,8 +75,8 @@ impl Mailer for LocoMailer {
     }
 }
 
-/// The server's object storage (S3-compatible or disk) for files packages store.
-pub struct StorageFiles(pub std::sync::Arc<loco_rs::storage::Storage>);
+/// The server's object storage (S3-compatible or disk) for files packages store; the same store opened for range reads.
+pub struct StorageFiles(pub std::sync::Arc<loco_rs::storage::Storage>, pub std::sync::Arc<crate::objects::Objects>);
 
 #[async_trait]
 impl ferrum_kernel::files::FileStore for StorageFiles {
@@ -89,6 +89,9 @@ impl ferrum_kernel::files::FileStore for StorageFiles {
             loco_rs::storage::StorageError::Store(o) if o.kind() == opendal::ErrorKind::NotFound => Error::NotFound(format!("stored object {key}")),
             _ => Error::Unavailable(format!("storage: {e}")),
         })
+    }
+    async fn get_range(&self, key: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        self.1.range(key, range).await
     }
     async fn delete(&self, key: &str) -> Result<()> {
         self.0.delete(std::path::Path::new(key)).await.map_err(|e| Error::Unavailable(format!("storage: {e}")))

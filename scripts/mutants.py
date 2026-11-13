@@ -82,6 +82,7 @@ MESSAGES_API = ("-p", "ferrum-server", "--test", "messages_api_it")
 MESSAGES_UNIT = ("-p", "ferrum-kernel", "--lib", "messages::tests")
 CONNECTIONS = ("-p", "ferrum-kernel", "--test", "connections_it")
 CONNECTIONS_UNIT = ("-p", "ferrum-kernel", "--lib", "connections::")
+STEPS = ("-p", "ferrum-kernel", "--test", "connections_steps_it")
 CONNECTIONS_API = ("-p", "ferrum-server", "--test", "connections_api_it")
 ROUTES = ("-p", "ferrum-server", "--test", "routes_it")
 DOCUMENTS = ("-p", "ferrum-kernel", "--test", "documents_it")
@@ -147,7 +148,7 @@ MUTANTS = [
     ('conn-other-host-reached', 'crates/kernel/src/connections/mod.rs', 'if !reach.hosts.is_empty() && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', 'if false && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', CONNECTIONS),
     ('conn-plain-http-called', 'crates/kernel/src/connections/mod.rs', '"http" if open => {}', '"http" => {}', CONNECTIONS),
     ('conn-answer-unbounded', 'crates/kernel/src/connections/mod.rs', 'max_bytes: self.desc.max_bytes.unwrap_or(DEFAULT_MAX_BYTES),', 'max_bytes: MAX_BYTES,', CONNECTIONS),
-    ('conn-key-calls-twice', 'crates/kernel/src/connections/mod.rs', 'if let Some(key) = key.filter(|_| op.changes())', 'if let Some(key) = key.filter(|_| false)', CONNECTIONS),
+    ('conn-key-calls-twice', 'crates/kernel/src/connections/mod.rs', 'if let Some(key) = key.filter(|_| changes) {', 'if let Some(key) = key.filter(|_| false) {', CONNECTIONS),
     ('conn-other-inputs-adopted', 'crates/kernel/src/connections/mod.rs', 'return if was == given {', 'return if true {', CONNECTIONS),
     ('conn-refusal-retried', 'crates/kernel/src/connections/mod.rs', 'Ok(a) if temporary.contains(&a.status) => (Outcome::Later', 'Ok(a) if a.status >= 400 => (Outcome::Later', CONNECTIONS),
     ('conn-secret-unmasked', 'crates/kernel/src/connections/mod.rs', '.filter(|m| m.len() >= 4)', '.filter(|m| m.is_empty())', CONNECTIONS_UNIT),
@@ -915,7 +916,7 @@ MUTANTS = [
     ("map-required-ignored", "crates/kernel/src/connections/inbound.rs", "                if p.required && v.is_null() {", "                if false && v.is_null() {", CONNECTIONS),
     ("retry-after-ignored", "crates/kernel/src/jobs.rs", "Error::RetryAfter(_, secs) => *secs as f64,", "Error::RetryAfter(_, _) => backoff(job.attempts),", CONNECTIONS),
     ("retry-after-uncapped", "crates/kernel/src/connections/mod.rs", "    Some(secs.clamp(1, MAX_RETRY_AFTER))", "    Some(secs.max(1))", CONNECTIONS_UNIT),
-    ("answer-expr-reads-secrets", "crates/kernel/src/connections/mod.rs", "let vars = [(\"answer\", &a.body), (\"headers\", &headers), (\"inputs\", inputs), (\"connection\", &connection)];", "let secret = json!(conn.secrets);\n        let vars = [(\"answer\", &a.body), (\"headers\", &headers), (\"inputs\", inputs), (\"connection\", &connection), (\"secret\", &secret)];", CONNECTIONS),
+    ("answer-expr-reads-secrets", "crates/kernel/src/connections/mod.rs", "let vars = [(\"answer\", &a.body), (\"headers\", &headers), (\"inputs\", inputs), (\"connection\", &connection), (\"now\", &now), (\"today\", &today)];", "let secret = json!(conn.secrets);\n        let vars = [(\"answer\", &a.body), (\"headers\", &headers), (\"inputs\", inputs), (\"connection\", &connection), (\"now\", &now), (\"today\", &today), (\"secret\", &secret)];", CONNECTIONS),
     # BD-47: files sent are the caller's to read and within the operation's limit; files an answer names are fetched within the connection's hosts.
     ("sent-file-any-reader", "crates/kernel/src/connections/mod.rs", "let info = self.file_info(ctx, id).await.map_err(", "let info = self.file_info(&Ctx::system(ctx.tenant, ctx.schema.clone()), id).await.map_err(", CONNECTIONS),
     ("sent-file-uncapped", "crates/kernel/src/connections/mod.rs", "let cap = part.max_bytes.unwrap_or(DEFAULT_FILE_BYTES).min(*budget);", "let cap = MAX_FILE_BYTES;", CONNECTIONS),
@@ -936,7 +937,13 @@ MUTANTS = [
     ("meta-unbounded", "crates/kernel/src/connections/mod.rs", "if self.meta.as_ref().is_some_and(|m| !m.is_object() || m.to_string().len() > MAX_META) {", "if false {", CONNECTIONS),
     ("person-pull-as-system", "crates/kernel/src/connections/pull.rs", "self.load_ctx(tenant, user, None, format!(\"pull-{}\", job.id)).await?", "Ctx::system(tenant, self.registry.schema(tenant).await?)", CONNECTIONS),
     ("person-pull-after-closing", "crates/kernel/src/connections/pull.rs", "                _ => Some(\"delete from conn_pull where tenant_id = $1 and conn_id = $2 and user_id = $3\"),", "                _ => None,", CONNECTIONS),
-    ("pulled-record-not-outside", "crates/kernel/src/connections/inbound.rs", "outside = Ctx { origin: Some(\"outside\".into()), ..ctx.clone() };", "outside = ctx.clone();", CONNECTIONS),
+    ("pulled-record-not-outside", "crates/kernel/src/connections/inbound.rs", "given.origin = Some(\"outside\".into());", "given.origin = None;", CONNECTIONS),
+    # BD-53 to BD-58: steps never send twice; a key is one worker's; limits hold; a mapping writes as the system only when it says.
+    ("step-lost-answer-resent", "crates/kernel/src/connections/steps.rs", "let Some(c) = &step.confirm else { return Ok(Outcome::Later(LOST.into(), None)) };", "let Some(c) = &step.confirm else { return Ok(self.perform(ctx, conn, &step.operation, given, Some(skey), extra, about, None).await?) };", STEPS),
+    ("step-done-made-again", "crates/kernel/src/connections/steps.rs", "if let Some((_, result)) = self.done_before(conn, &step.operation, skey).await? {", "if let Some((_, result)) = None::<(String, Value)> {", STEPS),
+    ("key-two-workers", "crates/kernel/src/connections/steps.rs", "Ok(held.then_some(tx))", "Ok(Some(tx))", STEPS),
+    ("limit-not-counted", "crates/kernel/src/connections/mod.rs", "if n as u32 > per {", "if false {", STEPS),
+    ("mapping-always-system", "crates/kernel/src/connections/inbound.rs", "if map.run_as == Some(RunAs::System) {", "if true {", STEPS),
     # The whole router builds: no path and method mounted twice.
     ("hub-on-connections-path", "server/src/controllers/connect.rs", ".add(\"/admin/connector-instances\", get(list).post(create))", ".add(\"/admin/connections\", get(list).post(create))", ROUTES),
 

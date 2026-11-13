@@ -112,6 +112,25 @@ pub struct Provider {
     /// Where the token answer names the account: a pointer, `/id_token/<claim>` reading the id token's claims.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_at: Option<String>,
+    /// Fields of the token answer (and of `after`'s results) kept, sealed, with the tokens: `auth.<name>` (BD-61).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keep: Vec<String>,
+    /// Operations made after the code is exchanged, in order, given `inputs.access_token`, `refresh_token` and
+    /// `client_id`: each result's names (`access_token`, `refresh_token`, `expires_in`, and any to keep) replace the
+    /// answer's (a long-lived token for a short one, the account's id).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<String>,
+    /// An operation that refreshes in place of the token address (a GET with the token itself), given the same
+    /// inputs; its result is read as a token answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<String>,
+    /// An operation that registers the platform's client at this server (its own request, not RFC 7591's), given
+    /// `inputs.redirect_uri`, `scopes` and `client_name`; its result's `client_id` and `client_secret` are kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration: Option<String>,
+    /// Its tokens never expire, whatever the token answer says: never refreshed ahead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub never_expires: bool,
 }
 
 fn address_problem(name: &str, url: &str) -> Option<String> {
@@ -130,8 +149,11 @@ impl Provider {
         {
             return Some(p);
         }
-        if self.client_id.trim().is_empty() && self.registration_url.is_none() {
-            return Some("auth.provider.client_id is required, unless the provider registers clients (registration_url)".into());
+        if self.client_id.trim().is_empty() && self.registration_url.is_none() && self.registration.is_none() {
+            return Some("auth.provider.client_id is required, unless the provider registers clients (registration_url or registration)".into());
+        }
+        if self.keep.iter().any(|k| !is_name(k) || ["access_token", "refresh_token"].contains(&k.as_str())) {
+            return Some("auth.provider.keep names fields of the token answer (not the tokens)".into());
         }
         if self.client_secret.as_deref().is_some_and(|s| !is_name(s)) {
             return Some("auth.provider.client_secret names one of the connection's secrets".into());
@@ -322,10 +344,18 @@ impl Kernel {
         let conn = self.load_connection(ctx.tenant, &conn_id.to_string()).await?;
         let (provider, _) = oauth(&conn)?;
         let form = [("grant_type", "authorization_code"), ("code", code), ("redirect_uri", &self.connection_callback()?), ("code_verifier", &verifier)];
-        let answer = match self.token_request(&conn, provider, &provider.token_url, &form).await? {
+        let mut answer = match self.token_request(&conn, provider, &provider.token_url, &form).await? {
             Granted::Tokens(t) => t,
             Granted::Refused(why) | Granted::Later(why) => return Err(Error::invalid(format!("the provider did not give tokens: {why}"))),
         };
+        // What follows the sign-in (a long-lived token for a short one, the account's facts): each result over the answer.
+        for op in &provider.after {
+            match self.signing_op(&conn, op, self.token_inputs(&conn, &answer)?, &answer).await? {
+                Granted::Tokens(Value::Object(more)) => answer.as_object_mut().into_iter().for_each(|a| a.extend(more.clone())),
+                Granted::Tokens(_) => {}
+                Granted::Refused(why) | Granted::Later(why) => return Err(Error::invalid(format!("{op} after the sign-in failed: {why}"))),
+            }
+        }
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
         let account = self.keep_tokens(&mut tx, &conn, owner_id, &answer, None, Some(ctx.user)).await?;
         // A person's own account: their pulls of it run (again), as them.
@@ -399,6 +429,15 @@ impl Kernel {
             }
             break got;
         };
+        // A token answer written as a form (`access_token=…&expires_in=…`) is read as one.
+        let got = got.map(|mut a| {
+            if let Value::String(text) = &a.body
+                && text.contains('=')
+            {
+                a.body = super::fns::form_value(text.as_bytes());
+            }
+            a
+        });
         Ok(match got {
             Ok(a) if (200..300).contains(&a.status) && a.body.get("access_token").and_then(Value::as_str).is_some_and(|t| !t.is_empty()) => {
                 Granted::Tokens(a.body)
@@ -416,10 +455,30 @@ impl Kernel {
     /// read again.
     async fn register_client(&self, conn: &Loaded, redirect: &str) -> Result<Loaded> {
         let (provider, _) = oauth(conn)?;
-        let url = provider.registration_url.clone().ok_or_else(|| Error::invalid("auth.provider.client_id is required"))?;
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
         let held = super::lock_secrets(&mut tx, self, conn.tenant, conn.id).await?;
+        if let Some(op) = provider.registration.as_deref().filter(|_| held.get(REGISTERED_ID).is_none_or(|v| v.is_empty())) {
+            // The server's own registration request, an operation of the connection.
+            let inputs = json!({"redirect_uri": redirect, "scopes": provider.scopes.join(" "), "client_name": conn.name});
+            let given = match self.signing_op(conn, op, inputs, &Value::Null).await? {
+                Granted::Tokens(r) => r,
+                Granted::Refused(why) | Granted::Later(why) => return Err(Error::invalid(format!("the server did not register a client: {why}"))),
+            };
+            let id =
+                given["client_id"].as_str().filter(|i| !i.is_empty() && i.len() <= 500).ok_or_else(|| Error::invalid(format!("{op} gave no client_id")))?;
+            let mut set = BTreeMap::from([(REGISTERED_ID.to_string(), id.to_string())]);
+            if let Some(secret) = given["client_secret"].as_str().filter(|s| !s.is_empty()) {
+                set.insert(REGISTERED_SECRET.into(), secret.to_string());
+            }
+            super::store_secrets(&mut tx, self, conn.tenant, conn.id, held, set, &[]).await?;
+            let system = Ctx::system(conn.tenant, self.registry.schema(conn.tenant).await?);
+            audit::record(&mut tx, &system, "Connection", conn.id, "register_client", None, json!({"client_id": id})).await?;
+            tx.commit().await?;
+            return self.load_connection(conn.tenant, &conn.id.to_string()).await;
+        }
+        let url = provider.registration_url.clone().filter(|_| provider.registration.is_none());
         if held.get(REGISTERED_ID).is_none_or(|v| v.is_empty()) {
+            let url = url.ok_or_else(|| Error::invalid("auth.provider.client_id is required"))?;
             let mut asked = json!({"client_name": conn.name, "redirect_uris": [redirect], "grant_types": ["authorization_code", "refresh_token"],
                                    "response_types": ["code"], "token_endpoint_auth_method": "client_secret_basic"});
             if !provider.scopes.is_empty() {
@@ -501,12 +560,15 @@ impl Kernel {
 
     /// Seals what a token address gave for `owner` (nil: the workspace's), keeping `refresh` when it gave none; marks
     /// it connected. The account it names.
-    async fn keep_tokens(&self, tx: &mut Tx, conn: &Loaded, owner: Uuid, answer: &Value, refresh: Option<String>, by: Option<Uuid>) -> Result<Option<String>> {
+    async fn keep_tokens(&self, tx: &mut Tx, conn: &Loaded, owner: Uuid, answer: &Value, before: Option<&Value>, by: Option<Uuid>) -> Result<Option<String>> {
+        let refresh = before.and_then(|b| b["refresh_token"].as_str()).filter(|r| !r.is_empty()).map(str::to_string);
         let access =
             answer.get("access_token").and_then(Value::as_str).filter(|t| !t.is_empty()).ok_or_else(|| Error::invalid("the provider gave no access token"))?;
         let refresh = answer.get("refresh_token").and_then(Value::as_str).map(str::to_string).or(refresh);
+        let never = matches!(&conn.desc.auth, Auth::Oauth { provider, .. } if provider.never_expires);
         let expires = answer
             .get("expires_in")
+            .filter(|_| !never)
             .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()))
             .map(|s| Utc::now() + chrono::Duration::seconds(s.clamp(0, 365 * 86400)));
         let mut seen = answer.clone();
@@ -519,7 +581,20 @@ impl Kernel {
         };
         let account = super::at(&seen, account_at).map(|a| a.chars().take(200).collect::<String>());
         let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("tokens are sealed with the server's secret key".into()))?;
-        let sealed = key.seal(&token_label(conn.tenant, conn.id, owner), &json!({"access_token": access, "refresh_token": refresh}).to_string())?;
+        // What the sign-in keeps (`auth.<name>`): this answer's, else what was kept before.
+        let names: &[String] = match &conn.desc.auth {
+            Auth::Oauth { provider, .. } => &provider.keep,
+            Auth::Session { keep, .. } => keep,
+            _ => &[],
+        };
+        let mut kept = before.and_then(|b| b.get("kept")).cloned().unwrap_or_else(|| json!({}));
+        for n in names {
+            if let Some(v) = answer.get(n).filter(|v| !v.is_null()) {
+                kept[n.as_str()] = v.clone();
+            }
+        }
+        let sealed =
+            key.seal(&token_label(conn.tenant, conn.id, owner), &json!({"access_token": access, "refresh_token": refresh, "kept": kept}).to_string())?;
         sqlx::query(
             "insert into conn_token (tenant_id, conn_id, user_id, sealed, expires_at, account, status, told, connected_by) values ($1, $2, $3, $4, $5, $6, 'connected', false, $7) \
              on conflict (tenant_id, conn_id, user_id) do update set sealed = excluded.sealed, expires_at = excluded.expires_at, \
@@ -539,7 +614,7 @@ impl Kernel {
     }
 
     /// Whose tokens a call by `ctx` uses: the workspace's, or the caller's own.
-    fn token_owner(conn: &Loaded, ctx: &Ctx) -> Result<Uuid> {
+    pub(crate) fn token_owner(conn: &Loaded, ctx: &Ctx) -> Result<Uuid> {
         if matches!(conn.desc.auth, Auth::Session { .. }) {
             return Ok(Uuid::nil());
         }
@@ -548,6 +623,27 @@ impl Kernel {
             Owner::Person if ctx.user.is_nil() => Err(Error::invalid(format!("{} is each person's own: it is used as a person", conn.name))),
             Owner::Person => Ok(ctx.user),
         }
+    }
+
+    /// What a call by `ctx` reads of its signed-in account (BD-60): the account the sign-in named, and what it kept
+    /// (`auth.<name>`, BD-61). Nulls before anyone signed in.
+    pub(crate) async fn account_vars(&self, conn: &Loaded, ctx: &Ctx) -> Result<(Value, Value)> {
+        if !matches!(conn.desc.auth, Auth::Oauth { .. } | Auth::Session { .. }) {
+            return Ok((Value::Null, json!({})));
+        }
+        let owner = Self::token_owner(conn, ctx)?;
+        let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
+        let row: Option<(Option<String>, String)> =
+            sqlx::query_as("select account, sealed from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3")
+                .bind(conn.tenant)
+                .bind(conn.id)
+                .bind(owner)
+                .fetch_optional(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        let Some((account, sealed)) = row else { return Ok((Value::Null, json!({}))) };
+        let open: Value = serde_json::from_str(&self.open_sealed(&token_label(conn.tenant, conn.id, owner), &sealed)?).map_err(Error::internal)?;
+        Ok((json!(account), open.get("kept").cloned().unwrap_or_else(|| json!({}))))
     }
 
     /// The access token a call by `ctx` sends, refreshed first when it is about to expire (`force`: whatever its time).
@@ -603,6 +699,11 @@ impl Kernel {
         let granted = match (&conn.desc.auth, &refresh) {
             // A session refreshes with its refresh operation, else signs in again.
             (Auth::Session { .. }, _) => self.session_grant(conn, refresh.as_deref()).await?,
+            // A provider that refreshes by an operation of its own (a GET with the token itself).
+            (Auth::Oauth { provider, .. }, _) if provider.refresh.is_some() => {
+                let op = provider.refresh.clone().unwrap_or_default();
+                self.signing_op(conn, &op, self.token_inputs(conn, &open)?, &open).await?
+            }
             (_, None) => {
                 self.needs_reconnecting(&mut tx, conn, owner).await?;
                 tx.commit().await?;
@@ -615,7 +716,7 @@ impl Kernel {
         };
         match granted {
             Granted::Tokens(answer) => {
-                self.keep_tokens(&mut tx, conn, owner, &answer, refresh, None).await?;
+                self.keep_tokens(&mut tx, conn, owner, &answer, Some(&open), None).await?;
                 tx.commit().await?;
                 Ok(answer["access_token"].as_str().unwrap_or_default().to_string())
             }
@@ -738,7 +839,7 @@ impl Kernel {
     /// What a session's login or refresh operation gives (`refresh`: the refresh token, for its refresh operation), as
     /// a token address's answer would say it.
     async fn session_grant(&self, conn: &Loaded, refresh: Option<&str>) -> Result<Granted> {
-        let Auth::Session { login, refresh: renew, token_at, refresh_at, expires_at, .. } = &conn.desc.auth else {
+        let Auth::Session { login, refresh: renew, token_at, refresh_at, expires_at, keep, .. } = &conn.desc.auth else {
             return Err(Error::invalid(format!("{} has no session", conn.name)));
         };
         let (op, inputs) = match (renew, refresh) {
@@ -751,7 +852,7 @@ impl Kernel {
             quiet.secrets.insert("\u{0}refresh".into(), r.to_string());
         }
         let ctx = Ctx::system(conn.tenant, self.registry.schema(conn.tenant).await?);
-        Ok(match Box::pin(self.perform(&ctx, &quiet, op, &inputs, None, None, None, None)).await? {
+        Ok(match Box::pin(self.perform(&ctx, &quiet, op, &inputs, None, super::Extra::default(), None, None)).await? {
             Outcome::Ok(_, a) => match super::at(&a.body, Some(token_at)).filter(|t| !t.is_empty()) {
                 Some(token) => {
                     let mut out = json!({"access_token": token});
@@ -761,10 +862,37 @@ impl Kernel {
                     if let Some(at) = expires_at.as_deref().and_then(|p| a.body.pointer(p)).and_then(expiry) {
                         out["expires_in"] = json!((at - Utc::now()).num_seconds().max(0));
                     }
+                    for k in keep {
+                        out[k.as_str()] = a.body.get(k).cloned().unwrap_or(Value::Null);
+                    }
                     Granted::Tokens(out)
                 }
                 None => Granted::Refused(format!("{op} gave no token at {token_at}")),
             },
+            Outcome::Later(why, _) => Granted::Later(why),
+            Outcome::No(why) => Granted::Refused(why),
+        })
+    }
+
+    /// The inputs a signing operation (`after`, `refresh`) is given: the tokens of `answer` and the client's id.
+    fn token_inputs(&self, conn: &Loaded, answer: &Value) -> Result<Value> {
+        let client_id = match &conn.desc.auth {
+            Auth::Oauth { provider, .. } => client(conn, provider).map(|c| c.0).unwrap_or_default(),
+            _ => String::new(),
+        };
+        Ok(json!({"access_token": answer["access_token"], "refresh_token": answer["refresh_token"], "client_id": client_id}))
+    }
+
+    /// A signing operation of the connection (`after`, `refresh`, `registration`), made without credentials of its own
+    /// and never captured, the tokens it is given masked wherever its words are kept: its mapped result.
+    async fn signing_op(&self, conn: &Loaded, op: &str, inputs: Value, tokens: &Value) -> Result<Granted> {
+        let mut quiet = conn.clone();
+        for (i, t) in ["access_token", "refresh_token"].iter().filter_map(|n| tokens.get(*n)?.as_str()).enumerate() {
+            quiet.secrets.insert(format!("\u{0}token{i}"), t.to_string());
+        }
+        let ctx = Ctx::system(conn.tenant, self.registry.schema(conn.tenant).await?);
+        Ok(match Box::pin(self.perform(&ctx, &quiet, op, &inputs, None, super::Extra::default(), None, None)).await? {
+            Outcome::Ok(result, _) => Granted::Tokens(result),
             Outcome::Later(why, _) => Granted::Later(why),
             Outcome::No(why) => Granted::Refused(why),
         })
