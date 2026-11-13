@@ -3,11 +3,26 @@
 //! newer build's events and jobs alone; it refuses, naming what to start, when it is not let in. Against a real
 //! PostgreSQL (`FERRUM_TEST_DATABASE_URL`; the database is reset first).
 
+use async_trait::async_trait;
+use ferrum_kernel::outbox::Event;
 use ferrum_kernel::tenant::NewTenant;
-use ferrum_kernel::{Db, DbConfig, HookRegistry, Kernel, KernelSettings, window};
+use ferrum_kernel::{Db, DbConfig, EventSink, HookRegistry, Kernel, KernelSettings, window};
 use ferrum_meta::Catalog;
 use serde_json::json;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+/// The topics of the events handled, in the order they were.
+#[derive(Default)]
+struct Seen(Mutex<Vec<i64>>);
+
+#[async_trait]
+impl EventSink for Seen {
+    async fn on_event(&self, _k: &Kernel, ev: &Event) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().push(ev.id);
+        Ok(())
+    }
+}
 
 #[test]
 fn an_older_build_runs_as_a_guest_of_a_newer_one() {
@@ -47,9 +62,14 @@ async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 12, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let seen = Arc::new(Seen::default());
     let boot = |migrate_at_start: bool| {
-        let db = db.clone();
-        async move { Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings { migrate_at_start, ..Default::default() }, None).await }
+        let (db, seen) = (db.clone(), seen.clone());
+        async move {
+            let mut hooks = HookRegistry::default();
+            hooks.add_event_sink(seen);
+            Kernel::boot(db, catalog(), hooks, KernelSettings { migrate_at_start, ..Default::default() }, None).await
+        }
     };
     let refused = |what: &str, r: ferrum_kernel::Result<std::sync::Arc<Kernel>>| -> String {
         let Err(e) = r else { panic!("{what}: booted") };
@@ -134,12 +154,56 @@ async fn scenario() {
     let id = made["id"].as_str().unwrap().parse().unwrap();
     assert_eq!(guest.get(&ctx, "Currency", id, false).await.unwrap()["code"], "XTS");
 
-    // Its own events go out; the newer build's event and job stay as they were, for a newer replica.
+    // The newer build's event and job stay as they were, for a newer replica; so does its own event that came after the
+    // newer one in the workspace (order holds), and the gauges count them as waiting for a newer build.
     while guest.dispatch_outbox_once().await.unwrap() > 0 {}
     while guest.run_jobs_once(4).await.unwrap() > 0 {}
-    assert_eq!(scalar(&db, "select count(*) from outbox where entity = 'Currency' and processed_at is null").await, 0);
+    let newer: i64 = scalar(&db, "select id from outbox where topic = 'newer.topic'").await;
+    let after = scalar(
+        &db,
+        "select count(*) from outbox where id > (select id from outbox where topic = 'newer.topic') and processed_at is null and not dead and attempts = 0",
+    )
+    .await;
+    assert!(
+        after > 0 && after == scalar(&db, "select count(*) from outbox where id > (select id from outbox where topic = 'newer.topic')").await,
+        "an event after the newer one was taken"
+    );
     assert_eq!(scalar(&db, "select count(*) from outbox where topic = 'newer.topic' and processed_at is null and not dead and attempts = 0").await, 1);
     assert_eq!(scalar(&db, "select count(*) from job where kind = 'newer.kind' and status = 'queued' and attempts = 0").await, 1);
+    assert_eq!(guest.waiting_for_newer().await.unwrap(), (1 + after, 1));
+    assert!(seen.0.lock().unwrap().iter().all(|id| *id < newer), "{:?}", seen.0.lock().unwrap());
+    // A replica at least as new as the one that wrote it (here: the event dated as this build) takes both, in order.
+    let mut tx = db.system_tx().await.unwrap();
+    sqlx::query("update outbox set build_date = $1 where topic = 'newer.topic'").bind(window::build_date()).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    while guest.dispatch_outbox_once().await.unwrap() > 0 {}
+    let order: Vec<i64> = seen.0.lock().unwrap().iter().copied().filter(|id| *id >= newer).collect();
+    assert!(order.len() as i64 == 1 + after && order.windows(2).all(|w| w[0] < w[1]) && order[0] == newer, "{order:?}");
+    assert_eq!(guest.waiting_for_newer().await.unwrap(), (0, 1));
+    let mut tx = db.system_tx().await.unwrap();
+    sqlx::query("insert into outbox (tenant_id, topic, payload, build_date) values ($1, 'newer.topic', '{}', now() + interval '400 days')")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // A build with an older date that the newer one was not made from is no guest: one of its migrations is not
+    // applied, or the database lacks a column its catalog has.
+    let last: i64 = scalar(&db, "select max(version) from _sqlx_migrations where version < 99991231000000").await;
+    sqlx::query("update _sqlx_migrations set version = -version where version = $1").bind(last).execute(&db.pool).await.unwrap();
+    for migrate_at_start in [true, false] {
+        let said = refused("a migration not applied", boot(migrate_at_start).await);
+        assert!(said.contains("not an older build of the one that migrated") && said.contains(&format!("migration {last}")), "{said}");
+    }
+    sqlx::query("update _sqlx_migrations set version = -version where version = $1").bind(-last).execute(&db.pool).await.unwrap();
+    sqlx::query("alter table e_currency rename column currency_name to currency_name_gone").execute(&db.pool).await.unwrap();
+    for migrate_at_start in [true, false] {
+        let said = refused("a column missing", boot(migrate_at_start).await);
+        assert!(said.contains("not an older build of the one that migrated") && said.contains("currency_name"), "{said}");
+    }
+    sqlx::query("alter table e_currency rename column currency_name_gone to currency_name").execute(&db.pool).await.unwrap();
+    boot(false).await.expect("a guest again");
 
     // A newer build whose COMPATIBLE_FROM is past this build: refused with either setting, saying what to start.
     set_state(&db, "schema_compatible_from", &day(1)).await;

@@ -100,6 +100,8 @@ fn constraint_messages(schema: &Schema) {
 
 struct Ddl<'a> {
     conn: &'a mut PgConnection,
+    /// A dry run ([`lacks`]): statements are collected here instead of run.
+    dry: Option<Vec<String>>,
     report: SyncReport,
     constraints: HashSet<String>,
     policies: HashSet<String>,
@@ -108,6 +110,10 @@ struct Ddl<'a> {
 
 impl Ddl<'_> {
     async fn exec(&mut self, sql: String) -> Result<()> {
+        if let Some(planned) = &mut self.dry {
+            planned.push(sql);
+            return Ok(());
+        }
         tracing::debug!("ddl: {sql}");
         sqlx::raw_sql(AssertSqlSafe(sql.clone())).execute(&mut *self.conn).await.map_err(|e| Error::Internal(format!("schema sync failed on `{sql}`: {e}")))?;
         self.report.statements += 1;
@@ -336,6 +342,68 @@ pub async fn is_current(db: &Db, catalog: &Catalog) -> Result<bool> {
     Ok(current.as_deref() == Some(fingerprint(catalog).as_str()))
 }
 
+/// The entities that have tables of their own.
+fn managed(schema: &Schema) -> Vec<&EffEntity> {
+    schema.entities.values().map(|e| e.as_ref()).filter(|e| !e.custom && e.def.kind != EntityKind::Child && e.def.kind != EntityKind::Ledger).collect()
+}
+
+/// Pass 1 of the sync: every table and column the catalog needs.
+async fn tables_and_columns(ddl: &mut Ddl<'_>, schema: &Schema, managed: &[&EffEntity]) -> Result<()> {
+    for ent in managed {
+        if !ddl.columns.contains_key(&ent.table) {
+            ddl.exec(format!("create table if not exists {} (\n{SYSTEM_COLUMNS}\n)", q(&ent.table))).await?;
+            ddl.columns.insert(ent.table.clone(), HashMap::new());
+        }
+        ddl.add_columns(&ent.table, ent).await?;
+        for child in ent.children.values() {
+            let Some(cent) = schema.entity(&child.entity) else { continue };
+            if !ddl.columns.contains_key(&child.table) {
+                ddl.exec(format!(
+                    "create table if not exists {ct} (\n  tenant_id uuid not null,\n  id uuid not null,\n  parent_id uuid not null,\n  \
+                     idx int not null check (idx >= 0),\n  created_at timestamptz not null default now(),\n  \
+                     updated_at timestamptz not null default now(),\n  ext jsonb not null default '{{}}'::jsonb,\n  \
+                     primary key (tenant_id, id),\n  foreign key (tenant_id, parent_id) references {pt} (tenant_id, id) on delete cascade\n)",
+                    ct = q(&child.table),
+                    pt = q(&ent.table)
+                ))
+                .await?;
+                ddl.columns.insert(child.table.clone(), HashMap::new());
+                ddl.index(&child.table, &["parent_id", "idx"], false, None).await?;
+            }
+            ddl.add_columns(&child.table, cent).await?;
+        }
+    }
+    Ok(())
+}
+
+/// What the database lacks for `catalog`, changing nothing: the tables and columns the sync would create (a dry run of
+/// its pass 1), and package SQL files it has not applied. Empty when the database holds everything the catalog needs.
+pub async fn lacks(db: &Db, catalog: &Catalog) -> Result<Vec<String>> {
+    let schema = cluster_schema(catalog)?;
+    let mut conn = db.pool.acquire().await?;
+    let mut ddl = Ddl {
+        conn: &mut conn,
+        dry: Some(Vec::new()),
+        report: SyncReport::default(),
+        constraints: HashSet::new(),
+        policies: HashSet::new(),
+        columns: HashMap::new(),
+    };
+    ddl.load_state().await?;
+    tables_and_columns(&mut ddl, &schema, &managed(&schema)).await?;
+    let mut out = ddl.dry.take().unwrap_or_default();
+    let applied: HashSet<(String, String)> =
+        sqlx::query_as::<_, (String, String)>("select package, file from cluster_package_sql").fetch_all(&mut *conn).await?.into_iter().collect();
+    for pkg in catalog.packages() {
+        for (file, _) in &pkg.sql {
+            if !applied.contains(&(pkg.name().to_string(), file.clone())) {
+                out.push(format!("package SQL {}/{file}", pkg.name()));
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub async fn sync(db: &Db, catalog: &Catalog, force: bool) -> Result<SyncReport> {
     let mut conn = db.pool.acquire().await?;
     sqlx::query("select pg_advisory_lock($1)").bind(SYNC_LOCK).execute(&mut *conn).await?;
@@ -356,37 +424,12 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
         crate::window::record(conn).await?;
         return Ok(SyncReport { skipped: true, ..Default::default() });
     }
-    let mut ddl = Ddl { conn, report: SyncReport::default(), constraints: HashSet::new(), policies: HashSet::new(), columns: HashMap::new() };
+    let mut ddl = Ddl { conn, dry: None, report: SyncReport::default(), constraints: HashSet::new(), policies: HashSet::new(), columns: HashMap::new() };
     ddl.load_state().await?;
 
     // Pass 1: tables and columns.
-    let managed: Vec<&EffEntity> =
-        schema.entities.values().map(|e| e.as_ref()).filter(|e| !e.custom && e.def.kind != EntityKind::Child && e.def.kind != EntityKind::Ledger).collect();
-    for ent in &managed {
-        if !ddl.columns.contains_key(&ent.table) {
-            ddl.exec(format!("create table if not exists {} (\n{SYSTEM_COLUMNS}\n)", q(&ent.table))).await?;
-            ddl.columns.insert(ent.table.clone(), HashMap::new());
-        }
-        ddl.add_columns(&ent.table, ent).await?;
-        for (field, child) in &ent.children {
-            let Some(cent) = schema.entity(&child.entity) else { continue };
-            if !ddl.columns.contains_key(&child.table) {
-                ddl.exec(format!(
-                    "create table if not exists {ct} (\n  tenant_id uuid not null,\n  id uuid not null,\n  parent_id uuid not null,\n  \
-                     idx int not null check (idx >= 0),\n  created_at timestamptz not null default now(),\n  \
-                     updated_at timestamptz not null default now(),\n  ext jsonb not null default '{{}}'::jsonb,\n  \
-                     primary key (tenant_id, id),\n  foreign key (tenant_id, parent_id) references {pt} (tenant_id, id) on delete cascade\n)",
-                    ct = q(&child.table),
-                    pt = q(&ent.table)
-                ))
-                .await?;
-                ddl.columns.insert(child.table.clone(), HashMap::new());
-                ddl.index(&child.table, &["parent_id", "idx"], false, None).await?;
-            }
-            ddl.add_columns(&child.table, cent).await?;
-            let _ = field;
-        }
-    }
+    let managed = managed(&schema);
+    tables_and_columns(&mut ddl, &schema, &managed).await?;
 
     // Pass 2: constraints, indexes, RLS (all tables exist now, so FK targets do too).
     for ent in &managed {

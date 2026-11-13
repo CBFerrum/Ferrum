@@ -112,6 +112,12 @@ pub(crate) async fn record(conn: &mut PgConnection) -> Result<()> {
     Ok(())
 }
 
+/// An event (`o`, of `outbox`) this build may not take: a newer build wrote it, or one waits before it in its workspace
+/// and priority, whose order holds (docs/events.md), so it waits behind that one. `$1` is this build's date. Served by
+/// the index `outbox_newer` (migration 20261117000901): empty unless a newer build has written events.
+pub const NOT_YET: &str = "(coalesce(o.build_date > $1, false) or exists (select 1 from outbox n where n.tenant_id = o.tenant_id and n.priority = o.priority \
+     and n.processed_at is null and not n.dead and n.build_date > $1 and n.id < o.id))";
+
 /// Where a build stands against the database.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Standing {
@@ -123,17 +129,23 @@ pub enum Standing {
     Refused(String),
 }
 
-/// `unknown`: applied migrations this build does not have.
-pub fn standing(own: DateTime<Utc>, unknown: &[i64], rec: Option<Recorded>) -> Standing {
+/// `dated`: whether this build knows its date ([`dated`]); `unknown`: applied migrations this build does not have.
+pub fn standing(own: DateTime<Utc>, dated: bool, unknown: &[i64], rec: Option<Recorded>) -> Standing {
     match rec {
+        // A build that cannot tell its date may be newer than it says (an image built without BUILD_DATE): never a guest
+        // that would quietly skip its start-up steps. Undated on undated is level, as before the window.
+        Some(r) if !dated && r.build > parse(UNDATED) => Standing::Refused(format!(
+            "this build cannot tell its own date (it was built without git or BUILD_DATE), and the database was synced by a build of {}. \
+             Build the image with BUILD_DATE set to its commit's date (git log -1 --format=%ct), or build from git",
+            shown(r.build)
+        )),
         Some(r) if r.build > own && own >= r.compatible_from => Standing::Guest(r),
         Some(r) if r.build > own => Standing::Refused(format!(
-            "the database was migrated by a newer build (of {}), which runs only with builds from {} on; this build is of {}{}. \
+            "the database was migrated by a newer build (of {}), which runs only with builds from {} on; this build is of {}. \
              Start a build from {} or newer, such as the one that migrated it",
             shown(r.build),
             shown(r.compatible_from),
             shown(own),
-            if dated() { "" } else { " (built without git or BUILD_DATE, so it cannot tell its own date)" },
             shown(r.compatible_from)
         )),
         // A newer build's migrations without its record: one from before the window. Refused as before it.
@@ -142,6 +154,28 @@ pub fn standing(own: DateTime<Utc>, unknown: &[i64], rec: Option<Recorded>) -> S
             unknown[0]
         )),
         _ => Standing::Level,
+    }
+}
+
+/// Before a build is let in as a guest: the database must hold everything it needs. A build with an older date that the
+/// one that migrated was not made from (another branch with its own migration or fields, or a wrong date) would
+/// otherwise start and then fail on a missing column. None of its migrations may be pending, and a dry run of its
+/// schema sync must add nothing.
+pub(crate) async fn admit(db: &crate::Db, catalog: &ferrum_meta::Catalog, rec: Recorded) -> Result<()> {
+    let mut lacking: Vec<String> = db.pending_migrations().await?.iter().map(|v| format!("migration {v}")).collect();
+    if lacking.is_empty() {
+        lacking = crate::ddl::lacks(db, catalog).await?;
+    }
+    match lacking.first() {
+        None => Ok(()),
+        Some(first) => Err(Error::Invalid(format!(
+            "this build is not an older build of the one that migrated the database (of {}): it has things the database lacks \
+             ({} of them; the first: {}). Start the build that migrated the database, or a newer one; run this build only on a \
+             database it migrated itself",
+            shown(rec.build),
+            lacking.len(),
+            first.lines().next().unwrap_or_default()
+        ))),
     }
 }
 
@@ -168,7 +202,7 @@ impl Deciding {
 
     pub(crate) async fn standing(&mut self, db: &crate::Db) -> Result<Standing> {
         let unknown = db.unknown_migrations().await?;
-        Ok(standing(build_date(), &unknown, recorded(&mut self.0).await?))
+        Ok(standing(build_date(), dated(), &unknown, recorded(&mut self.0).await?))
     }
 
     pub(crate) async fn release(mut self) {
@@ -196,7 +230,7 @@ impl Kernel {
         let unknown = self.db.unknown_migrations().await?;
         let rec = recorded(&mut conn).await;
         let hold = StartHold(conn);
-        match standing(build_date(), &unknown, rec?) {
+        match standing(build_date(), dated(), &unknown, rec?) {
             Standing::Level => Ok(Some(hold)),
             Standing::Guest(_) => {
                 hold.release().await;
@@ -207,6 +241,20 @@ impl Kernel {
                 Err(Error::Invalid(why))
             }
         }
+    }
+
+    /// Work waiting for a newer build than this one: (events, jobs). Counted apart from what this build can take.
+    pub async fn waiting_for_newer(&self) -> Result<(i64, i64)> {
+        let mut tx = self.db.system_tx().await?;
+        let events: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("select count(*) from outbox o where o.processed_at is null and not o.dead and {NOT_YET}")))
+                .bind(build_date())
+                .fetch_one(&mut *tx)
+                .await?;
+        let jobs: i64 =
+            sqlx::query_scalar("select count(*) from job where status = 'queued' and build_date > $1").bind(build_date()).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        Ok((events, jobs))
     }
 
     /// Whether a newer build than this one has synced the schema: what this build cannot read may be the newer one's.
@@ -228,21 +276,26 @@ mod tests {
     fn the_constants_are_dates_and_no_build_is_older_than_its_own_window() {
         assert!(compatible_from() > DateTime::<Utc>::MIN_UTC && parse(UNDATED) > DateTime::<Utc>::MIN_UTC);
         assert!(parse(UNDATED) <= build_date());
-        assert!(compatible_from() <= build_date(), "COMPATIBLE_FROM is later than this build: it would refuse itself");
+        assert!(compatible_from() <= Utc::now(), "COMPATIBLE_FROM is in the future: every build would refuse itself");
     }
 
     #[test]
     fn a_newer_record_lets_in_builds_from_its_compatible_from() {
         let own = at("2026-12-01T00:00:00Z");
         let newer = |from: &str| Some(Recorded { build: at("2026-12-10T00:00:00Z"), compatible_from: at(from) });
-        assert_eq!(standing(own, &[], None), Standing::Level);
-        assert_eq!(standing(own, &[], Some(Recorded { build: own, compatible_from: own })), Standing::Level);
-        assert!(matches!(standing(own, &[7], newer("2026-11-01T00:00:00Z")), Standing::Guest(_)));
-        assert!(matches!(standing(own, &[], newer("2026-12-01T00:00:00Z")), Standing::Guest(_)));
-        let Standing::Refused(why) = standing(own, &[], newer("2026-12-01T00:00:01Z")) else { panic!() };
+        assert_eq!(standing(own, true, &[], None), Standing::Level);
+        assert_eq!(standing(own, true, &[], Some(Recorded { build: own, compatible_from: own })), Standing::Level);
+        assert!(matches!(standing(own, true, &[7], newer("2026-11-01T00:00:00Z")), Standing::Guest(_)));
+        assert!(matches!(standing(own, true, &[], newer("2026-12-01T00:00:00Z")), Standing::Guest(_)));
+        let Standing::Refused(why) = standing(own, true, &[], newer("2026-12-01T00:00:01Z")) else { panic!() };
         assert!(why.contains("Start a build from 2026-12-01T00:00:01Z or newer"), "{why}");
+        // Undated: refused under a dated build's record, level under an undated one's.
+        let Standing::Refused(why) = standing(parse(UNDATED), false, &[], newer("2026-11-01T00:00:00Z")) else { panic!() };
+        assert!(why.contains("BUILD_DATE"), "{why}");
+        let undated = Some(Recorded { build: parse(UNDATED), compatible_from: parse(UNDATED) });
+        assert_eq!(standing(parse(UNDATED), false, &[], undated), Standing::Level);
         // Migrations it does not know with no newer record: refused as before the window.
-        let Standing::Refused(why) = standing(own, &[42], Some(Recorded { build: own, compatible_from: own })) else { panic!() };
+        let Standing::Refused(why) = standing(own, true, &[42], Some(Recorded { build: own, compatible_from: own })) else { panic!() };
         assert!(why.contains("newer build") && why.contains("42"), "{why}");
     }
 }

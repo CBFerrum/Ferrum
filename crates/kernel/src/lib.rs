@@ -340,8 +340,10 @@ impl Kernel {
                 match deciding.standing(&db).await? {
                     window::Standing::Refused(why) => Err(Error::Invalid(why)),
                     window::Standing::Guest(rec) => {
+                        let full = combine(&db).await?;
+                        window::admit(&db, &full, rec).await?;
                         booted.guest = Some(rec);
-                        combine(&db).await
+                        Ok(full)
                     }
                     window::Standing::Level => {
                         let before = db.applied_migrations().await?;
@@ -363,13 +365,14 @@ impl Kernel {
         } else {
             // Another step has brought the database here (`ferrum task migrate`): this only checks that it did.
             let mut conn = db.pool.acquire().await?;
-            let standing = window::standing(window::build_date(), &db.unknown_migrations().await?, window::recorded(&mut conn).await?);
+            let standing = window::standing(window::build_date(), window::dated(), &db.unknown_migrations().await?, window::recorded(&mut conn).await?);
             drop(conn);
             match standing {
                 window::Standing::Refused(why) => return Err(Error::Invalid(why)),
                 window::Standing::Guest(rec) => {
-                    booted.guest = Some(rec);
                     full = combine(&db).await?;
+                    window::admit(&db, &full, rec).await?;
+                    booted.guest = Some(rec);
                 }
                 window::Standing::Level => {
                     let pending = db.pending_migrations().await?;
