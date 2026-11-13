@@ -1758,6 +1758,24 @@ Decided 13 November 2026.
   there is no signature, so it is refused too.
 * **The App API is 0.3.8** (BD-63). An app hands the file's id as an input and names the address in its description.
 
+## BD-65. Credential-free reads of any public host
+
+Decided 13 November 2026.
+
+* **The gap**: a feed reader (Social's feeds) reads whatever site a person gives; `allowed_hosts` cannot list every site
+  with a feed, so each new site waited for an administrator.
+* **The flag**: a description's `any_host: true` lifts the host list and nothing else. What makes it safe is what it
+  cannot carry: no auth, no secrets (given with it, kept from before, or merged later), no template naming `secret.`,
+  `auth.` or `account.`, no inbound address, and only operations that read: GET (or steps of such), no body, form,
+  form fields or public files. So a request it makes carries nothing of the workspace but its inputs.
+* **The guard is unchanged**: https only (plain http only to a host the operator opened), every address resolved and
+  refused when private, loopback, link-local or reserved, then pinned; each redirect checked the same way (a redirect to
+  a private address is refused); answers capped by size and time as before.
+* **Who**: saving any description is an administrator's (`save_connection_def`), and a package's connection is offered
+  turned off for an administrator to turn on, so the flag is never set by anyone else.
+* Part of the App API 0.3.8 (BD-63): an app's description may carry it; Social's `feeds` connection can drop its
+  "add the host" step.
+
 ## BD-66. An app told when an approval is decided
 
 Decided 13 November 2026.

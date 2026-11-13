@@ -98,6 +98,10 @@ pub struct Description {
     /// Hosts besides the base's that calls (and redirects) may reach.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_hosts: Vec<String>,
+    /// Reads any public host (BD-65: a feed reader): only with no auth, no secrets and no template naming one, every
+    /// operation a GET; the guard otherwise as ever (https, public addresses pinned, each redirect checked again).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub any_host: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -658,6 +662,32 @@ impl Description {
         }
     }
 
+    /// Why it may not read any host (BD-65): credentials of any kind, or a request that is not a plain read.
+    fn any_host_problem(&self) -> Option<String> {
+        if !matches!(self.auth, Auth::None) {
+            return Some("a description that reads any host has no auth".into());
+        }
+        if self.inbound.is_some() {
+            return Some("a description that reads any host takes nothing in".into());
+        }
+        let said = serde_json::to_string(&self.headers).unwrap_or_default()
+            + &self
+                .operations
+                .iter()
+                .map(|(n, o)| serde_json::to_string(o).unwrap_or_default() + &serde_json::to_string(self.more(n)).unwrap_or_default())
+                .collect::<String>();
+        if ["secret.", "secret[", "auth.", "account."].iter().any(|w| said.contains(w)) {
+            return Some("a description that reads any host names no secret, sign-in or account".into());
+        }
+        if let Some((n, _)) = self.operations.iter().find(|(n, o)| {
+            let m = self.more(n);
+            (m.steps.is_empty() && o.method() != "GET") || o.body.is_some() || !o.form.is_empty() || m.form_fields.is_some() || !m.public_files.is_empty()
+        }) {
+            return Some(format!("{n}: a description that reads any host only reads (GET, nothing sent)"));
+        }
+        None
+    }
+
     /// What is wrong with it, said plainly; `None` when it may be saved.
     pub fn problem(&self) -> Option<String> {
         if !self.test {
@@ -671,6 +701,11 @@ impl Description {
         }
         if let Some(h) = self.allowed_hosts.iter().find(|h| h.is_empty() || h.contains(['/', ':', '@', ' '])) {
             return Some(format!("allowed_hosts: {h} is not a host name"));
+        }
+        if self.any_host
+            && let Some(p) = self.any_host_problem()
+        {
+            return Some(format!("any_host: {p}"));
         }
         if self.timeout_ms.is_some_and(|t| t == 0 || t > MAX_TIMEOUT_MS) {
             return Some(format!("timeout_ms is 1 to {MAX_TIMEOUT_MS}"));
@@ -846,6 +881,8 @@ pub(crate) struct Request {
 #[derive(Debug, Clone)]
 pub(crate) struct Reach {
     pub hosts: Vec<String>,
+    /// Any host (a description's `any_host`): no list, the rest of the guard as ever.
+    pub any: bool,
     pub timeout: Duration,
     pub max_bytes: u64,
 }
@@ -900,7 +937,7 @@ impl Kernel {
     /// A client for one hop to `url`, its addresses checked and pinned; no redirects of its own.
     async fn vet(&self, url: &reqwest::Url, reach: &Reach) -> Result<reqwest::Client> {
         let host = url.host_str().ok_or_else(|| Error::invalid("the address has no host"))?.trim_matches(['[', ']']).to_string();
-        if !reach.hosts.is_empty() && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
+        if !reach.any && !reach.hosts.is_empty() && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
             return Err(Error::invalid(format!("{host} is not one of the hosts this connection may reach")));
         }
         let open = self.settings.webhooks_allow_private || self.operator_allows(&host);
@@ -1123,6 +1160,7 @@ impl Loaded {
         }
         Reach {
             hosts,
+            any: self.desc.any_host,
             timeout: Duration::from_millis(self.desc.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
             max_bytes: self.desc.max_bytes.unwrap_or(DEFAULT_MAX_BYTES),
         }
@@ -1916,6 +1954,17 @@ impl Kernel {
         let id = id.unwrap_or_else(Uuid::now_v7);
         let source = self.packaged_connections(ctx).into_iter().find(|(_, c)| c.name == input.name).map(|(p, _)| format!("package:{p}"));
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // Reading any host goes without secrets: none given, none kept from before (BD-65).
+        if input.description.any_host {
+            let kept: Option<bool> = sqlx::query_scalar("select sealed is not null from conn where tenant_id = $1 and id = $2")
+                .bind(ctx.tenant)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            if input.secrets.as_ref().is_some_and(|s| !s.is_empty()) || (input.secrets.is_none() && kept == Some(true)) {
+                return Err(Error::field("description", "any_host: a description that reads any host has no secrets (remove them first)"));
+            }
+        }
         let sealed = match &input.secrets {
             Some(s) => {
                 let key = self
@@ -1981,6 +2030,15 @@ impl Kernel {
             return Err(Error::field("secrets", "each named as an input is, of at most 16 KB"));
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let reads_any: Option<bool> =
+            sqlx::query_scalar("select coalesce((description->>'any_host')::boolean, false) from conn where tenant_id = $1 and id = $2")
+                .bind(ctx.tenant)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if reads_any == Some(true) && !set.is_empty() {
+            return Err(Error::field("secrets", "any_host: a description that reads any host has no secrets"));
+        }
         let held = lock_secrets(&mut tx, self, ctx.tenant, id).await?;
         let now = store_secrets(&mut tx, self, ctx.tenant, id, held, set.clone(), remove).await?;
         let names: Vec<String> = now.into_keys().filter(|n| !kept_by_platform(n)).collect();
