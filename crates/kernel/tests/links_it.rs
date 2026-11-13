@@ -360,6 +360,7 @@ async fn scenario() {
     assert_eq!(w.get("XApplication", id_of(&other)).await["reviews"], json!([]), "no type, no run");
 
     franchise_periods(&w, &office).await;
+    link_from(&w).await;
 }
 
 /// R30: no two reports of one franchisee overlap, by an aggregate whose filter reads the saved record's own fields.
@@ -397,4 +398,78 @@ async fn franchise_periods(w: &W, office: &Doc) {
     k.insert(&admin, "XReport", report("2026-02-01", "2026-02-28")).await.expect("February, after it");
     refused(k.insert(&admin, "XReport", report("2026-01-15", "2026-02-10")).await, "another report of this franchisee overlaps these dates");
     k.update(&admin, "XReport", id_of(&jan), obj(json!({"period_to": "2026-01-30"})), None).await.expect("a report does not overlap itself");
+}
+
+/// BD-52: a link limited by another field of the record, `{company: {from: company}}`, or of the record a line is in,
+/// `{company: {from: parent.company}}`: checked when declared, and on every write the static filters are.
+async fn link_from(w: &W) {
+    let k = &w.k;
+    let store = json!({"name": "XStore", "label": "Store", "kind": "master", "title_field": "name", "fields": [
+        {"name": "name", "type": "data"}, {"name": "company", "type": "link", "to": "GovOffice"}]});
+    let order = |filters: Value, line: Value| {
+        let o = json!({"name": "XOrder", "label": "Order", "kind": "document", "title_field": "name", "fields": [
+            {"name": "name", "type": "data"}, {"name": "company", "type": "link", "to": "GovOffice"},
+            {"name": "store", "type": "link", "to": "XStore", "link_filters": filters},
+            {"name": "lines", "type": "table", "of": "XOrderLine"}]});
+        (o, line)
+    };
+    let line = |filters: Value| {
+        json!({"name": "XOrderLine", "label": "Order Line", "kind": "child", "fields": [
+        {"name": "store", "type": "link", "to": "XStore", "link_filters": filters}]})
+    };
+    let both = |o: (Value, Value)| vec![define(store.clone()), define(o.1), define(o.0)];
+    for (filters, row, says) in [
+        (json!({"company": {"from": "nope"}}), json!({}), "nope is not a field of XOrder"),
+        (json!({"company": {"from": "parent.company"}}), json!({}), "parent. is only for a line"),
+        (json!({"company": {"from": "name"}}), json!({}), "cannot be compared"),
+        (json!({"company": {"from": "company"}}), json!({"company": {"from": "parent.nope"}}), "nope is not a field of XOrder"),
+        (json!({"name": {"from": "company"}}), json!({}), "cannot be compared"),
+    ] {
+        let e = w.batch(both(order(filters, line(row)))).await.unwrap_err();
+        assert!(e.contains(says), "{says}: {e}");
+    }
+    w.batch(both(order(json!({"company": {"from": "company"}}), line(json!({"company": {"from": "parent.company"}})))))
+        .await
+        .expect("a store limited by the order's company, and a line's by its order's");
+    let admin = w.admin().await;
+    let mut ids = Vec::new();
+    for name in ["Company A", "Company B"] {
+        ids.push(id_of(&k.insert(&admin, "GovOffice", obj(json!({"name": name}))).await.unwrap()));
+    }
+    for (name, c) in [("Stores", ids[0]), ("Yard", ids[1])] {
+        ids.push(id_of(&k.insert(&admin, "XStore", obj(json!({"name": name, "company": c.to_string()}))).await.unwrap()));
+    }
+    let [a, b, sa, sb] = ids[..] else { unreachable!() };
+    let mine = k
+        .insert(
+            &admin,
+            "XOrder",
+            obj(json!({"name": "O1", "company": a.to_string(), "store": sa.to_string(),
+        "lines": [{"store": sa.to_string()}]})),
+        )
+        .await
+        .expect("matching");
+    refused(
+        k.insert(&admin, "XOrder", obj(json!({"name": "O2", "company": a.to_string(), "store": sb.to_string()}))).await,
+        "store: Store Yard belongs to Company B; this record is for Company A",
+    );
+    k.insert(&admin, "XOrder", obj(json!({"name": "O3", "store": sb.to_string(), "lines": [{"store": sa.to_string()}]})))
+        .await
+        .expect("no company: nothing to compare");
+    refused(
+        k.insert(&admin, "XOrder", obj(json!({"name": "O4", "company": a.to_string(), "lines": [{"store": sb.to_string()}]}))).await,
+        "Store Yard belongs to Company B; this line is for Company A",
+    );
+    refused(k.update(&admin, "XOrder", id_of(&mine), obj(json!({"company": b.to_string()})), None).await, "Store Stores belongs to Company A");
+    let (_, failed) = k.import_rows(&admin, "XOrder", &[json!({"name": "O5", "company": b.to_string(), "store": sa.to_string()})]).await.unwrap();
+    assert!(failed.len() == 1 && failed[0].to_string().contains("belongs to Company A"), "{failed:?}");
+    w.batch(vec![op(
+        "XOrder",
+        json!({"op": "add_action", "action": {"name": "x_move", "label": "Move",
+        "effects": [{"type": "set_fields", "values": {"store": format!("'{sb}'")}}]}}),
+    )])
+    .await
+    .unwrap();
+    let admin = w.admin().await;
+    refused(k.run_action(&admin, "XOrder", id_of(&mine), "x_move", json!({})).await, "Store Yard belongs to Company B");
 }

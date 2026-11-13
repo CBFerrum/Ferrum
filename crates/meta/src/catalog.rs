@@ -1056,6 +1056,34 @@ fn validate_rollup(e: &EntityDef, f: &FieldDef, r: &RollupDef, all: &HashMap<&st
     }
 }
 
+/// A link filter taken from a field of the record, or of the record a line is in (BD-52): that field exists, and holds
+/// what the linked entity's field does (a link to the same entity, or the same plain type).
+fn validate_link_from(e: &EntityDef, fname: &str, to: &str, tf: &FieldDef, v: &Value, all: &HashMap<&str, &EntityDef>) -> Result<(), String> {
+    let o = v.as_object().filter(|o| o.len() == 1);
+    let Some(from) = o.and_then(|_| link_filter_from(v)) else {
+        return Err(format!("link field '{fname}': filter {}: write {{from: <field>}} or {{from: parent.<field>}}", tf.name));
+    };
+    let (owners, src): (Vec<&EntityDef>, &str) = match from.strip_prefix("parent.") {
+        Some(_) if e.kind != EntityKind::Child => {
+            return Err(format!("link field '{fname}': filter {}: parent. is only for a line's field, and {} is not a line", tf.name, e.name));
+        }
+        Some(src) => {
+            (all.values().copied().filter(|p| p.fields.iter().any(|t| t.ftype == FieldType::Table && t.of.as_deref() == Some(e.name.as_str()))).collect(), src)
+        }
+        None => (vec![e], from),
+    };
+    for owner in owners {
+        let Some(sf) = owner.fields.iter().find(|f| f.name == src) else {
+            return Err(format!("link field '{fname}': filter {}: {src} is not a field of {}", tf.name, owner.name));
+        };
+        let same = if sf.ftype == FieldType::Link || tf.ftype == FieldType::Link { sf.ftype == tf.ftype && sf.to == tf.to } else { sf.ftype == tf.ftype };
+        if !same || !sf.ftype.is_stored() {
+            return Err(format!("link field '{fname}': filter {k}: {}.{src} and {to}.{k} cannot be compared", owner.name, k = tf.name));
+        }
+    }
+    Ok(())
+}
+
 fn validate_field(e: &EntityDef, f: &FieldDef, all: &HashMap<&str, &EntityDef>, custom: bool) -> Result<(), String> {
     let fname = &f.name;
     if f.ftype == FieldType::Secret {
@@ -1077,9 +1105,12 @@ fn validate_field(e: &EntityDef, f: &FieldDef, all: &HashMap<&str, &EntityDef>, 
                 return Err(format!("link field '{fname}' cannot target a child entity"));
             }
             if let Some(filters) = &f.link_filters {
-                for k in filters.keys() {
-                    if !target.fields.iter().any(|tf| &tf.name == k) {
+                for (k, v) in filters {
+                    let Some(tf) = target.fields.iter().find(|tf| &tf.name == k) else {
                         return Err(format!("link field '{fname}': filter on unknown field {to}.{k}"));
+                    };
+                    if v.as_object().is_some_and(|o| o.contains_key("from")) {
+                        validate_link_from(e, fname, to, tf, v, all)?;
                     }
                 }
             }
@@ -1601,5 +1632,21 @@ mod tests {
         assert!(with_events("[{name: a, label: X}, {name: a, label: Y}]").is_err(), "twice");
         assert!(with_events("[{name: a, label: X, entity: Nowhere}]").is_err(), "about an entity nobody has");
         assert!(with_events("[{name: a, label: X, payload: 3}]").is_err());
+    }
+
+    #[test]
+    fn link_filter_from_another_field() {
+        let ent = |v: serde_json::Value| -> EntityDef { serde_json::from_value(v).unwrap() };
+        let co = ent(serde_json::json!({"name": "XCo", "label": "Co", "kind": "master", "fields": []}));
+        let store =
+            ent(serde_json::json!({"name": "XStore", "label": "Store", "kind": "master", "fields": [{"name": "company", "type": "link", "to": "XCo"}]}));
+        let order = |from: &str| {
+            ent(serde_json::json!({"name": "XOrder", "label": "Order", "kind": "document", "fields": [{"name": "company", "type": "link", "to": "XCo"},
+                {"name": "store", "type": "link", "to": "XStore", "link_filters": {"company": {"from": from}}}]}))
+        };
+        let all = HashMap::from([("XCo", &co), ("XStore", &store)]);
+        validate_entity(&order("company"), &all, false).expect("the order's company");
+        assert!(validate_entity(&order("nope"), &all, false).unwrap_err().contains("nope is not a field of XOrder"));
+        assert!(validate_entity(&order("parent.company"), &all, false).unwrap_err().contains("parent. is only for a line"));
     }
 }

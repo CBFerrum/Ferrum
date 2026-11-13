@@ -156,6 +156,7 @@ several workspaces in turn and is left as it is.
   An action's `may_run` says whether the caller may press it at all: its permission or a role's rule naming it, and its `roles`, as running it checks them (an administrator always may); `condition`, `docstatus` and `refuse_if` are judged per record, so a form evaluates them on the record it shows. A configured action's `effects` (what it writes) go to administrators only.
 * `Field`: `{name, label, type, required?, unique?, read_only?, hidden?, in_list?, in_filter?, options?, to?, of?, precision?, currency?, min?, max?, max_length?, default?, default_expr?, computed?, rollup?, visible_if?, required_if?, read_only_if?, read_only_message?, fetch_from?, description?, widget?, link_filters?, storage: "column"|"ext", can_read, can_write}`.
   `rollup` (`{table, op: sum|count, field?}`) is an exact total over the record's own rows of `table`: the sum of a number field of the rows, or their count. The server computes it at every save and in the draft preview, before validation, in exact decimals; a value sent for it is ignored.
+  `link_filters` (`{field: value}` on the linked entity) limits a link's choices, checked on write: a literal, or `{"from": "<field>"}` (equal to that field of the record being saved) or, on a line's field, `{"from": "parent.<field>"}` ([BD-52](builder/decisions.md#bd-52-a-link-limited-by-another-field-of-the-record-and-the-app-api-036)). An empty source field applies no filter; a mismatch is refused on the field ("Store Yard belongs to Company B; this record is for Company A"). A picker resolves `from` against the form and sends it as an ordinary equality filter on the target's list: `filters={"company": "<id>"}`.
   Types: `data text markdown code int decimal currency percent date datetime check select link table json email phone url attach color secret`.
   `visible_if`/`required_if`/`read_only_if` are CEL over `doc` (and `parent` in child rows); the server is the authority. `read_only_if` is judged on the record (or row) as stored before the change: while it holds, the field ignores input exactly as a `read_only` field does for that caller (the system and an amendment's copy still write it); a new record or row has nothing stored, so only `read_only` counts for it, and a condition that cannot be evaluated counts as holding. A field may say why instead: with `read_only_message` ("went to the kitchen: void it and order again"), a person's value that differs from the stored one while `read_only_if` holds refuses the save with 422 and that message on the field (and the row, for a line); both values are compared after normalising, so a form sending the whole record back unchanged passes. The system, an amendment's copy and a field that is `read_only` outright still ignore the input silently; table and secret fields do not take the message.
   A link field to its own entity makes a hierarchy: a record cannot be its own parent, and a move that would make a loop is refused on the field naming both records (`Asia cannot sit under India: India is already under Asia, which would make a cycle in the hierarchy`).
@@ -598,7 +599,8 @@ For the bar, with the cookie or a token:
   color, compact, url, family}], create: [{app, label, entity, url}], intents: [{app, action, type,
   title, url}], sidepanels: [{id, app, title, icon, contextual, url}], families: [{id, title, apps}],
   assistant}`: what the caller may use. `family` names the head of the entry's family (`families`
-  lists them, heads first). Apps without an interface of their own, without launcher entries of
+  lists them, heads first). An app's `create` row naming an `entity` is left out where the workspace lacks that
+  entity (its package is not installed) or the person may not create it. Apps without an interface of their own, without launcher entries of
   their own, get one entry into their records (`/data/{app}/`, the manifest's name and summary) when
   the person may read one of their entities. A workspace's own menu gives a member who reads one of
   its entities a tile `{id: "menu-{name}", app: "{name}", title, description, icon, color, compact:
@@ -1061,7 +1063,8 @@ of this API answers with 422 is 400 here, with a `scimType`.
 
 ## Apps — `/api/admin/apps` (administrators; [design](plan/apps.md))
 
-`AppSummary` = `{id, name, version, runtime: native|wasm|meta, summary, categories[], publisher?, verified, icon_url, source: native|upload|store:<url>, private}`.
+`AppSummary` = `{id, name, version, runtime: native|wasm|meta, summary, categories[], publisher?, verified, icon_url, source: native|upload|store:<url>, private, parent?, requires: [{app, range}], platform: <range>|null, blocked: [{app, need, have, action: install|upgrade}]}`.
+`requires` and `platform` come from the app's manifest (a store's search result carries neither: empty and null). `blocked` is what keeps it from installing in this workspace now, worked out against the apps it has: an app it needs that is not installed (`install`, `have: null`) or installed outside the range (`upgrade`), and `{app: "platform", need, have: <this server's App API version>, action: "upgrade"}` when the server is outside `platform`; empty when nothing blocks. Both lists carry it.
 
 * `GET /api/admin/apps` → `{installed: [AppSummary + {enabled, installed_at, update: {version}|null}], available: [AppSummary], uploads: off|private|cluster, platform, stores: [{url, ok, error}]}`.
   `installed` also lists native apps whose packages the workspace already has (installed when it was created); `available` holds this build's native apps, releases available on the cluster and the workspace's private uploads. `update` is a newer compatible release on the cluster (from the stores too when `uploads` is `cluster`), or this build's version of a native app.
@@ -1666,9 +1669,10 @@ CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/s
 workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`. A package that uses any of this
 (`layout_file`, `page`, `letterhead`, `copies`, `enabled`, a LetterHead or PrintSettings record in its seed) needs
 the app API version 0.3.3: its app says `platform: ">=0.3.3, <0.4"` (an older server refuses the fields it does not
-know). The app API is 0.3.5 now: what each version carries is in
+know). The app API is 0.3.6 now: what each version carries is in
 [BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034)
-(0.3.4) and [BD-51](builder/decisions.md#bd-51-the-connector-hubs-instances-move-and-the-app-api-035) (0.3.5).
+(0.3.4), [BD-51](builder/decisions.md#bd-51-the-connector-hubs-instances-move-and-the-app-api-035) (0.3.5) and
+[BD-52](builder/decisions.md#bd-52-a-link-limited-by-another-field-of-the-record-and-the-app-api-036) (0.3.6).
 
 ### Moving an app's print layout or file to a document template
 

@@ -1249,7 +1249,7 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
                 "family": family_of.get(&a.id),
             }));
         }
-        for item in a.items("shell.create") {
+        for item in a.items("shell.create").filter(|i| shell::create_offered(&ctx, i)) {
             create.push(json!({"app": a.id, "label": item.get("label"), "entity": item.get("entity"), "url": format!("/{}", item.get("path").and_then(Value::as_str).unwrap_or_default())}));
         }
         for item in a.items("shell.intent") {
