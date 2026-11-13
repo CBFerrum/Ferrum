@@ -44,6 +44,7 @@ settings:
   ui_source: "<%= get_env(name="FERRUM_UI_SOURCE", default="") %>"
   apps_base: "<%= get_env(name="FERRUM_APPS_BASE", default="") %>"
   base_domain: "<%= get_env(name="FERRUM_BASE_DOMAIN", default="") %>"
+  accounts_host: "<%= get_env(name="FERRUM_ACCOUNTS_HOST", default="") %>"
   region: "<%= get_env(name="FERRUM_REGION", default="") %>"
   regions: "<%= get_env(name="FERRUM_REGIONS", default="") %>"
   dev_ui: <%= get_env(name="FERRUM_DEV_UI", default="false") %>

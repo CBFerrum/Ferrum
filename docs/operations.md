@@ -61,6 +61,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
 | `FERRUM_SESSION_DAYS` | no | How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own that people and administrators sign out one by one |
 | `FERRUM_BASE_DOMAIN` | no | Shapes B and C (below, [Many workspaces](#many-workspaces-subdomains-and-ferrum-accounts)): the domain under which each workspace is `{slug}.{base}`, people sign in at `accounts.{base}` and outside callers use `hooks.{base}`. Empty: one workspace (`FERRUM_DEFAULT_WORKSPACE`) or a shared host |
+| `FERRUM_ACCOUNTS_HOST` | no | The host where people sign in once, with their Ferrum account (`id.example.com`), with or without a base domain: every host of every workspace sends sign-in there. Default `accounts.{base}` with `FERRUM_BASE_DOMAIN`, else none (each host signs in on its own). See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_PLANS` | no | The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up) |
 | `FERRUM_SIGNUP` | no | `open` lets people make workspaces of their own at `accounts.{base}/signup`; default `closed`. Needs `FERRUM_BASE_DOMAIN` and mail |
 | `FERRUM_SIGNUP_DOMAINS`, `FERRUM_SIGNUP_PACKAGES`, `FERRUM_SIGNUP_PLAN`, `FERRUM_SIGNUP_PER_ADDRESS` | with sign-up | The address domains sign-ups come from (comma-separated; empty: any), what a new workspace installs besides the core, the plan it starts on (one of `FERRUM_PLANS`), and how many workspaces one address may make (default 3) |
@@ -1790,6 +1791,39 @@ workspaces, each at its own address, and people sign in once for all of them ([A
   sign in on each workspace's host again with that workspace's own password, which joining never
   changed. Someone who never had one there (added without a password, then signing in with their
   Ferrum account) needs an administrator to set one.
+
+## Names that should never change
+
+A workspace can be reached at more than one host (a staff host and a public one), and its hosts can
+change over the years. A few addresses are registered with others, saved by browsers or printed in
+mail, so they should be picked once and kept: the host people sign in at, the host other services
+call back, the host every mailed link goes through, and the passkeys' relying party. Each has a
+setting; each defaults to what the server did before the setting existed.
+
+* **`FERRUM_ACCOUNTS_HOST`**: where people sign in once, as their Ferrum account ([Many
+  workspaces](#many-workspaces-subdomains-and-ferrum-accounts) describes the accounts host). It works
+  without a base domain: every host of every workspace sends a member who is not signed in there, and
+  gets them back with a one-use code for that host alone, so an identity provider knows one redirect
+  address and a person signs in once. Portal people still sign in on the workspace's host.
+  * *A one-workspace server* (`FERRUM_DEFAULT_WORKSPACE`) that turns it on: its public address
+    (`PUBLIC_URL`'s host) is the workspace's host that the accounts host hands sign-ins to. People sign
+    in at the accounts host with the password they have; the first time, it makes their Ferrum account
+    from it (with a code mailed to the address, when the server sends mail), and they are back in the
+    workspace. Nobody is locked out: the workspace's own password keeps working for that first sign-in.
+    Workspaces that require single sign-on: add `https://{accounts host}/app/login` to the provider's
+    redirect addresses first. Other hosts that reach the server (an internal name) are not handed
+    sign-ins; use the public address.
+  * *Turning it off* again restores sign-in on the workspace's host with the workspace's own password,
+    which making the Ferrum account copied and never changed. A password changed since at the accounts
+    host is not the workspace's: such a person signs in with the older one, with an emailed code, or
+    has an administrator set a new one.
+  * *A shared host* (no default workspace, no host of the workspace's own) keeps signing people in on
+    itself with each workspace's own password; only hosts that belong to one workspace hand sign-in
+    to the accounts host.
+  * *Changing it later* signs everyone out of the accounts host, breaks every single sign-on provider's
+    registered redirect address, and makes passkeys made there unusable (their relying party is that
+    host): pick it once.
+  * It must be a host of its own, not `PUBLIC_URL`'s; the server refuses to start otherwise.
 
 ## Sign-in security
 

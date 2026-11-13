@@ -117,6 +117,10 @@ async fn add(Auth(ctx): Auth, State(app): State<AppContext>, Json(d): Json<NewDo
     {
         return Err(Error::field("host", format!("is under {base}, this service's own domain")).into());
     }
+    // Nor are the hosts it signs in, takes callbacks and sends links through.
+    if ferrum_kernel::shell::normalize_host(&host).is_some_and(|h| st.shell.is_own_host(&h)) {
+        return Err(Error::field("host", "is one of this service's own hosts").into());
+    }
     // A site is an app's: one this workspace has, that renders pages.
     if let Some(app_id) = d.target.strip_prefix("site:")
         && !site_apps(&st, ctx.tenant).await?.iter().any(|a| a["app"] == app_id)

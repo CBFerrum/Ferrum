@@ -15,6 +15,10 @@ image:
 
 # The address users open; the Gateway's host below should match.
 publicUrl: https://erp.example.com
+# Names that should never change (docs/operations.md, "Names that should never change"); empty
+# keeps each as the server had it before the setting existed.
+names:
+  accountsHost: ""   # FERRUM_ACCOUNTS_HOST: where people sign in once
 logLevel: info
 # Connections each replica may open (plus 4 on the side). Autoscaling's maxReplicas x (this + 4)
 # must fit the database's connectionLimit.

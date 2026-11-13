@@ -157,6 +157,11 @@ pub struct Settings {
     /// `hooks.{base}`; a host the cluster does not know leads nowhere. Empty: shapes A and A′.
     #[serde(default)]
     pub base_domain: String,
+    /// The host where people sign in once, as their Ferrum account (`FERRUM_ACCOUNTS_HOST`), with
+    /// or without a base domain: every host of every workspace hands sign-in to it. Empty:
+    /// `accounts.{base}` with a base domain, else none (each host signs in on its own).
+    #[serde(default)]
+    pub accounts_host: String,
     /// This cluster's region (`eu`, `in`…), as the directory names it.
     #[serde(default)]
     pub region: String,

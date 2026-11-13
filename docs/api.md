@@ -87,7 +87,10 @@ provider ([OpenID Connect Back-Channel Logout](operations.md#sign-in-security)):
 
 With `FERRUM_BASE_DOMAIN` set ([operations](operations.md#many-workspaces-subdomains-and-ferrum-accounts),
 [plan](plan/apps-ui.md) §9.3, §12.3), each workspace is at `{slug}.{base}` (and any custom domain it
-verified), and people sign in once, at `accounts.{base}`, as their **Ferrum account**: one password,
+verified), and people sign in once, at `accounts.{base}`, as their **Ferrum account**. `FERRUM_ACCOUNTS_HOST`
+names another accounts host, and gives a server without a base domain one: then every host of a
+workspace (and a one-workspace server's public address) signs in there as described here
+([operations](operations.md#names-that-should-never-change)). The Ferrum account is one password,
 two-factor sign-in, passkeys and list of browsers for every workspace. A workspace's account joins a
 Ferrum account once the person proves it is theirs (its password, a code sent to its address, its
 single sign-on, or, with the address already proven by a code, confirming); never by the address

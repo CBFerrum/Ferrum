@@ -79,6 +79,8 @@ spec:
             # For MinIO, Cloudflare R2 and other S3-compatible stores:
             # - {name: FERRUM_S3_ENDPOINT, value: "https://<account>.r2.cloudflarestorage.com"}
             - {name: PUBLIC_URL, value: "https://erp.example.com"}
+            # Names that should never change (docs/operations.md), each empty by default:
+            # - {name: FERRUM_ACCOUNTS_HOST, value: "id.example.com"}
             - {name: FERRUM_PDF_URL, value: "http://ferrum-pdf:3000"}
             # Online editing of Word, Excel and PowerPoint files (office/): the editor as the server
             # reaches it, the server as the editor reaches it, and the editor as browsers reach it.

@@ -219,10 +219,13 @@ pub struct Shell {
     files: DashMap<String, Bytes>,
     file_bytes: AtomicUsize,
     used: DashMap<(String, String), Instant>,
-    /// Shapes B and C: the base domain, and the accounts and hooks hosts under it.
+    /// Shapes B and C: the base domain. The accounts host (under it, or set on its own) and the
+    /// hooks host under it.
     base: Option<String>,
     accounts_host: Option<String>,
     hooks_host: Option<String>,
+    /// The host of the server's public address (`PUBLIC_URL`): the one workspace's (shape A).
+    public_host: Option<String>,
     /// This cluster's region, and the other regions' accounts hosts by name.
     pub region: String,
     pub regions: Vec<(String, String)>,
@@ -256,6 +259,47 @@ pub fn base_domain(settings: &Settings) -> Option<String> {
     Some(settings.base_domain.trim().trim_matches('.').to_ascii_lowercase()).filter(|b| !b.is_empty())
 }
 
+/// A setting that names a host (`FERRUM_ACCOUNTS_HOST` …): a name with a dot, lowercase, without
+/// a scheme, port or path. `Ok(None)` when empty.
+pub fn host_setting(name: &str, raw: &str) -> std::result::Result<Option<String>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    match ferrum_kernel::shell::normalize_host(raw) {
+        Some(h) if !raw.contains([':', '/', '\\', '@']) => Ok(Some(h)),
+        _ => Err(format!("{name} ({raw}) must be a host name such as accounts.example.com, without a scheme, port or path")),
+    }
+}
+
+/// The accounts host: `FERRUM_ACCOUNTS_HOST`, else `accounts.{base}` with a base domain, else none.
+/// A malformed setting counts as none here; the server refuses to start with one (app.rs).
+pub fn accounts_host(settings: &Settings) -> Option<String> {
+    host_setting("FERRUM_ACCOUNTS_HOST", &settings.accounts_host)
+        .ok()
+        .flatten()
+        .or_else(|| base_domain(settings).map(|b| format!("{}.{b}", ferrum_kernel::identity::DIRECTORY)))
+}
+
+/// The settings that name the cluster's own hosts, checked at start: each a host name, and none
+/// the server's public address (that host would then serve nothing else).
+pub fn check_names(settings: &Settings, public_url: &str) -> std::result::Result<(), String> {
+    let public = public_host(public_url);
+    for (name, raw) in [("FERRUM_ACCOUNTS_HOST", &settings.accounts_host)] {
+        if let Some(h) = host_setting(name, raw)?
+            && public.as_deref() == Some(h.as_str())
+        {
+            return Err(format!("{name} ({h}) is the host of PUBLIC_URL; give it a host of its own"));
+        }
+    }
+    Ok(())
+}
+
+/// The host part of the server's public address, as hosts are compared.
+pub fn public_host(public_url: &str) -> Option<String> {
+    reqwest::Url::parse(public_url.trim()).ok().and_then(|u| u.host_str().and_then(ferrum_kernel::shell::normalize_host))
+}
+
 impl Shell {
     pub fn new(kernel: Arc<Kernel>, storage: Arc<Storage>, settings: &Settings, public_url: &str) -> Shell {
         Shell {
@@ -274,8 +318,9 @@ impl Shell {
             file_bytes: AtomicUsize::new(0),
             used: DashMap::new(),
             base: base_domain(settings),
-            accounts_host: base_domain(settings).map(|b| format!("{}.{b}", ferrum_kernel::identity::DIRECTORY)),
+            accounts_host: accounts_host(settings),
             hooks_host: base_domain(settings).map(|b| format!("hooks.{b}")),
+            public_host: public_host(public_url),
             region: settings.region.trim().to_ascii_lowercase(),
             regions: parse_regions(&settings.regions),
             dev_ui: settings.dev_ui,
@@ -306,9 +351,28 @@ impl Shell {
     }
 
     /// The accounts host's origin as this request reaches the cluster (with its port, on a
-    /// development server).
+    /// development server): where members sign in once, when the server has an accounts host.
     pub fn accounts_origin(&self, headers: &HeaderMap) -> Option<String> {
         self.host_origin(self.accounts_host.as_deref()?, headers)
+    }
+
+    /// One of the cluster's own hosts (accounts, hooks, links), which no workspace may claim.
+    pub fn is_own_host(&self, bare: &str) -> bool {
+        [&self.accounts_host, &self.hooks_host].into_iter().flatten().any(|h| h == bare)
+    }
+
+    /// The workspace a sign-in at the accounts host may be handed to on `bare`: one whose shell
+    /// that host serves, or the server's one workspace on its public address (shape A, without a
+    /// base domain, as [`Shell::place`] finds it there). Never a host only the request names.
+    pub async fn workspace_at(&self, bare: &str) -> Result<Option<Uuid>> {
+        if self.is_own_host(bare) {
+            return Ok(None);
+        }
+        Ok(match self.kernel.route_host(bare).await? {
+            HostRoute::Serve { tenant, target } if target == "shell" => Some(tenant),
+            HostRoute::Unknown if self.base.is_none() && self.public_host.as_deref() == Some(bare) => self.default_workspace().await?,
+            _ => None,
+        })
     }
 
     /// Shapes B and C: the fixed host for outside callers (webhooks, payment and connector
@@ -374,14 +438,13 @@ impl Shell {
     /// Where the request's host leads (docs/plan/apps-ui.md §7).
     pub async fn place(&self, headers: &HeaderMap) -> Result<Place> {
         if let Some(host) = request_host(headers) {
-            if self.base.is_some() {
-                let bare = ferrum_kernel::shell::normalize_host(host);
-                if bare.is_some() && bare == self.accounts_host {
-                    return Ok(Place::Accounts);
-                }
-                if bare.is_some() && bare == self.hooks_host {
-                    return Ok(Place::Hooks);
-                }
+            // The cluster's own hosts: with a base domain, or each set on its own.
+            let bare = ferrum_kernel::shell::normalize_host(host);
+            if bare.is_some() && bare == self.accounts_host {
+                return Ok(Place::Accounts);
+            }
+            if bare.is_some() && bare == self.hooks_host {
+                return Ok(Place::Hooks);
             }
             match self.kernel.route_host(host).await? {
                 HostRoute::Serve { tenant, target } => {
@@ -1744,6 +1807,23 @@ mod tests {
             assert!(DATA_PAGES.contains(&page), "{page}");
         }
         assert!(!DATA_PAGES.contains(&"hr"), "an app's records keep /data/{{app}}/");
+    }
+
+    #[test]
+    fn host_settings_are_host_names() {
+        assert_eq!(host_setting("X", "  ID.Acme.com. "), Ok(Some("id.acme.com".into())));
+        assert_eq!(host_setting("X", ""), Ok(None));
+        for bad in ["https://id.acme.com", "id.acme.com:8443", "id.acme.com/x", "localhost", "a@id.acme.com", "id..acme.com"] {
+            assert!(host_setting("X", bad).is_err(), "{bad}");
+        }
+        let s = |v: Value| serde_json::from_value::<Settings>(v).unwrap();
+        assert!(check_names(&s(json!({})), "https://erp.acme.com").is_ok());
+        assert!(check_names(&s(json!({"accounts_host": "id.acme.com"})), "https://erp.acme.com").is_ok());
+        assert!(check_names(&s(json!({"accounts_host": "erp.acme.com"})), "https://erp.acme.com").is_err(), "the public address's host");
+        assert!(check_names(&s(json!({"accounts_host": "https://id.acme.com"})), "https://erp.acme.com").is_err());
+        assert_eq!(accounts_host(&s(json!({"base_domain": "ferrum.cloud"}))).as_deref(), Some("accounts.ferrum.cloud"));
+        assert_eq!(accounts_host(&s(json!({"base_domain": "ferrum.cloud", "accounts_host": "id.ferrum.cloud"}))).as_deref(), Some("id.ferrum.cloud"));
+        assert_eq!(accounts_host(&s(json!({}))), None);
     }
 
     #[test]
