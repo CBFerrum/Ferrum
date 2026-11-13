@@ -23,10 +23,11 @@ approvals:\n  - entity: Change\n    on: {action: apply}\n    policy: {steps: [{l
 const CHANGE: &str = "name: Change\nlabel: Change\nkind: master\ntitle_field: title\nfields:\n  - {name: title, type: data}\n  - {name: state, type: data}\n  - {name: bumps, type: int}\n\
 actions:\n  - name: apply\n    label: Apply\n    condition: \"doc.state != 'Closed'\"\n    params:\n      - {name: window, label: Window}\n      - {name: pin, label: PIN, secret: true}\n  - {name: peek, label: Peek, read_only: true}\n";
 
-/// The app: what `apply` was given, by whom.
+/// The app: what `apply` was given, by whom; each approval's outcome it was told (BD-66).
 #[derive(Default)]
 struct Board {
     ran: Mutex<Vec<(String, Uuid, Value)>>,
+    told: Mutex<Vec<(String, String, Uuid, Option<String>)>>,
 }
 
 impl Board {
@@ -43,6 +44,24 @@ impl DocHook for Board {
         }
         self.ran.lock().unwrap().push((doc["title"].as_str().unwrap_or_default().into(), hc.ctx.user, params.clone()));
         Ok(Some(json!({"applied": true})))
+    }
+    async fn approval_decided(&self, hc: &mut HookCtx<'_>, doc: &Doc, d: &ferrum_kernel::ApprovalDecided<'_>) -> Result<()> {
+        let title = doc["title"].as_str().unwrap_or_default().to_string();
+        self.told.lock().unwrap().push((title.clone(), d.outcome.to_string(), d.decided_by, d.comment.map(str::to_string)));
+        // It writes in the deciding transaction; C2's hook writes and then fails: its write goes, the decision stays.
+        let id: Uuid = doc["id"].as_str().unwrap().parse().unwrap();
+        let system = Ctx::system(hc.ctx.tenant, hc.ctx.schema.clone());
+        hc.kernel.set_values_tx(&system, hc.tx, "Change", id, obj(json!({"state": "Told"}))).await?;
+        if title == "C2" {
+            return Err(Error::invalid("the app's own trouble"));
+        }
+        Ok(())
+    }
+}
+
+impl Board {
+    fn told(&self, title: &str) -> Vec<(String, Uuid, Option<String>)> {
+        self.told.lock().unwrap().iter().filter(|r| r.0 == title).map(|r| (r.1.clone(), r.2, r.3.clone())).collect()
     }
 }
 
@@ -163,6 +182,8 @@ async fn scenario() {
     let s = decide(b1.clone(), c1, true).await.unwrap();
     assert_eq!(s["status"], json!("approved"), "{s}");
     assert_eq!(board.ran("C1"), [(changer, given.clone())], "once, as the changer, with exactly what was given");
+    assert_eq!(board.told("C1"), [("approved".to_string(), boss1, Some("seen".to_string()))], "the app is told once, with who and why");
+    assert_eq!(k.get(&admin, "Change", c1, false).await.unwrap()["state"], json!("Told"), "in the deciding transaction");
     for seen in
         [k.approval_of(&cc, "Change", c1).await.unwrap(), k.approval_of(&b1, "Change", c1).await.unwrap(), k.audit_trail(&admin, "Change", c1).await.unwrap()]
     {
@@ -180,7 +201,10 @@ async fn scenario() {
     // ───────────── a rejection and a recall run nothing ─────────────
     let c2 = change("C2").await;
     k.run_action(&cc, "Change", c2, "apply", json!({"window": "now"})).await.unwrap();
-    assert_eq!(decide(b1.clone(), c2, false).await.unwrap()["status"], json!("rejected"));
+    assert_eq!(decide(b1.clone(), c2, false).await.unwrap()["status"], json!("rejected"), "the hook failed; the decision stands");
+    assert_eq!(board.told("C2"), [("rejected".to_string(), boss1, Some("seen".to_string()))]);
+    assert_eq!(k.get(&admin, "Change", c2, false).await.unwrap()["state"], json!("Open"), "what the failing hook wrote is undone");
+    assert!(k.audit_trail(&admin, "Change", c2).await.unwrap().to_string().contains("approval:hook_failed"), "and kept in the audit trail");
     k.run_action(&cc, "Change", c2, "apply", json!({"window": "later"})).await.expect("asked again");
     assert_eq!(k.recall_approval(&cc, "Change", c2).await.unwrap()["status"], json!("recalled"));
     refused(decide(b1.clone(), c2, true).await, "an approval awaiting a decision");
@@ -194,6 +218,7 @@ async fn scenario() {
     assert_eq!(s["status"], json!("failed"), "{s}");
     assert!(s["failure"].as_str().is_some_and(|f| f.contains("'Apply' is not available for this document")), "{s}");
     assert!(board.ran("C3").is_empty());
+    assert_eq!(board.told("C3").iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["failed"]);
     let told: i64 = sqlx::query_scalar("select count(*) from notification where user_id = $1 and title like 'Approved, but not done: apply%'")
         .bind(changer)
         .fetch_one(&mut *k.db.tenant_tx(tenant).await.unwrap())
@@ -209,6 +234,7 @@ async fn scenario() {
     assert_eq!(bumps(c4).await, 0, "one of two");
     decide(b2.clone(), c4, true).await.unwrap();
     assert_eq!(bumps(c4).await, 1, "ran once");
+    assert_eq!(board.told("C4"), [("approved".to_string(), boss2, Some("seen".to_string()))], "told at the outcome, not at each step's decision");
     let c5 = change("C5").await;
     k.run_action(&cc, "Change", c5, "x_bump", Value::Null).await.unwrap();
     let (one, two) = tokio::join!(decide(b1.clone(), c5, true), decide(b2.clone(), c5, true));
