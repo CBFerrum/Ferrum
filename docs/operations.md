@@ -911,6 +911,7 @@ trigger would need a gauge of events due now (`available_at <= now()`), which th
 | `its zone … admits no staff, so it must not run background work` | A pool in a zone with `staff: none` needs `background: off`; the server refuses to start such a replica anyway |
 | `names the gateway …, which is not enabled` | A route names `public` or `private`, and that gateway must be on |
 | `defaultPool … is not a pool` / `… has background: only` | A gateway's default pool must exist and take requests |
+| `privateGateway.defaultPool: with pools, name the pool …` | The private gateway's default pool is never assumed |
 | `a pool with background: only … has no routes` | It has no Service to route to |
 | `… takes all of the gateway's own hosts` | A route with no hosts, paths or apps: make that pool the gateway's `defaultPool` |
 | `pools … both take all of host …` | Two pools cannot both answer the whole of one host |
@@ -927,7 +928,8 @@ holds the proxies' Service settings, where your cloud's annotation for an intern
 in `values.yaml`). A pool's `routes` say which gateway reaches it and by what: whole `hostnames` (added to that
 gateway's listeners, with its certificate), path prefixes (`paths`), or `apps`, matched on the `X-Ferrum-UI`
 header (`{app}@{version}`, which every API call carries) with an anchored regular expression. What no route
-takes goes to the gateway's `defaultPool` (the first pool unless set). WebSockets, files and MCP keep their own
+takes goes to the gateway's `defaultPool`: for the public gateway the first pool unless set; the private
+gateway's must be named whenever there are pools. WebSockets, files and MCP keep their own
 routes and time limits on every gateway; they carry no app, so they follow the host or the gateway's default.
 
 **Network policies.** With pools, each pool admits only the Envoy proxies of the gateways whose routes lead to

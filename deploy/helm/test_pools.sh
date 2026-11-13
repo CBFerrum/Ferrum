@@ -121,6 +121,8 @@ refuses "more than database.connectionLimit 370" --set-json 'pools=[{"name":"web
 # 2 x 34 + 2 x 34 + 20 fits; the migrate Job's 34 more, with a limit of 180, does not.
 tpl "${small[@]}" --set database.connectionLimit=180 --set-json 'pools=[{"name":"web"},{"name":"b"}]' > /dev/null
 refuses "the migrate Job 30 + 4" "${small[@]}" --set database.connectionLimit=180 --set migrate.enabled=true --set-json 'pools=[{"name":"web"},{"name":"b"}]' --is-upgrade
+refuses "privateGateway.defaultPool: with pools, name the pool" "${small[@]}" --set privateGateway.enabled=true --set-json 'pools=[{"name":"web"},{"name":"b"}]'
+tpl --set privateGateway.enabled=true > /dev/null  # without pools, the one pool answers it
 refuses "cannot be background: only" --set-json 'pools=[{"name":"web","background":"only"}]'
 refuses "has no routes" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"b","background":"only","routes":[{"apps":["x"]}]}]'
 refuses "both take all of host h.example.com" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"b","routes":[{"hostnames":["h.example.com"]}]},{"name":"c","routes":[{"hostnames":["h.example.com"]}]}]'

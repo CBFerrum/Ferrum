@@ -162,6 +162,9 @@ gateway, hostnames, pool, and either every path ("full") or the matches it narro
 {{- if $v.privateGateway.enabled -}}
 {{- $pg := $v.privateGateway -}}
 {{- $own := required "privateGateway.hostnames: name at least one host" $pg.hostnames -}}
+{{- if and $v.pools (not $pg.defaultPool) -}}
+{{- fail "privateGateway.defaultPool: with pools, name the pool that answers what no route on the private gateway takes; it is not taken to be the first pool" -}}
+{{- end -}}
 {{- $suffix := dict -}}
 {{- range $own }}{{ $_ := set $suffix . (printf "-%s" (. | replace "*" "wildcard" | replace "." "-")) }}{{ end -}}
 {{- $_ := set $gws "private" (dict "name" ($pg.name | default (printf "%s-private" $n)) "own" $own "extra" list "suffix" $suffix "claimed" dict "defaultPool" ($pg.defaultPool | default (first $pools).name)) -}}

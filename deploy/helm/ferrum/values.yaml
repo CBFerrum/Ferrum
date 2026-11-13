@@ -164,7 +164,7 @@ privateGateway:
   hostnames: [erp.internal.example.com]
   clusterIssuer: ""                # empty: no cert-manager annotation; create tlsSecretName yourself
   tlsSecretName: ferrum-private-tls
-  defaultPool: ""                  # what no pool's route takes (empty: the first pool)
+  defaultPool: ""                  # what no pool's route takes; required with pools
   envoyProxy:
     enabled: true
     replicas: 2
