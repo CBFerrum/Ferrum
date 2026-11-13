@@ -1522,7 +1522,7 @@ impl Kernel {
         let mut errors = Vec::new();
         check_required(ent, doc, &view, None, old_view.as_ref(), &user, &mut errors, &[]);
         self.validate_rows(ctx, tx, ent, doc, &view, on, &mut errors, &[]).await?;
-        self.check_links(ctx, tx, ent, doc, &mut errors, &[]).await?;
+        self.check_links(ctx, tx, ent, doc, None, &mut errors, &[]).await?;
         // A letter head's header and footer are layouts (BD-28): checked as a format's are.
         if ent.def.name == "LetterHead" && ent.package == "core" {
             errors.extend(crate::documents::letter_head_problems(&ctx.schema, doc));
@@ -1586,7 +1586,7 @@ impl Kernel {
                         Err(e) => errors.push(FieldError::new(&rule.name, format!("rule could not be evaluated: {e}")).at(&path)),
                     }
                 }
-                self.check_links(ctx, tx, &cent, rm, errors, &path).await?;
+                self.check_links(ctx, tx, &cent, rm, Some(doc), errors, &path).await?;
                 if !cent.children.is_empty() {
                     Box::pin(self.validate_rows(ctx, tx, &cent, rm, &rview, on, errors, &path)).await?;
                 }
@@ -1595,8 +1595,19 @@ impl Kernel {
         Ok(())
     }
 
-    /// Existence for links without a foreign key, link filters, and tree cycles.
-    async fn check_links(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc, errors: &mut Vec<FieldError>, at: &[(&str, usize)]) -> Result<()> {
+    /// Existence for links without a foreign key, link filters, and tree cycles. `parent`: the record or line a line is
+    /// in, which a `{from: parent.<field>}` filter reads (BD-52).
+    #[allow(clippy::too_many_arguments)]
+    async fn check_links(
+        &self,
+        ctx: &Ctx,
+        tx: &mut Tx,
+        ent: &EffEntity,
+        doc: &Doc,
+        parent: Option<&Doc>,
+        errors: &mut Vec<FieldError>,
+        at: &[(&str, usize)],
+    ) -> Result<()> {
         let push = |errors: &mut Vec<FieldError>, f: &str, m: String| errors.push(FieldError::new(f, m).at(at));
         for f in ent.value_fields().filter(|f| f.ftype == FieldType::Link) {
             let Some(id) = uuid_of(doc.get(&f.name)) else { continue };
@@ -1613,6 +1624,30 @@ impl Kernel {
                         if let Some(filters) = &f.link_filters {
                             for (k, expected) in filters {
                                 let actual = t.get(k).cloned().unwrap_or(Value::Null);
+                                if let Some(from) = ferrum_meta::link_filter_from(expected) {
+                                    // Another field of this record, or of the one a line is in: empty, nothing to compare.
+                                    let want = match from.strip_prefix("parent.") {
+                                        Some(p) => parent.and_then(|d| d.get(p)),
+                                        None => doc.get(from),
+                                    };
+                                    let Some(want) = want.filter(|w| !w.is_null() && w.as_str() != Some("")) else { continue };
+                                    if !same_value(&actual, want) {
+                                        let tf = target.field(k);
+                                        let to = tf.and_then(|tf| tf.to.as_deref());
+                                        let (has, want) = (self.shown(ctx, tx, to, &actual).await?, self.shown(ctx, tx, to, want).await?);
+                                        let this = if at.is_empty() { "record" } else { "line" };
+                                        let title = crate::collab::record_title(ctx, &target.def.name, t);
+                                        let m = match (to, tf) {
+                                            (Some(_), _) => format!("{} {title} belongs to {has}; this {this} is for {want}", target.def.label),
+                                            (None, tf) => {
+                                                let kl = tf.map(|f| f.label()).unwrap_or_else(|| k.clone());
+                                                format!("{} {title} has {kl} {has}; this {this} has {want}", target.def.label)
+                                            }
+                                        };
+                                        push(errors, &f.name, m);
+                                    }
+                                    continue;
+                                }
                                 let same = match (expected, &actual) {
                                     (Value::Bool(b), Value::Null) => !*b,
                                     _ => &actual == expected,
@@ -1655,6 +1690,16 @@ impl Kernel {
             }
         }
         Ok(())
+    }
+
+    /// A value as a person reads it: a linked record by its title, anything else as written.
+    async fn shown(&self, ctx: &Ctx, tx: &mut Tx, to: Option<&str>, v: &Value) -> Result<String> {
+        if let (Some(to), Some(id)) = (to.and_then(|t| ctx.schema.entity(t)), uuid_of(Some(v)))
+            && let Some(d) = store::load_many(tx, &ctx.schema, to, ctx.tenant, &[id]).await?.first()
+        {
+            return Ok(crate::collab::record_title(ctx, &to.def.name, d));
+        }
+        Ok(v.as_str().map(str::to_string).unwrap_or_else(|| if v.is_null() { "nothing".into() } else { v.to_string() }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2135,4 +2180,10 @@ fn transition_params(t: &ferrum_meta::WorkflowTransition, params: &Value) -> Res
         given.entry(p.name.clone()).or_insert(Value::Null);
     }
     Ok(Value::Object(given))
+}
+
+/// Two field values alike, whether a number or decimal is held as text or as a number.
+fn same_value(a: &Value, b: &Value) -> bool {
+    let text = |v: &Value| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+    a == b || (!a.is_null() && !b.is_null() && text(a) == text(b))
 }
