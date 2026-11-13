@@ -46,11 +46,17 @@ spec:
       {{- with $p.tolerations }}
       tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with $p.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
         fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
+      {{- with $p.topologySpreadConstraints }}
+      topologySpreadConstraints: {{- toYaml . | nindent 8 }}
+      {{- else }}
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
@@ -65,6 +71,7 @@ spec:
           labelSelector:
             matchLabels: {app.kubernetes.io/name: {{ $n }}}
           matchLabelKeys: [pod-template-hash]
+      {{- end }}
       containers:
         - name: ferrum
           image: {{ include "ferrum.image" (list "image" .Values.image) }}

@@ -85,7 +85,9 @@ pools: []
 #   env: []                    # entries of `env`; a name already set is replaced
 #   nodeSelector: {}
 #   tolerations: []
-#   priorityClassName: ""
+#   priorityClassName: ""        # e.g. a low class for a public pool, so it is evicted first
+#   affinity: {}                 # the pod's affinity, e.g. private pools on nodes of their own
+#   topologySpreadConstraints: [] # replaces the default spread over zones and hosts
 #   zone: ""                   # a name from `zones`: FERRUM_ZONE, and the pod label ferrum.dev/zone
 #   routes:                    # what reaches this pool; the rest goes to each gateway's defaultPool
 #     - gateway: public        # public | private

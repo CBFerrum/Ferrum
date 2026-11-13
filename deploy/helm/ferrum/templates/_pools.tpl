@@ -69,6 +69,8 @@ Call with the root context: include "ferrum.pools" . | fromJson
   "nodeSelector" ($p.nodeSelector | default dict)
   "tolerations" ($p.tolerations | default list)
   "priorityClassName" ($p.priorityClassName | default "")
+  "affinity" ($p.affinity | default dict)
+  "topologySpreadConstraints" ($p.topologySpreadConstraints | default list)
 ) -}}
 {{- end -}}
 {{- end -}}

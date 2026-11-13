@@ -839,7 +839,10 @@ network policy and Service. A pool takes every setting it leaves out from the to
 `background` (`both`; `off`, which sets `FERRUM_RUN_BACKGROUND=false`, API only; `only`, which has no Service
 and no routes and runs only background work), `zone`, `replicas`, `autoscaling`, `resources`,
 `dbMaxConnections`, `pdb`, `env` (a name already set is replaced), `nodeSelector`, `tolerations`,
-`priorityClassName` and `routes`. Each pool's pods carry the labels `ferrum.dev/pool` and `ferrum.dev/zone`
+`affinity`, `topologySpreadConstraints` (replacing the default spread over zones and hosts),
+`priorityClassName`, `keda` and `routes`. The scheduling ones let private pools run on nodes of their own
+(a node selector and a toleration for their taint) and a public pool be evicted first (a lower priority
+class, which you create). Each pool's pods carry the labels `ferrum.dev/pool` and `ferrum.dev/zone`
 (never in a selector); the `ServiceMonitor` covers every pool with a Service and passes both labels on to
 the metrics, and a `PodMonitor` (`ferrum-background`) scrapes the `only` pools.
 

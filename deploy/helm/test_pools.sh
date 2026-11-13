@@ -230,6 +230,26 @@ refuses "set keda.prometheusAddress" -f "$chart/presets/split.yaml" --set-json '
 refuses "keda.minReplicas must be at least 1" "${kedaon[@]}" --set keda.minReplicas=0
 refuses "worker 9 x (20 + 4)" "${kedaon[@]}" --set keda.maxReplicas=9 --set-json 'pools[1]={"name":"worker","background":"only","autoscaling":{"enabled":false},"keda":{"enabled":true},"dbMaxConnections":20}'
 
+echo "each pool takes its own scheduling: node selector, tolerations, affinity, spread and priority"
+tpl -f "$chart/presets/zones.yaml" --set-json 'pools[0].nodeSelector={"ferrum.dev/nodes":"private"}' \
+  --set-json 'pools[0].tolerations=[{"key":"private","operator":"Exists","effect":"NoSchedule"}]' \
+  --set-json 'pools[0].affinity={"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":1,"podAffinityTerm":{"topologyKey":"kubernetes.io/hostname","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"ferrum"}}}}]}}' \
+  --set-json 'pools[0].topologySpreadConstraints=[{"maxSkew":2,"topologyKey":"kubernetes.io/hostname","whenUnsatisfiable":"ScheduleAnyway","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"ferrum"}}}]' \
+  --set-json 'pools[1].priorityClassName="ferrum-public-low"' > "$tmp/sched.yaml"
+python3 - "$tmp/sched.yaml" <<'PY2'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+pod = {d["metadata"]["name"]: d["spec"]["template"]["spec"] for d in docs if d["kind"] == "Deployment"}
+g, pub = pod["ferrum"], pod["ferrum-public"]
+assert g["nodeSelector"] == {"ferrum.dev/nodes": "private"} and g["tolerations"][0]["key"] == "private"
+assert "podAntiAffinity" in g["affinity"]
+assert [c["maxSkew"] for c in g["topologySpreadConstraints"]] == [2], g["topologySpreadConstraints"]
+assert pub["priorityClassName"] == "ferrum-public-low"
+# What a pool does not set stays as before: no selector, no affinity, today's two spread rules.
+assert "nodeSelector" not in pub and "affinity" not in pub and "priorityClassName" not in g
+assert [c["topologyKey"] for c in pub["topologySpreadConstraints"]] == ["topology.kubernetes.io/zone", "kubernetes.io/hostname"]
+PY2
+
 echo "an app's calls are matched on X-Ferrum-UI, anchored, and other paths stay with the host"
 python3 - "$tmp/pools.yaml" <<'PY'
 import re, sys, yaml
