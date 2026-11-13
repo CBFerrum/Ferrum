@@ -110,6 +110,17 @@ pub struct Mapping {
     /// notification) is not sent for one that came from another system.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outside: bool,
+    /// `system`: what it writes is written as the system (BD-58), so fields only the system sets (read-only ones) are
+    /// set too; records keep the person a pull runs for as their maker. Only a description an administrator saved
+    /// (or a package offered and an administrator took up) holds a mapping, so only they can say it.
+    #[serde(default, rename = "as", skip_serializing_if = "Option::is_none")]
+    pub run_as: Option<RunAs>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunAs {
+    System,
 }
 
 /// An app's code for what a connection accepts. Runs in the transaction that marks the call processed: what it changes
@@ -356,13 +367,16 @@ impl Kernel {
         let empty = json!({});
         let connection = json!({"name": conn.name, "id": conn.id});
         let (now, today) = super::clock_vars(chrono::Utc::now());
-        let outside;
-        let ctx = if map.outside {
-            outside = Ctx { origin: Some("outside".into()), ..ctx.clone() };
-            &outside
-        } else {
-            ctx
-        };
+        let mut given = ctx.clone();
+        if map.outside {
+            given.origin = Some("outside".into());
+        }
+        if map.run_as == Some(RunAs::System) {
+            given.is_system = true;
+            given.is_admin = true;
+            given.perms = std::sync::Arc::new(crate::ctx::PermSet { admin: true, entities: BTreeMap::new() });
+        }
+        let ctx = &given;
         for (i, item) in items.iter().enumerate() {
             let at = |e| crate::pack::about(&format!("item {}", i + 1), e);
             let picked = map.pick(item, &[("payload", payload), ("item", item), ("connection", &connection), ("now", &now), ("today", &today)]).map_err(at)?;
