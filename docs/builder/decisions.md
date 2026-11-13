@@ -1730,3 +1730,30 @@ Decided 13 November 2026.
   web app) a link that loads `/{path}`.
 * **The App API is 0.3.8**; an app using `shell.menu` says `platform: ">=0.3.8, <0.4"`. 0.3.8 also carries BD-64 to
   BD-66.
+
+## BD-64. A stored file's short-lived public address, for a service that pulls it
+
+Decided 13 November 2026.
+
+* **The gap**: some services take no bytes; a step sends `image_url`/`video_url` and the service fetches it (Instagram,
+  Threads). The platform gave an app no address a service could reach.
+* **What was there**: `/files/public/{id}` serves files marked public for good, which is not this; S3 presigned URLs
+  exist for uploads only, and a local store has none. Reused: the streamed download with ranges (`Objects::stream`,
+  `streamed_response`, `file_headers`), the server's key (`SecretKey::fingerprint`, HMAC-SHA256), `PUBLIC_URL` as the
+  connection callback uses it. One route serves every store the same way.
+* **The shape**: an operation's `public_files: {<name>: {file, minutes?, end_with_call?}}`; templates read
+  `public_files.<name>`, a step's inputs too. A property of the operation, resolved before the request is built, rather
+  than a template function: making an address writes a row and checks the caller may read the file, which a template
+  (synchronous, run for every attempt) cannot do once.
+* **The address**: `{PUBLIC_URL}/files/pull/{id}?s={HMAC(id)}`; the row (`conn_file_address`) names the file, the
+  connection, operation, key and record of the call, the person, until when, and when it was ended. The signature is
+  in the query, which the request log never writes; any change to the id or the signature misses. Default 60 minutes,
+  at most 360. Not found alike for every refusal.
+* **Ending**: at its time, or with `end_with_call` once the call has its answer (not while it waits for the service, which
+  may still be fetching). A keyed call made again (a retry, a resumed wait) gets the address it made while it has ten
+  minutes left, so the service is not given a second one. Rows go 90 days after they end.
+* **A secret**: the masking every capture, error and result goes through hides `s=<64 hex>` (and `s%3D…`) wherever it
+  appears; a capture of the request never shows it.
+* **Without `PUBLIC_URL`** the call is refused: "a service cannot pull a file from localhost". Without the server's key
+  there is no signature, so it is refused too.
+* **The App API is 0.3.8** (BD-63). An app hands the file's id as an input and names the address in its description.

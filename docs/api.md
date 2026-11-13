@@ -1361,6 +1361,26 @@ platform's client at this server with an operation of its own (given `inputs.red
 its result's `client_id` and `client_secret` kept, once), for a server whose registration is not RFC 7591's;
 `never_expires: true` ignores the answer's expiry. These operations sign in: they are never called as operations.
 
+**A stored file's public address** ([BD-64](builder/decisions.md#bd-64-a-stored-files-short-lived-public-address-for-a-service-that-pulls-it)),
+for a service that pulls media by address instead of taking bytes. An operation's `public_files` names them; its
+templates read `public_files.<name>`, and a step's `inputs` too (pass it on to the step that sends it):
+
+```json
+"publish_image": {"method": "POST", "path": "/{{ inputs.account }}/media",
+  "public_files": {"photo": {"file": "{{ inputs.file }}", "minutes": 30, "end_with_call": true}},
+  "body": "{\"image_url\": {{ public_files.photo | json }}}", "result": {"id": "/id"}}
+```
+
+Each is `{PUBLIC_URL}/files/pull/{id}?s=<HMAC of the id under the server's key>`: good for that one file only, for
+`minutes` (60 unless said, at most 360), read without signing in with the file's type and length and byte ranges
+(`Range`, `206`), never cached; `end_with_call: true` ends it once the call has its answer (worked or refused; one that
+waits for the service keeps it). The caller must be able to read the file (as for a file part). A keyed call made again
+gets the address it made while it has ten minutes left. Altered, ended or past its time, the address answers 404 alike.
+The connection's log (`GET /api/admin/connections/{id}/log`) gives `addresses: [{at, operation, name, key, file, entity,
+record_id, user_id, expires_at, ended_at}]`, never the address; the signature is hidden in captures, errors and results
+wherever it appears (as written or percent-encoded). A server without `PUBLIC_URL` refuses the call: a service cannot
+pull a file from localhost. Works with the local file store and S3 alike (the server streams the object).
+
 ### Moving an app's own HTTP client onto a connection
 
 Social, ERP's carriers and the service apps each build requests themselves. To move one:

@@ -37,6 +37,7 @@ mod fns;
 pub mod inbound;
 pub mod oauth;
 pub(crate) mod personal;
+pub mod public;
 pub mod pull;
 pub mod steps;
 
@@ -143,7 +144,7 @@ pub struct Limit {
 const TURN_WAIT: Duration = Duration::from_secs(10);
 
 /// The keys of an operation that are [`More`]'s.
-const MORE: [&str; 7] = ["steps", "url", "success", "credentials", "form_fields", "answer", "lists"];
+const MORE: [&str; 8] = ["steps", "url", "success", "credentials", "form_fields", "answer", "lists", "public_files"];
 
 /// Read as derived, each operation's [`More`] keys taken apart first.
 impl<'de> Deserialize<'de> for Description {
@@ -212,6 +213,10 @@ pub struct More {
     /// In an XML answer, the elements that are always lists (`item`, `entry`), even when there is one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lists: Vec<String>,
+    /// Short-lived public addresses of stored files, for a service that pulls media by address (BD-64): templates (and
+    /// steps' inputs) read each as `public_files.<name>`. Made for calls only.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub public_files: BTreeMap<String, public::PublicFile>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,7 +228,8 @@ pub enum AnswerKind {
     Text,
 }
 
-static NO_MORE: More = More { steps: Vec::new(), url: None, success: None, credentials: None, form_fields: None, answer: None, lists: Vec::new() };
+static NO_MORE: More =
+    More { steps: Vec::new(), url: None, success: None, credentials: None, form_fields: None, answer: None, lists: Vec::new(), public_files: BTreeMap::new() };
 
 impl More {
     fn problem(&self, op: &Operation) -> Option<String> {
@@ -232,6 +238,9 @@ impl More {
         }
         if self.success.as_ref().is_some_and(|s| s.iter().any(|c| !(100..=599).contains(c))) {
             return Some("success lists statuses, 100 to 599".into());
+        }
+        if let Some(p) = self.public_files.iter().find_map(|(n, p)| p.problem(n)) {
+            return Some(p);
         }
         self.url.iter().chain(self.form_fields.iter()).find_map(|t| template_problem(t))
     }
@@ -1012,7 +1021,8 @@ pub(crate) fn at(v: &Value, pointer: Option<&str>) -> Option<String> {
 /// `v` with each of `mask` (secret values, tokens) written as dots, wherever it appears.
 pub(crate) fn masked(v: &Value, mask: &[String]) -> Value {
     match v {
-        Value::String(s) => Value::String(mask.iter().filter(|m| m.len() >= 4).fold(s.clone(), |s, m| s.replace(m.as_str(), HIDDEN))),
+        // A file's public address is a secret too (BD-64), wherever it appears.
+        Value::String(s) => Value::String(public::mask_addresses(&mask.iter().filter(|m| m.len() >= 4).fold(s.clone(), |s, m| s.replace(m.as_str(), HIDDEN)))),
         Value::Array(a) => Value::Array(a.iter().map(|x| masked(x, mask)).collect()),
         Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), masked(x, mask))).collect()),
         _ => v.clone(),
@@ -1193,6 +1203,8 @@ pub(crate) struct Extra<'a> {
     pub now: Option<DateTime<Utc>>,
     /// The part of a stored file its file part sends: the file, the first byte, how many.
     pub range: Option<(Uuid, u64, u64)>,
+    /// The public addresses made for the call (`public_files`, BD-64).
+    pub public: Option<&'a Value>,
 }
 
 /// Calls an operation of a connection and gives its mapped result: for apps (docs/api.md, "Connections"). `app` is the
@@ -1265,11 +1277,12 @@ impl Kernel {
         }
         let about = c.entity.clone().zip(c.record);
         let about = about.as_ref().map(|(e, r)| (e.as_str(), *r));
+        let public = self.public_files(ctx, &conn, &c.operation, (&inputs, key), about, more).await?;
         let outcome = if more.steps.is_empty() {
-            let extra = Extra { now: Some(clock), ..Default::default() };
+            let extra = Extra { now: Some(clock), public: Some(&public.vars), ..Default::default() };
             self.perform(ctx, &conn, &c.operation, &inputs, key, extra, about, changes.then_some(given.as_str())).await?
         } else {
-            let o = Box::pin(self.perform_steps(ctx, &conn, &c.operation, &inputs, key, clock, about)).await?;
+            let o = Box::pin(self.perform_steps(ctx, &conn, &c.operation, (&inputs, &public.vars), key, clock, about)).await?;
             if let (Outcome::Ok(result, _), Some(key)) = (&o, key) {
                 self.remember(ctx, &conn, &c.operation, key, &given, result).await?;
             }
@@ -1277,6 +1290,10 @@ impl Kernel {
         };
         if let Some(tx) = held {
             tx.commit().await?;
+        }
+        // Addresses that end with the call end once it has its answer; one that waits keeps them.
+        if matches!(outcome, Outcome::Ok(..) | Outcome::No(_)) {
+            self.end_public_files(conn.tenant, &public.ends).await?;
         }
         match outcome {
             Outcome::Ok(result, _) => Ok(result),
@@ -1651,6 +1668,9 @@ impl Kernel {
         }
         if let Some(p) = page {
             vars["cursor"] = p.cursor.clone();
+        }
+        if !more.public_files.is_empty() {
+            vars["public_files"] = extra.public.cloned().ok_or_else(|| Error::invalid("public_files are made for a call, not for a pull or a sign-in"))?;
         }
         let r = |s: &str| render(s, &vars);
         // A page the last one's `Link` named is asked at that address as it is (the guard still checks its host).
@@ -2053,11 +2073,16 @@ impl Kernel {
             return Err(Error::invalid(format!("{operation} changes something at the service, so trying it needs a key")));
         }
         let inputs = if inputs.is_null() { json!({}) } else { inputs.clone() };
-        let outcome = if conn.desc.more(operation).steps.is_empty() {
-            self.perform(ctx, &conn, operation, &inputs, key, Extra::default(), None, None).await?
+        let more = conn.desc.more(operation);
+        let public = self.public_files(ctx, &conn, operation, (&inputs, key), None, more).await?;
+        let outcome = if more.steps.is_empty() {
+            self.perform(ctx, &conn, operation, &inputs, key, Extra { public: Some(&public.vars), ..Default::default() }, None, None).await?
         } else {
-            Box::pin(self.perform_steps(ctx, &conn, operation, &inputs, key, Utc::now(), None)).await?
+            Box::pin(self.perform_steps(ctx, &conn, operation, (&inputs, &public.vars), key, Utc::now(), None)).await?
         };
+        if matches!(outcome, Outcome::Ok(..) | Outcome::No(_)) {
+            self.end_public_files(conn.tenant, &public.ends).await?;
+        }
         Ok(match outcome {
             Outcome::Ok(result, answer) => json!({"ok": true, "result": result, "answer": masked(&answer.body, &conn.mask())}),
             Outcome::Later(why, _) => json!({"ok": false, "temporary": true, "error": why}),
