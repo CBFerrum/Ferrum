@@ -1425,3 +1425,29 @@ Decided 13 November 2026.
   pick, `Retry-After` and `Error::RetryAfter`; file parts, file bodies and file results; `auth: session`,
   `provider.dpop`, `provider.registration_url` and `connect_session`; `verify: signature` without a timestamp;
   `merge_connection_secrets`, `meta`, per-person pulls, a mapping's `outside` and `Ctx::origin`.
+
+## BD-52. A link limited by another field of the record, and the App API 0.3.6
+
+Decided 13 November 2026.
+
+* **The fault**: a link's `link_filters` was a fixed equality map (`{is_group: false}`). Nothing let a link limit its
+  choices by another field of the same record, so Commerce's Store Settings listed every company's warehouses and then
+  refused the save, and each app wrote that refusal in Rust.
+* **The shape**: a filter's value is a literal, or `{from: <field>}` (the linked record's field equals that field of the
+  record being saved), or, in a line's field, `{from: parent.<field>}` (of the record or line it is in):
+  `link_filters: {company: {from: company}}` on a document's `warehouse`, `{company: {from: parent.company}}` on a line's.
+* **Checked when declared** (a package, a customization, a pack; `catalog::validate_link_from`): the named field
+  exists on the record, or on every entity whose table holds the line; the filtered field exists on the linked entity;
+  the two hold the same thing (links to the same entity, or the same plain type); `parent.` outside a line is refused.
+* **Checked on write** wherever fixed filters are (`doc.rs` `check_links`): every insert, update and submit, so imports,
+  effects, automations and a line's rows too, on every save, so changing the source field checks again the links
+  filtered by it. An empty source field applies no filter (the field's own `required` decides). A mismatch is refused
+  on the link field in plain words: "Warehouse Stores belongs to Company A; this record is for Company B" ("this line"
+  in a row; "has <field> …" for a plain value). Engine writes (`set_values_tx`, `set_child_values_tx`) check no links,
+  as before.
+* **Pickers**: `/api/meta/{Entity}` carries the filter as declared. A picker resolves `from` against the form's values
+  (the parent record's for a line) and sends an ordinary equality filter on the linked entity's field,
+  `filters={"company": "<id>"}` (or `[["company","=","<id>"]]`) on `GET /api/v1/{Target}`; with the source empty, it sends
+  none for that key.
+* **The App API is 0.3.6**; an app using `from` says `platform: ">=0.3.6, <0.4"`. 0.3.6 carries `{from: …}` in
+  `link_filters`.

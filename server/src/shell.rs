@@ -898,6 +898,14 @@ pub fn menu_entries(ctx: &Ctx) -> (Vec<Value>, Vec<Value>) {
     (tiles, create)
 }
 
+/// Whether an app's Create row is offered: one naming an entity only where the workspace has it (its package
+/// installed) and the person may create it, so the menu never leads to "Not available here".
+pub fn create_offered(ctx: &Ctx, item: &Value) -> bool {
+    item.get("entity")
+        .and_then(Value::as_str)
+        .is_none_or(|e| ctx.schema.entity(e).is_some() && ctx.perms.access(e, ferrum_kernel::Action::Create) != ferrum_kernel::Access::None)
+}
+
 /// Families (§11.5): an app with an interface of its own heads one when it names one (`ui.family`)
 /// or when its add-ons bring interfaces too; they share its navigation and its launcher group.
 /// Returns each member's family (app → head) and the families in install order.
@@ -2003,6 +2011,12 @@ mod tests {
         };
         // A reader of one item gets the tile; create rows only where they may create.
         let manager = person(&[("Risk", true, true), ("Finding", true, false)]);
+        // An app's Create row: its entity installed and creatable, or none named.
+        let row = |e: &str| json!({"label": "New", "path": "x/new", "entity": e});
+        assert!(create_offered(&manager, &row("Risk")));
+        assert!(!create_offered(&manager, &row("Finding")), "no create right");
+        assert!(!create_offered(&Ctx::system(Uuid::nil(), schema.clone()), &row("Warehouse")), "its package not installed");
+        assert!(create_offered(&manager, &json!({"label": "Email", "path": "mail/compose"})));
         let (tiles, create) = menu_entries(&manager);
         assert_eq!(
             tiles[0],
