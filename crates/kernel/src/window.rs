@@ -71,6 +71,11 @@ pub struct Recorded {
 }
 
 pub async fn recorded(conn: &mut PgConnection) -> Result<Option<Recorded>> {
+    // A new database has no table yet.
+    let there: bool = sqlx::query_scalar("select to_regclass('cluster_state') is not null").fetch_one(&mut *conn).await?;
+    if !there {
+        return Ok(None);
+    }
     let rows: Vec<(String, String)> =
         sqlx::query_as("select key, value from cluster_state where key in ($1, $2)").bind(BUILD_KEY).bind(FROM_KEY).fetch_all(&mut *conn).await?;
     let get = |k: &str| rows.iter().find(|(key, _)| key == k).map(|(_, v)| parse(v));
@@ -140,6 +145,16 @@ pub fn standing(own: DateTime<Utc>, unknown: &[i64], rec: Option<Recorded>) -> S
     }
 }
 
+/// Takes the lock, however long another start migrates. Asked again and again rather than waited for in one statement:
+/// a waiting statement is a transaction that another start's `create index concurrently` would wait for in turn.
+async fn wait(conn: &mut PgConnection, take: &str) -> Result<()> {
+    let sql = format!("select {take}($1)");
+    while !sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(sql.clone())).bind(LOCK).fetch_one(&mut *conn).await? {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    Ok(())
+}
+
 /// Holds the decision taken at start until the schema is migrated and synced: no other build decides in between.
 pub(crate) struct Deciding(PgConnection);
 
@@ -147,7 +162,7 @@ impl Deciding {
     pub(crate) async fn lock(db: &crate::Db) -> Result<Deciding> {
         // Detached: if this start fails half-way, the connection closes and the lock goes with it.
         let mut conn = db.pool.acquire().await?.detach();
-        sqlx::query("select pg_advisory_lock($1)").bind(LOCK).execute(&mut conn).await?;
+        wait(&mut conn, "pg_try_advisory_lock").await?;
         Ok(Deciding(conn))
     }
 
@@ -177,7 +192,7 @@ impl Kernel {
     /// one in has migrated the database since this one started.
     pub async fn hold_start(&self) -> Result<Option<StartHold>> {
         let mut conn = self.db.pool.acquire().await?.detach();
-        sqlx::query("select pg_advisory_lock_shared($1)").bind(LOCK).execute(&mut conn).await?;
+        wait(&mut conn, "pg_try_advisory_lock_shared").await?;
         let unknown = self.db.unknown_migrations().await?;
         let rec = recorded(&mut conn).await;
         let hold = StartHold(conn);
@@ -197,7 +212,7 @@ impl Kernel {
     /// Whether a newer build than this one has synced the schema: what this build cannot read may be the newer one's.
     pub async fn newer_build_here(&self) -> Result<bool> {
         let mut conn = self.db.pool.acquire().await?;
-        Ok(recorded(&mut *conn).await?.is_some_and(|r| r.build > build_date()))
+        Ok(recorded(&mut conn).await?.is_some_and(|r| r.build > build_date()))
     }
 }
 

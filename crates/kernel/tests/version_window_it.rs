@@ -58,7 +58,9 @@ async fn scenario() {
 
     // Several starts of this build at once: each takes its turn, and the database records this build.
     let starts = futures::future::join_all((0..3).map(|_| boot(true))).await;
-    assert!(starts.iter().all(|s| s.as_ref().is_ok_and(|k| k.booted.guest.is_none())), "a start failed");
+    for s in &starts {
+        assert!(s.as_ref().map_err(|e| e.to_string()).expect("a start").booted.guest.is_none());
+    }
     let own = day(0);
     assert_eq!(state(&db, "schema_build_date").await.as_deref(), Some(own.as_str()));
     assert_eq!(state(&db, "schema_compatible_from").await.as_deref(), Some(window::COMPATIBLE_FROM));

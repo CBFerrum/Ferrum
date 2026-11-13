@@ -26,10 +26,8 @@ fn git_date() -> Option<String> {
     git(&["ls-files", "--error-unmatch", "build.rs"])?;
     // A new commit or checkout moves HEAD's log: the date is read again.
     for path in ["HEAD", "logs/HEAD"] {
-        if let Some(p) = git(&["rev-parse", "--git-path", path]).map(std::path::PathBuf::from) {
-            if let Ok(p) = p.canonicalize() {
-                println!("cargo:rerun-if-changed={}", p.display());
-            }
+        if let Some(Ok(p)) = git(&["rev-parse", "--git-path", path]).map(|p| std::path::PathBuf::from(p).canonicalize()) {
+            println!("cargo:rerun-if-changed={}", p.display());
         }
     }
     git(&["log", "-1", "--format=%ct"]).filter(|d| d.parse::<i64>().is_ok())
