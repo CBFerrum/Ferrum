@@ -1063,7 +1063,8 @@ of this API answers with 422 is 400 here, with a `scimType`.
 
 ## Apps — `/api/admin/apps` (administrators; [design](plan/apps.md))
 
-`AppSummary` = `{id, name, version, runtime: native|wasm|meta, summary, categories[], publisher?, verified, icon_url, source: native|upload|store:<url>, private}`.
+`AppSummary` = `{id, name, version, runtime: native|wasm|meta, summary, categories[], publisher?, verified, icon_url, source: native|upload|store:<url>, private, parent?, requires: [{app, range}], platform: <range>|null, blocked: [{app, need, have, action: install|upgrade}]}`.
+`requires` and `platform` come from the app's manifest (a store's search result carries neither: empty and null). `blocked` is what keeps it from installing in this workspace now, worked out against the apps it has: an app it needs that is not installed (`install`, `have: null`) or installed outside the range (`upgrade`), and `{app: "platform", need, have: <this server's App API version>, action: "upgrade"}` when the server is outside `platform`; empty when nothing blocks. Both lists carry it.
 
 * `GET /api/admin/apps` → `{installed: [AppSummary + {enabled, installed_at, update: {version}|null}], available: [AppSummary], uploads: off|private|cluster, platform, stores: [{url, ok, error}]}`.
   `installed` also lists native apps whose packages the workspace already has (installed when it was created); `available` holds this build's native apps, releases available on the cluster and the workspace's private uploads. `update` is a newer compatible release on the cluster (from the stores too when `uploads` is `cluster`), or this build's version of a native app.
