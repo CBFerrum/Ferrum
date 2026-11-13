@@ -11,14 +11,35 @@ Call with the root context: include "ferrum.pools" . | fromJson
 {{- if not $v.pools -}}
 {{- $out = append $out (dict "name" "" "obj" $n "first" true "background" "both" "zone" "" "replicas" $v.replicas "autoscaling" $v.autoscaling "resources" $v.resources "pdb" $v.pdb "dbMaxConnections" $v.dbMaxConnections) -}}
 {{- else -}}
+{{- $seen := dict -}}
 {{- range $i, $p := $v.pools -}}
 {{- $name := required (printf "pools[%d].name is required" $i) $p.name | toString -}}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name) -}}
 {{- fail (printf "pools[%d].name %q: use lower-case letters, digits and dashes" $i $name) -}}
 {{- end -}}
+{{- if hasKey $seen $name -}}{{- fail (printf "two pools are named %s: each pool needs a name of its own" $name) -}}{{- end -}}
+{{- $_ := set $seen $name true -}}
+{{- if has $name (list "pdf" "db" "office" "editors" "metrics-engine" "migrate" "background" "private") -}}
+{{- fail (printf "pool %s: %s-%s is the name of another part of the chart; choose another name" $name $n $name) -}}
+{{- end -}}
 {{- $bg := $p.background | default "both" -}}
 {{- if not (has $bg (list "both" "off" "only")) -}}
 {{- fail (printf "pool %s: background is both, off or only, not %q" $name $bg) -}}
+{{- end -}}
+{{- if and (eq $i 0) (eq $bg "only") -}}
+{{- fail (printf "pool %s: the first pool keeps today's Service, which the gateway and the online editor call, so it cannot be background: only; put the background pool after it" $name) -}}
+{{- end -}}
+{{- if and (eq $bg "only") $p.routes -}}
+{{- fail (printf "pool %s: a pool with background: only takes no requests, so it has no routes" $name) -}}
+{{- end -}}
+{{- with $p.zone -}}
+{{- $rule := get ($v.zones | default dict) (toString .) -}}
+{{- if not (hasKey ($v.zones | default dict) (toString .)) -}}
+{{- fail (printf "pool %s: zone %q is not in zones" $name .) -}}
+{{- end -}}
+{{- if and $rule (eq (toString $rule.staff) "none") (ne $bg "off") -}}
+{{- fail (printf "pool %s: its zone %s admits no staff, so it must not run background work: set background: off" $name .) -}}
+{{- end -}}
 {{- end -}}
 {{- /* Booleans set to false are kept: merge would treat them as unset. */ -}}
 {{- $as := mergeOverwrite (deepCopy $v.autoscaling) (deepCopy ($p.autoscaling | default dict)) -}}
@@ -41,6 +62,24 @@ Call with the root context: include "ferrum.pools" . | fromJson
   "tolerations" ($p.tolerations | default list)
   "priorityClassName" ($p.priorityClassName | default "")
 ) -}}
+{{- end -}}
+{{- /* The connection budget: every pool at its most replicas, the migrate Job, and what else uses the role
+(scripts/check_manifests.py: OTHERS), within the role's limit (database.yaml). */ -}}
+{{- if $v.database.enabled -}}
+{{- $need := 20 -}}
+{{- $parts := list -}}
+{{- range $out -}}
+{{- $r := ternary .autoscaling.maxReplicas .replicas .autoscaling.enabled | int -}}
+{{- $need = add $need (mul $r (add (int .dbMaxConnections) 4)) -}}
+{{- $parts = append $parts (printf "%s %d x (%d + 4)" .name $r (int .dbMaxConnections)) -}}
+{{- end -}}
+{{- if eq (include "ferrum.migrateJob" .) "true" -}}
+{{- $need = add $need (add (int $v.dbMaxConnections) 4) -}}
+{{- $parts = append $parts (printf "the migrate Job %d + 4" (int $v.dbMaxConnections)) -}}
+{{- end -}}
+{{- if gt (int $need) (int $v.database.connectionLimit) -}}
+{{- fail (printf "the pools may open %d database connections (%s, and 20 for other users of the role), more than database.connectionLimit %d: lower maxReplicas or dbMaxConnections" $need (join ", " $parts) (int $v.database.connectionLimit)) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- toJson (dict "pools" $out) -}}
@@ -110,6 +149,7 @@ gateway, hostnames, pool, and either every path ("full") or the matches it narro
 {{- range $key, $g := $gws -}}
 {{- $d := get $byName $g.defaultPool -}}
 {{- if not $d -}}{{- fail (printf "%s gateway: defaultPool %q is not a pool" $key $g.defaultPool) -}}{{- end -}}
+{{- if eq $d.background "only" -}}{{- fail (printf "%s gateway: defaultPool %s has background: only and takes no requests" $key $d.name) -}}{{- end -}}
 {{- $_ := set $g "defaultObj" $d.obj -}}
 {{- $_ := set $admits $d.name (append (get $admits $d.name) $g.name) -}}
 {{- end -}}
