@@ -1487,3 +1487,23 @@ inputs refused; each step's answer kept, the token resting nowhere; a lost answe
 back, sent again under its own key with an idempotency header; an address off the connection's hosts refused; two
 workers on one key, one sending; wrong steps refused when saved.
 
+## BD-54. A step that waits
+
+Decided 13 November 2026. Containers, videos and uploads are processed before they can be published (Instagram,
+Threads, TikTok, YouTube, Mastodon, LinkedIn): the publish waits for a status.
+
+* `wait: {until, fail_if?, every_secs (5), within_secs (600), attempts (1000)}` on a step whose operation only reads.
+  Each ask is logged; one the service answers "later" counts as not ready. `fail_if` stops the call with the service's
+  words; `within_secs` is counted from the key's first attempt (its clock, BD-56), so a wait carried over many calls
+  is still bounded; the asks are counted in the key's attempt.
+* **Patience**: a call waits in place at most 20 s, then answers "later" after `every_secs`; for a queued call or an
+  app's call that is `RetryAfter`, so the job comes back when the service should be asked again rather than holding a
+  worker for minutes. Why not sleep inside the job: a worker held for a ten-minute transcode is a worker no other
+  workspace gets.
+* Once ready, the step's result is kept under its key like any step's, so the next call goes straight on.
+
+Tests (`connections_steps_it` `waiting`): a container processed after three asks, published once; one that fails says
+the service's status and publishes nothing; past its patience the call answers "later" after its own delay and the
+next calls carry on from the wait without a second container; a wait bounded in time; a wait on an operation that
+changes something refused.
+
