@@ -171,7 +171,20 @@ async fn oauth_code(k: &Kernel, ctx: &ferrum_kernel::Ctx) -> (String, String, St
 }
 
 async fn redeem(s: &Server, host: &str, ip: &str, (client, code, verifier): &(String, String, String)) -> (StatusCode, Value) {
-    let form = format!("grant_type=authorization_code&code={code}&redirect_uri=http%3A%2F%2F127.0.0.1%3A9%2Fcb&code_verifier={verifier}&client_id={client}");
+    token_endpoint(
+        s,
+        host,
+        ip,
+        format!("grant_type=authorization_code&code={code}&redirect_uri=http%3A%2F%2F127.0.0.1%3A9%2Fcb&code_verifier={verifier}&client_id={client}"),
+    )
+    .await
+}
+
+async fn refresh(s: &Server, host: &str, ip: &str, client: &str, token: &str) -> (StatusCode, Value) {
+    token_endpoint(s, host, ip, format!("grant_type=refresh_token&refresh_token={token}&client_id={client}")).await
+}
+
+async fn token_endpoint(s: &Server, host: &str, ip: &str, form: String) -> (StatusCode, Value) {
     let req = Request::builder()
         .method(Method::POST)
         .uri("/oauth/token")
@@ -444,10 +457,22 @@ async fn scenario() {
     assert_eq!(status, StatusCode::OK, "and the staff address still lets them in");
     let (status, body, _) = sign_in(&walled, host, "198.18.0.5", "portal@acme.test", PASSWORD, false).await;
     assert_eq!(status, StatusCode::OK, "a portal person signs in: {body}");
-    // OAuth: a staff code is answered as a bad one; an outside person's is redeemed.
+    // OAuth: a staff code or refresh token is answered as an unknown one, and left as it was: each
+    // still works afterwards where staff are admitted. An outside person's is redeemed.
     let staff_ctx = k.load_ctx(acme, people[0].2, None, "it".into()).await.unwrap();
-    let (status, answer) = redeem(&walled, host, ip, &oauth_code(&k, &staff_ctx).await).await;
-    assert_eq!((status, answer["error"].clone()), (StatusCode::BAD_REQUEST, json!("invalid_grant")), "{answer}");
+    let unknown = redeem(&walled, host, ip, &(String::from("nobody"), String::from("no-such-code"), "v".repeat(50))).await;
+    assert_eq!((unknown.0, unknown.1["error"].clone()), (StatusCode::BAD_REQUEST, json!("invalid_grant")));
+    let code = oauth_code(&k, &staff_ctx).await;
+    let (status, answer) = redeem(&walled, host, ip, &code).await;
+    assert_eq!((status, &answer), (unknown.0, &unknown.1), "a staff code: the unknown answer");
+    let (status, granted) = redeem(&open, STAFF_HOST, "10.1.2.3", &code).await;
+    assert_eq!(status, StatusCode::OK, "and it was not used up: {granted}");
+    let staff_refresh = granted["refresh_token"].as_str().unwrap().to_string();
+    let unknown = refresh(&walled, host, ip, &code.0, "fr_no-such-token").await;
+    assert_eq!(refresh(&walled, host, ip, &code.0, &staff_refresh).await, unknown, "a staff refresh token: the unknown answer");
+    assert_eq!(refresh(&walled, host, ip, &code.0, &staff_refresh).await, unknown, "again: no reuse detection, nothing revoked");
+    let (status, rotated) = refresh(&open, STAFF_HOST, "10.1.2.3", &code.0, &staff_refresh).await;
+    assert_eq!(status, StatusCode::OK, "it still works where staff are admitted: {rotated}");
     let portal_ctx = k.load_ctx(acme, people[1].2, None, "it".into()).await.unwrap();
     assert_eq!(redeem(&walled, host, ip, &oauth_code(&k, &portal_ctx).await).await.0, StatusCode::OK);
     // The sign-in page for staff is the plain page, the portal's is not.
@@ -481,6 +506,98 @@ async fn scenario() {
     for (_, _, id) in &people {
         k.load_ctx(acme, *id, None, "job-1".into()).await.expect("inside");
     }
+
+    // Staff on two more credentials: an app token, and support access.
+    let admin_ctx = k.load_ctx(acme, s.user, None, "it".into()).await.unwrap();
+    let secret = base.config.auth.as_ref().unwrap().jwt.as_ref().unwrap().secret.clone();
+    let admin_cookie = holds.iter().find(|(k, _)| *k == "admin").and_then(|(_, h)| h.cookie.clone()).unwrap();
+    let sid = loco_rs::auth::jwt::JWT::new(&secret).validate(&admin_cookie).unwrap().claims.claims["sid"].clone();
+    let mut claims = serde_json::Map::new();
+    claims.insert("tenant".into(), json!(acme.to_string()));
+    claims.insert("tv".into(), json!(k.token_version(acme, s.user).await.unwrap()));
+    claims.insert("bsid".into(), sid);
+    claims.insert("app".into(), json!("core"));
+    let app_token = loco_rs::auth::jwt::JWT::new(&secret).generate_token(300, s.user.to_string(), claims).unwrap();
+    let (status, answer) = call(&walled, Method::GET, host, "/api/v1/Company", ip, Cred::Bearer(&app_token), None).await;
+    assert!(refused_by_zone(status, &answer), "an app token: {status} {answer}");
+    assert!(!refused_by_zone(call(&open, Method::GET, host, "/api/v1/Company", ip, Cred::Bearer(&app_token), None).await.0, ""), "works elsewhere");
+    let grant = serde_json::from_value(json!({"level": "health", "grantee": "Support desk", "reason": "the wall", "hours": 1})).unwrap();
+    let (_, support) = k.grant_support(&admin_ctx, grant).await.unwrap();
+    let (status, answer) = call(&walled, Method::GET, host, "/api/support/report", ip, Cred::Bearer(&support), None).await;
+    assert!(refused_by_zone(status, &answer), "support access: {status} {answer}");
+    let (status, answer) = call(&open, Method::GET, host, "/api/support/report", ip, Cred::Bearer(&support), None).await;
+    assert_eq!(status, StatusCode::OK, "support access without zones: {answer}");
+
+    // Outside people, for real, in the zone: a published list gives its rows.
+    k.insert(&admin_ctx, "Currency", json!({"code": "XTS", "currency_name": "Testing Coin"}).as_object().cloned().unwrap()).await.unwrap();
+    let publish: ferrum_meta::OverlayOp =
+        serde_json::from_value(json!({"op": "publish_list", "list": {"name": "currencies", "label": "Currencies", "fields": ["code", "currency_name"]}}))
+            .unwrap();
+    k.add_customization(&admin_ctx, "Currency", publish, None).await.unwrap();
+    let (status, list) = call(&walled, Method::GET, host, "/api/public/acme/lists/currencies", ip, Cred::None, None).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let rows = serde_json::from_str::<Value>(&list).unwrap()["rows"].clone();
+    assert!(rows.as_array().unwrap().contains(&json!({"code": "XTS", "currency_name": "Testing Coin"})), "{list}");
+    assert!(call(&walled, Method::GET, host, "/public/acme/lists/currencies", ip, Cred::None, None).await.1.contains("Testing Coin"), "and its page");
+    // An action link does what it says.
+    let quote = json!({"name": "XQuote", "label": "Quotation", "kind": "master", "title_field": "title",
+        "fields": [{"name": "title", "type": "data", "required": true}, {"name": "rating", "type": "int"}],
+        "actions": [{"name": "rate", "label": "Rate us", "permission": "write",
+            "params": [{"name": "rating", "label": "Rating", "type": "int", "required": true}],
+            "effects": [{"type": "set_fields", "values": {"rating": "params.rating"}}]}]});
+    let define: ferrum_kernel::customize::NewCustomization =
+        serde_json::from_value(json!({"entity": "XQuote", "op": {"op": "define_entity", "entity": quote}})).unwrap();
+    k.batch_customizations(&admin_ctx, vec![define], false).await.map_err(|(_, e)| e.to_string()).unwrap();
+    let admin_ctx = k.load_ctx(acme, s.user, None, "it".into()).await.unwrap();
+    let q: Uuid = k.insert(&admin_ctx, "XQuote", json!({"title": "Q-1"}).as_object().cloned().unwrap()).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let spec: ferrum_kernel::action_link::LinkSpec = serde_json::from_value(json!({"actions": ["rate"]})).unwrap();
+    let link = k.issue_link_now(&admin_ctx, "XQuote", q, &spec).await.unwrap();
+    let path = format!("/api/public/acme/links/{}", link.url.rsplit('/').next().unwrap());
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(&path)
+        .header(header::HOST, host)
+        .header("x-forwarded-for", ip)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from("_action=rate&rating=4"))
+        .unwrap();
+    let res = walled.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "the link's action");
+    assert_eq!(k.get(&admin_ctx, "XQuote", q, false).await.unwrap()["rating"], json!(4), "done to the record");
+    // A plugin's public callback runs as its service account and does its work.
+    // The plugins' own fixture, without what reaches the selling app's Customer (not in this server's packages).
+    let mut manifest: Value = serde_json::from_str(include_str!("../../crates/plugins/tests/fixtures/device_gateway.json")).unwrap();
+    manifest["hooks"] = json!([]);
+    manifest["subscriptions"] = json!([]);
+    manifest["permissions"].as_array_mut().unwrap().retain(|p| p["entity"] != "Customer");
+    let manifest: ferrum_plugins::NewPlugin = serde_json::from_value(manifest).unwrap();
+    st.plugins.install(&k, &admin_ctx, manifest, include_bytes!("../../crates/plugins/tests/fixtures/device_gateway.wasm")).await.unwrap();
+    let (status, answer) = call(&walled, Method::GET, host, "/api/public/acme/device-gateway/status", ip, Cred::None, None).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(serde_json::from_str::<Value>(&answer).unwrap()["online"], json!(0), "it read its devices as its service account");
+    // A job a portal person queues from the zone is picked up and completes.
+    let rule: ferrum_meta::PermissionDef = serde_json::from_value(json!({"entity": "Currency", "read": true})).unwrap();
+    k.set_role_permission(&admin_ctx, "Shoppers", &rule).await.unwrap();
+    k.set_role_portal(&admin_ctx, "Shoppers", true).await.unwrap();
+    k.set_user_roles_until(&admin_ctx, people[1].2, &["Shoppers".into()], &Default::default()).await.unwrap();
+    let portal_token = holds.iter().find(|(k, _)| *k == "portal").and_then(|(_, h)| h.token.clone()).unwrap();
+    let (status, queued) = call(
+        &walled,
+        Method::POST,
+        host,
+        "/api/v1/Currency/_bulk/jobs",
+        ip,
+        Cred::Bearer(&portal_token),
+        Some(json!({"filters": {}, "op": "update", "values": {}})),
+    )
+    .await;
+    assert!(status.is_success(), "queued from the zone: {status} {queued}");
+    let job: Uuid = serde_json::from_str::<Value>(&queued).unwrap()["job"].as_str().unwrap().parse().unwrap();
+    assert!(k.run_jobs_once(10).await.unwrap() >= 1, "picked up");
+    let mut tx = k.db.tenant_tx(acme).await.unwrap();
+    let (done, created_by): (String, Uuid) = sqlx::query_as("select status, created_by from job where id = $1").bind(job).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!((done.as_str(), created_by), ("done", people[1].2), "and completed, as the portal person");
 
     // Report mode: everything as without zones, and counted.
     let report = server(&base, &st, zones(by_host, "", "", "report")).await;
