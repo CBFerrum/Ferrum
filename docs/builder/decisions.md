@@ -1815,3 +1815,20 @@ Decided 13 November 2026.
 * Tests: `ferrum-meta` compiles and runs a dozen nested `?:` and the deepest allowed nesting on a 2 MiB thread (it aborts
   with a stack overflow without the fix); `ferrum-kernel`'s `descriptions_small_stack` loads, validates and works out
   the result of the Telegram description (a fixture) on 2 MiB.
+
+## BD-68. A 2xx answer that is a refusal, in the service's words
+
+Decided 13 November 2026.
+
+* **The gap**: Slack (`ok: false`), GraphQL services (`errors`), VK (`error`), Twitch and Kick (`is_sent: false`) and
+  TikTok Business (`code != 0`) answer 200 when they refuse; `error_at` was read only on a failing status, so the
+  descriptions made a missing id fail the call and the person read "the answer has no id".
+* **The shape** (on the operation, beside `error_at` and `temporary`): `refused_if`, a CEL expression (the language of
+  `result`'s `expr`) over `answer`, `headers`, `status` and `inputs`; `temporary_if`, which refusals are "later"
+  (status or expression); `error`, an expression giving the words, in place of `error_at`'s pointer. `error_at` (item
+  12 of the request) is now read on such an answer too, and `error` is the expression form of it; one mechanism.
+* **Expressions that cannot be worked out** (an answer without the key) count as false, and words fall back to
+  `error_at`, then to the answer: a description is not refused at run time for the shape of an answer it did not
+  expect. They are compiled when the description is saved. Words are masked as every error is.
+* **Steps**: each step's operation says its own; a refused step ends the operation as before (`No` or `Later`).
+* Part of the App API 0.3.8 (BD-63).

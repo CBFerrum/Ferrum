@@ -125,6 +125,9 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
 <entry><id>urn:a1</id><title type="text">Atom one</title><link rel="alternate" href="https://news.example/a1"/></entry></feed>"#
                 .into(),
         ),
+        ("GET", "/v1/ok-false") => (200, String::new(), json!({"ok": false, "error": "channel_not_found"}).to_string()),
+        ("GET", "/v1/ok-true") => (200, String::new(), json!({"ok": true, "id": "M-9"}).to_string()),
+        ("POST", "/v1/graphql") => (200, String::new(), json!({"errors": [{"message": "slow down", "extensions": {"code": "THROTTLED"}}]}).to_string()),
         ("GET", "/v1/to-private") => (302, "location: https://10.0.0.1/feed\r\n".into(), String::new()),
         ("GET", "/v1/to-local") => (302, format!("location: http://localhost:{port}/v1/rss\r\n"), String::new()),
         ("GET", "/v1/dtd") => (200, String::new(), r#"<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>"#.into()),
@@ -926,6 +929,26 @@ async fn scenario() {
     pull_each(&k, &admin, &base).await;
     signing_in(&k, &admin, &base).await;
     any_host(&k, &admin, port).await;
+    refusals(&k, &admin, &base).await;
+}
+
+/// BD-68: a 2xx answer that is a refusal, in the service's words, temporary or not.
+async fn refusals(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let ops = json!({
+        "post": {"path": "/ok-false", "refused_if": "has(answer.ok) && !answer.ok", "error_at": "/error", "result": {"id": {"at": "/id", "required": true}}},
+        "fine": {"path": "/ok-true", "refused_if": "has(answer.ok) && !answer.ok", "result": {"id": "/id"}},
+        "query": {"method": "POST", "path": "/graphql", "body": "{}", "changes": false, "refused_if": "has(answer.errors)",
+                  "temporary_if": "has(answer.errors) && answer.errors[0].extensions.code == 'THROTTLED'", "error": "answer.errors[0].message"},
+    });
+    k.save_connection_def(admin, None, &input("refusing", json!({"base": base, "operations": ops}), None)).await.unwrap();
+    let e = connections::call(k, admin, None, &call("refusing", "post", json!({}), None)).await.unwrap_err();
+    assert!(matches!(&e, Error::Validation(_) | Error::Invalid(_)) && e.to_string().contains("channel_not_found"), "the service's words: {e:?}");
+    assert!(!e.to_string().contains("has no id"), "{e}");
+    assert_eq!(connections::call(k, admin, None, &call("refusing", "fine", json!({}), None)).await.unwrap(), json!({"id": "M-9"}));
+    let e = connections::call(k, admin, None, &call("refusing", "query", json!({}), None)).await.unwrap_err();
+    assert!(matches!(&e, Error::Unavailable(m) if m.contains("slow down")), "temporary, in its words: {e:?}");
+    let bad = json!({"base": base, "operations": {"x": {"path": "/x", "refused_if": "answer.ok &&"}}});
+    assert!(k.save_connection_def(admin, None, &input("refusing2", bad, None)).await.is_err(), "checked when saved");
 }
 
 /// BD-65: a description with no auth and no secrets reads any public host, by GET, without credentials, the guard as ever.

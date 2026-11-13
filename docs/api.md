@@ -1383,6 +1383,13 @@ platform's client at this server with an operation of its own (given `inputs.red
 its result's `client_id` and `client_secret` kept, once), for a server whose registration is not RFC 7591's;
 `never_expires: true` ignores the answer's expiry. These operations sign in: they are never called as operations.
 
+**A 2xx answer that is a refusal** ([BD-68](builder/decisions.md#bd-68-a-2xx-answer-that-is-a-refusal-in-the-services-words)):
+`refused_if` is a CEL expression over `answer`, `headers`, `status` and `inputs` that turns an answer whose status
+worked into a refusal (`"has(answer.ok) && !answer.ok"`, `"has(answer.errors)"`, `"answer.code != 0"`); `error_at` (a
+pointer) or `error` (an expression, `"answer.errors[0].message"`) then gives its words, on any status; `temporary_if`
+says which refusals are "later" (`"answer.errors[0].extensions.code == 'THROTTLED'"`), besides the statuses in
+`temporary`. An expression that cannot be worked out (a key the answer lacks) counts as false; use `has()`.
+
 **A stored file's public address** ([BD-64](builder/decisions.md#bd-64-a-stored-files-short-lived-public-address-for-a-service-that-pulls-it)),
 for a service that pulls media by address instead of taking bytes. An operation's `public_files` names them; its
 templates read `public_files.<name>`, and a step's `inputs` too (pass it on to the step that sends it):
