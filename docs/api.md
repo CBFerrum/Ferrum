@@ -265,6 +265,22 @@ policies as part of the workflow; `GET /api/customize/definition/{Entity}` retur
   periods today and to come; `DELETE /api/away` → `{cleared: n}` takes them back (`?starts_on=` one of them). An
   administrator adds `?user=` for anyone; anyone else gets 403 for another person.
 
+**An app told of the outcome** ([BD-66](builder/decisions.md#bd-66-an-app-told-when-an-approval-is-decided)): a
+`DocHook` on the entity gets `approval_decided(hc, doc, &ApprovalDecided {request, action, outcome, failure, requester,
+decided_by, on_behalf_of, comment})` once per request, when it reaches `approved`, `rejected` or `failed` (approved but
+refused when done), in the deciding transaction after the outcome took effect, with the record as it now stands. Every
+kind of request (a transition, a submit or cancel, an action) and every app's hooks on the entity alike. A hook's error
+does not undo the decision: what the hook wrote is rolled back (a savepoint), the failure is logged and audited as
+`approval:hook_failed`, and the decision stands; a conflict between transactions retries the whole decision, so the hook
+runs once for the decision that commits. A step decided before the last (two of three) tells nothing.
+
+```rust
+async fn approval_decided(&self, hc: &mut HookCtx<'_>, doc: &Doc, d: &ApprovalDecided<'_>) -> Result<()> {
+    if d.outcome == "approved" { /* schedule the post */ }
+    Ok(())
+}
+```
+
 ### Approval before a document is submitted or cancelled
 
 A workspace attaches a policy of the same shape to a submittable entity's submit, and separately its cancel, where no

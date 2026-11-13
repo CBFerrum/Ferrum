@@ -1757,3 +1757,24 @@ Decided 13 November 2026.
 * **Without `PUBLIC_URL`** the call is refused: "a service cannot pull a file from localhost". Without the server's key
   there is no signature, so it is refused too.
 * **The App API is 0.3.8** (BD-63). An app hands the file's id as an input and names the address in its description.
+
+## BD-66. An app told when an approval is decided
+
+Decided 13 November 2026.
+
+* **The gap**: an app whose record went through an approval policy learned the outcome only by reading it back (Social's
+  review: the post's state, polled).
+* **A record hook**: `DocHook::approval_decided(hc, doc, &ApprovalDecided)`, beside `on_submit` and `after_action`,
+  with a default that does nothing, so every app compiles unchanged. Registered per entity as the other hooks are, so an
+  app hears of its own entities' approvals only (and a workspace's packages lacking the app's are left out as for every
+  hook).
+* **When**: once per request, at its outcome: `approved` (and done), `rejected`, or `failed` (approved, then refused when
+  done, `failure` saying why). Not at a step that leaves the request pending. In the deciding transaction, after the
+  outcome took effect, so the hook sees the record as the decision left it and its writes commit with the decision.
+* **What it is given**: the record, the request's id and what was asked, the outcome, who asked, who decided (and for
+  whom when standing in) and the decider's comment.
+* **A failing hook**: each hook runs in a savepoint; an error rolls back that hook's writes, is logged (WARN) and audited
+  on the record (`approval:hook_failed`, with the hook's name and the error), and the decision commits. A retryable
+  error (serialization, deadlock) is passed on: `decide_approval` retries the whole decision, so a hook runs once for
+  the decision that commits. A hook that must not miss an outcome reads the request again from its own job.
+* Part of the App API 0.3.8 (BD-63).
