@@ -1,6 +1,7 @@
 //! Passkeys (WebAuthn; docs/plan/apps-ui.md §12.3, U6): signing in with a credential the person's
-//! device keeps instead of a password. The relying party is the host the person signs in on, so a
-//! passkey works on the host it was made on. Registration asks for no attestation ("none"): Ferrum
+//! device keeps instead of a password. The relying party is the host the person signs in on, or
+//! the domain `FERRUM_PASSKEY_RP` names for the hosts under it; a passkey is always checked against
+//! the relying party it was made for, so one keeps working where it was made. Registration asks for no attestation ("none"): Ferrum
 //! trusts the signed-in person, not a make of authenticator. Signing in finds the account by the
 //! credential (discoverable credentials): nobody types an email. Each challenge is used once.
 //!
@@ -149,6 +150,30 @@ pub fn check_client_data(json: &[u8], ceremony: &str, challenge: &[u8], origins:
     Ok(())
 }
 
+/// Whether a page on `host` may use relying party `rp`: the same name, or a name under it, label by
+/// label (`erp.acme.com` under `acme.com`; never `evilacme.com`).
+pub fn host_may_use_rp(host: &str, rp: &str) -> bool {
+    let (host, rp) = (host.trim_end_matches('.').to_ascii_lowercase(), rp.trim_end_matches('.').to_ascii_lowercase());
+    !rp.is_empty() && (host == rp || host.strip_suffix(rp.as_str()).is_some_and(|under| under.len() > 1 && under.ends_with('.')))
+}
+
+/// The relying party of a passkey made on `host`: the configured one (`FERRUM_PASSKEY_RP`) when the
+/// host is it or under it, else the host itself.
+pub fn rp_for(configured: Option<&str>, host: &str) -> String {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    match configured {
+        Some(rp) if host_may_use_rp(&host, rp) => rp.trim_end_matches('.').to_ascii_lowercase(),
+        _ => host,
+    }
+}
+
+/// Refuses a ceremony answered on a page whose host may not use the relying party it was made for.
+fn origins_may_use(origins: &[String], rp_id: &str) -> Result<()> {
+    let ok = !origins.is_empty()
+        && origins.iter().all(|o| reqwest::Url::parse(o).ok().and_then(|u| u.host_str().map(|h| host_may_use_rp(h, rp_id))).unwrap_or(false));
+    if ok { Ok(()) } else { Err(refused("made for another site")) }
+}
+
 fn b64(v: &Value, what: &str) -> Result<Vec<u8>> {
     v.as_str().and_then(|s| B64.decode(s.trim_end_matches('=')).ok()).ok_or_else(|| refused(&format!("{what} is missing")))
 }
@@ -158,6 +183,31 @@ fn sha256(b: &[u8]) -> [u8; 32] {
 }
 
 impl Kernel {
+    /// The relying party for a passkey ceremony on `host` (a name, no port): [`rp_for`] with this
+    /// server's `FERRUM_PASSKEY_RP`.
+    pub fn passkey_rp(&self, host: &str) -> String {
+        rp_for(self.settings.passkey_rp.as_deref(), host.split(':').next().unwrap_or_default())
+    }
+
+    /// What the browser needs to sign in with a passkey on `host`: a request for [`Kernel::passkey_rp`],
+    /// and, when that is not the host itself and passkeys were made for the host before the setting
+    /// (they keep their relying party), a second request for those under `also`. The sign-in page
+    /// asks the device with the first and, when it offers none, with the second.
+    pub async fn passkey_sign_in_offer(&self, host: &str) -> Result<Value> {
+        let host = host.split(':').next().unwrap_or_default().to_ascii_lowercase();
+        let rp = self.passkey_rp(&host);
+        let mut offer = self.passkey_sign_in_options(&rp).await?;
+        if rp != host {
+            let mut tx = self.db.system_tx().await?;
+            let older: bool = sqlx::query_scalar("select exists(select 1 from passkey where rp_id = $1)").bind(&host).fetch_one(&mut *tx).await?;
+            tx.commit().await?;
+            if older {
+                offer["also"] = self.passkey_sign_in_options(&host).await?;
+            }
+        }
+        Ok(offer)
+    }
+
     async fn new_challenge(&self, purpose: &str, tenant: Option<Uuid>, user: Option<Uuid>, rp_id: &str) -> Result<(Uuid, [u8; 32])> {
         let (id, challenge) = (Uuid::now_v7(), rand::random::<[u8; 32]>());
         let mut tx = self.db.system_tx().await?;
@@ -230,6 +280,7 @@ impl Kernel {
         if tenant != Some(ctx.tenant) || user != Some(ctx.user) {
             return Err(refused("this request was someone else's"));
         }
+        origins_may_use(origins, &rp_id)?;
         let res = &credential["response"];
         check_client_data(&b64(&res["clientDataJSON"], "the client data")?, "webauthn.create", &challenge, origins)?;
         let attestation: Cbor =
@@ -309,6 +360,7 @@ impl Kernel {
     /// one: no authenticator code follows. `tenant`: the workspace this host serves, when it serves one.
     pub async fn passkey_sign_in(&self, request: Uuid, origins: &[String], credential: &Value, tenant: Option<Uuid>) -> Result<Session> {
         let (challenge, _, _, rp_id) = self.take_challenge(request, "sign_in").await?;
+        origins_may_use(origins, &rp_id)?;
         let res = &credential["response"];
         let client = b64(&res["clientDataJSON"], "the client data")?;
         let auth = b64(&res["authenticatorData"], "the authenticator data")?;
@@ -497,6 +549,25 @@ mod tests {
         assert!(check_client_data(client, "webauthn.get", &[1, 2, 3], &["https://evil.example".into()]).is_err(), "another site");
         let framed = br#"{"type":"webauthn.get","challenge":"AQID","origin":"https://erp.example.com","crossOrigin":true}"#;
         assert!(check_client_data(framed, "webauthn.get", &[1, 2, 3], &["https://erp.example.com".into()]).is_err(), "inside another site's frame");
+    }
+
+    #[test]
+    fn a_relying_party_covers_its_own_names_only() {
+        assert!(host_may_use_rp("acme.com", "acme.com") && host_may_use_rp("erp.acme.com", "acme.com") && host_may_use_rp("a.b.Acme.com.", "acme.com"));
+        for (host, rp) in [("evilacme.com", "acme.com"), ("acme.com.evil.com", "acme.com"), ("acme.com", "erp.acme.com"), (".acme.com", "acme.com"), ("x", "")]
+        {
+            assert!(!host_may_use_rp(host, rp), "{host} under {rp}");
+        }
+        assert_eq!(rp_for(Some("acme.com"), "erp.acme.com"), "acme.com");
+        assert_eq!(rp_for(Some("acme.com"), "acme.com"), "acme.com");
+        assert_eq!(rp_for(Some("acme.com"), "evilacme.com"), "evilacme.com", "a host outside it keeps its own");
+        assert_eq!(rp_for(Some("acme.com"), "shop.example.org"), "shop.example.org");
+        assert_eq!(rp_for(None, "erp.acme.com"), "erp.acme.com", "as before");
+        assert!(origins_may_use(&["https://erp.acme.com".into()], "acme.com").is_ok());
+        assert!(origins_may_use(&["https://evilacme.com".into()], "acme.com").is_err());
+        assert!(origins_may_use(&["https://erp.acme.com".into(), "https://evilacme.com".into()], "acme.com").is_err(), "every origin");
+        assert!(origins_may_use(&[], "acme.com").is_err());
+        assert!(origins_may_use(&["not an origin".into()], "acme.com").is_err());
     }
 
     #[test]

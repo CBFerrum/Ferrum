@@ -167,6 +167,11 @@ pub struct Settings {
     /// still use `PUBLIC_URL` there, as before), else `PUBLIC_URL`'s host.
     #[serde(default)]
     pub hooks_host: String,
+    /// The passkeys' relying party (`FERRUM_PASSKEY_RP`), a domain: passkeys made on it or on a
+    /// host under it are made for it, so they work on every host under it. Empty: each host is
+    /// its own relying party. A passkey always keeps the one it was made for.
+    #[serde(default)]
+    pub passkey_rp: String,
     /// This cluster's region (`eu`, `in`…), as the directory names it.
     #[serde(default)]
     pub region: String,

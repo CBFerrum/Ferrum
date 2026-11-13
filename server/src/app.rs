@@ -229,6 +229,7 @@ impl Hooks for App {
                 hold_on_timeline: std::env::var("FERRUM_HOLD_ON_TIMELINE").map_or(true, |v| v != "false"),
                 accounts_host: crate::shell::accounts_host(&settings),
                 hooks_url: crate::shell::hooks_url(&settings, &ctx.config.server.host),
+                passkey_rp: crate::shell::host_setting("FERRUM_PASSKEY_RP", &settings.passkey_rp).ok().flatten(),
                 plans,
                 signup,
                 process_runtime: processes,

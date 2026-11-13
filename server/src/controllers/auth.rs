@@ -571,11 +571,12 @@ async fn kept_by_identity(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kerne
 
 // ── passkeys (docs/plan/apps-ui.md §12.3, U6; the kernel's passkey.rs) ──
 
-/// The relying party of a request: its host (a passkey works on the host it was made on), and
-/// the origins its pages have.
+/// The relying party of a request ([`ferrum_kernel::Kernel::passkey_rp`]: its host, or
+/// `FERRUM_PASSKEY_RP` for a host under it), and the one origin a ceremony on it may be answered
+/// from: this host's own (the kernel also checks that host may use the party).
 fn relying_party(st: &AppState, headers: &HeaderMap) -> Result<(String, Vec<String>), ApiError> {
     let host = crate::shell::request_host(headers).ok_or_else(|| ApiError(Error::invalid("no host")))?.to_ascii_lowercase();
-    let rp = host.split(':').next().unwrap_or_default().to_string();
+    let rp = st.kernel.passkey_rp(&host);
     let scheme = if st.shell.secure { "https" } else { "http" };
     Ok((rp, vec![format!("{scheme}://{host}")]))
 }
@@ -640,8 +641,8 @@ async fn remove_passkey(Auth(ctx): Auth, State(app): State<AppContext>, Path(id)
 async fn passkey_sign_in_options(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
     st.login_limiter.check(&format!("{}|passkey", client_ip(&headers))).await?;
-    let (rp, _) = relying_party(&st, &headers)?;
-    Ok(Json(st.kernel.passkey_sign_in_options(&rp).await?).into_response())
+    let host = crate::shell::request_host(&headers).ok_or_else(|| ApiError(Error::invalid("no host")))?.to_ascii_lowercase();
+    Ok(Json(st.kernel.passkey_sign_in_offer(&host).await?).into_response())
 }
 
 #[derive(Deserialize)]

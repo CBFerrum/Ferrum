@@ -66,6 +66,9 @@ app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
 {{- with .Values.names.hooksHost }}
 - {name: FERRUM_HOOKS_HOST, value: {{ . | quote }}}
 {{- end }}
+{{- with .Values.names.passkeyRp }}
+- {name: FERRUM_PASSKEY_RP, value: {{ . | quote }}}
+{{- end }}
 {{- if .Values.pdf.enabled }}
 - {name: FERRUM_PDF_URL, value: "http://{{ include "ferrum.fullname" . }}-pdf:3000"}
 {{- end }}

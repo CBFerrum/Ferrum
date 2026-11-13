@@ -292,6 +292,13 @@ pub fn check_names(settings: &Settings, public_url: &str) -> std::result::Result
             return Err(format!("{name} ({h}) is the host of PUBLIC_URL; give it a host of its own"));
         }
     }
+    // Passkeys under a shared base domain would be good on every workspace's host: the accounts
+    // host stays their relying party there (docs/operations.md).
+    if let (Some(rp), Some(base)) = (host_setting("FERRUM_PASSKEY_RP", &settings.passkey_rp)?, base_domain(settings))
+        && ferrum_kernel::passkey::host_may_use_rp(&base, &rp)
+    {
+        return Err(format!("FERRUM_PASSKEY_RP ({rp}) covers the base domain {base}, whose hosts are other workspaces'; leave it empty"));
+    }
     if accounts_host(settings).is_some() && accounts_host(settings) == hooks_host(settings) {
         return Err("FERRUM_ACCOUNTS_HOST and FERRUM_HOOKS_HOST name the same host; give each its own".into());
     }
@@ -1846,6 +1853,11 @@ mod tests {
         assert!(check_names(&s(json!({"base_domain": "acme.com", "hooks_host": "accounts.acme.com"})), "https://erp.acme.com").is_err());
         assert!(check_names(&s(json!({"hooks_host": "hooks.acme.com", "accounts_host": "id.acme.com"})), "https://erp.acme.com").is_ok());
         assert_eq!(hooks_host(&s(json!({"base_domain": "ferrum.cloud"}))).as_deref(), Some("hooks.ferrum.cloud"));
+        assert!(check_names(&s(json!({"passkey_rp": "acme.com"})), "https://erp.acme.com").is_ok());
+        assert!(check_names(&s(json!({"passkey_rp": "https://acme.com"})), "https://erp.acme.com").is_err());
+        assert!(check_names(&s(json!({"base_domain": "ferrum.cloud", "passkey_rp": "ferrum.cloud"})), "https://ferrum.cloud").is_err(), "never the base");
+        assert!(check_names(&s(json!({"base_domain": "a.ferrum.cloud", "passkey_rp": "ferrum.cloud"})), "https://ferrum.cloud").is_err());
+        assert!(check_names(&s(json!({"base_domain": "ferrum.cloud", "passkey_rp": "accounts.ferrum.cloud"})), "https://ferrum.cloud").is_ok());
         assert_eq!(hooks_url(&s(json!({"base_domain": "ferrum.cloud"})), "https://ferrum.cloud"), None, "connectors keep PUBLIC_URL as before");
         assert_eq!(hooks_url(&s(json!({"hooks_host": "cb.acme.com"})), "https://erp.acme.com").as_deref(), Some("https://cb.acme.com"));
         assert_eq!(hooks_url(&s(json!({"hooks_host": "cb.acme.localhost"})), "http://erp.acme.localhost:5150").as_deref(), Some("http://cb.acme.localhost"));

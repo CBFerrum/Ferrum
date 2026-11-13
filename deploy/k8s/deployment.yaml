@@ -82,6 +82,7 @@ spec:
             # Names that should never change (docs/operations.md), each empty by default:
             # - {name: FERRUM_ACCOUNTS_HOST, value: "id.example.com"}
             # - {name: FERRUM_HOOKS_HOST, value: "hooks.example.com"}
+            # - {name: FERRUM_PASSKEY_RP, value: "example.com"}
             - {name: FERRUM_PDF_URL, value: "http://ferrum-pdf:3000"}
             # Online editing of Word, Excel and PowerPoint files (office/): the editor as the server
             # reaches it, the server as the editor reaches it, and the editor as browsers reach it.

@@ -63,6 +63,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_BASE_DOMAIN` | no | Shapes B and C (below, [Many workspaces](#many-workspaces-subdomains-and-ferrum-accounts)): the domain under which each workspace is `{slug}.{base}`, people sign in at `accounts.{base}` and outside callers use `hooks.{base}`. Empty: one workspace (`FERRUM_DEFAULT_WORKSPACE`) or a shared host |
 | `FERRUM_ACCOUNTS_HOST` | no | The host where people sign in once, with their Ferrum account (`id.example.com`), with or without a base domain: every host of every workspace sends sign-in there. Default `accounts.{base}` with `FERRUM_BASE_DOMAIN`, else none (each host signs in on its own). See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_HOOKS_HOST` | no | The host other services call back (`hooks.example.com`): webhooks and `/api/public/…` calls, a mail or calendar connector's sign-in return (`/api/connections/callback`), the addresses services pull files from. Default `hooks.{base}` for pages and public calls with `FERRUM_BASE_DOMAIN`, else `PUBLIC_URL`; connectors and pulled files use `PUBLIC_URL` unless this is set. See [Names that should never change](#names-that-should-never-change) |
+| `FERRUM_PASSKEY_RP` | no | The passkeys' relying party, a domain (`example.com`): passkeys made on it or a host under it work on every host under it. Default none: each host is its own, as before. Never the base domain. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_PLANS` | no | The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up) |
 | `FERRUM_SIGNUP` | no | `open` lets people make workspaces of their own at `accounts.{base}/signup`; default `closed`. Needs `FERRUM_BASE_DOMAIN` and mail |
 | `FERRUM_SIGNUP_DOMAINS`, `FERRUM_SIGNUP_PACKAGES`, `FERRUM_SIGNUP_PLAN`, `FERRUM_SIGNUP_PER_ADDRESS` | with sign-up | The address domains sign-ups come from (comma-separated; empty: any), what a new workspace installs besides the core, the plan it starts on (one of `FERRUM_PLANS`), and how many workspaces one address may make (default 3) |
@@ -1835,6 +1836,21 @@ setting; each defaults to what the server did before the setting existed.
   * *Changing it later* breaks every return address registered with an outside service (connectors
     stop connecting until it is registered again) and every webhook address given out.
   * It must be a host of its own, neither `PUBLIC_URL`'s nor the accounts host.
+* **`FERRUM_PASSKEY_RP`**: the passkeys' relying party. A passkey belongs to one domain, and a
+  browser offers it only there and on hosts under it. Without the setting each host is its own, so a
+  passkey made on `erp.example.com` does not work on `shop.example.com`. Set to `example.com`, a
+  passkey made on that domain or any host under it is made for the domain and works on all of them
+  (`erp.example.com`, `shop.example.com`); a host outside it (`erp.other.org`) keeps its own. The
+  check is by whole names: `evilexample.com` is not under `example.com`.
+  * *Turning it on* leaves every passkey made before with the host it was made on: it keeps working
+    there. The sign-in page asks the device for one made for the domain first and, when it has none,
+    for one made for that host.
+  * *Changing it later* (or turning it off) makes passkeys made for the old domain unusable: people
+    sign in another way and make new ones.
+  * *A shared base domain* (`FERRUM_BASE_DOMAIN`, each workspace a host under it): never set it to the
+    base or a domain above it, or one workspace's pages could ask for passkeys of another's; the
+    server refuses to start so. Leave it empty: passkeys live on the accounts host, where everyone
+    signs in. Set it only to a domain whose hosts are all yours (one company's staff and public hosts).
 
 ## Sign-in security
 
