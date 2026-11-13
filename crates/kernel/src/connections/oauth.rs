@@ -539,7 +539,7 @@ impl Kernel {
     }
 
     /// Whose tokens a call by `ctx` uses: the workspace's, or the caller's own.
-    fn token_owner(conn: &Loaded, ctx: &Ctx) -> Result<Uuid> {
+    pub(crate) fn token_owner(conn: &Loaded, ctx: &Ctx) -> Result<Uuid> {
         if matches!(conn.desc.auth, Auth::Session { .. }) {
             return Ok(Uuid::nil());
         }
@@ -548,6 +548,27 @@ impl Kernel {
             Owner::Person if ctx.user.is_nil() => Err(Error::invalid(format!("{} is each person's own: it is used as a person", conn.name))),
             Owner::Person => Ok(ctx.user),
         }
+    }
+
+    /// What a call by `ctx` reads of its signed-in account (BD-60): the account the sign-in named, and what it kept
+    /// (`auth.<name>`, BD-61). Nulls before anyone signed in.
+    pub(crate) async fn account_vars(&self, conn: &Loaded, ctx: &Ctx) -> Result<(Value, Value)> {
+        if !matches!(conn.desc.auth, Auth::Oauth { .. } | Auth::Session { .. }) {
+            return Ok((Value::Null, json!({})));
+        }
+        let owner = Self::token_owner(conn, ctx)?;
+        let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
+        let row: Option<(Option<String>, String)> =
+            sqlx::query_as("select account, sealed from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3")
+                .bind(conn.tenant)
+                .bind(conn.id)
+                .bind(owner)
+                .fetch_optional(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        let Some((account, sealed)) = row else { return Ok((Value::Null, json!({}))) };
+        let open: Value = serde_json::from_str(&self.open_sealed(&token_label(conn.tenant, conn.id, owner), &sealed)?).map_err(Error::internal)?;
+        Ok((json!(account), open.get("kept").cloned().unwrap_or_else(|| json!({}))))
     }
 
     /// The access token a call by `ctx` sends, refreshed first when it is about to expire (`force`: whatever its time).

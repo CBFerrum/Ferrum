@@ -1633,3 +1633,23 @@ Tests (`connections_steps_it` `xml_answers`, unit test): an RSS feed with `&amp;
 and an Atom feed of one entry, pulled into posts; a prefixed element and an element's text beside its attribute read
 by pointers; a form answer; a document type refused; an unknown kind refused; a document nested too deep refused.
 
+## BD-60. A pull that asks for each item, and the signed-in account
+
+Decided 13 November 2026. Reading back an account's own posts needs the account's id in the path (from its sign-in),
+and each post's numbers are another request.
+
+* **`each`** on a pull: a reading operation (one request, not a sign-in) asked once for each item of a page, its inputs
+  expressions over `item`; its result is put in the item under `as`, so the mapping reads it. Bounded: `max` items a
+  page (10, at most 50; a page with more fails the run before asking anything, so a description sets its page size to
+  fit), and each ask is a request counted by the connection's `limit` (BD-57). A "later" from one carries the page
+  over to the pull's retry, as a page's own "later" does (the page and its cursor are not committed).
+* **Inputs from the account**: a pull's `inputs` are expressions over `account` (the account its sign-in named, the
+  person's own on a person's pull), `auth` (what the sign-in kept, BD-61), `now` and `today`, evaluated once a run. An
+  operation's templates read `account` and `auth` as well, loaded only when its words name them (one read of the
+  sealed tokens). Why the account and not "the caller's record": a call already passes what a record holds as its
+  inputs (an effect's expressions over `doc`); what a call could not reach was its own sign-in's facts.
+
+Tests (`connections_steps_it` `pull_each`): an account's own posts read by its id from the sign-in, each post's likes
+asked once and mapped; an operation's path from the account; a page over `max` failing the run without asking; `each`
+on an operation that changes something refused.
+

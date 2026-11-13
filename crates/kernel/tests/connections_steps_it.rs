@@ -127,6 +127,11 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
         ),
         ("GET", "/v1/dtd") => (200, String::new(), r#"<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>"#.into()),
         ("GET", "/v1/form") => (200, String::new(), "a=1&b=x%20y&token=tok-Ww2".into()),
+        ("POST", "/v1/oauth/token2") => (200, String::new(), json!({"access_token": "AT-Uu8-access", "account": {"id": "U-7"}}).to_string()),
+        ("GET", "/v1/users/U-7/posts") => (200, String::new(), json!({"items": [{"id": "P-1"}, {"id": "P-2"}]}).to_string()),
+        ("GET", p) if p.starts_with("/v1/posts/") && p.ends_with("/numbers") => {
+            (200, String::new(), json!({"likes": if p.contains("P-1") { 5 } else { 9 }}).to_string())
+        }
         ("GET", "/v1/feed") => (200, String::new(), json!({"items": [{"id": "F-1"}]}).to_string()),
         // Shaped like a media container: made, processed for a while, then published.
         ("POST", "/v1/containers") => (200, String::new(), json!({"id": format!("C-{}-{}", asked(bare), body["kind"].as_str().unwrap_or("ok"))}).to_string()),
@@ -733,6 +738,47 @@ async fn xml_answers(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     assert!(serde_json::from_value::<ConnectionInput>(bad).unwrap_err().to_string().contains("unknown variant `yaml`"));
 }
 
+/// P8: a pull that asks a second operation for each item, bounded, and inputs taken from the signed-in account.
+async fn pull_each(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let provider = json!({"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/oauth/token2"), "client_id": "ferrum-test",
+                          "account_at": "/account/id"});
+    let ops = json!({"own_posts": {"path": "/users/{{ inputs.user }}/posts", "inputs": ["user", "cursor"]},
+                     "mine": {"path": "/users/{{ account }}/posts"},
+                     "numbers": {"path": "/posts/{{ inputs.id }}/numbers", "result": {"likes": "/likes"}}});
+    let pull = |name: &str, max: u32| {
+        json!({"name": name, "operation": "own_posts", "every_minutes": 60, "items_at": "/items", "cursor": "time",
+        "inputs": {"user": "account"}, "each": {"operation": "numbers", "inputs": {"id": "item.id"}, "as": "numbers", "max": max},
+        "map": {"entity": "Post", "by": {"title": "'own ' + item.id"}, "set": {"external_id": "string(item.numbers.likes)"}}})
+    };
+    let d = json!({"base": base, "auth": {"type": "oauth", "provider": provider}, "operations": ops, "pulls": [pull("own", 10), pull("few", 1)]});
+    let id = k.save_connection_def(admin, None, &input("net_own", d, None)).await.unwrap();
+    let session = Uuid::now_v7();
+    let state = query(&k.connect_start(admin, id, session).await.unwrap())["state"].clone();
+    k.connect_finish(admin, session, &state, Some("CODE-2"), None).await.unwrap();
+    // An operation's template reads the account too.
+    let r = connections::call(k, admin, None, &call("net_own", "mine", json!({}), None)).await.unwrap();
+    assert_eq!(r["items"][0]["id"], "P-1");
+    let before = asked("/v1/posts/P-1/numbers");
+    k.pull_now(admin, id, "own").await.unwrap();
+    drain(k).await;
+    let table = admin.schema.entity("Post").unwrap().table.clone();
+    for (title, likes) in [("own P-1", "5"), ("own P-2", "9")] {
+        let n = count(k, admin.tenant, &format!("select count(*) from {table} where tenant_id = $1 and title = '{title}' and external_id = '{likes}'")).await;
+        assert_eq!(n, 1, "{title}: {:?}", k.connection_pulls(admin, id).await.unwrap());
+    }
+    assert_eq!(asked("/v1/posts/P-1/numbers"), before + 1, "once for each item");
+    // Bounded: a page with more items than the pull asks about fails, saying so, and asks nothing.
+    k.pull_now(admin, id, "few").await.unwrap();
+    drain(k).await;
+    let few = k.connection_pulls(admin, id).await.unwrap().into_iter().find(|p| p["name"] == "few").unwrap();
+    assert!(few["last_error"].as_str().unwrap_or_default().contains("more than the 1"), "{few}");
+    assert_eq!(asked("/v1/posts/P-1/numbers"), before + 1);
+    let bad = json!({"base": base, "operations": {"a": {"path": "/a"}, "w": {"method": "POST", "path": "/w", "body": "{}"}},
+                     "pulls": [{"name": "p", "operation": "a", "every_minutes": 60, "items_at": "/i", "cursor": "time", "each": {"operation": "w", "as": "x"},
+                                "map": {"entity": "Post", "by": {"title": "/t"}}}]});
+    assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("each"));
+}
+
 #[test]
 fn connections_run_steps_safely() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -785,4 +831,5 @@ async fn scenario() {
     limits(&k, &admin, &base).await;
     as_system(&k, &admin, &base).await;
     xml_answers(&k, &admin, &base).await;
+    pull_each(&k, &admin, &base).await;
 }
