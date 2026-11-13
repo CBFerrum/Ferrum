@@ -378,6 +378,17 @@ mod tests {
     }
 
     #[test]
+    fn lists_sort_into_a_stable_order() {
+        let doc = json!({"types": {"post": {"slug": "post"}, "page": {"slug": "page"}, "book": {"slug": "book"}}, "n": [3, 1, 2]});
+        let run = |e: &str| Expr::compile(e).unwrap().eval(&Scope { doc: &doc, old: None, parent: None, user: &json!({}) }).unwrap();
+        for _ in 0..5 {
+            assert_eq!(run("sortBy(doc.types.map(k, doc.types[k]), 'slug').map(t, t.slug)"), json!(["book", "page", "post"]));
+            assert_eq!(run("sort(doc.types.map(k, k))"), json!(["book", "page", "post"]));
+        }
+        assert_eq!(run("doc.n.sort()"), json!([1, 2, 3]));
+    }
+
+    #[test]
     fn evaluates_conditions() {
         let doc = json!({"grand_total": 1500000.0, "po_no": "", "posting_date": "2026-01-02", "due_date": "2026-01-01"});
         let user = json!({"roles": ["Accounts Manager"]});

@@ -673,9 +673,19 @@ impl Description {
     }
 
     /// Whether operation `name` changes something at the service (then it needs a key): unless it says, every method
-    /// but GET, and every operation of steps.
+    /// but GET, and an operation of steps when one of its steps' operations does (BD-69: one made only of reads reads).
     pub(crate) fn changes(&self, name: &str) -> bool {
-        self.operations.get(name).is_some_and(|op| op.changes.unwrap_or(!self.more(name).steps.is_empty() || op.method() != "GET"))
+        self.operations.get(name).is_some_and(|op| {
+            op.changes.unwrap_or_else(|| {
+                let steps = &self.more(name).steps;
+                if steps.is_empty() {
+                    op.method() != "GET"
+                } else {
+                    // A step names another operation, never one of steps (refused when saved).
+                    steps.iter().any(|s| s.operation == name || self.operations.get(&s.operation).is_none_or(|o| o.changes.unwrap_or(o.method() != "GET")))
+                }
+            })
+        })
     }
 
     /// Whether operation `name` is how the connection signs in (a session's login or refresh): never called as an
@@ -2370,6 +2380,17 @@ pub(crate) fn handler(kind: &str) -> Option<Arc<dyn JobHandler>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_operation_of_reading_steps_reads() {
+        let d: Description = serde_json::from_value(json!({"test": true, "operations": {
+            "get": {"path": "/a"}, "post": {"method": "POST", "path": "/b", "body": "{}"},
+            "reads": {"steps": [{"name": "a", "operation": "get"}, {"name": "b", "operation": "get"}]},
+            "writes": {"steps": [{"name": "a", "operation": "get"}, {"name": "b", "operation": "post"}]},
+            "said": {"changes": true, "steps": [{"name": "a", "operation": "get"}]}}}))
+        .unwrap();
+        assert_eq!(["reads", "writes", "said", "get", "post"].map(|o| d.changes(o)), [false, true, true, false, true]);
+    }
 
     #[test]
     fn the_guard_blocks_what_is_not_public() {

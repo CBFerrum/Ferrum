@@ -1832,3 +1832,17 @@ Decided 13 November 2026.
   expect. They are compiled when the description is saved. Words are masked as every error is.
 * **Steps**: each step's operation says its own; a refused step ends the operation as before (`No` or `Later`).
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-69. A stable order for lists built from maps, and reading steps read
+
+Decided 13 November 2026.
+
+* **Order**: a JSON object becomes a CEL map, whose entries `.map()` and `.filter()` visit in no order of their own, so
+  a list made from one (WordPress's content types) came out in any order. A record's maps were already written back
+  with sorted keys; lists need the expression to say. Two functions: `sort(list)` (null, numbers, text, the rest by how
+  they print) and `sortBy(list, key)` (maps by one key), in every expression, not only connections'.
+* **Reading steps**: an operation made of steps counted as changing something whatever its steps did, so every reading
+  one (`account`, `metrics`) said `"changes": false` by hand. Now an operation of steps changes something when one of its
+  steps' operations does (by its own `changes`, else its method); `changes` said on the operation still decides.
+  Nothing that wrote before reads now: a step that writes makes the whole operation one that writes and needs a key.
+* Part of the App API 0.3.8 (BD-63).
