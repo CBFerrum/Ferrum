@@ -956,6 +956,23 @@ async fn scenario() {
     schemes(&k, &admin, &base).await;
     repeated_parts(&k, &admin, &base).await;
     named_headers(&k, &admin, &base).await;
+    handshake(&k, &admin).await;
+}
+
+/// BD-78: the check a service makes before it delivers: the challenge echoed when the token matches, else refused alike.
+async fn handshake(k: &Arc<Kernel>, admin: &Ctx) {
+    let d = json!({"test": true, "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "hook"},
+        "map": {"entity": "Post", "by": {"external_id": "item.id"}, "set": {"title": "item.title"}}},
+        "handshake": {"token": "hub.verify_token", "challenge": "hub.challenge", "secret": "verify", "expect": {"hub.mode": "subscribe"}}});
+    let id = k.save_connection_def(admin, None, &input("hooked", d, Some(json!({"hook": "tok-Ww1-hook", "verify": "vt-Pp3-verify"})))).await.unwrap();
+    let q = |token: &str, mode: &str| -> BTreeMap<String, String> {
+        [("hub.verify_token", token), ("hub.challenge", "1158201444"), ("hub.mode", mode)].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    };
+    assert_eq!(k.connection_handshake(id, &q("vt-Pp3-verify", "subscribe")).await.unwrap(), "1158201444");
+    for (token, mode) in [("vt-Pp3-verifx", "subscribe"), ("", "subscribe"), ("vt-Pp3-verify", "unsubscribe"), ("tok-Ww1-hook", "subscribe")] {
+        assert!(matches!(k.connection_handshake(id, &q(token, mode)).await, Err(Error::Unauthorized(_))), "{token} {mode}");
+    }
+    assert!(matches!(k.connection_handshake(Uuid::now_v7(), &q("vt-Pp3-verify", "subscribe")).await, Err(Error::Unauthorized(_))), "unknown alike");
 }
 
 /// BD-76: an upload step whose headers an earlier answer named, for that request only, masked, never credentials.

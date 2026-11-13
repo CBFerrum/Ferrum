@@ -1191,6 +1191,7 @@ their own sign-ins, whose tokens go and are revoked at the provider where it say
 | `DELETE /api/connections/{id}/connect` | disconnects (the workspace's: administrators) → `{revoked}` |
 | `GET /api/connections/callback` | where the provider sends the browser back; a page, no redirect |
 | `POST /api/connections/inbound/{id}` | no session: a call from outside → `{accepted: true}`, or `401 this call was not accepted` whatever the reason |
+| `GET /api/connections/inbound/{id}?…` | no session: the check a service makes before it delivers, where the description declares `handshake: {token, challenge, secret, expect?}` beside its `inbound` (`{"token": "hub.verify_token", "challenge": "hub.challenge", "secret": "verify", "expect": {"hub.mode": "subscribe"}}`): the challenge as plain text when the token equals the named secret (compared in constant time) and `expect` holds, else the same `401` ([BD-78](builder/decisions.md#bd-78-an-inbound-addresss-verification-handshake)); rate-limited as the POST |
 
 **Calling** — an app: `ferrum_kernel::connections::call(&kernel, &ctx, Some("erp"), &Call { connection: "carrier".into(),
 operation: "create_label".into(), inputs: json!({"weight": 2, "ref": "P-9"}), key: Some(format!("label:{id}")),

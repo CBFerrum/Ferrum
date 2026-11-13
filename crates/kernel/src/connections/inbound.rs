@@ -63,6 +63,29 @@ pub struct Inbound {
     pub handler: Option<String>,
 }
 
+impl Handshake {
+    pub(crate) fn problem(&self) -> Option<String> {
+        (self.token.is_empty() || self.challenge.is_empty() || self.secret.is_empty() || self.token == self.challenge)
+            .then(|| "handshake names its token and challenge parameters and the secret the token must equal".into())
+    }
+}
+
+/// `GET <inbound address>?<token>=…&<challenge>=…` (`hub.verify_token`, `hub.challenge`): the challenge echoed as text
+/// when the token equals the secret `secret` names (compared in constant time) and the query has each of `expect`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Handshake {
+    pub token: String,
+    pub challenge: String,
+    pub secret: String,
+    /// Query parameters it must also carry, as given (`{"hub.mode": "subscribe"}`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub expect: BTreeMap<String, String>,
+}
+
+/// The longest challenge echoed.
+const MAX_CHALLENGE: usize = 512;
+
 /// How a caller is verified. `secret` names one of the connection's sealed values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -346,6 +369,29 @@ impl Kernel {
         crate::jobs::enqueue(&mut tx, conn.tenant, None, job).await?;
         tx.commit().await?;
         Ok(json!({"accepted": true}))
+    }
+
+    /// Answers a service's check before it delivers (BD-78): the challenge, or the same refusal as any other.
+    pub async fn connection_handshake(&self, id: Uuid, query: &BTreeMap<String, String>) -> Result<String> {
+        let mut tx = self.db.system_tx().await?;
+        let tenant: Option<Uuid> = sqlx::query_scalar("select tenant_id from conn where id = $1 and enabled").bind(id).fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
+        let conn = match tenant {
+            Some(t) => Some(self.load_connection(t, &id.to_string()).await?),
+            None => None,
+        };
+        let Some((conn, h)) = conn.and_then(|c| Some((c.clone(), c.desc.handshake.clone().filter(|_| c.desc.inbound.is_some())?))) else {
+            REFUSED_UNKNOWN.fetch_add(1, Ordering::Relaxed);
+            return Err(refused());
+        };
+        let given = query.get(&h.token).map(String::as_str).unwrap_or_default();
+        let held = conn.secret(&h.secret).unwrap_or_default();
+        let same = !held.is_empty() && given.len() == held.len() && given.bytes().zip(held.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0;
+        let expected = h.expect.iter().all(|(k, v)| query.get(k) == Some(v));
+        match query.get(&h.challenge) {
+            Some(c) if same && expected && !c.is_empty() && c.len() <= MAX_CHALLENGE => Ok(c.clone()),
+            _ => self.refuse_inbound(&conn).await.map(|_| String::new()),
+        }
     }
 
     async fn refuse_inbound(&self, conn: &Loaded) -> Result<Value> {
