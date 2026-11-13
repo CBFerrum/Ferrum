@@ -155,7 +155,7 @@ fn page(text: &str, status: StatusCode) -> Response {
 /// still serve that workspace. Otherwise a page says how it went.
 async fn callback(State(app): State<AppContext>, headers: HeaderMap, uri: axum::http::Uri, Query(b): Query<Back>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    if let Some(to) = started_elsewhere(&st, &headers, &uri, &b).await? {
+    if let Some(to) = started_elsewhere(&st.kernel, &st.shell, &headers, uri.query(), b.state.as_deref()).await? {
         let mut res = StatusCode::FOUND.into_response();
         res.headers_mut().insert(header::LOCATION, axum::http::HeaderValue::from_str(&to).map_err(|e| ApiError(Error::internal(e.to_string())))?);
         res.headers_mut().insert(header::REFERRER_POLICY, axum::http::HeaderValue::from_static("no-referrer"));
@@ -165,16 +165,22 @@ async fn callback(State(app): State<AppContext>, headers: HeaderMap, uri: axum::
     callback_page(&st.kernel, &ctx, sid, &b).await
 }
 
-/// The same return address on the host the sign-in started from, when that is another host that still serves the
-/// workspace the signed `state` names.
-async fn started_elsewhere(st: &crate::state::AppState, headers: &HeaderMap, uri: &axum::http::Uri, b: &Back) -> ApiResult<Option<String>> {
-    let Some((tenant, host)) = b.state.as_deref().filter(|s| s.len() <= 1024).and_then(|s| st.kernel.connection_state_host(s)) else { return Ok(None) };
+/// The same return address (with the request's `query`) on the host the sign-in started from, when that is another
+/// host that still serves the workspace the signed `state` names; `None`: answer here.
+pub async fn started_elsewhere(
+    k: &Kernel,
+    shell: &crate::shell::Shell,
+    headers: &HeaderMap,
+    query: Option<&str>,
+    state: Option<&str>,
+) -> ApiResult<Option<String>> {
+    let Some((tenant, host)) = state.filter(|s| s.len() <= 1024).and_then(|s| k.connection_state_host(s)) else { return Ok(None) };
     let here = crate::shell::request_host(headers).and_then(ferrum_kernel::shell::normalize_host);
-    if here.as_deref() == Some(host.as_str()) || st.shell.workspace_at(&host).await? != Some(tenant) {
+    if here.as_deref() == Some(host.as_str()) || shell.workspace_at(&host).await? != Some(tenant) {
         return Ok(None);
     }
-    let Some(origin) = st.shell.origin_of(&host, headers) else { return Ok(None) };
-    Ok(Some(format!("{origin}{}?{}", ferrum_kernel::connections::oauth::CALLBACK, uri.query().unwrap_or_default())))
+    let Some(origin) = shell.origin_of(&host, headers) else { return Ok(None) };
+    Ok(Some(format!("{origin}{}?{}", ferrum_kernel::connections::oauth::CALLBACK, query.unwrap_or_default())))
 }
 
 /// What the callback answers the person `ctx` in browser session `sid`.

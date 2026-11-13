@@ -60,6 +60,72 @@ async fn scenario() {
     hooks_host(&k, acme).await;
     link_host(&k, acme).await;
     framing_hosts(&k, acme).await;
+    connector_return(acme).await;
+}
+
+/// A connector's sign-in started on a second host of the workspace comes back to `PUBLIC_URL` (the
+/// one return address registered with the provider), goes on to the host it started from, and
+/// finishes there; a state for a host that no longer serves the workspace, or one used already, is
+/// refused.
+async fn connector_return(acme: uuid::Uuid) {
+    use axum::routing::post;
+    use ferrum_server::controllers::connections::{Back, callback_page, started_elsewhere};
+    let token = axum::Router::new().route("/token", post(|| async { axum::Json(json!({"access_token": "at-Qq1", "expires_in": 3600})) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, token).await.unwrap() });
+
+    let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+    let db = Db::connect(DbConfig { url, max_connections: 4, ..Default::default() }).await.expect("connect");
+    let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages/core")).expect("core");
+    let settings = KernelSettings {
+        secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])),
+        public_url: Some("https://erp.acme.test".into()),
+        connection_hosts: vec!["127.0.0.1".into()],
+        ..Default::default()
+    };
+    let k = Kernel::boot(db, Catalog::from_packages(vec![core]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
+    let sh = shell(&k, json!({}), "https://erp.acme.test");
+    let s = k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+    let admin = k.load_ctx(acme, s.user, Some(s.token_version), "it".into()).await.unwrap();
+    let desc = json!({"base": provider, "auth": {"type": "oauth", "provider": {"authorize_url": "https://id.example.test/authorize", "token_url": format!("{provider}/token"), "client_id": "ferrum-test"}},
+        "operations": {"me": {"path": "/me"}}});
+    let input: ferrum_kernel::connections::ConnectionInput =
+        serde_json::from_value(json!({"name": "mail", "label": "Mail", "description": desc, "enabled": true})).unwrap();
+    let conn = k.save_connection_def(&admin, None, &input).await.unwrap();
+    let state_of = |url: String| reqwest::Url::parse(&url).unwrap().query_pairs().find(|(k, _)| k == "state").unwrap().1.into_owned();
+    let page = |k: &Arc<Kernel>, admin: &ferrum_kernel::Ctx, sid, state: &str| {
+        let (k, admin, back) = (k.clone(), admin.clone(), Back { state: Some(state.to_string()), code: Some("CODE-1".into()), error: None });
+        async move { callback_page(&k, &admin, Some(sid), &back).await.map(|r| r.status().as_u16()).unwrap_or(0) }
+    };
+
+    // Started on staff.acme.test (verified, not the main host): back at PUBLIC_URL, sent on there.
+    let sid = uuid::Uuid::now_v7();
+    let state = state_of(k.connect_start_on(&admin, conn, sid, Some("staff.acme.test")).await.unwrap());
+    let query = format!("state={state}&code=CODE-1");
+    let on = started_elsewhere(&k, &sh, &host("erp.acme.test"), Some(&query), Some(&state)).await.unwrap();
+    assert_eq!(on, Some(format!("https://staff.acme.test/api/connections/callback?{query}")));
+    // There, nothing to pass on: the person's session finishes it, once.
+    assert_eq!(started_elsewhere(&k, &sh, &host("staff.acme.test"), Some(&query), Some(&state)).await.unwrap(), None);
+    assert_eq!(page(&k, &admin, sid, &state).await, 200, "connected");
+    assert_eq!(page(&k, &admin, sid, &state).await, 401, "a state replayed after use");
+
+    // A host that no longer serves the workspace: answered where it landed, which has no session.
+    k.add_host(&admin, "old.acme.test", "shell").await.unwrap();
+    k.host_checked("old.acme.test", true).await.unwrap();
+    let sid = uuid::Uuid::now_v7();
+    let state = state_of(k.connect_start_on(&admin, conn, sid, Some("old.acme.test")).await.unwrap());
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update tenant_host set released_at = now() - interval '200 days' where host = 'old.acme.test'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(started_elsewhere(&k, &sh, &host("erp.acme.test"), Some("x"), Some(&state)).await.unwrap(), None, "not sent on");
+    // Nor to another workspace's host, nor with a state this server did not sign.
+    let state = state_of(k.connect_start_on(&admin, conn, uuid::Uuid::now_v7(), Some("globex.erp.test")).await.unwrap());
+    assert_eq!(started_elsewhere(&k, &sh, &host("erp.acme.test"), Some("x"), Some(&state)).await.unwrap(), None, "another workspace's host");
+    assert_eq!(started_elsewhere(&k, &sh, &host("erp.acme.test"), Some("x"), Some("forged.state.mac")).await.unwrap(), None);
+    // A person on another session cannot finish someone's sign-in, even on the right host.
+    let state = state_of(k.connect_start_on(&admin, conn, uuid::Uuid::now_v7(), Some("staff.acme.test")).await.unwrap());
+    assert_eq!(page(&k, &admin, uuid::Uuid::now_v7(), &state).await, 401, "another browser session");
 }
 
 /// An isolated app may be framed by every host that serves the workspace's shell, its main one first.
@@ -154,6 +220,17 @@ async fn link_host(k: &Arc<Kernel>, acme: uuid::Uuid) {
     tx.commit().await.unwrap();
     let fresh = shell(&on, json!({"link_host": "go.acme.test"}), "https://erp.acme.test");
     assert_eq!(fresh.go_target("globex/s/", None).await.unwrap(), None, "closed");
+
+    // The route order on a link host that is also the accounts host: `/go/…` first, the accounts
+    // host's own pages as before.
+    let both = host("go.acme.test");
+    assert_eq!(sh.place(&both).await.unwrap(), Place::Accounts);
+    assert!(sh.is_go(&both, "go/acme/s/") && sh.is_go(&both, "go"));
+    assert_eq!(sh.go_target("acme/s/", None).await.unwrap().as_deref(), Some("https://acme.erp.test/"), "/go/acme/s/ there redirects");
+    for other in ["authorize", "login", "gone", "goals/x", "api/accounts/me"] {
+        assert!(!sh.is_go(&both, other), "{other} stays the accounts host's");
+    }
+    assert!(!sh.is_go(&host("acme.erp.test"), "go/acme/s/"), "a workspace's own /go/ stays its own");
 }
 
 /// `FERRUM_HOOKS_HOST` without a base domain: a place of its own (no pages, no sign-in), named in

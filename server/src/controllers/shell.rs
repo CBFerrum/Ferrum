@@ -365,7 +365,7 @@ async fn page(
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     // The link host answers `/go/` whatever else it is (accounts, hooks, a workspace's host).
-    if (path == "go" || path.starts_with("go/")) && st.shell.on_link_host(&headers) {
+    if st.shell.is_go(&headers, &path) {
         return go(&st, &headers, &uri).await;
     }
     if let Some(res) = super::origins::serve_app_host(&st, &headers, &path).await? {

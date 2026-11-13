@@ -2115,7 +2115,9 @@ setting; each defaults to what the server did before the setting existed.
   following one needs no sign-in and leads (`302`) to the workspace's main host (staff) or its
   portal's host (outside people; the main host when it has none, where portal pages live under
   `/portal`), with the rest of the address kept. A workspace that is unknown or suspended answers
-  `404`. The link host answers `/go/` whatever else it is, so it can be the accounts host. Not set:
+  `404`. The link host answers `/go/` before anything else that host is, so it may be the accounts host or
+  the hooks host (their other addresses work as before; only `/go` and `/go/…` are taken). It may not
+  be `PUBLIC_URL`'s host, where `/go/` belongs to the workspace: the server refuses to start so. Not set:
   links name the workspace's main host (or `PUBLIC_URL`), as before, and stop working when that host
   is released.
   * *Why*: a mailed link outlives the host it names. With a link host, a workspace can move to a new

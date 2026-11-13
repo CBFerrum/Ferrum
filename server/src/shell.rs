@@ -296,7 +296,13 @@ pub fn check_names(settings: &Settings, public_url: &str) -> std::result::Result
     }
     // Passkeys under a shared base domain would be good on every workspace's host: the accounts
     // host stays their relying party there (docs/operations.md).
-    host_setting("FERRUM_LINK_HOST", &settings.link_host)?;
+    // The link host may be the accounts or hooks host (neither has routes of a workspace), but not
+    // the public address, where `/go/` would hide a workspace's app of that name.
+    if let Some(link) = host_setting("FERRUM_LINK_HOST", &settings.link_host)?
+        && public.as_deref() == Some(link.as_str())
+    {
+        return Err(format!("FERRUM_LINK_HOST ({link}) is the host of PUBLIC_URL, whose /go/ belongs to the workspace; give links a host of their own"));
+    }
     if let (Some(rp), Some(base)) = (host_setting("FERRUM_PASSKEY_RP", &settings.passkey_rp)?, base_domain(settings))
         && ferrum_kernel::passkey::host_may_use_rp(&base, &rp)
     {
@@ -391,6 +397,13 @@ impl Shell {
     /// The request came to the link host (`FERRUM_LINK_HOST`).
     pub fn on_link_host(&self, headers: &HeaderMap) -> bool {
         self.link_host.is_some() && request_host(headers).and_then(ferrum_kernel::shell::normalize_host) == self.link_host
+    }
+
+    /// A request for `/go/…` on the link host, which is answered before anything else the host is
+    /// (`path`: the request's path without its first `/`). Only `go` and `go/…`: `/gone`, `/authorize`
+    /// and every other path keep going where the host's place sends them.
+    pub fn is_go(&self, headers: &HeaderMap, path: &str) -> bool {
+        (path == "go" || path.starts_with("go/")) && self.on_link_host(headers)
     }
 
     /// Where `/go/{workspace}/{s|p}{rest}` on the link host leads: the workspace's current host for
@@ -1902,6 +1915,11 @@ mod tests {
         assert!(check_names(&s(json!({"hooks_host": "hooks.acme.com", "accounts_host": "id.acme.com"})), "https://erp.acme.com").is_ok());
         assert_eq!(hooks_host(&s(json!({"base_domain": "ferrum.cloud"}))).as_deref(), Some("hooks.ferrum.cloud"));
         assert!(check_names(&s(json!({"passkey_rp": "acme.com"})), "https://erp.acme.com").is_ok());
+        assert!(check_names(&s(json!({"link_host": "erp.acme.com"})), "https://erp.acme.com").is_err(), "links through the public address");
+        assert!(check_names(&s(json!({"link_host": "go.acme.com:443"})), "https://erp.acme.com").is_err());
+        for shared in [json!({"link_host": "id.acme.com", "accounts_host": "id.acme.com"}), json!({"link_host": "cb.acme.com", "hooks_host": "cb.acme.com"})] {
+            assert!(check_names(&s(shared.clone()), "https://erp.acme.com").is_ok(), "{shared}: /go/ is answered there too");
+        }
         assert!(check_names(&s(json!({"passkey_rp": "https://acme.com"})), "https://erp.acme.com").is_err());
         assert!(check_names(&s(json!({"base_domain": "ferrum.cloud", "passkey_rp": "ferrum.cloud"})), "https://ferrum.cloud").is_err(), "never the base");
         assert!(check_names(&s(json!({"base_domain": "a.ferrum.cloud", "passkey_rp": "ferrum.cloud"})), "https://ferrum.cloud").is_err());

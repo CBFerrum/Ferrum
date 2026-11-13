@@ -143,6 +143,9 @@ impl Hooks for App {
 
     async fn after_context(ctx: AppContext) -> Result<AppContext> {
         let settings = Settings::from_ctx(&ctx)?;
+        // The hosts this server names for itself, checked before it connects to or writes anything, on every start
+        // (a guest of a newer build's database too).
+        crate::shell::check_names(&settings, &ctx.config.server.host).map_err(Error::Message)?;
         // `ferrum task migrate` is what brings the database up to date, whatever the setting says.
         let migrating = is_migrate_task(std::env::args());
         let migrate_now = settings.migrate_at_start || migrating;
@@ -204,7 +207,6 @@ impl Hooks for App {
         plugins.seal_with(secret_key.clone());
         plugins.open_also_with(retired.clone());
         let processes = crate::process::configure(&mut hooks, &secret_key, &retired).await.map_err(Error::Message)?;
-        crate::shell::check_names(&settings, &ctx.config.server.host).map_err(Error::Message)?;
         let (plans, signup) = signup_settings(|name| std::env::var(name).ok(), crate::shell::base_domain(&settings).is_some()).map_err(Error::Message)?;
         if signup.open && mailer.is_none() {
             return Err(Error::Message("FERRUM_SIGNUP=open needs mail (settings.mailer): sign-up proves addresses with emailed codes".into()));
