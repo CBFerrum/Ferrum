@@ -1593,3 +1593,22 @@ Tests (`connections_steps_it` `limits`): a 429 with `Retry-After: 7` reaching an
 requests a minute, the third not sent and told when; two workers' calls under `concurrent: 1` never overlapping, the
 second waiting its turn; a limit without its window refused.
 
+## BD-58. A mapping that writes as the system
+
+Decided 13 November 2026. Social made `external_id` writable because a person's pull (BD-50) runs as that person and
+read-only fields ignore her input.
+
+* `as: system` on a mapping (inbound or a pull's): its writes run as the system (`is_system`, every permission), so
+  read-only fields and fields she could not write are set; the person a pull runs for stays the records' maker
+  (`created_by`), `origin: outside` still applies when the mapping says `outside`. Workspace pulls and inbound calls
+  already ran as the system; this changes only a person's own pulls.
+* **How it is enforced**: a mapping lives only in a connection's description, and a description is written only by
+  `save_connection_def` and a pack's install, both administrators' (`admin_only`), or offered by a package and taken
+  up by an administrator's save. No app call, effect, gate call or person's request carries a mapping or changes one;
+  every save is audited. So `as: system` is what an administrator or a package declared, never what a caller asks.
+* Why not a list of fields the mapping may set past read-only: the mapping already names every field it writes, and
+  the person who could write it is the administrator; a second list would say the same thing twice.
+
+Tests (`connections_steps_it` `as_system`): Ana's own pull making a post with the read-only id set, made as her; her
+other pull without it leaving that field empty; her own write not setting it; her save of a description refused.
+

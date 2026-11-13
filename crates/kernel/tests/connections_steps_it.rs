@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 const SECRET: &str = "sk-Vv31-steps-secret";
 
-const PACKAGE: &str = "package: social\nversion: 0.1.0\ndepends: [core]\n";
+const PACKAGE: &str = "package: social\nversion: 0.1.0\ndepends: [core]\nroles:\n  - name: Poster\n    permissions:\n      - {entity: Post, read: true, write: true, create: true}\n";
 const ENTITIES: &str = r#"
 - name: Post
   label: Post
@@ -105,6 +105,11 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
         ("POST", "/v1/records") => (200, String::new(), json!({"uri": format!("at://did/post/{}", body["rkey"].as_str().unwrap_or_default())}).to_string()),
         ("GET", "/v1/slow-read") | ("GET", "/v1/counted") => (200, String::new(), json!({"ok": true}).to_string()),
         ("GET", "/v1/busy") => (429, "retry-after: 7\r\n".into(), json!({"error": "slow down"}).to_string()),
+        ("GET", "/v1/mine") => (200, String::new(), json!({"items": [{"id": "N-1", "title": "Native one"}]}).to_string()),
+        ("GET", "/v1/mine2") => (200, String::new(), json!({"items": [{"id": "N-2", "title": "Native two"}]}).to_string()),
+        ("POST", "/v1/oauth/token") => {
+            (200, String::new(), json!({"access_token": "AT-Pp5-access", "refresh_token": "RT-Pp5", "expires_in": 3600}).to_string())
+        }
         ("GET", "/v1/feed") => (200, String::new(), json!({"items": [{"id": "F-1"}]}).to_string()),
         // Shaped like a media container: made, processed for a while, then published.
         ("POST", "/v1/containers") => (200, String::new(), json!({"id": format!("C-{}-{}", asked(bare), body["kind"].as_str().unwrap_or("ok"))}).to_string()),
@@ -639,6 +644,45 @@ async fn limits(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("limit"));
 }
 
+fn query(url: &str) -> BTreeMap<String, String> {
+    reqwest::Url::parse(url).unwrap().query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect()
+}
+
+/// P6: a mapping a package or an administrator declared may write as the system, so a read-only field is set.
+async fn as_system(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let tenant = admin.tenant;
+    let ana_id = k.create_user(admin, "ana@social.test", "Ana", None, &[], false).await.unwrap();
+    k.set_user_roles(admin, ana_id, &["Poster".into()]).await.unwrap();
+    let ana = k.load_ctx(tenant, ana_id, None, "it".into()).await.unwrap();
+    let provider = json!({"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/oauth/token"), "client_id": "ferrum-test"});
+    let map = |at: &str, system: bool| {
+        let mut m = json!({"entity": "Post", "by": {"title": "/title"}, "set": {"external_id": "/id"}, "outside": true});
+        if system {
+            m["as"] = json!("system");
+        }
+        json!({"name": at, "operation": at, "every_minutes": 15, "items_at": "/items", "cursor": "time", "map": m})
+    };
+    let d = json!({"base": base, "auth": {"type": "oauth", "owner": "person", "provider": provider}, "roles": ["Poster"],
+                   "operations": {"mine": {"path": "/mine"}, "mine2": {"path": "/mine2"}}, "pulls": [map("mine", true), map("mine2", false)]});
+    let id = k.save_connection_def(admin, None, &input("own", d.clone(), None)).await.unwrap();
+    // Only an administrator (or a package, whose descriptions an administrator takes up) writes a description.
+    assert!(matches!(k.save_connection_def(&ana, None, &input("hers", d, None)).await.unwrap_err(), Error::Forbidden(_)));
+    let session = Uuid::now_v7();
+    let state = query(&k.connect_start(&ana, id, session).await.unwrap())["state"].clone();
+    k.connect_finish(&ana, session, &state, Some("CODE-1"), None).await.unwrap();
+    for pull in ["mine", "mine2"] {
+        k.pull_now(admin, id, pull).await.unwrap();
+    }
+    drain(k).await;
+    let table = admin.schema.entity("Post").unwrap().table.clone();
+    let row = |title: &str| format!("select count(*) from {table} where tenant_id = $1 and title = '{title}' and created_by = '{ana_id}'");
+    assert_eq!(count(k, tenant, &(row("Native one") + " and external_id = 'N-1'")).await, 1, "as the system: the read-only field set, still hers");
+    assert_eq!(count(k, tenant, &(row("Native two") + " and external_id is null")).await, 1, "as her: the read-only field left alone");
+    // Her own write cannot set it.
+    let mine = k.insert(&ana, "Post", serde_json::from_value(json!({"title": "Typed", "external_id": "forged"})).unwrap()).await.unwrap();
+    assert!(mine["external_id"].is_null());
+}
+
 #[test]
 fn connections_run_steps_safely() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -689,4 +733,5 @@ async fn scenario() {
     loops(&k, &admin, &base, &store).await;
     functions(&k, &admin, &base).await;
     limits(&k, &admin, &base).await;
+    as_system(&k, &admin, &base).await;
 }

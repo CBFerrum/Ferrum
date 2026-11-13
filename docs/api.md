@@ -1235,7 +1235,9 @@ connection's own key (DPoP), and `provider.registration_url` without `client_id`
 **Operating**: `meta` on a description is an object (16 KB at most) the platform keeps and gives back without reading.
 A mapping's `"outside": true` marks what it writes as fetched from outside: the change's events carry `origin:
 "outside"`, automations read `origin` (empty otherwise), hooks `ctx.origin`; an app's effect for new records that
-reaches people checks it ([BD-50](builder/decisions.md#bd-50-operating-a-connection)).
+reaches people checks it ([BD-50](builder/decisions.md#bd-50-operating-a-connection)). A mapping's `"as": "system"` writes
+as the system ([BD-58](builder/decisions.md#bd-58-a-mapping-that-writes-as-the-system)), so fields only the system
+sets (read-only ones, such as an id the other system gave) are set; on a person's own pull the records stay hers.
 
 **Signing in to an account**: `"auth": {"type": "oauth", "owner": "workspace" | "person", "provider": {…}}`, the
 redirect address registered at the provider being `{PUBLIC_URL}/api/connections/callback`. Two worked descriptions, with
