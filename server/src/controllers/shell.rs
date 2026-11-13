@@ -93,6 +93,10 @@ async fn auth_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)
         return Ok(failed("It took too long, or was started in another browser. Sign in again."));
     }
     let next = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(next).ok().and_then(|b| String::from_utf8(b).ok()).unwrap_or_else(|| "/".into());
+    // Host codes are members' alone: where staff are refused, one is answered as expired and left unused.
+    if crate::zone::refuses_staff(st, headers).await {
+        return Ok(failed("The link has expired or was used already. Sign in again."));
+    }
     let s = match st.kernel.redeem_host_code(code, shell::request_host(headers).unwrap_or_default()).await {
         Ok(s) if s.tenant == tenant => s,
         _ => return Ok(failed("The link has expired or was used already. Sign in again.")),
