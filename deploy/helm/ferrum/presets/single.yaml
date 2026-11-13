@@ -1,0 +1,3 @@
+# One pool: every replica answers requests and runs background work (today's shape and the default).
+# helm upgrade ferrum deploy/helm/ferrum -f presets/single.yaml -f <your values>
+pools: []
