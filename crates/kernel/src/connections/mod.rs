@@ -148,7 +148,7 @@ pub struct Limit {
 const TURN_WAIT: Duration = Duration::from_secs(10);
 
 /// The keys of an operation that are [`More`]'s.
-const MORE: [&str; 8] = ["steps", "url", "success", "credentials", "form_fields", "answer", "lists", "public_files"];
+const MORE: [&str; 11] = ["steps", "url", "success", "credentials", "form_fields", "answer", "lists", "public_files", "refused_if", "temporary_if", "error"];
 
 /// Read as derived, each operation's [`More`] keys taken apart first.
 impl<'de> Deserialize<'de> for Description {
@@ -221,6 +221,16 @@ pub struct More {
     /// steps' inputs) read each as `public_files.<name>`. Made for calls only.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub public_files: BTreeMap<String, public::PublicFile>,
+    /// An expression over `answer`, `headers`, `status` and `inputs` saying a 2xx answer is a refusal (BD-68:
+    /// `has(answer.ok) && !answer.ok`, `has(answer.errors)`); `error_at` and `error` then read its words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused_if: Option<String>,
+    /// Among refusals (by status or by `refused_if`), an expression saying which are temporary ("later").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporary_if: Option<String>,
+    /// An expression giving a refusal's words (`answer.errors[0].message`), in place of `error_at`'s pointer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,8 +242,19 @@ pub enum AnswerKind {
     Text,
 }
 
-static NO_MORE: More =
-    More { steps: Vec::new(), url: None, success: None, credentials: None, form_fields: None, answer: None, lists: Vec::new(), public_files: BTreeMap::new() };
+static NO_MORE: More = More {
+    steps: Vec::new(),
+    url: None,
+    success: None,
+    credentials: None,
+    form_fields: None,
+    answer: None,
+    lists: Vec::new(),
+    public_files: BTreeMap::new(),
+    refused_if: None,
+    temporary_if: None,
+    error: None,
+};
 
 impl More {
     fn problem(&self, op: &Operation) -> Option<String> {
@@ -244,6 +265,13 @@ impl More {
             return Some("success lists statuses, 100 to 599".into());
         }
         if let Some(p) = self.public_files.iter().find_map(|(n, p)| p.problem(n)) {
+            return Some(p);
+        }
+        if let Some(p) = [&self.refused_if, &self.temporary_if, &self.error]
+            .into_iter()
+            .flatten()
+            .find_map(|e| ferrum_meta::Expr::compile(e).err().map(|m| format!("'{e}': {m}")))
+        {
             return Some(p);
         }
         self.url.iter().chain(self.form_fields.iter()).find_map(|t| template_problem(t))
@@ -1472,8 +1500,21 @@ impl Kernel {
             })
         };
         let temporary = op.temporary.clone().unwrap_or_else(|| TEMPORARY.to_vec());
+        // The description's expressions over an answer (BD-68); one that cannot be worked out (a key the answer lacks)
+        // says no, and a refusal's words fall back to `error_at`, then to the answer itself.
+        let over = |e: &Option<String>, a: &Answer| -> Option<Value> {
+            let headers = Value::Object(a.headers.iter().map(|(h, v)| (h.clone(), Value::String(v.clone()))).collect());
+            let vars = [("answer", &a.body), ("headers", &headers), ("status", &json!(a.status)), ("inputs", inputs)];
+            e.as_deref().and_then(|e| crate::automation::eval_with(e, &Value::Null, &Value::Null, &vars).ok())
+        };
+        let holds = |e: &Option<String>, a: &Answer| matches!(over(e, a), Some(Value::Bool(true)));
         let error_of = |a: &Answer| {
-            let said = at(&a.body, op.error_at.as_deref()).unwrap_or_else(|| a.body.to_string().chars().take(300).collect());
+            let said = match over(&more.error, a) {
+                Some(Value::String(s)) => Some(s),
+                Some(v) if !v.is_null() => Some(v.to_string()),
+                _ => None,
+            };
+            let said = said.or_else(|| at(&a.body, op.error_at.as_deref())).unwrap_or_else(|| a.body.to_string().chars().take(300).collect());
             masked_text(&format!("{}: {said}", a.status), &mask)
         };
         // An answer read as the operation says (XML, a form, text): what pointers, picks and mappings then read.
@@ -1498,7 +1539,7 @@ impl Kernel {
         };
         let worked = |s: u16| (200..300).contains(&s) || more.success.as_ref().is_some_and(|ok| ok.contains(&s));
         let (outcome, status, row_outcome) = match answered {
-            Ok(a) if worked(a.status) => {
+            Ok(a) if worked(a.status) && !holds(&more.refused_if, &a) => {
                 let status = a.status;
                 match self.mapped(ctx, conn, op, inputs, &a, about).await {
                     Ok(result) => (Outcome::Ok(masked(&result, &mask), Box::new(a)), Some(status), "ok"),
@@ -1506,7 +1547,7 @@ impl Kernel {
                     Err(e) => (Outcome::No(masked_text(&format!("{status}: {e}"), &mask)), Some(status), "failed"),
                 }
             }
-            Ok(a) if temporary.contains(&a.status) => (Outcome::Later(error_of(&a), a.wait()), Some(a.status), "temporary"),
+            Ok(a) if temporary.contains(&a.status) || holds(&more.temporary_if, &a) => (Outcome::Later(error_of(&a), a.wait()), Some(a.status), "temporary"),
             Ok(a) => (Outcome::No(error_of(&a)), Some(a.status), "failed"),
             Err(Error::Unavailable(m)) => (Outcome::Later(m, None), None, "temporary"),
             Err(Error::RetryAfter(m, s)) => (Outcome::Later(m, Some(s)), None, "temporary"),
