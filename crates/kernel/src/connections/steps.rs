@@ -783,3 +783,22 @@ impl Kernel {
 pub(crate) fn empty_answer() -> Result<Answer> {
     Ok(Answer { status: 200, body: Value::Null, headers: vec![], url: reqwest::Url::parse("https://steps.invalid/").map_err(Error::internal)?, raw: vec![] })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A step's inputs filter a list as a body's template does (reported as keeping every item; not reproduced on
+    /// 13 November 2026 with the shape given, kept as the check).
+    #[test]
+    fn step_inputs_filter_as_templates_do() {
+        let vars = serde_json::json!({"inputs": {"media": [{"content_type": "image/png", "id": 1}, {"content_type": "video/mp4", "id": 2}]}});
+        let e = "inputs.media | selectattr('content_type', 'startingwith', 'image/')";
+        let images = serde_json::json!([{"content_type": "image/png", "id": 1}]);
+        assert_eq!(evaluate(e, &vars).unwrap(), images);
+        assert_eq!(evaluate(&format!("{e} | list"), &vars).unwrap(), images);
+        assert_eq!(super::super::render(&format!("{{{{ {e} | list | json }}}}"), &vars).unwrap(), images.to_string());
+        let step: Step = serde_json::from_value(serde_json::json!({"name": "s", "operation": "o", "inputs": {"images": e}})).unwrap();
+        assert_eq!(inputs_of(&step, &vars).unwrap()["images"], images);
+    }
+}

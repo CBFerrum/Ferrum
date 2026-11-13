@@ -1345,7 +1345,9 @@ retry sends the same moment; answers' and mappings' expressions have them too (t
 (hex), `hmac(key, "hex" | "base64" | "base64url")` (SHA-256), `base64`, `base64url`, `base32`, `urlencode`, `tid` (a
 13-character id that sorts by time, from the key and its clock: `{{ key | tid }}`), `length_in("chars" | "graphemes" |
 "utf16" | "bytes")`, `entities(unit)` (the links, mentions and tags in a text: `[{type, text, value, start, end}]`,
-offsets in that unit), `truncate(n, end?)` (by graphemes), `strftime(format)` (of a moment), besides the template
+offsets in that unit), `truncate(n, end?)` (by graphemes), `strftime(format)` (of a moment), `add_time("-7d")` (a
+moment moved by whole `s`, `m`, `h`, `d` or `w`), `start_of(unit)` and `end_of(unit)` (`hour`, `day`, `week` from
+Monday, `month`, in UTC; [BD-70](builder/decisions.md#bd-70-date-arithmetic-in-templates)), besides the template
 language's own (`replace`, `split`, `join`, `default`, `json`, …). A record keyed from the call and a facet in bytes:
 
 ```json

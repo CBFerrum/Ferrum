@@ -1846,3 +1846,20 @@ Decided 13 November 2026.
   steps' operations does (by its own `changes`, else its method); `changes` said on the operation still decides.
   Nothing that wrote before reads now: a step that writes makes the whole operation one that writes and needs a key.
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-70. Date arithmetic in templates
+
+Decided 13 November 2026.
+
+* **The gap**: a description asking for "the last seven days" or "since the start of today" could only format the
+  clock (`strftime`), not move it.
+* **Three filters on a moment** (RFC 3339, `now` or any answer's): `add_time("<signed n><s|m|h|d|w>")`,
+  `start_of(unit)` and `end_of(unit)` for `hour`, `day`, `week` (from Monday) and `month`, in UTC; they chain with
+  `strftime` (`now | add_time('-1d') | start_of('day') | strftime('%s')`). On `now` they move the clock fixed at the
+  key's first attempt (BD-56), so a retry asks for the same window. No months or years in `add_time`: their length
+  varies; `start_of('month')` covers the common case. The workspace's own time zone is not applied: a service's windows
+  are its own, usually UTC.
+* **Step inputs** (item 18 of the request): a step's inputs and a body's template filter alike
+  (`selectattr('content_type', 'startingwith', 'image/')` keeps the images in both); the case reported was not
+  reproduced with the shape given, and a test keeps the two equal.
+* Part of the App API 0.3.8 (BD-63).
