@@ -143,7 +143,7 @@ pub struct Limit {
 const TURN_WAIT: Duration = Duration::from_secs(10);
 
 /// The keys of an operation that are [`More`]'s.
-const MORE: [&str; 5] = ["steps", "url", "success", "credentials", "form_fields"];
+const MORE: [&str; 7] = ["steps", "url", "success", "credentials", "form_fields", "answer", "lists"];
 
 /// Read as derived, each operation's [`More`] keys taken apart first.
 impl<'de> Deserialize<'de> for Description {
@@ -206,9 +206,24 @@ pub struct More {
     /// their order (a signed upload form an earlier answer gave).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub form_fields: Option<String>,
+    /// How the answer is read (BD-59): `json` (else its text, as without this), `xml`, `form` or `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<AnswerKind>,
+    /// In an XML answer, the elements that are always lists (`item`, `entry`), even when there is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lists: Vec<String>,
 }
 
-static NO_MORE: More = More { steps: Vec::new(), url: None, success: None, credentials: None, form_fields: None };
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerKind {
+    Json,
+    Xml,
+    Form,
+    Text,
+}
+
+static NO_MORE: More = More { steps: Vec::new(), url: None, success: None, credentials: None, form_fields: None, answer: None, lists: Vec::new() };
 
 impl More {
     fn problem(&self, op: &Operation) -> Option<String> {
@@ -1394,6 +1409,26 @@ impl Kernel {
         let error_of = |a: &Answer| {
             let said = at(&a.body, op.error_at.as_deref()).unwrap_or_else(|| a.body.to_string().chars().take(300).collect());
             masked_text(&format!("{}: {said}", a.status), &mask)
+        };
+        // An answer read as the operation says (XML, a form, text): what pointers, picks and mappings then read.
+        let answered = match (answered, more.answer) {
+            (Ok(mut a), Some(kind)) if kind != AnswerKind::Json => {
+                let body = match kind {
+                    AnswerKind::Xml => fns::xml_value(&a.raw, &more.lists),
+                    AnswerKind::Form => Ok(fns::form_value(&a.raw)),
+                    _ => Ok(Value::String(String::from_utf8_lossy(&a.raw).into_owned())),
+                };
+                match body {
+                    Ok(b) => {
+                        a.body = b;
+                        Ok(a)
+                    }
+                    // Only an answer that worked must be XML; an error page is read as it came.
+                    Err(e) if (200..300).contains(&a.status) => Err(Error::invalid(format!("the answer is not XML: {e}"))),
+                    Err(_) => Ok(a),
+                }
+            }
+            (other, _) => other,
         };
         let worked = |s: u16| (200..300).contains(&s) || more.success.as_ref().is_some_and(|ok| ok.contains(&s));
         let (outcome, status, row_outcome) = match answered {

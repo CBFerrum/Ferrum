@@ -110,6 +110,23 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
         ("POST", "/v1/oauth/token") => {
             (200, String::new(), json!({"access_token": "AT-Pp5-access", "refresh_token": "RT-Pp5", "expires_in": 3600}).to_string())
         }
+        ("GET", "/v1/rss") => (
+            200,
+            String::new(),
+            r#"<?xml version="1.0"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>
+<title>News</title><item><title>First &amp; best</title><link>https://news.example/1</link><dc:creator>Ana</dc:creator></item>
+<item><title><![CDATA[Second <b>]]></title><guid isPermaLink="false">g2</guid></item></channel></rss>"#
+                .into(),
+        ),
+        ("GET", "/v1/atom") => (
+            200,
+            String::new(),
+            r#"<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title>
+<entry><id>urn:a1</id><title type="text">Atom one</title><link rel="alternate" href="https://news.example/a1"/></entry></feed>"#
+                .into(),
+        ),
+        ("GET", "/v1/dtd") => (200, String::new(), r#"<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>"#.into()),
+        ("GET", "/v1/form") => (200, String::new(), "a=1&b=x%20y&token=tok-Ww2".into()),
         ("GET", "/v1/feed") => (200, String::new(), json!({"items": [{"id": "F-1"}]}).to_string()),
         // Shaped like a media container: made, processed for a while, then published.
         ("POST", "/v1/containers") => (200, String::new(), json!({"id": format!("C-{}-{}", asked(bare), body["kind"].as_str().unwrap_or("ok"))}).to_string()),
@@ -683,6 +700,39 @@ async fn as_system(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     assert!(mine["external_id"].is_null());
 }
 
+/// P7: answers in XML (RSS, Atom, plain) and form-encoded, read into the shape pointers and mappings work on.
+async fn xml_answers(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let ops = json!({
+        "rss": {"path": "/rss", "answer": "xml", "lists": ["item"]},
+        "atom": {"path": "/atom", "answer": "xml", "lists": ["entry", "link"]},
+        "dtd": {"path": "/dtd", "answer": "xml"},
+        "form": {"path": "/form", "answer": "form", "result": {"b": "/b", "a": "/a"}},
+        "creator": {"path": "/rss", "answer": "xml", "lists": ["item"], "result": {"by": "/rss/channel/item/0/dc:creator", "second": "/rss/channel/item/1/guid/#text"}}
+    });
+    let pull = |name: &str, items: &str, by: &str, id: &str| {
+        json!({"name": name, "operation": name, "every_minutes": 60, "items_at": items, "cursor": "time",
+                                                                "map": {"entity": "Post", "by": {"title": by}, "set": {"external_id": id}}})
+    };
+    let d = json!({"base": base, "operations": ops, "pulls": [pull("rss", "/rss/channel/item", "/title", "/link"), pull("atom", "/feed/entry", "/title/#text", "/link/0/@href")]});
+    let id = k.save_connection_def(admin, None, &input("feeds", d, None)).await.unwrap();
+    for p in ["rss", "atom"] {
+        k.pull_now(admin, id, p).await.unwrap();
+    }
+    drain(k).await;
+    let table = admin.schema.entity("Post").unwrap().table.clone();
+    for (title, link) in [("First & best", "= 'https://news.example/1'"), ("Second <b>", "is null"), ("Atom one", "= 'https://news.example/a1'")] {
+        let n = count(k, admin.tenant, &format!("select count(*) from {table} where tenant_id = $1 and title = '{title}' and external_id {link}")).await;
+        assert_eq!(n, 1, "{title}: {:?}", k.connection_pulls(admin, id).await.unwrap());
+    }
+    let r = connections::call(k, admin, None, &call("feeds", "creator", json!({}), None)).await.unwrap();
+    assert_eq!(r, json!({"by": "Ana", "second": "g2"}), "a prefixed element, an element's text beside its attribute");
+    assert_eq!(connections::call(k, admin, None, &call("feeds", "form", json!({}), None)).await.unwrap(), json!({"b": "x y", "a": "1"}));
+    let e = connections::call(k, admin, None, &call("feeds", "dtd", json!({}), None)).await.unwrap_err().to_string();
+    assert!(e.contains("not XML"), "a document type (and its entities) is refused: {e}");
+    let bad = json!({"name": "bad", "label": "bad", "description": {"base": base, "operations": {"a": {"path": "/a", "answer": "yaml"}}}});
+    assert!(serde_json::from_value::<ConnectionInput>(bad).unwrap_err().to_string().contains("unknown variant `yaml`"));
+}
+
 #[test]
 fn connections_run_steps_safely() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -734,4 +784,5 @@ async fn scenario() {
     functions(&k, &admin, &base).await;
     limits(&k, &admin, &base).await;
     as_system(&k, &admin, &base).await;
+    xml_answers(&k, &admin, &base).await;
 }
