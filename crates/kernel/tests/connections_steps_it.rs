@@ -132,6 +132,20 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
         ("GET", p) if p.starts_with("/v1/posts/") && p.ends_with("/numbers") => {
             (200, String::new(), json!({"likes": if p.contains("P-1") { 5 } else { 9 }}).to_string())
         }
+        // Shaped like a sign-in whose token answer is a form, exchanged for a long-lived token, refreshed by a GET.
+        ("POST", "/v1/oauth/form-token") => (200, String::new(), "access_token=SHORT-Ss1&user_id=U-9&expires_in=3600".into()),
+        ("GET", "/v1/oauth/exchange") if path.contains("fb_exchange_token=SHORT-Ss1") && path.contains("client_secret=cs-Gg4") => {
+            (200, String::new(), json!({"access_token": "LONG-Ll1", "expires_in": 5_184_000}).to_string())
+        }
+        ("GET", "/v1/oauth/refresh_long") if path.contains("access_token=LONG-Ll1") => {
+            (200, String::new(), json!({"access_token": "LONG-Ll2", "expires_in": 5_184_000}).to_string())
+        }
+        ("GET", "/v1/who/U-9") => {
+            (200, String::new(), json!({"auth": raw.lines().find_map(|l| l.strip_prefix("authorization: ")).unwrap_or_default()}).to_string())
+        }
+        // Shaped like a server where each instance registers its client by a request of its own.
+        ("POST", "/v1/api/v1/apps") => (200, String::new(), json!({"client_id": "CID-1", "client_secret": "CS-Rr1"}).to_string()),
+        ("POST", "/v1/oauth/token3") => (200, String::new(), json!({"access_token": "MAST-Mm1", "expires_in": 1}).to_string()),
         ("GET", "/v1/feed") => (200, String::new(), json!({"items": [{"id": "F-1"}]}).to_string()),
         // Shaped like a media container: made, processed for a while, then published.
         ("POST", "/v1/containers") => (200, String::new(), json!({"id": format!("C-{}-{}", asked(bare), body["kind"].as_str().unwrap_or("ok"))}).to_string()),
@@ -779,6 +793,82 @@ async fn pull_each(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("each"));
 }
 
+/// P9: sign-in extras: a form-encoded token answer with fields kept, a long-lived token exchanged after the sign-in,
+/// a refresh by a GET, a client registered at each server by an operation, a token that never expires.
+async fn signing_in(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let tenant = admin.tenant;
+    let provider = json!({"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/oauth/form-token"), "client_id": "app-1",
+                          "client_secret": "client", "keep": ["user_id"], "after": ["exchange"], "refresh": "refresh_long"});
+    let ops = json!({
+        "exchange": {"path": "/oauth/exchange", "query": {"grant_type": "fb_exchange_token", "client_id": "{{ inputs.client_id }}",
+                     "client_secret": "{{ secret.client }}", "fb_exchange_token": "{{ inputs.access_token }}"},
+                     "result": {"access_token": "/access_token", "expires_in": "/expires_in"}},
+        "refresh_long": {"path": "/oauth/refresh_long", "query": {"access_token": "{{ inputs.access_token }}"},
+                         "result": {"access_token": "/access_token", "expires_in": "/expires_in"}},
+        "me": {"path": "/who/{{ auth.user_id }}"}
+    });
+    let id = k
+        .save_connection_def(
+            admin,
+            None,
+            &input("page", json!({"base": base, "auth": {"type": "oauth", "provider": provider}, "operations": ops}), Some(json!({"client": "cs-Gg4"}))),
+        )
+        .await
+        .unwrap();
+    let session = Uuid::now_v7();
+    let state = query(&k.connect_start(admin, id, session).await.unwrap())["state"].clone();
+    k.connect_finish(admin, session, &state, Some("CODE-3"), None).await.unwrap();
+    let me = || call("page", "me", json!({}), None);
+    assert_eq!(connections::call(k, admin, None, &me()).await.unwrap(), json!({"auth": "Bearer ••••••"}), "a token is masked in an answer");
+    assert!(last("GET /v1/who/U-9").contains("authorization: Bearer LONG-Ll1"), "exchanged; the kept user id in the path");
+    assert!(connections::call(k, admin, None, &call("page", "exchange", json!({}), None)).await.unwrap_err().to_string().contains("signs in"));
+    // Refreshed by its GET when about to expire, without a refresh token; what was kept stays.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update conn_token set expires_at = now() - interval '1 minute' where tenant_id = $1 and conn_id = $2")
+        .bind(tenant)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    connections::call(k, admin, None, &me()).await.unwrap();
+    assert!(last("GET /v1/who/U-9").contains("authorization: Bearer LONG-Ll2"));
+    assert_eq!(asked("/v1/oauth/refresh_long"), 1);
+    assert!(
+        rests(k, &["SHORT-Ss1", "LONG-Ll1", "LONG-Ll2", "cs-Gg4"]).await.is_empty(),
+        "{:?}",
+        rests(k, &["SHORT-Ss1", "LONG-Ll1", "LONG-Ll2", "cs-Gg4"]).await
+    );
+
+    // A client registered at this server by its own request, once; its token kept without an expiry.
+    let provider = json!({"authorize_url": "https://instance.example.test/oauth/authorize", "token_url": format!("{base}/oauth/token3"),
+                          "registration": "register_app", "scopes": ["read", "write"], "never_expires": true});
+    let ops = json!({"register_app": {"method": "POST", "path": "/api/v1/apps", "form": {"client_name": "{{ inputs.client_name }}",
+                     "redirect_uris": "{{ inputs.redirect_uri }}", "scopes": "{{ inputs.scopes }}"}, "result": {"client_id": "/client_id", "client_secret": "/client_secret"}},
+                     "me": {"path": "/who/U-9"}});
+    let inst = k
+        .save_connection_def(admin, None, &input("instance", json!({"base": base, "auth": {"type": "oauth", "provider": provider}, "operations": ops}), None))
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        let q = query(&k.connect_start(admin, inst, session).await.unwrap());
+        assert_eq!(q["client_id"], "CID-1");
+    }
+    assert_eq!(asked("/v1/api/v1/apps"), 1, "registered once");
+    let sent = parts(&last("POST /v1/api/v1/apps"));
+    let form = query(&format!("http://f/?{}", last("POST /v1/api/v1/apps").split("\r\n\r\n").nth(1).unwrap()));
+    assert!(sent.is_empty() && form["redirect_uris"] == "https://ferrum.example.test/api/connections/callback" && form["scopes"] == "read write", "{form:?}");
+    let state = query(&k.connect_start(admin, inst, session).await.unwrap())["state"].clone();
+    k.connect_finish(admin, session, &state, Some("CODE-4"), None).await.unwrap();
+    let token = last("POST /v1/oauth/token3");
+    use base64::Engine as _;
+    let basic = base64::engine::general_purpose::STANDARD.encode("CID-1:CS-Rr1");
+    assert!(token.contains(&format!("authorization: Basic {basic}")), "the registered client proves itself as registered: {token}");
+    assert!(k.connection_defs(admin).await.unwrap().iter().find(|c| c["name"] == "instance").unwrap()["account"]["expires_at"].is_null(), "never expires");
+    connections::call(k, admin, None, &call("instance", "me", json!({}), None)).await.unwrap();
+    assert!(last("GET /v1/who/U-9").contains("authorization: Bearer MAST-Mm1"));
+}
+
 #[test]
 fn connections_run_steps_safely() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -832,4 +922,5 @@ async fn scenario() {
     as_system(&k, &admin, &base).await;
     xml_answers(&k, &admin, &base).await;
     pull_each(&k, &admin, &base).await;
+    signing_in(&k, &admin, &base).await;
 }

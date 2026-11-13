@@ -296,6 +296,9 @@ pub enum Auth {
         header: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prefix: Option<String>,
+        /// Fields of the login's answer kept with the tokens: `auth.<name>` (BD-61).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<String>,
     },
 }
 
@@ -637,7 +640,13 @@ impl Description {
     /// Whether operation `name` is how the connection signs in (a session's login or refresh): never called as an
     /// operation, by an app, a person, an effect, a pull or "try this", since its answer is a token.
     pub(crate) fn signs_in_with(&self, name: &str) -> bool {
-        matches!(&self.auth, Auth::Session { login, refresh, .. } if login == name || refresh.as_deref() == Some(name))
+        match &self.auth {
+            Auth::Session { login, refresh, .. } => login == name || refresh.as_deref() == Some(name),
+            Auth::Oauth { provider, .. } => {
+                provider.after.iter().any(|a| a == name) || provider.refresh.as_deref() == Some(name) || provider.registration.as_deref() == Some(name)
+            }
+            _ => false,
+        }
     }
 
     /// What is wrong with it, said plainly; `None` when it may be saved.
@@ -691,6 +700,11 @@ impl Description {
             Auth::Oauth { provider, .. } => {
                 if let Some(p) = provider.problem() {
                     return Some(p);
+                }
+                if let Some(op) =
+                    provider.after.iter().chain(provider.refresh.iter()).chain(provider.registration.iter()).find(|o| !self.operations.contains_key(*o))
+                {
+                    return Some(format!("auth: there is no operation {op}"));
                 }
             }
             Auth::Session { login, refresh, token_at, refresh_at, expires_at, header, .. } => {
@@ -1019,7 +1033,8 @@ pub(crate) fn digest(v: &Value) -> String {
 /// A connection's secrets, open, its row locked for the rest of `tx` (to change them).
 pub(crate) async fn lock_secrets(tx: &mut Tx, k: &Kernel, tenant: Uuid, id: Uuid) -> Result<BTreeMap<String, String>> {
     let sealed: Option<Option<String>> =
-        sqlx::query_scalar("select sealed from conn where tenant_id = $1 and id = $2 for update").bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
+        // Not a key's lock: a call logged meanwhile (its row refers to this one) is not held up by it.
+        sqlx::query_scalar("select sealed from conn where tenant_id = $1 and id = $2 for no key update").bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
     match sealed.ok_or_else(|| Error::NotFound("connection".into()))? {
         Some(s) => serde_json::from_str(&k.open_sealed(&sealed_label(tenant, id), &s)?).map_err(Error::internal),
         None => Ok(BTreeMap::new()),

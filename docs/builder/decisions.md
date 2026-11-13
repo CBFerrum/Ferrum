@@ -1653,3 +1653,56 @@ Tests (`connections_steps_it` `pull_each`): an account's own posts read by its i
 asked once and mapped; an operation's path from the account; a page over `max` failing the run without asking; `each`
 on an operation that changes something refused.
 
+## BD-61. Sign-in extras
+
+Decided 13 November 2026. Found while describing networks for Social: Meta's long-lived tokens, Instagram's and
+Threads' refresh by a GET with the token itself, VK's and TikTok's extra fields in the token answer, a Mastodon
+instance's own client registration, tokens that never expire.
+
+* **`keep`** (provider, or session): named fields of the token answer (an account's id, an instance's address) are
+  sealed with the tokens as `kept`, and read as `auth.<name>` by templates and pull expressions (BD-60); a refresh that
+  does not repeat them keeps the earlier ones. Not the tokens themselves; a kept field is shown where a template puts it
+  (it is not a secret), unlike the tokens, which stay masked.
+* **A token answer written as a form** (`access_token=…&expires_in=…`) is read as one, at the token address and in
+  revocation.
+* **`after`**: operations of the connection made, in order, after the code is exchanged, given the tokens and the
+  client's id (the client secret is `secret.<name>` in their templates); each result's names replace the answer's. Why
+  operations: the exchange is a request like any other (a GET with a query), and describing it keeps the platform
+  free of any network's grant names.
+* **`refresh`**: an operation that refreshes in place of the token address, given the same inputs; used even without
+  a refresh token (the access token is its own). Its result is read as a token answer; a refusal marks the sign-in
+  needing reconnecting, as a refused refresh does.
+* **`registration`**: an operation that registers the platform's client at this server (Mastodon's `POST /api/v1/apps`
+  takes `redirect_uris` and `scopes` as its own words, not RFC 7591's), given the exact callback, the scopes and the
+  connection's name; its `client_id` and `client_secret` are sealed as RFC 7591's are (`_client_id`), once, under the
+  connection's lock; the client then proves itself with basic authentication, as a registered one does. One connection
+  is one server: a person's instance is a connection of its own (its base and addresses), registered on first use.
+* **`never_expires`**: the answer's expiry is ignored; the token is never refreshed ahead (a 401 still asks once).
+* All these operations sign in (`signs_in_with`): never called by an app, an effect, a pull or "try"; made without
+  credentials of their own, never captured, the tokens they are given masked like secrets.
+* The connection's secrets are now locked `for no key update` while they change, so a call logged meanwhile (whose row
+  refers to the connection) is not held up; a registration made by an operation is logged like any call.
+
+Tests (`connections_steps_it` `signing_in`): a form-encoded token answer, exchanged after the sign-in for a long-lived
+token, the account's id kept and read in a path; refreshed by its GET without a refresh token, the id still kept;
+the short and long tokens and the client secret at rest nowhere; the exchange refused as an operation; a client
+registered at the server by its own request once over two sign-ins, with the exact callback and the scopes; the token
+asked with the registered client; a token kept without an expiry.
+
+## BD-62. Connections, part three, and the App API 0.3.7
+
+Decided 13 November 2026.
+
+* **The App API is 0.3.7**; an app using any of this says `platform: ">=0.3.7, <0.4"`. 0.3.7 carries: an operation's
+  `steps` (with `when`, `confirm`, `wait`, `for_each`, `range`, `chunks`), `url`, `credentials`, `form_fields`,
+  `success`, `answer`, `lists` (BD-53 to BD-55, BD-59); `connections::More` and `Description::more` (an app that builds
+  descriptions in code sets them there); `FileStore::get_range` (a store an app supplies may read a range); the clock and
+  the template functions (BD-56); `RetryAfter` from `connections::call` and a description's `limit` (BD-57); a mapping's
+  `as: system` (BD-58); a pull's `inputs` and `each`, and `account`/`auth` in templates (BD-60); `provider.keep`,
+  `after`, `refresh`, `registration`, `never_expires` and a session's `keep` (BD-61).
+* **What an app must change**: only an app that matches `connections::call`'s errors: `RetryAfter` is "later" with a
+  time (Social's publish job matched `Unavailable` and `Wait` only). An app that builds an `Operation`, an `Inbound` or
+  a `Description` in code compiles unchanged: no field was added to the first two, and the third is built with
+  `..Default::default()`. Every stored description, call and pull reads as before.
+* Reference products read for this part, and which of their mechanisms each answers: docs/references/social.md.
+
