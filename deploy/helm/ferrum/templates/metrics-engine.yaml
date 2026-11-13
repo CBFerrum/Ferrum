@@ -81,7 +81,7 @@ spec:
   ingress:
     - from:
         - podSelector:
-            matchLabels: {app.kubernetes.io/name: {{ include "ferrum.fullname" . }}}
+            {{- include "ferrum.serverPods" . | nindent 12 }}
       ports:
         - {port: 5180}
   egress: []

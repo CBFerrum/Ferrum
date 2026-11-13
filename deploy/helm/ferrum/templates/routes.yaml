@@ -1,0 +1,67 @@
+{{- /* The gateways' routes when there are pools (and the private gateway's always); without pools the
+public gateway's are in gateway.yaml, as before. Each gateway sends HTTP to HTTPS, sends each pool what
+its routes name, and sends the rest to its default pool. */}}
+{{- $pooled := not (empty .Values.pools) }}
+{{- $routing := include "ferrum.routing" . | fromJson }}
+{{- range $key, $g := $routing.gateways }}
+{{- if or $pooled (ne $key "public") }}
+{{- $all := concat $g.own $g.extra }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $g.name }}-https-redirect
+spec:
+  parentRefs:
+    {{- range $all }}
+    - {name: {{ $g.name }}, sectionName: http{{ get $g.suffix . }}}
+    {{- end }}
+  hostnames: {{ toJson $all }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect: {scheme: https, statusCode: 301}
+{{- with $g.defaultHosts }}
+---
+# What no pool's route takes: the gateway's default pool.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $g.name }}
+spec:
+  parentRefs:
+    {{- range . }}
+    - {name: {{ $g.name }}, sectionName: https{{ get $g.suffix . }}}
+    {{- end }}
+  hostnames: {{ toJson . }}
+  rules:
+    {{- include "ferrum.fullRules" $g.defaultObj | nindent 4 }}
+{{- end }}
+{{- range $routing.routes }}
+{{- if eq .gateway $g.name }}
+{{- $r := . }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .name }}
+spec:
+  parentRefs:
+    {{- range .hostnames }}
+    - {name: {{ $g.name }}, sectionName: https{{ get $g.suffix . }}}
+    {{- end }}
+  hostnames: {{ toJson .hostnames }}
+  rules:
+    {{- if .matches }}
+    # Apps are matched on X-Ferrum-UI ({app}@{version}), which every API call carries; WebSockets and files
+    # carry no app and stay with the host's pool.
+    - matches: {{- toYaml .matches | nindent 8 }}
+      backendRefs: [{name: {{ .obj }}, port: 80}]
+      timeouts: {request: 600s}
+    {{- else }}
+    {{- include "ferrum.fullRules" .obj | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

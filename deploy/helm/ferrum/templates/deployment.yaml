@@ -1,14 +1,25 @@
 # Stateless API replicas. Every replica runs the outbox, webhook and maintenance loops;
 # they coordinate through the database, so any replica can die at any time.
-{{- $n := include "ferrum.fullname" . }}
+{{- /* With `pools` (values.yaml) there is one Deployment for each pool; the first keeps these names. */}}
+{{- $root := . }}
+{{- $pooled := not (empty .Values.pools) }}
+{{- $pools := (include "ferrum.pools" . | fromJson).pools }}
+{{- $routing := include "ferrum.routing" . | fromJson }}
+{{- range $i, $p := $pools }}
+{{- $n := $p.obj }}
+{{- $f := include "ferrum.fullname" $root }}
+{{- with $root }}
+{{- if $i }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ $n }}
   labels: {{- include "ferrum.labels" (list . $n) | nindent 4 }}
 spec:
-  {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicas }}
+  {{- if not (or $p.autoscaling.enabled (and $p.keda $p.keda.enabled)) }}
+  replicas: {{ $p.replicas }}
   {{- end }}
   revisionHistoryLimit: 5
   selector:
@@ -20,15 +31,34 @@ spec:
     rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
   template:
     metadata:
+      {{- if $pooled }}
+      labels: {app.kubernetes.io/name: {{ $n }}, ferrum.dev/pool: {{ $p.name }}{{ with $p.zone }}, ferrum.dev/zone: {{ . }}{{ end }}}
+      {{- else }}
       labels: {app.kubernetes.io/name: {{ $n }}}
+      {{- end }}
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 40
+      {{- with $p.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $p.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
         fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
+      {{- with $p.topologySpreadConstraints }}
+      topologySpreadConstraints: {{- toYaml . | nindent 8 }}
+      {{- else }}
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
@@ -43,6 +73,7 @@ spec:
           labelSelector:
             matchLabels: {app.kubernetes.io/name: {{ $n }}}
           matchLabelKeys: [pod-template-hash]
+      {{- end }}
       containers:
         - name: ferrum
           image: {{ include "ferrum.image" (list "image" .Values.image) }}
@@ -50,13 +81,17 @@ spec:
           ports:
             - {name: http, containerPort: 5150}
           env:
+            {{- if $pooled }}
+            {{- include "ferrum.poolEnv" (list . $p) | nindent 12 }}
+            {{- else }}
             {{- include "ferrum.env" . | nindent 12 }}
-            {{- if .Values.migrate.enabled }}
+            {{- if eq (include "ferrum.migrateJob" .) "true" }}
             {{- with .Values.migrate.serverEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
             {{- end }}
-          resources: {{- toYaml .Values.resources | nindent 12 }}
+            {{- end }}
+          resources: {{- toYaml $p.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -84,6 +119,7 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {sizeLimit: 512Mi}
+{{- if ne $p.background "only" }}
 ---
 apiVersion: v1
 kind: Service
@@ -94,7 +130,8 @@ spec:
   selector: {app.kubernetes.io/name: {{ $n }}}
   ports:
     - {name: http, port: 80, targetPort: http}
-{{- if .Values.autoscaling.enabled }}
+{{- end }}
+{{- if $p.autoscaling.enabled }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -102,25 +139,59 @@ metadata:
   name: {{ $n }}
 spec:
   scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ $n }}}
-  minReplicas: {{ .Values.autoscaling.minReplicas }}
-  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  minReplicas: {{ $p.autoscaling.minReplicas }}
+  maxReplicas: {{ $p.autoscaling.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
-        target: {type: Utilization, averageUtilization: {{ .Values.autoscaling.cpuUtilization }}}
+        target: {type: Utilization, averageUtilization: {{ $p.autoscaling.cpuUtilization }}}
   behavior:
     scaleDown:
-      stabilizationWindowSeconds: {{ .Values.autoscaling.scaleDownStabilizationSeconds }}
+      stabilizationWindowSeconds: {{ $p.autoscaling.scaleDownStabilizationSeconds }}
 {{- end }}
-{{- if .Values.pdb.enabled }}
+{{- if and $p.keda $p.keda.enabled }}
+---
+# Scales this background pool on waiting work (values.yaml, keda). Fields checked against KEDA 2.21
+# (ScaledObject specification, Prometheus scaler).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $n }}
+spec:
+  scaleTargetRef: {name: {{ $n }}}
+  minReplicaCount: {{ $p.keda.minReplicas }}
+  maxReplicaCount: {{ $p.keda.maxReplicas }}
+  pollingInterval: {{ $p.keda.pollingInterval }}
+  cooldownPeriod: {{ $p.keda.cooldownPeriod }}
+  triggers:
+    {{- if $p.keda.triggers }}
+    {{- toYaml $p.keda.triggers | nindent 4 }}
+    {{- else }}
+    # Events waiting: one replica for every outboxPerReplica of them.
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: {{ $p.keda.prometheusAddress | quote }}
+        query: max(ferrum_outbox_pending{namespace="{{ .Release.Namespace }}"})
+        threshold: {{ $p.keda.outboxPerReplica | quote }}
+    # Jobs that are due and not yet taken: more replicas while the oldest has waited past jobWaitSeconds.
+    - type: prometheus
+      metricType: Value
+      metadata:
+        serverAddress: {{ $p.keda.prometheusAddress | quote }}
+        query: max(ferrum_jobs_oldest_waiting_seconds{namespace="{{ .Release.Namespace }}"})
+        threshold: {{ $p.keda.jobWaitSeconds | quote }}
+    {{- end }}
+{{- end }}
+{{- if $p.pdb.enabled }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: {{ $n }}
 spec:
-  maxUnavailable: {{ .Values.pdb.maxUnavailable }}
+  maxUnavailable: {{ $p.pdb.maxUnavailable }}
   selector:
     matchLabels: {app.kubernetes.io/name: {{ $n }}}
 {{- end }}
@@ -136,16 +207,30 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
+        {{- if $pooled }}
+        {{- range (get $routing.admits $p.name) }}
+        # The proxies of the gateway {{ . }}, the only gateway whose routes lead here.
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ $.Values.networkPolicy.gatewayNamespace }}}
+          podSelector:
+            matchLabels: {gateway.envoyproxy.io/owning-gateway-name: {{ . }}, gateway.envoyproxy.io/owning-gateway-namespace: {{ $.Release.Namespace }}}
+        {{- end }}
+        {{- range .Values.networkPolicy.monitoringNamespaces }}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ . }}}
+        {{- end }}
+        {{- else }}
         {{- range .Values.networkPolicy.ingressNamespaces }}
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: {{ . }}}
         {{- end }}
-        {{- if .Values.office.enabled }}
+        {{- end }}
+        {{- if and .Values.office.enabled $p.first }}
         # The online editor's WOPI calls.
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: {{ .Values.office.namespace }}}
           podSelector:
-            matchLabels: {app.kubernetes.io/name: {{ $n }}-office}
+            matchLabels: {app.kubernetes.io/name: {{ $f }}-office}
         {{- end }}
       ports:
         - {port: 5150}
@@ -153,14 +238,14 @@ spec:
     {{- if .Values.database.enabled }}
     - to:
         - podSelector:
-            matchLabels: {cnpg.io/cluster: {{ $n }}-db}
+            matchLabels: {cnpg.io/cluster: {{ $f }}-db}
       ports:
         - {port: 5432}
     {{- end }}
     {{- if .Values.pdf.enabled }}
     - to:
         - podSelector:
-            matchLabels: {app.kubernetes.io/name: {{ $n }}-pdf}
+            matchLabels: {app.kubernetes.io/name: {{ $f }}-pdf}
       ports:
         - {port: 3000}
     {{- end }}
@@ -170,24 +255,38 @@ spec:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: {{ .Values.office.namespace }}}
           podSelector:
-            matchLabels: {app.kubernetes.io/name: {{ $n }}-office}
+            matchLabels: {app.kubernetes.io/name: {{ $f }}-office}
       ports:
         - {port: 9980}
     {{- end }}
     - ports:
         - {port: 53, protocol: UDP}
         - {port: 53, protocol: TCP}
+    {{- if .Values.networkPolicy.egressAnyHost }}
     - ports:
         - {port: 443}
         - {port: 587}
+    {{- else if .Values.networkPolicy.egressCIDRs }}
+    # HTTPS and mail submission only to these networks (networkPolicy.egressCIDRs).
+    - to:
+        {{- range .Values.networkPolicy.egressCIDRs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+      ports:
+        - {port: 443}
+        - {port: 587}
+    {{- end }}
     {{- if .Values.metricsEngine.enabled }}
     - to:
         - podSelector:
-            matchLabels: {app.kubernetes.io/name: {{ $n }}-metrics-engine}
+            matchLabels: {app.kubernetes.io/name: {{ $f }}-metrics-engine}
       ports:
         - {port: 5180}
     {{- end }}
 {{- end }}
+{{- end }}
+{{- end }}
+{{- $n := include "ferrum.fullname" . }}
 {{- if .Values.serviceMonitor.enabled }}
 ---
 apiVersion: monitoring.coreos.com/v1
@@ -196,7 +295,14 @@ metadata:
   name: {{ $n }}
 spec:
   selector:
+    {{- if $pooled }}
+    {{- $names := list }}
+    {{- range $pools }}{{ if ne .background "only" }}{{ $names = append $names .obj }}{{ end }}{{ end }}
+    matchExpressions: [{key: app.kubernetes.io/name, operator: In, values: {{ toJson $names }}}]
+  podTargetLabels: [ferrum.dev/pool, ferrum.dev/zone]
+    {{- else }}
     matchLabels: {app.kubernetes.io/name: {{ $n }}}
+    {{- end }}
   endpoints:
     - port: http
       path: /metrics
@@ -204,6 +310,27 @@ spec:
       authorization:
         type: Bearer
         credentials: {name: {{ .Values.secrets.existingSecret }}, key: FERRUM_METRICS_TOKEN}
+{{- $only := list }}
+{{- range $pools }}{{ if eq .background "only" }}{{ $only = append $only .obj }}{{ end }}{{ end }}
+{{- if $only }}
+---
+# Pools with only background work have no Service: their pods are scraped directly.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $n }}-background
+spec:
+  selector:
+    matchExpressions: [{key: app.kubernetes.io/name, operator: In, values: {{ toJson $only }}}]
+  podTargetLabels: [ferrum.dev/pool, ferrum.dev/zone]
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      authorization:
+        type: Bearer
+        credentials: {name: {{ .Values.secrets.existingSecret }}, key: FERRUM_METRICS_TOKEN}
+{{- end }}
 {{- if .Values.database.enabled }}
 ---
 apiVersion: monitoring.coreos.com/v1

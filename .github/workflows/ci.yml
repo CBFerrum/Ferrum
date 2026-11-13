@@ -170,6 +170,9 @@ jobs:
       # The Helm chart renders what deploy/k8s renders (same resources, same environment variables).
       - name: Helm chart against deploy/k8s
         run: bash deploy/helm/test.sh
+      # Pools, zones and gateways: each preset keeps its promises, each refusal refuses.
+      - name: Helm chart's deployment shapes
+        run: bash deploy/helm/test_pools.sh
       # The tools that carry a release to a site without internet (docs/operations.md), against stand-ins.
       - name: Offline bundles
         run: python3 deploy/offline/test_offline.py
