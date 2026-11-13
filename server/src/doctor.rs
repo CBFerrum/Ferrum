@@ -100,6 +100,15 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     if st.kernel.db.fenced() {
         out.push(Finding::blocker("authority", "this region does not hold the right to write", "See docs/operations.md, Regions."));
     }
+    // Work a newer build wrote, which this one leaves for it (docs/operations.md, Rolling back and the two-version window).
+    let (events, jobs) = st.kernel.waiting_for_newer().await?;
+    if events + jobs > 0 {
+        out.push(Finding::warning(
+            "window.waiting",
+            format!("{events} events and {jobs} jobs wait for a newer build than this one"),
+            "They run once a server at least as new as the one that wrote them runs again; roll forward when it is safe.",
+        ));
+    }
 
     out.push(match tokio::task::spawn_blocking(ferrum_kernel::sso::saml_self_check).await.ok().flatten() {
         None => Finding::ok("identity.saml", "built without SAML: single sign-on is OpenID Connect only"),

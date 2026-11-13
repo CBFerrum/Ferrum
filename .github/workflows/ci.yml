@@ -155,11 +155,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The two-version window's check compares with the commit before the change.
+          fetch-depth: 0
       - name: RustSec advisories
         run: cargo install cargo-audit --locked && cargo audit
       # Every accepted advisory has an owner, a reason and a review date (scripts/registry.py).
       - name: Requirements registry, accepted advisories and generated documents
         run: python3 -m pip install --quiet pyyaml && python3 scripts/registry.py check && python3 scripts/test_registry.py && python3 scripts/test_manifests.py && python3 scripts/mutants.py --check && python3 scripts/test_baseline.py && python3 scripts/test_mutation_paths.py && python3 scripts/test_builder_inventory.py
+      # A schema change the build before it cannot live with moves COMPATIBLE_FROM in the same change
+      # (crates/kernel/src/window.rs, docs/operations.md).
+      - name: Two-version window
+        run: python3 scripts/test_window.py && python3 scripts/window.py --range "${{ github.event.pull_request.base.sha || github.event.before }}..${{ github.sha }}"
       # The Helm chart renders what deploy/k8s renders (same resources, same environment variables).
       - name: Helm chart against deploy/k8s
         run: bash deploy/helm/test.sh
@@ -248,12 +255,17 @@ jobs:
       digest: ${{ steps.candidate.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
+      # The commit's date goes into the image (the build context has no .git): crates/kernel/src/window.rs.
+      - id: commit
+        run: echo "date=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
           load: true
-          build-args: BUILD_SHA=${{ github.sha }}
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.commit.outputs.date }}
           tags: ferrum:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max

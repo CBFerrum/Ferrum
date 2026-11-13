@@ -215,9 +215,9 @@ pub async fn enqueue(tx: &mut Tx, tenant: Uuid, topic: &str, entity: Option<&str
     // list carries nothing anyone is waiting for, and stays behind that.
     let urgent = matches!(topic, MAIL_TOPIC | crate::notify::MAIL_TOPIC | crate::webpush::PUSH_TOPIC);
     sqlx::query(
-        "insert into outbox (tenant_id, topic, entity, record_id, payload, priority) \
+        "insert into outbox (tenant_id, topic, entity, record_id, payload, priority, build_date) \
          values ($1, $2, $3, $4, $5, case when $6 and coalesce(nullif(current_setting('ferrum.priority', true), '')::smallint, 1) < 2 then 0 \
-         else coalesce(nullif(current_setting('ferrum.priority', true), '')::smallint, 1) end)",
+         else coalesce(nullif(current_setting('ferrum.priority', true), '')::smallint, 1) end, $7)",
     )
     .bind(tenant)
     .bind(topic)
@@ -225,6 +225,7 @@ pub async fn enqueue(tx: &mut Tx, tenant: Uuid, topic: &str, entity: Option<&str
     .bind(record_id)
     .bind(payload)
     .bind(urgent)
+    .bind(crate::window::build_date())
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -243,7 +244,8 @@ pub struct Source<'a> {
 /// [`enqueue`] for a change to a record, saying who made it and which version it made.
 pub async fn enqueue_change(tx: &mut Tx, tenant: Uuid, topic: &str, source: Source<'_>, payload: Value) -> Result<()> {
     sqlx::query(
-        "insert into outbox (tenant_id, topic, entity, record_id, payload, actor, legal_entity, source_version) values ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "insert into outbox (tenant_id, topic, entity, record_id, payload, actor, legal_entity, source_version, build_date) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(tenant)
     .bind(topic)
@@ -253,6 +255,7 @@ pub async fn enqueue_change(tx: &mut Tx, tenant: Uuid, topic: &str, source: Sour
     .bind(source.actor)
     .bind(source.legal_entity)
     .bind(source.version)
+    .bind(crate::window::build_date())
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -326,6 +329,9 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         // A loose index scan finds the workspaces with work, however long their backlogs. They come
         // in random order, so that more workspaces than a batch holds all get their turn.
+        // A newer build's events wait for a replica of it: their topics may be ones this build does not know, which it
+        // would mark done or send to webhooks that the newer build keeps them from (window.rs). Everything else goes on,
+        // so a newer event may be handled after later ones of its workspace (docs/events.md, Order).
         let events: Vec<Event> = sqlx::query_as(
             "with recursive waiting(tenant_id) as ( \
                (select tenant_id from outbox where processed_at is null and not dead order by tenant_id limit 1) \
@@ -336,13 +342,15 @@ impl Kernel {
              update outbox set available_at = now() + make_interval(secs => $1) where id in ( \
                select claimed.id from (select tenant_id from waiting where tenant_id is not null order by random()) w \
                cross join lateral (select o.id from outbox o where o.tenant_id = w.tenant_id and o.processed_at is null and not o.dead \
-                 and o.available_at <= now() order by o.priority, o.id limit $2 for update skip locked) claimed \
+                 and o.available_at <= now() and (o.build_date is null or o.build_date <= $4) \
+                 order by o.priority, o.id limit $2 for update skip locked) claimed \
                limit $3) \
              returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, depth, available_at as lease",
         )
         .bind(LEASE_SECS)
         .bind(TENANT_SHARE)
         .bind(BATCH)
+        .bind(crate::window::build_date())
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;

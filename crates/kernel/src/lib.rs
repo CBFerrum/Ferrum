@@ -84,6 +84,7 @@ pub mod twofactor;
 pub mod value;
 pub mod views;
 pub mod webpush;
+pub mod window;
 
 pub use ctx::{Access, Action, Ctx, PermSet, row_scope};
 pub use db::{Db, DbConfig, Trace, Tx, with_retry};
@@ -235,6 +236,8 @@ pub struct BootReport {
     /// Versions of the SQL migrations it applied.
     pub migrations: Vec<i64>,
     pub schema: ddl::SyncReport,
+    /// A newer build migrated the database and lets this one run on it: this one changed nothing ([`window`]).
+    pub guest: Option<window::Recorded>,
 }
 
 pub struct Kernel {
@@ -326,32 +329,76 @@ impl Kernel {
                 Ok::<_, Error>(full)
             }
         };
+        // The two-version window (window.rs): a database a newer build migrated is first asked whether this build may run on
+        // it, as a guest that changes nothing; only a database that is this build's or behind it is migrated or checked.
         let full;
         if settings.migrate_at_start {
-            let before = db.applied_migrations().await?;
-            db.migrate().await?;
-            booted.migrations = db.applied_migrations().await?.into_iter().filter(|v| !before.contains(v)).collect();
-            full = combine(&db).await?;
-            booted.schema = ddl::sync(&db, &full, false).await?;
-            if !booted.schema.skipped {
-                tracing::info!(statements = booted.schema.statements, sql = ?booted.schema.sql_files_applied, warnings = booted.schema.warnings.len(), "schema synced");
+            // Held until the schema is synced: two builds of different ages starting together each decide on what the
+            // other left, never between its migrating and its recording.
+            let mut deciding = window::Deciding::lock(&db).await?;
+            let decided = async {
+                match deciding.standing(&db).await? {
+                    window::Standing::Refused(why) => Err(Error::Invalid(why)),
+                    window::Standing::Guest(rec) => {
+                        let full = combine(&db).await?;
+                        window::admit(&db, &full, rec).await?;
+                        booted.guest = Some(rec);
+                        Ok(full)
+                    }
+                    window::Standing::Level => {
+                        let before = db.applied_migrations().await?;
+                        db.migrate().await?;
+                        booted.migrations = db.applied_migrations().await?.into_iter().filter(|v| !before.contains(v)).collect();
+                        let full = combine(&db).await?;
+                        // Records this build's date and COMPATIBLE_FROM too, even when nothing else changed.
+                        booted.schema = ddl::sync(&db, &full, false).await?;
+                        if !booted.schema.skipped {
+                            tracing::info!(statements = booted.schema.statements, sql = ?booted.schema.sql_files_applied, warnings = booted.schema.warnings.len(), "schema synced");
+                        }
+                        Ok(full)
+                    }
+                }
             }
+            .await;
+            deciding.release().await;
+            full = decided?;
         } else {
             // Another step has brought the database here (`ferrum task migrate`): this only checks that it did.
-            // As a migrating start refuses a database a newer build migrated, so does this one.
-            if let Some(newer) = db.unknown_migrations().await?.first() {
-                return Err(Error::Invalid(format!(
-                    "the database was migrated by a newer build than this one: it has migration {newer}, which this build does not know. Start the build that migrated it"
-                )));
+            let mut conn = db.pool.acquire().await?;
+            let standing = window::standing(window::build_date(), window::dated(), &db.unknown_migrations().await?, window::recorded(&mut conn).await?);
+            drop(conn);
+            match standing {
+                window::Standing::Refused(why) => return Err(Error::Invalid(why)),
+                window::Standing::Guest(rec) => {
+                    full = combine(&db).await?;
+                    window::admit(&db, &full, rec).await?;
+                    booted.guest = Some(rec);
+                }
+                window::Standing::Level => {
+                    let pending = db.pending_migrations().await?;
+                    if !pending.is_empty() {
+                        return Err(not_migrated(&format!(
+                            "{} of this build's database migrations are not applied (the first is {})",
+                            pending.len(),
+                            pending[0]
+                        )));
+                    }
+                    full = combine(&db).await?;
+                    if !ddl::is_current(&db, &full).await? {
+                        return Err(not_migrated("the schema was last synced for other packages than this build's"));
+                    }
+                }
             }
-            let pending = db.pending_migrations().await?;
-            if !pending.is_empty() {
-                return Err(not_migrated(&format!("{} of this build's database migrations are not applied (the first is {})", pending.len(), pending[0])));
-            }
-            full = combine(&db).await?;
-            if !ddl::is_current(&db, &full).await? {
-                return Err(not_migrated("the schema was last synced for other packages than this build's"));
-            }
+        }
+        if booted.guest.is_some() || !settings.migrate_at_start {
+            ddl::words(&full)?;
+        }
+        if let Some(rec) = booted.guest {
+            tracing::warn!(
+                newer = %rec.build,
+                this = %window::build_date(),
+                "a newer build has migrated the database: this server runs on it as a guest, and leaves the schema, the start-up steps and the newer build's work alone"
+            );
         }
         let registry = Arc::new(Registry::new(&catalog, Arc::new(full), db.clone()));
         let kernel = Arc::new(Kernel {
@@ -371,7 +418,8 @@ impl Kernel {
             clock: Default::default(),
         });
         kernel.notice_restore().await?;
-        match kernel.adopt_customization_baselines().await {
+        // From this build's packages: a guest's are older than the database's (window.rs).
+        match if kernel.booted.guest.is_some() { Ok(0) } else { kernel.adopt_customization_baselines().await } {
             Ok(0) => {}
             Ok(n) => tracing::info!(customizations = n, "customizations compared from here on with what their packages say now"),
             Err(e) => tracing::warn!("customizations' baselines: {e}"),

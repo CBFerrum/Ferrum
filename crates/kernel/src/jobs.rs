@@ -141,7 +141,8 @@ impl Job {
 /// Queues a job in the caller's transaction: it exists only if that commits. Returns its id.
 pub async fn enqueue(tx: &mut Tx, tenant: Uuid, created_by: Option<Uuid>, job: NewJob) -> Result<Uuid> {
     let inserted: Option<Uuid> = sqlx::query_scalar(
-        "insert into job (tenant_id, id, kind, payload, priority, max_attempts, dedupe_key, created_by, undo_on_cancel) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+        "insert into job (tenant_id, id, kind, payload, priority, max_attempts, dedupe_key, created_by, undo_on_cancel, build_date) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
          on conflict (tenant_id, kind, dedupe_key) where dedupe_key is not null and status in ('queued', 'running') do nothing returning id",
     )
     .bind(tenant)
@@ -153,6 +154,7 @@ pub async fn enqueue(tx: &mut Tx, tenant: Uuid, created_by: Option<Uuid>, job: N
     .bind(&job.dedupe_key)
     .bind(created_by)
     .bind(job.undo_on_cancel)
+    .bind(crate::window::build_date())
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(id) = inserted {
@@ -247,6 +249,7 @@ impl Kernel {
              picked as ( \
                select claimed.tenant_id, claimed.id from (select tenant_id from waiting where tenant_id is not null order by random()) w \
                cross join lateral (select j.tenant_id, j.id from job j where j.tenant_id = w.tenant_id and (not j.cancel_requested or j.undo_on_cancel) \
+                 and (j.build_date is null or j.build_date <= $5) \
                  and ((j.status = 'queued' and j.run_at <= now()) or (j.status = 'running' and j.lease_until < now())) \
                  and (select count(*) from job r where r.tenant_id = w.tenant_id and r.status = 'running' and r.lease_until >= now()) < $3 \
                  order by j.priority, j.run_at limit 1 for update of j skip locked) claimed \
@@ -260,6 +263,8 @@ impl Kernel {
         .bind(LEASE.as_secs_f64())
         .bind(TENANT_RUNNING)
         .bind(slots as i64)
+        // A newer build's jobs wait for a replica of it, rather than failing here as a kind nothing runs (window.rs).
+        .bind(crate::window::build_date())
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;

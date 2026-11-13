@@ -125,7 +125,12 @@ impl Hooks for App {
     }
 
     fn app_version() -> String {
-        format!("{} ({})", env!("CARGO_PKG_VERSION"), option_env!("BUILD_SHA").or(option_env!("GITHUB_SHA")).unwrap_or("dev"))
+        format!(
+            "{} ({}, built from a commit of {})",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("BUILD_SHA").or(option_env!("GITHUB_SHA")).unwrap_or("dev"),
+            ferrum_kernel::window::build_date().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        )
     }
 
     async fn boot(mode: StartMode, environment: &Environment, config: Config) -> Result<BootResult> {
@@ -267,20 +272,29 @@ impl Hooks for App {
         let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())
             .map_err(Error::Message)?;
         let shell = Arc::new(crate::shell::Shell::new(kernel.clone(), storage.clone(), &settings, &ctx.config.server.host));
-        // Workspaces from before this release's package layout move onto it (logged, not fatal:
-        // the next start tries again).
-        if migrating {
-            // The task runs the steps itself, to print them and to fail when one fails.
-        } else if migrate_now {
-            if let Err(e) = crate::upgrade::run(&kernel).await {
-                tracing::error!("moving workspaces onto this release's packages failed: {e}");
+        // What would put this build's older things back on a newer build's database (crates/kernel/src/window.rs): held
+        // so that no newer build migrates meanwhile, and left out by a guest (the upgrade steps and their marker, apps
+        // recorded at this build's versions, interfaces registered for them).
+        match kernel.hold_start().await.map_err(|e| Error::Message(format!("kernel boot: {e}")))? {
+            Some(hold) => {
+                // Workspaces from before this release's package layout move onto it (logged, not fatal:
+                // the next start tries again).
+                if migrating {
+                    // The task runs the steps itself, to print them and to fail when one fails.
+                } else if migrate_now {
+                    if let Err(e) = crate::upgrade::run(&kernel).await {
+                        tracing::error!("moving workspaces onto this release's packages failed: {e}");
+                    }
+                } else {
+                    crate::upgrade::verify(&kernel).await.map_err(|e| Error::Message(e.to_string()))?;
+                }
+                apps.ensure_native("erp", "accounting").await;
+                apps.ensure_native("studio", "studio").await;
+                crate::shell::register_compiled(&kernel, &storage, &settings, &apps).await;
+                hold.release().await;
             }
-        } else {
-            crate::upgrade::verify(&kernel).await.map_err(|e| Error::Message(e.to_string()))?;
+            None => tracing::warn!("a newer build has this database: its upgrade steps, apps and interfaces are left as that build made them"),
         }
-        apps.ensure_native("erp", "accounting").await;
-        apps.ensure_native("studio", "studio").await;
-        crate::shell::register_compiled(&kernel, &storage, &settings, &apps).await;
         if settings.dev_ui {
             tracing::warn!("FERRUM_DEV_UI is on: administrators may serve apps' pages from development servers on this machine; never on a server people use");
         }
