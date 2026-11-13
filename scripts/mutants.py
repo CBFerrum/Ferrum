@@ -145,12 +145,15 @@ MUTANTS = [
     # BD-29: a connection reaches only public addresses on its own hosts, within its limits, once per key, for whom it says.
     ('conn-private-address-called', 'crates/kernel/src/connections/mod.rs', 'if !open && addrs.iter().any(|a| blocked(a.ip())) {', 'if false && addrs.iter().any(|a| blocked(a.ip())) {', CONNECTIONS),
     ('conn-blocked-ranges-shrunk', 'crates/kernel/src/connections/mod.rs', 'if crate::outbox::is_private(ip) {\n        return true;\n    }', 'if crate::outbox::is_private(ip) {\n        return false;\n    }', CONNECTIONS_UNIT),
-    ('conn-other-host-reached', 'crates/kernel/src/connections/mod.rs', 'if !reach.hosts.is_empty() && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', 'if false && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', CONNECTIONS),
+    ('conn-other-host-reached', 'crates/kernel/src/connections/mod.rs', 'if !reach.any && !reach.hosts.is_empty() && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', 'if false && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', CONNECTIONS),
+    # BD-64, BD-65: a public address's signature checked; reading any host only for a description without credentials.
+    ('conn-pulled-signature-ignored', 'crates/kernel/src/connections/public.rs', 'if self.settings.secret_key.is_none() || !same(&self.address_signature(id)?, signature) {', 'if self.settings.secret_key.is_none() {', CONNECTIONS),
+    ('conn-any-host-with-auth', 'crates/kernel/src/connections/mod.rs', 'if !matches!(self.auth, Auth::None) {', 'if false {', CONNECTIONS),
     ('conn-plain-http-called', 'crates/kernel/src/connections/mod.rs', '"http" if open => {}', '"http" => {}', CONNECTIONS),
     ('conn-answer-unbounded', 'crates/kernel/src/connections/mod.rs', 'max_bytes: self.desc.max_bytes.unwrap_or(DEFAULT_MAX_BYTES),', 'max_bytes: MAX_BYTES,', CONNECTIONS),
     ('conn-key-calls-twice', 'crates/kernel/src/connections/mod.rs', 'if let Some(key) = key.filter(|_| changes) {', 'if let Some(key) = key.filter(|_| false) {', CONNECTIONS),
     ('conn-other-inputs-adopted', 'crates/kernel/src/connections/mod.rs', 'return if was == given {', 'return if true {', CONNECTIONS),
-    ('conn-refusal-retried', 'crates/kernel/src/connections/mod.rs', 'Ok(a) if temporary.contains(&a.status) => (Outcome::Later', 'Ok(a) if a.status >= 400 => (Outcome::Later', CONNECTIONS),
+    ('conn-refusal-retried', 'crates/kernel/src/connections/mod.rs', 'Ok(a) if temporary.contains(&a.status) || holds(&more.temporary_if, &a) => (Outcome::Later', 'Ok(a) if a.status >= 400 => (Outcome::Later', CONNECTIONS),
     ('conn-secret-unmasked', 'crates/kernel/src/connections/mod.rs', '.filter(|m| m.len() >= 4)', '.filter(|m| m.is_empty())', CONNECTIONS_UNIT),
     ('conn-anyone-may-use', 'crates/kernel/src/connections/mod.rs', 'None => ctx.is_system || ctx.is_admin || desc.roles', 'None => true || desc.roles', CONNECTIONS),
     ('conn-path-steered', 'crates/kernel/src/connections/mod.rs', 'out.write_str(&pct(&text))', 'out.write_str(&text)', CONNECTIONS_UNIT),
@@ -916,7 +919,7 @@ MUTANTS = [
     ("map-required-ignored", "crates/kernel/src/connections/inbound.rs", "                if p.required && v.is_null() {", "                if false && v.is_null() {", CONNECTIONS),
     ("retry-after-ignored", "crates/kernel/src/jobs.rs", "Error::RetryAfter(_, secs) => *secs as f64,", "Error::RetryAfter(_, _) => backoff(job.attempts),", CONNECTIONS),
     ("retry-after-uncapped", "crates/kernel/src/connections/mod.rs", "    Some(secs.clamp(1, MAX_RETRY_AFTER))", "    Some(secs.max(1))", CONNECTIONS_UNIT),
-    ("answer-expr-reads-secrets", "crates/kernel/src/connections/mod.rs", "let vars = [(\"answer\", &a.body), (\"headers\", &headers), (\"inputs\", inputs), (\"connection\", &connection), (\"now\", &now), (\"today\", &today)];", "let secret = json!(conn.secrets);\n        let vars = [(\"answer\", &a.body), (\"headers\", &headers), (\"inputs\", inputs), (\"connection\", &connection), (\"now\", &now), (\"today\", &today), (\"secret\", &secret)];", CONNECTIONS),
+    ("answer-expr-reads-secrets", "crates/kernel/src/connections/mod.rs", "            (\"account\", &account),\n        ];", "            (\"account\", &account),\n            (\"secret\", &json!(conn.secrets)),\n        ];", CONNECTIONS),
     # BD-47: files sent are the caller's to read and within the operation's limit; files an answer names are fetched within the connection's hosts.
     ("sent-file-any-reader", "crates/kernel/src/connections/mod.rs", "let info = self.file_info(ctx, id).await.map_err(", "let info = self.file_info(&Ctx::system(ctx.tenant, ctx.schema.clone()), id).await.map_err(", CONNECTIONS),
     ("sent-file-uncapped", "crates/kernel/src/connections/mod.rs", "let cap = part.max_bytes.unwrap_or(DEFAULT_FILE_BYTES).min(*budget);", "let cap = MAX_FILE_BYTES;", CONNECTIONS),
