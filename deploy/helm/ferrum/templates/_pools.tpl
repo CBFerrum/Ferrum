@@ -77,7 +77,8 @@ Call with the root context: include "ferrum.pools" . | fromJson
 {{- /* The connection budget: every pool at its most replicas, the migrate Job, and what else uses the role
 (scripts/check_manifests.py: OTHERS), within the role's limit (database.yaml). Each replica opens its pool and 6 beside
 it (BESIDE in scripts/check_manifests.py). With the pooler, each replica
-counts only its direct connections and the pooler its own. Checked with pools or the pooler on. */ -}}
+counts only its direct connections and the pooler its own. Each pool counts its most replicas plus the pods a rollout
+adds (ferrum.maxSurge). Checked with pools or the pooler on. */ -}}
 {{- $pl := $v.database.pooler -}}
 {{- if and $v.database.enabled (or $v.pools $pl.enabled) -}}
 {{- $need := 20 -}}
@@ -88,14 +89,17 @@ counts only its direct connections and the pooler its own. Checked with pools or
 {{- $parts = append $parts (printf "the pooler %d x %d" (int $pl.instances) (int $per)) -}}
 {{- end -}}
 {{- range $out -}}
-{{- $r := ternary .autoscaling.maxReplicas .replicas .autoscaling.enabled | int -}}
-{{- if and .keda .keda.enabled }}{{ $r = int .keda.maxReplicas }}{{ end -}}
+{{- $m := ternary .autoscaling.maxReplicas .replicas .autoscaling.enabled | int -}}
+{{- if and .keda .keda.enabled }}{{ $m = int .keda.maxReplicas }}{{ end -}}
+{{- /* A rollout runs maxSurge more pods beside them. */ -}}
+{{- $s := int (include "ferrum.maxSurge" $) -}}
+{{- $r := add $m $s -}}
 {{- if and $pl.enabled $pl.used -}}
 {{- $need = add $need (mul $r (int $pl.directConnectionsPerReplica)) -}}
-{{- $parts = append $parts (printf "%s %d x %d direct" (.name | default "ferrum") $r (int $pl.directConnectionsPerReplica)) -}}
+{{- $parts = append $parts (printf "%s (%d + %d in a rollout) x %d direct" (.name | default "ferrum") $m $s (int $pl.directConnectionsPerReplica)) -}}
 {{- else -}}
 {{- $need = add $need (mul $r (add (int .dbMaxConnections) 6)) -}}
-{{- $parts = append $parts (printf "%s %d x (%d + 6)" (.name | default "ferrum") $r (int .dbMaxConnections)) -}}
+{{- $parts = append $parts (printf "%s (%d + %d in a rollout) x (%d + 6)" (.name | default "ferrum") $m $s (int .dbMaxConnections)) -}}
 {{- end -}}
 {{- end -}}
 {{- if eq (include "ferrum.migrateJob" .) "true" -}}
@@ -142,6 +146,9 @@ Call with (list . pool). */}}
 
 {{/* "true" when the migrate Job is rendered. Not on the first install with the chart's own database: the
 hook would run before the database exists, so the pods migrate themselves that once. */}}
+{{/* Extra pods a server Deployment runs during a rollout (its strategy's maxSurge); the budget counts them. */}}
+{{- define "ferrum.maxSurge" -}}1{{- end -}}
+
 {{- define "ferrum.migrateJob" -}}
 {{- if and .Values.migrate.enabled (or (not .Values.database.enabled) .Release.IsUpgrade) }}true{{ end -}}
 {{- end -}}

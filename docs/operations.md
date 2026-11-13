@@ -114,15 +114,16 @@ its own, counted like a replica.
 
 | Who | Connections at the most, in the manifests |
 |---|---|
-| API, 9 replicas × (30 + 6) | 324 |
+| API, 9 replicas and 1 more during a rollout (`maxSurge`) × (30 + 6) | 360 |
 | Cloud's controller, 2 replicas × (6 + 4), if deployed | 20 |
-| The role's limit | 370 |
-| Left for administration and replication | 30 |
+| The role's limit | 380 |
+| Left of `max_connections` (400): an administrator, the standbys' replication, CloudNativePG's checks and monitoring | 20 |
 
-Until 14 November the manifests counted 4 beside the pool and allowed 10 replicas: 10 × 36 + 20 = 380,
-above the role's limit, so the autoscaler's maximum is now 9 (lowering it replaces nothing that runs;
-raising the role's limit instead would need a higher `max_connections`, which restarts PostgreSQL). Past
-9, put the pooler in front.
+Until 14 November the manifests counted 4 beside the pool, no pod a rollout adds, and allowed 10 replicas:
+(10 + 1) × 36 + 20 = 416, above the role's limit of 370. The autoscaler's maximum is now 9 and the role's
+limit 380. CloudNativePG applies a managed role's `connectionLimit` with `ALTER ROLE … CONNECTION LIMIT` on
+the primary, so changing it restarts nothing; raising `max_connections` would restart PostgreSQL. Past 9, put
+the pooler in front.
 
 `python3 scripts/check_manifests.py` fails when those stop adding up, and when a workload sets `replicas`
 under an autoscaler: every apply would put the count back. The Helm chart's migrate Job is a process of its own
@@ -962,11 +963,12 @@ The exact commands, what each move replaces and what to watch are in "Moving fro
 
 **Connection budget.** Every replica may open `dbMaxConnections + 6` connections ("Database role" above), and the
 migrate Job (when it runs) as many again. With pools, the chart adds up every pool at its most replicas (`maxReplicas`, or
-`replicas` without an autoscaler), the migrate Job and 20 for other users of the role (as
+`replicas` without an autoscaler) plus the pod a rollout adds (`maxSurge`, 1; `check_manifests.py` reads each
+Deployment's own, a percentage rounded up against its most replicas), the migrate Job and 20 for other users of the role (as
 `scripts/check_manifests.py` does), and refuses to render when the sum is above `database.connectionLimit`.
 Each preset says its sum. Without pools the chart refuses nothing new: check it with
 `helm template ... | python3 scripts/check_manifests.py -`, which adds up every server Deployment and Job it
-is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With today's defaults and `migrate.enabled`, that is 380 of 370: lower `autoscaling.maxReplicas`
+is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With today's defaults and `migrate.enabled`, that is 416 of 380: lower `autoscaling.maxReplicas`
 to 8 when you turn the Job on.)
 
 **Connection pooler.** `database.pooler.enabled` puts PgBouncer (CloudNativePG's `Pooler`, `ferrum-db-pooler`,

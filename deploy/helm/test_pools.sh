@@ -117,10 +117,11 @@ refuses "its zone pub admits no staff" "${small[@]}" --set-json 'zones={"pub":{"
 refuses 'zone "nope" is not in zones' "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"b","zone":"nope"}]'
 refuses 'names the gateway "private", which is not enabled' "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"b","routes":[{"gateway":"private","apps":["x"]}]}]'
 refuses 'defaultPool "nope" is not a pool' "${small[@]}" --set gateway.defaultPool=nope --set-json 'pools=[{"name":"web"}]'
-refuses "more than database.connectionLimit 370" --set-json 'pools=[{"name":"web"},{"name":"b"}]'
-# 2 x 36 + 2 x 36 + 20 fits; the migrate Job's 36 more, with a limit of 180, does not.
-tpl "${small[@]}" --set database.connectionLimit=180 --set-json 'pools=[{"name":"web"},{"name":"b"}]' > /dev/null
-refuses "the migrate Job 30 + 6" "${small[@]}" --set database.connectionLimit=180 --set migrate.enabled=true --set-json 'pools=[{"name":"web"},{"name":"b"}]' --is-upgrade
+refuses "more than database.connectionLimit 380" --set-json 'pools=[{"name":"web"},{"name":"b"}]'
+# (2 + 1) x 36 twice + 20 = 236 fits (one more pod each in a rollout); the migrate Job's 36 more, with a limit of
+# 240, does not.
+tpl "${small[@]}" --set database.connectionLimit=240 --set-json 'pools=[{"name":"web"},{"name":"b"}]' > /dev/null
+refuses "the migrate Job 30 + 6" "${small[@]}" --set database.connectionLimit=240 --set migrate.enabled=true --set-json 'pools=[{"name":"web"},{"name":"b"}]' --is-upgrade
 refuses "privateGateway.defaultPool: with pools, name the pool" "${small[@]}" --set privateGateway.enabled=true --set-json 'pools=[{"name":"web"},{"name":"b"}]'
 tpl --set privateGateway.enabled=true > /dev/null  # without pools, the one pool answers it
 refuses "cannot be background: only" --set-json 'pools=[{"name":"web","background":"only"}]'
@@ -197,15 +198,28 @@ servers = pol["spec"]["ingress"][0]["from"][0]["podSelector"]["matchExpressions"
 assert servers == ["ferrum", "ferrum-worker"], servers
 assert any(d["kind"] == "PodDisruptionBudget" and d["metadata"]["name"] == "ferrum-db-pooler" for d in docs)
 PY2
-# 8 x 8 + 2 x 8 + 2 x 40 + 36 + 20 = 216 fits 220; one more instance does not.
+# (6 + 1) x 8 + (2 + 1) x 8 + 2 x 40 + 36 + 20 = 216 fits 220; one more instance does not.
 tpl --set database.pooler.enabled=true --set database.connectionLimit=220 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade > /dev/null
 refuses "the pooler 3 x 40" --set database.pooler.enabled=true --set database.pooler.instances=3 --set database.connectionLimit=220 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade
 refuses "the pooler 2 x 45" --set database.pooler.enabled=true --set-json 'database.pooler.parameters={"reserve_pool_size":5}' --set database.pooler.directConnectionsPerReplica=40
-# Kept but not used: the server connects directly, and both count in the budget (9 x 36 + 2 x 40 + 20 = 424).
-refuses "the pooler 2 x 40, ferrum 9 x (30 + 6)" --set database.pooler.enabled=true --set database.pooler.used=false
-tpl --set database.pooler.enabled=true --set database.pooler.used=false --set autoscaling.maxReplicas=7 > "$tmp/unused.yaml"
+# Kept but not used: the server connects directly, and both count in the budget ((9 + 1) x 36 + 2 x 40 + 20 = 460).
+refuses "the pooler 2 x 40, ferrum (9 + 1 in a rollout) x (30 + 6)" --set database.pooler.enabled=true --set database.pooler.used=false
+tpl --set database.pooler.enabled=true --set database.pooler.used=false --set autoscaling.maxReplicas=6 > "$tmp/unused.yaml"
 grep -q 'kind: Pooler' "$tmp/unused.yaml" && ! grep -q FERRUM_DATABASE_DIRECT_URL "$tmp/unused.yaml"
 python3 scripts/check_manifests.py "$tmp/unused.yaml"
+echo "every pool gets the database addresses through the shared env helper"
+tpl -f "$chart/presets/zones.yaml" --set database.readReplicas.enabled=true --set database.pooler.enabled=true > "$tmp/zones-db.yaml"
+python3 - "$tmp/zones-db.yaml" <<'PY2'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+servers = [d for d in docs if d["kind"] == "Deployment" and any(e["name"] == "DATABASE_URL" for e in d["spec"]["template"]["spec"]["containers"][0].get("env", []))]
+assert len(servers) == 4, [d["metadata"]["name"] for d in servers]
+for d in servers:
+    names = [e["name"] for e in d["spec"]["template"]["spec"]["containers"][0]["env"]]
+    for want in ("FERRUM_DATABASE_DIRECT_URL", "FERRUM_DATABASE_READ_URL", "FERRUM_DATABASE_READ_MAX_LAG_SECS"):
+        assert want in names, (d["metadata"]["name"], want)
+    assert d["spec"]["strategy"]["rollingUpdate"]["maxSurge"] == 1, "the budget counts 1"
+PY2
 echo "the read address points the server at the standbys, never the migrate Job, and needs a standby"
 tpl --set database.readReplicas.enabled=true --set migrate.enabled=true --set autoscaling.maxReplicas=8 --is-upgrade > "$tmp/ro.yaml"
 python3 scripts/check_manifests.py "$tmp/ro.yaml"
@@ -250,7 +264,7 @@ refuses "must never both scale one Deployment" -f "$chart/presets/split.yaml" --
 refuses "for a pool with background: only" -f "$chart/presets/split.yaml" --set keda.prometheusAddress=x --set-json 'pools[0]={"name":"web","background":"off","autoscaling":{"enabled":false},"keda":{"enabled":true}}'
 refuses "set keda.prometheusAddress" -f "$chart/presets/split.yaml" --set-json 'pools[1]={"name":"worker","background":"only","autoscaling":{"enabled":false},"keda":{"enabled":true,"maxReplicas":2}}'
 refuses "keda.minReplicas must be at least 1" "${kedaon[@]}" --set keda.minReplicas=0
-refuses "worker 9 x (20 + 6)" "${kedaon[@]}" --set keda.maxReplicas=9 --set-json 'pools[1]={"name":"worker","background":"only","autoscaling":{"enabled":false},"keda":{"enabled":true},"dbMaxConnections":20}'
+refuses "worker (9 + 1 in a rollout) x (20 + 6)" "${kedaon[@]}" --set keda.maxReplicas=9 --set-json 'pools[1]={"name":"worker","background":"only","autoscaling":{"enabled":false},"keda":{"enabled":true},"dbMaxConnections":20}'
 
 echo "each pool takes its own scheduling: node selector, tolerations, affinity, spread and priority"
 tpl -f "$chart/presets/zones.yaml" --set-json 'pools[0].nodeSelector={"ferrum.dev/nodes":"private"}' \

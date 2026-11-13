@@ -28,7 +28,7 @@ spec:
   # migrated: the two-version window (docs/operations.md, Rolling back).
   strategy:
     type: RollingUpdate
-    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+    rollingUpdate: {maxSurge: {{ include "ferrum.maxSurge" . }}, maxUnavailable: 0}
   template:
     metadata:
       {{- if $pooled }}

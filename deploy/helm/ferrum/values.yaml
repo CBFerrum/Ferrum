@@ -61,7 +61,8 @@ replicas: 3     # used only when autoscaling.enabled is false
 autoscaling:
   enabled: true
   minReplicas: 3
-  # Each replica may open dbMaxConnections + 6 connections; 9 x 36 and 20 for others fit connectionLimit 370.
+  # Each replica may open dbMaxConnections + 6 connections; (9 + 1 in a rollout) x 36 and 20 for others fit
+  # connectionLimit 380.
   # Add a PgBouncer pooler before raising this.
   maxReplicas: 9
   cpuUtilization: 70
@@ -193,9 +194,9 @@ database:
   imageName: ghcr.io/cloudnative-pg/postgresql:17
   storageSize: 100Gi
   walStorageSize: 20Gi
-  # What the application role may hold; max_connections minus 30 for administration,
-  # replication and a migration.
-  connectionLimit: 370
+  # What the application role may hold: max_connections minus 20 for an administrator, the standbys'
+  # replication and CloudNativePG's checks and monitoring. Changed with ALTER ROLE: no restart.
+  connectionLimit: 380
   parameters:
     max_connections: "400"
     shared_buffers: 2GB

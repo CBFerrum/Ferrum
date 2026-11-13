@@ -54,6 +54,20 @@ def per_replica(spec, pooler):
     return size + BESIDE
 
 
+def surge(workload, most):
+    """Pods a rollout runs beside `most` replicas: the Deployment's maxSurge, a percentage rounded up against `most`
+    (Kubernetes' default 25%). A Job or StatefulSet runs none."""
+    if workload.get("kind") != "Deployment":
+        return 0
+    strategy = workload["spec"].get("strategy", {})
+    if strategy.get("type") == "Recreate":
+        return 0
+    value = strategy.get("rollingUpdate", {}).get("maxSurge", "25%")
+    if isinstance(value, str) and value.endswith("%"):
+        return -(-most * int(value[:-1]) // 100)
+    return int(value)
+
+
 def pooler_connections(pooler):
     """A PgBouncer pooler's connections to PostgreSQL: each instance's pool and reserve (PgBouncer's defaults
     20 and 0)."""
@@ -99,7 +113,8 @@ def problems(docs):
         if each is None:
             continue
         through = pooler is not None and through_pooler(entry[1]["spec"])
-        needed = hpa["spec"]["maxReplicas"] * each + OTHERS + (pooler_connections(pooler) if through else 0)
+        most = hpa["spec"]["maxReplicas"]
+        needed = (most + surge(entry[1], most)) * each + OTHERS + (pooler_connections(pooler) if through else 0)
         spec = clusters[0]["spec"]
         allowed = int(spec["postgresql"]["parameters"]["max_connections"])
         roles = spec.get("managed", {}).get("roles", [])
@@ -109,10 +124,10 @@ def problems(docs):
         elif limit > allowed - RESERVED:
             found.append(f"database: the ferrum role may hold {limit} of {allowed}, leaving less than {RESERVED}")
         if limit >= 0 and needed > limit:
-            found.append(f"{target['name']}: at {hpa['spec']['maxReplicas']} replicas it needs {needed} connections, and the role may hold {limit}")
+            found.append(f"{target['name']}: at {most} replicas and {surge(entry[1], most)} more in a rollout it needs {needed} connections, and the role may hold {limit}")
 
     # Every workload on the role at once: each server Deployment at its most replicas (its autoscaler's
-    # maximum, or its replicas), and each Job that runs the server (a migration).
+    # maximum, or its replicas) and the pods a rollout adds, and each Job that runs the server (a migration).
     if not clusters:
         return found
     roles = clusters[0]["spec"].get("managed", {}).get("roles", [])
@@ -125,7 +140,7 @@ def problems(docs):
             if each is not None:
                 key = (d["kind"], d["metadata"]["name"])
                 n = most.get(key, d["spec"].get("parallelism" if d["kind"] == "Job" else "replicas", 1))
-                parts.append((key, n * each))
+                parts.append((key, (n + surge(d, n)) * each))
     if pooler:
         parts.append((("Pooler", pooler["metadata"]["name"]), pooler_connections(pooler)))
     needed = sum(n for _, n in parts) + OTHERS

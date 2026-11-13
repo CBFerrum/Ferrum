@@ -5,9 +5,9 @@ metadata:
 spec:
   scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: ferrum}
   minReplicas: 3
-  # Each replica may open 36 database connections (its pool of 30, 4 side, 2 of Loco's own); 9 × 36 and
-  # Cloud's 20 fit the role's limit of 370 (docs/operations.md, "Database role"). Add a PgBouncer pooler before
-  # raising this.
+  # Each replica may open 36 database connections (its pool of 30, 4 side, 2 of Loco's own); (9 + 1 in a
+  # rollout) × 36 and Cloud's 20 fit the role's limit of 380 (docs/operations.md, "Database role"). Add a
+  # PgBouncer pooler before raising this.
   maxReplicas: 9
   metrics:
     - type: Resource
