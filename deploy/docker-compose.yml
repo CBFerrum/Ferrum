@@ -54,6 +54,11 @@ services:
       FERRUM_OPS_TELEMETRY_DAYS: ${FERRUM_OPS_TELEMETRY_DAYS:-30}
       FERRUM_BOOTSTRAP_TOKEN: ${FERRUM_BOOTSTRAP_TOKEN:-}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      # Names that should never change (docs/operations.md): empty keeps each as before.
+      FERRUM_ACCOUNTS_HOST: ${FERRUM_ACCOUNTS_HOST:-}
+      FERRUM_HOOKS_HOST: ${FERRUM_HOOKS_HOST:-}
+      FERRUM_PASSKEY_RP: ${FERRUM_PASSKEY_RP:-}
+      FERRUM_LINK_HOST: ${FERRUM_LINK_HOST:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Single server: attachments on the local volume. Set FERRUM_S3_BUCKET (and FERRUM_S3_ENDPOINT,
       # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY for MinIO/R2/...) to use object storage instead.

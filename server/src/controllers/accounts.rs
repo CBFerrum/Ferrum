@@ -71,12 +71,9 @@ fn state_param(state: &str) -> Option<&str> {
     (!state.is_empty() && state.len() <= 128 && state.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')).then_some(state)
 }
 
-/// The workspace a host serves the shell for.
+/// The workspace a host serves the shell for ([`shell::Shell::workspace_at`]).
 async fn workspace_at(st: &AppState, bare: &str) -> Result<Option<Uuid>, ApiError> {
-    Ok(match st.kernel.route_host(bare).await? {
-        HostRoute::Serve { tenant, target } if target == "shell" => Some(tenant),
-        _ => None,
-    })
+    Ok(st.shell.workspace_at(bare).await?)
 }
 
 fn callback(st: &AppState, host: &str, code: &str, state: &str) -> String {
@@ -311,7 +308,7 @@ async fn directory(State(app): State<AppContext>, Query(q): Query<Vec<(String, S
     let Some(bare) = query(&q, "host").and_then(normalize_host) else { return Ok(StatusCode::NOT_FOUND.into_response()) };
     let ours = match st.kernel.route_host(&bare).await? {
         HostRoute::Serve { .. } | HostRoute::Moved { .. } => true,
-        HostRoute::Unknown => st.shell.base().is_some_and(|b| bare == format!("{}.{b}", ferrum_kernel::identity::DIRECTORY) || bare == format!("hooks.{b}")),
+        HostRoute::Unknown => st.shell.is_own_host(&bare),
     };
     if !ours {
         return Ok(StatusCode::NOT_FOUND.into_response());

@@ -143,6 +143,9 @@ impl Hooks for App {
 
     async fn after_context(ctx: AppContext) -> Result<AppContext> {
         let settings = Settings::from_ctx(&ctx)?;
+        // The hosts this server names for itself, checked before it connects to or writes anything, on every start
+        // (a guest of a newer build's database too).
+        crate::shell::check_names(&settings, &ctx.config.server.host).map_err(Error::Message)?;
         // `ferrum task migrate` is what brings the database up to date, whatever the setting says.
         let migrating = is_migrate_task(std::env::args());
         let migrate_now = settings.migrate_at_start || migrating;
@@ -240,7 +243,10 @@ impl Hooks for App {
                 push_services: push_services(&settings.push_services),
                 push_contact: Some(settings.push_contact.trim().to_string()).filter(|c| c.starts_with("mailto:") || c.starts_with("https://")),
                 hold_on_timeline: std::env::var("FERRUM_HOLD_ON_TIMELINE").map_or(true, |v| v != "false"),
-                accounts_host: crate::shell::base_domain(&settings).map(|b| format!("{DIRECTORY}.{b}", DIRECTORY = ferrum_kernel::identity::DIRECTORY)),
+                accounts_host: crate::shell::accounts_host(&settings),
+                hooks_url: crate::shell::hooks_url(&settings, &ctx.config.server.host),
+                passkey_rp: crate::shell::host_setting("FERRUM_PASSKEY_RP", &settings.passkey_rp).ok().flatten(),
+                link_host: crate::shell::host_setting("FERRUM_LINK_HOST", &settings.link_host).ok().flatten(),
                 plans,
                 signup,
                 process_runtime: processes,
@@ -309,11 +315,16 @@ impl Hooks for App {
         }
         // Shapes B and C (docs/plan/apps-ui.md §7, §9.3): the directory of Ferrum accounts, and every
         // workspace's subdomain of the base domain.
-        if let Some(base) = crate::shell::base_domain(&settings) {
-            if ferrum_kernel::shell::normalize_host(&format!("{}.{base}", ferrum_kernel::identity::DIRECTORY)).is_none() {
-                return Err(Error::Message(format!("settings.base_domain ({base}) is not a domain name")));
-            }
+        if let Some(base) = crate::shell::base_domain(&settings)
+            && ferrum_kernel::shell::normalize_host(&format!("{}.{base}", ferrum_kernel::identity::DIRECTORY)).is_none()
+        {
+            return Err(Error::Message(format!("settings.base_domain ({base}) is not a domain name")));
+        }
+        // An accounts host, with a base domain or set on its own: identities sign in there.
+        if crate::shell::accounts_host(&settings).is_some() {
             kernel.ensure_directory().await.map_err(|e| Error::Message(format!("the accounts directory: {e}")))?;
+        }
+        if let Some(base) = crate::shell::base_domain(&settings) {
             match kernel.ensure_subdomains(&base).await {
                 Ok(0) => {}
                 Ok(added) => tracing::info!(added, %base, "workspaces got their subdomains"),

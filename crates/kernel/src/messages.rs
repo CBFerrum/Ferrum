@@ -21,6 +21,7 @@ use crate::ctx::Ctx;
 use crate::db::Tx;
 use crate::error::{Error, Result};
 use crate::jobs::{Job, JobHandler, NewJob};
+use crate::notify::Audience::Outside;
 use crate::{Kernel, audit};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveTime, Timelike, Utc};
@@ -720,11 +721,16 @@ pub async fn render_for(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message, channel
     } else if promotional && k.opted_out(tx, ctx.tenant, channel, &address).await? {
         return Err(Error::Forbidden("opted out".into()));
     }
-    let opt_out = match (promotional, k.link_base(ctx.tenant).await, k.settings.secret_key.as_ref()) {
-        (false, ..) => None,
-        (true, Some(base), Some(key)) => Some(format!("{base}/api/messages/opt-out?token={}", opt_out_token(key, ctx.tenant, channel, &address))),
-        (true, ..) => return Err(Error::Unavailable("a promotional message needs the server's public address and key for its opt-out link".into())),
+    let opt_out = match (promotional, k.settings.secret_key.as_ref()) {
+        (false, _) => None,
+        (true, Some(key)) => {
+            k.person_link(ctx.tenant, Outside, &format!("/api/messages/opt-out?token={}", opt_out_token(key, ctx.tenant, channel, &address))).await
+        }
+        (true, None) => None,
     };
+    if promotional && opt_out.is_none() {
+        return Err(Error::Unavailable("a promotional message needs the server's public address and key for its opt-out link".into()));
+    }
     let doc = record_view(k, tx, ctx, m.entity.as_deref(), m.record).await?;
     let settings = crate::settings::load(k, ctx, tx, &settings_named(&def)).await?;
     let (language, b) = bodies(&def, r.language.as_deref(), workspace_language.as_deref());
@@ -947,7 +953,6 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Ve
     let doc = record_view(k, tx, ctx, m.entity.as_deref(), m.record).await?;
     let settings = crate::settings::load(k, ctx, tx, &settings_named(&def)).await?;
     let (cfg, workspace_language) = workspace(tx, ctx.tenant).await?;
-    let base = k.link_base(ctx.tenant).await;
     let mut out = Vec::new();
     let mut seen = Vec::new();
     for r in &m.to {
@@ -988,8 +993,11 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Ve
                     continue;
                 }
             };
-            let opt_out = match (&address, promotional, &base, k.settings.secret_key.as_ref()) {
-                (Some(a), true, Some(base), Some(key)) => format!("{base}/api/messages/opt-out?token={}", opt_out_token(key, ctx.tenant, ch, a)),
+            let opt_out = match (&address, promotional, k.settings.secret_key.as_ref()) {
+                (Some(a), true, Some(key)) => k
+                    .person_link(ctx.tenant, Outside, &format!("/api/messages/opt-out?token={}", opt_out_token(key, ctx.tenant, ch, a)))
+                    .await
+                    .unwrap_or_default(),
                 _ => String::new(),
             };
             let vars = variables(doc.clone(), settings.clone(), Value::Object(m.values.clone()), &opt_out);

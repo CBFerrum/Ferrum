@@ -42,9 +42,9 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `GET /sessions?user=` | → `{sessions: [{id, user_id, actor, created_at, last_seen_at, expires_at, user_agent, ip, current}]}`: the signed-in browsers of the caller (administrators: of `user`) |
 | `DELETE /sessions/{id}` | signs one browser out (one's own; administrators: anyone's) |
 | `POST /step-up` | `{password, code?}` → `204`: the person proved themselves again; sensitive actions accept the session for ten minutes |
-| `POST /passkey/options` | → `{request, publicKey}`: what the browser needs to sign in with a passkey on this host (`navigator.credentials.get`; binary fields base64url) |
+| `POST /passkey/options` | → `{request, publicKey, also?}`: what the browser needs to sign in with a passkey on this host (`navigator.credentials.get`; binary fields base64url). The relying party is the host, or `FERRUM_PASSKEY_RP` for a host under it; `also`, a second `{request, publicKey}` for passkeys made for this host itself before that was set, which the page asks for when the device offers none for the first. Each passkey is checked against the relying party it was made for, on this host's own origin |
 | `POST /passkey` | `{request, credential, session?}` → a session, as `/login`: the account the passkey belongs to (on a workspace's own host, only that workspace's); the device must have verified the person |
-| `POST /passkeys/options` | → `{request, publicKey}` for `navigator.credentials.create`: a passkey for the caller on this host; `403` unless the session signed in or stepped up in the last ten minutes |
+| `POST /passkeys/options` | → `{request, publicKey}` for `navigator.credentials.create`: a passkey for the caller on this host (for `FERRUM_PASSKEY_RP` when the host is it or under it); `403` unless the session signed in or stepped up in the last ten minutes |
 | `POST /passkeys` | `{request, credential, name}` → `201` the passkey kept; `GET /passkeys` → `{passkeys: [{id, name, rp_id, transports, created_at, last_used_at}]}`; `PATCH /passkeys/{id}` `{name}`; `DELETE /passkeys/{id}` |
 | `POST /password` | `{current_password, new_password}` (policy: ≥10 chars, 3 of lower/upper/digit/symbol) |
 | `GET /api_keys`, `POST /api_keys` `{name, expires_at?, scope?}` → `{id, key}`, `DELETE /api_keys/{id}` | API keys (secret shown once). `scope: "dav"` makes an app password for calendar and contacts apps: it signs them in at `/api/dav/…` over HTTP Basic (email and password) and is refused as a bearer token. `scope: "records:Customer=read;SalesInvoice=read+create"` makes a records key: it reaches only `/api/v1/…` and `/api/meta/…`, with its owner's rights narrowed to the entities and actions it names (`read`, `write`, `create`, `delete`, `submit`, `cancel`, `export`, `import`), never more than theirs, never an administrator's, and no field group; an unknown entity or action is a `422` |
@@ -87,7 +87,10 @@ provider ([OpenID Connect Back-Channel Logout](operations.md#sign-in-security)):
 
 With `FERRUM_BASE_DOMAIN` set ([operations](operations.md#many-workspaces-subdomains-and-ferrum-accounts),
 [plan](plan/apps-ui.md) §9.3, §12.3), each workspace is at `{slug}.{base}` (and any custom domain it
-verified), and people sign in once, at `accounts.{base}`, as their **Ferrum account**: one password,
+verified), and people sign in once, at `accounts.{base}`, as their **Ferrum account**. `FERRUM_ACCOUNTS_HOST`
+names another accounts host, and gives a server without a base domain one: then every host of a
+workspace (and a one-workspace server's public address) signs in there as described here
+([operations](operations.md#names-that-should-never-change)). The Ferrum account is one password,
 two-factor sign-in, passkeys and list of browsers for every workspace. A workspace's account joins a
 Ferrum account once the person proves it is theirs (its password, a code sent to its address, its
 single sign-on, or, with the address already proven by a code, confirming); never by the address
@@ -581,6 +584,14 @@ Pages, for browsers, with the session cookie:
   the other moved apps → their pages, anything else → `/`. `/app/sw.js` is a worker that clears
   today's web app's cache and removes itself.
 * `GET /healthz` → `ok` (for load balancers).
+* `GET /go/{workspace}/{s|p}/{path}?{query}` on the link host (`FERRUM_LINK_HOST`) only, whatever
+  else that host is: no session; `302` to `https://{host}/{path}?{query}`, where `host` is the
+  workspace's main host (`s`, staff) or its portal's host (`p`, people from outside; the main host when
+  it has none), or the server's public address when it has neither. `404` for an unknown or suspended
+  workspace, or a path that is not a plain path (one that starts with `//` or holds a backslash). The
+  host comes only from the workspace's own verified hosts; the path is kept as a path. Rate-limited per
+  client address. Mail, notifications, digests, action links and opt-out links are built this way
+  when the link host is set.
 * `GET /login?next=` → the sign-in page. On the portal's host, and on the way to `/portal/`, it
   offers an emailed code first.
 * `GET /portal/` → the workspace's portal ([plan](plan/apps-ui.md) §9.1): the pages the apps give
@@ -649,7 +660,7 @@ in the app's id; any other keeps the sandboxed frame), and its pages frame that 
 origin every path the server does not keep serves the app's page, with `#ferrum-bootstrap`
 `{v, app: {id, version, release, title}, workspace: {slug, name, origin}, oauth: {authorize, token,
 client_id, redirect_uri}}`, and its release's files by name; the policy allows `'self'` only and
-`frame-ancestors` the workspace's origins. Of the server's paths only `/api/v1/…`, `/api/meta/…`,
+`frame-ancestors` the workspace's origins (every host that serves its shell, and `PUBLIC_URL`). Of the server's paths only `/api/v1/…`, `/api/meta/…`,
 `/api/ext/{app}/…`, `POST /oauth/token` and `POST /oauth/revoke` answer there (the rest is 404), and
 no cookie is read or set on it.
 
@@ -1189,7 +1200,7 @@ their own sign-ins, whose tokens go and are revoked at the provider where it say
 | `GET /api/connections` | a person's own: `{connections: [{id, name, label, status, account}]}` |
 | `POST /api/connections/{id}/connect` | from the browser, signed in → `{url}` to send it to |
 | `DELETE /api/connections/{id}/connect` | disconnects (the workspace's: administrators) → `{revoked}` |
-| `GET /api/connections/callback` | where the provider sends the browser back; a page, no redirect |
+| `GET /api/connections/callback` | where the provider sends the browser back; a page. A sign-in started on another host of the same workspace (named, signed, in its `state`) is first sent on (`302`) to the same path and query on that host, where the person's session is; only a host that still serves that workspace |
 | `POST /api/connections/inbound/{id}` | no session: a call from outside → `{accepted: true}`, or `401 this call was not accepted` whatever the reason |
 | `GET /api/connections/inbound/{id}?…` | no session: the check a service makes before it delivers, where the description declares `handshake: {token, challenge, secret, expect?}` beside its `inbound` (`{"token": "hub.verify_token", "challenge": "hub.challenge", "secret": "verify", "expect": {"hub.mode": "subscribe"}}`): the challenge as plain text when the token equals the named secret (compared in constant time) and `expect` holds, else the same `401` ([BD-78](builder/decisions.md#bd-78-an-inbound-addresss-verification-handshake)); rate-limited as the POST |
 
@@ -1264,7 +1275,7 @@ as the system ([BD-58](builder/decisions.md#bd-58-a-mapping-that-writes-as-the-s
 sets (read-only ones, such as an id the other system gave) are set; on a person's own pull the records stay hers.
 
 **Signing in to an account**: `"auth": {"type": "oauth", "owner": "workspace" | "person", "provider": {…}}`, the
-redirect address registered at the provider being `{PUBLIC_URL}/api/connections/callback`. Two worked descriptions, with
+redirect address registered at the provider being `{PUBLIC_URL}/api/connections/callback` (`https://{FERRUM_HOOKS_HOST}/api/connections/callback` when that is set). Two worked descriptions, with
 placeholder addresses:
 
 ```json

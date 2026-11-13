@@ -704,7 +704,9 @@ the new primary host.
   `support.acme.com`) or `site:{app}` (an app's public site at the root, such as `shop.acme.com` for
   Commerce's storefront). Cached on every replica, invalidated by NOTIFY.
 * **One primary host** per workspace and target. Links, emails and redirects use it; other hosts of
-  the same target redirect to it, except while a move is in progress.
+  the same target redirect to it, except while a move is in progress. With `FERRUM_LINK_HOST`, emailed
+  and notified links go through `https://{link host}/go/{workspace}/{s|p}/…` instead, which leads to
+  the primary host when followed (docs/operations.md, "Names that should never change").
 * **Unknown hosts** are refused before any application code runs: no Host-header tricks, and no DNS
   left pointing at us can show someone else's workspace.
 * **Renamed or deleted workspaces**: their hosts redirect for 90 days, then stay quarantined for a year
@@ -718,7 +720,8 @@ the new primary host.
   gets both recipes.
 * **Fixed hosts for outside callers.** Identity providers (SSO), OAuth callbacks of mail and calendar
   connectors, payment and other webhooks use the server's canonical address (A, A′) or
-  `accounts.{base}` and `hooks.{base}` (B, C), with the workspace in signed state or in the path. Adding
+  `accounts.{base}` and `hooks.{base}` (B, C), with the workspace in signed state or in the path.
+  `FERRUM_ACCOUNTS_HOST` and `FERRUM_HOOKS_HOST` name these hosts in any shape, a base domain or not. Adding
   a custom domain never means re-registering a callback with Microsoft, Google or a payment provider.
 * **Public suffix.** In the cloud, workspace hosts live under a domain of their own that is listed in
   the Public Suffix List (as `github.io` is), and accounts and the website under another. Each workspace
@@ -1166,7 +1169,8 @@ the last two.
   `same-site` and `cross-site` are refused; without that header the `Origin` must equal the host.
   WebSocket upgrades need `Origin` equal to the host. Bearer-token requests are exempt (nothing ambient
   to abuse). The sign-in and OAuth forms keep their own tokens. About thirty lines, no new dependency.
-* **Shapes A and A′**: sign-in on the host. **B and C**: a host without a session redirects to
+* **Shapes A and A′**: sign-in on the host, unless `FERRUM_ACCOUNTS_HOST` gives the server an
+  accounts host: then shape A's public address hands sign-in to it as B does. **B and C**: a host without a session redirects to
   `accounts.{base}` with `prompt=none` first (a top-level redirect, never a hidden frame, since Safari
   and Firefox block third-party cookies), gets a code and sets its own cookie; a person already signed
   in sees no page.
@@ -1175,7 +1179,8 @@ the last two.
   shows sign-in. Sign-out sends `Clear-Site-Data: "cache"` but never `"storage"` (§16, offline).
 * **SSO** and outside OAuth callbacks use the fixed hosts of §7.2.
 * **Passkeys** (U6): the relying party is the host (A) or the accounts domain (B, C); custom domains
-  sign in through accounts.
+  sign in through accounts. `FERRUM_PASSKEY_RP` names a domain whose hosts share one relying party;
+  each passkey keeps the one it was made for.
 * **Bearer tokens** for API, MCP, mobile and CLI, and app passwords for CalDAV and CardDAV, are
   unchanged.
 * **App tokens for isolated UIs**: JWTs of a few minutes, audience the app, limited to the app's

@@ -75,6 +75,14 @@ fn from_page(headers: &HeaderMap) -> bool {
     headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("same-origin")
 }
 
+/// The accounts host's origin when this request's host hands sign-in to it: every host but a shared
+/// one (shape A′), where each workspace's people keep signing in with its own credentials, since no
+/// accounts host hands a sign-in to a host that serves several workspaces.
+pub(crate) async fn accounts_for(st: &AppState, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+    let Some(origin) = st.shell.accounts_origin(headers) else { return Ok(None) };
+    Ok((!matches!(st.shell.place(headers).await?, crate::shell::Place::Any)).then_some(origin))
+}
+
 /// A finished sign-in. API clients get a bearer token, as always. A page of this site also gets
 /// a browser session in the cookie (docs/plan/apps-ui.md §12.3), and, unless it asked for the
 /// cookie alone, a bearer token bound to that session for the pages that still send one.
@@ -82,7 +90,7 @@ pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &Heade
     // Shapes B and C: someone whose workspace account joined their Ferrum account signs in at the
     // accounts host, with that account's credentials; the workspace's own, unused since, open
     // nothing (for pages and API clients alike).
-    if let Some(accounts) = st.shell.accounts_origin(headers)
+    if let Some(accounts) = accounts_for(st, headers).await?
         && st.kernel.directory().await? != Some(s.tenant)
         && st.kernel.identity_of(s.tenant, s.user).await?.is_some()
     {
@@ -341,7 +349,7 @@ async fn me(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>
     let shell_v2 = st.shell.workspace(ctx.tenant).await?.shell_v2;
     // Shapes B and C: a joined account's password, two-step sign-in and passkeys are its Ferrum
     // account's, kept at the accounts host.
-    let accounts = match st.shell.accounts_origin(&headers) {
+    let accounts = match accounts_for(&st, &headers).await? {
         Some(origin) if st.kernel.identity_of(ctx.tenant, ctx.user).await?.is_some() => Some(origin),
         _ => None,
     };
@@ -436,7 +444,7 @@ async fn logout(State(app): State<AppContext>, method: axum::http::Method, heade
     res.headers_mut().insert("clear-site-data", HeaderValue::from_static("\"cache\""));
     // Shapes B and C: signed out of this host only; the next sign-in here asks which account
     // rather than going straight back in through the accounts host.
-    if st.shell.base().is_some() && matches!(st.shell.place(&headers).await?, crate::shell::Place::Workspace(_)) {
+    if st.shell.accounts_origin(&headers).is_some() && matches!(st.shell.place(&headers).await?, crate::shell::Place::Workspace(_)) {
         let secure = st.shell.secure;
         res.headers_mut().append(
             axum::http::header::SET_COOKIE,
@@ -526,7 +534,7 @@ async fn step_up(
     }
     // Shapes B and C: a joined account steps up with its Ferrum account's password (and app).
     let (slug, email) = match st.kernel.identity_of(ctx.tenant, ctx.user).await? {
-        Some((_, email)) if st.shell.base().is_some() => (DIRECTORY.to_string(), email),
+        Some((_, email)) if accounts_for(&st, &headers).await?.is_some() => (DIRECTORY.to_string(), email),
         _ => (st.shell.workspace(ctx.tenant).await?.slug.clone(), ctx.email.clone()),
     };
     match st.kernel.sign_in(&slug, &email, &req.password).await? {
@@ -547,7 +555,7 @@ async fn step_up(
 /// Shapes B and C: someone whose workspace account joined their Ferrum account has that account's
 /// password, two-step sign-in and passkeys, kept at the accounts host.
 async fn kept_by_identity(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kernel::Ctx) -> Result<(), ApiError> {
-    if let Some(accounts) = st.shell.accounts_origin(headers)
+    if let Some(accounts) = accounts_for(st, headers).await?
         && st.kernel.identity_of(ctx.tenant, ctx.user).await?.is_some()
     {
         return Err(ApiError(Error::Forbidden(format!("your Ferrum account keeps this; change it at {accounts}"))));
@@ -563,11 +571,12 @@ async fn kept_by_identity(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kerne
 
 // ── passkeys (docs/plan/apps-ui.md §12.3, U6; the kernel's passkey.rs) ──
 
-/// The relying party of a request: its host (a passkey works on the host it was made on), and
-/// the origins its pages have.
+/// The relying party of a request ([`ferrum_kernel::Kernel::passkey_rp`]: its host, or
+/// `FERRUM_PASSKEY_RP` for a host under it), and the one origin a ceremony on it may be answered
+/// from: this host's own (the kernel also checks that host may use the party).
 fn relying_party(st: &AppState, headers: &HeaderMap) -> Result<(String, Vec<String>), ApiError> {
     let host = crate::shell::request_host(headers).ok_or_else(|| ApiError(Error::invalid("no host")))?.to_ascii_lowercase();
-    let rp = host.split(':').next().unwrap_or_default().to_string();
+    let rp = st.kernel.passkey_rp(&host);
     let scheme = if st.shell.secure { "https" } else { "http" };
     Ok((rp, vec![format!("{scheme}://{host}")]))
 }
@@ -632,8 +641,8 @@ async fn remove_passkey(Auth(ctx): Auth, State(app): State<AppContext>, Path(id)
 async fn passkey_sign_in_options(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
     st.login_limiter.check(&format!("{}|passkey", client_ip(&headers))).await?;
-    let (rp, _) = relying_party(&st, &headers)?;
-    Ok(Json(st.kernel.passkey_sign_in_options(&rp).await?).into_response())
+    let host = crate::shell::request_host(&headers).ok_or_else(|| ApiError(Error::invalid("no host")))?.to_ascii_lowercase();
+    Ok(Json(st.kernel.passkey_sign_in_offer(&host).await?).into_response())
 }
 
 #[derive(Deserialize)]

@@ -61,6 +61,10 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
 | `FERRUM_SESSION_DAYS` | no | How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own that people and administrators sign out one by one |
 | `FERRUM_BASE_DOMAIN` | no | Shapes B and C (below, [Many workspaces](#many-workspaces-subdomains-and-ferrum-accounts)): the domain under which each workspace is `{slug}.{base}`, people sign in at `accounts.{base}` and outside callers use `hooks.{base}`. Empty: one workspace (`FERRUM_DEFAULT_WORKSPACE`) or a shared host |
+| `FERRUM_ACCOUNTS_HOST` | no | The host where people sign in once, with their Ferrum account (`id.example.com`), with or without a base domain: every host of every workspace sends sign-in there. Default `accounts.{base}` with `FERRUM_BASE_DOMAIN`, else none (each host signs in on its own). See [Names that should never change](#names-that-should-never-change) |
+| `FERRUM_HOOKS_HOST` | no | The host other services call back (`hooks.example.com`): webhooks and `/api/public/…` calls, a mail or calendar connector's sign-in return (`/api/connections/callback`), the addresses services pull files from. Default `hooks.{base}` for pages and public calls with `FERRUM_BASE_DOMAIN`, else `PUBLIC_URL`; connectors and pulled files use `PUBLIC_URL` unless this is set. See [Names that should never change](#names-that-should-never-change) |
+| `FERRUM_PASSKEY_RP` | no | The passkeys' relying party, a domain (`example.com`): passkeys made on it or a host under it work on every host under it. Default none: each host is its own, as before. Never the base domain. See [Names that should never change](#names-that-should-never-change) |
+| `FERRUM_LINK_HOST` | no | The host every mailed, notified or printed link goes through (`go.example.com`): links become `https://{it}/go/{workspace}/{s\|p}/…`, which lead on to wherever the workspace is when someone follows them. Default none: links name the workspace's host, as before. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_PLANS` | no | The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up) |
 | `FERRUM_SIGNUP` | no | `open` lets people make workspaces of their own at `accounts.{base}/signup`; default `closed`. Needs `FERRUM_BASE_DOMAIN` and mail |
 | `FERRUM_SIGNUP_DOMAINS`, `FERRUM_SIGNUP_PACKAGES`, `FERRUM_SIGNUP_PLAN`, `FERRUM_SIGNUP_PER_ADDRESS` | with sign-up | The address domains sign-ups come from (comma-separated; empty: any), what a new workspace installs besides the core, the plan it starts on (one of `FERRUM_PLANS`), and how many workspaces one address may make (default 3) |
@@ -2122,6 +2126,87 @@ workspaces, each at its own address, and people sign in once for all of them ([A
   sign in on each workspace's host again with that workspace's own password, which joining never
   changed. Someone who never had one there (added without a password, then signing in with their
   Ferrum account) needs an administrator to set one.
+
+## Names that should never change
+
+A workspace can be reached at more than one host (a staff host and a public one), and its hosts can
+change over the years. A few addresses are registered with others, saved by browsers or printed in
+mail, so they should be picked once and kept: the host people sign in at, the host other services
+call back, the host every mailed link goes through, and the passkeys' relying party. Each has a
+setting; each defaults to what the server did before the setting existed.
+
+* **`FERRUM_ACCOUNTS_HOST`**: where people sign in once, as their Ferrum account ([Many
+  workspaces](#many-workspaces-subdomains-and-ferrum-accounts) describes the accounts host). It works
+  without a base domain: every host of every workspace sends a member who is not signed in there, and
+  gets them back with a one-use code for that host alone, so an identity provider knows one redirect
+  address and a person signs in once. Portal people still sign in on the workspace's host.
+  * *A one-workspace server* (`FERRUM_DEFAULT_WORKSPACE`) that turns it on: its public address
+    (`PUBLIC_URL`'s host) is the workspace's host that the accounts host hands sign-ins to. People sign
+    in at the accounts host with the password they have; the first time, it makes their Ferrum account
+    from it (with a code mailed to the address, when the server sends mail), and they are back in the
+    workspace. Nobody is locked out: the workspace's own password keeps working for that first sign-in.
+    Workspaces that require single sign-on: add `https://{accounts host}/app/login` to the provider's
+    redirect addresses first. Other hosts that reach the server (an internal name) are not handed
+    sign-ins; use the public address.
+  * *Turning it off* again restores sign-in on the workspace's host with the workspace's own password,
+    which making the Ferrum account copied and never changed. A password changed since at the accounts
+    host is not the workspace's: such a person signs in with the older one, with an emailed code, or
+    has an administrator set a new one.
+  * *A shared host* (no default workspace, no host of the workspace's own) keeps signing people in on
+    itself with each workspace's own password; only hosts that belong to one workspace hand sign-in
+    to the accounts host.
+  * *Changing it later* signs everyone out of the accounts host, breaks every single sign-on provider's
+    registered redirect address, and makes passkeys made there unusable (their relying party is that
+    host): pick it once.
+  * It must be a host of its own, not `PUBLIC_URL`'s; the server refuses to start otherwise.
+* **`FERRUM_HOOKS_HOST`**: where other services call back. It is a place of its own with no pages
+  and no sign-in, so a session never lives there. Set, it is the start of every callback address the
+  server gives out: a mail or calendar connector's return address (register
+  `https://{hooks host}/api/connections/callback` with Google or Microsoft), the short-lived addresses
+  services pull files from, and the address the workspace's pages show for its public endpoints
+  (`/api/public/{workspace}/…`). A connector's return lands there and is passed on to the
+  workspace host the person started from, where their session is. Not set: `hooks.{base}` for public
+  endpoints with a base domain, and `PUBLIC_URL` for everything else, as before.
+  * *Changing it later* breaks every return address registered with an outside service (connectors
+    stop connecting until it is registered again) and every webhook address given out.
+  * It must be a host of its own, neither `PUBLIC_URL`'s nor the accounts host.
+* **`FERRUM_PASSKEY_RP`**: the passkeys' relying party. A passkey belongs to one domain, and a
+  browser offers it only there and on hosts under it. Without the setting each host is its own, so a
+  passkey made on `erp.example.com` does not work on `shop.example.com`. Set to `example.com`, a
+  passkey made on that domain or any host under it is made for the domain and works on all of them
+  (`erp.example.com`, `shop.example.com`); a host outside it (`erp.other.org`) keeps its own. The
+  check is by whole names: `evilexample.com` is not under `example.com`.
+  * *Turning it on* leaves every passkey made before with the host it was made on: it keeps working
+    there. The sign-in page asks the device for one made for the domain first and, when it has none,
+    for one made for that host.
+  * *Changing it later* (or turning it off) makes passkeys made for the old domain unusable: people
+    sign in another way and make new ones.
+  * *A shared base domain* (`FERRUM_BASE_DOMAIN`, each workspace a host under it): never set it to the
+    base or a domain above it, or one workspace's pages could ask for passkeys of another's; the
+    server refuses to start so. Leave it empty: passkeys live on the accounts host, where everyone
+    signs in. Set it only to a domain whose hosts are all yours (one company's staff and public hosts).
+* **`FERRUM_LINK_HOST`**: the host every link that leaves the server for a person goes through:
+  notification mail and daily digests, action links, opt-out links in promotional messages. Links
+  are then `https://{link host}/go/{workspace}/s/…` for staff and `…/p/…` for people from outside;
+  following one needs no sign-in and leads (`302`) to the workspace's main host (staff) or its
+  portal's host (outside people; the main host when it has none, where portal pages live under
+  `/portal`), with the rest of the address kept. A workspace that is unknown or suspended answers
+  `404`. The link host answers `/go/` before anything else that host is, so it may be the accounts host or
+  the hooks host (their other addresses work as before; only `/go` and `/go/…` are taken). It may not
+  be `PUBLIC_URL`'s host, where `/go/` belongs to the workspace: the server refuses to start so. Not set:
+  links name the workspace's main host (or `PUBLIC_URL`), as before, and stop working when that host
+  is released.
+  * *Why*: a mailed link outlives the host it names. With a link host, a workspace can move to a new
+    host, or get a separate public host, and every link sent before still leads to it.
+  * *Changing it later* breaks every link sent before; it should be the steadiest name you have.
+  * *Not covered yet*: the addresses apps keep of their own (Sign, Bookings, Comms, LMS) and links
+    printed into exported documents still name a host directly.
+
+**A shared base domain.** In the cloud, where many organisations' workspaces are hosts under one base
+domain, leave `FERRUM_ACCOUNTS_HOST` and `FERRUM_HOOKS_HOST` at their defaults (`accounts.{base}`,
+`hooks.{base}`), set `FERRUM_LINK_HOST` to a host under a domain of the operator's own (or leave it),
+and never set `FERRUM_PASSKEY_RP`. A company running its own servers sets all four once, under its
+own domain, before people start using them.
 
 ## Sign-in security
 
