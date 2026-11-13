@@ -686,6 +686,19 @@ async fn limits(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     assert_eq!(with(|s| s.inflight.1), 1, "never two at once");
     let bad = json!({"base": base, "limit": {"per": 0, "every": 60}});
     assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("limit"));
+    // BD-74: an operation's own limit, counted apart from the description's and from the other operations.
+    let ops = json!({"post": {"path": "/counted", "limit": {"per": 1, "every": 60}}, "read": {"path": "/ok-true"}});
+    k.save_connection_def(admin, None, &input("oplim", json!({"base": base, "operations": ops, "limit": {"per": 5, "every": 60}}), None)).await.unwrap();
+    connections::call(k, admin, None, &call("oplim", "post", json!({}), None)).await.unwrap();
+    let e = connections::call(k, admin, None, &call("oplim", "post", json!({}), None)).await.unwrap_err();
+    assert!(matches!(&e, Error::RetryAfter(m, _) if m.contains("oplim's post")), "{e:?}");
+    for _ in 0..3 {
+        connections::call(k, admin, None, &call("oplim", "read", json!({}), None)).await.expect("reading is not posting");
+    }
+    let e = connections::call(k, admin, None, &call("oplim", "read", json!({}), None)).await.unwrap_err();
+    assert!(matches!(&e, Error::RetryAfter(m, _) if !m.contains("'s")), "the description's five, the refused post counted: {e:?}");
+    let bad = json!({"base": base, "operations": {"x": {"path": "/x", "limit": {"concurrent": 0}}}});
+    assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("limit"));
 }
 
 fn query(url: &str) -> BTreeMap<String, String> {

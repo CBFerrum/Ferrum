@@ -1902,3 +1902,16 @@ Decided 13 November 2026.
   OAuth without DPoP, a session's default header): with basic, a header secret, a signature or DPoP the scheme is part
   of what proves the call, and the description is refused. The token stays masked as before.
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-74. A limit per operation
+
+Decided 13 November 2026.
+
+* **The gap**: a service with a tight limit on posting and a loose one on reading could be described only by the
+  tighter one for everything, or a separate connection for posting.
+* **The shape**: an operation's `limit` (`per`/`every`, `concurrent`), as the description's (BD-57), counted apart under
+  the operation's name (`conn_rate.operation`, `''` for the description's; the concurrency locks are named apart too).
+  A request takes the description's turn first, then the operation's; one refused by the operation's has used one of
+  the description's (it counts calls asked, as the description's always did). The refusal names which limit
+  (`<connection>'s <operation> takes 1 calls each 60 s`) and says when to come back.
+* Part of the App API 0.3.8 (BD-63).

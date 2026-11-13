@@ -135,6 +135,16 @@ pub struct Description {
     pub more: BTreeMap<String, More>,
 }
 
+impl Limit {
+    fn problem(&self) -> Option<String> {
+        let wrong = self.per.is_some() != self.every.is_some()
+            || self.per.is_some_and(|n| n == 0)
+            || self.every.is_some_and(|n| !(1..=86_400).contains(&n))
+            || self.concurrent.is_some_and(|n| !(1..=64).contains(&n));
+        wrong.then(|| "limit is {per, every} (calls, and seconds up to a day) and concurrent (1 to 64)".into())
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limit {
@@ -150,8 +160,8 @@ pub struct Limit {
 const TURN_WAIT: Duration = Duration::from_secs(10);
 
 /// The keys of an operation that are [`More`]'s.
-const MORE: [&str; 12] =
-    ["steps", "url", "success", "credentials", "form_fields", "answer", "lists", "public_files", "refused_if", "temporary_if", "error", "auth_scheme"];
+const MORE: [&str; 13] =
+    ["steps", "url", "success", "credentials", "form_fields", "answer", "lists", "public_files", "refused_if", "temporary_if", "error", "auth_scheme", "limit"];
 
 /// Read as derived, each operation's [`More`] keys taken apart first.
 impl<'de> Deserialize<'de> for Description {
@@ -238,6 +248,9 @@ pub struct More {
     /// alone), for a connection whose auth is a token (BD-73).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_scheme: Option<String>,
+    /// How much of the service this operation takes, besides the description's `limit` (BD-74): a tight one on posting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<Limit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +275,7 @@ static NO_MORE: More = More {
     temporary_if: None,
     error: None,
     auth_scheme: None,
+    limit: None,
 };
 
 impl More {
@@ -277,6 +291,11 @@ impl More {
         }
         if self.auth_scheme.as_deref().is_some_and(|s| s.len() > 30 || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))) {
             return Some("auth_scheme is a word such as OAuth, or empty".into());
+        }
+        if let Some(l) = &self.limit
+            && let Some(p) = l.problem()
+        {
+            return Some(p);
         }
         if let Some(p) = [&self.refused_if, &self.temporary_if, &self.error]
             .into_iter()
@@ -771,13 +790,8 @@ impl Description {
         if self.meta.as_ref().is_some_and(|m| !m.is_object() || m.to_string().len() > MAX_META) {
             return Some(format!("meta is an object of at most {MAX_META} bytes"));
         }
-        if let Some(l) = &self.limit
-            && (l.per.is_some() != l.every.is_some()
-                || l.per.is_some_and(|n| n == 0)
-                || l.every.is_some_and(|n| !(1..=86_400).contains(&n))
-                || l.concurrent.is_some_and(|n| !(1..=64).contains(&n)))
-        {
-            return Some("limit is {per, every} (calls, and seconds up to a day) and concurrent (1 to 64)".into());
+        if let Some(p) = self.limit.as_ref().and_then(Limit::problem) {
+            return Some(p);
         }
         if self.roles.iter().chain(&self.apps).any(|r| r.trim().is_empty()) {
             return Some("roles and apps are names".into());
@@ -1491,7 +1505,7 @@ impl Kernel {
                 let got = match self.build_request(ctx, conn, (op, more), inputs, key, extra, bare).await {
                     Ok((req, more)) => 'made: {
                         // The description's limits, across workers: nothing is sent past them.
-                        let turn = match self.take_turn(conn).await {
+                        let turn = match self.take_turns(conn, name, conn.desc.more(name)).await {
                             Ok(t) => t,
                             Err(e) => break 'made Err(e),
                         };
@@ -1511,7 +1525,7 @@ impl Kernel {
                         if let (Some(d), Ok(a)) = (debug.as_mut(), &got) {
                             d["answer"] = json!({"status": a.status, "body": clipped(&masked(&a.body, &mask))});
                         }
-                        if let Some(t) = turn {
+                        for t in turn {
                             t.commit().await?;
                         }
                         got
@@ -1633,24 +1647,39 @@ impl Kernel {
     /// A request's turn under the connection's [`Limit`]: counted in its window (none left: `RetryAfter` until the next
     /// window), and one of its `concurrent` places, held until the transaction given back ends (none free within
     /// [`TURN_WAIT`]: `RetryAfter`).
-    async fn take_turn(&self, conn: &Loaded) -> Result<Option<Tx>> {
-        let Some(limit) = &conn.desc.limit else { return Ok(None) };
+    async fn take_turns(&self, conn: &Loaded, op: &str, more: &More) -> Result<Vec<Tx>> {
+        let mut held = Vec::new();
+        for (scope, limit) in [("", conn.desc.limit.as_ref()), (op, more.limit.as_ref())] {
+            if let Some(limit) = limit
+                && let Some(tx) = self.take_turn(conn, scope, limit).await?
+            {
+                held.push(tx);
+            }
+        }
+        Ok(held)
+    }
+
+    /// One [`Limit`]'s turn: the description's (`scope` empty) or an operation's (its name), counted apart.
+    async fn take_turn(&self, conn: &Loaded, scope: &str, limit: &Limit) -> Result<Option<Tx>> {
+        let whose = if scope.is_empty() { conn.name.clone() } else { format!("{}'s {scope}", conn.name) };
         if let (Some(per), Some(every)) = (limit.per, limit.every) {
             let now = Utc::now().timestamp();
             let slot = now - now.rem_euclid(every as i64);
             let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
             let n: i32 = sqlx::query_scalar(
-                "insert into conn_rate (tenant_id, conn_id, slot, n) values ($1, $2, $3, 1)                  on conflict (tenant_id, conn_id, slot) do update set n = conn_rate.n + 1 returning n",
+                "insert into conn_rate (tenant_id, conn_id, operation, slot, n) values ($1, $2, $3, $4, 1) \
+                 on conflict (tenant_id, conn_id, operation, slot) do update set n = conn_rate.n + 1 returning n",
             )
             .bind(conn.tenant)
             .bind(conn.id)
+            .bind(scope)
             .bind(slot)
             .fetch_one(&mut *tx)
             .await?;
             tx.commit().await?;
             if n as u32 > per {
                 let wait = (slot + every as i64 - now).max(1) as u64;
-                return Err(Error::RetryAfter(format!("{} takes {per} calls each {every} s", conn.name), wait));
+                return Err(Error::RetryAfter(format!("{whose} takes {per} calls each {every} s"), wait));
             }
         }
         let Some(places) = limit.concurrent else { return Ok(None) };
@@ -1659,7 +1688,7 @@ impl Kernel {
             let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
             for place in 0..places {
                 let held: bool = sqlx::query_scalar("select pg_try_advisory_xact_lock(hashtextextended($1, 0))")
-                    .bind(format!("conn_turn:{}:{place}", conn.id))
+                    .bind(format!("conn_turn:{}:{scope}:{place}", conn.id))
                     .fetch_one(&mut *tx)
                     .await?;
                 if held {
@@ -1668,7 +1697,7 @@ impl Kernel {
             }
             tx.rollback().await?;
             if started.elapsed() > TURN_WAIT {
-                return Err(Error::RetryAfter(format!("{} takes {places} calls at once", conn.name), 1));
+                return Err(Error::RetryAfter(format!("{whose} takes {places} calls at once"), 1));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

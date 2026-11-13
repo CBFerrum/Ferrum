@@ -1361,7 +1361,10 @@ language's own (`replace`, `split`, `join`, `default`, `json`, …). A record ke
 an app's `connections::call`, the `call` effect and the gate get `RetryAfter(why, seconds)` when the service's
 `Retry-After` (or the connection's limit) says when to come back, `Unavailable` when nothing does. `"limit": {"per": 300,
 "every": 900, "concurrent": 2}` on a description: at most `per` requests in each window of `every` seconds and
-`concurrent` at once, counted in the database so every worker shares them; a request past them is not sent.
+`concurrent` at once, counted in the database so every worker shares them; a request past them is not sent. An
+operation may carry a `limit` of its own besides (a tight one on posting, the description's on everything;
+[BD-74](builder/decisions.md#bd-74-a-limit-per-operation)): a request takes the description's turn, then the
+operation's, each counted apart.
 
 **XML and forms** ([BD-59](builder/decisions.md#bd-59-xml-and-form-answers)): `"answer": "xml"` reads the answer as
 XML into JSON's shape, so pointers, picks, `items_at` and mappings work on it: `{<root>: …}`, an element its text when
