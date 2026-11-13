@@ -160,8 +160,22 @@ pub struct Limit {
 const TURN_WAIT: Duration = Duration::from_secs(10);
 
 /// The keys of an operation that are [`More`]'s.
-const MORE: [&str; 13] =
-    ["steps", "url", "success", "credentials", "form_fields", "answer", "lists", "public_files", "refused_if", "temporary_if", "error", "auth_scheme", "limit"];
+const MORE: [&str; 14] = [
+    "steps",
+    "url",
+    "success",
+    "credentials",
+    "form_fields",
+    "answer",
+    "lists",
+    "public_files",
+    "refused_if",
+    "temporary_if",
+    "error",
+    "auth_scheme",
+    "limit",
+    "headers_from",
+];
 
 /// Read as derived, each operation's [`More`] keys taken apart first.
 impl<'de> Deserialize<'de> for Description {
@@ -251,6 +265,10 @@ pub struct More {
     /// How much of the service this operation takes, besides the description's `limit` (BD-74): a tight one on posting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<Limit>,
+    /// A template giving more request headers as a JSON object, from an earlier answer (`{{ inputs.upload_headers |
+    /// json }}`, BD-76): for this operation's request only, never one that carries credentials, its values masked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers_from: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,6 +294,7 @@ static NO_MORE: More = More {
     error: None,
     auth_scheme: None,
     limit: None,
+    headers_from: None,
 };
 
 impl More {
@@ -296,6 +315,14 @@ impl More {
             && let Some(p) = l.problem()
         {
             return Some(p);
+        }
+        if let Some(h) = &self.headers_from {
+            if ["secret", "auth.", "account."].iter().any(|w| h.contains(w)) {
+                return Some("headers_from gives an answer's headers, never the connection's secrets or sign-in".into());
+            }
+            if let Some(p) = template_problem(h) {
+                return Some(p);
+            }
         }
         if let Some(p) = [&self.refused_if, &self.temporary_if, &self.error]
             .into_iter()
@@ -1935,11 +1962,42 @@ impl Kernel {
             None => None,
         };
         let method = reqwest::Method::from_bytes(op.method().as_bytes()).map_err(Error::internal)?;
-        let hidden = if bare || more.credentials == Some(false) {
+        // Headers an earlier answer named (BD-76): never ones that carry credentials, the auth's own included.
+        let mut named = Vec::new();
+        if let Some(t) = &more.headers_from {
+            let given: Map<String, Value> = match serde_json::from_str::<Value>(&r(t)?) {
+                Ok(Value::Object(o)) => o,
+                Ok(Value::Null) => Map::new(),
+                _ => return Err(Error::invalid("headers_from gives no object of headers")),
+            };
+            let auth_header = match &conn.desc.auth {
+                Auth::Header { header, .. } | Auth::Signed { header, .. } => Some(header.as_str()),
+                Auth::Session { header, .. } => header.as_deref(),
+                _ => None,
+            };
+            for (h, v) in given {
+                let v = match v {
+                    Value::String(s) => s,
+                    Value::Null => continue,
+                    other => other.to_string(),
+                };
+                let lower = h.to_ascii_lowercase();
+                let carries = ["authorization", "proxy-authorization", "cookie", "dpop", "host", "content-length", "transfer-encoding", "connection"]
+                    .contains(&lower.as_str())
+                    || auth_header.is_some_and(|a| a.eq_ignore_ascii_case(&h));
+                if carries || header_problem(&h).is_some() || v.contains(['\r', '\n']) {
+                    return Err(Error::invalid(format!("headers_from may not set {h}")));
+                }
+                named.push(v.clone());
+                headers.push((h, v));
+            }
+        }
+        let mut hidden = if bare || more.credentials == Some(false) {
             vec![]
         } else {
             self.authenticate(ctx, conn, &mut headers, body.as_ref().map(|b| b.0.as_slice()), &method, &url).await?
         };
+        hidden.extend(named);
         rescheme(&mut headers, more.auth_scheme.as_deref());
         Ok((Request { method, url, headers, body }, hidden))
     }
