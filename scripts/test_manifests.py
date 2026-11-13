@@ -21,6 +21,8 @@ def changed(kind, change):
 
 assert any("two things now own" in p for p in changed("Deployment", lambda d: d["spec"].update(replicas=3)))
 assert any("needs" in p for p in changed("HorizontalPodAutoscaler", lambda d: d["spec"].update(maxReplicas=12)))
+# Each replica opens its pool and 6 more (4 side, 2 of Loco's own): ten of them and Cloud's 20 need 380 of 370.
+assert any("needs 380" in p for p in changed("HorizontalPodAutoscaler", lambda d: d["spec"].update(maxReplicas=10)))
 assert any("no connection limit" in p for p in changed("Cluster", lambda d: d["spec"].pop("managed")))
 assert any("leaving less" in p for p in changed("Cluster", lambda d: d["spec"]["managed"]["roles"][0].update(connectionLimit=399)))
 
@@ -36,9 +38,9 @@ cluster = [("chart", d) for _, d in real if d.get("kind") == "Cluster"]
 hpa = ("chart", {"kind": "HorizontalPodAutoscaler", "metadata": {"name": "ferrum"},
                  "spec": {"scaleTargetRef": {"kind": "Deployment", "name": "ferrum"}, "maxReplicas": 8}})
 fits = cluster + [hpa, server("Deployment", "ferrum", 30), server("Deployment", "ferrum-worker", 20, replicas=2)]
-assert problems(fits) == [], problems(fits)  # 8 x 34 + 2 x 24 + 20 = 340
-over = fits + [server("Job", "ferrum-migrate", 30)]  # + 34 = 374
-assert [p for p in problems(over) if "all together" in p and "374" in p], problems(over)
+assert problems(fits) == [], problems(fits)  # 8 x 36 + 2 x 26 + 20 = 360
+over = fits + [server("Job", "ferrum-migrate", 30)]  # + 36 = 396
+assert [p for p in problems(over) if "all together" in p and "396" in p], problems(over)
 assert problems(fits + [server("Deployment", "ferrum-more", 30, replicas=1)]) != []  # no autoscaler: still counted
 # Workloads that do not use the database are not counted.
 pdf = ("chart", {"kind": "Deployment", "metadata": {"name": "pdf"}, "spec": {"replicas": 50, "template": {"spec": {"containers": [{"name": "p"}]}}}})
@@ -46,7 +48,7 @@ assert problems(fits + [pdf]) == []
 assert rendered("x", "a: 1\n---\n---\nb: 2\n") == [("x", {"a": 1}), ("x", {"b": 2})]
 
 # With a pooler: a replica that reaches the database through it counts only its direct connections, and the
-# pooler its own. 30 replicas x 34 would never fit; 30 x 8 + 2 x 40 + 20 = 340 does.
+# pooler its own. 30 replicas x 36 would never fit; 30 x 8 + 2 x 40 + 20 = 340 does.
 def through(name, pool, **spec):
     kind, d = server("Deployment", name, pool, **spec)
     d["spec"]["template"]["spec"]["containers"][0]["env"].append({"name": "FERRUM_DATABASE_DIRECT_URL", "value": "y"})
@@ -66,8 +68,8 @@ assert any("needs" in p for p in problems(cluster + [big, server("Deployment", "
 wide = copy.deepcopy(pooler)
 wide[1]["spec"]["pgbouncer"]["parameters"]["reserve_pool_size"] = "50"
 assert [p for p in problems(cluster + [wide, big, through("ferrum", 30)]) if "440" in p], problems(cluster + [wide, big, through("ferrum", 30)])
-# A replica that does not use the pooler still counts in full beside it: + 3 x 34 = 442.
-assert [p for p in problems(pooled + [server("Deployment", "ferrum-old", 30, replicas=3)]) if "all together" in p and "442" in p]
+# A replica that does not use the pooler still counts in full beside it: + 3 x 36 = 448.
+assert [p for p in problems(pooled + [server("Deployment", "ferrum-old", 30, replicas=3)]) if "all together" in p and "448" in p]
 
 # A KEDA ScaledObject counts as an autoscaler: at its maxReplicaCount, never beside an HPA or fixed replicas.
 def scaled(name, most):
@@ -76,8 +78,8 @@ def scaled(name, most):
 
 worker = server("Deployment", "ferrum-worker", 20)
 assert problems(cluster + [hpa, server("Deployment", "ferrum", 30), worker, scaled("ferrum-worker", 2)]) == []
-# 8 x 34 + 5 x 24 + 20 = 412
-assert [p for p in problems(cluster + [hpa, server("Deployment", "ferrum", 30), worker, scaled("ferrum-worker", 5)]) if "412" in p]
+# 8 x 36 + 5 x 26 + 20 = 438
+assert [p for p in problems(cluster + [hpa, server("Deployment", "ferrum", 30), worker, scaled("ferrum-worker", 5)]) if "438" in p]
 assert any("two things now own" in p for p in problems(cluster + [server("Deployment", "ferrum-worker", 20, replicas=2), scaled("ferrum-worker", 2)]))
 both = ("chart", {"kind": "HorizontalPodAutoscaler", "metadata": {"name": "w"}, "spec": {"scaleTargetRef": {"kind": "Deployment", "name": "ferrum-worker"}, "maxReplicas": 2}})
 assert any("both scale" in p for p in problems(cluster + [worker, both, scaled("ferrum-worker", 2)]))

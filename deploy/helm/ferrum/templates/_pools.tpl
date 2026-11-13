@@ -75,7 +75,8 @@ Call with the root context: include "ferrum.pools" . | fromJson
 {{- end -}}
 {{- end -}}
 {{- /* The connection budget: every pool at its most replicas, the migrate Job, and what else uses the role
-(scripts/check_manifests.py: OTHERS), within the role's limit (database.yaml). With the pooler, each replica
+(scripts/check_manifests.py: OTHERS), within the role's limit (database.yaml). Each replica opens its pool and 6 beside
+it (BESIDE in scripts/check_manifests.py). With the pooler, each replica
 counts only its direct connections and the pooler its own. Checked with pools or the pooler on. */ -}}
 {{- $pl := $v.database.pooler -}}
 {{- if and $v.database.enabled (or $v.pools $pl.enabled) -}}
@@ -93,13 +94,13 @@ counts only its direct connections and the pooler its own. Checked with pools or
 {{- $need = add $need (mul $r (int $pl.directConnectionsPerReplica)) -}}
 {{- $parts = append $parts (printf "%s %d x %d direct" (.name | default "ferrum") $r (int $pl.directConnectionsPerReplica)) -}}
 {{- else -}}
-{{- $need = add $need (mul $r (add (int .dbMaxConnections) 4)) -}}
-{{- $parts = append $parts (printf "%s %d x (%d + 4)" (.name | default "ferrum") $r (int .dbMaxConnections)) -}}
+{{- $need = add $need (mul $r (add (int .dbMaxConnections) 6)) -}}
+{{- $parts = append $parts (printf "%s %d x (%d + 6)" (.name | default "ferrum") $r (int .dbMaxConnections)) -}}
 {{- end -}}
 {{- end -}}
 {{- if eq (include "ferrum.migrateJob" .) "true" -}}
-{{- $need = add $need (add (int $v.dbMaxConnections) 4) -}}
-{{- $parts = append $parts (printf "the migrate Job %d + 4" (int $v.dbMaxConnections)) -}}
+{{- $need = add $need (add (int $v.dbMaxConnections) 6) -}}
+{{- $parts = append $parts (printf "the migrate Job %d + 6" (int $v.dbMaxConnections)) -}}
 {{- end -}}
 {{- if gt (int $need) (int $v.database.connectionLimit) -}}
 {{- fail (printf "the pools may open %d database connections (%s, and 20 for other users of the role), more than database.connectionLimit %d: lower maxReplicas or dbMaxConnections%s" $need (join ", " $parts) (int $v.database.connectionLimit) (ternary ", or the pooler's instances or poolSize" "" (and $pl.enabled true))) -}}

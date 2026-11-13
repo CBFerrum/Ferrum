@@ -77,17 +77,45 @@ isolation, so the server refuses to start with them. CloudNativePG's `ferrum` ap
 the Compose setup (`deploy/postgres-init`) are already set up this way. The role needs to create the
 trusted extensions `btree_gist`, `citext` and `pg_trgm`, which a database owner can do.
 
-Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 4 for short side writes
-(document numbering). Give the role a connection limit at least 20 below the database's
+Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 6: 4 for short side writes
+(document numbering) and 2 of Loco's own. Give the role a connection limit at least 20 below the database's
 `max_connections`, so that however far things scale there are connections left for an administrator,
 replication and a migration: PostgreSQL enforces that one, and `ferrum task doctor` warns without it.
 
+What one replica holds, with the defaults (counted from the code on 14 November 2026 and seen in
+`pg_stat_activity` with the server running):
+
+| What | Connects to | At the most | When |
+|---|---|---|---|
+| The pool | `DATABASE_URL` | `FERRUM_DB_MAX_CONNECTIONS` (30) | Requests, background work. Without a direct address the listeners and session locks below come out of it |
+| The side pool | `DATABASE_URL` | 4 | Short writes while a request's own transaction is open (numbering); idle ones close after a minute |
+| Loco's own pool | `DATABASE_URL` | 2 | Opened at start to check Loco's migrations (there are none); nothing else uses it. Safe through a pooler: it keeps no session |
+| Listeners: metadata, users, plugin sockets, live updates, co-editing | the direct address | 5 | One each, for as long as the replica runs |
+| Session locks: apps' upkeep, app stores' revocations | the direct address | 3 | One per app whose upkeep runs (`FERRUM_UPKEEP_CONCURRENCY`, 2), one for revocations, while each runs |
+| At start: the two-version window's lock, then the migrations', the schema sync's and the upgrade steps' locks | the direct address | 2 | Before the replica serves or works: the window's lock is a connection outside every pool, the others one at a time |
+| The first of Loco's two set-ups (`ferrum start` sets up twice and keeps the first) | `DATABASE_URL` | its own pools | Until the set-up that serves is ready; then closed |
+| The Temporal worker (`TEMPORAL_ADDRESS`) | none: it talks to Temporal | 0 | |
+| The region witness (`FERRUM_AUTHORITY_WITNESS_URL`) | another database | 2 there | When set |
+
+So, without a pooler (the direct address is `DATABASE_URL`, the default), a replica holds at most
+`FERRUM_DB_MAX_CONNECTIONS` + 6 = 36: the listeners and locks are inside its pool, and while it starts it
+holds a few connections of its pool and the window's lock, far fewer. With a pooler (`FERRUM_DATABASE_DIRECT_URL`
+set, see "Deployment shapes"), PostgreSQL sees 8 direct connections from each replica (5 listeners, 1 lock,
+2 upkeep: 6 + `FERRUM_UPKEEP_CONCURRENCY`; at most 3 while it starts), and the pool, the side pool and Loco's
+pool are the pooler's clients. `ferrum task migrate` (the chart's migrate Job) is one process with a pool of
+its own, counted like a replica.
+
 | Who | Connections at the most, in the manifests |
 |---|---|
-| API, 10 replicas × (30 + 4) | 340 |
+| API, 9 replicas × (30 + 6) | 324 |
 | Cloud's controller, 2 replicas × (6 + 4), if deployed | 20 |
 | The role's limit | 370 |
 | Left for administration and replication | 30 |
+
+Until 14 November the manifests counted 4 beside the pool and allowed 10 replicas: 10 × 36 + 20 = 380,
+above the role's limit, so the autoscaler's maximum is now 9 (lowering it replaces nothing that runs;
+raising the role's limit instead would need a higher `max_connections`, which restarts PostgreSQL). Past
+9, put the pooler in front.
 
 `python3 scripts/check_manifests.py` fails when those stop adding up, and when a workload sets `replicas`
 under an autoscaler: every apply would put the count back. The Helm chart's migrate Job is a process of its own
@@ -863,7 +891,7 @@ Logs are JSON. Clients may send an `x-request-id` header to correlate their call
 
 ## Scaling
 
-* API: the HPA scales 3–10 replicas on CPU (the connection budget above); replicas are interchangeable.
+* API: the HPA scales 3–9 replicas on CPU (the connection budget above); replicas are interchangeable.
 * Database: scale vertically first; add a PgBouncer pooler (`database.pooler.enabled` in the Helm chart,
   "Deployment shapes") when connections become the limit. Change the number of instances or the size of their
   volumes with `deploy/scale-database.sh --instances N` or `--storage 200Gi` (`--wait 600` to wait for
@@ -924,14 +952,14 @@ worker pool is deleted at once and background work waits until the first new `we
 `zones` changes where staff work: after it, staff use the private host, and the public host admits no staff.
 The exact commands, what each move replaces and what to watch are in "Moving from one shape to another".
 
-**Connection budget.** Every replica may open `dbMaxConnections + 4` connections, and the migrate Job (when
-it runs) as many again. With pools, the chart adds up every pool at its most replicas (`maxReplicas`, or
+**Connection budget.** Every replica may open `dbMaxConnections + 6` connections ("Database role" above), and the
+migrate Job (when it runs) as many again. With pools, the chart adds up every pool at its most replicas (`maxReplicas`, or
 `replicas` without an autoscaler), the migrate Job and 20 for other users of the role (as
 `scripts/check_manifests.py` does), and refuses to render when the sum is above `database.connectionLimit`.
 Each preset says its sum. Without pools the chart refuses nothing new: check it with
 `helm template ... | python3 scripts/check_manifests.py -`, which adds up every server Deployment and Job it
-is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With today's defaults and `migrate.enabled`, that is 394 of 370: lower `autoscaling.maxReplicas`
-to 9 when you turn the Job on.)
+is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With today's defaults and `migrate.enabled`, that is 380 of 370: lower `autoscaling.maxReplicas`
+to 8 when you turn the Job on.)
 
 **Connection pooler.** `database.pooler.enabled` puts PgBouncer (CloudNativePG's `Pooler`, `ferrum-db-pooler`,
 `database.pooler.instances` of them, at most one down at a time) in front of the primary, in transaction mode
@@ -943,8 +971,8 @@ and migrations; the migrate Job always connects directly. Turn it on only with a
 do not hold. Only the server's pods may reach the pooler, and Prometheus its metrics (`ferrum-db-pooler`
 PodMonitor). With the pooler, PostgreSQL sees `instances x poolSize` connections from it (plus
 `reserve_pool_size` if you set it in `database.pooler.parameters`) and `directConnectionsPerReplica`
-(default 8: listeners and locks, to be confirmed by the server change) from each replica, and the budget
-below counts that instead of `dbMaxConnections + 4`. `dbMaxConnections` is then what each replica opens to the
+(default 8: 5 listeners, 1 session lock and 2 apps' upkeep; 6 + `FERRUM_UPKEEP_CONCURRENCY` if you change
+that) from each replica, and the budget counts that instead of `dbMaxConnections + 6`. `dbMaxConnections` is then what each replica opens to the
 pooler; keep the sum over every replica under `maxClientConnections` times `instances`.
 
 **Worker scaling on waiting work.** A pool with `background: only` can scale with KEDA (installed

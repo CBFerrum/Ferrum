@@ -11,8 +11,9 @@ import sys
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-# Each replica's short side writes (SIDE_CONNECTIONS in crates/kernel/src/db.rs).
-SIDE = 4
+# What each replica opens besides its pool: 4 for short side writes and 2 of Loco's own (BESIDE_POOL in
+# crates/kernel/src/doctor.rs; docs/operations.md, "Database role").
+BESIDE = 6
 # What else uses this role: Cloud's controller at two replicas of ten, when it is deployed.
 OTHERS = 20
 # What PostgreSQL must keep for an administrator and replication (RESERVED_CONNECTIONS in doctor.rs).
@@ -43,14 +44,14 @@ def through_pooler(spec):
 
 
 def per_replica(spec, pooler):
-    """What one replica opens on PostgreSQL itself: its pool and side connections, or, when it reaches the
+    """What one replica opens on PostgreSQL itself: its pool and what it opens beside it, or, when it reaches the
     database through the pooler (it then has FERRUM_DATABASE_DIRECT_URL), only its direct ones."""
     size = pool_size(spec)
     if size is None:
         return None
     if pooler and through_pooler(spec):
         return int(pooler["metadata"].get("annotations", {}).get("ferrum.dev/direct-connections-per-replica", 8))
-    return size + SIDE
+    return size + BESIDE
 
 
 def pooler_connections(pooler):

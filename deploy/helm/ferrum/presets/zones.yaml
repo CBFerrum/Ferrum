@@ -2,7 +2,7 @@
 # staff (portal, guest and service accounts, signed callbacks and public pages); staff work through the
 # private gateway, inside your network, where `general` (today's names), `finance` and `worker` are.
 # Point the public host (and the portal host) at the public gateway and erp.internal.example.com at the
-# private one. Connections: 4 x 34 + 3 x 24 + 2 x 34 + 2 x 24 + 20 = 344 of 370.
+# private one. Connections: 4 x 36 + 3 x 26 + 2 x 36 + 2 x 26 + 20 = 366 of 370.
 zones:
   public: {staff: none}
   office: {staff: all}

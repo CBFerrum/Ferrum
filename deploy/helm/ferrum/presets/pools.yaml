@@ -1,7 +1,7 @@
 # Four pools on one gateway. `general` keeps today's names and answers what no other pool's route takes;
 # `public` answers the portal host; `finance` answers the API calls of the apps named (matched on the
 # X-Ferrum-UI header; use your apps' ids); `worker` runs the background work. Every pool holds every app.
-# Connections: 4 x 34 + 3 x 24 + 2 x 34 + 2 x 24 + 20 = 344 of 370.
+# Connections: 4 x 36 + 3 x 26 + 2 x 36 + 2 x 26 + 20 = 366 of 370.
 pools:
   - name: general
     background: "off"

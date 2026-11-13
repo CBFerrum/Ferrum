@@ -16,8 +16,8 @@ image:
 # The address users open; the Gateway's host below should match.
 publicUrl: https://erp.example.com
 logLevel: info
-# Connections each replica may open (plus 4 on the side). Autoscaling's maxReplicas x (this + 4)
-# must fit the database's connectionLimit.
+# Connections each replica may open (plus 6 beside them: 4 on the side, 2 of Loco's own). Autoscaling's
+# maxReplicas x (this + 6) must fit the database's connectionLimit.
 dbMaxConnections: 30
 
 # Attachments must be shared by all replicas: object storage. The credentials are
@@ -54,9 +54,9 @@ replicas: 3     # used only when autoscaling.enabled is false
 autoscaling:
   enabled: true
   minReplicas: 3
-  # Each replica may open dbMaxConnections + 4 connections; 10 x 34 fits max_connections 400.
+  # Each replica may open dbMaxConnections + 6 connections; 9 x 36 and 20 for others fit connectionLimit 370.
   # Add a PgBouncer pooler before raising this.
-  maxReplicas: 10
+  maxReplicas: 9
   cpuUtilization: 70
   scaleDownStabilizationSeconds: 300
 
@@ -77,7 +77,7 @@ pools: []
 # - name: web                  # lower-case letters, digits and dashes; unique
 #   background: both           # both | off (FERRUM_RUN_BACKGROUND=false: API only) | only (no Service, no routes)
 #   replicas: 3                # used when autoscaling.enabled is false
-#   autoscaling: {enabled: true, minReplicas: 3, maxReplicas: 10}
+#   autoscaling: {enabled: true, minReplicas: 3, maxReplicas: 9}
 #   keda: {enabled: false}       # background: only pools: scale on waiting work (`keda` below)
 #   resources: {requests: {cpu: 250m, memory: 256Mi}}
 #   dbMaxConnections: 30       # FERRUM_DB_MAX_CONNECTIONS for this pool
@@ -226,7 +226,8 @@ database:
     maxClientConnections: 1000    # max_client_conn: each instance's connections from server replicas
     maxPreparedStatements: 200    # max_prepared_statements; 0 turns prepared statements off
     parameters: {}                # other PgBouncer settings CloudNativePG allows
-    # Each replica's direct connections: listeners and locks. To be confirmed by the server change.
+    # Each replica's direct connections: its 5 listeners, 1 session lock at a time, and apps' upkeep at once
+    # (FERRUM_UPKEEP_CONCURRENCY, default 2). Raise it with that setting.
     directConnectionsPerReplica: 8
     resources:
       requests: {cpu: 100m, memory: 64Mi}

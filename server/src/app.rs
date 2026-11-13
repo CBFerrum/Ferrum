@@ -311,6 +311,19 @@ impl Hooks for App {
                 Err(e) => tracing::error!("workspaces' subdomains: {e}"),
             }
         }
+        // `ferrum start`: Loco sets up a context only to read the configuration, then the one that serves, and keeps the
+        // first as long as the process runs. Once this one is ready, the earlier one's pools are closed, so that they hold
+        // no connections (docs/operations.md, "Database role").
+        if is_start(std::env::args()) {
+            let earlier = EARLIER_SET_UP.lock().ok().and_then(|mut e| e.replace((kernel.db.clone(), ctx.db.clone())));
+            if let Some((db, loco)) = earlier {
+                tokio::spawn(async move {
+                    db.pool.close().await;
+                    db.side.close().await;
+                    let _ = loco.close_by_ref().await;
+                });
+            }
+        }
         let (tx, _rx) = watch::channel(false);
         let db = kernel.db.clone();
         let user_requests = settings.user_requests_per_minute;
@@ -756,6 +769,26 @@ fn signup_settings(
     Ok((plans, policy))
 }
 
+/// The pools of the last set-up of this process (see `is_start`).
+static EARLIER_SET_UP: std::sync::Mutex<Option<(Db, sea_orm::DatabaseConnection)>> = std::sync::Mutex::new(None);
+
+/// `ferrum start` (the server binary, not a test's): the command whose set-up Loco does twice.
+fn is_start(args: impl IntoIterator<Item = String>) -> bool {
+    let args: Vec<String> = args.into_iter().collect();
+    let server = args.first().and_then(|a| Path::new(a).file_name()).is_some_and(|n| n == "ferrum");
+    let mut rest = args.iter().skip(1);
+    let command = loop {
+        match rest.next() {
+            Some(a) if a == "-e" || a == "--environment" => {
+                rest.next();
+            }
+            Some(a) if a.starts_with('-') => {}
+            other => break other,
+        }
+    };
+    server && command.is_some_and(|c| c == "start")
+}
+
 /// Whether the command line runs `ferrum task migrate`.
 fn is_migrate_task(args: impl IntoIterator<Item = String>) -> bool {
     let args: Vec<String> = args.into_iter().collect();
@@ -808,6 +841,18 @@ mod tests {
         assert!(args(&["ferrum", "--environment", "production", "task", "migrate"]));
         assert!(!args(&["ferrum", "start"]));
         assert!(!args(&["ferrum", "task", "doctor", "migrate"]));
+    }
+
+    #[test]
+    fn the_start_command_is_the_server_binarys() {
+        let args = |a: &[&str]| super::is_start(a.iter().map(|s| s.to_string()));
+        assert!(args(&["/app/ferrum", "start"]));
+        assert!(args(&["ferrum", "--environment", "production", "start", "--no-banner"]));
+        assert!(args(&["ferrum", "-e", "production", "start"]));
+        assert!(!args(&["ferrum", "task", "start"]));
+        assert!(!args(&["ferrum", "task", "migrate"]));
+        // A test binary given `start` as its filter: its set-ups are each a test's own.
+        assert!(!args(&["/target/debug/deps/apps_api-0123abcd", "start"]));
     }
 
     use super::*;
