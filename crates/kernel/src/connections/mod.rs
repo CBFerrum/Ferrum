@@ -119,6 +119,10 @@ pub struct Description {
     /// What it takes from outside, on its inbound address (BD-30).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound: Option<inbound::Inbound>,
+    /// The check a service makes of the inbound address before it delivers (BD-78): a GET whose challenge is echoed
+    /// when its verify token is the connection's secret. Beside `inbound`, which apps build in code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handshake: Option<inbound::Handshake>,
     /// Schedules that pull from it (BD-31).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pulls: Vec<pull::Pull>,
@@ -826,6 +830,14 @@ impl Description {
             && let Some(p) = self.any_host_problem()
         {
             return Some(format!("any_host: {p}"));
+        }
+        if let Some(h) = &self.handshake {
+            if self.inbound.is_none() {
+                return Some("handshake: there is no inbound address to check".into());
+            }
+            if let Some(p) = h.problem() {
+                return Some(p);
+            }
         }
         let (keep, plain) = self.auth.kept();
         if plain.iter().any(|n| !keep.contains(n)) {

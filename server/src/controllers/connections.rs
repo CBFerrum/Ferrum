@@ -173,6 +173,19 @@ async fn inbound(State(app): State<AppContext>, Path(id): Path<Uuid>, headers: H
     inbound_answer(&st.kernel, &st.public_limiter, &headers, id, &body).await
 }
 
+/// `GET /api/connections/inbound/{id}?…`: a service's check before it delivers (BD-78): the challenge as plain text, or
+/// the same 401 as any refusal.
+async fn handshake(State(app): State<AppContext>, Path(id): Path<Uuid>, Query(q): Query<BTreeMap<String, String>>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.public_limiter.check(&format!("{}|connections", client_ip(&headers))).await?;
+    let challenge = st.kernel.connection_handshake(id, &q).await?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8"), (axum::http::header::HeaderName::from_static("x-content-type-options"), "nosniff")],
+        challenge,
+    )
+        .into_response())
+}
+
 /// What an inbound call is answered: every refusal the same 401, counted; one accepted, `{accepted: true}`.
 pub async fn inbound_answer(k: &Kernel, limiter: &RateLimiter, headers: &HeaderMap, id: Uuid, body: &[u8]) -> ApiResult<Response> {
     limiter.check(&format!("{}|connections", client_ip(headers))).await?;
@@ -196,5 +209,5 @@ pub fn routes() -> Routes {
         .add("/connections", get(personal))
         .add("/connections/callback", get(callback))
         .add("/connections/{id}/connect", post(connect).delete(disconnect))
-        .add("/connections/inbound/{id}", post(inbound))
+        .add("/connections/inbound/{id}", post(inbound).get(handshake))
 }

@@ -1961,3 +1961,18 @@ Decided 13 November 2026.
   the provider (or a session) lists it in `not_secret`, which must name fields it keeps. A handle is public; an open id
   or a device id may not be, and the platform cannot tell, so the default stays hidden.
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-78. An inbound address's verification handshake
+
+Decided 13 November 2026.
+
+* **The gap**: some services (Meta's webhooks, WebSub hubs) check an address before delivering to it: a GET carrying a
+  verify token and a challenge, which the address must echo. Inbound addresses took POSTs only.
+* **The shape**: the description's `handshake: {token, challenge, secret, expect?}`, beside `inbound` (which apps build
+  in code, so it takes no new field), names the query parameters and the
+  connection secret the token must equal; `expect` lists parameters that must be there as given. `GET` on the inbound
+  address answers the challenge as `text/plain` (nosniff, at most 512 characters) when the token matches, compared in
+  constant time; anything else (a wrong token, a missing `expect`, no handshake declared, an unknown or turned-off
+  connection) gets the same `401` as a refused delivery and counts as refused. Rate-limited with the deliveries.
+* The deliveries themselves are verified as before (`verify`); the handshake proves nothing about them.
+* Part of the App API 0.3.8 (BD-63).
