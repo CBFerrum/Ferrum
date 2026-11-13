@@ -808,8 +808,8 @@ Logs are JSON. Clients may send an `x-request-id` header to correlate their call
 ## Scaling
 
 * API: the HPA scales 3–10 replicas on CPU (the connection budget above); replicas are interchangeable.
-* Database: scale vertically first; add a PgBouncer pooler (CloudNativePG `Pooler`, transaction
-  mode) when connections become the limit. Change the number of instances or the size of their
+* Database: scale vertically first; add a PgBouncer pooler (`database.pooler.enabled` in the Helm chart,
+  "Deployment shapes") when connections become the limit. Change the number of instances or the size of their
   volumes with `deploy/scale-database.sh --instances N` or `--storage 200Gi` (`--wait 600` to wait for
   replication to recover first). It changes nothing, says why, and exits 3 in these cases:
   - an instance is not ready;
@@ -870,8 +870,22 @@ it runs) as many again. With pools, the chart adds up every pool at its most rep
 `scripts/check_manifests.py` does), and refuses to render when the sum is above `database.connectionLimit`.
 Each preset says its sum. Without pools the chart refuses nothing new: check it with
 `helm template ... | python3 scripts/check_manifests.py -`, which adds up every server Deployment and Job it
-is given. (With today's defaults and `migrate.enabled`, that is 394 of 370: lower `autoscaling.maxReplicas`
+is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With today's defaults and `migrate.enabled`, that is 394 of 370: lower `autoscaling.maxReplicas`
 to 9 when you turn the Job on.)
+
+**Connection pooler.** `database.pooler.enabled` puts PgBouncer (CloudNativePG's `Pooler`, `ferrum-db-pooler`,
+`database.pooler.instances` of them, at most one down at a time) in front of the primary, in transaction mode
+with protocol-level prepared statements (`max_prepared_statements`, PgBouncer 1.21 or later; the operator
+supplies the image). The server's pods then get `DATABASE_URL` pointing at the pooler and
+`FERRUM_DATABASE_DIRECT_URL` at the primary (`ferrum-db-rw`), which the server uses for LISTEN, session locks
+and migrations; the migrate Job always connects directly. Turn it on only with a server that reads
+`FERRUM_DATABASE_DIRECT_URL`: an older one would send LISTEN and session locks through the pooler, where they
+do not hold. Only the server's pods may reach the pooler, and Prometheus its metrics (`ferrum-db-pooler`
+PodMonitor). With the pooler, PostgreSQL sees `instances x poolSize` connections from it (plus
+`reserve_pool_size` if you set it in `database.pooler.parameters`) and `directConnectionsPerReplica`
+(default 8: listeners and locks, to be confirmed by the server change) from each replica, and the budget
+below counts that instead of `dbMaxConnections + 4`. `dbMaxConnections` is then what each replica opens to the
+pooler; keep the sum over every replica under `maxClientConnections` times `instances`.
 
 **What the chart refuses, and why:**
 
@@ -888,6 +902,9 @@ to 9 when you turn the Job on.)
 | `… takes all of the gateway's own hosts` | A route with no hosts, paths or apps: make that pool the gateway's `defaultPool` |
 | `pools … both take all of host …` | Two pools cannot both answer the whole of one host |
 | `the pools may open … database connections` | The connection budget above |
+| `database.pooler … needs database.enabled` | The pooler is CloudNativePG's; in front of your own database, run PgBouncer yourself |
+| `database.bootstrap.mode …: set …` | A way of starting the database lacks what it reads ("Moving from one shape to another") |
+| `… where this cluster would also write its own` | A recovery from this chart's own backups needs a new `database.backup.serverName` |
 
 **Two gateways.** The public Gateway is as before (`gateway`). `privateGateway.enabled` adds a second one,
 `ferrum-private`, with its own class, hosts, certificate and Envoy proxies; `privateGateway.envoyProxy.envoyService`

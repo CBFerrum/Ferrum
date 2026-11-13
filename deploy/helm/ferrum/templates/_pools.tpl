@@ -19,7 +19,7 @@ Call with the root context: include "ferrum.pools" . | fromJson
 {{- end -}}
 {{- if hasKey $seen $name -}}{{- fail (printf "two pools are named %s: each pool needs a name of its own" $name) -}}{{- end -}}
 {{- $_ := set $seen $name true -}}
-{{- if has $name (list "pdf" "db" "office" "editors" "metrics-engine" "migrate" "background" "private") -}}
+{{- if has $name (list "pdf" "db" "db-pooler" "office" "editors" "metrics-engine" "migrate" "background" "private") -}}
 {{- fail (printf "pool %s: %s-%s is the name of another part of the chart; choose another name" $name $n $name) -}}
 {{- end -}}
 {{- $bg := $p.background | default "both" -}}
@@ -63,23 +63,35 @@ Call with the root context: include "ferrum.pools" . | fromJson
   "priorityClassName" ($p.priorityClassName | default "")
 ) -}}
 {{- end -}}
+{{- end -}}
 {{- /* The connection budget: every pool at its most replicas, the migrate Job, and what else uses the role
-(scripts/check_manifests.py: OTHERS), within the role's limit (database.yaml). */ -}}
-{{- if $v.database.enabled -}}
+(scripts/check_manifests.py: OTHERS), within the role's limit (database.yaml). With the pooler, each replica
+counts only its direct connections and the pooler its own. Checked with pools or the pooler on. */ -}}
+{{- $pl := $v.database.pooler -}}
+{{- if and $v.database.enabled (or $v.pools $pl.enabled) -}}
 {{- $need := 20 -}}
 {{- $parts := list -}}
+{{- if $pl.enabled -}}
+{{- $per := add (int $pl.poolSize) (int (get ($pl.parameters | default dict) "reserve_pool_size" | default 0)) -}}
+{{- $need = add $need (mul (int $pl.instances) $per) -}}
+{{- $parts = append $parts (printf "the pooler %d x %d" (int $pl.instances) (int $per)) -}}
+{{- end -}}
 {{- range $out -}}
 {{- $r := ternary .autoscaling.maxReplicas .replicas .autoscaling.enabled | int -}}
+{{- if $pl.enabled -}}
+{{- $need = add $need (mul $r (int $pl.directConnectionsPerReplica)) -}}
+{{- $parts = append $parts (printf "%s %d x %d direct" (.name | default "ferrum") $r (int $pl.directConnectionsPerReplica)) -}}
+{{- else -}}
 {{- $need = add $need (mul $r (add (int .dbMaxConnections) 4)) -}}
 {{- $parts = append $parts (printf "%s %d x (%d + 4)" .name $r (int .dbMaxConnections)) -}}
+{{- end -}}
 {{- end -}}
 {{- if eq (include "ferrum.migrateJob" .) "true" -}}
 {{- $need = add $need (add (int $v.dbMaxConnections) 4) -}}
 {{- $parts = append $parts (printf "the migrate Job %d + 4" (int $v.dbMaxConnections)) -}}
 {{- end -}}
 {{- if gt (int $need) (int $v.database.connectionLimit) -}}
-{{- fail (printf "the pools may open %d database connections (%s, and 20 for other users of the role), more than database.connectionLimit %d: lower maxReplicas or dbMaxConnections" $need (join ", " $parts) (int $v.database.connectionLimit)) -}}
-{{- end -}}
+{{- fail (printf "the pools may open %d database connections (%s, and 20 for other users of the role), more than database.connectionLimit %d: lower maxReplicas or dbMaxConnections%s" $need (join ", " $parts) (int $v.database.connectionLimit) (ternary ", or the pooler's instances or poolSize" "" (and $pl.enabled true))) -}}
 {{- end -}}
 {{- end -}}
 {{- toJson (dict "pools" $out) -}}

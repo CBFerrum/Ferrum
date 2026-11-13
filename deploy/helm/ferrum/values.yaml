@@ -189,6 +189,25 @@ database:
     # cluster refuses to archive where one of the same name already did: give it a new name when it starts
     # from a copy or a backup of a cluster that wrote there.
     serverName: ""
+  # A connection pooler (PgBouncer, as CloudNativePG's Pooler) in front of the primary, in transaction mode,
+  # with protocol-level prepared statements (PgBouncer 1.21 or later; CloudNativePG's own image is newer).
+  # On, the server's DATABASE_URL points at it and FERRUM_DATABASE_DIRECT_URL at the primary, which the
+  # server uses for LISTEN, session locks and migrations (the migrate Job always connects directly). Only
+  # with a server that reads FERRUM_DATABASE_DIRECT_URL: an older one would LISTEN through the pooler.
+  # PostgreSQL then sees `instances x poolSize` connections from the pooler (plus reserve_pool_size, if
+  # set in parameters) and directConnectionsPerReplica from each server replica.
+  pooler:
+    enabled: false
+    instances: 2
+    poolSize: 40                  # default_pool_size: connections each instance keeps to PostgreSQL
+    maxClientConnections: 1000    # max_client_conn: each instance's connections from server replicas
+    maxPreparedStatements: 200    # max_prepared_statements; 0 turns prepared statements off
+    parameters: {}                # other PgBouncer settings CloudNativePG allows
+    # Each replica's direct connections: listeners and locks. To be confirmed by the server change.
+    directConnectionsPerReplica: 8
+    resources:
+      requests: {cpu: 100m, memory: 64Mi}
+      limits: {memory: 256Mi}
   # How the database starts, read once when the Cluster is created (docs/operations.md, "Moving from one
   # shape to another"). Keep the same values on later upgrades.
   #   empty     a new, empty database

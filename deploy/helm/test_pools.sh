@@ -167,6 +167,41 @@ refuses 'not "restore"' --set database.bootstrap.mode=restore
 # Reading another cluster's backups needs no new name.
 tpl --set database.bootstrap.mode=recovery --set database.bootstrap.recovery.serverName=old-db > /dev/null
 
+echo "with the pooler, the server reaches the database through it and the migrate Job directly, within the budget"
+tpl --set database.pooler.enabled=true --set migrate.enabled=true --is-upgrade -f "$chart/presets/split.yaml" > "$tmp/pooler.yaml"
+python3 scripts/check_manifests.py "$tmp/pooler.yaml"
+python3 - "$tmp/pooler.yaml" <<'PY2'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+def env(d):
+    return {e["name"]: e for e in d["spec"]["template"]["spec"]["containers"][0]["env"]}
+for name in ("ferrum", "ferrum-worker"):
+    dep = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == name)
+    e = env(dep)
+    assert "@ferrum-db-pooler.ferrum:5432/" in e["DATABASE_URL"]["value"], e["DATABASE_URL"]
+    assert e["FERRUM_DATABASE_DIRECT_URL"]["valueFrom"]["secretKeyRef"] == {"name": "ferrum-db-app", "key": "uri"}
+    names = list(e)
+    assert names.index("FERRUM_DB_PASSWORD") < names.index("DATABASE_URL"), "a variable is used before it is set"
+job = next(d for d in docs if d["kind"] == "Job")
+e = env(job)
+assert e["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {"name": "ferrum-db-app", "key": "uri"}, e["DATABASE_URL"]
+assert "FERRUM_DATABASE_DIRECT_URL" not in e
+p = next(d for d in docs if d["kind"] == "Pooler")
+assert p["spec"]["cluster"] == {"name": "ferrum-db"} and p["spec"]["type"] == "rw"
+assert p["spec"]["pgbouncer"]["poolMode"] == "transaction"
+assert int(p["spec"]["pgbouncer"]["parameters"]["max_prepared_statements"]) > 0
+pol = next(d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "ferrum-db-pooler")
+servers = pol["spec"]["ingress"][0]["from"][0]["podSelector"]["matchExpressions"][0]["values"]
+assert servers == ["ferrum", "ferrum-worker"], servers
+assert any(d["kind"] == "PodDisruptionBudget" and d["metadata"]["name"] == "ferrum-db-pooler" for d in docs)
+PY2
+# 8 x 8 + 2 x 8 + 2 x 40 + 34 + 20 = 214 fits 220; one more instance does not.
+tpl --set database.pooler.enabled=true --set database.connectionLimit=220 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade > /dev/null
+refuses "the pooler 3 x 40" --set database.pooler.enabled=true --set database.pooler.instances=3 --set database.connectionLimit=220 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade
+refuses "the pooler 2 x 45" --set database.pooler.enabled=true --set-json 'database.pooler.parameters={"reserve_pool_size":5}' --set database.pooler.directConnectionsPerReplica=40
+refuses "needs database.enabled" --set database.pooler.enabled=true --set database.enabled=false --set database.urlSecret.name=x
+refuses "is the name of another part of the chart" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"db-pooler"}]'
+
 echo "an app's calls are matched on X-Ferrum-UI, anchored, and other paths stay with the host"
 python3 - "$tmp/pools.yaml" <<'PY'
 import re, sys, yaml

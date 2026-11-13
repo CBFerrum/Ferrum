@@ -38,6 +38,31 @@ def pool_size(spec):
     return next((int(e["value"]) for e in env if e["name"] == "FERRUM_DB_MAX_CONNECTIONS"), 30)
 
 
+def through_pooler(spec):
+    return any(e["name"] == "FERRUM_DATABASE_DIRECT_URL" for c in spec["template"]["spec"]["containers"] for e in c.get("env", []))
+
+
+def per_replica(spec, pooler):
+    """What one replica opens on PostgreSQL itself: its pool and side connections, or, when it reaches the
+    database through the pooler (it then has FERRUM_DATABASE_DIRECT_URL), only its direct ones."""
+    size = pool_size(spec)
+    if size is None:
+        return None
+    if pooler and through_pooler(spec):
+        return int(pooler["metadata"].get("annotations", {}).get("ferrum.dev/direct-connections-per-replica", 8))
+    return size + SIDE
+
+
+def pooler_connections(pooler):
+    """A PgBouncer pooler's connections to PostgreSQL: each instance's pool and reserve (PgBouncer's defaults
+    20 and 0)."""
+    if not pooler:
+        return 0
+    params = pooler["spec"].get("pgbouncer", {}).get("parameters", {})
+    each = int(params.get("default_pool_size", 20)) + int(params.get("reserve_pool_size", 0))
+    return pooler["spec"].get("instances", 1) * each
+
+
 def problems(docs):
     docs = list(docs)
     found = []
@@ -52,14 +77,19 @@ def problems(docs):
             found.append(f"{entry[0]}: {target['name']} sets replicas under an autoscaler, and two things now own that number")
 
     clusters = [d for _, d in docs if d.get("kind") == "Cluster"]
+    # The read-write pooler in front of the cluster, if there is one.
+    pooler = next((d for _, d in docs if d.get("kind") == "Pooler" and d["spec"].get("type", "rw") == "rw"
+                   and clusters and d["spec"]["cluster"]["name"] == clusters[0]["metadata"]["name"]), None)
     for hpa in scalers:
         target = hpa["spec"]["scaleTargetRef"]
         entry = workloads.get((target["kind"], target["name"]))
         if entry is None or not clusters:
             continue
-        env = [e for c in entry[1]["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])]
-        pool = next((int(e["value"]) for e in env if e["name"] == "FERRUM_DB_MAX_CONNECTIONS"), 30)
-        needed = hpa["spec"]["maxReplicas"] * (pool + SIDE) + OTHERS
+        each = per_replica(entry[1]["spec"], pooler)
+        if each is None:
+            continue
+        through = pooler is not None and through_pooler(entry[1]["spec"])
+        needed = hpa["spec"]["maxReplicas"] * each + OTHERS + (pooler_connections(pooler) if through else 0)
         spec = clusters[0]["spec"]
         allowed = int(spec["postgresql"]["parameters"]["max_connections"])
         roles = spec.get("managed", {}).get("roles", [])
@@ -81,11 +111,13 @@ def problems(docs):
     parts = []
     for _, d in docs:
         if d.get("kind") in ("Deployment", "StatefulSet", "Job"):
-            pool = pool_size(d["spec"])
-            if pool is not None:
+            each = per_replica(d["spec"], pooler)
+            if each is not None:
                 key = (d["kind"], d["metadata"]["name"])
                 n = most.get(key, d["spec"].get("parallelism" if d["kind"] == "Job" else "replicas", 1))
-                parts.append((key, n * (pool + SIDE)))
+                parts.append((key, n * each))
+    if pooler:
+        parts.append((("Pooler", pooler["metadata"]["name"]), pooler_connections(pooler)))
     needed = sum(n for _, n in parts) + OTHERS
     alone = len(parts) == 1 and parts[0][0] in most  # already said above
     if limit >= 0 and needed > limit and not alone:

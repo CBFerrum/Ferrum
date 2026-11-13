@@ -73,4 +73,94 @@ spec:
       compression: gzip
     data:
       compression: gzip
+{{- with $d.pooler }}{{ if .enabled }}
+---
+# PgBouncer in front of the primary (values.yaml, database.pooler). Fields checked against CloudNativePG 1.30
+# (docs/src/connection_pooling.md, the Pooler API) and PgBouncer's configuration reference
+# (max_prepared_statements: 1.21 and later). The operator picks PgBouncer's image.
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: {{ $n }}-db-pooler
+  annotations:
+    # Read by scripts/check_manifests.py for the connection budget.
+    ferrum.dev/direct-connections-per-replica: {{ .directConnectionsPerReplica | quote }}
+spec:
+  cluster: {name: {{ $n }}-db}
+  type: rw
+  instances: {{ .instances }}
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      {{- $p := merge (dict "default_pool_size" (toString .poolSize) "max_client_conn" (toString .maxClientConnections) "max_prepared_statements" (toString .maxPreparedStatements)) (.parameters | default dict) }}
+      {{- range $k, $v := $p }}
+      {{ $k }}: {{ $v | toString | quote }}
+      {{- end }}
+  template:
+    spec:
+      containers:
+        - name: pgbouncer
+          resources: {{- toYaml .resources | nindent 12 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {cnpg.io/poolerName: {{ $n }}-db-pooler}
+{{- if gt (int .instances) 1 }}
+---
+# CloudNativePG makes no disruption budget for a pooler: at most one instance down at a time.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $n }}-db-pooler
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {cnpg.io/poolerName: {{ $n }}-db-pooler}
+{{- end }}
+{{- if $.Values.networkPolicy.enabled }}
+---
+# Only the server's pods reach the pooler, and Prometheus its metrics. Its way out is not narrowed: its
+# instance manager talks to the Kubernetes API as well as to PostgreSQL. (The server's own policy already
+# lets it reach the pooler: its pods carry the cluster's cnpg.io/cluster label.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $n }}-db-pooler
+spec:
+  podSelector:
+    matchLabels: {cnpg.io/poolerName: {{ $n }}-db-pooler}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            {{- include "ferrum.serverPods" $ | nindent 12 }}
+      ports:
+        - {port: 5432}
+    {{- with $.Values.networkPolicy.monitoringNamespaces }}
+    - from:
+        {{- range . }}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ . }}}
+        {{- end }}
+      ports:
+        - {port: 9127}
+    {{- end }}
+{{- end }}
+{{- if $.Values.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $n }}-db-pooler
+spec:
+  selector:
+    matchLabels: {cnpg.io/poolerName: {{ $n }}-db-pooler}
+  podMetricsEndpoints:
+    - port: metrics
+{{- end }}
+{{- end }}{{ end }}
+{{- else if .Values.database.pooler.enabled }}
+{{- fail "database.pooler is CloudNativePG's Pooler, so it needs database.enabled; in front of your own database, run PgBouncer yourself and point database.urlSecret at it" }}
 {{- end }}

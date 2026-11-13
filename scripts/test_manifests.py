@@ -44,4 +44,28 @@ assert problems(fits + [server("Deployment", "ferrum-more", 30, replicas=1)]) !=
 pdf = ("chart", {"kind": "Deployment", "metadata": {"name": "pdf"}, "spec": {"replicas": 50, "template": {"spec": {"containers": [{"name": "p"}]}}}})
 assert problems(fits + [pdf]) == []
 assert rendered("x", "a: 1\n---\n---\nb: 2\n") == [("x", {"a": 1}), ("x", {"b": 2})]
+
+# With a pooler: a replica that reaches the database through it counts only its direct connections, and the
+# pooler its own. 30 replicas x 34 would never fit; 30 x 8 + 2 x 40 + 20 = 340 does.
+def through(name, pool, **spec):
+    kind, d = server("Deployment", name, pool, **spec)
+    d["spec"]["template"]["spec"]["containers"][0]["env"].append({"name": "FERRUM_DATABASE_DIRECT_URL", "value": "y"})
+    return kind, d
+
+
+pooler = ("chart", {"kind": "Pooler", "metadata": {"name": "ferrum-db-pooler", "annotations": {"ferrum.dev/direct-connections-per-replica": "8"}},
+                    "spec": {"cluster": {"name": cluster[0][1]["metadata"]["name"]}, "type": "rw", "instances": 2,
+                             "pgbouncer": {"parameters": {"default_pool_size": "40"}}}})
+big = ("chart", {"kind": "HorizontalPodAutoscaler", "metadata": {"name": "ferrum"},
+                 "spec": {"scaleTargetRef": {"kind": "Deployment", "name": "ferrum"}, "maxReplicas": 30}})
+pooled = cluster + [pooler, big, through("ferrum", 30)]
+assert problems(pooled) == [], problems(pooled)
+# The same replicas without the pooler do not fit.
+assert any("needs" in p for p in problems(cluster + [big, server("Deployment", "ferrum", 30)]))
+# A bigger pooler is counted: 30 x 8 + 2 x (40 + 50) + 20 = 440.
+wide = copy.deepcopy(pooler)
+wide[1]["spec"]["pgbouncer"]["parameters"]["reserve_pool_size"] = "50"
+assert [p for p in problems(cluster + [wide, big, through("ferrum", 30)]) if "440" in p], problems(cluster + [wide, big, through("ferrum", 30)])
+# A replica that does not use the pooler still counts in full beside it: + 3 x 34 = 442.
+assert [p for p in problems(pooled + [server("Deployment", "ferrum-old", 30, replicas=3)]) if "all together" in p and "442" in p]
 print("the manifests say what they mean")

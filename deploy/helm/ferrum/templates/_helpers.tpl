@@ -33,6 +33,20 @@ app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
 
 {{/* The server's environment, shared by the Deployment and the migration Job. */}}
 {{- define "ferrum.env" -}}
+{{- if and .Values.database.enabled .Values.database.pooler.enabled (not .direct) }}
+{{- /* Through the pooler (database.yaml). The parts come from CloudNativePG's secret; the password it
+generates is letters and digits only, so it needs no escaping in the address. */}}
+{{- $n := include "ferrum.fullname" . -}}
+- name: FERRUM_DB_USER
+  valueFrom: {secretKeyRef: {name: {{ $n }}-db-app, key: username}}
+- name: FERRUM_DB_PASSWORD
+  valueFrom: {secretKeyRef: {name: {{ $n }}-db-app, key: password}}
+- name: FERRUM_DB_NAME
+  valueFrom: {secretKeyRef: {name: {{ $n }}-db-app, key: dbname}}
+- {name: DATABASE_URL, value: "postgresql://$(FERRUM_DB_USER):$(FERRUM_DB_PASSWORD)@{{ $n }}-db-pooler.{{ .Release.Namespace }}:5432/$(FERRUM_DB_NAME)"}
+- name: FERRUM_DATABASE_DIRECT_URL
+  valueFrom: {secretKeyRef: {name: {{ $n }}-db-app, key: uri}}
+{{- else -}}
 - name: DATABASE_URL
   valueFrom:
     secretKeyRef:
@@ -42,6 +56,7 @@ app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
 {{- else }}
       name: {{ required "database.urlSecret.name is required when database.enabled is false" .Values.database.urlSecret.name }}
       key: {{ .Values.database.urlSecret.key }}
+{{- end }}
 {{- end }}
 {{ include "ferrum.secretEnv" (list . "JWT_SECRET" false) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_SECRET_KEY" false) }}
