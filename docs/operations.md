@@ -62,6 +62,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_SESSION_DAYS` | no | How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own that people and administrators sign out one by one |
 | `FERRUM_BASE_DOMAIN` | no | Shapes B and C (below, [Many workspaces](#many-workspaces-subdomains-and-ferrum-accounts)): the domain under which each workspace is `{slug}.{base}`, people sign in at `accounts.{base}` and outside callers use `hooks.{base}`. Empty: one workspace (`FERRUM_DEFAULT_WORKSPACE`) or a shared host |
 | `FERRUM_ACCOUNTS_HOST` | no | The host where people sign in once, with their Ferrum account (`id.example.com`), with or without a base domain: every host of every workspace sends sign-in there. Default `accounts.{base}` with `FERRUM_BASE_DOMAIN`, else none (each host signs in on its own). See [Names that should never change](#names-that-should-never-change) |
+| `FERRUM_HOOKS_HOST` | no | The host other services call back (`hooks.example.com`): webhooks and `/api/public/…` calls, a mail or calendar connector's sign-in return (`/api/connections/callback`), the addresses services pull files from. Default `hooks.{base}` for pages and public calls with `FERRUM_BASE_DOMAIN`, else `PUBLIC_URL`; connectors and pulled files use `PUBLIC_URL` unless this is set. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_PLANS` | no | The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up) |
 | `FERRUM_SIGNUP` | no | `open` lets people make workspaces of their own at `accounts.{base}/signup`; default `closed`. Needs `FERRUM_BASE_DOMAIN` and mail |
 | `FERRUM_SIGNUP_DOMAINS`, `FERRUM_SIGNUP_PACKAGES`, `FERRUM_SIGNUP_PLAN`, `FERRUM_SIGNUP_PER_ADDRESS` | with sign-up | The address domains sign-ups come from (comma-separated; empty: any), what a new workspace installs besides the core, the plan it starts on (one of `FERRUM_PLANS`), and how many workspaces one address may make (default 3) |
@@ -1824,6 +1825,16 @@ setting; each defaults to what the server did before the setting existed.
     registered redirect address, and makes passkeys made there unusable (their relying party is that
     host): pick it once.
   * It must be a host of its own, not `PUBLIC_URL`'s; the server refuses to start otherwise.
+* **`FERRUM_HOOKS_HOST`**: where other services call back. It is a place of its own with no pages
+  and no sign-in, so a session never lives there. Set, it is the start of every callback address the
+  server gives out: a mail or calendar connector's return address (register
+  `https://{hooks host}/api/connections/callback` with Google or Microsoft), the short-lived addresses
+  services pull files from, and the address the workspace's pages show for its public endpoints
+  (`/api/public/{workspace}/…`). Not set: `hooks.{base}` for public
+  endpoints with a base domain, and `PUBLIC_URL` for everything else, as before.
+  * *Changing it later* breaks every return address registered with an outside service (connectors
+    stop connecting until it is registered again) and every webhook address given out.
+  * It must be a host of its own, neither `PUBLIC_URL`'s nor the accounts host.
 
 ## Sign-in security
 

@@ -162,6 +162,11 @@ pub struct Settings {
     /// `accounts.{base}` with a base domain, else none (each host signs in on its own).
     #[serde(default)]
     pub accounts_host: String,
+    /// The host other services call back (`FERRUM_HOOKS_HOST`): webhooks, connectors' sign-in
+    /// returns, files they pull. Empty: `hooks.{base}` with a base domain (pages only; connectors
+    /// still use `PUBLIC_URL` there, as before), else `PUBLIC_URL`'s host.
+    #[serde(default)]
+    pub hooks_host: String,
     /// This cluster's region (`eu`, `in`…), as the directory names it.
     #[serde(default)]
     pub region: String,

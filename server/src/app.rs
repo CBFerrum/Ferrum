@@ -228,6 +228,7 @@ impl Hooks for App {
                 push_contact: Some(settings.push_contact.trim().to_string()).filter(|c| c.starts_with("mailto:") || c.starts_with("https://")),
                 hold_on_timeline: std::env::var("FERRUM_HOLD_ON_TIMELINE").map_or(true, |v| v != "false"),
                 accounts_host: crate::shell::accounts_host(&settings),
+                hooks_url: crate::shell::hooks_url(&settings, &ctx.config.server.host),
                 plans,
                 signup,
                 process_runtime: processes,

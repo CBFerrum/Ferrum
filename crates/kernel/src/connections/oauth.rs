@@ -282,10 +282,9 @@ impl Kernel {
     pub fn connection_callback(&self) -> Result<String> {
         let base = self
             .settings
-            .public_url
-            .as_deref()
+            .callback_base()
             .ok_or_else(|| Error::Unavailable("signing in to an account needs the server's public address (PUBLIC_URL)".into()))?;
-        Ok(format!("{}{CALLBACK}", base.trim_end_matches('/')))
+        Ok(format!("{base}{CALLBACK}"))
     }
 
     /// Starts a sign-in to connection `id`'s account for the person `ctx` in browser session `session`: the address to

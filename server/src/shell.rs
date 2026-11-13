@@ -285,14 +285,30 @@ pub fn accounts_host(settings: &Settings) -> Option<String> {
 /// the server's public address (that host would then serve nothing else).
 pub fn check_names(settings: &Settings, public_url: &str) -> std::result::Result<(), String> {
     let public = public_host(public_url);
-    for (name, raw) in [("FERRUM_ACCOUNTS_HOST", &settings.accounts_host)] {
+    for (name, raw) in [("FERRUM_ACCOUNTS_HOST", &settings.accounts_host), ("FERRUM_HOOKS_HOST", &settings.hooks_host)] {
         if let Some(h) = host_setting(name, raw)?
             && public.as_deref() == Some(h.as_str())
         {
             return Err(format!("{name} ({h}) is the host of PUBLIC_URL; give it a host of its own"));
         }
     }
+    if accounts_host(settings).is_some() && accounts_host(settings) == hooks_host(settings) {
+        return Err("FERRUM_ACCOUNTS_HOST and FERRUM_HOOKS_HOST name the same host; give each its own".into());
+    }
     Ok(())
+}
+
+/// The callbacks host: `FERRUM_HOOKS_HOST`, else `hooks.{base}` with a base domain, else none (the
+/// public address takes callbacks).
+pub fn hooks_host(settings: &Settings) -> Option<String> {
+    host_setting("FERRUM_HOOKS_HOST", &settings.hooks_host).ok().flatten().or_else(|| base_domain(settings).map(|b| format!("hooks.{b}")))
+}
+
+/// `FERRUM_HOOKS_HOST` as an origin, for the kernel's callback addresses: over https unless the
+/// public address is plain http (development). None when it is not set on its own.
+pub fn hooks_url(settings: &Settings, public_url: &str) -> Option<String> {
+    let host = host_setting("FERRUM_HOOKS_HOST", &settings.hooks_host).ok().flatten()?;
+    Some(format!("{}://{host}", if public_url.trim().starts_with("http://") { "http" } else { "https" }))
 }
 
 /// The host part of the server's public address, as hosts are compared.
@@ -319,7 +335,7 @@ impl Shell {
             used: DashMap::new(),
             base: base_domain(settings),
             accounts_host: accounts_host(settings),
-            hooks_host: base_domain(settings).map(|b| format!("hooks.{b}")),
+            hooks_host: hooks_host(settings),
             public_host: public_host(public_url),
             region: settings.region.trim().to_ascii_lowercase(),
             regions: parse_regions(&settings.regions),
@@ -375,8 +391,9 @@ impl Shell {
         })
     }
 
-    /// Shapes B and C: the fixed host for outside callers (webhooks, payment and connector
-    /// callbacks), which no change of a workspace's addresses moves (docs/plan/apps-ui.md §7.2).
+    /// The fixed host for outside callers (webhooks, payment and connector callbacks), which no
+    /// change of a workspace's addresses moves (docs/plan/apps-ui.md §7.2): `FERRUM_HOOKS_HOST`, or
+    /// `hooks.{base}`; none otherwise (the public address takes them).
     pub fn hooks_origin(&self, headers: &HeaderMap) -> Option<String> {
         self.host_origin(self.hooks_host.as_deref()?, headers)
     }
@@ -1824,6 +1841,14 @@ mod tests {
         assert_eq!(accounts_host(&s(json!({"base_domain": "ferrum.cloud"}))).as_deref(), Some("accounts.ferrum.cloud"));
         assert_eq!(accounts_host(&s(json!({"base_domain": "ferrum.cloud", "accounts_host": "id.ferrum.cloud"}))).as_deref(), Some("id.ferrum.cloud"));
         assert_eq!(accounts_host(&s(json!({}))), None);
+        assert!(check_names(&s(json!({"hooks_host": "erp.acme.com"})), "https://erp.acme.com").is_err(), "the public address's host");
+        assert!(check_names(&s(json!({"hooks_host": "id.acme.com", "accounts_host": "id.acme.com"})), "https://erp.acme.com").is_err(), "one host for both");
+        assert!(check_names(&s(json!({"base_domain": "acme.com", "hooks_host": "accounts.acme.com"})), "https://erp.acme.com").is_err());
+        assert!(check_names(&s(json!({"hooks_host": "hooks.acme.com", "accounts_host": "id.acme.com"})), "https://erp.acme.com").is_ok());
+        assert_eq!(hooks_host(&s(json!({"base_domain": "ferrum.cloud"}))).as_deref(), Some("hooks.ferrum.cloud"));
+        assert_eq!(hooks_url(&s(json!({"base_domain": "ferrum.cloud"})), "https://ferrum.cloud"), None, "connectors keep PUBLIC_URL as before");
+        assert_eq!(hooks_url(&s(json!({"hooks_host": "cb.acme.com"})), "https://erp.acme.com").as_deref(), Some("https://cb.acme.com"));
+        assert_eq!(hooks_url(&s(json!({"hooks_host": "cb.acme.localhost"})), "http://erp.acme.localhost:5150").as_deref(), Some("http://cb.acme.localhost"));
     }
 
     #[test]

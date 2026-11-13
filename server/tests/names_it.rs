@@ -57,6 +57,21 @@ async fn scenario() {
         .unwrap();
 
     accounts_host(&k, acme).await;
+    hooks_host(&k, acme).await;
+}
+
+/// `FERRUM_HOOKS_HOST` without a base domain: a place of its own (no pages, no sign-in), named in
+/// the bootstrap as where outside callers go.
+async fn hooks_host(k: &Arc<Kernel>, acme: uuid::Uuid) {
+    let off = shell(k, json!({"default_workspace": "acme"}), "https://erp.acme.test");
+    assert_eq!(off.hooks_origin(&host("erp.acme.test")), None, "the public address, as before");
+    assert_eq!(off.place(&host("cb.acme.test")).await.unwrap(), Place::Workspace(acme));
+    let on = shell(k, json!({"default_workspace": "acme", "hooks_host": "cb.acme.test"}), "https://erp.acme.test");
+    assert_eq!(on.hooks_origin(&host("erp.acme.test")).as_deref(), Some("https://cb.acme.test"));
+    assert_eq!(on.place(&host("cb.acme.test")).await.unwrap(), Place::Hooks);
+    assert_eq!(on.place(&host("erp.acme.test")).await.unwrap(), Place::Workspace(acme));
+    assert!(on.is_own_host("cb.acme.test"));
+    assert_eq!(on.workspace_at("cb.acme.test").await.unwrap(), None, "no sign-in is handed to it");
 }
 
 /// `FERRUM_ACCOUNTS_HOST` without a base domain, on a one-workspace server (shape A).

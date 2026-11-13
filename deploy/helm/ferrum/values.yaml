@@ -19,6 +19,7 @@ publicUrl: https://erp.example.com
 # keeps each as the server had it before the setting existed.
 names:
   accountsHost: ""   # FERRUM_ACCOUNTS_HOST: where people sign in once
+  hooksHost: ""      # FERRUM_HOOKS_HOST: where other services call back
 logLevel: info
 # Connections each replica may open (plus 4 on the side). Autoscaling's maxReplicas x (this + 4)
 # must fit the database's connectionLimit.
