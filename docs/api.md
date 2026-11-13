@@ -599,7 +599,8 @@ For the bar, with the cookie or a token:
   color, compact, url, family}], create: [{app, label, entity, url}], intents: [{app, action, type,
   title, url}], sidepanels: [{id, app, title, icon, contextual, url}], families: [{id, title, apps}],
   assistant}`: what the caller may use. `family` names the head of the entry's family (`families`
-  lists them, heads first). Apps without an interface of their own, without launcher entries of
+  lists them, heads first). An app's `create` row naming an `entity` is left out where the workspace lacks that
+  entity (its package is not installed) or the person may not create it. Apps without an interface of their own, without launcher entries of
   their own, get one entry into their records (`/data/{app}/`, the manifest's name and summary) when
   the person may read one of their entities. A workspace's own menu gives a member who reads one of
   its entities a tile `{id: "menu-{name}", app: "{name}", title, description, icon, color, compact:
