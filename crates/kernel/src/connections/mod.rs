@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+mod fns;
 pub mod inbound;
 pub mod oauth;
 pub(crate) mod personal;
@@ -571,7 +572,13 @@ pub(crate) fn environment() -> minijinja::Environment<'static> {
     let mut env = crate::print::environment();
     env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
     env.add_filter("json", |v: minijinja::Value| serde_json::to_string(&v).unwrap_or_default());
+    fns::add(&mut env);
     env
+}
+
+/// The clock as templates and expressions read it: `now` (RFC 3339, milliseconds, UTC) and `today`.
+pub(crate) fn clock_vars(now: DateTime<Utc>) -> (Value, Value) {
+    (json!(now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)), json!(now.date_naive().to_string()))
 }
 
 pub(crate) fn pointer_problem(p: &str) -> Option<String> {
@@ -1409,7 +1416,8 @@ impl Kernel {
         }
         let headers = Value::Object(a.headers.iter().map(|(h, v)| (h.clone(), Value::String(v.clone()))).collect());
         let connection = json!({"name": conn.name, "id": conn.id});
-        let vars = [("answer", &a.body), ("headers", &headers), ("inputs", inputs), ("connection", &connection)];
+        let (now, today) = clock_vars(Utc::now());
+        let vars = [("answer", &a.body), ("headers", &headers), ("inputs", inputs), ("connection", &connection), ("now", &now), ("today", &today)];
         let mut out = Map::new();
         for (name, pick) in &op.result {
             let p = Pick::of(pick).map_err(Error::invalid)?.spec(false);
@@ -1505,9 +1513,8 @@ impl Kernel {
         bare: bool,
     ) -> Result<(Request, Vec<String>)> {
         let page = extra.page;
-        let now = extra.now.unwrap_or_else(Utc::now);
-        let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key, "now": now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                              "today": now.date_naive().to_string()});
+        let (now, today) = clock_vars(extra.now.unwrap_or_else(Utc::now));
+        let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key, "now": now, "today": today});
         if let Some(p) = page {
             vars["cursor"] = p.cursor.clone();
         }

@@ -1544,3 +1544,28 @@ service's offset, each byte sent once and in order, read only as ranges; INIT/AP
 answer is lost, started again from INIT under new keys, finalised once; parts the service names, each its range,
 their ETags collected for the finish; a file over the operator's cap; loops that cannot be refused when saved.
 
+## BD-56. Template functions and the clock
+
+Decided 13 November 2026. A record key made from the delivery's key (so a lost answer cannot post twice), rich-text
+facets counted in bytes, lengths counted as a service counts them, a creation moment that a retry repeats.
+
+* **The clock is the key's**: `now` and `today` are the moment of the key's first attempt (`conn_attempt.clock`), for
+  an operation of steps and for a single keyed call alike, so a retry sends the same `createdAt` and the same record
+  key. A call without a key (a read) has the moment it is made. Answers' and mappings' expressions bind `now` and
+  `today` as the moment they run (BD-17 keeps the clock out of the expression language itself: it is a value given to
+  it, as `user.now` is).
+* **Filters, not a language of our own**: minijinja's filters, in the connections' environment only (print formats are
+  unchanged): `sha256`, `hmac`, `base64`, `base64url`, `base32`, `urlencode`, `tid`, `length_in`, `entities`,
+  `truncate`, `strftime`. `tid` is 53 bits of microseconds and 10 bits of a digest of the key in the sortable base32
+  alphabet, 13 characters: the same key gives the same id, a later first attempt a larger one. `entities` finds links
+  (`http(s)://…`, trailing punctuation left out), mentions (`@handle`, `@user@host`) and tags (`#word`, not a bare
+  number), never inside a link, with offsets in bytes, characters, UTF-16 units or graphemes. A mention's account id
+  (a service's own lookup) is a `for_each` step over the mentions, not a function.
+* Not done: a weighted length (a service that counts some characters double and every link as 23): its weights are
+  that service's rules, which a description cannot name yet; `length_in` and `entities` give the parts.
+
+Tests (`connections_steps_it` `functions`, unit tests): a record's key, moment and day the same on a retry; a later
+key sorting after; facets' byte offsets around an emoji with a tone; a grapheme count; a signature in hex that does not
+send its key; truncate, split, join, default, urlencode, strftime; a pull's mapping reading `today`; RFC 4231's HMAC
+vector; offsets in each unit.
+

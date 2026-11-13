@@ -405,7 +405,8 @@ impl Kernel {
         let mut i = 0;
         let steps = &conn.desc.more(name).steps;
         while let Some(step) = steps.get(i) {
-            let vars = json!({"inputs": inputs, "steps": done, "key": key});
+            let (now, today) = super::clock_vars(clock);
+            let vars = json!({"inputs": inputs, "steps": done, "key": key, "now": now, "today": today});
             if let Some(w) = &step.when
                 && !truthy(&evaluate(w, &vars)?)
             {

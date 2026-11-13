@@ -34,6 +34,8 @@ rand = "0.9"
 hmac = "0.12"
 sha1 = "0.10"
 data-encoding = "2"
+# Lengths and offsets in graphemes, as some services count a post (connections/fns.rs).
+unicode-segmentation = "1"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 base64 = "0.22"

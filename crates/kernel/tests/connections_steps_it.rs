@@ -99,6 +99,9 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
             (200, String::new(), json!({"elements": if found { json!([{"id": "urn:post:found"}]) } else { json!([]) }}).to_string())
         }
         ("POST", "/v1/slow-step") => (200, String::new(), json!({"id": "S-1"}).to_string()),
+        // Shaped like a record created under a key of its own, with byte-offset facets.
+        ("POST", "/v1/records") => (200, String::new(), json!({"uri": format!("at://did/post/{}", body["rkey"].as_str().unwrap_or_default())}).to_string()),
+        ("GET", "/v1/feed") => (200, String::new(), json!({"items": [{"id": "F-1"}]}).to_string()),
         // Shaped like a media container: made, processed for a while, then published.
         ("POST", "/v1/containers") => (200, String::new(), json!({"id": format!("C-{}-{}", asked(bare), body["kind"].as_str().unwrap_or("ok"))}).to_string()),
         ("GET", p) if p.starts_with("/v1/containers/C-") => {
@@ -534,6 +537,71 @@ async fn loops(k: &Arc<Kernel>, admin: &Ctx, base: &str, store: &Memory) {
     }
 }
 
+async fn drain(k: &Kernel) {
+    for _ in 0..5 {
+        let mut tx = k.db.system_tx().await.unwrap();
+        sqlx::query("update job set run_at = now() where status = 'queued'").execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        while k.run_jobs_once(4).await.unwrap() > 0 {}
+    }
+}
+
+/// P4: functions in templates and the clock, fixed at a key's first attempt so that a retry sends the same thing.
+async fn functions(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let body = "{\"rkey\": {{ key | tid | json }}, \"createdAt\": {{ now | json }}, \"day\": {{ today | json }}, \"text\": {{ inputs.text | json }},                 \"facets\": {{ inputs.text | entities('bytes') | json }}, \"length\": {{ inputs.text | length_in('graphemes') }},                 \"sig\": {{ inputs.text | hmac(secret.token) | json }}, \"short\": {{ inputs.text | truncate(5) | json }},                 \"tags\": {{ inputs.tags | split(',') | join(' ') | json }}, \"q\": {{ inputs.text | urlencode | json }},                 \"when\": {{ now | strftime('%Y/%m/%d') | json }}, \"none\": {{ inputs.missing | default('-') | json }}}";
+    let ops = json!({
+        "create": {"method": "POST", "path": "/records", "body": body, "result": {"uri": "/uri"}},
+        "create_twice": {"steps": [{"name": "rec", "operation": "create", "inputs": {"text": "inputs.text", "tags": "inputs.tags"}}]},
+        "feed": {"path": "/feed"}
+    });
+    let pulls = json!([{"name": "feed", "operation": "feed", "every_minutes": 60, "items_at": "/items", "cursor": "time",
+                        "map": {"entity": "Post", "by": {"title": "'pulled ' + today + ' ' + item.id"}}}]);
+    k.save_connection_def(
+        admin,
+        None,
+        &input("sky", json!({"base": base, "auth": {"type": "bearer", "secret": "token"}, "operations": ops, "pulls": pulls}), Some(json!({"token": SECRET}))),
+    )
+    .await
+    .unwrap();
+    let text = "Hi @ana.example.test 👋🏽 see https://ferrum.example/a. #news";
+    fail_once("/v1/records", 503);
+    let make = || call("sky", "create", json!({"text": text, "tags": "a,b"}), Some("r-1"));
+    assert!(connections::call(k, admin, None, &make()).await.is_err());
+    let first = body_of(&last("POST /v1/records"));
+    connections::call(k, admin, None, &make()).await.unwrap();
+    let second = body_of(&last("POST /v1/records"));
+    assert_eq!(first, second, "a retry sends the same moment and the same record key");
+    let rkey = first["rkey"].as_str().unwrap();
+    assert_eq!(rkey.len(), 13, "{rkey}");
+    assert!(rkey.chars().all(|c| "234567abcdefghijklmnopqrstuvwxyz".contains(c)));
+    assert_eq!(first["day"], first["createdAt"].as_str().unwrap()[..10]);
+    assert_eq!(first["when"], first["createdAt"].as_str().unwrap()[..10].replace('-', "/"));
+    // Byte offsets, as a facet wants them: the emoji counts four and eight bytes, one grapheme.
+    let link = first["facets"].as_array().unwrap().iter().find(|f| f["type"] == "link").unwrap().clone();
+    assert_eq!(&text.as_bytes()[link["start"].as_u64().unwrap() as usize..link["end"].as_u64().unwrap() as usize], b"https://ferrum.example/a");
+    assert_eq!(first["facets"][0], json!({"type": "mention", "text": "@ana.example.test", "value": "ana.example.test", "start": 3, "end": 20}));
+    assert_eq!(first["facets"][2]["value"], "news");
+    assert_eq!(first["length"], text.chars().count() - 1, "the emoji and its tone are one grapheme");
+    assert_eq!((first["short"].as_str(), first["tags"].as_str(), first["none"].as_str()), (Some("Hi @a"), Some("a b"), Some("-")));
+    assert!(first["q"].as_str().unwrap().starts_with("Hi%20%40ana.example.test%20"));
+    assert_eq!(first["sig"].as_str().unwrap().len(), 64, "hex HMAC-SHA256");
+    assert!(!first.to_string().contains(SECRET), "the key signs, it is not sent");
+    // A later key sorts after.
+    connections::call(k, admin, None, &call("sky", "create", json!({"text": "x", "tags": ""}), Some("r-2"))).await.unwrap();
+    assert!(body_of(&last("POST /v1/records"))["rkey"].as_str().unwrap() > rkey);
+    // In a step's expression too, under its own key and the operation's clock.
+    let r = connections::call(k, admin, None, &call("sky", "create_twice", json!({"text": "y", "tags": ""}), Some("r-3"))).await.unwrap();
+    assert!(r["rec"]["uri"].as_str().unwrap().starts_with("at://did/post/"));
+    // In a mapping: `today` and `now`.
+    let id: Uuid = k.connection_defs(admin).await.unwrap().iter().find(|c| c["name"] == "sky").unwrap()["id"].as_str().unwrap().parse().unwrap();
+    k.pull_now(admin, id, "feed").await.unwrap();
+    drain(k).await;
+    let title = format!("pulled {} F-1", chrono::Utc::now().date_naive());
+    let table = admin.schema.entity("Post").unwrap().table.clone();
+    let made = count(k, admin.tenant, &format!("select count(*) from {table} where tenant_id = $1 and title = '{title}'")).await;
+    assert_eq!(made, 1, "{:?}", k.connection_pulls(admin, id).await.unwrap());
+}
+
 #[test]
 fn connections_run_steps_safely() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -582,4 +650,5 @@ async fn scenario() {
     steps(&k, &admin, &base, &store).await;
     waiting(&k, &admin, &base).await;
     loops(&k, &admin, &base, &store).await;
+    functions(&k, &admin, &base).await;
 }
