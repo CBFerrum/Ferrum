@@ -125,6 +125,8 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
 <entry><id>urn:a1</id><title type="text">Atom one</title><link rel="alternate" href="https://news.example/a1"/></entry></feed>"#
                 .into(),
         ),
+        ("GET", "/v1/to-private") => (302, "location: https://10.0.0.1/feed\r\n".into(), String::new()),
+        ("GET", "/v1/to-local") => (302, format!("location: http://localhost:{port}/v1/rss\r\n"), String::new()),
         ("GET", "/v1/dtd") => (200, String::new(), r#"<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>"#.into()),
         ("GET", "/v1/form") => (200, String::new(), "a=1&b=x%20y&token=tok-Ww2".into()),
         ("POST", "/v1/oauth/token2") => (200, String::new(), json!({"access_token": "AT-Uu8-access", "account": {"id": "U-7"}}).to_string()),
@@ -885,7 +887,7 @@ async fn boot() -> (Arc<Kernel>, Ctx) {
     let social = ferrum_meta::catalog::load_package_files(&files).expect("package");
     let settings = KernelSettings {
         secret_key: Some(SecretKey::new([7u8; 32])),
-        connection_hosts: vec!["127.0.0.1".into()],
+        connection_hosts: vec!["127.0.0.1".into(), "localhost".into()],
         public_url: Some("https://ferrum.example.test".into()),
         connection_upload_bytes: 16,
         ..Default::default()
@@ -923,4 +925,48 @@ async fn scenario() {
     xml_answers(&k, &admin, &base).await;
     pull_each(&k, &admin, &base).await;
     signing_in(&k, &admin, &base).await;
+    any_host(&k, &admin, port).await;
+}
+
+/// BD-65: a description with no auth and no secrets reads any public host, by GET, without credentials, the guard as ever.
+async fn any_host(k: &Arc<Kernel>, admin: &Ctx, port: u16) {
+    let base = format!("http://127.0.0.1:{port}/v1");
+    let read = json!({"url": "{{ inputs.url }}", "answer": "xml"});
+    let feed = |any: bool| input("anyfeed", json!({"base": base, "any_host": any, "operations": {"read": read}}), None);
+    let elsewhere = json!({"url": format!("http://localhost:{port}/v1/rss")});
+    // Without the flag, a host besides the base's is refused, and its redirects are held to the base's host.
+    k.save_connection_def(admin, None, &feed(false)).await.unwrap();
+    let e = connections::call(k, admin, None, &call("anyfeed", "read", elsewhere.clone(), None)).await.unwrap_err();
+    assert!(e.to_string().contains("not one of the hosts"), "{e}");
+    let e = connections::call(k, admin, None, &call("anyfeed", "read", json!({"url": format!("{base}/to-local")}), None)).await.unwrap_err();
+    assert!(e.to_string().contains("not one of the hosts"), "{e}");
+    // With it: any host, a redirect to another host too.
+    let id = k.save_connection_def(admin, Some(conn_id(k, admin, "anyfeed").await), &feed(true)).await.unwrap();
+    let r = connections::call(k, admin, None, &call("anyfeed", "read", elsewhere, None)).await.unwrap();
+    assert!(r.to_string().contains("First & best"), "{r}");
+    connections::call(k, admin, None, &call("anyfeed", "read", json!({"url": format!("{base}/to-local")}), None)).await.expect("redirected elsewhere");
+    // The guard is unchanged: a redirect to a private address, plain http to a host the operator did not open.
+    let e = connections::call(k, admin, None, &call("anyfeed", "read", json!({"url": format!("{base}/to-private")}), None)).await.unwrap_err();
+    assert!(e.to_string().contains("private"), "{e}");
+    let e = connections::call(k, admin, None, &call("anyfeed", "read", json!({"url": "http://example.com/feed"}), None)).await.unwrap_err();
+    assert!(e.to_string().contains("https only"), "{e}");
+    // Refused the flag: any auth, any secret, a template naming one, anything but GET.
+    let refused = |desc: Value, secrets: Option<Value>| async move {
+        let mut d = json!({"base": "https://feeds.example.com", "any_host": true, "operations": {"read": {"url": "{{ inputs.url }}"}}});
+        d.as_object_mut().unwrap().extend(desc.as_object().unwrap().clone());
+        k.save_connection_def(admin, None, &input("feeds2", d, secrets)).await.unwrap_err().to_string()
+    };
+    assert!(refused(json!({"auth": {"type": "bearer", "secret": "t"}}), None).await.contains("any_host"));
+    assert!(refused(json!({}), Some(json!({"t": "x"}))).await.contains("any_host"));
+    assert!(refused(json!({"headers": {"x-key": "{{ secret.t }}"}}), None).await.contains("any_host"));
+    assert!(refused(json!({"operations": {"post": {"method": "POST", "url": "{{ inputs.url }}", "body": "{}"}}}), None).await.contains("any_host"));
+    let e = k.merge_connection_secrets(admin, id, &[("t".to_string(), "x".to_string())].into(), &[]).await.unwrap_err();
+    assert!(e.to_string().contains("any_host"), "{e}");
+}
+
+async fn conn_id(k: &Kernel, admin: &Ctx, name: &str) -> Uuid {
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let id = sqlx::query_scalar("select id from conn where tenant_id = $1 and name = $2").bind(admin.tenant).bind(name).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    id
 }

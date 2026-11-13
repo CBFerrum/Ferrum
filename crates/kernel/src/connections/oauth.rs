@@ -402,7 +402,7 @@ impl Kernel {
         }
         let address = reqwest::Url::parse(url).map_err(|_| Error::invalid("the provider's address is not an address"))?;
         let bound = provider.dpop && url == provider.token_url;
-        let reach = Reach { hosts: vec![host_of(url)], timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES };
+        let reach = Reach { hosts: vec![host_of(url)], any: false, timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES };
         let mask = conn.mask();
         let mut tries = 0;
         let got = loop {
@@ -493,7 +493,7 @@ impl Kernel {
                 headers: vec![("accept".into(), "application/json".into())],
                 body: Some((asked.to_string().into_bytes(), "application/json".to_string())),
             };
-            let a = self.fetch(req, &Reach { hosts: vec![host_of(&url)], timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES }).await?;
+            let a = self.fetch(req, &Reach { hosts: vec![host_of(&url)], any: false, timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES }).await?;
             let id = a.body.get("client_id").and_then(Value::as_str).filter(|i| (200..300).contains(&a.status) && !i.is_empty() && i.len() <= 500);
             let Some(id) = id else {
                 return Err(Error::invalid(format!("the provider did not register a client ({})", a.status)));

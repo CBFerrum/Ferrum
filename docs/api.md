@@ -1158,6 +1158,12 @@ bearer, secret}`, `{type: signed, header, secret, timestamp_header?, encoding: h
 needs a key. `{"test": true}` with a `fixture: {status, body}` per operation answers from that and calls nobody.
 Calls go to `https` only, to the base's host and `allowed_hosts`, never to a private, loopback, link-local or reserved
 address unless the operator names the host in `FERRUM_CONNECTION_HOSTS` (which also allows plain http to it).
+A description with `"any_host": true` reads any public host instead
+([BD-65](builder/decisions.md#bd-65-credential-free-reads-of-any-public-host)), as a feed reader must: only with `auth:
+none`, no secrets (given or kept, and `PATCH …/secrets` refused), no template naming `secret.`, `auth.` or `account.`, no
+inbound address, and every operation a GET sending nothing (no body, form or file); everything else of the guard is as
+ever (https, public addresses pinned, each redirect checked again, answers size-capped). Only administrators save
+descriptions, and a package's comes turned off for one to turn on.
 
 | Method & path | Notes |
 |---|---|
