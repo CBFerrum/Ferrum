@@ -1387,7 +1387,10 @@ answer's (a long-lived token for a short one); `refresh: "refresh_long"` refresh
 itself) instead of the token address, with or without a refresh token; `registration: "register_app"` registers the
 platform's client at this server with an operation of its own (given `inputs.redirect_uri`, `scopes`, `client_name`;
 its result's `client_id` and `client_secret` kept, once), for a server whose registration is not RFC 7591's;
-`never_expires: true` ignores the answer's expiry. These operations sign in: they are never called as operations.
+`never_expires: true` ignores the answer's expiry; `client_id_param: "client_key"` names the client's id as the
+provider does on the authorisation address and token requests, and `scope_separator: ","` joins scopes with commas
+([BD-72](builder/decisions.md#bd-72-a-providers-own-names-for-the-client-and-its-scopes)). These operations sign in:
+they are never called as operations.
 
 **A 2xx answer that is a refusal** ([BD-68](builder/decisions.md#bd-68-a-2xx-answer-that-is-a-refusal-in-the-services-words)):
 `refused_if` is a CEL expression over `answer`, `headers`, `status` and `inputs` that turns an answer whose status

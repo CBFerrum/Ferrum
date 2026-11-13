@@ -132,6 +132,9 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
         ("GET", "/v1/to-local") => (302, format!("location: http://localhost:{port}/v1/rss\r\n"), String::new()),
         ("GET", "/v1/dtd") => (200, String::new(), r#"<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>"#.into()),
         ("GET", "/v1/form") => (200, String::new(), "a=1&b=x%20y&token=tok-Ww2".into()),
+        ("POST", "/v1/oauth/token-key") if body_of(raw).is_null() && raw.contains("client_key=ck-1") && !raw.contains("client_id=") => {
+            (200, String::new(), json!({"access_token": "AT-Kk1", "expires_in": 3600}).to_string())
+        }
         ("POST", "/v1/oauth/token2") => (200, String::new(), json!({"access_token": "AT-Uu8-access", "account": {"id": "U-7"}}).to_string()),
         ("GET", "/v1/users/U-7/posts") => (200, String::new(), json!({"items": [{"id": "P-1"}, {"id": "P-2"}]}).to_string()),
         ("GET", p) if p.starts_with("/v1/posts/") && p.ends_with("/numbers") => {
@@ -930,6 +933,32 @@ async fn scenario() {
     signing_in(&k, &admin, &base).await;
     any_host(&k, &admin, port).await;
     refusals(&k, &admin, &base).await;
+    provider_words(&k, &admin, &base).await;
+}
+
+/// BD-72: a provider that calls the client's id `client_key` and joins scopes with commas.
+async fn provider_words(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let provider = json!({"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/oauth/token-key"), "client_id": "ck-1",
+                          "client_id_param": "client_key", "scope_separator": ",", "scopes": ["user.info.basic", "video.publish"]});
+    let id = k
+        .save_connection_def(admin, None, &input("keyed", json!({"base": base, "auth": {"type": "oauth", "provider": provider}, "operations": {}}), None))
+        .await
+        .unwrap();
+    let session = Uuid::now_v7();
+    let asked = query(&k.connect_start(admin, id, session).await.unwrap());
+    assert_eq!((asked.get("client_key").map(String::as_str), asked.get("scope").map(String::as_str)), (Some("ck-1"), Some("user.info.basic,video.publish")));
+    assert!(!asked.contains_key("client_id"), "{asked:?}");
+    k.connect_finish(admin, session, &asked["state"], Some("CODE-K"), None).await.expect("exchanged with client_key");
+    let mut bad = json!({"authorize_url": "https://id.example.test/a", "token_url": "https://id.example.test/t", "client_id": "x", "scope_separator": "|"});
+    let e = k
+        .save_connection_def(admin, None, &input("keyed2", json!({"base": base, "auth": {"type": "oauth", "provider": bad.clone()}}), None))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("scope_separator"), "{e}");
+    bad["scope_separator"] = json!(",");
+    bad["params"] = json!({"client_key": "y"});
+    bad["client_id_param"] = json!("client_key");
+    assert!(k.save_connection_def(admin, None, &input("keyed2", json!({"base": base, "auth": {"type": "oauth", "provider": bad}}), None)).await.is_err());
 }
 
 /// BD-68: a 2xx answer that is a refusal, in the service's words, temporary or not.

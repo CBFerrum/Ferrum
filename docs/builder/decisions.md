@@ -1878,3 +1878,15 @@ Decided 13 November 2026.
 * **Where an operator finds it**: docs/operations.md's configuration table (with `FERRUM_CONNECTION_HOSTS`, which was
   missing too), the Compose file, the Kubernetes deployment and the Helm chart's secret keys.
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-72. A provider's own names for the client and its scopes
+
+Decided 13 November 2026.
+
+* **The gap**: TikTok calls the client's id `client_key`; Slack wants scopes joined by commas. `params` cannot set
+  either (the flow sets them), so neither could sign in.
+* **Two words on the provider**: `client_id_param` (the parameter's name on the authorisation address and on every
+  token request, the exchange and the refresh alike; `client_id` unless said) and `scope_separator` (a space unless
+  said; a comma, a plus or a semicolon). `params` still cannot set what the flow sets, the renamed parameter included.
+  A client proving itself with basic authentication is unchanged.
+* Part of the App API 0.3.8 (BD-63).

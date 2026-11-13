@@ -131,6 +131,23 @@ pub struct Provider {
     /// Its tokens never expire, whatever the token answer says: never refreshed ahead.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub never_expires: bool,
+    /// What the provider calls the client's id on the authorisation address and the token requests (`client_key`);
+    /// `client_id` unless said (BD-72).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id_param: Option<String>,
+    /// What scopes are joined with: a space unless said (`,` for a provider that wants commas).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_separator: Option<String>,
+}
+
+impl Provider {
+    pub(crate) fn id_param(&self) -> &str {
+        self.client_id_param.as_deref().unwrap_or("client_id")
+    }
+
+    pub(crate) fn scope(&self) -> String {
+        self.scopes.join(self.scope_separator.as_deref().unwrap_or(" "))
+    }
 }
 
 fn address_problem(name: &str, url: &str) -> Option<String> {
@@ -161,7 +178,13 @@ impl Provider {
         if self.scopes.iter().any(|s| s.is_empty() || s.contains(char::is_whitespace)) {
             return Some("auth.provider.scopes are words without spaces".into());
         }
-        if ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope"]
+        if self.client_id_param.as_deref().is_some_and(|p| !is_name(p)) {
+            return Some("auth.provider.client_id_param is a parameter's name".into());
+        }
+        if self.scope_separator.as_deref().is_some_and(|s| ![" ", ",", "+", ";"].contains(&s)) {
+            return Some("auth.provider.scope_separator is a space, a comma, a plus or a semicolon".into());
+        }
+        if ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", self.id_param()]
             .iter()
             .any(|p| self.params.contains_key(*p))
         {
@@ -305,9 +328,9 @@ impl Kernel {
         let mut url = reqwest::Url::parse(&provider.authorize_url).map_err(|_| Error::invalid("the provider's authorize_url is not an address"))?;
         {
             let mut q = url.query_pairs_mut();
-            q.append_pair("response_type", "code").append_pair("client_id", &client_id).append_pair("redirect_uri", &redirect);
+            q.append_pair("response_type", "code").append_pair(provider.id_param(), &client_id).append_pair("redirect_uri", &redirect);
             if !provider.scopes.is_empty() {
-                q.append_pair("scope", &provider.scopes.join(" "));
+                q.append_pair("scope", &provider.scope());
             }
             q.append_pair("state", &state).append_pair("code_challenge", &challenge).append_pair("code_challenge_method", "S256");
             for (k, v) in &provider.params {
@@ -393,7 +416,7 @@ impl Kernel {
                     headers.push(("authorization".into(), format!("Basic {pair}")));
                 }
                 (_, secret) => {
-                    q.append_pair("client_id", &client_id);
+                    q.append_pair(provider.id_param(), &client_id);
                     if let Some(s) = secret {
                         q.append_pair("client_secret", &s);
                     }
