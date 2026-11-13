@@ -172,6 +172,11 @@ pub struct Settings {
     /// its own relying party. A passkey always keeps the one it was made for.
     #[serde(default)]
     pub passkey_rp: String,
+    /// The host every emailed, notified or printed link goes through (`FERRUM_LINK_HOST`):
+    /// `https://{it}/go/{workspace}/{s|p}/…` leads on to the workspace's current host. Empty:
+    /// links name the workspace's host, as before.
+    #[serde(default)]
+    pub link_host: String,
     /// This cluster's region (`eu`, `in`…), as the directory names it.
     #[serde(default)]
     pub region: String,

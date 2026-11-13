@@ -60,6 +60,7 @@ settings:
   accounts_host: "<%= get_env(name="FERRUM_ACCOUNTS_HOST", default="") %>"
   hooks_host: "<%= get_env(name="FERRUM_HOOKS_HOST", default="") %>"
   passkey_rp: "<%= get_env(name="FERRUM_PASSKEY_RP", default="") %>"
+  link_host: "<%= get_env(name="FERRUM_LINK_HOST", default="") %>"
   region: "<%= get_env(name="FERRUM_REGION", default="") %>"
   regions: "<%= get_env(name="FERRUM_REGIONS", default="") %>"
   dev_ui: <%= get_env(name="FERRUM_DEV_UI", default="false") %>

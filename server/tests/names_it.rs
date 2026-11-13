@@ -58,6 +58,89 @@ async fn scenario() {
 
     accounts_host(&k, acme).await;
     hooks_host(&k, acme).await;
+    link_host(&k, acme).await;
+}
+
+/// `FERRUM_LINK_HOST`: off, links are the workspace's host and the path, as before; on, they go
+/// through `/go/{workspace}/{s|p}`, which leads on to the workspace's current host and is never an
+/// open redirect.
+async fn link_host(k: &Arc<Kernel>, acme: uuid::Uuid) {
+    use ferrum_kernel::notify::Audience::{Outside, Staff};
+    let s = k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+    let admin = k.load_ctx(acme, s.user, Some(s.token_version), "it".into()).await.unwrap();
+    k.add_subdomain(acme, "acme.erp.test").await.unwrap();
+    k.add_host(&admin, "help.acme.test", "portal").await.unwrap();
+    k.host_checked("help.acme.test", true).await.unwrap();
+    k.make_primary_host(&admin, "help.acme.test").await.unwrap();
+    let globex = k
+        .create_tenant(NewTenant {
+            slug: "globex".into(),
+            name: "Globex".into(),
+            admin_email: "admin@globex.test".into(),
+            admin_password: PASSWORD.into(),
+            admin_name: None,
+            packages: vec![],
+            settings: None,
+        })
+        .await
+        .unwrap();
+    k.add_subdomain(globex, "globex.erp.test").await.unwrap();
+
+    // Off: exactly the workspace's host and the path.
+    assert_eq!(k.person_link(acme, Staff, "/open/Note/1").await.as_deref(), Some("https://acme.erp.test/open/Note/1"));
+    assert_eq!(k.person_link(acme, Outside, "/open/Note/1").await, k.link_base(acme).await.map(|b| format!("{b}/open/Note/1")));
+
+    // On.
+    let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+    let db = Db::connect(DbConfig { url, max_connections: 4, ..Default::default() }).await.expect("connect");
+    let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages/core")).expect("core");
+    let settings = KernelSettings { link_host: Some("go.acme.test".into()), public_url: Some("https://erp.acme.test".into()), ..Default::default() };
+    let on = Kernel::boot(db, Catalog::from_packages(vec![core]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
+    assert_eq!(on.person_link(acme, Staff, "/open/Note/1").await.as_deref(), Some("https://go.acme.test/go/acme/s/open/Note/1"));
+    assert_eq!(
+        on.person_link(acme, Outside, "/api/messages/opt-out?token=t").await.as_deref(),
+        Some("https://go.acme.test/go/acme/p/api/messages/opt-out?token=t")
+    );
+
+    // `/go/`, answered on the link host whatever else it is (here the accounts host too).
+    let sh = shell(&on, json!({"link_host": "go.acme.test", "accounts_host": "go.acme.test"}), "https://erp.acme.test");
+    assert!(sh.on_link_host(&host("go.acme.test")) && sh.on_link_host(&host("GO.acme.test:443")));
+    assert!(!sh.on_link_host(&host("acme.erp.test")));
+    assert!(!shell(&on, json!({}), "https://erp.acme.test").on_link_host(&host("go.acme.test")), "off");
+    let go = |rest: &'static str, q: Option<&'static str>| {
+        let sh = &sh;
+        async move { sh.go_target(rest, q).await.unwrap() }
+    };
+    assert_eq!(go("acme/s/open/Note/1", Some("tab=2")).await.as_deref(), Some("https://acme.erp.test/open/Note/1?tab=2"));
+    assert_eq!(go("acme/p/open/Note/1", None).await.as_deref(), Some("https://help.acme.test/open/Note/1"), "the portal's host");
+    assert_eq!(go("globex/p/open/Note/1", None).await.as_deref(), Some("https://globex.erp.test/open/Note/1"), "no portal host: the main one");
+    assert_eq!(go("acme/s", None).await.as_deref(), Some("https://acme.erp.test/"));
+    for (rest, why) in [
+        ("nobody/s/x", "unknown workspace"),
+        ("acme/x/open", "no such audience"),
+        ("accounts/s/", "the directory"),
+        ("acme/s//evil.example", "scheme-relative"),
+        ("acme/s/\\evil.example", "backslash"),
+        ("acme/s/x\\y", "backslash inside"),
+    ] {
+        assert_eq!(go(rest, None).await, None, "{why}");
+    }
+    // What the path or query says never moves the host.
+    for (rest, q) in [
+        ("acme/s/%2F%2Fevil.example", None),
+        ("acme/s/%5Cevil.example", None),
+        ("acme/s/open/Note/1", Some("host=evil.example&next=https://evil.example")),
+        ("acme/s/@evil.example", None),
+    ] {
+        let to = go(rest, q).await.expect(rest);
+        assert_eq!(reqwest::Url::parse(&to).unwrap().host_str(), Some("acme.erp.test"), "{to}");
+    }
+    // A closed workspace: 404.
+    let mut tx = on.db.system_tx().await.unwrap();
+    sqlx::query("update tenant set status = 'suspended' where id = $1").bind(globex).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let fresh = shell(&on, json!({"link_host": "go.acme.test"}), "https://erp.acme.test");
+    assert_eq!(fresh.go_target("globex/s/", None).await.unwrap(), None, "closed");
 }
 
 /// `FERRUM_HOOKS_HOST` without a base domain: a place of its own (no pages, no sign-in), named in

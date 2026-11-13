@@ -584,6 +584,14 @@ Pages, for browsers, with the session cookie:
   the other moved apps → their pages, anything else → `/`. `/app/sw.js` is a worker that clears
   today's web app's cache and removes itself.
 * `GET /healthz` → `ok` (for load balancers).
+* `GET /go/{workspace}/{s|p}/{path}?{query}` on the link host (`FERRUM_LINK_HOST`) only, whatever
+  else that host is: no session; `302` to `https://{host}/{path}?{query}`, where `host` is the
+  workspace's main host (`s`, staff) or its portal's host (`p`, people from outside; the main host when
+  it has none), or the server's public address when it has neither. `404` for an unknown or suspended
+  workspace, or a path that is not a plain path (one that starts with `//` or holds a backslash). The
+  host comes only from the workspace's own verified hosts; the path is kept as a path. Rate-limited per
+  client address. Mail, notifications, digests, action links and opt-out links are built this way
+  when the link host is set.
 * `GET /login?next=` → the sign-in page. On the portal's host, and on the way to `/portal/`, it
   offers an emailed code first.
 * `GET /portal/` → the workspace's portal ([plan](plan/apps-ui.md) §9.1): the pages the apps give

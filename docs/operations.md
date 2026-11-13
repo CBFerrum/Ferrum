@@ -64,6 +64,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_ACCOUNTS_HOST` | no | The host where people sign in once, with their Ferrum account (`id.example.com`), with or without a base domain: every host of every workspace sends sign-in there. Default `accounts.{base}` with `FERRUM_BASE_DOMAIN`, else none (each host signs in on its own). See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_HOOKS_HOST` | no | The host other services call back (`hooks.example.com`): webhooks and `/api/public/…` calls, a mail or calendar connector's sign-in return (`/api/connections/callback`), the addresses services pull files from. Default `hooks.{base}` for pages and public calls with `FERRUM_BASE_DOMAIN`, else `PUBLIC_URL`; connectors and pulled files use `PUBLIC_URL` unless this is set. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_PASSKEY_RP` | no | The passkeys' relying party, a domain (`example.com`): passkeys made on it or a host under it work on every host under it. Default none: each host is its own, as before. Never the base domain. See [Names that should never change](#names-that-should-never-change) |
+| `FERRUM_LINK_HOST` | no | The host every mailed, notified or printed link goes through (`go.example.com`): links become `https://{it}/go/{workspace}/{s\|p}/…`, which lead on to wherever the workspace is when someone follows them. Default none: links name the workspace's host, as before. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_PLANS` | no | The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up) |
 | `FERRUM_SIGNUP` | no | `open` lets people make workspaces of their own at `accounts.{base}/signup`; default `closed`. Needs `FERRUM_BASE_DOMAIN` and mail |
 | `FERRUM_SIGNUP_DOMAINS`, `FERRUM_SIGNUP_PACKAGES`, `FERRUM_SIGNUP_PLAN`, `FERRUM_SIGNUP_PER_ADDRESS` | with sign-up | The address domains sign-ups come from (comma-separated; empty: any), what a new workspace installs besides the core, the plan it starts on (one of `FERRUM_PLANS`), and how many workspaces one address may make (default 3) |
@@ -1851,6 +1852,26 @@ setting; each defaults to what the server did before the setting existed.
     base or a domain above it, or one workspace's pages could ask for passkeys of another's; the
     server refuses to start so. Leave it empty: passkeys live on the accounts host, where everyone
     signs in. Set it only to a domain whose hosts are all yours (one company's staff and public hosts).
+* **`FERRUM_LINK_HOST`**: the host every link that leaves the server for a person goes through:
+  notification mail and daily digests, action links, opt-out links in promotional messages. Links
+  are then `https://{link host}/go/{workspace}/s/…` for staff and `…/p/…` for people from outside;
+  following one needs no sign-in and leads (`302`) to the workspace's main host (staff) or its
+  portal's host (outside people; the main host when it has none, where portal pages live under
+  `/portal`), with the rest of the address kept. A workspace that is unknown or suspended answers
+  `404`. The link host answers `/go/` whatever else it is, so it can be the accounts host. Not set:
+  links name the workspace's main host (or `PUBLIC_URL`), as before, and stop working when that host
+  is released.
+  * *Why*: a mailed link outlives the host it names. With a link host, a workspace can move to a new
+    host, or get a separate public host, and every link sent before still leads to it.
+  * *Changing it later* breaks every link sent before; it should be the steadiest name you have.
+  * *Not covered yet*: the addresses apps keep of their own (Sign, Bookings, Comms, LMS) and links
+    printed into exported documents still name a host directly.
+
+**A shared base domain.** In the cloud, where many organisations' workspaces are hosts under one base
+domain, leave `FERRUM_ACCOUNTS_HOST` and `FERRUM_HOOKS_HOST` at their defaults (`accounts.{base}`,
+`hooks.{base}`), set `FERRUM_LINK_HOST` to a host under a domain of the operator's own (or leave it),
+and never set `FERRUM_PASSKEY_RP`. A company running its own servers sets all four once, under its
+own domain, before people start using them.
 
 ## Sign-in security
 

@@ -226,6 +226,8 @@ pub struct Shell {
     hooks_host: Option<String>,
     /// The host of the server's public address (`PUBLIC_URL`): the one workspace's (shape A).
     public_host: Option<String>,
+    /// The host links go through (`FERRUM_LINK_HOST`), answering `/go/` whatever else it is.
+    link_host: Option<String>,
     /// This cluster's region, and the other regions' accounts hosts by name.
     pub region: String,
     pub regions: Vec<(String, String)>,
@@ -294,6 +296,7 @@ pub fn check_names(settings: &Settings, public_url: &str) -> std::result::Result
     }
     // Passkeys under a shared base domain would be good on every workspace's host: the accounts
     // host stays their relying party there (docs/operations.md).
+    host_setting("FERRUM_LINK_HOST", &settings.link_host)?;
     if let (Some(rp), Some(base)) = (host_setting("FERRUM_PASSKEY_RP", &settings.passkey_rp)?, base_domain(settings))
         && ferrum_kernel::passkey::host_may_use_rp(&base, &rp)
     {
@@ -344,6 +347,7 @@ impl Shell {
             accounts_host: accounts_host(settings),
             hooks_host: hooks_host(settings),
             public_host: public_host(public_url),
+            link_host: host_setting("FERRUM_LINK_HOST", &settings.link_host).ok().flatten(),
             region: settings.region.trim().to_ascii_lowercase(),
             regions: parse_regions(&settings.regions),
             dev_ui: settings.dev_ui,
@@ -381,7 +385,45 @@ impl Shell {
 
     /// One of the cluster's own hosts (accounts, hooks, links), which no workspace may claim.
     pub fn is_own_host(&self, bare: &str) -> bool {
-        [&self.accounts_host, &self.hooks_host].into_iter().flatten().any(|h| h == bare)
+        [&self.accounts_host, &self.hooks_host, &self.link_host].into_iter().flatten().any(|h| h == bare)
+    }
+
+    /// The request came to the link host (`FERRUM_LINK_HOST`).
+    pub fn on_link_host(&self, headers: &HeaderMap) -> bool {
+        self.link_host.is_some() && request_host(headers).and_then(ferrum_kernel::shell::normalize_host) == self.link_host
+    }
+
+    /// Where `/go/{workspace}/{s|p}{rest}` on the link host leads: the workspace's current host for
+    /// staff (`s`: its main host) or people from outside (`p`: its portal's host, else its main
+    /// host, where portal pages live under `/portal`), with the rest of the path and the query as
+    /// they came. `rest` is the request's path after `/go/`, still percent-encoded. `None` (404):
+    /// no such workspace, a closed one, the directory, or a path that is not a plain path. The
+    /// host is only ever one of the workspace's own (or the server's public address); the path is
+    /// put after it as a path, never read as an address.
+    pub async fn go_target(&self, rest: &str, query: Option<&str>) -> Result<Option<String>> {
+        let (slug, after) = rest.split_once('/').unwrap_or((rest, ""));
+        let (who, path) = match after.split_once('/') {
+            Some((who, path)) => (who, format!("/{path}")),
+            None => (after, "/".to_string()),
+        };
+        let audience = match who {
+            "s" => ferrum_kernel::notify::Audience::Staff,
+            "p" => ferrum_kernel::notify::Audience::Outside,
+            _ => return Ok(None),
+        };
+        let plain = |s: &str| !s.contains(['\\', '\r', '\n', '\t', ' ', '#']) && !s.chars().any(char::is_control);
+        if path.starts_with("//") || !plain(&path) || path.len() > 2000 || query.is_some_and(|q| !plain(q) || q.len() > 4000) {
+            return Ok(None);
+        }
+        let Some(tenant) = self.workspace_by_slug(slug).await? else { return Ok(None) };
+        if self.kernel.directory().await? == Some(tenant) || self.workspace(tenant).await?.status != "active" {
+            return Ok(None);
+        }
+        let Some(base) = self.kernel.audience_base(tenant, audience).await else { return Ok(None) };
+        Ok(Some(match query.filter(|q| !q.is_empty()) {
+            Some(q) => format!("{base}{path}?{q}"),
+            None => format!("{base}{path}"),
+        }))
     }
 
     /// The workspace a sign-in at the accounts host may be handed to on `bare`: one whose shell

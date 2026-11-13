@@ -179,6 +179,9 @@ pub struct KernelSettings {
     /// The passkeys' relying party for the hosts under it (`FERRUM_PASSKEY_RP`); none: each host is
     /// its own ([`crate::passkey::rp_for`]).
     pub passkey_rp: Option<String>,
+    /// The host every link that leaves the system for a person goes through (`FERRUM_LINK_HOST`):
+    /// `/go/{workspace}/{s|p}/…` there leads on to the workspace's current host ([`Kernel::person_link`]).
+    pub link_host: Option<String>,
     /// The operator's plans by name: each a set of quotas ([`plans`]).
     pub plans: serde_json::Map<String, serde_json::Value>,
     /// Who may make a workspace of their own ([`signup`]).
@@ -239,6 +242,7 @@ impl Default for KernelSettings {
             accounts_host: None,
             hooks_url: None,
             passkey_rp: None,
+            link_host: None,
             plans: serde_json::Map::new(),
             signup: signup::SignupPolicy::default(),
             chain_depth: 8,

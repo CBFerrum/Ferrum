@@ -364,6 +364,10 @@ async fn page(
     Query(q): Query<Vec<(String, String)>>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    // The link host answers `/go/` whatever else it is (accounts, hooks, a workspace's host).
+    if (path == "go" || path.starts_with("go/")) && st.shell.on_link_host(&headers) {
+        return go(&st, &headers, &uri).await;
+    }
     if let Some(res) = super::origins::serve_app_host(&st, &headers, &path).await? {
         return Ok(res);
     }
@@ -1043,6 +1047,22 @@ fn app_icon(q: &[(String, String)]) -> Response {
 
 fn query<'a>(q: &'a [(String, String)], key: &str) -> Option<&'a str> {
     q.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+}
+
+/// `/go/{workspace}/{s|p}/…` on the link host (`FERRUM_LINK_HOST`): no session; on to the
+/// workspace's current host for that audience ([`shell::Shell::go_target`]), `302`; else 404.
+/// Rate-limited per client address like other public addresses.
+async fn go(st: &AppState, headers: &HeaderMap, uri: &Uri) -> ApiResult<Response> {
+    st.public_limiter.check(&format!("{}|go", crate::extract::client_ip(headers))).await?;
+    let rest = uri.path().strip_prefix("/go/").unwrap_or_default();
+    let Some(to) = st.shell.go_target(rest, uri.query()).await? else { return Ok(not_found(uri.path())) };
+    let Ok(location) = HeaderValue::from_str(&to) else { return Ok(not_found(uri.path())) };
+    let mut res = StatusCode::FOUND.into_response();
+    let h = res.headers_mut();
+    h.insert(header::LOCATION, location);
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    Ok(res)
 }
 
 /// `/login?next=…`: the sign-in page; someone already signed in goes on.

@@ -358,8 +358,9 @@ impl Kernel {
         )
         .await?;
         let slug: String = sqlx::query_scalar("select slug from tenant where id = $1").bind(ctx.tenant).fetch_one(&mut **tx).await?;
-        let base = self.link_base(ctx.tenant).await.unwrap_or_default();
-        Ok(Issued { id, url: format!("{base}/api/public/{slug}/links/{token}"), expires_at })
+        let path = format!("/api/public/{slug}/links/{token}");
+        let url = self.person_link(ctx.tenant, crate::notify::Audience::Outside, &path).await.unwrap_or(path);
+        Ok(Issued { id, url, expires_at })
     }
 
     /// [`Kernel::issue_link`] in a transaction of its own (staff from a record).

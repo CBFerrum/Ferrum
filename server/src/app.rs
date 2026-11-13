@@ -230,6 +230,7 @@ impl Hooks for App {
                 accounts_host: crate::shell::accounts_host(&settings),
                 hooks_url: crate::shell::hooks_url(&settings, &ctx.config.server.host),
                 passkey_rp: crate::shell::host_setting("FERRUM_PASSKEY_RP", &settings.passkey_rp).ok().flatten(),
+                link_host: crate::shell::host_setting("FERRUM_LINK_HOST", &settings.link_host).ok().flatten(),
                 plans,
                 signup,
                 process_runtime: processes,

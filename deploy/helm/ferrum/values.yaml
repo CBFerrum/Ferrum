@@ -21,6 +21,7 @@ names:
   accountsHost: ""   # FERRUM_ACCOUNTS_HOST: where people sign in once
   hooksHost: ""      # FERRUM_HOOKS_HOST: where other services call back
   passkeyRp: ""      # FERRUM_PASSKEY_RP: the passkeys' relying party
+  linkHost: ""       # FERRUM_LINK_HOST: every mailed or printed link goes through it
 logLevel: info
 # Connections each replica may open (plus 4 on the side). Autoscaling's maxReplicas x (this + 4)
 # must fit the database's connectionLimit.

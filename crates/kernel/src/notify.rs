@@ -168,26 +168,79 @@ fn mail_html(workspace: &str, heading: Option<&str>, items: &[Mailed], more: usi
     html
 }
 
+/// Who a link is for: the workspace's staff (members and support), or people from outside
+/// (portal people and guests), whose pages may live on another host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Audience {
+    Staff,
+    Outside,
+}
+
+impl Audience {
+    /// The audience of a person of this kind.
+    pub fn of_kind(kind: &str) -> Audience {
+        if matches!(kind, "portal" | "guest") { Audience::Outside } else { Audience::Staff }
+    }
+
+    fn letter(self) -> char {
+        match self {
+            Audience::Staff => 's',
+            Audience::Outside => 'p',
+        }
+    }
+}
+
+/// A link through the link host: `{scheme}://{link host}/go/{workspace}/{s|p}{path}`, over https
+/// unless the public address is plain http (development).
+pub fn go_link(public_url: Option<&str>, link_host: &str, slug: &str, audience: Audience, path: &str) -> String {
+    let scheme = if public_url.is_some_and(|u| u.starts_with("http://")) { "http" } else { "https" };
+    format!("{scheme}://{link_host}/go/{slug}/{}{path}", audience.letter())
+}
+
+/// The path of a link to a record (`/open/{entity}/{id}`), or to the workspace's home.
+fn record_path(entity: Option<&str>, record: Option<Uuid>) -> String {
+    match (entity, record) {
+        (Some(e), Some(r)) => format!("/open/{e}/{r}"),
+        _ => "/".to_string(),
+    }
+}
+
 impl crate::Kernel {
     /// Where links a person follows from outside point: the workspace's own address when the
     /// server is reached over HTTPS (or does not say), else the server's (`public_url`); none
     /// without either. Apps use it for what they email, unless a setting of theirs says otherwise.
     pub async fn link_base(&self, tenant: Uuid) -> Option<String> {
+        self.audience_base(tenant, Audience::Staff).await
+    }
+
+    /// The workspace's current address for an audience: for people from outside its portal's host
+    /// when it has one, else (and for staff) its main host; with the rules of [`Kernel::link_base`].
+    pub async fn audience_base(&self, tenant: Uuid, audience: Audience) -> Option<String> {
         let public = self.settings.public_url.clone();
-        if public.as_deref().is_none_or(|u| u.starts_with("https://"))
-            && let Ok(Some(host)) = self.primary_host(tenant, "shell").await
-        {
-            return Some(format!("https://{host}"));
+        if public.as_deref().is_none_or(|u| u.starts_with("https://")) {
+            if audience == Audience::Outside
+                && let Ok(Some(host)) = self.primary_host(tenant, "portal").await
+            {
+                return Some(format!("https://{host}"));
+            }
+            if let Ok(Some(host)) = self.primary_host(tenant, "shell").await {
+                return Some(format!("https://{host}"));
+            }
         }
         public
     }
 
-    fn link(base: Option<&str>, entity: Option<&str>, record: Option<Uuid>) -> Option<String> {
-        let base = base?;
-        Some(match (entity, record) {
-            (Some(e), Some(r)) => format!("{base}/open/{e}/{r}"),
-            _ => format!("{base}/"),
-        })
+    /// Every link that leaves the system for a person (mail, notifications, digests, action links,
+    /// opt-out links) is built here, from its path on the workspace's host (`/open/…`, `/api/…`,
+    /// with its query). Without `FERRUM_LINK_HOST`: [`Kernel::link_base`] and the path, as always.
+    /// With it: through the link host's `/go/{workspace}/{s|p}`, which leads on to wherever the
+    /// workspace is when the link is followed. `None` without any address to give.
+    pub async fn person_link(&self, tenant: Uuid, audience: Audience, path: &str) -> Option<String> {
+        let Some(link) = self.settings.link_host.as_deref() else {
+            return self.link_base(tenant).await.map(|base| format!("{base}{path}"));
+        };
+        let (slug, ..) = self.workspace_brief(tenant).await.ok()?;
+        Some(go_link(self.settings.public_url.as_deref(), link, &slug, audience, path))
     }
 
     /// Emails a notification its person chose to have at once ([`MAIL_TOPIC`]'s handler). Without a
@@ -199,9 +252,9 @@ impl crate::Kernel {
             return Ok(());
         };
         let mut tx = self.db.tenant_tx(tenant).await?;
-        type Row = (String, Option<String>, Option<String>, Option<Uuid>, String, String);
+        type Row = (String, Option<String>, Option<String>, Option<Uuid>, String, String, String);
         let row: Option<Row> = sqlx::query_as(
-            "select n.title, n.body, n.entity, n.record_id, u.email::text, t.name from notification n \
+            "select n.title, n.body, n.entity, n.record_id, u.email::text, t.name, u.kind from notification n \
              join app_user u on u.tenant_id = n.tenant_id and u.id = n.user_id join tenant t on t.id = n.tenant_id \
              where n.tenant_id = $1 and n.id = $2 and n.emailed_at is null and n.read_at is null and u.is_active and u.kind <> 'service'",
         )
@@ -210,13 +263,13 @@ impl crate::Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
-        let Some((title, body, entity, record, email, workspace)) = row else { return Ok(()) };
+        let Some((title, body, entity, record, email, workspace, kind)) = row else { return Ok(()) };
         let subject = one_line(&title, 200);
         if crate::outbox::check_mail(&email, &subject).is_err() {
             return Ok(());
         }
-        let base = self.link_base(tenant).await;
-        let item = Mailed { title, body, link: Self::link(base.as_deref(), entity.as_deref(), record) };
+        let link = self.person_link(tenant, Audience::of_kind(&kind), &record_path(entity.as_deref(), record)).await;
+        let item = Mailed { title, body, link };
         mailer.send(&email, &subject, &mail_html(&workspace, None, &[item], 0)).await?;
         let mut tx = self.db.tenant_tx(tenant).await?;
         sqlx::query("update notification set emailed_at = now() where tenant_id = $1 and id = $2").bind(tenant).bind(id).execute(&mut *tx).await?;
@@ -264,8 +317,8 @@ impl crate::Kernel {
         .bind(user)
         .fetch_all(&mut *tx)
         .await?;
-        let person: Option<(String, String)> = sqlx::query_as(
-            "select u.email::text, t.name from app_user u join tenant t on t.id = u.tenant_id \
+        let person: Option<(String, String, String)> = sqlx::query_as(
+            "select u.email::text, t.name, u.kind from app_user u join tenant t on t.id = u.tenant_id \
              where u.tenant_id = $1 and u.id = $2 and u.is_active and u.kind <> 'service'",
         )
         .bind(tenant)
@@ -273,10 +326,10 @@ impl crate::Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let n = rows.len();
-        let subject = person.as_ref().map(|(_, w)| one_line(&format!("{n} notification{} in {w}", if n == 1 { "" } else { "s" }), 200));
+        let subject = person.as_ref().map(|(_, w, _)| one_line(&format!("{n} notification{} in {w}", if n == 1 { "" } else { "s" }), 200));
         // Nothing left (another replica took them), or no one to send to (inactive, an address the
         // mailer refuses): they stay marked, read in the bar.
-        let (Some((email, workspace)), Some(subject)) = (person, subject) else {
+        let (Some((email, workspace, kind)), Some(subject)) = (person, subject) else {
             tx.commit().await?;
             return Ok(false);
         };
@@ -285,12 +338,11 @@ impl crate::Kernel {
             return Ok(false);
         }
         rows.sort_by_key(|r| std::cmp::Reverse(r.4));
-        let base = self.link_base(tenant).await;
-        let items: Vec<Mailed> = rows
-            .into_iter()
-            .take(DIGEST_LISTS)
-            .map(|(title, body, entity, record, _)| Mailed { title, body, link: Self::link(base.as_deref(), entity.as_deref(), record) })
-            .collect();
+        let mut items: Vec<Mailed> = Vec::new();
+        for (title, body, entity, record, _) in rows.into_iter().take(DIGEST_LISTS) {
+            let link = self.person_link(tenant, Audience::of_kind(&kind), &record_path(entity.as_deref(), record)).await;
+            items.push(Mailed { title, body, link });
+        }
         let heading = format!("Your daily digest: {n} you have not read");
         self.queue_mail(&mut tx, tenant, &email, &subject, &mail_html(&workspace, Some(&heading), &items, n.saturating_sub(DIGEST_LISTS))).await?;
         tx.commit().await?;
@@ -308,4 +360,21 @@ pub async fn push(tx: &mut Tx, tenant: Uuid, user: Uuid, kind: &str, data: serde
     }
     sqlx::query("select pg_notify($1, $2)").bind(LIVE_CHANNEL).bind(payload).execute(&mut **tx).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn links_through_the_link_host() {
+        assert_eq!(Audience::of_kind("member"), Audience::Staff);
+        assert_eq!(Audience::of_kind("support"), Audience::Staff);
+        assert_eq!((Audience::of_kind("portal"), Audience::of_kind("guest")), (Audience::Outside, Audience::Outside));
+        assert_eq!(go_link(Some("https://erp.acme.com"), "go.acme.com", "acme", Audience::Staff, "/open/Note/1"), "https://go.acme.com/go/acme/s/open/Note/1");
+        assert_eq!(go_link(None, "go.acme.com", "acme", Audience::Outside, "/"), "https://go.acme.com/go/acme/p/");
+        assert_eq!(go_link(Some("http://localhost:5150"), "go.localhost", "acme", Audience::Staff, "/"), "http://go.localhost/go/acme/s/");
+        assert_eq!(record_path(Some("Note"), Some(Uuid::nil())), format!("/open/Note/{}", Uuid::nil()));
+        assert_eq!(record_path(Some("Note"), None), "/");
+    }
 }
