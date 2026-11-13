@@ -1200,7 +1200,7 @@ their own sign-ins, whose tokens go and are revoked at the provider where it say
 | `GET /api/connections` | a person's own: `{connections: [{id, name, label, status, account}]}` |
 | `POST /api/connections/{id}/connect` | from the browser, signed in → `{url}` to send it to |
 | `DELETE /api/connections/{id}/connect` | disconnects (the workspace's: administrators) → `{revoked}` |
-| `GET /api/connections/callback` | where the provider sends the browser back; a page, no redirect |
+| `GET /api/connections/callback` | where the provider sends the browser back; a page. A sign-in started on another host of the same workspace (named, signed, in its `state`) is first sent on (`302`) to the same path and query on that host, where the person's session is; only a host that still serves that workspace |
 | `POST /api/connections/inbound/{id}` | no session: a call from outside → `{accepted: true}`, or `401 this call was not accepted` whatever the reason |
 | `GET /api/connections/inbound/{id}?…` | no session: the check a service makes before it delivers, where the description declares `handshake: {token, challenge, secret, expect?}` beside its `inbound` (`{"token": "hub.verify_token", "challenge": "hub.challenge", "secret": "verify", "expect": {"hub.mode": "subscribe"}}`): the challenge as plain text when the token equals the named secret (compared in constant time) and `expect` holds, else the same `401` ([BD-78](builder/decisions.md#bd-78-an-inbound-addresss-verification-handshake)); rate-limited as the POST |
 
@@ -1275,7 +1275,7 @@ as the system ([BD-58](builder/decisions.md#bd-58-a-mapping-that-writes-as-the-s
 sets (read-only ones, such as an id the other system gave) are set; on a person's own pull the records stay hers.
 
 **Signing in to an account**: `"auth": {"type": "oauth", "owner": "workspace" | "person", "provider": {…}}`, the
-redirect address registered at the provider being `{PUBLIC_URL}/api/connections/callback`. Two worked descriptions, with
+redirect address registered at the provider being `{PUBLIC_URL}/api/connections/callback` (`https://{FERRUM_HOOKS_HOST}/api/connections/callback` when that is set). Two worked descriptions, with
 placeholder addresses:
 
 ```json

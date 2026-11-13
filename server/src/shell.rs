@@ -447,6 +447,12 @@ impl Shell {
         self.host_origin(self.hooks_host.as_deref()?, headers)
     }
 
+    /// A host of the cluster's (or a workspace's) as this request reaches it, with its port on a
+    /// development server.
+    pub fn origin_of(&self, host: &str, headers: &HeaderMap) -> Option<String> {
+        self.host_origin(host, headers)
+    }
+
     /// A host of the cluster's as this request reaches it (with its port on a development server).
     fn host_origin(&self, host: &str, headers: &HeaderMap) -> Option<String> {
         let port = request_host(headers).and_then(|h| h.rsplit_once(':')).map(|(_, p)| p).filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));

@@ -1832,7 +1832,8 @@ setting; each defaults to what the server did before the setting existed.
   server gives out: a mail or calendar connector's return address (register
   `https://{hooks host}/api/connections/callback` with Google or Microsoft), the short-lived addresses
   services pull files from, and the address the workspace's pages show for its public endpoints
-  (`/api/public/{workspace}/…`). Not set: `hooks.{base}` for public
+  (`/api/public/{workspace}/…`). A connector's return lands there and is passed on to the
+  workspace host the person started from, where their session is. Not set: `hooks.{base}` for public
   endpoints with a base domain, and `PUBLIC_URL` for everything else, as before.
   * *Changing it later* breaks every return address registered with an outside service (connectors
     stop connecting until it is registered again) and every webhook address given out.
