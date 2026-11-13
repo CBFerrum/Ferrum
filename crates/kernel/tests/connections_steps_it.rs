@@ -41,6 +41,8 @@ struct Service {
     fail_at: BTreeMap<String, (usize, u16)>,
     /// What each upload session holds.
     sessions: BTreeMap<String, String>,
+    /// Requests to `/v1/slow-read` in flight now, and the most at once.
+    inflight: (usize, usize),
 }
 
 static SERVICE: Mutex<Option<Service>> = Mutex::new(None);
@@ -101,6 +103,8 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
         ("POST", "/v1/slow-step") => (200, String::new(), json!({"id": "S-1"}).to_string()),
         // Shaped like a record created under a key of its own, with byte-offset facets.
         ("POST", "/v1/records") => (200, String::new(), json!({"uri": format!("at://did/post/{}", body["rkey"].as_str().unwrap_or_default())}).to_string()),
+        ("GET", "/v1/slow-read") | ("GET", "/v1/counted") => (200, String::new(), json!({"ok": true}).to_string()),
+        ("GET", "/v1/busy") => (429, "retry-after: 7\r\n".into(), json!({"error": "slow down"}).to_string()),
         ("GET", "/v1/feed") => (200, String::new(), json!({"items": [{"id": "F-1"}]}).to_string()),
         // Shaped like a media container: made, processed for a while, then published.
         ("POST", "/v1/containers") => (200, String::new(), json!({"id": format!("C-{}-{}", asked(bare), body["kind"].as_str().unwrap_or("ok"))}).to_string()),
@@ -197,6 +201,14 @@ async fn service() -> u16 {
                 });
                 if bare == "/v1/slow-step" {
                     tokio::time::sleep(Duration::from_millis(700)).await;
+                }
+                if bare == "/v1/slow-read" {
+                    with(|s| {
+                        s.inflight.0 += 1;
+                        s.inflight.1 = s.inflight.1.max(s.inflight.0);
+                    });
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    with(|s| s.inflight.0 -= 1);
                 }
                 let (status, extra, body) = match failing {
                     Some(0) => {
@@ -324,7 +336,7 @@ async fn steps(k: &Arc<Kernel>, admin: &Ctx, base: &str, store: &Memory) {
     // The post is "not now" once: the register and the upload are not made again.
     fail_once("/v1/posts", 503);
     let e = connections::call(k, admin, None, &publish("p-1", "Hello")).await.unwrap_err();
-    assert!(matches!(e, Error::RetryAfter(_, 7) | Error::Unavailable(_)), "{e:?}");
+    assert!(matches!(e, Error::RetryAfter(_, 7)), "{e:?}");
     assert_eq!((asked("/v1/uploads:register"), asked("/v1/upload/1"), asked("/v1/posts")), (1, 1, 1));
     let put = last("PUT /v1/upload/1");
     assert!(put.ends_with("PNGDATA") && put.contains(&format!("authorization: Bearer {SECRET}")), "the bytes, put to the address the answer gave: {put}");
@@ -420,7 +432,7 @@ async fn waiting(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     // Beyond its patience the call answers "later" when the service should be asked again; asked again, it carries on
     // from the wait (the container is not made twice).
     let e = connections::call(k, admin, None, &go("media_patient", "ok", "m-3")).await.unwrap_err();
-    assert!(matches!(e, Error::RetryAfter(_, 25) | Error::Unavailable(_)), "{e:?}");
+    assert!(matches!(e, Error::RetryAfter(_, 25)), "{e:?}");
     assert!(connections::call(k, admin, None, &go("media_patient", "ok", "m-3")).await.is_err(), "still processing");
     assert_eq!(connections::call(k, admin, None, &go("media_patient", "ok", "m-3")).await.unwrap(), json!({"id": "M-C-3-ok"}));
     assert_eq!(asked("/v1/containers"), 3, "one container each");
@@ -602,6 +614,31 @@ async fn functions(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     assert_eq!(made, 1, "{:?}", k.connection_pulls(admin, id).await.unwrap());
 }
 
+/// P5: the service's Retry-After reaches an app's call; a description's limits hold across workers.
+async fn limits(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let ops = json!({"busy": {"path": "/busy"}, "slow": {"path": "/slow-read"}, "counted": {"path": "/counted"}});
+    k.save_connection_def(admin, None, &input("lim", json!({"base": base, "operations": ops, "limit": {"per": 2, "every": 60, "concurrent": 1}}), None))
+        .await
+        .unwrap();
+    let e = connections::call(k, admin, None, &call("lim", "busy", json!({}), None)).await.unwrap_err();
+    assert!(matches!(e, Error::RetryAfter(_, 7)), "the service's own wait: {e:?}");
+    // Two calls a minute (the busy one counted too): the next is not sent, and says when to come back.
+    connections::call(k, admin, None, &call("lim", "counted", json!({}), None)).await.unwrap();
+    let e = connections::call(k, admin, None, &call("lim", "counted", json!({}), None)).await.unwrap_err();
+    assert!(matches!(e, Error::RetryAfter(_, s) if (1..=60).contains(&s)), "{e:?}");
+    assert_eq!(asked("/v1/counted"), 1, "not sent past the limit");
+    // One at a time: two workers' calls do not overlap.
+    let d = json!({"base": base, "operations": ops, "limit": {"concurrent": 1}});
+    k.save_connection_def(admin, None, &input("one", d, None)).await.unwrap();
+    let (a, b, c1, c2) = (k.clone(), k.clone(), admin.clone(), admin.clone());
+    let one = tokio::spawn(async move { connections::call(&a, &c1, None, &call("one", "slow", json!({}), None)).await });
+    let two = tokio::spawn(async move { connections::call(&b, &c2, None, &call("one", "slow", json!({}), None)).await });
+    assert!(one.await.unwrap().is_ok() && two.await.unwrap().is_ok(), "the second waited its turn");
+    assert_eq!(with(|s| s.inflight.1), 1, "never two at once");
+    let bad = json!({"base": base, "limit": {"per": 0, "every": 60}});
+    assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("limit"));
+}
+
 #[test]
 fn connections_run_steps_safely() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -651,4 +688,5 @@ async fn scenario() {
     waiting(&k, &admin, &base).await;
     loops(&k, &admin, &base, &store).await;
     functions(&k, &admin, &base).await;
+    limits(&k, &admin, &base).await;
 }

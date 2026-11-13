@@ -119,10 +119,28 @@ pub struct Description {
     /// never read by the platform; at most [`MAX_META`] bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<Value>,
+    /// How much the service takes (BD-57): at most `per` requests each `every` seconds and `concurrent` at once,
+    /// counted across workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<Limit>,
     /// What each operation says besides [`Operation`]'s own fields, by operation (written on the operation itself).
     #[serde(skip)]
     pub more: BTreeMap<String, More>,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Limit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrent: Option<u32>,
+}
+
+/// How long a call waits for its turn among a connection's `concurrent` before it answers "later".
+const TURN_WAIT: Duration = Duration::from_secs(10);
 
 /// The keys of an operation that are [`More`]'s.
 const MORE: [&str; 5] = ["steps", "url", "success", "credentials", "form_fields"];
@@ -629,6 +647,14 @@ impl Description {
         }
         if self.meta.as_ref().is_some_and(|m| !m.is_object() || m.to_string().len() > MAX_META) {
             return Some(format!("meta is an object of at most {MAX_META} bytes"));
+        }
+        if let Some(l) = &self.limit
+            && (l.per.is_some() != l.every.is_some()
+                || l.per.is_some_and(|n| n == 0)
+                || l.every.is_some_and(|n| !(1..=86_400).contains(&n))
+                || l.concurrent.is_some_and(|n| !(1..=64).contains(&n)))
+        {
+            return Some("limit is {per, every} (calls, and seconds up to a day) and concurrent (1 to 64)".into());
         }
         if self.roles.iter().chain(&self.apps).any(|r| r.trim().is_empty()) {
             return Some("roles and apps are names".into());
@@ -1141,7 +1167,8 @@ pub(crate) struct Extra<'a> {
 
 /// Calls an operation of a connection and gives its mapped result: for apps (docs/api.md, "Connections"). `app` is the
 /// calling package, which the connection must list; `None` is a person's own call (an administrator, or one holding a
-/// role the connection lists) or the system's. A temporary failure is `Unavailable`; any other, `Invalid`.
+/// role the connection lists) or the system's. A temporary failure is `RetryAfter` with the seconds the service (or
+/// the connection's `limit`) asked to wait, else `Unavailable`; any other, `Invalid`.
 pub async fn call(k: &Kernel, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
     k.call_connection(ctx, app, c).await
 }
@@ -1156,13 +1183,13 @@ pub(crate) fn may_use(ctx: &Ctx, app: Option<&str>, desc: &Description) -> Resul
 }
 
 impl Kernel {
+    /// A temporary failure is `RetryAfter` when the service (or the connection's limit) said when to come back, else
+    /// `Unavailable` (BD-57).
     pub async fn call_connection(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
-        self.call_waiting(ctx, app, c, false).await
+        self.call_waiting(ctx, app, c).await
     }
 
-    /// [`Kernel::call_connection`]; `waits`: a "later" with the service's `Retry-After` is `RetryAfter` (a queued call's
-    /// job then comes back when it said) rather than `Unavailable`.
-    async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call, waits: bool) -> Result<Value> {
+    async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
         let conn = self.load_connection(ctx.tenant, &c.connection).await?;
         if !conn.enabled {
             return Err(Error::invalid(format!("the connection {} is turned off", conn.name)));
@@ -1227,7 +1254,7 @@ impl Kernel {
         }
         match outcome {
             Outcome::Ok(result, _) => Ok(result),
-            Outcome::Later(why, Some(secs)) if waits => Err(Error::RetryAfter(why, secs)),
+            Outcome::Later(why, Some(secs)) => Err(Error::RetryAfter(why, secs)),
             Outcome::Later(why, _) => Err(Error::Unavailable(why)),
             Outcome::No(why) => Err(Error::invalid(why)),
         }
@@ -1310,7 +1337,12 @@ impl Kernel {
             let got = loop {
                 tries += 1;
                 let got = match self.build_request(ctx, conn, (op, more), inputs, key, extra, bare).await {
-                    Ok((req, more)) => {
+                    Ok((req, more)) => 'made: {
+                        // The description's limits, across workers: nothing is sent past them.
+                        let turn = match self.take_turn(conn).await {
+                            Ok(t) => t,
+                            Err(e) => break 'made Err(e),
+                        };
                         sent = true;
                         mask.extend(more);
                         if conn.debug && !bare {
@@ -1326,6 +1358,9 @@ impl Kernel {
                         }
                         if let (Some(d), Ok(a)) = (debug.as_mut(), &got) {
                             d["answer"] = json!({"status": a.status, "body": clipped(&masked(&a.body, &mask))});
+                        }
+                        if let Some(t) = turn {
+                            t.commit().await?;
                         }
                         got
                     }
@@ -1351,6 +1386,7 @@ impl Kernel {
             };
             got.map_err(|e| match e {
                 Error::Unavailable(m) => Error::Unavailable(masked_text(&m, &mask)),
+                Error::RetryAfter(m, s) => Error::RetryAfter(m, s),
                 other => Error::invalid(masked_text(&other.to_string(), &mask)),
             })
         };
@@ -1372,6 +1408,7 @@ impl Kernel {
             Ok(a) if temporary.contains(&a.status) => (Outcome::Later(error_of(&a), a.wait()), Some(a.status), "temporary"),
             Ok(a) => (Outcome::No(error_of(&a)), Some(a.status), "failed"),
             Err(Error::Unavailable(m)) => (Outcome::Later(m, None), None, "temporary"),
+            Err(Error::RetryAfter(m, s)) => (Outcome::Later(m, Some(s)), None, "temporary"),
             Err(e) => (Outcome::No(e.to_string()), None, "refused"),
         };
         let error = match &outcome {
@@ -1406,6 +1443,50 @@ impl Kernel {
         .await?;
         tx.commit().await?;
         Ok((outcome, status, sent))
+    }
+
+    /// A request's turn under the connection's [`Limit`]: counted in its window (none left: `RetryAfter` until the next
+    /// window), and one of its `concurrent` places, held until the transaction given back ends (none free within
+    /// [`TURN_WAIT`]: `RetryAfter`).
+    async fn take_turn(&self, conn: &Loaded) -> Result<Option<Tx>> {
+        let Some(limit) = &conn.desc.limit else { return Ok(None) };
+        if let (Some(per), Some(every)) = (limit.per, limit.every) {
+            let now = Utc::now().timestamp();
+            let slot = now - now.rem_euclid(every as i64);
+            let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
+            let n: i32 = sqlx::query_scalar(
+                "insert into conn_rate (tenant_id, conn_id, slot, n) values ($1, $2, $3, 1)                  on conflict (tenant_id, conn_id, slot) do update set n = conn_rate.n + 1 returning n",
+            )
+            .bind(conn.tenant)
+            .bind(conn.id)
+            .bind(slot)
+            .fetch_one(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            if n as u32 > per {
+                let wait = (slot + every as i64 - now).max(1) as u64;
+                return Err(Error::RetryAfter(format!("{} takes {per} calls each {every} s", conn.name), wait));
+            }
+        }
+        let Some(places) = limit.concurrent else { return Ok(None) };
+        let started = Instant::now();
+        loop {
+            let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
+            for place in 0..places {
+                let held: bool = sqlx::query_scalar("select pg_try_advisory_xact_lock(hashtextextended($1, 0))")
+                    .bind(format!("conn_turn:{}:{place}", conn.id))
+                    .fetch_one(&mut *tx)
+                    .await?;
+                if held {
+                    return Ok(Some(tx));
+                }
+            }
+            tx.rollback().await?;
+            if started.elapsed() > TURN_WAIT {
+                return Err(Error::RetryAfter(format!("{} takes {places} calls at once", conn.name), 1));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// The mapped result of an answer that worked: each of the operation's `result` read as its [`Pick`] says (none: the
@@ -1992,6 +2073,8 @@ impl Kernel {
             .await?
             .rows_affected();
         n += sqlx::query("delete from conn_signin where expires_at < now()").execute(&mut *tx).await?.rows_affected();
+        n += sqlx::query("delete from conn_rate where slot < extract(epoch from now())::bigint - 86400").execute(&mut *tx).await?.rows_affected();
+        n += sqlx::query("delete from conn_attempt where at < now() - make_interval(days => $1::int)").bind(LOG_DAYS).execute(&mut *tx).await?.rows_affected();
         tx.commit().await?;
         Ok(n)
     }
@@ -2090,7 +2173,7 @@ impl JobHandler for Queued {
             ctx.user = u;
         }
         // A "later" with the service's own Retry-After comes back when it said, capped.
-        let result = k.call_waiting(&ctx, None, &c, true).await?;
+        let result = k.call_waiting(&ctx, None, &c).await?;
         Ok(json!({"result": result}))
     }
 
