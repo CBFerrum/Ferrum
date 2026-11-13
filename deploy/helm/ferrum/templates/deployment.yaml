@@ -18,7 +18,7 @@ metadata:
   name: {{ $n }}
   labels: {{- include "ferrum.labels" (list . $n) | nindent 4 }}
 spec:
-  {{- if not $p.autoscaling.enabled }}
+  {{- if not (or $p.autoscaling.enabled (and $p.keda $p.keda.enabled)) }}
   replicas: {{ $p.replicas }}
   {{- end }}
   revisionHistoryLimit: 5
@@ -46,11 +46,17 @@ spec:
       {{- with $p.tolerations }}
       tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with $p.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
         fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
+      {{- with $p.topologySpreadConstraints }}
+      topologySpreadConstraints: {{- toYaml . | nindent 8 }}
+      {{- else }}
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
@@ -65,6 +71,7 @@ spec:
           labelSelector:
             matchLabels: {app.kubernetes.io/name: {{ $n }}}
           matchLabelKeys: [pod-template-hash]
+      {{- end }}
       containers:
         - name: ferrum
           image: {{ include "ferrum.image" (list "image" .Values.image) }}
@@ -140,6 +147,40 @@ spec:
   behavior:
     scaleDown:
       stabilizationWindowSeconds: {{ $p.autoscaling.scaleDownStabilizationSeconds }}
+{{- end }}
+{{- if and $p.keda $p.keda.enabled }}
+---
+# Scales this background pool on waiting work (values.yaml, keda). Fields checked against KEDA 2.21
+# (ScaledObject specification, Prometheus scaler).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $n }}
+spec:
+  scaleTargetRef: {name: {{ $n }}}
+  minReplicaCount: {{ $p.keda.minReplicas }}
+  maxReplicaCount: {{ $p.keda.maxReplicas }}
+  pollingInterval: {{ $p.keda.pollingInterval }}
+  cooldownPeriod: {{ $p.keda.cooldownPeriod }}
+  triggers:
+    {{- if $p.keda.triggers }}
+    {{- toYaml $p.keda.triggers | nindent 4 }}
+    {{- else }}
+    # Events waiting: one replica for every outboxPerReplica of them.
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: {{ $p.keda.prometheusAddress | quote }}
+        query: max(ferrum_outbox_pending{namespace="{{ .Release.Namespace }}"})
+        threshold: {{ $p.keda.outboxPerReplica | quote }}
+    # Jobs that are due and not yet taken: more replicas while the oldest has waited past jobWaitSeconds.
+    - type: prometheus
+      metricType: Value
+      metadata:
+        serverAddress: {{ $p.keda.prometheusAddress | quote }}
+        query: max(ferrum_jobs_oldest_waiting_seconds{namespace="{{ .Release.Namespace }}"})
+        threshold: {{ $p.keda.jobWaitSeconds | quote }}
+    {{- end }}
 {{- end }}
 {{- if $p.pdb.enabled }}
 ---

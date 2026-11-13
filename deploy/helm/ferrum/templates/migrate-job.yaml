@@ -30,7 +30,8 @@ spec:
           image: {{ include "ferrum.image" (list "image" .Values.image) }}
           args: {{ toJson .Values.migrate.args }}
           env:
-            {{- include "ferrum.env" . | nindent 12 }}
+            {{- /* Always straight to the primary, never through the pooler. */}}
+            {{- include "ferrum.env" (dict "Values" .Values "Release" .Release "Chart" .Chart "direct" true) | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

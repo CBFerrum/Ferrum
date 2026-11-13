@@ -19,7 +19,7 @@ Call with the root context: include "ferrum.pools" . | fromJson
 {{- end -}}
 {{- if hasKey $seen $name -}}{{- fail (printf "two pools are named %s: each pool needs a name of its own" $name) -}}{{- end -}}
 {{- $_ := set $seen $name true -}}
-{{- if has $name (list "pdf" "db" "office" "editors" "metrics-engine" "migrate" "background" "private") -}}
+{{- if has $name (list "pdf" "db" "db-pooler" "office" "editors" "metrics-engine" "migrate" "background" "private") -}}
 {{- fail (printf "pool %s: %s-%s is the name of another part of the chart; choose another name" $name $n $name) -}}
 {{- end -}}
 {{- $bg := $p.background | default "both" -}}
@@ -44,6 +44,13 @@ Call with the root context: include "ferrum.pools" . | fromJson
 {{- /* Booleans set to false are kept: merge would treat them as unset. */ -}}
 {{- $as := mergeOverwrite (deepCopy $v.autoscaling) (deepCopy ($p.autoscaling | default dict)) -}}
 {{- if and $p.autoscaling (hasKey $p.autoscaling "enabled") -}}{{- $_ := set $as "enabled" $p.autoscaling.enabled -}}{{- end -}}
+{{- $keda := mergeOverwrite (deepCopy ($v.keda | default dict)) (deepCopy ($p.keda | default dict)) -}}
+{{- if $keda.enabled -}}
+{{- if ne $bg "only" -}}{{- fail (printf "pool %s: keda scales on waiting background work, so it is for a pool with background: only" $name) -}}{{- end -}}
+{{- if $as.enabled -}}{{- fail (printf "pool %s: a KEDA ScaledObject and an autoscaler must never both scale one Deployment: set autoscaling: {enabled: false}" $name) -}}{{- end -}}
+{{- if lt (int $keda.minReplicas) 1 -}}{{- fail (printf "pool %s: keda.minReplicas must be at least 1: schedules and upkeep show in no gauge, so nothing would wake a worker" $name) -}}{{- end -}}
+{{- if and (not $keda.triggers) (not $keda.prometheusAddress) -}}{{- fail (printf "pool %s: set keda.prometheusAddress, the Prometheus that scrapes the server, or give keda.triggers" $name) -}}{{- end -}}
+{{- end -}}
 {{- $pdb := mergeOverwrite (deepCopy $v.pdb) (deepCopy ($p.pdb | default dict)) -}}
 {{- if and $p.pdb (hasKey $p.pdb "enabled") -}}{{- $_ := set $pdb "enabled" $p.pdb.enabled -}}{{- end -}}
 {{- $out = append $out (dict
@@ -54,6 +61,7 @@ Call with the root context: include "ferrum.pools" . | fromJson
   "zone" ($p.zone | default "" | toString)
   "replicas" (hasKey $p "replicas" | ternary $p.replicas $v.replicas)
   "autoscaling" $as
+  "keda" $keda
   "resources" ($p.resources | default $v.resources)
   "pdb" $pdb
   "dbMaxConnections" (hasKey $p "dbMaxConnections" | ternary $p.dbMaxConnections $v.dbMaxConnections)
@@ -61,25 +69,40 @@ Call with the root context: include "ferrum.pools" . | fromJson
   "nodeSelector" ($p.nodeSelector | default dict)
   "tolerations" ($p.tolerations | default list)
   "priorityClassName" ($p.priorityClassName | default "")
+  "affinity" ($p.affinity | default dict)
+  "topologySpreadConstraints" ($p.topologySpreadConstraints | default list)
 ) -}}
 {{- end -}}
+{{- end -}}
 {{- /* The connection budget: every pool at its most replicas, the migrate Job, and what else uses the role
-(scripts/check_manifests.py: OTHERS), within the role's limit (database.yaml). */ -}}
-{{- if $v.database.enabled -}}
+(scripts/check_manifests.py: OTHERS), within the role's limit (database.yaml). With the pooler, each replica
+counts only its direct connections and the pooler its own. Checked with pools or the pooler on. */ -}}
+{{- $pl := $v.database.pooler -}}
+{{- if and $v.database.enabled (or $v.pools $pl.enabled) -}}
 {{- $need := 20 -}}
 {{- $parts := list -}}
+{{- if $pl.enabled -}}
+{{- $per := add (int $pl.poolSize) (int (get ($pl.parameters | default dict) "reserve_pool_size" | default 0)) -}}
+{{- $need = add $need (mul (int $pl.instances) $per) -}}
+{{- $parts = append $parts (printf "the pooler %d x %d" (int $pl.instances) (int $per)) -}}
+{{- end -}}
 {{- range $out -}}
 {{- $r := ternary .autoscaling.maxReplicas .replicas .autoscaling.enabled | int -}}
+{{- if and .keda .keda.enabled }}{{ $r = int .keda.maxReplicas }}{{ end -}}
+{{- if and $pl.enabled $pl.used -}}
+{{- $need = add $need (mul $r (int $pl.directConnectionsPerReplica)) -}}
+{{- $parts = append $parts (printf "%s %d x %d direct" (.name | default "ferrum") $r (int $pl.directConnectionsPerReplica)) -}}
+{{- else -}}
 {{- $need = add $need (mul $r (add (int .dbMaxConnections) 4)) -}}
-{{- $parts = append $parts (printf "%s %d x (%d + 4)" .name $r (int .dbMaxConnections)) -}}
+{{- $parts = append $parts (printf "%s %d x (%d + 4)" (.name | default "ferrum") $r (int .dbMaxConnections)) -}}
+{{- end -}}
 {{- end -}}
 {{- if eq (include "ferrum.migrateJob" .) "true" -}}
 {{- $need = add $need (add (int $v.dbMaxConnections) 4) -}}
 {{- $parts = append $parts (printf "the migrate Job %d + 4" (int $v.dbMaxConnections)) -}}
 {{- end -}}
 {{- if gt (int $need) (int $v.database.connectionLimit) -}}
-{{- fail (printf "the pools may open %d database connections (%s, and 20 for other users of the role), more than database.connectionLimit %d: lower maxReplicas or dbMaxConnections" $need (join ", " $parts) (int $v.database.connectionLimit)) -}}
-{{- end -}}
+{{- fail (printf "the pools may open %d database connections (%s, and 20 for other users of the role), more than database.connectionLimit %d: lower maxReplicas or dbMaxConnections%s" $need (join ", " $parts) (int $v.database.connectionLimit) (ternary ", or the pooler's instances or poolSize" "" (and $pl.enabled true))) -}}
 {{- end -}}
 {{- end -}}
 {{- toJson (dict "pools" $out) -}}
@@ -141,6 +164,9 @@ gateway, hostnames, pool, and either every path ("full") or the matches it narro
 {{- if $v.privateGateway.enabled -}}
 {{- $pg := $v.privateGateway -}}
 {{- $own := required "privateGateway.hostnames: name at least one host" $pg.hostnames -}}
+{{- if and $v.pools (not $pg.defaultPool) -}}
+{{- fail "privateGateway.defaultPool: with pools, name the pool that answers what no route on the private gateway takes; it is not taken to be the first pool" -}}
+{{- end -}}
 {{- $suffix := dict -}}
 {{- range $own }}{{ $_ := set $suffix . (printf "-%s" (. | replace "*" "wildcard" | replace "." "-")) }}{{ end -}}
 {{- $_ := set $gws "private" (dict "name" ($pg.name | default (printf "%s-private" $n)) "own" $own "extra" list "suffix" $suffix "claimed" dict "defaultPool" ($pg.defaultPool | default (first $pools).name)) -}}

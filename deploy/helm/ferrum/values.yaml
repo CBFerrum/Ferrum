@@ -78,19 +78,39 @@ pools: []
 #   background: both           # both | off (FERRUM_RUN_BACKGROUND=false: API only) | only (no Service, no routes)
 #   replicas: 3                # used when autoscaling.enabled is false
 #   autoscaling: {enabled: true, minReplicas: 3, maxReplicas: 10}
+#   keda: {enabled: false}       # background: only pools: scale on waiting work (`keda` below)
 #   resources: {requests: {cpu: 250m, memory: 256Mi}}
 #   dbMaxConnections: 30       # FERRUM_DB_MAX_CONNECTIONS for this pool
 #   pdb: {enabled: true, maxUnavailable: 1}
 #   env: []                    # entries of `env`; a name already set is replaced
 #   nodeSelector: {}
 #   tolerations: []
-#   priorityClassName: ""
+#   priorityClassName: ""        # e.g. a low class for a public pool, so it is evicted first
+#   affinity: {}                 # the pod's affinity, e.g. private pools on nodes of their own
+#   topologySpreadConstraints: [] # replaces the default spread over zones and hosts
 #   zone: ""                   # a name from `zones`: FERRUM_ZONE, and the pod label ferrum.dev/zone
 #   routes:                    # what reaches this pool; the rest goes to each gateway's defaultPool
 #     - gateway: public        # public | private
 #       hostnames: []          # whole hosts (with no paths or apps); empty: the gateway's own hosts
 #       paths: []              # path prefixes
 #       apps: []               # app ids, matched on the X-Ferrum-UI header ({app}@{version})
+
+# Scaling a pool with `background: only` on how much work waits, with KEDA (installed separately; the chart
+# installs no part of it). A pool turns it on with `keda: {enabled: true}` and takes the rest from here; it
+# must then have `autoscaling: {enabled: false}`, since an autoscaler and KEDA would both own its replicas.
+# The triggers read the server's gauges through Prometheus (the ServiceMonitor and PodMonitor above). Every
+# replica reports the same figures, which it reads from the database, so the queries take `max`, never `sum`.
+#   ferrum_outbox_pending              events not yet handled (also those waiting to be retried)
+#   ferrum_jobs_oldest_waiting_seconds how long the oldest job that is due has waited (0: none)
+keda:
+  minReplicas: 1               # at least 1: schedules and upkeep show in no gauge, so none would wake a worker
+  maxReplicas: 4               # counted in the connection budget
+  pollingInterval: 30
+  cooldownPeriod: 300
+  prometheusAddress: ""        # e.g. http://prometheus-operated.monitoring.svc:9090
+  outboxPerReplica: 500        # one more replica for every this many events waiting
+  jobWaitSeconds: 60           # more replicas while the oldest due job has waited longer than this
+  triggers: []                 # KEDA triggers that replace the two above (ScaledObject spec.triggers)
 
 # Zones (docs/plan/topology.md, D4): name -> rule, given to every pool as FERRUM_ZONES (JSON). A rule:
 # {staff: all | none | [app, ...], admin: true|false, scim: true|false, networks: [cidr, ...]}.
@@ -146,7 +166,7 @@ privateGateway:
   hostnames: [erp.internal.example.com]
   clusterIssuer: ""                # empty: no cert-manager annotation; create tlsSecretName yourself
   tlsSecretName: ferrum-private-tls
-  defaultPool: ""                  # what no pool's route takes (empty: the first pool)
+  defaultPool: ""                  # what no pool's route takes; required with pools
   envoyProxy:
     enabled: true
     replicas: 2
@@ -185,6 +205,59 @@ database:
     credentialsSecret: ferrum-backup-s3  # keys ACCESS_KEY_ID, ACCESS_SECRET_KEY
     retention: 30d
     schedule: "0 0 2 * * *"            # six fields, seconds first
+    # The name this cluster's backups and WAL go under in destinationPath (empty: "<fullname>-db"). A new
+    # cluster refuses to archive where one of the same name already did: give it a new name when it starts
+    # from a copy or a backup of a cluster that wrote there.
+    serverName: ""
+  # A connection pooler (PgBouncer, as CloudNativePG's Pooler) in front of the primary, in transaction mode,
+  # with protocol-level prepared statements (PgBouncer 1.21 or later; CloudNativePG's own image is newer).
+  # On, the server's DATABASE_URL points at it and FERRUM_DATABASE_DIRECT_URL at the primary, which the
+  # server uses for LISTEN, session locks and migrations (the migrate Job always connects directly). Only
+  # with a server that reads FERRUM_DATABASE_DIRECT_URL: an older one would LISTEN through the pooler.
+  # PostgreSQL then sees `instances x poolSize` connections from the pooler (plus reserve_pool_size, if
+  # set in parameters) and directConnectionsPerReplica from each server replica.
+  pooler:
+    enabled: false
+    # false keeps the pooler running while the server connects directly: turn it off in two upgrades
+    # (used: false, then enabled: false), so no pod is left pointing at a pooler that is gone.
+    used: true
+    instances: 2
+    poolSize: 40                  # default_pool_size: connections each instance keeps to PostgreSQL
+    maxClientConnections: 1000    # max_client_conn: each instance's connections from server replicas
+    maxPreparedStatements: 200    # max_prepared_statements; 0 turns prepared statements off
+    parameters: {}                # other PgBouncer settings CloudNativePG allows
+    # Each replica's direct connections: listeners and locks. To be confirmed by the server change.
+    directConnectionsPerReplica: 8
+    resources:
+      requests: {cpu: 100m, memory: 64Mi}
+      limits: {memory: 256Mi}
+  # How the database starts, read once when the Cluster is created (docs/operations.md, "Moving from one
+  # shape to another"). Keep the same values on later upgrades.
+  #   empty     a new, empty database
+  #   import    a dump of one database from a running PostgreSQL (pg_dump, then pg_restore here); any
+  #             version up to imageName's. The server treats the result as restored from a backup and holds
+  #             mail, webhooks, jobs and commands until an operator releases them.
+  #   copy      a physical copy of a running PostgreSQL (pg_basebackup), which must run imageName's major
+  #             version (17) on the same architecture with the same tablespaces, allow a replication
+  #             connection from this cluster in pg_hba.conf and have max_wal_senders free for two. It keeps
+  #             the database's identity, but starts on a new timeline: the server holds as after a restore
+  #             unless FERRUM_HOLD_ON_TIMELINE is false. Stop writes to the source first.
+  #   recovery  the newest state, or the state at targetTime, from the backups in object storage (the Barman
+  #             Cloud plugin, as this chart backs up). Held as after a restore.
+  bootstrap:
+    mode: empty
+    source:                    # import and copy: the existing server, reachable from this cluster
+      host: ""
+      port: 5432
+      database: ferrum         # the database to import or, for copy, the one the application uses
+      user: ""                 # import: a superuser (row-level security hides rows from any other role);
+                               # copy: a role with REPLICATION and LOGIN
+      passwordSecret: {name: "", key: password}   # a Secret you created, holding that role's password
+      sslmode: prefer
+    recovery:
+      objectStore: ""          # an ObjectStore holding the backups; empty: this chart's own "<fullname>-backups"
+      serverName: ""           # the name they were taken under; empty: "<fullname>-db"
+      targetTime: ""           # e.g. "2026-11-14 10:00:00+00"; empty: up to the last archived change
 
 # The PDF renderer (Gotenberg). The server needs it for print formats.
 pdf:

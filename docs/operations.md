@@ -482,6 +482,12 @@ A failover to a synchronous replica is also a new timeline, and loses nothing. S
 `FERRUM_HOLD_ON_TIMELINE=false` if that is the only way a timeline changes here. Then an in-place
 point-in-time restore is not noticed, so run the steps below by hand after one.
 
+A database the Helm chart starts from another one (`database.bootstrap.mode`, "Moving from one shape to
+another") is held the same way: `import` makes a database this server never knew, and `recovery` and `copy`
+start on a new timeline. A `copy` keeps the database's identity, so with `FERRUM_HOLD_ON_TIMELINE=false` it
+is not held, and neither is a `recovery`, whose base backup has the same identity as the cluster it came
+from. Release the hold with `ferrum task release_restore` once you know nothing will be sent twice.
+
 A database restored from a backup brings back whatever was erased since it was taken, and lets back in
 whoever left since, so do this before people, integrations or the assistant reach it:
 
@@ -802,8 +808,8 @@ Logs are JSON. Clients may send an `x-request-id` header to correlate their call
 ## Scaling
 
 * API: the HPA scales 3–10 replicas on CPU (the connection budget above); replicas are interchangeable.
-* Database: scale vertically first; add a PgBouncer pooler (CloudNativePG `Pooler`, transaction
-  mode) when connections become the limit. Change the number of instances or the size of their
+* Database: scale vertically first; add a PgBouncer pooler (`database.pooler.enabled` in the Helm chart,
+  "Deployment shapes") when connections become the limit. Change the number of instances or the size of their
   volumes with `deploy/scale-database.sh --instances N` or `--storage 200Gi` (`--wait 600` to wait for
   replication to recover first). It changes nothing, says why, and exits 3 in these cases:
   - an instance is not ready;
@@ -833,7 +839,10 @@ network policy and Service. A pool takes every setting it leaves out from the to
 `background` (`both`; `off`, which sets `FERRUM_RUN_BACKGROUND=false`, API only; `only`, which has no Service
 and no routes and runs only background work), `zone`, `replicas`, `autoscaling`, `resources`,
 `dbMaxConnections`, `pdb`, `env` (a name already set is replaced), `nodeSelector`, `tolerations`,
-`priorityClassName` and `routes`. Each pool's pods carry the labels `ferrum.dev/pool` and `ferrum.dev/zone`
+`affinity`, `topologySpreadConstraints` (replacing the default spread over zones and hosts),
+`priorityClassName`, `keda` and `routes`. The scheduling ones let private pools run on nodes of their own
+(a node selector and a toleration for their taint) and a public pool be evicted first (a lower priority
+class, which you create). Each pool's pods carry the labels `ferrum.dev/pool` and `ferrum.dev/zone`
 (never in a selector); the `ServiceMonitor` covers every pool with a Service and passes both labels on to
 the metrics, and a `PodMonitor` (`ferrum-background`) scrapes the `only` pools.
 
@@ -857,6 +866,7 @@ ones that are gone. Background work is claimed through the database, so for a mo
 both run it, which is safe, and nothing is lost when it pauses: going from `split` back to `single`, the
 worker pool is deleted at once and background work waits until the first new `web` pod is ready. Moving to
 `zones` changes where staff work: after it, staff use the private host, and the public host admits no staff.
+The exact commands, what each move replaces and what to watch are in "Moving from one shape to another".
 
 **Connection budget.** Every replica may open `dbMaxConnections + 4` connections, and the migrate Job (when
 it runs) as many again. With pools, the chart adds up every pool at its most replicas (`maxReplicas`, or
@@ -864,8 +874,35 @@ it runs) as many again. With pools, the chart adds up every pool at its most rep
 `scripts/check_manifests.py` does), and refuses to render when the sum is above `database.connectionLimit`.
 Each preset says its sum. Without pools the chart refuses nothing new: check it with
 `helm template ... | python3 scripts/check_manifests.py -`, which adds up every server Deployment and Job it
-is given. (With today's defaults and `migrate.enabled`, that is 394 of 370: lower `autoscaling.maxReplicas`
+is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With today's defaults and `migrate.enabled`, that is 394 of 370: lower `autoscaling.maxReplicas`
 to 9 when you turn the Job on.)
+
+**Connection pooler.** `database.pooler.enabled` puts PgBouncer (CloudNativePG's `Pooler`, `ferrum-db-pooler`,
+`database.pooler.instances` of them, at most one down at a time) in front of the primary, in transaction mode
+with protocol-level prepared statements (`max_prepared_statements`, PgBouncer 1.21 or later; the operator
+supplies the image). The server's pods then get `DATABASE_URL` pointing at the pooler and
+`FERRUM_DATABASE_DIRECT_URL` at the primary (`ferrum-db-rw`), which the server uses for LISTEN, session locks
+and migrations; the migrate Job always connects directly. Turn it on only with a server that reads
+`FERRUM_DATABASE_DIRECT_URL`: an older one would send LISTEN and session locks through the pooler, where they
+do not hold. Only the server's pods may reach the pooler, and Prometheus its metrics (`ferrum-db-pooler`
+PodMonitor). With the pooler, PostgreSQL sees `instances x poolSize` connections from it (plus
+`reserve_pool_size` if you set it in `database.pooler.parameters`) and `directConnectionsPerReplica`
+(default 8: listeners and locks, to be confirmed by the server change) from each replica, and the budget
+below counts that instead of `dbMaxConnections + 4`. `dbMaxConnections` is then what each replica opens to the
+pooler; keep the sum over every replica under `maxClientConnections` times `instances`.
+
+**Worker scaling on waiting work.** A pool with `background: only` can scale with KEDA (installed
+separately): `keda: {enabled: true}` on the pool, `autoscaling: {enabled: false}` beside it, and the rest from
+the top-level `keda` values. The chart renders a `ScaledObject` with two Prometheus triggers on gauges the
+server already exports: `max(ferrum_outbox_pending)` (events not yet handled, one more replica for every
+`keda.outboxPerReplica` of them) and `max(ferrum_jobs_oldest_waiting_seconds)` (how long the oldest due job
+has waited, more replicas while it is above `keda.jobWaitSeconds`). Every replica reports the same figures,
+read from the database, so the queries take the largest, never the sum. Prometheus must scrape the server
+(`serviceMonitor`) and be reachable at `keda.prometheusAddress`; `keda.triggers` replaces both triggers with
+your own. `keda.minReplicas` is at least 1, because schedules and upkeep show in no gauge. The outbox gauge
+also counts events waiting to be retried, so a backlog of failing deliveries keeps workers up; an exact
+trigger would need a gauge of events due now (`available_at <= now()`), which the server does not export yet.
+`keda.maxReplicas` is what the connection budget counts.
 
 **What the chart refuses, and why:**
 
@@ -878,10 +915,16 @@ to 9 when you turn the Job on.)
 | `its zone … admits no staff, so it must not run background work` | A pool in a zone with `staff: none` needs `background: off`; the server refuses to start such a replica anyway |
 | `names the gateway …, which is not enabled` | A route names `public` or `private`, and that gateway must be on |
 | `defaultPool … is not a pool` / `… has background: only` | A gateway's default pool must exist and take requests |
+| `privateGateway.defaultPool: with pools, name the pool …` | The private gateway's default pool is never assumed |
 | `a pool with background: only … has no routes` | It has no Service to route to |
 | `… takes all of the gateway's own hosts` | A route with no hosts, paths or apps: make that pool the gateway's `defaultPool` |
 | `pools … both take all of host …` | Two pools cannot both answer the whole of one host |
 | `the pools may open … database connections` | The connection budget above |
+| `a KEDA ScaledObject and an autoscaler must never both scale one Deployment` | Set `autoscaling: {enabled: false}` on a pool with `keda` |
+| `keda scales on waiting background work …` / `set keda.prometheusAddress` / `keda.minReplicas must be at least 1` | `keda` is for `background: only` pools, needs a Prometheus to ask, and keeps one worker |
+| `database.pooler … needs database.enabled` | The pooler is CloudNativePG's; in front of your own database, run PgBouncer yourself |
+| `database.bootstrap.mode …: set …` | A way of starting the database lacks what it reads ("Moving from one shape to another") |
+| `… where this cluster would also write its own` | A recovery from this chart's own backups needs a new `database.backup.serverName` |
 
 **Two gateways.** The public Gateway is as before (`gateway`). `privateGateway.enabled` adds a second one,
 `ferrum-private`, with its own class, hosts, certificate and Envoy proxies; `privateGateway.envoyProxy.envoyService`
@@ -889,7 +932,8 @@ holds the proxies' Service settings, where your cloud's annotation for an intern
 in `values.yaml`). A pool's `routes` say which gateway reaches it and by what: whole `hostnames` (added to that
 gateway's listeners, with its certificate), path prefixes (`paths`), or `apps`, matched on the `X-Ferrum-UI`
 header (`{app}@{version}`, which every API call carries) with an anchored regular expression. What no route
-takes goes to the gateway's `defaultPool` (the first pool unless set). WebSockets, files and MCP keep their own
+takes goes to the gateway's `defaultPool`: for the public gateway the first pool unless set; the private
+gateway's must be named whenever there are pools. WebSockets, files and MCP keep their own
 routes and time limits on every gateway; they carry no app, so they follow the host or the gateway's default.
 
 **Network policies.** With pools, each pool admits only the Envoy proxies of the gateways whose routes lead to
@@ -910,10 +954,63 @@ them is in [docs/plan/topology.md](plan/topology.md), D4.
 value changes.
 
 **Not proven.** The chart has only been rendered and checked (`deploy/helm/test.sh`,
-`deploy/helm/test_pools.sh`); none of these shapes has been installed on a cluster. Whether Envoy Gateway
+`deploy/helm/test_pools.sh`); none of these shapes has been installed on a cluster (`deploy/kind/pools.sh` is
+written to, and has not run yet). Whether Envoy Gateway
 orders the app routes over the default ones as the Gateway API says, whether the network policies admit
 exactly the private gateway's proxies, the internal load balancer annotations, a move between presets under
 traffic, and the External Secrets Operator have not been run.
+
+## Moving from one shape to another
+
+Every move below is a `helm upgrade` of the same release; nothing else changes and nothing is copied. The
+first pool keeps the Deployment `ferrum`, its selector and its Service in every shape, so its pods are
+replaced one at a time (none taken down before its replacement is ready). Give the preset first and your own
+values after it; `my-values.yaml` below stands for yours.
+
+| Move | Command | What is replaced | What to watch |
+|---|---|---|---|
+| single → split | `helm upgrade ferrum deploy/helm/ferrum -n ferrum -f deploy/helm/ferrum/presets/split.yaml -f my-values.yaml` | `ferrum`'s pods (they stop running background work); `ferrum-worker` is new | `kubectl -n ferrum rollout status deploy/ferrum deploy/ferrum-worker`; `ferrum_outbox_pending` and `ferrum_jobs_oldest_waiting_seconds` stay level |
+| split → single | the same with `presets/single.yaml` | `ferrum`'s pods (they run background work again); `ferrum-worker` is deleted at once | background work waits until the first new `ferrum` pod is ready: the same two gauges, for a minute |
+| split → pools | the same with `presets/pools.yaml` | `ferrum`'s pods; `ferrum-public` and `ferrum-finance` are new, with their routes and the portal host's listener | the new pools' rollouts; `kubectl -n ferrum get httproute` all `Accepted`; the portal host's certificate `Ready` |
+| pools → zones | first `… -f presets/zones.yaml --set gateway.defaultPool=general -f my-values.yaml`, then `… -f presets/zones.yaml -f my-values.yaml` | every pool's pods (each is now in a zone); the private gateway and its proxies are new. The second step moves the public host to `ferrum-public`, whose pods are by then ready | `kubectl -n ferrum wait gateway/ferrum-private --for=condition=Programmed`; the private host answers before staff are told to use it; after the second step, staff sign-ins on the public host are refused |
+| zones → pools or single | the same with that preset | the reverse; the private gateway is deleted | tell staff before: the private host stops answering, the public host admits them again |
+| pooler on | add `database: {pooler: {enabled: true}}` to your values | the pooler is new; every server pod is replaced (it now connects through it). A new pod is not ready until the pooler answers, so the rollout waits for it | `kubectl -n ferrum get pooler,pods -l cnpg.io/poolerName=ferrum-db-pooler`; PostgreSQL's connections (`cnpg_backends_total`) fall |
+| pooler off | first `pooler: {enabled: true, used: false}`, then `pooler: {enabled: false}` | first every server pod (it connects directly again), then the pooler is deleted. In one step the pooler would go while old pods still use it | the first rollout finishes before the second upgrade |
+| worker scaling on | `keda: {enabled: true}` and `autoscaling: {enabled: false}` on the `background: only` pool, `keda.prometheusAddress` | nothing is restarted; KEDA's `ScaledObject` takes over the worker's replicas | `kubectl -n ferrum get scaledobject` `READY True`; the worker's replicas follow the gauges |
+
+A preset change that also changes `zones`, `dbMaxConnections` or a pool's `background` replaces that pool's
+pods; one that only adds a route or a pool replaces nothing that already runs. Background work is claimed
+through the database, so old and new pods may both run it during a rollout, which is safe. Going to `zones`
+in one step works too, but for the seconds between the public host's route moving to `ferrum-public` and that
+pool's pods being ready, the public host answers 503; the two steps avoid it. Going from `zones` back to
+`pools` in one step has a shorter gap of its own: the first pool's network policy and the route change at
+slightly different moments.
+
+**How the database starts.** `database.bootstrap.mode` is read once, when CloudNativePG creates the cluster;
+keep it in your values afterwards. Every mode but `empty` needs the server's settings (`FERRUM_SECRET_KEY`
+above all: sealed values open only with the key that sealed them) and the files (object storage) of the
+installation it comes from.
+
+| Mode | What it does | Use it when you come from | Needs | After it |
+|---|---|---|---|---|
+| `empty` (default) | A new database | nothing: a new installation | | |
+| `import` | `pg_dump` of one database from a running PostgreSQL, restored here (`source`) | a Docker Compose installation, or any PostgreSQL up to the cluster's version (17), when an hour of downtime is acceptable: stop the server first, so nothing is written after the dump starts | the source reachable from the cluster; a superuser in `source.user` (row-level security hides every workspace's rows from any other role) and its password in a Secret | the server holds outbound work as after a restore: release it ("After restoring a backup") |
+| `copy` | `pg_basebackup`: a physical copy of a running PostgreSQL (`source`) | another cluster or server on the same PostgreSQL major version, when the database is too large to dump | the same major version, architecture and tablespaces; a role with `REPLICATION` and `LOGIN` that `pg_hba.conf` admits from the cluster; two free `max_wal_senders`. Stop writes to the source before: the copy does not follow it | keeps the database's identity but starts on a new timeline: held unless `FERRUM_HOLD_ON_TIMELINE=false` |
+| `recovery` | the newest state, or `recovery.targetTime`, from backups in object storage (`recovery.objectStore`, `recovery.serverName`) | a lost cluster, or another cluster that backs up the way this chart does | the `ObjectStore` (this chart's own by default) and, when it is this chart's own, a new `database.backup.serverName` so the new cluster does not write over the backups it reads | held as after any restore |
+
+For a Compose installation, `import` with the Compose database as the source (it must be reachable from the
+cluster; `pg_hba.conf` and `listen_addresses` may need opening) is the shortest way; copy the attachments
+volume into the bucket in `storage` before starting the server. Going from one cluster to another, `copy`
+keeps everything (roles, settings, the database's identity) and `recovery` needs no connection to the old
+cluster at all. A planned move that adopts the new identity without the hold is a separate server change;
+until it lands, every mode but `empty` ends with `ferrum task release_restore`.
+
+**Not proven.** None of this has been installed on a cluster. The chart renders every move and refuses what
+each mode lacks (`deploy/helm/test_pools.sh`); `deploy/kind/pools.sh` rehearses default values → `zones` →
+default values under traffic on kind and is written but has never run (CI runs it as a job that cannot fail
+the workflow until it has passed once). The two-step moves, the pooler, KEDA and the three ways of starting
+from an existing database have not been run at all; the pooler also waits for the server to read
+`FERRUM_DATABASE_DIRECT_URL`.
 
 ## Capacity
 
