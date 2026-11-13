@@ -72,6 +72,42 @@ pub struct AppSummary {
     /// The app this one is an add-on of (`parent` in its app.yaml).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// The apps it needs, `[{app, range}]`, and the App API versions it runs on (its manifest's `requires`, `platform`;
+    /// a store's search result says neither).
+    pub requires: Vec<Value>,
+    pub platform: Option<String>,
+    /// What keeps it from installing in this workspace now: `[{app, need, have, action: install|upgrade}]`, the
+    /// platform's own App API as `app: "platform"`; empty when nothing does.
+    pub blocked: Vec<Value>,
+}
+
+impl AppSummary {
+    /// Fills `blocked` against the apps the workspace has, `id → version`.
+    fn block(mut self, have: &BTreeMap<String, String>) -> Self {
+        self.blocked = blocked(&self.requires, self.platform.as_deref(), have);
+        self
+    }
+}
+
+/// What of `requires` (`[{app, range}]`) and `platform` the workspace (`have`: id → version) and this server lack.
+fn blocked(requires: &[Value], platform: Option<&str>, have: &BTreeMap<String, String>) -> Vec<Value> {
+    let fits = |range: &str, v: &str| match (VersionReq::parse(range), Version::parse(v)) {
+        (Ok(r), Ok(v)) => r.matches(&v),
+        _ => false,
+    };
+    let mut out = Vec::new();
+    for r in requires {
+        let (Some(app), Some(range)) = (r["app"].as_str(), r["range"].as_str()) else { continue };
+        match have.get(app) {
+            None => out.push(json!({"app": app, "need": range, "have": null, "action": "install"})),
+            Some(v) if !fits(range, v) => out.push(json!({"app": app, "need": range, "have": v, "action": "upgrade"})),
+            Some(_) => {}
+        }
+    }
+    if let Some(range) = platform.filter(|r| !fits(r, PLATFORM_VERSION)) {
+        out.push(json!({"app": "platform", "need": range, "have": PLATFORM_VERSION, "action": "upgrade"}));
+    }
+    out
 }
 
 /// An app installed in the workspace.
@@ -696,6 +732,9 @@ fn summary(m: &AppManifest, source: &str, verified: bool, private: bool, icon_ur
         source: source.into(),
         private,
         parent: m.parent.clone(),
+        requires: m.requires.iter().map(|(app, range)| json!({"app": app, "range": range.to_string()})).collect(),
+        platform: Some(m.platform.to_string()),
+        blocked: Vec::new(),
     }
 }
 
@@ -2039,6 +2078,7 @@ impl AppManager {
         let ws = self.workspace(ctx.tenant).await?;
         let local = self.kernel.releases(Some(ctx.tenant)).await?;
         let updates = join_all(ws.apps.iter().map(|(id, inst)| self.update_for(id, inst, &ws, &local))).await;
+        let have: BTreeMap<String, String> = ws.apps.iter().map(|(id, i)| (id.clone(), i.version.clone())).collect();
         let mut installed = Vec::with_capacity(ws.apps.len());
         for ((id, inst), update) in ws.apps.iter().zip(updates) {
             let mut app = match self.native(id) {
@@ -2058,10 +2098,14 @@ impl AppManager {
                         source: "unknown".into(),
                         private: false,
                         parent: None,
+                        requires: Vec::new(),
+                        platform: None,
+                        blocked: Vec::new(),
                     },
                 },
             };
             app.version = inst.version.clone();
+            let app = app.block(&have);
             installed.push(InstalledApp { app, enabled: inst.enabled, installed_at: inst.installed_at, update });
         }
         let stores = join_all(self.stores.iter().map(|url| async move {
@@ -2073,7 +2117,7 @@ impl AppManager {
         .await;
         Ok(json!({
             "installed": installed,
-            "available": self.available(&local),
+            "available": self.available(&local).into_iter().map(|a| a.block(&have)).collect::<Vec<_>>(),
             "uploads": self.uploads,
             "platform": PLATFORM_VERSION,
             "stores": stores,
@@ -2109,7 +2153,8 @@ impl AppManager {
                 Err(e) => tracing::warn!(store = %url, "store search failed: {e}"),
             }
         }
-        Ok(out)
+        let have: BTreeMap<String, String> = self.workspace(ctx.tenant).await?.apps.into_iter().map(|(id, i)| (id, i.version)).collect();
+        Ok(out.into_iter().map(|a| a.block(&have)).collect())
     }
 
     // ───────────────────────── operators and revocations ─────────────────────────
@@ -2532,6 +2577,9 @@ pub mod store {
                 source: format!("store:{store}"),
                 private: false,
                 parent: None,
+                requires: Vec::new(),
+                platform: None,
+                blocked: Vec::new(),
             }
         }
     }
@@ -2739,6 +2787,21 @@ fn packages_behind(installed: &BTreeMap<String, String>, packages: &[String], bu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_app_says_what_blocks_it() {
+        let have = BTreeMap::from([("erp".to_string(), "0.14.0".to_string())]);
+        let needs = |app: &str, range: &str| json!({"app": app, "range": range});
+        assert!(blocked(&[needs("erp", ">=0.14, <0.15")], Some(PLATFORM_VERSION), &have).is_empty(), "nothing blocks");
+        assert_eq!(
+            blocked(&[needs("erp", ">=0.15"), needs("crm", ">=0.8")], Some(">=9.0"), &have),
+            vec![
+                json!({"app": "erp", "need": ">=0.15", "have": "0.14.0", "action": "upgrade"}),
+                json!({"app": "crm", "need": ">=0.8", "have": null, "action": "install"}),
+                json!({"app": "platform", "need": ">=9.0", "have": PLATFORM_VERSION, "action": "upgrade"}),
+            ]
+        );
+    }
 
     #[test]
     fn only_packages_older_than_the_build_call_for_an_update() {
