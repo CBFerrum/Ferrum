@@ -1863,3 +1863,18 @@ Decided 13 November 2026.
   (`selectattr('content_type', 'startingwith', 'image/')` keeps the images in both); the case reported was not
   reproduced with the shape given, and a test keeps the two equal.
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-71. The server's upload ceiling, and a file part's own
+
+Decided 13 November 2026.
+
+* **The gap**: a file part was capped at 25 MB whatever the operator set, while chunked uploads followed
+  `FERRUM_CONNECTION_UPLOAD_MB`; the setting was documented only in the API reference, where an administrator does not
+  look.
+* **One ceiling**: what one request sends of stored files in all is `FERRUM_CONNECTION_UPLOAD_MB` (25 MB, or more where
+  raised); a file part may declare `max_bytes` up to 1 GiB, and is sent only as far as that ceiling. A file past it is
+  refused naming the setting, so the person's administrator knows what to raise. A part that says nothing stays at
+  10 MB; nothing that worked before changes.
+* **Where an operator finds it**: docs/operations.md's configuration table (with `FERRUM_CONNECTION_HOSTS`, which was
+  missing too), the Compose file, the Kubernetes deployment and the Helm chart's secret keys.
+* Part of the App API 0.3.8 (BD-63).

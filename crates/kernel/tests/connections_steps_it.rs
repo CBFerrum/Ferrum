@@ -947,6 +947,12 @@ async fn refusals(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     assert_eq!(connections::call(k, admin, None, &call("refusing", "fine", json!({}), None)).await.unwrap(), json!({"id": "M-9"}));
     let e = connections::call(k, admin, None, &call("refusing", "query", json!({}), None)).await.unwrap_err();
     assert!(matches!(&e, Error::Unavailable(m) if m.contains("slow down")), "temporary, in its words: {e:?}");
+    // BD-71: a part may declare more than 25 MB; it is sent only as far as the server's ceiling.
+    let big = k.store_file(admin, None, "big.bin", "application/octet-stream", &vec![7u8; 26 << 20]).await.unwrap()["id"].as_str().unwrap().to_string();
+    let up = json!({"base": base, "operations": {"up": {"method": "POST", "path": "/posts", "changes": false, "body": {"file": "{{ inputs.f }}", "max_bytes": 50 << 20}}}});
+    k.save_connection_def(admin, None, &input("big", up, None)).await.expect("50 MB declared");
+    let e = connections::call(k, admin, None, &call("big", "up", json!({"f": big}), None)).await.unwrap_err();
+    assert!(e.to_string().contains("FERRUM_CONNECTION_UPLOAD_MB"), "{e}");
     let bad = json!({"base": base, "operations": {"x": {"path": "/x", "refused_if": "answer.ok &&"}}});
     assert!(k.save_connection_def(admin, None, &input("refusing2", bad, None)).await.is_err(), "checked when saved");
 }

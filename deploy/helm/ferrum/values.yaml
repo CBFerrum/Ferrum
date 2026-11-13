@@ -30,7 +30,7 @@ storage:
 # The name of a Secret you created. The chart creates none and holds no secret value. Keys:
 #   JWT_SECRET, FERRUM_SECRET_KEY, FERRUM_BOOTSTRAP_TOKEN, FERRUM_METRICS_TOKEN,
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-# and, optional: FERRUM_CLAMAV_ADDR, FERRUM_CLAMAV_MAX_MB, FERRUM_OPS_TELEMETRY_DAYS,
+# and, optional: FERRUM_CLAMAV_ADDR, FERRUM_CLAMAV_MAX_MB, FERRUM_CONNECTION_UPLOAD_MB, FERRUM_OPS_TELEMETRY_DAYS,
 #   FERRUM_RETIRED_SECRET_KEYS.
 secrets:
   existingSecret: ferrum-secrets

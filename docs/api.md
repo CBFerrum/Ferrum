@@ -1338,6 +1338,9 @@ that also mean it worked). A chunk whose answer was lost goes on from what `offs
 service holds (a number, or `bytes=0-<last>`; none with a 2xx: the upload is complete, that answer the result), or
 starts the upload again from the step `restart_from` names under new keys (at most twice), or stops, saying so. Files
 sent in chunks may be up to `FERRUM_CONNECTION_UPLOAD_MB` (25 MB unless the operator says); a chunk is at most 25 MB.
+A file part (`{"file": …, "max_bytes": …}`) is 10 MB unless it says; it may say more than 25 MB, and is then sent only as
+far as `FERRUM_CONNECTION_UPLOAD_MB` (what one request sends of files in all), past which the call is refused naming the
+setting ([BD-71](builder/decisions.md#bd-71-the-servers-upload-ceiling-and-a-file-parts-own)).
 
 **Functions and the clock** ([BD-56](builder/decisions.md#bd-56-template-functions-and-the-clock)): templates and step
 expressions have `now` (RFC 3339, UTC, milliseconds) and `today`, fixed at the first attempt of the call's key, so a
