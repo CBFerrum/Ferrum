@@ -76,6 +76,11 @@ pools: []
 #   tolerations: []
 #   priorityClassName: ""
 #   zone: ""                   # a name from `zones`: FERRUM_ZONE, and the pod label ferrum.dev/zone
+#   routes:                    # what reaches this pool; the rest goes to each gateway's defaultPool
+#     - gateway: public        # public | private
+#       hostnames: []          # whole hosts (with no paths or apps); empty: the gateway's own hosts
+#       paths: []              # path prefixes
+#       apps: []               # app ids, matched on the X-Ferrum-UI header ({app}@{version})
 
 # Zones (docs/plan/topology.md, D4): name -> rule, given to every pool as FERRUM_ZONES (JSON). A rule:
 # {staff: all | none | [app, ...], admin: true|false, scim: true|false, networks: [cidr, ...]}.
@@ -106,9 +111,33 @@ gateway:
   hostname: erp.example.com
   clusterIssuer: letsencrypt
   tlsSecretName: ferrum-tls
+  # With pools: the pool that answers what no pool's route takes (empty: the first pool). Hosts that
+  # pools' routes name get listeners here, with the same certificate.
+  defaultPool: ""
 envoyProxy:
   enabled: true
   replicas: 2
+
+# A second Gateway, for traffic from inside your network: its own hosts, certificate and Envoy proxies,
+# behind an internal load balancer (envoyService: Envoy Gateway's Service settings, where your cloud's
+# annotation for an internal load balancer goes). Pools say in `routes` which gateway reaches them.
+privateGateway:
+  enabled: false
+  name: ""                         # empty: "<fullname>-private"
+  gatewayClassName: eg
+  hostnames: [erp.internal.example.com]
+  clusterIssuer: ""                # empty: no cert-manager annotation; create tlsSecretName yourself
+  tlsSecretName: ferrum-private-tls
+  defaultPool: ""                  # what no pool's route takes (empty: the first pool)
+  envoyProxy:
+    enabled: true
+    replicas: 2
+    envoyService:
+      externalTrafficPolicy: Local
+      annotations: {}
+      # AWS:   service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+      # GCP:   networking.gke.io/load-balancer-type: Internal
+      # Azure: service.beta.kubernetes.io/azure-load-balancer-internal: "true"
 
 # A CloudNativePG Cluster with continuous backups (Barman Cloud plugin). Off: bring your own
 # database and name the Secret holding its connection URI in urlSecret.

@@ -81,3 +81,100 @@ Call with (list . pool). */}}
 {{- define "ferrum.migrateJob" -}}
 {{- if .Values.migrate.enabled }}true{{ end -}}
 {{- end -}}
+
+{{/*
+Gateways and routes, resolved: JSON {"gateways": {key: gateway}, "routes": [...], "admits": {pool name: [gateway name]}}.
+A gateway: name, own hostnames, the hostnames pools add, the listener suffix of each hostname ("" for the public
+gateway's own `https`/`http`), the hostnames its default route answers and that route's pool. A route: name,
+gateway, hostnames, pool, and either every path ("full") or the matches it narrows to.
+*/}}
+{{- define "ferrum.routing" -}}
+{{- $v := .Values -}}
+{{- $n := include "ferrum.fullname" . -}}
+{{- $pools := (include "ferrum.pools" . | fromJson).pools -}}
+{{- $byName := dict -}}
+{{- range $pools }}{{ $_ := set $byName .name . }}{{ end -}}
+{{- $gws := dict -}}
+{{- if $v.gateway.enabled -}}
+{{- $_ := set $gws "public" (dict "name" $n "own" (list $v.gateway.hostname) "extra" list "suffix" (dict $v.gateway.hostname "") "claimed" dict "defaultPool" ($v.gateway.defaultPool | default (first $pools).name)) -}}
+{{- end -}}
+{{- if $v.privateGateway.enabled -}}
+{{- $pg := $v.privateGateway -}}
+{{- $own := required "privateGateway.hostnames: name at least one host" $pg.hostnames -}}
+{{- $suffix := dict -}}
+{{- range $own }}{{ $_ := set $suffix . (printf "-%s" (. | replace "*" "wildcard" | replace "." "-")) }}{{ end -}}
+{{- $_ := set $gws "private" (dict "name" ($pg.name | default (printf "%s-private" $n)) "own" $own "extra" list "suffix" $suffix "claimed" dict "defaultPool" ($pg.defaultPool | default (first $pools).name)) -}}
+{{- end -}}
+{{- $admits := dict -}}
+{{- range $pools }}{{ $_ := set $admits .name list }}{{ end -}}
+{{- range $key, $g := $gws -}}
+{{- $d := get $byName $g.defaultPool -}}
+{{- if not $d -}}{{- fail (printf "%s gateway: defaultPool %q is not a pool" $key $g.defaultPool) -}}{{- end -}}
+{{- $_ := set $g "defaultObj" $d.obj -}}
+{{- $_ := set $admits $d.name (append (get $admits $d.name) $g.name) -}}
+{{- end -}}
+{{- $routes := list -}}
+{{- range $p := $v.pools -}}
+{{- range $j, $r := $p.routes -}}
+{{- $g := get $gws ($r.gateway | default "public" | toString) -}}
+{{- if not $g -}}{{- fail (printf "pool %s: routes[%d] names the gateway %q, which is not enabled (public or private)" $p.name $j ($r.gateway | default "public")) -}}{{- end -}}
+{{- $hosts := $r.hostnames | default $g.own -}}
+{{- range $hosts -}}
+{{- if not (hasKey $g.suffix .) -}}
+{{- $_ := set $g.suffix . (printf "-%s" (. | replace "*" "wildcard" | replace "." "-")) -}}
+{{- $_ := set $g "extra" (append $g.extra .) -}}
+{{- end -}}
+{{- end -}}
+{{- $route := dict "name" (printf "%s-%s-%d" $g.name $p.name $j) "gateway" $g.name "hostnames" $hosts "obj" (get $byName $p.name).obj -}}
+{{- if or $r.paths $r.apps -}}
+{{- $matches := list -}}
+{{- range ($r.paths | default (list "/api" "/")) -}}
+{{- $m := dict "path" (dict "type" "PathPrefix" "value" .) -}}
+{{- if $r.apps -}}
+{{- $apps := list -}}{{- range $r.apps }}{{ $apps = append $apps (regexQuoteMeta (toString .)) }}{{ end -}}
+{{- $_ := set $m "headers" (list (dict "type" "RegularExpression" "name" "x-ferrum-ui" "value" (printf "^(%s)@[^@]+$" (join "|" $apps)))) -}}
+{{- end -}}
+{{- $matches = append $matches $m -}}
+{{- end -}}
+{{- $_ := set $route "matches" $matches -}}
+{{- else -}}
+{{- if not $r.hostnames -}}{{- fail (printf "pool %s: routes[%d] takes all of the gateway's own hosts: make it the gateway's defaultPool instead" $p.name $j) -}}{{- end -}}
+{{- range $hosts -}}
+{{- if hasKey $g.claimed . -}}{{- fail (printf "pools %s and %s both take all of host %s" (get $g.claimed .) $p.name .) -}}{{- end -}}
+{{- $_ := set $g.claimed . $p.name -}}
+{{- end -}}
+{{- end -}}
+{{- $routes = append $routes $route -}}
+{{- if not (has $g.name (get $admits $p.name)) }}{{ $_ := set $admits $p.name (append (get $admits $p.name) $g.name) }}{{ end -}}
+{{- end -}}
+{{- end -}}
+{{- range $key, $g := $gws -}}
+{{- $hosts := list -}}
+{{- range (concat $g.own $g.extra) }}{{ if not (hasKey $g.claimed .) }}{{ $hosts = append $hosts . }}{{ end }}{{ end -}}
+{{- $_ := set $g "defaultHosts" $hosts -}}
+{{- end -}}
+{{- toJson (dict "gateways" $gws "routes" $routes "admits" $admits) -}}
+{{- end -}}
+
+{{/* The rules of a route that takes every path of its hosts: today's three. Call with the backend's name. */}}
+{{- define "ferrum.fullRules" -}}
+# Long-lived connections: WebSockets and MCP streams have no overall time limit.
+- matches:
+    - path: {type: PathPrefix, value: /ws}
+    - path: {type: PathPrefix, value: /mcp}
+  backendRefs: [{name: {{ . }}, port: 80}]
+  timeouts: {request: "0s"}
+# The rest of the server: large exports and imports may take minutes.
+- matches:
+    - path: {type: PathPrefix, value: /api}
+    - path: {type: PathPrefix, value: /files}
+    - path: {type: PathPrefix, value: /oauth}
+    - path: {type: PathPrefix, value: /.well-known/oauth-protected-resource}
+    - path: {type: Exact, value: /.well-known/oauth-authorization-server}
+    - path: {type: Exact, value: /.well-known/caldav}
+    - path: {type: Exact, value: /.well-known/carddav}
+  backendRefs: [{name: {{ . }}, port: 80}]
+  timeouts: {request: 600s}
+# Everything else: Home, apps' interfaces, the shell's files and pages.
+- backendRefs: [{name: {{ . }}, port: 80}]
+{{- end -}}
