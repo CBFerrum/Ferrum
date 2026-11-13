@@ -415,11 +415,11 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   their record, apps recorded at its versions, interfaces registered for them, customizations' baselines. It serves
   requests on everything it knows, and runs the background work, but takes no event or job a newer build wrote (each
   says which build wrote it): those wait for a newer replica, never failed or dropped. A scheduled automation or a
-  service target it cannot read is left as it is. Events keep their order within a workspace and a priority
-  (docs/events.md): an event written after a newer build's waits behind it, even one the guest wrote itself.
-  After a full rollback, a workspace's queue from its first newer-build event on, and the newer build's jobs, wait
-  until a build at least that new runs again; `ferrum task doctor` says how many (`window.waiting`), and the metrics
-  `ferrum_outbox_waiting_newer_build` and `ferrum_jobs_waiting_newer_build` count them. `ferrum task migrate` with an older image prints that there is
+  service target it cannot read is left as it is. After a full rollback only the newer build's own events and jobs
+  wait, until a build at least that new runs again; everything else goes on, so such an event may be handled after
+  later events of its workspace (docs/events.md, Order). `ferrum task doctor` says how many wait (`window.waiting`),
+  and the metrics `ferrum_outbox_waiting_newer_build` and `ferrum_jobs_waiting_newer_build` count them.
+  `ferrum task migrate` with an older image prints that there is
   nothing to do and succeeds, so a rollback that runs it goes on.
 * **How long the window is.** From one release to the next, for as long as `COMPATIBLE_FROM` stays where it is: in
   practice the release before is always let in, and usually several before it. A rollback to a build from before
@@ -953,7 +953,7 @@ the top-level `keda` values. The chart renders a `ScaledObject` with two Prometh
 server already exports: `max(ferrum_outbox_pending)` (events not yet handled, one more replica for every
 `keda.outboxPerReplica` of them) and `max(ferrum_jobs_oldest_waiting_seconds)` (how long the oldest due job
 has waited, more replicas while it is above `keda.jobWaitSeconds`). Both count only work the reporting replica's
-build may take: work a newer build wrote shows in `ferrum_outbox_waiting_newer_build` and
+build may take: events and jobs a newer build wrote show in `ferrum_outbox_waiting_newer_build` and
 `ferrum_jobs_waiting_newer_build` instead (*Rolling back and the two-version window*), so after a rollback the pool is
 not held at its maximum by work nobody running can take. Replicas of one build report the same figures, read from
 the database, and the newest reports the most, so the queries take the largest, never the sum. Prometheus must scrape the server

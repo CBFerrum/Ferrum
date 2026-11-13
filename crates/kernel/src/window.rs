@@ -112,12 +112,6 @@ pub(crate) async fn record(conn: &mut PgConnection) -> Result<()> {
     Ok(())
 }
 
-/// An event (`o`, of `outbox`) this build may not take: a newer build wrote it, or one waits before it in its workspace
-/// and priority, whose order holds (docs/events.md), so it waits behind that one. `$1` is this build's date. Served by
-/// the index `outbox_newer` (migration 20261117000901): empty unless a newer build has written events.
-pub const NOT_YET: &str = "(coalesce(o.build_date > $1, false) or exists (select 1 from outbox n where n.tenant_id = o.tenant_id and n.priority = o.priority \
-     and n.processed_at is null and not n.dead and n.build_date > $1 and n.id < o.id))";
-
 /// Where a build stands against the database.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Standing {
@@ -246,11 +240,10 @@ impl Kernel {
     /// Work waiting for a newer build than this one: (events, jobs). Counted apart from what this build can take.
     pub async fn waiting_for_newer(&self) -> Result<(i64, i64)> {
         let mut tx = self.db.system_tx().await?;
-        let events: i64 =
-            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("select count(*) from outbox o where o.processed_at is null and not o.dead and {NOT_YET}")))
-                .bind(build_date())
-                .fetch_one(&mut *tx)
-                .await?;
+        let events: i64 = sqlx::query_scalar("select count(*) from outbox where processed_at is null and not dead and build_date > $1")
+            .bind(build_date())
+            .fetch_one(&mut *tx)
+            .await?;
         let jobs: i64 =
             sqlx::query_scalar("select count(*) from job where status = 'queued' and build_date > $1").bind(build_date()).fetch_one(&mut *tx).await?;
         tx.commit().await?;

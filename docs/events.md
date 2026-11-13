@@ -36,7 +36,9 @@ and moment). There is no exactly-once, and nothing should
 assume it.
 
 **Order** holds within a workspace and a priority, until something fails: a retry goes behind later
-events. Anything that depends on order compares `source_version`.
+events. During an upgrade or after a rollback, an event written by a newer build can be delivered after later events of
+the same workspace (an older server leaves it for a newer one, docs/operations.md); `source_version` covers that too.
+Anything that depends on order compares `source_version`.
 
 **Fairness.** A batch gives each workspace with work at most 10 events, of 50, and handles workspaces
 side by side. So one workspace's backlog, or its slow provider, does not delay another's events.

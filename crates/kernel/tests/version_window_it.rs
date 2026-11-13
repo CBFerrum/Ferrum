@@ -154,31 +154,23 @@ async fn scenario() {
     let id = made["id"].as_str().unwrap().parse().unwrap();
     assert_eq!(guest.get(&ctx, "Currency", id, false).await.unwrap()["code"], "XTS");
 
-    // The newer build's event and job stay as they were, for a newer replica; so does its own event that came after the
-    // newer one in the workspace (order holds), and the gauges count them as waiting for a newer build.
+    // The newer build's event and job stay as they were, for a newer replica, and the gauges count them; the guest's own
+    // events written after the newer one in the same workspace go out.
     while guest.dispatch_outbox_once().await.unwrap() > 0 {}
     while guest.run_jobs_once(4).await.unwrap() > 0 {}
     let newer: i64 = scalar(&db, "select id from outbox where topic = 'newer.topic'").await;
-    let after = scalar(
-        &db,
-        "select count(*) from outbox where id > (select id from outbox where topic = 'newer.topic') and processed_at is null and not dead and attempts = 0",
-    )
-    .await;
-    assert!(
-        after > 0 && after == scalar(&db, "select count(*) from outbox where id > (select id from outbox where topic = 'newer.topic')").await,
-        "an event after the newer one was taken"
-    );
+    assert!(scalar(&db, "select count(*) from outbox where topic = 'Currency.created' and id > (select id from outbox where topic = 'newer.topic')").await > 0);
+    assert_eq!(scalar(&db, "select count(*) from outbox where id > (select id from outbox where topic = 'newer.topic') and processed_at is null").await, 0);
     assert_eq!(scalar(&db, "select count(*) from outbox where topic = 'newer.topic' and processed_at is null and not dead and attempts = 0").await, 1);
     assert_eq!(scalar(&db, "select count(*) from job where kind = 'newer.kind' and status = 'queued' and attempts = 0").await, 1);
-    assert_eq!(guest.waiting_for_newer().await.unwrap(), (1 + after, 1));
-    assert!(seen.0.lock().unwrap().iter().all(|id| *id < newer), "{:?}", seen.0.lock().unwrap());
-    // A replica at least as new as the one that wrote it (here: the event dated as this build) takes both, in order.
+    assert_eq!(guest.waiting_for_newer().await.unwrap(), (1, 1));
+    assert!(!seen.0.lock().unwrap().contains(&newer));
+    // A build at least as new as the one that wrote it (here: the event dated as this build) takes it.
     let mut tx = db.system_tx().await.unwrap();
     sqlx::query("update outbox set build_date = $1 where topic = 'newer.topic'").bind(window::build_date()).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     while guest.dispatch_outbox_once().await.unwrap() > 0 {}
-    let order: Vec<i64> = seen.0.lock().unwrap().iter().copied().filter(|id| *id >= newer).collect();
-    assert!(order.len() as i64 == 1 + after && order.windows(2).all(|w| w[0] < w[1]) && order[0] == newer, "{order:?}");
+    assert!(seen.0.lock().unwrap().contains(&newer));
     assert_eq!(guest.waiting_for_newer().await.unwrap(), (0, 1));
     let mut tx = db.system_tx().await.unwrap();
     sqlx::query("insert into outbox (tenant_id, topic, payload, build_date) values ($1, 'newer.topic', '{}', now() + interval '400 days')")

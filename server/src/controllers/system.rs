@@ -92,11 +92,11 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     let mut tx = st.kernel.db.system_tx().await?;
     // Only what this build may take: the worker pool scales on these, and a newer build's work waits for a replica of it
     // (crates/kernel/src/window.rs), counted apart below.
-    let takes = format!("processed_at is null and not dead and not {}", ferrum_kernel::window::NOT_YET);
-    let (pending, dead, oldest): (i64, i64, Option<f64>) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select count(*) filter (where {takes}), count(*) filter (where dead), \
-         extract(epoch from now() - min(created_at) filter (where {takes}))::float8 from outbox o"
-    )))
+    let (pending, dead, oldest): (i64, i64, Option<f64>) = sqlx::query_as(
+        "select count(*) filter (where processed_at is null and not dead and (build_date is null or build_date <= $1)), count(*) filter (where dead), \
+         extract(epoch from now() - min(created_at) filter (where processed_at is null and not dead and (build_date is null or build_date <= $1)))::float8 \
+         from outbox",
+    )
     .bind(ferrum_kernel::window::build_date())
     .fetch_one(&mut *tx)
     .await
@@ -192,7 +192,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
          # TYPE ferrum_jobs_running gauge\nferrum_jobs_running {jobs_running}\n\
          # HELP ferrum_jobs_failed_day Jobs that gave up in the last day.\n# TYPE ferrum_jobs_failed_day gauge\nferrum_jobs_failed_day {jobs_failed}\n\
          # TYPE ferrum_jobs_oldest_waiting_seconds gauge\nferrum_jobs_oldest_waiting_seconds {}\n\
-         # HELP ferrum_outbox_waiting_newer_build Events this build leaves for a newer one (written by it, or after one of its in their workspace).\n\
+         # HELP ferrum_outbox_waiting_newer_build Events a newer build wrote, which this build leaves for it.\n\
          # TYPE ferrum_outbox_waiting_newer_build gauge\nferrum_outbox_waiting_newer_build {newer_events}\n\
          # HELP ferrum_jobs_waiting_newer_build Jobs a newer build queued, which this build leaves for it.\n\
          # TYPE ferrum_jobs_waiting_newer_build gauge\nferrum_jobs_waiting_newer_build {newer_jobs}\n\

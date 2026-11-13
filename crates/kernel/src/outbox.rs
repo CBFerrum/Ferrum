@@ -330,10 +330,9 @@ impl Kernel {
         // A loose index scan finds the workspaces with work, however long their backlogs. They come
         // in random order, so that more workspaces than a batch holds all get their turn.
         // A newer build's events wait for a replica of it: their topics may be ones this build does not know, which it
-        // would mark done or send to webhooks that the newer build keeps them from. Those after one of them in its
-        // workspace and priority wait too, so that order holds (window.rs).
-        let not_yet = crate::window::NOT_YET.replace("$1", "$4");
-        let events: Vec<Event> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        // would mark done or send to webhooks that the newer build keeps them from (window.rs). Everything else goes on,
+        // so a newer event may be handled after later ones of its workspace (docs/events.md, Order).
+        let events: Vec<Event> = sqlx::query_as(
             "with recursive waiting(tenant_id) as ( \
                (select tenant_id from outbox where processed_at is null and not dead order by tenant_id limit 1) \
                union all \
@@ -343,11 +342,11 @@ impl Kernel {
              update outbox set available_at = now() + make_interval(secs => $1) where id in ( \
                select claimed.id from (select tenant_id from waiting where tenant_id is not null order by random()) w \
                cross join lateral (select o.id from outbox o where o.tenant_id = w.tenant_id and o.processed_at is null and not o.dead \
-                 and o.available_at <= now() and not {not_yet} \
+                 and o.available_at <= now() and (o.build_date is null or o.build_date <= $4) \
                  order by o.priority, o.id limit $2 for update skip locked) claimed \
                limit $3) \
-             returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, depth, available_at as lease"
-        )))
+             returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, depth, available_at as lease",
+        )
         .bind(LEASE_SECS)
         .bind(TENANT_SHARE)
         .bind(BATCH)
