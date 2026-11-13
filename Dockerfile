@@ -32,11 +32,18 @@ COPY server ./server
 COPY packages ./packages
 ARG BUILD_SHA=dev
 ENV BUILD_SHA=${BUILD_SHA}
+# The commit's date, `git log -1 --format=%ct` (the context has no .git): the server's place in the two-version window
+# (crates/kernel/src/window.rs). Without it the build takes a fixed date that is never later than its own.
+ARG BUILD_DATE=
+ENV BUILD_DATE=${BUILD_DATE}
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -p ferrum-server --features saml,process && cp target/release/ferrum /usr/local/bin/ferrum
 
 FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+ARG BUILD_DATE=
+# Read by deploy/smoke.sh: an image with it can start again on a database a newer one migrated.
+LABEL io.ferrum.build-date=${BUILD_DATE}
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tini libxml2 libxmlsec1 libxmlsec1-openssl libssl3 \
  && rm -rf /var/lib/apt/lists/* \
