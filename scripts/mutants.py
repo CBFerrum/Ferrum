@@ -120,6 +120,7 @@ SHELL = ("-p", "ferrum-kernel", "--test", "shell_it")
 APPS_API = ("-p", "ferrum-server", "--test", "apps_api")
 LINKS = ("-p", "ferrum-kernel", "--test", "links_it")
 META_LINKS = ("-p", "ferrum-meta", "--lib", "linked_records")
+META_LINK_FROM = ("-p", "ferrum-meta", "--lib", "link_filter_from")
 STREAMED = ("-p", "ferrum-server", "--test", "streamed_files_it")
 SECRET_VALUES = ("-p", "ferrum-kernel", "--test", "secrets_it")
 PACKAGE_DEFAULTS = ("-p", "ferrum-kernel", "--test", "package_defaults_it")
@@ -746,6 +747,9 @@ MUTANTS = [
     ("automation-old-unseen", "crates/kernel/src/automation.rs", "(&doc, &cel_doc, cel_old.as_ref())", "(&doc, &cel_doc, None)", TARGETS),
     ("links-read-as-the-saver", "crates/kernel/src/links.rs", "let workspace = Ctx::system(ctx.tenant, ctx.schema.clone());", "let workspace = ctx.clone();", LINKS),
     ("links-keep-secrets", "crates/kernel/src/links.rs", "                    m.remove(&f.name);\n", "\n", LINKS),
+    # BD-52: a link limited by another field of the record is checked when declared and on every save.
+    ("link-from-unchecked", "crates/kernel/src/doc.rs", "if !same_value(&actual, want) {", "if false && !same_value(&actual, want) {", LINKS),
+    ("link-from-undeclared", "crates/meta/src/catalog.rs", "validate_link_from(e, fname, to, tf, v, all)?;", "let _ = validate_link_from;", META_LINK_FROM),
     ("links-inbox-guard-evaluated", "crates/kernel/src/collab.rs", "!g.links().is_empty()\n                                || !g.settings()", "false\n                                || !g.settings()", LINKS),
     ("links-names-unchecked", "crates/meta/src/catalog.rs", "if let Some(n) = e.links().iter().find(|n| !on.fields", "if let Some(n) = e.links().iter().find(|n| false && !on.fields", META_LINKS),
     ("links-in-browser-expressions", "crates/meta/src/catalog.rs", "    if !reads {\n        return Err(format!(", "    if false {\n        return Err(format!(", META_LINKS),

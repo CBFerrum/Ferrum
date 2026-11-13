@@ -1315,7 +1315,8 @@ pub struct FieldDef {
     pub mask: Option<FieldMask>,
     #[serde(default)]
     pub on_delete: OnDelete,
-    /// Static equality filters applied to link candidates and validated on write, e.g. `{is_group: false}`.
+    /// Equality filters applied to link candidates and validated on write: a literal, `{is_group: false}`, or another
+    /// field of the record, `{company: {from: company}}`, or of the record a line is in, `{from: parent.company}` (BD-52).
     #[serde(default)]
     pub link_filters: Option<serde_json::Map<String, Value>>,
 }
@@ -1342,6 +1343,12 @@ impl FieldDef {
     pub fn label(&self) -> String {
         self.label.clone().unwrap_or_else(|| humanize(&self.name))
     }
+}
+
+/// The field a link filter's value is taken from, `{"from": "<field>"}` or `{"from": "parent.<field>"}` (BD-52); `None`
+/// for a literal.
+pub fn link_filter_from(v: &Value) -> Option<&str> {
+    v.as_object().and_then(|o| o.get("from")).and_then(Value::as_str)
 }
 
 pub fn humanize(name: &str) -> String {
