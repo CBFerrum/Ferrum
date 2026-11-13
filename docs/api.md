@@ -1154,7 +1154,8 @@ bearer, secret}`, `{type: signed, header, secret, timestamp_header?, encoding: h
 `<timestamp>.<body>`, or the body) or `{type: oauth, …}` (below); each `secret` names one of `secrets`. An operation's
 `method` is GET, POST, PUT, PATCH or DELETE; its `path` starts with `/` and every value it prints is percent-encoded;
 `query`, `headers`, `body` (a template giving JSON) and `form` are templates over `inputs`, `secret` and `key`;
-`result` maps names to JSON pointers (none: the whole answer); `changes` (every method but GET unless said) means it
+`result` maps names to JSON pointers (none: the whole answer); `changes` (every method but GET unless said; an operation of
+steps when one of its steps' operations changes something, [BD-69](builder/decisions.md#bd-69-a-stable-order-for-lists-built-from-maps-and-reading-steps-read)) means it
 needs a key. `{"test": true}` with a `fixture: {status, body}` per operation answers from that and calls nobody.
 Calls go to `https` only, to the base's host and `allowed_hosts`, never to a private, loopback, link-local or reserved
 address unless the operator names the host in `FERRUM_CONNECTION_HOSTS` (which also allows plain http to it).

@@ -45,6 +45,7 @@ CEL timestamp. A function that gives a date back gives it in the form it was giv
 | `list.join(sep?)` | a list of texts as one | `doc.stages.map(s, s.stage).join(', ')` |
 | `padStart(s, n, fill?)`, `padEnd(s, n, fill?)` | filled to `n` characters (with spaces unless `fill`) | `padStart(string(doc.seq), 5, '0')` |
 | `concat(a, b, ...)` | text from parts: numbers written out, empty parts left out | `concat(doc.first, ' ', doc.last)` |
+| `sort(list)`, `sortBy(list, key)` | a list in a stable order: null first, numbers, then text; `sortBy` orders maps by one key (a map's entries come out of `.map()` in no order) | `sortBy(answer.map(k, answer[k]), 'slug')` |
 | `s.format(list)` | `%s`, `%d`... filled from the list (CEL's) | `'%s needs %d more'.format([doc.name, doc.short])` |
 
 ## Empty
