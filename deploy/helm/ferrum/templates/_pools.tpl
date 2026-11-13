@@ -89,12 +89,12 @@ counts only its direct connections and the pooler its own. Checked with pools or
 {{- range $out -}}
 {{- $r := ternary .autoscaling.maxReplicas .replicas .autoscaling.enabled | int -}}
 {{- if and .keda .keda.enabled }}{{ $r = int .keda.maxReplicas }}{{ end -}}
-{{- if $pl.enabled -}}
+{{- if and $pl.enabled $pl.used -}}
 {{- $need = add $need (mul $r (int $pl.directConnectionsPerReplica)) -}}
 {{- $parts = append $parts (printf "%s %d x %d direct" (.name | default "ferrum") $r (int $pl.directConnectionsPerReplica)) -}}
 {{- else -}}
 {{- $need = add $need (mul $r (add (int .dbMaxConnections) 4)) -}}
-{{- $parts = append $parts (printf "%s %d x (%d + 4)" .name $r (int .dbMaxConnections)) -}}
+{{- $parts = append $parts (printf "%s %d x (%d + 4)" (.name | default "ferrum") $r (int .dbMaxConnections)) -}}
 {{- end -}}
 {{- end -}}
 {{- if eq (include "ferrum.migrateJob" .) "true" -}}

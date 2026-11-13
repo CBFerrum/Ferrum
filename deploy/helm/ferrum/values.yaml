@@ -218,6 +218,9 @@ database:
   # set in parameters) and directConnectionsPerReplica from each server replica.
   pooler:
     enabled: false
+    # false keeps the pooler running while the server connects directly: turn it off in two upgrades
+    # (used: false, then enabled: false), so no pod is left pointing at a pooler that is gone.
+    used: true
     instances: 2
     poolSize: 40                  # default_pool_size: connections each instance keeps to PostgreSQL
     maxClientConnections: 1000    # max_client_conn: each instance's connections from server replicas

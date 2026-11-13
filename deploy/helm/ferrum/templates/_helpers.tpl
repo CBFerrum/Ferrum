@@ -33,7 +33,7 @@ app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
 
 {{/* The server's environment, shared by the Deployment and the migration Job. */}}
 {{- define "ferrum.env" -}}
-{{- if and .Values.database.enabled .Values.database.pooler.enabled (not .direct) }}
+{{- if and .Values.database.enabled .Values.database.pooler.enabled .Values.database.pooler.used (not .direct) }}
 {{- /* Through the pooler (database.yaml). The parts come from CloudNativePG's secret; the password it
 generates is letters and digits only, so it needs no escaping in the address. */}}
 {{- $n := include "ferrum.fullname" . -}}

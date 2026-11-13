@@ -201,6 +201,11 @@ PY2
 tpl --set database.pooler.enabled=true --set database.connectionLimit=220 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade > /dev/null
 refuses "the pooler 3 x 40" --set database.pooler.enabled=true --set database.pooler.instances=3 --set database.connectionLimit=220 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade
 refuses "the pooler 2 x 45" --set database.pooler.enabled=true --set-json 'database.pooler.parameters={"reserve_pool_size":5}' --set database.pooler.directConnectionsPerReplica=40
+# Kept but not used: the server connects directly, and both count in the budget (10 x 34 + 2 x 40 + 20 = 440).
+refuses "the pooler 2 x 40, ferrum 10 x (30 + 4)" --set database.pooler.enabled=true --set database.pooler.used=false
+tpl --set database.pooler.enabled=true --set database.pooler.used=false --set autoscaling.maxReplicas=7 > "$tmp/unused.yaml"
+grep -q 'kind: Pooler' "$tmp/unused.yaml" && ! grep -q FERRUM_DATABASE_DIRECT_URL "$tmp/unused.yaml"
+python3 scripts/check_manifests.py "$tmp/unused.yaml"
 refuses "needs database.enabled" --set database.pooler.enabled=true --set database.enabled=false --set database.urlSecret.name=x
 refuses "is the name of another part of the chart" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"db-pooler"}]'
 
