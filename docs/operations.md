@@ -107,7 +107,7 @@ Past the limit a request waits for its pool and answers 503; nothing queues with
    Optionally expire objects under `uploads/` after a day as a backstop; the server already deletes
    abandoned uploads.
 3. Create the secrets as shown in `deploy/k8s/secret.example.yaml`.
-4. Edit `deploy/k8s/kustomization.yaml` (the images' tag: a commit's, see *Images* below), `deployment.yaml` (`PUBLIC_URL`, bucket, region),
+4. Edit `deploy/k8s/kustomization.yaml` (the images' tag: a commit's, see *Images* below; until it is set the pods fail to pull), `deployment.yaml` (`PUBLIC_URL`, bucket, region),
    `gateway.yaml` (host; `gatewayClassName` if not Envoy Gateway's `eg`) and `database.yaml` (the
    `ObjectStore`'s backup bucket, sizes). `envoy-proxy.yaml` runs two of Envoy Gateway's proxies on
    different nodes and keeps the client's address (`externalTrafficPolicy: Local`), which the

@@ -24,9 +24,11 @@ resources:
 # components:
 #   - editors
 #   - metrics-engine
+# A commit's full SHA (docs/operations.md, "Images"), never `latest`: it moves, so a pod started later would
+# run another release. Until it is set, the pods fail to pull rather than run whatever `latest` is that day.
 images:
   - name: ferrum
     newName: ghcr.io/cbferrum/ferrum
-    newTag: latest
+    newTag: CHANGE-ME-commit-sha
   - name: ghcr.io/cbferrum/ferrum-editors
-    newTag: latest
+    newTag: CHANGE-ME-commit-sha
