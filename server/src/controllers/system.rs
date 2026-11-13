@@ -90,10 +90,14 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     }
     LazyLock::force(&STARTED);
     let mut tx = st.kernel.db.system_tx().await?;
-    let (pending, dead, oldest): (i64, i64, Option<f64>) = sqlx::query_as(
-        "select count(*) filter (where processed_at is null and not dead), count(*) filter (where dead), \
-         extract(epoch from now() - min(created_at) filter (where processed_at is null and not dead))::float8 from outbox",
-    )
+    // Only what this build may take: the worker pool scales on these, and a newer build's work waits for a replica of it
+    // (crates/kernel/src/window.rs), counted apart below.
+    let takes = format!("processed_at is null and not dead and not {}", ferrum_kernel::window::NOT_YET);
+    let (pending, dead, oldest): (i64, i64, Option<f64>) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select count(*) filter (where {takes}), count(*) filter (where dead), \
+         extract(epoch from now() - min(created_at) filter (where {takes}))::float8 from outbox o"
+    )))
+    .bind(ferrum_kernel::window::build_date())
     .fetch_one(&mut *tx)
     .await
     .map_err(Error::from)?;
@@ -106,8 +110,9 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     let (jobs_queued, jobs_running, jobs_failed, job_wait): (i64, i64, i64, Option<f64>) = sqlx::query_as(
         "select count(*) filter (where status = 'queued'), count(*) filter (where status = 'running'), \
          count(*) filter (where status = 'failed' and finished_at > now() - interval '1 day'), \
-         extract(epoch from now() - min(run_at) filter (where status = 'queued' and run_at <= now()))::float8 from job",
+         extract(epoch from now() - min(run_at) filter (where status = 'queued' and run_at <= now() and (build_date is null or build_date <= $1)))::float8 from job",
     )
+    .bind(ferrum_kernel::window::build_date())
     .fetch_one(&mut *tx)
     .await
     .map_err(Error::from)?;
@@ -130,6 +135,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     .await
     .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
+    let (newer_events, newer_jobs) = st.kernel.waiting_for_newer().await?;
     let logic = format!(
         "# HELP ferrum_logic_runs Process runs by where they stand.\n# TYPE ferrum_logic_runs gauge\n\
          ferrum_logic_runs{{status=\"starting\"}} {runs_starting}\nferrum_logic_runs{{status=\"running\"}} {runs_running}\n\
@@ -186,6 +192,10 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
          # TYPE ferrum_jobs_running gauge\nferrum_jobs_running {jobs_running}\n\
          # HELP ferrum_jobs_failed_day Jobs that gave up in the last day.\n# TYPE ferrum_jobs_failed_day gauge\nferrum_jobs_failed_day {jobs_failed}\n\
          # TYPE ferrum_jobs_oldest_waiting_seconds gauge\nferrum_jobs_oldest_waiting_seconds {}\n\
+         # HELP ferrum_outbox_waiting_newer_build Events this build leaves for a newer one (written by it, or after one of its in their workspace).\n\
+         # TYPE ferrum_outbox_waiting_newer_build gauge\nferrum_outbox_waiting_newer_build {newer_events}\n\
+         # HELP ferrum_jobs_waiting_newer_build Jobs a newer build queued, which this build leaves for it.\n\
+         # TYPE ferrum_jobs_waiting_newer_build gauge\nferrum_jobs_waiting_newer_build {newer_jobs}\n\
          # HELP ferrum_connections Connections to outside systems that are on.\n# TYPE ferrum_connections gauge\nferrum_connections {conn_on}\n\
          # HELP ferrum_connections_failing Connections whose last calls failed.\n# TYPE ferrum_connections_failing gauge\nferrum_connections_failing {conn_failing}\n\
          # HELP ferrum_connections_waiting Connections left alone because the provider said to wait.\n# TYPE ferrum_connections_waiting gauge\nferrum_connections_waiting {conn_waiting}\n\

@@ -400,15 +400,26 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
 
 * **What starts where.** A server that finds the database ahead of it (a newer build's record, or migrations it does not
   know) starts when its date is not before the recorded `COMPATIBLE_FROM`, whatever `FERRUM_MIGRATE_AT_START` says, and
-  runs as a **guest**. Otherwise it refuses, saying the date of the build to start. A database behind the build is
+  runs as a **guest**, but only when the database holds everything it needs: none of its own migrations is missing,
+  and a dry run of its schema sync would add no table, column or package SQL. A build with an older date that the one
+  that migrated was not made from (another branch with its own migration or fields) is refused, saying it is not an
+  older build of that one. Otherwise it refuses, saying the date of the build to start. A database behind the build is
   migrated as it starts, or, with `FERRUM_MIGRATE_AT_START=false`, refused as before. Several builds starting at once
   each end right: deciding, migrating and syncing hold one advisory lock, and the start-up writes hold it shared.
+  Session advisory locks need a direct database connection, not one through a transaction-pooling proxy such as
+  PgBouncer: this window lock (`crates/kernel/src/window.rs`), the schema sync's (`crates/kernel/src/ddl.rs`), the
+  upgrade steps' (`server/src/upgrade.rs`), apps' upkeep (`server/src/packages.rs`) and app revocations
+  (`server/src/appmgr.rs`). Leases on events and jobs are rows, not locks.
 * **What a guest does not do.** It does not migrate, does not sync the schema (nor make an app with packages
   available), and skips the start-up writes that would put its older things back: the one-time upgrade steps and
   their record, apps recorded at its versions, interfaces registered for them, customizations' baselines. It serves
   requests on everything it knows, and runs the background work, but takes no event or job a newer build wrote (each
   says which build wrote it): those wait for a newer replica, never failed or dropped. A scheduled automation or a
-  service target it cannot read is left as it is. `ferrum task migrate` with an older image prints that there is
+  service target it cannot read is left as it is. Events keep their order within a workspace and a priority
+  (docs/events.md): an event written after a newer build's waits behind it, even one the guest wrote itself.
+  After a full rollback, a workspace's queue from its first newer-build event on, and the newer build's jobs, wait
+  until a build at least that new runs again; `ferrum task doctor` says how many (`window.waiting`), and the metrics
+  `ferrum_outbox_waiting_newer_build` and `ferrum_jobs_waiting_newer_build` count them. `ferrum task migrate` with an older image prints that there is
   nothing to do and succeeds, so a rollback that runs it goes on.
 * **How long the window is.** From one release to the next, for as long as `COMPATIBLE_FROM` stays where it is: in
   practice the release before is always let in, and usually several before it. A rollback to a build from before
@@ -425,7 +436,11 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   upgrade step the newer build ran stays done: to go back to before one, use `ferrum task upgrade_back` (above).
 * **Images.** The image build takes the commit's date as a build argument, `BUILD_DATE` (`git log -1 --format=%ct`;
   CI passes it), and labels the image `io.ferrum.build-date`. A build without git or `BUILD_DATE` takes a fixed date
-  that is never later than its own, so it may be refused as a guest where a dated build of the same commit is let in.
+  that is never later than its own, and is never a guest: on a database a dated build synced it refuses, saying to
+  build with `BUILD_DATE` or from git (otherwise a newer image built without it would run as a guest and quietly serve
+  old interfaces). Two such builds on one database are level, as before the window. A local build from git takes the
+  date of the commit checked out when the kernel's build script last ran, so two local builds may look the same age:
+  they are then level, which is safe.
   `deploy/smoke.sh` starts the previous image again on the database the new one migrated, when the previous image has
   the label.
 
@@ -937,8 +952,11 @@ separately): `keda: {enabled: true}` on the pool, `autoscaling: {enabled: false}
 the top-level `keda` values. The chart renders a `ScaledObject` with two Prometheus triggers on gauges the
 server already exports: `max(ferrum_outbox_pending)` (events not yet handled, one more replica for every
 `keda.outboxPerReplica` of them) and `max(ferrum_jobs_oldest_waiting_seconds)` (how long the oldest due job
-has waited, more replicas while it is above `keda.jobWaitSeconds`). Every replica reports the same figures,
-read from the database, so the queries take the largest, never the sum. Prometheus must scrape the server
+has waited, more replicas while it is above `keda.jobWaitSeconds`). Both count only work the reporting replica's
+build may take: work a newer build wrote shows in `ferrum_outbox_waiting_newer_build` and
+`ferrum_jobs_waiting_newer_build` instead (*Rolling back and the two-version window*), so after a rollback the pool is
+not held at its maximum by work nobody running can take. Replicas of one build report the same figures, read from
+the database, and the newest reports the most, so the queries take the largest, never the sum. Prometheus must scrape the server
 (`serviceMonitor`) and be reachable at `keda.prometheusAddress`; `keda.triggers` replaces both triggers with
 your own. `keda.minReplicas` is at least 1, because schedules and upkeep show in no gauge. The outbox gauge
 also counts events waiting to be retried, so a backlog of failing deliveries keeps workers up; an exact
