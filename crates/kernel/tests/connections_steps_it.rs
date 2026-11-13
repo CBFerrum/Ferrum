@@ -91,6 +91,17 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
             (200, String::new(), json!({"elements": if found { json!([{"id": "urn:post:found"}]) } else { json!([]) }}).to_string())
         }
         ("POST", "/v1/slow-step") => (200, String::new(), json!({"id": "S-1"}).to_string()),
+        // Shaped like a media container: made, processed for a while, then published.
+        ("POST", "/v1/containers") => (200, String::new(), json!({"id": format!("C-{}-{}", asked(bare), body["kind"].as_str().unwrap_or("ok"))}).to_string()),
+        ("GET", p) if p.starts_with("/v1/containers/C-") => {
+            let status = match (p.rsplit('-').next().unwrap_or_default(), asked(p)) {
+                ("error", _) => "ERROR",
+                ("ok", n) if n >= 3 => "FINISHED",
+                _ => "IN_PROGRESS",
+            };
+            (200, String::new(), json!({"id": p.trim_start_matches("/v1/containers/"), "status_code": status}).to_string())
+        }
+        ("POST", p) if p.starts_with("/v1/publish/") => (200, String::new(), json!({"id": format!("M-{}", p.trim_start_matches("/v1/publish/"))}).to_string()),
         _ => (404, String::new(), json!({"error": "no such route"}).to_string()),
     }
 }
@@ -321,6 +332,45 @@ async fn steps(k: &Arc<Kernel>, admin: &Ctx, base: &str, store: &Memory) {
     }
 }
 
+/// P2: a step repeated on a delay until its answer says so, bounded, handing "later" to the queue past its patience.
+async fn waiting(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let wait = |every: u64, within: u64| json!({"until": "result.status == 'FINISHED'", "fail_if": "result.status in ['ERROR', 'EXPIRED']", "every_secs": every, "within_secs": within});
+    let media = |w: Value| {
+        json!({"result": {"id": "/publish/id"}, "steps": [
+        {"name": "container", "operation": "container", "inputs": {"kind": "inputs.kind"}},
+        {"name": "ready", "operation": "container_status", "inputs": {"id": "steps.container.id"}, "wait": w},
+        {"name": "publish", "operation": "publish_container", "inputs": {"id": "steps.container.id"}}]})
+    };
+    let ops = json!({
+        "container": {"method": "POST", "path": "/containers", "body": "{\"kind\": {{ inputs.kind | json }}}", "result": {"id": "/id"}},
+        "container_status": {"path": "/containers/{{ inputs.id }}", "result": {"status": "/status_code"}},
+        "publish_container": {"method": "POST", "path": "/publish/{{ inputs.id }}", "body": "{}", "result": {"id": "/id"}},
+        "media": media(wait(1, 30)), "media_patient": media(wait(25, 600)), "media_short": media(wait(1, 1))
+    });
+    k.save_connection_def(admin, None, &input("gram", json!({"base": base, "operations": ops}), None)).await.unwrap();
+    let go = |op: &str, kind: &str, key: &str| call("gram", op, json!({"kind": kind}), Some(key));
+    // Processed after three looks, then published once.
+    assert_eq!(connections::call(k, admin, None, &go("media", "ok", "m-1")).await.unwrap(), json!({"id": "M-C-1-ok"}));
+    assert_eq!((asked("/v1/containers/C-1-ok"), asked("/v1/publish/C-1-ok")), (3, 1));
+    // Failed processing fails the call, saying what the service said; nothing is published.
+    let e = connections::call(k, admin, None, &go("media", "error", "m-2")).await.unwrap_err().to_string();
+    assert!(e.contains("ERROR"), "{e}");
+    assert_eq!(asked("/v1/publish/C-2-error"), 0);
+    // Beyond its patience the call answers "later" when the service should be asked again; asked again, it carries on
+    // from the wait (the container is not made twice).
+    let e = connections::call(k, admin, None, &go("media_patient", "ok", "m-3")).await.unwrap_err();
+    assert!(matches!(e, Error::RetryAfter(_, 25) | Error::Unavailable(_)), "{e:?}");
+    assert!(connections::call(k, admin, None, &go("media_patient", "ok", "m-3")).await.is_err(), "still processing");
+    assert_eq!(connections::call(k, admin, None, &go("media_patient", "ok", "m-3")).await.unwrap(), json!({"id": "M-C-3-ok"}));
+    assert_eq!(asked("/v1/containers"), 3, "one container each");
+    // Bounded in time from the key's first attempt.
+    let e = connections::call(k, admin, None, &go("media_short", "never", "m-4")).await.unwrap_err().to_string();
+    assert!(e.contains("not ready within 1 s"), "{e}");
+    // Only a reading step waits.
+    let bad = json!({"base": base, "operations": {"a": {"method": "POST", "path": "/a", "body": "{}"}, "b": {"steps": [{"name": "x", "operation": "a", "wait": {"until": "true"}}]}}});
+    assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("waits only on an operation that reads"));
+}
+
 #[test]
 fn connections_run_steps_safely() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -366,4 +416,5 @@ async fn scenario() {
     let port = service().await;
     let base = format!("http://127.0.0.1:{port}/v1");
     steps(&k, &admin, &base, &store).await;
+    waiting(&k, &admin, &base).await;
 }

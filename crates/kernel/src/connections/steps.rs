@@ -42,6 +42,44 @@ pub struct Step {
     /// result is then the step's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirm: Option<Confirm>,
+    /// Asked again on a delay until its answer says it is ready (BD-54).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<Wait>,
+}
+
+/// A step repeated until `until` is true over its `result`, `answer` and `headers`, `every_secs` apart, failing when
+/// `fail_if` is, or after `attempts` asks, or `within_secs` after the key's first attempt. Past the call's patience
+/// ([`PATIENCE`]) it answers "later", after `every_secs`, and the next call carries on from here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Wait {
+    pub until: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail_if: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempts: Option<u32>,
+}
+
+/// How long one call waits in place before it answers "later" for the queue to carry it.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+const MAX_EVERY: u64 = 3600;
+const MAX_WITHIN: u64 = 86_400;
+const MAX_POLLS: u32 = 1000;
+
+impl Wait {
+    fn every(&self) -> u64 {
+        self.every_secs.unwrap_or(5)
+    }
+    fn within(&self) -> u64 {
+        self.within_secs.unwrap_or(600)
+    }
+    fn attempts(&self) -> u32 {
+        self.attempts.unwrap_or(MAX_POLLS)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -108,6 +146,14 @@ pub(crate) fn problem(desc: &super::Description, op: &Operation) -> Option<Strin
         if let Some(i) = s.inputs.keys().find(|i| !inner.inputs.is_empty() && !inner.inputs.contains(i)) {
             return at(format!("{} takes no input {i}", s.operation));
         }
+        if let Some(w) = &s.wait {
+            if inner.changes() {
+                return at(format!("it waits only on an operation that reads, and {} changes something", s.operation));
+            }
+            if !(1..=MAX_EVERY).contains(&w.every()) || !(1..=MAX_WITHIN).contains(&w.within()) || !(1..=MAX_POLLS).contains(&w.attempts()) {
+                return at(format!("wait: every_secs is 1 to {MAX_EVERY}, within_secs 1 to {MAX_WITHIN}, attempts 1 to {MAX_POLLS}"));
+            }
+        }
         if let Some(c) = &s.confirm {
             match desc.operations.get(&c.operation) {
                 None => return at(format!("confirm: there is no operation {}", c.operation)),
@@ -115,7 +161,12 @@ pub(crate) fn problem(desc: &super::Description, op: &Operation) -> Option<Strin
                 _ => {}
             }
         }
-        let exprs = s.inputs.values().chain(s.when.iter()).chain(s.confirm.iter().flat_map(|c| c.inputs.values().chain(std::iter::once(&c.proves))));
+        let exprs = s
+            .inputs
+            .values()
+            .chain(s.when.iter())
+            .chain(s.confirm.iter().flat_map(|c| c.inputs.values().chain(std::iter::once(&c.proves))))
+            .chain(s.wait.iter().flat_map(|w| std::iter::once(&w.until).chain(w.fail_if.iter())));
         if let Some(p) = exprs.filter_map(|e| expression_problem(e)).next() {
             return at(p);
         }
@@ -128,6 +179,8 @@ pub(crate) struct Attempt {
     pub digest: String,
     pub clock: DateTime<Utc>,
     pub sending: bool,
+    /// A wait's asks, a loop's place.
+    pub progress: Value,
 }
 
 impl Kernel {
@@ -143,16 +196,32 @@ impl Kernel {
             .bind(digest)
             .execute(&mut *tx)
             .await?;
-        let (digest, clock, sending): (String, DateTime<Utc>, bool) =
-            sqlx::query_as("select input_digest, clock, sending from conn_attempt where tenant_id = $1 and conn_id = $2 and operation = $3 and key = $4")
-                .bind(conn.tenant)
-                .bind(conn.id)
-                .bind(op)
-                .bind(key)
-                .fetch_one(&mut *tx)
-                .await?;
+        let (digest, clock, sending, progress): (String, DateTime<Utc>, bool, Value) = sqlx::query_as(
+            "select input_digest, clock, sending, progress from conn_attempt where tenant_id = $1 and conn_id = $2 and operation = $3 and key = $4",
+        )
+        .bind(conn.tenant)
+        .bind(conn.id)
+        .bind(op)
+        .bind(key)
+        .fetch_one(&mut *tx)
+        .await?;
         tx.commit().await?;
-        Ok(Attempt { digest, clock, sending })
+        Ok(Attempt { digest, clock, sending, progress })
+    }
+
+    /// Keeps a wait's or a loop's place under `key`.
+    pub(crate) async fn progress(&self, conn: &Loaded, op: &str, key: &str, progress: &Value) -> Result<()> {
+        let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
+        sqlx::query("update conn_attempt set progress = $5, at = now() where tenant_id = $1 and conn_id = $2 and operation = $3 and key = $4")
+            .bind(conn.tenant)
+            .bind(conn.id)
+            .bind(op)
+            .bind(key)
+            .bind(progress)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Marks whether a request of `op` under `key` is out with its answer unknown.
@@ -215,6 +284,7 @@ impl Kernel {
         about: Option<(&str, Uuid)>,
     ) -> Result<Outcome> {
         let op = conn.desc.operations.get(name).ok_or_else(|| Error::invalid(format!("{} has no operation {name}", conn.name)))?;
+        let started = std::time::Instant::now();
         let mut done = Map::new();
         for step in &op.steps {
             let vars = json!({"inputs": inputs, "steps": done, "key": key});
@@ -225,7 +295,7 @@ impl Kernel {
                 continue;
             }
             let skey = key.map(|k| format!("{k}:{}", step.name));
-            match self.step(ctx, conn, step, &vars, skey.as_deref(), clock, about).await? {
+            match self.step(ctx, conn, step, &vars, skey.as_deref(), (clock, started), about).await? {
                 Outcome::Ok(result, _) => {
                     done.insert(step.name.clone(), result);
                 }
@@ -256,7 +326,7 @@ impl Kernel {
         step: &Step,
         vars: &Value,
         skey: Option<&str>,
-        clock: DateTime<Utc>,
+        (clock, started): (DateTime<Utc>, std::time::Instant),
         about: Option<(&str, Uuid)>,
     ) -> Result<Outcome> {
         let mut given = Map::new();
@@ -266,11 +336,16 @@ impl Kernel {
         let given = Value::Object(given);
         let inner = &conn.desc.operations[&step.operation];
         let extra = Extra { now: Some(clock), ..Default::default() };
-        let Some(skey) = skey else { return self.perform(ctx, conn, &step.operation, &given, None, extra, about, None).await };
         let digest = super::digest(&given);
-        if let Some((_, result)) = self.done_before(conn, &step.operation, skey).await? {
+        if let Some(skey) = skey
+            && let Some((_, result)) = self.done_before(conn, &step.operation, skey).await?
+        {
             return Ok(Outcome::Ok(result, Box::new(empty_answer()?)));
         }
+        if let Some(w) = &step.wait {
+            return self.wait(ctx, conn, step, w, (&given, vars), skey, (clock, started), about).await;
+        }
+        let Some(skey) = skey else { return self.perform(ctx, conn, &step.operation, &given, None, extra, about, None).await };
         let changes = inner.changes();
         if changes && self.key_attempt(conn, &step.operation, skey, &digest).await?.sending {
             // Its answer was lost: it may have happened.
@@ -312,6 +387,70 @@ impl Kernel {
             self.sending(conn, &step.operation, skey, false).await?;
         }
         Ok(outcome)
+    }
+}
+
+impl Kernel {
+    /// A step asked until it is ready ([`Wait`]); its result, kept under its key once it is.
+    #[allow(clippy::too_many_arguments)]
+    async fn wait(
+        &self,
+        ctx: &Ctx,
+        conn: &Loaded,
+        step: &Step,
+        w: &Wait,
+        (given, vars): (&Value, &Value),
+        skey: Option<&str>,
+        (clock, started): (DateTime<Utc>, std::time::Instant),
+        about: Option<(&str, Uuid)>,
+    ) -> Result<Outcome> {
+        let digest = super::digest(given);
+        let mut polls = match skey {
+            Some(k) => self.key_attempt(conn, &step.operation, k, &digest).await?.progress["polls"].as_u64().unwrap_or(0) as u32,
+            None => 0,
+        };
+        let deadline = clock + chrono::Duration::seconds(w.within() as i64);
+        let extra = Extra { now: Some(clock), ..Default::default() };
+        loop {
+            if Utc::now() > deadline {
+                return Ok(Outcome::No(format!("not ready within {} s", w.within())));
+            }
+            match self.perform(ctx, conn, &step.operation, given, None, extra, about, None).await? {
+                Outcome::Ok(result, answer) => {
+                    let mut v = vars.clone();
+                    v["result"] = result.clone();
+                    v["answer"] = answer.body.clone();
+                    v["headers"] = Value::Object(answer.headers.iter().map(|(h, x)| (h.clone(), Value::String(x.clone()))).collect());
+                    if let Some(f) = &w.fail_if
+                        && truthy(&evaluate(f, &v)?)
+                    {
+                        let said: String = result.to_string().chars().take(300).collect();
+                        return Ok(Outcome::No(format!("the service says it failed: {said}")));
+                    }
+                    if truthy(&evaluate(&w.until, &v)?) {
+                        if let Some(k) = skey {
+                            self.remember(ctx, conn, &step.operation, k, &digest, &result).await?;
+                        }
+                        return Ok(Outcome::Ok(result, answer));
+                    }
+                }
+                // "Later" from the service is "not ready yet".
+                Outcome::Later(..) => {}
+                no @ Outcome::No(_) => return Ok(no),
+            }
+            polls += 1;
+            if let Some(k) = skey {
+                self.progress(conn, &step.operation, k, &json!({"polls": polls})).await?;
+            }
+            if polls >= w.attempts() {
+                return Ok(Outcome::No(format!("not ready after {polls} asks")));
+            }
+            let every = std::time::Duration::from_secs(w.every());
+            if started.elapsed() + every > PATIENCE {
+                return Ok(Outcome::Later("not ready yet".into(), Some(w.every())));
+            }
+            tokio::time::sleep(every).await;
+        }
     }
 }
 

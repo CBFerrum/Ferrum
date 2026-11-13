@@ -1285,6 +1285,13 @@ in `url` (a template; one an earlier answer gave), held to the connection's host
 sends it without the connection's credentials (an address signed already); `form_fields` (a template giving an
 object, or a list of `{name, value}`) adds a signed upload form's fields before `form`'s.
 
+**Waiting** ([BD-54](builder/decisions.md#bd-54-a-step-that-waits)): a step on a reading operation may wait until its
+answer says it is ready: `"wait": {"until": "result.status == 'FINISHED'", "fail_if": "result.status in ['ERROR',
+'EXPIRED']", "every_secs": 5, "within_secs": 600, "attempts": 100}` (expressions over `result`, `answer`, `headers` and
+the step's names). It fails when `fail_if` holds, after `attempts` asks or `within_secs` after the key's first attempt.
+A call waits in place 20 s at most, then answers "later" after `every_secs` (`RetryAfter`); the same key again carries
+on from the wait.
+
 ### Moving an app's own HTTP client onto a connection
 
 Social, ERP's carriers and the service apps each build requests themselves. To move one:
