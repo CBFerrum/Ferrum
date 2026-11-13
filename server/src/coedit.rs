@@ -37,7 +37,6 @@ use futures_util::{SinkExt, StreamExt};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde_json::{Value, json};
-use sqlx::postgres::PgListener;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -202,17 +201,13 @@ impl Docs {
     fn listen(self: Arc<Self>, k: Arc<Kernel>, mut shutdown: watch::Receiver<bool>) -> JoinHandle<()> {
         tokio::spawn(async move {
             loop {
-                let mut listener = match PgListener::connect_with(&k.db.pool).await {
+                let mut listener = match k.db.listen(CHANNEL).await {
                     Ok(l) => l,
                     Err(e) => {
                         tracing::warn!("coedit listener: {e}");
                         tokio::select! { _ = shutdown.changed() => return, _ = tokio::time::sleep(Duration::from_secs(2)) => continue }
                     }
                 };
-                if let Err(e) = listener.listen(CHANNEL).await {
-                    tracing::warn!("coedit listener: {e}");
-                    tokio::select! { _ = shutdown.changed() => return, _ = tokio::time::sleep(Duration::from_secs(2)) => continue }
-                }
                 // Changes announced while nobody listened are read now.
                 for room in self.all() {
                     room.wake(&k);
@@ -220,7 +215,7 @@ impl Docs {
                 loop {
                     tokio::select! {
                         _ = shutdown.changed() => return,
-                        n = listener.recv() => match n {
+                        n = ferrum_kernel::db::notification(&mut listener) => match n {
                             Ok(n) => self.on_notify(&k, n.payload()),
                             Err(e) => {
                                 tracing::warn!("coedit listener lost its connection: {e}");

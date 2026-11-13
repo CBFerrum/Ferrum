@@ -70,6 +70,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_OFFICE_ORIGIN` | with online editing | The editor server as browsers reach it (`https://office.example.com`), when that is not `FERRUM_OFFICE_URL`: Drive's pages frame it and post to it, and their Content-Security-Policy names it (the Compose stack sets it from `OFFICE_PUBLIC_URL`, the Helm chart from `office.host`) |
 | `FERRUM_APPS_BASE` | no | A domain under which isolated apps get origins of their own, `{app}--{workspace}.{base}` (`example-apps.net`); see "Apps with interfaces of their own". Empty (the default): isolated apps run in sandboxed frames. `localhost` works in development |
 | `FERRUM_UI_SOURCE` | no | Development: a server listing built interfaces (`index.json`, as Ferrum-Frontend's `npm run build:apps` writes `dist-apps/`), fetched at start-up and every ten minutes, files checked against their digests |
+| `FERRUM_DATABASE_DIRECT_URL` | with a pooler | PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler* |
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
@@ -435,7 +436,8 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   migrated as it starts, or, with `FERRUM_MIGRATE_AT_START=false`, refused as before. Several builds starting at once
   each end right: deciding, migrating and syncing hold one advisory lock, and the start-up writes hold it shared.
   Session advisory locks need a direct database connection, not one through a transaction-pooling proxy such as
-  PgBouncer: this window lock (`crates/kernel/src/window.rs`), the schema sync's (`crates/kernel/src/ddl.rs`), the
+  PgBouncer, and take theirs from `FERRUM_DATABASE_DIRECT_URL` (`Db::direct`): this window lock
+  (`crates/kernel/src/window.rs`), the migrations' (sqlx's own), the schema sync's (`crates/kernel/src/ddl.rs`), the
   upgrade steps' (`server/src/upgrade.rs`), apps' upkeep (`server/src/packages.rs`) and app revocations
   (`server/src/appmgr.rs`). Leases on events and jobs are rows, not locks.
 * **What a guest does not do.** It does not migrate, does not sync the schema (nor make an app with packages

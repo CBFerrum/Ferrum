@@ -514,8 +514,13 @@ pub async fn round(pool: &PgPool, mut jobs: Vec<Upkeep>, concurrency: usize, eve
     while running.join_next().await.is_some() {}
 }
 
+/// How many apps' upkeep one replica runs at once (`FERRUM_UPKEEP_CONCURRENCY`): each holds a direct connection.
+pub fn upkeep_concurrency() -> usize {
+    std::env::var("FERRUM_UPKEEP_CONCURRENCY").ok().and_then(|v| v.trim().parse().ok()).filter(|n| *n > 0).unwrap_or(DEFAULT_CONCURRENCY)
+}
+
 pub fn spawn(k: Arc<Kernel>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
-    let concurrency = std::env::var("FERRUM_UPKEEP_CONCURRENCY").ok().and_then(|v| v.trim().parse().ok()).filter(|n| *n > 0).unwrap_or(DEFAULT_CONCURRENCY);
+    let concurrency = upkeep_concurrency();
     tokio::spawn(async move {
         loop {
             let mut jobs = upkeep_jobs(&k);
@@ -528,7 +533,8 @@ pub fn spawn(k: Arc<Kernel>, mut shutdown: watch::Receiver<bool>) -> tokio::task
                     Box::pin(async move { k.check_hosts().await.map(|_| ()).map_err(|e| e.to_string()) })
                 }),
             ));
-            round(&k.db.pool, jobs, concurrency, EVERY).await;
+            // Each running app's lock is a session's: on the direct address.
+            round(&k.db.direct, jobs, concurrency, EVERY).await;
             tokio::select! {
                 _ = shutdown.changed() => return,
                 _ = tokio::time::sleep(EVERY) => {}

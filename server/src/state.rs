@@ -178,6 +178,10 @@ pub struct Settings {
     /// or `https:`). Empty: the server's address when it is https.
     #[serde(default)]
     pub push_contact: String,
+    /// `FERRUM_DATABASE_DIRECT_URL`: PostgreSQL itself, for LISTEN, session locks and migrations, when `DATABASE_URL` is
+    /// a pooler in transaction mode. Empty: `DATABASE_URL`.
+    #[serde(default)]
+    pub database_direct_url: String,
 }
 
 fn default_session_days() -> u32 {

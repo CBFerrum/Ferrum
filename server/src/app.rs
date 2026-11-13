@@ -164,9 +164,16 @@ impl Hooks for App {
                 ferrum_kernel::doctor::POOL_FLOOR
             );
         }
-        let db = Db::connect(DbConfig { url: ctx.config.database.uri.clone(), max_connections: settings.db_max_connections, ..Default::default() })
-            .await
-            .map_err(|e| Error::Message(format!("database: {e}")))?;
+        let db = Db::connect(DbConfig {
+            url: ctx.config.database.uri.clone(),
+            max_connections: settings.db_max_connections,
+            // Unset: the same address as DATABASE_URL, one pool for everything as before.
+            direct_url: Some(Some(settings.database_direct_url.trim()).filter(|u| !u.is_empty()).unwrap_or(&ctx.config.database.uri).to_string()),
+            direct_connections: ferrum_kernel::db::LISTENERS + ferrum_kernel::db::DIRECT_LOCKS + crate::packages::upkeep_concurrency() as u32,
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| Error::Message(format!("database: {e}")))?;
         let catalog = crate::packages::base_catalog(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
         let missing = crate::packages::missing_logic(&catalog);
         if !missing.is_empty() {
@@ -318,8 +325,7 @@ impl Hooks for App {
             let earlier = EARLIER_SET_UP.lock().ok().and_then(|mut e| e.replace((kernel.db.clone(), ctx.db.clone())));
             if let Some((db, loco)) = earlier {
                 tokio::spawn(async move {
-                    db.pool.close().await;
-                    db.side.close().await;
+                    db.close().await;
                     let _ = loco.close_by_ref().await;
                 });
             }
@@ -486,8 +492,7 @@ impl Hooks for App {
             if tokio::time::timeout(Duration::from_secs(10), futures_util::future::join_all(handles)).await.is_err() {
                 tracing::warn!("background loops still busy after 10 s: stopping anyway");
             }
-            state.kernel.db.pool.close().await;
-            state.kernel.db.side.close().await;
+            state.kernel.db.close().await;
             crate::telemetry::shutdown();
             tracing::info!("shutdown complete");
         }
