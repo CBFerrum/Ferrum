@@ -1569,3 +1569,27 @@ key sorting after; facets' byte offsets around an emoji with a tone; a grapheme 
 send its key; truncate, split, join, default, urlencode, strftime; a pull's mapping reading `today`; RFC 4231's HMAC
 vector; offsets in each unit.
 
+## BD-57. Retry-After for every caller, and a description's limits
+
+Decided 13 November 2026. Social's publish job saw only "later" and fell back on the jobs' backoff; Postiz caps each
+network's concurrent jobs (`maxConcurrentJob`), and networks count requests per window.
+
+* **`RetryAfter` reaches `connections::call`** (and the `call` effect inline, and the gate): a temporary answer with
+  `Retry-After`, a wait past its patience (BD-54), a key another worker holds (BD-53) and a limit below are
+  `Error::RetryAfter(why, seconds)`, a 503 like `Unavailable`; without a time it stays `Unavailable`. What apps must do:
+  treat `RetryAfter` as `Unavailable` that says when (Social's job matched only `Unavailable` and `Wait`). This is why
+  the App API moves (BD-62).
+* **`limit: {per, every, concurrent}`** on a description. The window is counted in `conn_rate` (one row per
+  connection and window, an atomic upsert), so every worker and replica shares it; a request past `per` is not sent and
+  answers `RetryAfter` until the next window. `concurrent` places are advisory locks (`conn_turn:<connection>:<n>`)
+  held for the request; one that finds none free waits up to 10 s, then answers `RetryAfter` 1 s. Every request
+  counts: steps, chunks, waits' asks, pulls' pages, sign-in operations (those run before the request that needed them
+  takes its place, so a session's login never waits on itself).
+* Why per connection, not per account: a description is one service for one workspace's account, and a person's own
+  connection is usually limited per application as well; a per-person limit is left until a description needs it.
+* Upkeep drops windows older than a day, and attempts (`conn_attempt`) older than 90 days.
+
+Tests (`connections_steps_it` `limits`): a 429 with `Retry-After: 7` reaching an app's call as seven seconds; two
+requests a minute, the third not sent and told when; two workers' calls under `concurrent: 1` never overlapping, the
+second waiting its turn; a limit without its window refused.
+

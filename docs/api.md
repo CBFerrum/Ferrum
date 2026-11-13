@@ -1215,7 +1215,7 @@ connect again) or their account is closed. `GET …/pulls` gives each row's `use
 in a mapping over `payload`, `item`, `connection`), each with `"required": true` to fail the call or the item when it
 is null. In a mapping a plain string that is not a pointer is an expression, as before. From Rust, an object value in
 `Operation.result`, `form` or `body` is `connections::spec(&json!({…}))`. A temporary answer's `Retry-After` sets when
-a queued call or a pull's retry comes back (capped at an hour).
+a queued call or a pull's retry comes back (capped at an hour), and reaches an app's own call as `RetryAfter`.
 
 **Files** ([BD-47](builder/decisions.md#bd-47-bodies-beyond-json)): `"form": {"caption": "{{ inputs.text }}", "media":
 {"file": "{{ inputs.photo }}", "max_bytes": 5000000}}` sends `multipart/form-data`; `"body": {"file": "{{ inputs.video
@@ -1326,6 +1326,12 @@ language's own (`replace`, `split`, `join`, `default`, `json`, …). A record ke
 ```json
 "body": "{\"rkey\": {{ key | tid | json }}, \"createdAt\": {{ now | json }}, \"facets\": {{ inputs.text | entities('bytes') | json }}}"
 ```
+
+**Waiting for the service** ([BD-57](builder/decisions.md#bd-57-retry-after-for-every-caller-and-a-descriptions-limits)):
+an app's `connections::call`, the `call` effect and the gate get `RetryAfter(why, seconds)` when the service's
+`Retry-After` (or the connection's limit) says when to come back, `Unavailable` when nothing does. `"limit": {"per": 300,
+"every": 900, "concurrent": 2}` on a description: at most `per` requests in each window of `every` seconds and
+`concurrent` at once, counted in the database so every worker shares them; a request past them is not sent.
 
 ### Moving an app's own HTTP client onto a connection
 
