@@ -131,6 +131,26 @@ pub struct Provider {
     /// Its tokens never expire, whatever the token answer says: never refreshed ahead.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub never_expires: bool,
+    /// What the provider calls the client's id on the authorisation address and the token requests (`client_key`);
+    /// `client_id` unless said (BD-72).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id_param: Option<String>,
+    /// What scopes are joined with: a space unless said (`,` for a provider that wants commas).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_separator: Option<String>,
+    /// Kept fields that are not secret (a handle a permalink is made from): a result may show them (BD-77).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_secret: Vec<String>,
+}
+
+impl Provider {
+    pub(crate) fn id_param(&self) -> &str {
+        self.client_id_param.as_deref().unwrap_or("client_id")
+    }
+
+    pub(crate) fn scope(&self) -> String {
+        self.scopes.join(self.scope_separator.as_deref().unwrap_or(" "))
+    }
 }
 
 fn address_problem(name: &str, url: &str) -> Option<String> {
@@ -155,13 +175,22 @@ impl Provider {
         if self.keep.iter().any(|k| !is_name(k) || ["access_token", "refresh_token"].contains(&k.as_str())) {
             return Some("auth.provider.keep names fields of the token answer (not the tokens)".into());
         }
+        if self.not_secret.iter().any(|n| !self.keep.contains(n)) {
+            return Some("auth.provider.not_secret names fields it keeps".into());
+        }
         if self.client_secret.as_deref().is_some_and(|s| !is_name(s)) {
             return Some("auth.provider.client_secret names one of the connection's secrets".into());
         }
         if self.scopes.iter().any(|s| s.is_empty() || s.contains(char::is_whitespace)) {
             return Some("auth.provider.scopes are words without spaces".into());
         }
-        if ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope"]
+        if self.client_id_param.as_deref().is_some_and(|p| !is_name(p)) {
+            return Some("auth.provider.client_id_param is a parameter's name".into());
+        }
+        if self.scope_separator.as_deref().is_some_and(|s| ![" ", ",", "+", ";"].contains(&s)) {
+            return Some("auth.provider.scope_separator is a space, a comma, a plus or a semicolon".into());
+        }
+        if ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", self.id_param()]
             .iter()
             .any(|p| self.params.contains_key(*p))
         {
@@ -305,9 +334,9 @@ impl Kernel {
         let mut url = reqwest::Url::parse(&provider.authorize_url).map_err(|_| Error::invalid("the provider's authorize_url is not an address"))?;
         {
             let mut q = url.query_pairs_mut();
-            q.append_pair("response_type", "code").append_pair("client_id", &client_id).append_pair("redirect_uri", &redirect);
+            q.append_pair("response_type", "code").append_pair(provider.id_param(), &client_id).append_pair("redirect_uri", &redirect);
             if !provider.scopes.is_empty() {
-                q.append_pair("scope", &provider.scopes.join(" "));
+                q.append_pair("scope", &provider.scope());
             }
             q.append_pair("state", &state).append_pair("code_challenge", &challenge).append_pair("code_challenge_method", "S256");
             for (k, v) in &provider.params {
@@ -393,7 +422,7 @@ impl Kernel {
                     headers.push(("authorization".into(), format!("Basic {pair}")));
                 }
                 (_, secret) => {
-                    q.append_pair("client_id", &client_id);
+                    q.append_pair(provider.id_param(), &client_id);
                     if let Some(s) = secret {
                         q.append_pair("client_secret", &s);
                     }
@@ -402,7 +431,7 @@ impl Kernel {
         }
         let address = reqwest::Url::parse(url).map_err(|_| Error::invalid("the provider's address is not an address"))?;
         let bound = provider.dpop && url == provider.token_url;
-        let reach = Reach { hosts: vec![host_of(url)], timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES };
+        let reach = Reach { hosts: vec![host_of(url)], any: false, timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES };
         let mask = conn.mask();
         let mut tries = 0;
         let got = loop {
@@ -493,7 +522,7 @@ impl Kernel {
                 headers: vec![("accept".into(), "application/json".into())],
                 body: Some((asked.to_string().into_bytes(), "application/json".to_string())),
             };
-            let a = self.fetch(req, &Reach { hosts: vec![host_of(&url)], timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES }).await?;
+            let a = self.fetch(req, &Reach { hosts: vec![host_of(&url)], any: false, timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES }).await?;
             let id = a.body.get("client_id").and_then(Value::as_str).filter(|i| (200..300).contains(&a.status) && !i.is_empty() && i.len() <= 500);
             let Some(id) = id else {
                 return Err(Error::invalid(format!("the provider did not register a client ({})", a.status)));

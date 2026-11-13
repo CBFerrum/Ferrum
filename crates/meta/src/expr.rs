@@ -24,6 +24,19 @@ const MAX_NESTING: usize = 32;
 /// stack (8 November 2026). The longest shipped expression has about twenty.
 const MAX_OPERATORS: usize = 512;
 
+/// Runs CEL's parser or interpreter for an expression that nests (`heavy`) on a stack of its own: each nesting of a
+/// ternary, a call or a parenthesis goes through a dozen of the parser's rules, so a dozen nested `?:` (a description's
+/// result picking among a dozen answers) overflowed a 2 MiB worker thread in a debug build, where a server's workers
+/// run with 2 MiB. 16 MiB of address space, of which only what is touched is used, takes [`MAX_NESTING`].
+fn deep<T>(heavy: bool, f: impl FnOnce() -> T) -> T {
+    if heavy { stacker::grow(16 << 20, f) } else { f() }
+}
+
+/// Whether an expression nests enough to need [`deep`]: more than four levels of `?`, `(` or `[` in all.
+fn nests(source: &str) -> bool {
+    source.bytes().filter(|b| matches!(b, b'?' | b'(' | b'[')).count() > 4
+}
+
 /// Different linked records one expression may read through `links` (docs/builder/decisions.md BD-14).
 pub const MAX_LINKS: usize = 5;
 
@@ -41,6 +54,8 @@ pub struct Expr {
     uses: Arc<[&'static str]>,
     /// The settings it reads as `settings.<Entity>.<field>` (BD-17), each once, in the order written.
     settings: Arc<[(String, String)]>,
+    /// It nests enough to run on a stack of its own ([`deep`]).
+    heavy: bool,
 }
 
 impl fmt::Debug for Expr {
@@ -81,6 +96,12 @@ impl Expr {
         if source.chars().filter(|c| "+-*/%<>=!&|?".contains(*c)).count() > MAX_OPERATORS {
             return Err(format!("expression holds more than {MAX_OPERATORS} operators: split it"));
         }
+        let heavy = nests(source);
+        deep(heavy, || Expr::compiled(source, heavy))
+    }
+
+    /// [`Expr::compile`] past its limits: parsed, and what it reads worked out (both recurse over the tree).
+    fn compiled(source: &str, heavy: bool) -> Result<Expr, String> {
         let program = ENV.compile(source).map_err(|e| e.to_string())?;
         let mut links = Vec::new();
         link_names(program.expression(), &mut links)?;
@@ -92,7 +113,7 @@ impl Expr {
         let refs = program.references();
         let (reads_old, reads_parent) = (refs.has_variable("old"), refs.has_variable("parent"));
         let uses = expr_fns::NAMES.iter().copied().filter(|n| refs.has_function(n)).collect();
-        Ok(Expr { source: source.into(), program: Arc::new(program), links: links.into(), reads_old, reads_parent, uses, settings: settings.into() })
+        Ok(Expr { source: source.into(), program: Arc::new(program), links: links.into(), reads_old, reads_parent, uses, settings: settings.into(), heavy })
     }
 
     pub fn source(&self) -> &str {
@@ -172,7 +193,7 @@ impl Expr {
         for (name, v) in bound {
             ctx.add_variable_from_value(name.to_string(), json_to_cel(v));
         }
-        let out = self.program.execute(&ctx).map_err(|e| e.to_string())?;
+        let out = deep(self.heavy, || self.program.execute(&ctx)).map_err(|e| e.to_string())?;
         Ok(cel_to_json(&out))
     }
 
@@ -333,6 +354,38 @@ mod tests {
 
     fn scope<'a>(doc: &'a Value, user: &'a Value) -> Scope<'a> {
         Scope { doc, old: None, parent: None, user }
+    }
+
+    #[test]
+    fn nested_expressions_compile_and_run_on_a_small_stack() {
+        // A description's result picking among a dozen answers, on a thread the size of a server's worker (2 MiB),
+        // which overflowed before (13 November 2026); and the deepest nesting the limits allow.
+        let dozen = (0..12).fold("'none'".to_string(), |rest, i| format!("doc.a{i} != null ? string(doc.a{i}) : ({rest})"));
+        let deepest = format!("{}1{}", "(".repeat(MAX_NESTING), ")".repeat(MAX_NESTING));
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || {
+                let e = Expr::compile(&dozen).unwrap();
+                let mut doc: serde_json::Map<String, serde_json::Value> = (0..12).map(|i| (format!("a{i}"), json!(null))).collect();
+                doc.insert("a7".into(), json!(7));
+                let doc = serde_json::Value::Object(doc);
+                assert_eq!(e.eval(&Scope { doc: &doc, old: None, parent: None, user: &json!({}) }).unwrap(), json!("7"));
+                Expr::compile(&deepest).unwrap();
+            })
+            .unwrap()
+            .join()
+            .expect("no overflow");
+    }
+
+    #[test]
+    fn lists_sort_into_a_stable_order() {
+        let doc = json!({"types": {"post": {"slug": "post"}, "page": {"slug": "page"}, "book": {"slug": "book"}}, "n": [3, 1, 2]});
+        let run = |e: &str| Expr::compile(e).unwrap().eval(&Scope { doc: &doc, old: None, parent: None, user: &json!({}) }).unwrap();
+        for _ in 0..5 {
+            assert_eq!(run("sortBy(doc.types.map(k, doc.types[k]), 'slug').map(t, t.slug)"), json!(["book", "page", "post"]));
+            assert_eq!(run("sort(doc.types.map(k, k))"), json!(["book", "page", "post"]));
+        }
+        assert_eq!(run("doc.n.sort()"), json!([1, 2, 3]));
     }
 
     #[test]

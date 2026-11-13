@@ -1,0 +1,1025 @@
+{
+  "base": "https://api.telegram.org",
+  "auth": {
+    "type": "none"
+  },
+  "apps": [
+    "social"
+  ],
+  "allowed_hosts": [
+    "api.telegram.org"
+  ],
+  "timeout_ms": 60000,
+  "limit": {
+    "per": 30,
+    "every": 1,
+    "concurrent": 2
+  },
+  "meta": {
+    "carries": {
+      "network": "Telegram",
+      "provider": "telegram"
+    },
+    "social": {
+      "name": "Telegram",
+      "text": {
+        "max": 4096,
+        "count": "characters",
+        "format": "html"
+      },
+      "media": {
+        "kinds": [
+          "image",
+          "video",
+          "document",
+          "file"
+        ],
+        "max": 9,
+        "mixes": [
+          {
+            "image": 9,
+            "video": 9
+          },
+          {
+            "document": 9
+          },
+          {
+            "file": 9
+          }
+        ],
+        "image": {
+          "max_bytes": 10485760
+        },
+        "video": {
+          "max_bytes": 26214400
+        },
+        "document": {
+          "max_bytes": 26214400
+        },
+        "other": {
+          "file": {
+            "max_bytes": 26214400
+          }
+        }
+      },
+      "kinds": [
+        {
+          "name": "message",
+          "label": "Message",
+          "media": {
+            "kinds": []
+          }
+        },
+        {
+          "name": "media",
+          "label": "Photos, video or files",
+          "text": {
+            "max": 1024,
+            "count": "characters",
+            "format": "html"
+          },
+          "media": {
+            "kinds": [
+              "image",
+              "video",
+              "document",
+              "file"
+            ],
+            "max": 9,
+            "mixes": [
+              {
+                "image": 9,
+                "video": 9
+              },
+              {
+                "document": 9
+              },
+              {
+                "file": 9
+              }
+            ],
+            "image": {
+              "max_bytes": 10485760
+            },
+            "video": {
+              "max_bytes": 26214400
+            },
+            "document": {
+              "max_bytes": 26214400
+            },
+            "other": {
+              "file": {
+                "max_bytes": 26214400
+              }
+            },
+            "required": true,
+            "min": 1
+          }
+        }
+      ],
+      "follow_ups": {
+        "as": "thread",
+        "media": false,
+        "max": 20
+      },
+      "link_preview": true,
+      "accounts": {
+        "operation": "accounts",
+        "items_at": "/result",
+        "value_at": "/my_chat_member/chat/id",
+        "label_at": "/my_chat_member/chat/title",
+        "handle_at": "/my_chat_member/chat/username",
+        "kind_at": "/my_chat_member/chat/type"
+      },
+      "kind_by_media": {
+        "none": "message",
+        "image": "media",
+        "video": "media",
+        "document": "media"
+      }
+    }
+  },
+  "operations": {
+    "get_me": {
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/getMe",
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ]
+    },
+    "accounts": {
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/getUpdates",
+      "query": {
+        "allowed_updates": "[\"my_chat_member\"]"
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ]
+    },
+    "get_chat": {
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/getChat",
+      "query": {
+        "chat_id": "{{ inputs.chat_id }}"
+      },
+      "result": {
+        "title": "/result/title",
+        "username": "/result/username"
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id"
+      ]
+    },
+    "get_count": {
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/getChatMemberCount",
+      "query": {
+        "chat_id": "{{ inputs.chat_id }}"
+      },
+      "result": {
+        "count": "/result"
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id"
+      ]
+    },
+    "account": {
+      "inputs": [
+        "account_id"
+      ],
+      "changes": false,
+      "steps": [
+        {
+          "name": "chat",
+          "operation": "get_chat",
+          "inputs": {
+            "chat_id": "inputs.account_id"
+          }
+        },
+        {
+          "name": "members",
+          "operation": "get_count",
+          "inputs": {
+            "chat_id": "inputs.account_id"
+          }
+        }
+      ],
+      "result": {
+        "name": "/chat/title",
+        "handle": "/chat/username",
+        "followers": "/members/count"
+      }
+    },
+    "send_message": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendMessage",
+      "body": "{\"chat_id\": {{ inputs.chat_id | json }}, \"text\": {{ inputs.text | json }}, \"parse_mode\": \"HTML\"{% if inputs.reply_to %}, \"reply_parameters\": {\"message_id\": {{ inputs.reply_to | int | json }}, \"allow_sending_without_reply\": true}{% endif %}}",
+      "result": {
+        "message_id": "/result/message_id"
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "text",
+        "reply_to"
+      ]
+    },
+    "send_photo": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendPhoto",
+      "form": {
+        "chat_id": "{{ inputs.chat_id }}",
+        "caption": "{{ inputs.caption }}",
+        "parse_mode": "HTML",
+        "photo": {
+          "file": "{{ inputs.file }}",
+          "max_bytes": 10485760
+        }
+      },
+      "result": {
+        "message_id": "/result/message_id"
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "caption",
+        "file"
+      ]
+    },
+    "send_video": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendVideo",
+      "form": {
+        "chat_id": "{{ inputs.chat_id }}",
+        "caption": "{{ inputs.caption }}",
+        "parse_mode": "HTML",
+        "video": {
+          "file": "{{ inputs.file }}",
+          "max_bytes": 26214400
+        },
+        "supports_streaming": "true"
+      },
+      "result": {
+        "message_id": "/result/message_id"
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "caption",
+        "file"
+      ]
+    },
+    "send_document": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendDocument",
+      "form": {
+        "chat_id": "{{ inputs.chat_id }}",
+        "caption": "{{ inputs.caption }}",
+        "parse_mode": "HTML",
+        "document": {
+          "file": "{{ inputs.file }}",
+          "max_bytes": 26214400
+        }
+      },
+      "result": {
+        "message_id": "/result/message_id"
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "caption",
+        "file"
+      ]
+    },
+    "delete": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/deleteMessages",
+      "body": "{\"chat_id\": {{ inputs.id | split(':') | first | json }}, \"message_ids\": {{ inputs.id | split(':') | last | split(',') | map('int') | list | json }}}",
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "id"
+      ]
+    },
+    "send_album_2": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendMediaGroup",
+      "form": {
+        "chat_id": "{{ inputs.chat_id }}",
+        "media": "[{\"type\": {{ inputs.t0 | json }}, \"media\": \"attach://f0\", \"caption\": {{ inputs.caption | json }}, \"parse_mode\": \"HTML\"},{\"type\": {{ inputs.t1 | json }}, \"media\": \"attach://f1\"}]",
+        "f0": {
+          "file": "{{ inputs.f0 }}",
+          "max_bytes": 26214400
+        },
+        "f1": {
+          "file": "{{ inputs.f1 }}",
+          "max_bytes": 26214400
+        }
+      },
+      "result": {
+        "ids": {
+          "expr": "answer.result.map(m, string(m.message_id))"
+        }
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "caption",
+        "t0",
+        "t1",
+        "f0",
+        "f1"
+      ]
+    },
+    "send_album_3": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendMediaGroup",
+      "form": {
+        "chat_id": "{{ inputs.chat_id }}",
+        "media": "[{\"type\": {{ inputs.t0 | json }}, \"media\": \"attach://f0\", \"caption\": {{ inputs.caption | json }}, \"parse_mode\": \"HTML\"},{\"type\": {{ inputs.t1 | json }}, \"media\": \"attach://f1\"},{\"type\": {{ inputs.t2 | json }}, \"media\": \"attach://f2\"}]",
+        "f0": {
+          "file": "{{ inputs.f0 }}",
+          "max_bytes": 26214400
+        },
+        "f1": {
+          "file": "{{ inputs.f1 }}",
+          "max_bytes": 26214400
+        },
+        "f2": {
+          "file": "{{ inputs.f2 }}",
+          "max_bytes": 26214400
+        }
+      },
+      "result": {
+        "ids": {
+          "expr": "answer.result.map(m, string(m.message_id))"
+        }
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "caption",
+        "t0",
+        "t1",
+        "t2",
+        "f0",
+        "f1",
+        "f2"
+      ]
+    },
+    "send_album_4": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendMediaGroup",
+      "form": {
+        "chat_id": "{{ inputs.chat_id }}",
+        "media": "[{\"type\": {{ inputs.t0 | json }}, \"media\": \"attach://f0\", \"caption\": {{ inputs.caption | json }}, \"parse_mode\": \"HTML\"},{\"type\": {{ inputs.t1 | json }}, \"media\": \"attach://f1\"},{\"type\": {{ inputs.t2 | json }}, \"media\": \"attach://f2\"},{\"type\": {{ inputs.t3 | json }}, \"media\": \"attach://f3\"}]",
+        "f0": {
+          "file": "{{ inputs.f0 }}",
+          "max_bytes": 26214400
+        },
+        "f1": {
+          "file": "{{ inputs.f1 }}",
+          "max_bytes": 26214400
+        },
+        "f2": {
+          "file": "{{ inputs.f2 }}",
+          "max_bytes": 26214400
+        },
+        "f3": {
+          "file": "{{ inputs.f3 }}",
+          "max_bytes": 26214400
+        }
+      },
+      "result": {
+        "ids": {
+          "expr": "answer.result.map(m, string(m.message_id))"
+        }
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "caption",
+        "t0",
+        "t1",
+        "t2",
+        "t3",
+        "f0",
+        "f1",
+        "f2",
+        "f3"
+      ]
+    },
+    "send_album_5": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendMediaGroup",
+      "form": {
+        "chat_id": "{{ inputs.chat_id }}",
+        "media": "[{\"type\": {{ inputs.t0 | json }}, \"media\": \"attach://f0\", \"caption\": {{ inputs.caption | json }}, \"parse_mode\": \"HTML\"},{\"type\": {{ inputs.t1 | json }}, \"media\": \"attach://f1\"},{\"type\": {{ inputs.t2 | json }}, \"media\": \"attach://f2\"},{\"type\": {{ inputs.t3 | json }}, \"media\": \"attach://f3\"},{\"type\": {{ inputs.t4 | json }}, \"media\": \"attach://f4\"}]",
+        "f0": {
+          "file": "{{ inputs.f0 }}",
+          "max_bytes": 26214400
+        },
+        "f1": {
+          "file": "{{ inputs.f1 }}",
+          "max_bytes": 26214400
+        },
+        "f2": {
+          "file": "{{ inputs.f2 }}",
+          "max_bytes": 26214400
+        },
+        "f3": {
+          "file": "{{ inputs.f3 }}",
+          "max_bytes": 26214400
+        },
+        "f4": {
+          "file": "{{ inputs.f4 }}",
+          "max_bytes": 26214400
+        }
+      },
+      "result": {
+        "ids": {
+          "expr": "answer.result.map(m, string(m.message_id))"
+        }
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "caption",
+        "t0",
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "f0",
+        "f1",
+        "f2",
+        "f3",
+        "f4"
+      ]
+    },
+    "send_album_6": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendMediaGroup",
+      "form": {
+        "chat_id": "{{ inputs.chat_id }}",
+        "media": "[{\"type\": {{ inputs.t0 | json }}, \"media\": \"attach://f0\", \"caption\": {{ inputs.caption | json }}, \"parse_mode\": \"HTML\"},{\"type\": {{ inputs.t1 | json }}, \"media\": \"attach://f1\"},{\"type\": {{ inputs.t2 | json }}, \"media\": \"attach://f2\"},{\"type\": {{ inputs.t3 | json }}, \"media\": \"attach://f3\"},{\"type\": {{ inputs.t4 | json }}, \"media\": \"attach://f4\"},{\"type\": {{ inputs.t5 | json }}, \"media\": \"attach://f5\"}]",
+        "f0": {
+          "file": "{{ inputs.f0 }}",
+          "max_bytes": 26214400
+        },
+        "f1": {
+          "file": "{{ inputs.f1 }}",
+          "max_bytes": 26214400
+        },
+        "f2": {
+          "file": "{{ inputs.f2 }}",
+          "max_bytes": 26214400
+        },
+        "f3": {
+          "file": "{{ inputs.f3 }}",
+          "max_bytes": 26214400
+        },
+        "f4": {
+          "file": "{{ inputs.f4 }}",
+          "max_bytes": 26214400
+        },
+        "f5": {
+          "file": "{{ inputs.f5 }}",
+          "max_bytes": 26214400
+        }
+      },
+      "result": {
+        "ids": {
+          "expr": "answer.result.map(m, string(m.message_id))"
+        }
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "caption",
+        "t0",
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5",
+        "f0",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5"
+      ]
+    },
+    "send_album_7": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendMediaGroup",
+      "form": {
+        "chat_id": "{{ inputs.chat_id }}",
+        "media": "[{\"type\": {{ inputs.t0 | json }}, \"media\": \"attach://f0\", \"caption\": {{ inputs.caption | json }}, \"parse_mode\": \"HTML\"},{\"type\": {{ inputs.t1 | json }}, \"media\": \"attach://f1\"},{\"type\": {{ inputs.t2 | json }}, \"media\": \"attach://f2\"},{\"type\": {{ inputs.t3 | json }}, \"media\": \"attach://f3\"},{\"type\": {{ inputs.t4 | json }}, \"media\": \"attach://f4\"},{\"type\": {{ inputs.t5 | json }}, \"media\": \"attach://f5\"},{\"type\": {{ inputs.t6 | json }}, \"media\": \"attach://f6\"}]",
+        "f0": {
+          "file": "{{ inputs.f0 }}",
+          "max_bytes": 26214400
+        },
+        "f1": {
+          "file": "{{ inputs.f1 }}",
+          "max_bytes": 26214400
+        },
+        "f2": {
+          "file": "{{ inputs.f2 }}",
+          "max_bytes": 26214400
+        },
+        "f3": {
+          "file": "{{ inputs.f3 }}",
+          "max_bytes": 26214400
+        },
+        "f4": {
+          "file": "{{ inputs.f4 }}",
+          "max_bytes": 26214400
+        },
+        "f5": {
+          "file": "{{ inputs.f5 }}",
+          "max_bytes": 26214400
+        },
+        "f6": {
+          "file": "{{ inputs.f6 }}",
+          "max_bytes": 26214400
+        }
+      },
+      "result": {
+        "ids": {
+          "expr": "answer.result.map(m, string(m.message_id))"
+        }
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "caption",
+        "t0",
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5",
+        "t6",
+        "f0",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6"
+      ]
+    },
+    "send_album_8": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendMediaGroup",
+      "form": {
+        "chat_id": "{{ inputs.chat_id }}",
+        "media": "[{\"type\": {{ inputs.t0 | json }}, \"media\": \"attach://f0\", \"caption\": {{ inputs.caption | json }}, \"parse_mode\": \"HTML\"},{\"type\": {{ inputs.t1 | json }}, \"media\": \"attach://f1\"},{\"type\": {{ inputs.t2 | json }}, \"media\": \"attach://f2\"},{\"type\": {{ inputs.t3 | json }}, \"media\": \"attach://f3\"},{\"type\": {{ inputs.t4 | json }}, \"media\": \"attach://f4\"},{\"type\": {{ inputs.t5 | json }}, \"media\": \"attach://f5\"},{\"type\": {{ inputs.t6 | json }}, \"media\": \"attach://f6\"},{\"type\": {{ inputs.t7 | json }}, \"media\": \"attach://f7\"}]",
+        "f0": {
+          "file": "{{ inputs.f0 }}",
+          "max_bytes": 26214400
+        },
+        "f1": {
+          "file": "{{ inputs.f1 }}",
+          "max_bytes": 26214400
+        },
+        "f2": {
+          "file": "{{ inputs.f2 }}",
+          "max_bytes": 26214400
+        },
+        "f3": {
+          "file": "{{ inputs.f3 }}",
+          "max_bytes": 26214400
+        },
+        "f4": {
+          "file": "{{ inputs.f4 }}",
+          "max_bytes": 26214400
+        },
+        "f5": {
+          "file": "{{ inputs.f5 }}",
+          "max_bytes": 26214400
+        },
+        "f6": {
+          "file": "{{ inputs.f6 }}",
+          "max_bytes": 26214400
+        },
+        "f7": {
+          "file": "{{ inputs.f7 }}",
+          "max_bytes": 26214400
+        }
+      },
+      "result": {
+        "ids": {
+          "expr": "answer.result.map(m, string(m.message_id))"
+        }
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "caption",
+        "t0",
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5",
+        "t6",
+        "t7",
+        "f0",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6",
+        "f7"
+      ]
+    },
+    "send_album_9": {
+      "method": "POST",
+      "url": "https://api.telegram.org/bot{{ secret.bot_token }}/sendMediaGroup",
+      "form": {
+        "chat_id": "{{ inputs.chat_id }}",
+        "media": "[{\"type\": {{ inputs.t0 | json }}, \"media\": \"attach://f0\", \"caption\": {{ inputs.caption | json }}, \"parse_mode\": \"HTML\"},{\"type\": {{ inputs.t1 | json }}, \"media\": \"attach://f1\"},{\"type\": {{ inputs.t2 | json }}, \"media\": \"attach://f2\"},{\"type\": {{ inputs.t3 | json }}, \"media\": \"attach://f3\"},{\"type\": {{ inputs.t4 | json }}, \"media\": \"attach://f4\"},{\"type\": {{ inputs.t5 | json }}, \"media\": \"attach://f5\"},{\"type\": {{ inputs.t6 | json }}, \"media\": \"attach://f6\"},{\"type\": {{ inputs.t7 | json }}, \"media\": \"attach://f7\"},{\"type\": {{ inputs.t8 | json }}, \"media\": \"attach://f8\"}]",
+        "f0": {
+          "file": "{{ inputs.f0 }}",
+          "max_bytes": 26214400
+        },
+        "f1": {
+          "file": "{{ inputs.f1 }}",
+          "max_bytes": 26214400
+        },
+        "f2": {
+          "file": "{{ inputs.f2 }}",
+          "max_bytes": 26214400
+        },
+        "f3": {
+          "file": "{{ inputs.f3 }}",
+          "max_bytes": 26214400
+        },
+        "f4": {
+          "file": "{{ inputs.f4 }}",
+          "max_bytes": 26214400
+        },
+        "f5": {
+          "file": "{{ inputs.f5 }}",
+          "max_bytes": 26214400
+        },
+        "f6": {
+          "file": "{{ inputs.f6 }}",
+          "max_bytes": 26214400
+        },
+        "f7": {
+          "file": "{{ inputs.f7 }}",
+          "max_bytes": 26214400
+        },
+        "f8": {
+          "file": "{{ inputs.f8 }}",
+          "max_bytes": 26214400
+        }
+      },
+      "result": {
+        "ids": {
+          "expr": "answer.result.map(m, string(m.message_id))"
+        }
+      },
+      "error_at": "/description",
+      "temporary": [
+        429,
+        500,
+        502,
+        504
+      ],
+      "inputs": [
+        "chat_id",
+        "caption",
+        "t0",
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5",
+        "t6",
+        "t7",
+        "t8",
+        "f0",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6",
+        "f7",
+        "f8"
+      ]
+    },
+    "publish": {
+      "inputs": [
+        "account_id",
+        "text_with_link",
+        "media",
+        "media_items",
+        "reply_to"
+      ],
+      "steps": [
+        {
+          "name": "text",
+          "operation": "send_message",
+          "when": "not inputs.media_items",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "text": "inputs.text_with_link",
+            "reply_to": "(inputs.reply_to | split(':') | last | split(',') | first) if inputs.reply_to else none"
+          }
+        },
+        {
+          "name": "photo",
+          "operation": "send_photo",
+          "when": "inputs.media_items | length == 1 and inputs.media_items[0].kind == 'image'",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "file": "inputs.media_items[0].file",
+            "caption": "inputs.text_with_link"
+          }
+        },
+        {
+          "name": "video",
+          "operation": "send_video",
+          "when": "inputs.media_items | length == 1 and inputs.media_items[0].kind == 'video'",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "file": "inputs.media_items[0].file",
+            "caption": "inputs.text_with_link"
+          }
+        },
+        {
+          "name": "document",
+          "operation": "send_document",
+          "when": "inputs.media_items | length == 1 and inputs.media_items[0].kind in ['document', 'file']",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "file": "inputs.media_items[0].file",
+            "caption": "inputs.text_with_link"
+          }
+        },
+        {
+          "name": "album_2",
+          "operation": "send_album_2",
+          "when": "inputs.media_items | length == 2",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "caption": "inputs.text_with_link",
+            "t0": "'photo' if inputs.media_items[0].kind == 'image' else ('video' if inputs.media_items[0].kind == 'video' else 'document')",
+            "f0": "inputs.media_items[0].file",
+            "t1": "'photo' if inputs.media_items[1].kind == 'image' else ('video' if inputs.media_items[1].kind == 'video' else 'document')",
+            "f1": "inputs.media_items[1].file"
+          }
+        },
+        {
+          "name": "album_3",
+          "operation": "send_album_3",
+          "when": "inputs.media_items | length == 3",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "caption": "inputs.text_with_link",
+            "t0": "'photo' if inputs.media_items[0].kind == 'image' else ('video' if inputs.media_items[0].kind == 'video' else 'document')",
+            "f0": "inputs.media_items[0].file",
+            "t1": "'photo' if inputs.media_items[1].kind == 'image' else ('video' if inputs.media_items[1].kind == 'video' else 'document')",
+            "f1": "inputs.media_items[1].file",
+            "t2": "'photo' if inputs.media_items[2].kind == 'image' else ('video' if inputs.media_items[2].kind == 'video' else 'document')",
+            "f2": "inputs.media_items[2].file"
+          }
+        },
+        {
+          "name": "album_4",
+          "operation": "send_album_4",
+          "when": "inputs.media_items | length == 4",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "caption": "inputs.text_with_link",
+            "t0": "'photo' if inputs.media_items[0].kind == 'image' else ('video' if inputs.media_items[0].kind == 'video' else 'document')",
+            "f0": "inputs.media_items[0].file",
+            "t1": "'photo' if inputs.media_items[1].kind == 'image' else ('video' if inputs.media_items[1].kind == 'video' else 'document')",
+            "f1": "inputs.media_items[1].file",
+            "t2": "'photo' if inputs.media_items[2].kind == 'image' else ('video' if inputs.media_items[2].kind == 'video' else 'document')",
+            "f2": "inputs.media_items[2].file",
+            "t3": "'photo' if inputs.media_items[3].kind == 'image' else ('video' if inputs.media_items[3].kind == 'video' else 'document')",
+            "f3": "inputs.media_items[3].file"
+          }
+        },
+        {
+          "name": "album_5",
+          "operation": "send_album_5",
+          "when": "inputs.media_items | length == 5",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "caption": "inputs.text_with_link",
+            "t0": "'photo' if inputs.media_items[0].kind == 'image' else ('video' if inputs.media_items[0].kind == 'video' else 'document')",
+            "f0": "inputs.media_items[0].file",
+            "t1": "'photo' if inputs.media_items[1].kind == 'image' else ('video' if inputs.media_items[1].kind == 'video' else 'document')",
+            "f1": "inputs.media_items[1].file",
+            "t2": "'photo' if inputs.media_items[2].kind == 'image' else ('video' if inputs.media_items[2].kind == 'video' else 'document')",
+            "f2": "inputs.media_items[2].file",
+            "t3": "'photo' if inputs.media_items[3].kind == 'image' else ('video' if inputs.media_items[3].kind == 'video' else 'document')",
+            "f3": "inputs.media_items[3].file",
+            "t4": "'photo' if inputs.media_items[4].kind == 'image' else ('video' if inputs.media_items[4].kind == 'video' else 'document')",
+            "f4": "inputs.media_items[4].file"
+          }
+        },
+        {
+          "name": "album_6",
+          "operation": "send_album_6",
+          "when": "inputs.media_items | length == 6",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "caption": "inputs.text_with_link",
+            "t0": "'photo' if inputs.media_items[0].kind == 'image' else ('video' if inputs.media_items[0].kind == 'video' else 'document')",
+            "f0": "inputs.media_items[0].file",
+            "t1": "'photo' if inputs.media_items[1].kind == 'image' else ('video' if inputs.media_items[1].kind == 'video' else 'document')",
+            "f1": "inputs.media_items[1].file",
+            "t2": "'photo' if inputs.media_items[2].kind == 'image' else ('video' if inputs.media_items[2].kind == 'video' else 'document')",
+            "f2": "inputs.media_items[2].file",
+            "t3": "'photo' if inputs.media_items[3].kind == 'image' else ('video' if inputs.media_items[3].kind == 'video' else 'document')",
+            "f3": "inputs.media_items[3].file",
+            "t4": "'photo' if inputs.media_items[4].kind == 'image' else ('video' if inputs.media_items[4].kind == 'video' else 'document')",
+            "f4": "inputs.media_items[4].file",
+            "t5": "'photo' if inputs.media_items[5].kind == 'image' else ('video' if inputs.media_items[5].kind == 'video' else 'document')",
+            "f5": "inputs.media_items[5].file"
+          }
+        },
+        {
+          "name": "album_7",
+          "operation": "send_album_7",
+          "when": "inputs.media_items | length == 7",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "caption": "inputs.text_with_link",
+            "t0": "'photo' if inputs.media_items[0].kind == 'image' else ('video' if inputs.media_items[0].kind == 'video' else 'document')",
+            "f0": "inputs.media_items[0].file",
+            "t1": "'photo' if inputs.media_items[1].kind == 'image' else ('video' if inputs.media_items[1].kind == 'video' else 'document')",
+            "f1": "inputs.media_items[1].file",
+            "t2": "'photo' if inputs.media_items[2].kind == 'image' else ('video' if inputs.media_items[2].kind == 'video' else 'document')",
+            "f2": "inputs.media_items[2].file",
+            "t3": "'photo' if inputs.media_items[3].kind == 'image' else ('video' if inputs.media_items[3].kind == 'video' else 'document')",
+            "f3": "inputs.media_items[3].file",
+            "t4": "'photo' if inputs.media_items[4].kind == 'image' else ('video' if inputs.media_items[4].kind == 'video' else 'document')",
+            "f4": "inputs.media_items[4].file",
+            "t5": "'photo' if inputs.media_items[5].kind == 'image' else ('video' if inputs.media_items[5].kind == 'video' else 'document')",
+            "f5": "inputs.media_items[5].file",
+            "t6": "'photo' if inputs.media_items[6].kind == 'image' else ('video' if inputs.media_items[6].kind == 'video' else 'document')",
+            "f6": "inputs.media_items[6].file"
+          }
+        },
+        {
+          "name": "album_8",
+          "operation": "send_album_8",
+          "when": "inputs.media_items | length == 8",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "caption": "inputs.text_with_link",
+            "t0": "'photo' if inputs.media_items[0].kind == 'image' else ('video' if inputs.media_items[0].kind == 'video' else 'document')",
+            "f0": "inputs.media_items[0].file",
+            "t1": "'photo' if inputs.media_items[1].kind == 'image' else ('video' if inputs.media_items[1].kind == 'video' else 'document')",
+            "f1": "inputs.media_items[1].file",
+            "t2": "'photo' if inputs.media_items[2].kind == 'image' else ('video' if inputs.media_items[2].kind == 'video' else 'document')",
+            "f2": "inputs.media_items[2].file",
+            "t3": "'photo' if inputs.media_items[3].kind == 'image' else ('video' if inputs.media_items[3].kind == 'video' else 'document')",
+            "f3": "inputs.media_items[3].file",
+            "t4": "'photo' if inputs.media_items[4].kind == 'image' else ('video' if inputs.media_items[4].kind == 'video' else 'document')",
+            "f4": "inputs.media_items[4].file",
+            "t5": "'photo' if inputs.media_items[5].kind == 'image' else ('video' if inputs.media_items[5].kind == 'video' else 'document')",
+            "f5": "inputs.media_items[5].file",
+            "t6": "'photo' if inputs.media_items[6].kind == 'image' else ('video' if inputs.media_items[6].kind == 'video' else 'document')",
+            "f6": "inputs.media_items[6].file",
+            "t7": "'photo' if inputs.media_items[7].kind == 'image' else ('video' if inputs.media_items[7].kind == 'video' else 'document')",
+            "f7": "inputs.media_items[7].file"
+          }
+        },
+        {
+          "name": "album_9",
+          "operation": "send_album_9",
+          "when": "inputs.media_items | length == 9",
+          "inputs": {
+            "chat_id": "inputs.account_id",
+            "caption": "inputs.text_with_link",
+            "t0": "'photo' if inputs.media_items[0].kind == 'image' else ('video' if inputs.media_items[0].kind == 'video' else 'document')",
+            "f0": "inputs.media_items[0].file",
+            "t1": "'photo' if inputs.media_items[1].kind == 'image' else ('video' if inputs.media_items[1].kind == 'video' else 'document')",
+            "f1": "inputs.media_items[1].file",
+            "t2": "'photo' if inputs.media_items[2].kind == 'image' else ('video' if inputs.media_items[2].kind == 'video' else 'document')",
+            "f2": "inputs.media_items[2].file",
+            "t3": "'photo' if inputs.media_items[3].kind == 'image' else ('video' if inputs.media_items[3].kind == 'video' else 'document')",
+            "f3": "inputs.media_items[3].file",
+            "t4": "'photo' if inputs.media_items[4].kind == 'image' else ('video' if inputs.media_items[4].kind == 'video' else 'document')",
+            "f4": "inputs.media_items[4].file",
+            "t5": "'photo' if inputs.media_items[5].kind == 'image' else ('video' if inputs.media_items[5].kind == 'video' else 'document')",
+            "f5": "inputs.media_items[5].file",
+            "t6": "'photo' if inputs.media_items[6].kind == 'image' else ('video' if inputs.media_items[6].kind == 'video' else 'document')",
+            "f6": "inputs.media_items[6].file",
+            "t7": "'photo' if inputs.media_items[7].kind == 'image' else ('video' if inputs.media_items[7].kind == 'video' else 'document')",
+            "f7": "inputs.media_items[7].file",
+            "t8": "'photo' if inputs.media_items[8].kind == 'image' else ('video' if inputs.media_items[8].kind == 'video' else 'document')",
+            "f8": "inputs.media_items[8].file"
+          }
+        }
+      ],
+      "result": {
+        "id": {
+          "expr": "concat(inputs.account_id, ':', answer.text != null ? string(answer.text.message_id) : (answer.photo != null ? string(answer.photo.message_id) : (answer.video != null ? string(answer.video.message_id) : (answer.document != null ? string(answer.document.message_id) : (answer.album_2 != null ? answer.album_2.ids.join(',') : (answer.album_3 != null ? answer.album_3.ids.join(',') : (answer.album_4 != null ? answer.album_4.ids.join(',') : (answer.album_5 != null ? answer.album_5.ids.join(',') : (answer.album_6 != null ? answer.album_6.ids.join(',') : (answer.album_7 != null ? answer.album_7.ids.join(',') : (answer.album_8 != null ? answer.album_8.ids.join(',') : (answer.album_9 != null ? answer.album_9.ids.join(',') : ('')))))))))))))"
+        }
+      }
+    }
+  }
+}

@@ -37,6 +37,7 @@ mod fns;
 pub mod inbound;
 pub mod oauth;
 pub(crate) mod personal;
+pub mod public;
 pub mod pull;
 pub mod steps;
 
@@ -54,6 +55,8 @@ pub(crate) const MAX_RETRY_AFTER: u64 = 3600;
 /// sends of files, at most 25 MB in all.
 const DEFAULT_FILE_BYTES: u64 = 10 << 20;
 pub(crate) const MAX_FILE_BYTES: u64 = 25 << 20;
+/// The most a file part may declare (BD-71): sent only up to the server's ceiling (`FERRUM_CONNECTION_UPLOAD_MB`).
+const DECLARED_FILE_BYTES: u64 = 1 << 30;
 /// The statuses that mean "try again later", when a description says none.
 pub(crate) const TEMPORARY: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
 /// The longest a debug capture stays on, and how much of a body it keeps.
@@ -97,6 +100,10 @@ pub struct Description {
     /// Hosts besides the base's that calls (and redirects) may reach.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_hosts: Vec<String>,
+    /// Reads any public host (BD-65: a feed reader): only with no auth, no secrets and no template naming one, every
+    /// operation a GET; the guard otherwise as ever (https, public addresses pinned, each redirect checked again).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub any_host: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,6 +119,10 @@ pub struct Description {
     /// What it takes from outside, on its inbound address (BD-30).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound: Option<inbound::Inbound>,
+    /// The check a service makes of the inbound address before it delivers (BD-78): a GET whose challenge is echoed
+    /// when its verify token is the connection's secret. Beside `inbound`, which apps build in code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handshake: Option<inbound::Handshake>,
     /// Schedules that pull from it (BD-31).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pulls: Vec<pull::Pull>,
@@ -126,6 +137,16 @@ pub struct Description {
     /// What each operation says besides [`Operation`]'s own fields, by operation (written on the operation itself).
     #[serde(skip)]
     pub more: BTreeMap<String, More>,
+}
+
+impl Limit {
+    fn problem(&self) -> Option<String> {
+        let wrong = self.per.is_some() != self.every.is_some()
+            || self.per.is_some_and(|n| n == 0)
+            || self.every.is_some_and(|n| !(1..=86_400).contains(&n))
+            || self.concurrent.is_some_and(|n| !(1..=64).contains(&n));
+        wrong.then(|| "limit is {per, every} (calls, and seconds up to a day) and concurrent (1 to 64)".into())
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -143,7 +164,22 @@ pub struct Limit {
 const TURN_WAIT: Duration = Duration::from_secs(10);
 
 /// The keys of an operation that are [`More`]'s.
-const MORE: [&str; 7] = ["steps", "url", "success", "credentials", "form_fields", "answer", "lists"];
+const MORE: [&str; 14] = [
+    "steps",
+    "url",
+    "success",
+    "credentials",
+    "form_fields",
+    "answer",
+    "lists",
+    "public_files",
+    "refused_if",
+    "temporary_if",
+    "error",
+    "auth_scheme",
+    "limit",
+    "headers_from",
+];
 
 /// Read as derived, each operation's [`More`] keys taken apart first.
 impl<'de> Deserialize<'de> for Description {
@@ -212,6 +248,31 @@ pub struct More {
     /// In an XML answer, the elements that are always lists (`item`, `entry`), even when there is one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lists: Vec<String>,
+    /// Short-lived public addresses of stored files, for a service that pulls media by address (BD-64): templates (and
+    /// steps' inputs) read each as `public_files.<name>`. Made for calls only.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub public_files: BTreeMap<String, public::PublicFile>,
+    /// An expression over `answer`, `headers`, `status` and `inputs` saying a 2xx answer is a refusal (BD-68:
+    /// `has(answer.ok) && !answer.ok`, `has(answer.errors)`); `error_at` and `error` then read its words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused_if: Option<String>,
+    /// Among refusals (by status or by `refused_if`), an expression saying which are temporary ("later").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporary_if: Option<String>,
+    /// An expression giving a refusal's words (`answer.errors[0].message`), in place of `error_at`'s pointer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The scheme its token is sent under in `Authorization` in place of `Bearer` (`OAuth`, `Token`; empty: the token
+    /// alone), for a connection whose auth is a token (BD-73).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_scheme: Option<String>,
+    /// How much of the service this operation takes, besides the description's `limit` (BD-74): a tight one on posting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<Limit>,
+    /// A template giving more request headers as a JSON object, from an earlier answer (`{{ inputs.upload_headers |
+    /// json }}`, BD-76): for this operation's request only, never one that carries credentials, its values masked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers_from: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,7 +284,22 @@ pub enum AnswerKind {
     Text,
 }
 
-static NO_MORE: More = More { steps: Vec::new(), url: None, success: None, credentials: None, form_fields: None, answer: None, lists: Vec::new() };
+static NO_MORE: More = More {
+    steps: Vec::new(),
+    url: None,
+    success: None,
+    credentials: None,
+    form_fields: None,
+    answer: None,
+    lists: Vec::new(),
+    public_files: BTreeMap::new(),
+    refused_if: None,
+    temporary_if: None,
+    error: None,
+    auth_scheme: None,
+    limit: None,
+    headers_from: None,
+};
 
 impl More {
     fn problem(&self, op: &Operation) -> Option<String> {
@@ -232,6 +308,32 @@ impl More {
         }
         if self.success.as_ref().is_some_and(|s| s.iter().any(|c| !(100..=599).contains(c))) {
             return Some("success lists statuses, 100 to 599".into());
+        }
+        if let Some(p) = self.public_files.iter().find_map(|(n, p)| p.problem(n)) {
+            return Some(p);
+        }
+        if self.auth_scheme.as_deref().is_some_and(|s| s.len() > 30 || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))) {
+            return Some("auth_scheme is a word such as OAuth, or empty".into());
+        }
+        if let Some(l) = &self.limit
+            && let Some(p) = l.problem()
+        {
+            return Some(p);
+        }
+        if let Some(h) = &self.headers_from {
+            if ["secret", "auth.", "account."].iter().any(|w| h.contains(w)) {
+                return Some("headers_from gives an answer's headers, never the connection's secrets or sign-in".into());
+            }
+            if let Some(p) = template_problem(h) {
+                return Some(p);
+            }
+        }
+        if let Some(p) = [&self.refused_if, &self.temporary_if, &self.error]
+            .into_iter()
+            .flatten()
+            .find_map(|e| ferrum_meta::Expr::compile(e).err().map(|m| format!("'{e}': {m}")))
+        {
+            return Some(p);
         }
         self.url.iter().chain(self.form_fields.iter()).find_map(|t| template_problem(t))
     }
@@ -299,7 +401,21 @@ pub enum Auth {
         /// Fields of the login's answer kept with the tokens: `auth.<name>` (BD-61).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keep: Vec<String>,
+        /// Kept fields that are not secret (BD-77): a result may show them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        not_secret: Vec<String>,
     },
+}
+
+impl Auth {
+    /// What a sign-in keeps, and which of it is not secret (BD-77).
+    fn kept(&self) -> (&[String], &[String]) {
+        match self {
+            Auth::Oauth { provider, .. } => (&provider.keep, &provider.not_secret),
+            Auth::Session { keep, not_secret, .. } => (keep, not_secret),
+            _ => (&[], &[]),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -490,15 +606,26 @@ pub struct FilePart {
     /// Else its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
-    /// The largest it may be (10 MB, at most 25 MB).
+    /// The largest it may be: 10 MB unless said; more than 25 MB only as far as the server's ceiling
+    /// (`FERRUM_CONNECTION_UPLOAD_MB`, BD-71).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<u64>,
+    /// In a form, the part repeated for each item of a list (BD-75): an expression (`inputs.media`); `file`, `name` and
+    /// the part's own name, a template (`files[{{ index }}]`), read `item` and `index` (from 0). At most [`MAX_EACH`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub each: Option<String>,
 }
+
+/// The most parts one repeated part makes.
+const MAX_EACH: usize = 50;
 
 impl FilePart {
     fn problem(&self) -> Option<String> {
-        if self.max_bytes.is_some_and(|b| b == 0 || b > MAX_FILE_BYTES) {
-            return Some(format!("a file's max_bytes is 1 to {MAX_FILE_BYTES}"));
+        if let Some(p) = self.each.as_deref().and_then(steps::expression_problem) {
+            return Some(p);
+        }
+        if self.max_bytes.is_some_and(|b| b == 0 || b > DECLARED_FILE_BYTES) {
+            return Some(format!("a file part's max_bytes is 1 to {DECLARED_FILE_BYTES}"));
         }
         if self.content_type.as_deref().is_some_and(|c| c.parse::<reqwest::header::HeaderValue>().is_err() || !c.contains('/')) {
             return Some("a file's content_type is a media type".into());
@@ -632,9 +759,19 @@ impl Description {
     }
 
     /// Whether operation `name` changes something at the service (then it needs a key): unless it says, every method
-    /// but GET, and every operation of steps.
+    /// but GET, and an operation of steps when one of its steps' operations does (BD-69: one made only of reads reads).
     pub(crate) fn changes(&self, name: &str) -> bool {
-        self.operations.get(name).is_some_and(|op| op.changes.unwrap_or(!self.more(name).steps.is_empty() || op.method() != "GET"))
+        self.operations.get(name).is_some_and(|op| {
+            op.changes.unwrap_or_else(|| {
+                let steps = &self.more(name).steps;
+                if steps.is_empty() {
+                    op.method() != "GET"
+                } else {
+                    // A step names another operation, never one of steps (refused when saved).
+                    steps.iter().any(|s| s.operation == name || self.operations.get(&s.operation).is_none_or(|o| o.changes.unwrap_or(o.method() != "GET")))
+                }
+            })
+        })
     }
 
     /// Whether operation `name` is how the connection signs in (a session's login or refresh): never called as an
@@ -647,6 +784,32 @@ impl Description {
             }
             _ => false,
         }
+    }
+
+    /// Why it may not read any host (BD-65): credentials of any kind, or a request that is not a plain read.
+    fn any_host_problem(&self) -> Option<String> {
+        if !matches!(self.auth, Auth::None) {
+            return Some("a description that reads any host has no auth".into());
+        }
+        if self.inbound.is_some() {
+            return Some("a description that reads any host takes nothing in".into());
+        }
+        let said = serde_json::to_string(&self.headers).unwrap_or_default()
+            + &self
+                .operations
+                .iter()
+                .map(|(n, o)| serde_json::to_string(o).unwrap_or_default() + &serde_json::to_string(self.more(n)).unwrap_or_default())
+                .collect::<String>();
+        if ["secret.", "secret[", "auth.", "account."].iter().any(|w| said.contains(w)) {
+            return Some("a description that reads any host names no secret, sign-in or account".into());
+        }
+        if let Some((n, _)) = self.operations.iter().find(|(n, o)| {
+            let m = self.more(n);
+            (m.steps.is_empty() && o.method() != "GET") || o.body.is_some() || !o.form.is_empty() || m.form_fields.is_some() || !m.public_files.is_empty()
+        }) {
+            return Some(format!("{n}: a description that reads any host only reads (GET, nothing sent)"));
+        }
+        None
     }
 
     /// What is wrong with it, said plainly; `None` when it may be saved.
@@ -663,6 +826,28 @@ impl Description {
         if let Some(h) = self.allowed_hosts.iter().find(|h| h.is_empty() || h.contains(['/', ':', '@', ' '])) {
             return Some(format!("allowed_hosts: {h} is not a host name"));
         }
+        if self.any_host
+            && let Some(p) = self.any_host_problem()
+        {
+            return Some(format!("any_host: {p}"));
+        }
+        if let Some(h) = &self.handshake {
+            if self.inbound.is_none() {
+                return Some("handshake: there is no inbound address to check".into());
+            }
+            if let Some(p) = h.problem() {
+                return Some(p);
+            }
+        }
+        let (keep, plain) = self.auth.kept();
+        if plain.iter().any(|n| !keep.contains(n)) {
+            return Some("auth: not_secret names fields it keeps".into());
+        }
+        let token = matches!(&self.auth, Auth::Bearer { .. } | Auth::Session { header: None, .. })
+            || matches!(&self.auth, Auth::Oauth { provider, .. } if !provider.dpop);
+        if !token && let Some(n) = self.operations.keys().find(|n| self.more(n).auth_scheme.is_some()) {
+            return Some(format!("{n}: auth_scheme is for a connection whose auth is a token (bearer, oauth, a session's)"));
+        }
         if self.timeout_ms.is_some_and(|t| t == 0 || t > MAX_TIMEOUT_MS) {
             return Some(format!("timeout_ms is 1 to {MAX_TIMEOUT_MS}"));
         }
@@ -672,13 +857,8 @@ impl Description {
         if self.meta.as_ref().is_some_and(|m| !m.is_object() || m.to_string().len() > MAX_META) {
             return Some(format!("meta is an object of at most {MAX_META} bytes"));
         }
-        if let Some(l) = &self.limit
-            && (l.per.is_some() != l.every.is_some()
-                || l.per.is_some_and(|n| n == 0)
-                || l.every.is_some_and(|n| !(1..=86_400).contains(&n))
-                || l.concurrent.is_some_and(|n| !(1..=64).contains(&n)))
-        {
-            return Some("limit is {per, every} (calls, and seconds up to a day) and concurrent (1 to 64)".into());
+        if let Some(p) = self.limit.as_ref().and_then(Limit::problem) {
+            return Some(p);
         }
         if self.roles.iter().chain(&self.apps).any(|r| r.trim().is_empty()) {
             return Some("roles and apps are names".into());
@@ -837,6 +1017,8 @@ pub(crate) struct Request {
 #[derive(Debug, Clone)]
 pub(crate) struct Reach {
     pub hosts: Vec<String>,
+    /// Any host (a description's `any_host`): no list, the rest of the guard as ever.
+    pub any: bool,
     pub timeout: Duration,
     pub max_bytes: u64,
 }
@@ -882,6 +1064,12 @@ impl Answer {
 }
 
 impl Kernel {
+    /// What one request may send of stored files (BD-71): 25 MB, or more where the operator raised
+    /// `FERRUM_CONNECTION_UPLOAD_MB`.
+    pub(crate) fn upload_ceiling(&self) -> u64 {
+        self.settings.connection_upload_bytes.max(MAX_FILE_BYTES)
+    }
+
     /// Whether the operator named this host (`FERRUM_CONNECTION_HOSTS`): then a private address and plain http are
     /// allowed for it, and for it alone.
     fn operator_allows(&self, host: &str) -> bool {
@@ -891,7 +1079,7 @@ impl Kernel {
     /// A client for one hop to `url`, its addresses checked and pinned; no redirects of its own.
     async fn vet(&self, url: &reqwest::Url, reach: &Reach) -> Result<reqwest::Client> {
         let host = url.host_str().ok_or_else(|| Error::invalid("the address has no host"))?.trim_matches(['[', ']']).to_string();
-        if !reach.hosts.is_empty() && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
+        if !reach.any && !reach.hosts.is_empty() && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
             return Err(Error::invalid(format!("{host} is not one of the hosts this connection may reach")));
         }
         let open = self.settings.webhooks_allow_private || self.operator_allows(&host);
@@ -1009,10 +1197,21 @@ pub(crate) fn at(v: &Value, pointer: Option<&str>) -> Option<String> {
     }
 }
 
+/// The token in `Authorization` sent under `scheme` in place of the one the auth gave (BD-73): empty, the token alone.
+fn rescheme(headers: &mut [(String, String)], scheme: Option<&str>) {
+    let Some(scheme) = scheme else { return };
+    for (_, v) in headers.iter_mut().filter(|(h, _)| h.eq_ignore_ascii_case("authorization")) {
+        if let Some((_, token)) = v.split_once(' ') {
+            *v = if scheme.is_empty() { token.to_string() } else { format!("{scheme} {token}") };
+        }
+    }
+}
+
 /// `v` with each of `mask` (secret values, tokens) written as dots, wherever it appears.
 pub(crate) fn masked(v: &Value, mask: &[String]) -> Value {
     match v {
-        Value::String(s) => Value::String(mask.iter().filter(|m| m.len() >= 4).fold(s.clone(), |s, m| s.replace(m.as_str(), HIDDEN))),
+        // A file's public address is a secret too (BD-64), wherever it appears.
+        Value::String(s) => Value::String(public::mask_addresses(&mask.iter().filter(|m| m.len() >= 4).fold(s.clone(), |s, m| s.replace(m.as_str(), HIDDEN)))),
         Value::Array(a) => Value::Array(a.iter().map(|x| masked(x, mask)).collect()),
         Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), masked(x, mask))).collect()),
         _ => v.clone(),
@@ -1113,6 +1312,7 @@ impl Loaded {
         }
         Reach {
             hosts,
+            any: self.desc.any_host,
             timeout: Duration::from_millis(self.desc.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
             max_bytes: self.desc.max_bytes.unwrap_or(DEFAULT_MAX_BYTES),
         }
@@ -1193,6 +1393,8 @@ pub(crate) struct Extra<'a> {
     pub now: Option<DateTime<Utc>>,
     /// The part of a stored file its file part sends: the file, the first byte, how many.
     pub range: Option<(Uuid, u64, u64)>,
+    /// The public addresses made for the call (`public_files`, BD-64).
+    pub public: Option<&'a Value>,
 }
 
 /// Calls an operation of a connection and gives its mapped result: for apps (docs/api.md, "Connections"). `app` is the
@@ -1265,11 +1467,12 @@ impl Kernel {
         }
         let about = c.entity.clone().zip(c.record);
         let about = about.as_ref().map(|(e, r)| (e.as_str(), *r));
+        let public = self.public_files(ctx, &conn, &c.operation, (&inputs, key), about, more).await?;
         let outcome = if more.steps.is_empty() {
-            let extra = Extra { now: Some(clock), ..Default::default() };
+            let extra = Extra { now: Some(clock), public: Some(&public.vars), ..Default::default() };
             self.perform(ctx, &conn, &c.operation, &inputs, key, extra, about, changes.then_some(given.as_str())).await?
         } else {
-            let o = Box::pin(self.perform_steps(ctx, &conn, &c.operation, &inputs, key, clock, about)).await?;
+            let o = Box::pin(self.perform_steps(ctx, &conn, &c.operation, (&inputs, &public.vars), key, clock, about)).await?;
             if let (Outcome::Ok(result, _), Some(key)) = (&o, key) {
                 self.remember(ctx, &conn, &c.operation, key, &given, result).await?;
             }
@@ -1277,6 +1480,10 @@ impl Kernel {
         };
         if let Some(tx) = held {
             tx.commit().await?;
+        }
+        // Addresses that end with the call end once it has its answer; one that waits keeps them.
+        if matches!(outcome, Outcome::Ok(..) | Outcome::No(_)) {
+            self.end_public_files(conn.tenant, &public.ends).await?;
         }
         match outcome {
             Outcome::Ok(result, _) => Ok(result),
@@ -1365,7 +1572,7 @@ impl Kernel {
                 let got = match self.build_request(ctx, conn, (op, more), inputs, key, extra, bare).await {
                     Ok((req, more)) => 'made: {
                         // The description's limits, across workers: nothing is sent past them.
-                        let turn = match self.take_turn(conn).await {
+                        let turn = match self.take_turns(conn, name, conn.desc.more(name)).await {
                             Ok(t) => t,
                             Err(e) => break 'made Err(e),
                         };
@@ -1385,7 +1592,7 @@ impl Kernel {
                         if let (Some(d), Ok(a)) = (debug.as_mut(), &got) {
                             d["answer"] = json!({"status": a.status, "body": clipped(&masked(&a.body, &mask))});
                         }
-                        if let Some(t) = turn {
+                        for t in turn {
                             t.commit().await?;
                         }
                         got
@@ -1417,8 +1624,21 @@ impl Kernel {
             })
         };
         let temporary = op.temporary.clone().unwrap_or_else(|| TEMPORARY.to_vec());
+        // The description's expressions over an answer (BD-68); one that cannot be worked out (a key the answer lacks)
+        // says no, and a refusal's words fall back to `error_at`, then to the answer itself.
+        let over = |e: &Option<String>, a: &Answer| -> Option<Value> {
+            let headers = Value::Object(a.headers.iter().map(|(h, v)| (h.clone(), Value::String(v.clone()))).collect());
+            let vars = [("answer", &a.body), ("headers", &headers), ("status", &json!(a.status)), ("inputs", inputs)];
+            e.as_deref().and_then(|e| crate::automation::eval_with(e, &Value::Null, &Value::Null, &vars).ok())
+        };
+        let holds = |e: &Option<String>, a: &Answer| matches!(over(e, a), Some(Value::Bool(true)));
         let error_of = |a: &Answer| {
-            let said = at(&a.body, op.error_at.as_deref()).unwrap_or_else(|| a.body.to_string().chars().take(300).collect());
+            let said = match over(&more.error, a) {
+                Some(Value::String(s)) => Some(s),
+                Some(v) if !v.is_null() => Some(v.to_string()),
+                _ => None,
+            };
+            let said = said.or_else(|| at(&a.body, op.error_at.as_deref())).unwrap_or_else(|| a.body.to_string().chars().take(300).collect());
             masked_text(&format!("{}: {said}", a.status), &mask)
         };
         // An answer read as the operation says (XML, a form, text): what pointers, picks and mappings then read.
@@ -1443,7 +1663,7 @@ impl Kernel {
         };
         let worked = |s: u16| (200..300).contains(&s) || more.success.as_ref().is_some_and(|ok| ok.contains(&s));
         let (outcome, status, row_outcome) = match answered {
-            Ok(a) if worked(a.status) => {
+            Ok(a) if worked(a.status) && !holds(&more.refused_if, &a) => {
                 let status = a.status;
                 match self.mapped(ctx, conn, op, inputs, &a, about).await {
                     Ok(result) => (Outcome::Ok(masked(&result, &mask), Box::new(a)), Some(status), "ok"),
@@ -1451,7 +1671,7 @@ impl Kernel {
                     Err(e) => (Outcome::No(masked_text(&format!("{status}: {e}"), &mask)), Some(status), "failed"),
                 }
             }
-            Ok(a) if temporary.contains(&a.status) => (Outcome::Later(error_of(&a), a.wait()), Some(a.status), "temporary"),
+            Ok(a) if temporary.contains(&a.status) || holds(&more.temporary_if, &a) => (Outcome::Later(error_of(&a), a.wait()), Some(a.status), "temporary"),
             Ok(a) => (Outcome::No(error_of(&a)), Some(a.status), "failed"),
             Err(Error::Unavailable(m)) => (Outcome::Later(m, None), None, "temporary"),
             Err(Error::RetryAfter(m, s)) => (Outcome::Later(m, Some(s)), None, "temporary"),
@@ -1494,24 +1714,39 @@ impl Kernel {
     /// A request's turn under the connection's [`Limit`]: counted in its window (none left: `RetryAfter` until the next
     /// window), and one of its `concurrent` places, held until the transaction given back ends (none free within
     /// [`TURN_WAIT`]: `RetryAfter`).
-    async fn take_turn(&self, conn: &Loaded) -> Result<Option<Tx>> {
-        let Some(limit) = &conn.desc.limit else { return Ok(None) };
+    async fn take_turns(&self, conn: &Loaded, op: &str, more: &More) -> Result<Vec<Tx>> {
+        let mut held = Vec::new();
+        for (scope, limit) in [("", conn.desc.limit.as_ref()), (op, more.limit.as_ref())] {
+            if let Some(limit) = limit
+                && let Some(tx) = self.take_turn(conn, scope, limit).await?
+            {
+                held.push(tx);
+            }
+        }
+        Ok(held)
+    }
+
+    /// One [`Limit`]'s turn: the description's (`scope` empty) or an operation's (its name), counted apart.
+    async fn take_turn(&self, conn: &Loaded, scope: &str, limit: &Limit) -> Result<Option<Tx>> {
+        let whose = if scope.is_empty() { conn.name.clone() } else { format!("{}'s {scope}", conn.name) };
         if let (Some(per), Some(every)) = (limit.per, limit.every) {
             let now = Utc::now().timestamp();
             let slot = now - now.rem_euclid(every as i64);
             let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
             let n: i32 = sqlx::query_scalar(
-                "insert into conn_rate (tenant_id, conn_id, slot, n) values ($1, $2, $3, 1)                  on conflict (tenant_id, conn_id, slot) do update set n = conn_rate.n + 1 returning n",
+                "insert into conn_rate (tenant_id, conn_id, operation, slot, n) values ($1, $2, $3, $4, 1) \
+                 on conflict (tenant_id, conn_id, operation, slot) do update set n = conn_rate.n + 1 returning n",
             )
             .bind(conn.tenant)
             .bind(conn.id)
+            .bind(scope)
             .bind(slot)
             .fetch_one(&mut *tx)
             .await?;
             tx.commit().await?;
             if n as u32 > per {
                 let wait = (slot + every as i64 - now).max(1) as u64;
-                return Err(Error::RetryAfter(format!("{} takes {per} calls each {every} s", conn.name), wait));
+                return Err(Error::RetryAfter(format!("{whose} takes {per} calls each {every} s"), wait));
             }
         }
         let Some(places) = limit.concurrent else { return Ok(None) };
@@ -1520,7 +1755,7 @@ impl Kernel {
             let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
             for place in 0..places {
                 let held: bool = sqlx::query_scalar("select pg_try_advisory_xact_lock(hashtextextended($1, 0))")
-                    .bind(format!("conn_turn:{}:{place}", conn.id))
+                    .bind(format!("conn_turn:{}:{scope}:{place}", conn.id))
                     .fetch_one(&mut *tx)
                     .await?;
                 if held {
@@ -1529,7 +1764,7 @@ impl Kernel {
             }
             tx.rollback().await?;
             if started.elapsed() > TURN_WAIT {
-                return Err(Error::RetryAfter(format!("{} takes {places} calls at once", conn.name), 1));
+                return Err(Error::RetryAfter(format!("{whose} takes {places} calls at once"), 1));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -1544,7 +1779,32 @@ impl Kernel {
         let headers = Value::Object(a.headers.iter().map(|(h, v)| (h.clone(), Value::String(v.clone()))).collect());
         let connection = json!({"name": conn.name, "id": conn.id});
         let (now, today) = clock_vars(Utc::now());
-        let vars = [("answer", &a.body), ("headers", &headers), ("inputs", inputs), ("connection", &connection), ("now", &now), ("today", &today)];
+        // The signed-in account and what its sign-in kept (BD-77), read only when a result names them; kept values not
+        // declared `not_secret` are hidden wherever the result shows them.
+        let said = op.result.values().any(|p| p.contains("auth.") || p.contains("account"));
+        let (account, auth) = if said { self.account_vars(conn, ctx).await? } else { (Value::Null, json!({})) };
+        let (_, plain) = conn.desc.auth.kept();
+        let hidden: Vec<String> = auth
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(k, _)| !plain.contains(k))
+            .filter_map(|(_, v)| match v {
+                Value::String(s) => Some(s.clone()),
+                Value::Null => None,
+                other => Some(other.to_string()),
+            })
+            .collect();
+        let vars = [
+            ("answer", &a.body),
+            ("headers", &headers),
+            ("inputs", inputs),
+            ("connection", &connection),
+            ("now", &now),
+            ("today", &today),
+            ("auth", &auth),
+            ("account", &account),
+        ];
         let mut out = Map::new();
         for (name, pick) in &op.result {
             let p = Pick::of(pick).map_err(Error::invalid)?.spec(false);
@@ -1555,7 +1815,7 @@ impl Kernel {
             if p.required && v.is_null() {
                 return Err(Error::invalid(format!("the answer has no {name}")));
             }
-            out.insert(name.clone(), v);
+            out.insert(name.clone(), masked(&v, &hidden));
         }
         Ok(Value::Object(out))
     }
@@ -1605,7 +1865,14 @@ impl Kernel {
         let given = render(&part.file, vars)?;
         let id: Uuid = given.trim().parse().map_err(|_| Error::invalid(format!("{given} is not a stored file")))?;
         let info = self.file_info(ctx, id).await.map_err(|_| Error::invalid(format!("the file {id} is not one you may send")))?;
+        let ceiling = self.upload_ceiling();
         let cap = part.max_bytes.unwrap_or(DEFAULT_FILE_BYTES).min(*budget);
+        if part.max_bytes.is_some_and(|m| m > ceiling) && info.size as u64 > ceiling && range.is_none_or(|r| r.0 != id) {
+            return Err(Error::invalid(format!(
+                "{} is larger than the {ceiling} bytes this server sends in one request (an operator raises FERRUM_CONNECTION_UPLOAD_MB)",
+                info.name
+            )));
+        }
         // A chunk of it (a step's range): only that range is read, whatever the file's size.
         let range = range.filter(|r| r.0 == id);
         let size = range.map_or(info.size, |r| r.2 as i64);
@@ -1652,6 +1919,9 @@ impl Kernel {
         if let Some(p) = page {
             vars["cursor"] = p.cursor.clone();
         }
+        if !more.public_files.is_empty() {
+            vars["public_files"] = extra.public.cloned().ok_or_else(|| Error::invalid("public_files are made for a call, not for a pull or a sign-in"))?;
+        }
         let r = |s: &str| render(s, &vars);
         // A page the last one's `Link` named is asked at that address as it is (the guard still checks its host).
         if let Some(address) = page.and_then(|p| p.address) {
@@ -1660,8 +1930,9 @@ impl Kernel {
             for (h, v) in conn.desc.headers.iter().chain(&op.headers) {
                 headers.push((h.clone(), r(v)?));
             }
-            let more = self.authenticate(ctx, conn, &mut headers, None, &reqwest::Method::GET, &url).await?;
-            return Ok((Request { method: reqwest::Method::GET, url, headers, body: None }, more));
+            let hidden = self.authenticate(ctx, conn, &mut headers, None, &reqwest::Method::GET, &url).await?;
+            rescheme(&mut headers, more.auth_scheme.as_deref());
+            return Ok((Request { method: reqwest::Method::GET, url, headers, body: None }, hidden));
         }
         // A whole address (one an earlier answer gave) is taken as it is: the guard holds it to the connection's hosts.
         let address = match &more.url {
@@ -1684,7 +1955,7 @@ impl Kernel {
         if let (Some(h), Some(k)) = (&op.idempotency_header, key) {
             headers.push((h.clone(), k.to_string()));
         }
-        let mut budget = MAX_FILE_BYTES;
+        let mut budget = self.upload_ceiling();
         let body = match &op.body {
             Some(b) => match spec_of::<FilePart>(b) {
                 Some(part) => {
@@ -1703,13 +1974,33 @@ impl Kernel {
                     parts.push((k, None, v.into_bytes()));
                 }
                 for (k, v) in &op.form {
-                    parts.push(match spec_of::<FilePart>(v) {
+                    match spec_of::<FilePart>(v) {
                         Some(part) => {
-                            let (name, kind, bytes) = self.sent_file(ctx, &part.map_err(Error::invalid)?, &vars, &mut budget, extra.range).await?;
-                            (k.clone(), Some((name, kind)), bytes)
+                            let part = part.map_err(Error::invalid)?;
+                            let Some(each) = &part.each else {
+                                let (name, kind, bytes) = self.sent_file(ctx, &part, &vars, &mut budget, extra.range).await?;
+                                parts.push((k.clone(), Some((name, kind)), bytes));
+                                continue;
+                            };
+                            // A part for each item of the list, named by its template (BD-75).
+                            let items = match steps::evaluate(each, &vars)? {
+                                Value::Array(a) => a,
+                                Value::Null => vec![],
+                                _ => return Err(Error::invalid(format!("{k}: each gives no list"))),
+                            };
+                            if items.len() > MAX_EACH {
+                                return Err(Error::invalid(format!("{k}: at most {MAX_EACH} parts")));
+                            }
+                            for (i, item) in items.into_iter().enumerate() {
+                                let mut at = vars.clone();
+                                at["item"] = item;
+                                at["index"] = json!(i);
+                                let (name, kind, bytes) = self.sent_file(ctx, &part, &at, &mut budget, extra.range).await?;
+                                parts.push((render(k, &at)?, Some((name, kind)), bytes));
+                            }
                         }
-                        None => (k.clone(), None, r(v)?.into_bytes()),
-                    });
+                        None => parts.push((k.clone(), None, r(v)?.into_bytes())),
+                    }
                 }
                 Some(form_data(&parts))
             }
@@ -1726,11 +2017,43 @@ impl Kernel {
             None => None,
         };
         let method = reqwest::Method::from_bytes(op.method().as_bytes()).map_err(Error::internal)?;
-        let hidden = if bare || more.credentials == Some(false) {
+        // Headers an earlier answer named (BD-76): never ones that carry credentials, the auth's own included.
+        let mut named = Vec::new();
+        if let Some(t) = &more.headers_from {
+            let given: Map<String, Value> = match serde_json::from_str::<Value>(&r(t)?) {
+                Ok(Value::Object(o)) => o,
+                Ok(Value::Null) => Map::new(),
+                _ => return Err(Error::invalid("headers_from gives no object of headers")),
+            };
+            let auth_header = match &conn.desc.auth {
+                Auth::Header { header, .. } | Auth::Signed { header, .. } => Some(header.as_str()),
+                Auth::Session { header, .. } => header.as_deref(),
+                _ => None,
+            };
+            for (h, v) in given {
+                let v = match v {
+                    Value::String(s) => s,
+                    Value::Null => continue,
+                    other => other.to_string(),
+                };
+                let lower = h.to_ascii_lowercase();
+                let carries = ["authorization", "proxy-authorization", "cookie", "dpop", "host", "content-length", "transfer-encoding", "connection"]
+                    .contains(&lower.as_str())
+                    || auth_header.is_some_and(|a| a.eq_ignore_ascii_case(&h));
+                if carries || header_problem(&h).is_some() || v.contains(['\r', '\n']) {
+                    return Err(Error::invalid(format!("headers_from may not set {h}")));
+                }
+                named.push(v.clone());
+                headers.push((h, v));
+            }
+        }
+        let mut hidden = if bare || more.credentials == Some(false) {
             vec![]
         } else {
             self.authenticate(ctx, conn, &mut headers, body.as_ref().map(|b| b.0.as_slice()), &method, &url).await?
         };
+        hidden.extend(named);
+        rescheme(&mut headers, more.auth_scheme.as_deref());
         Ok((Request { method, url, headers, body }, hidden))
     }
 
@@ -1896,6 +2219,17 @@ impl Kernel {
         let id = id.unwrap_or_else(Uuid::now_v7);
         let source = self.packaged_connections(ctx).into_iter().find(|(_, c)| c.name == input.name).map(|(p, _)| format!("package:{p}"));
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // Reading any host goes without secrets: none given, none kept from before (BD-65).
+        if input.description.any_host {
+            let kept: Option<bool> = sqlx::query_scalar("select sealed is not null from conn where tenant_id = $1 and id = $2")
+                .bind(ctx.tenant)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            if input.secrets.as_ref().is_some_and(|s| !s.is_empty()) || (input.secrets.is_none() && kept == Some(true)) {
+                return Err(Error::field("description", "any_host: a description that reads any host has no secrets (remove them first)"));
+            }
+        }
         let sealed = match &input.secrets {
             Some(s) => {
                 let key = self
@@ -1961,6 +2295,15 @@ impl Kernel {
             return Err(Error::field("secrets", "each named as an input is, of at most 16 KB"));
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let reads_any: Option<bool> =
+            sqlx::query_scalar("select coalesce((description->>'any_host')::boolean, false) from conn where tenant_id = $1 and id = $2")
+                .bind(ctx.tenant)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if reads_any == Some(true) && !set.is_empty() {
+            return Err(Error::field("secrets", "any_host: a description that reads any host has no secrets"));
+        }
         let held = lock_secrets(&mut tx, self, ctx.tenant, id).await?;
         let now = store_secrets(&mut tx, self, ctx.tenant, id, held, set.clone(), remove).await?;
         let names: Vec<String> = now.into_keys().filter(|n| !kept_by_platform(n)).collect();
@@ -2053,11 +2396,16 @@ impl Kernel {
             return Err(Error::invalid(format!("{operation} changes something at the service, so trying it needs a key")));
         }
         let inputs = if inputs.is_null() { json!({}) } else { inputs.clone() };
-        let outcome = if conn.desc.more(operation).steps.is_empty() {
-            self.perform(ctx, &conn, operation, &inputs, key, Extra::default(), None, None).await?
+        let more = conn.desc.more(operation);
+        let public = self.public_files(ctx, &conn, operation, (&inputs, key), None, more).await?;
+        let outcome = if more.steps.is_empty() {
+            self.perform(ctx, &conn, operation, &inputs, key, Extra { public: Some(&public.vars), ..Default::default() }, None, None).await?
         } else {
-            Box::pin(self.perform_steps(ctx, &conn, operation, &inputs, key, Utc::now(), None)).await?
+            Box::pin(self.perform_steps(ctx, &conn, operation, (&inputs, &public.vars), key, Utc::now(), None)).await?
         };
+        if matches!(outcome, Outcome::Ok(..) | Outcome::No(_)) {
+            self.end_public_files(conn.tenant, &public.ends).await?;
+        }
         Ok(match outcome {
             Outcome::Ok(result, answer) => json!({"ok": true, "result": result, "answer": masked(&answer.body, &conn.mask())}),
             Outcome::Later(why, _) => json!({"ok": false, "temporary": true, "error": why}),
@@ -2248,6 +2596,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_operation_of_reading_steps_reads() {
+        let d: Description = serde_json::from_value(json!({"test": true, "operations": {
+            "get": {"path": "/a"}, "post": {"method": "POST", "path": "/b", "body": "{}"},
+            "reads": {"steps": [{"name": "a", "operation": "get"}, {"name": "b", "operation": "get"}]},
+            "writes": {"steps": [{"name": "a", "operation": "get"}, {"name": "b", "operation": "post"}]},
+            "said": {"changes": true, "steps": [{"name": "a", "operation": "get"}]}}}))
+        .unwrap();
+        assert_eq!(["reads", "writes", "said", "get", "post"].map(|o| d.changes(o)), [false, true, true, false, true]);
+    }
+
+    #[test]
     fn the_guard_blocks_what_is_not_public() {
         for ip in [
             "127.0.0.1",
@@ -2365,7 +2724,7 @@ mod tests {
                 .is_some()
         );
         assert!(
-            serde_json::from_value::<Description>(json!({"test": true, "operations": {"a": {"body": {"file": "x", "max_bytes": 1 << 30}}}}))
+            serde_json::from_value::<Description>(json!({"test": true, "operations": {"a": {"body": {"file": "x", "max_bytes": (1u64 << 30) + 1}}}}))
                 .unwrap()
                 .problem()
                 .is_some()

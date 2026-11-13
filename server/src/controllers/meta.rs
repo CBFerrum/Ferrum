@@ -11,7 +11,7 @@ use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde_json::{Value, json};
 
-async fn index(Auth(ctx): Auth) -> ApiResult<Response> {
+async fn index(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
     let entities: Vec<Value> = ctx
         .schema
         .entities
@@ -27,10 +27,26 @@ async fn index(Auth(ctx): Auth) -> ApiResult<Response> {
             })
         })
         .collect();
+    // Each module with the rows of its app's own pages this person sees (`shell.menu`, BD-63).
+    let st = crate::state::app_state(&app)?;
+    let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
+    let mut pages = crate::shell::menu_pages(&st.apps.shell_apps(ctx.tenant).await?, &ctx, &kind);
+    let modules: Vec<Value> = ctx
+        .schema
+        .modules
+        .iter()
+        .map(|m| {
+            let mut v = json!(m);
+            if let Some(rows) = pages.remove(&m.name) {
+                v["pages"] = json!(rows);
+            }
+            v
+        })
+        .collect();
     Ok(Json(json!({
         "version": ctx.schema.version,
         "packages": ctx.schema.packages,
-        "modules": ctx.schema.modules,
+        "modules": modules,
         "entities": entities,
         "warnings": if ctx.is_admin { json!(ctx.schema.warnings) } else { json!([]) },
     }))

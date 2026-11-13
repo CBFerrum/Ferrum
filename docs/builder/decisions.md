@@ -1706,3 +1706,273 @@ Decided 13 November 2026.
   `..Default::default()`. Every stored description, call and pull reads as before.
 * Reference products read for this part, and which of their mechanisms each answers: docs/references/social.md.
 
+
+## BD-63. A left-menu row for an app's own page, and the App API 0.3.8
+
+Decided 13 November 2026.
+
+* **The gap**: a package's module lists entities and `report:<name>` only, and the records frame drops anything else,
+  so an app's own pages (Social's composer, calendar, accounts, media, inbox, numbers) had no row in the left menu;
+  the only page rows (the till, Chat, Calendar, Meet, Documents) are written into the frame.
+* **In the manifest, not the package**: a new shell point `shell.menu`, item `{id, module, path, label, icon?, roles?,
+  after?}`. A page is the app's interface, which only the manifest knows (its routes, its `ui`); its `path` is checked
+  as every other point's path is (it starts with one of the app's routes, plain segments only, so nothing outside the
+  app), `roles` mean what they mean on `shell.app`, and a workspace's own menus (`define_module`) cannot have one,
+  having no interface. `module` must be a module of the app's own packages (checked in the bundle; at serving, a row
+  whose module is not there is left out). `icon` is a name (`square-pen`); one the menu does not draw falls back to a
+  page's icon, as other rows fall back. `label` is the app's English, shown in the page's words as entity names are.
+* **Served with the modules**: `GET /api/meta` gives each module `pages`, the rows this person sees (a member who may
+  use the app and holds one of the row's roles; administrators all; portal people none). `after` names the module's
+  item a row follows (an entity, `report:<name>` or another row's id); without one, or naming one not shown, rows come
+  first in the order declared.
+* **Drawn as other rows**: the frame's left menu and Home's module cards. Inside the app's own page under its own route
+  a row is a client-side route (`/compose`, with the active state); anywhere else (another app's frame, the classic
+  web app) a link that loads `/{path}`.
+* **The App API is 0.3.8**; an app using `shell.menu` says `platform: ">=0.3.8, <0.4"`. 0.3.8 also carries BD-64 to
+  BD-66.
+
+## BD-64. A stored file's short-lived public address, for a service that pulls it
+
+Decided 13 November 2026.
+
+* **The gap**: some services take no bytes; a step sends `image_url`/`video_url` and the service fetches it (Instagram,
+  Threads). The platform gave an app no address a service could reach.
+* **What was there**: `/files/public/{id}` serves files marked public for good, which is not this; S3 presigned URLs
+  exist for uploads only, and a local store has none. Reused: the streamed download with ranges (`Objects::stream`,
+  `streamed_response`, `file_headers`), the server's key (`SecretKey::fingerprint`, HMAC-SHA256), `PUBLIC_URL` as the
+  connection callback uses it. One route serves every store the same way.
+* **The shape**: an operation's `public_files: {<name>: {file, minutes?, end_with_call?}}`; templates read
+  `public_files.<name>`, a step's inputs too. A property of the operation, resolved before the request is built, rather
+  than a template function: making an address writes a row and checks the caller may read the file, which a template
+  (synchronous, run for every attempt) cannot do once.
+* **The address**: `{PUBLIC_URL}/files/pull/{id}?s={HMAC(id)}`; the row (`conn_file_address`) names the file, the
+  connection, operation, key and record of the call, the person, until when, and when it was ended. The signature is
+  in the query, which the request log never writes; any change to the id or the signature misses. Default 60 minutes,
+  at most 360. Not found alike for every refusal.
+* **Ending**: at its time, or with `end_with_call` once the call has its answer (not while it waits for the service, which
+  may still be fetching). A keyed call made again (a retry, a resumed wait) gets the address it made while it has ten
+  minutes left, so the service is not given a second one. Rows go 90 days after they end.
+* **A secret**: the masking every capture, error and result goes through hides `s=<64 hex>` (and `s%3D…`) wherever it
+  appears; a capture of the request never shows it.
+* **Without `PUBLIC_URL`** the call is refused: "a service cannot pull a file from localhost". Without the server's key
+  there is no signature, so it is refused too.
+* **The App API is 0.3.8** (BD-63). An app hands the file's id as an input and names the address in its description.
+
+## BD-65. Credential-free reads of any public host
+
+Decided 13 November 2026.
+
+* **The gap**: a feed reader (Social's feeds) reads whatever site a person gives; `allowed_hosts` cannot list every site
+  with a feed, so each new site waited for an administrator.
+* **The flag**: a description's `any_host: true` lifts the host list and nothing else. What makes it safe is what it
+  cannot carry: no auth, no secrets (given with it, kept from before, or merged later), no template naming `secret.`,
+  `auth.` or `account.`, no inbound address, and only operations that read: GET (or steps of such), no body, form,
+  form fields or public files. So a request it makes carries nothing of the workspace but its inputs.
+* **The guard is unchanged**: https only (plain http only to a host the operator opened), every address resolved and
+  refused when private, loopback, link-local or reserved, then pinned; each redirect checked the same way (a redirect to
+  a private address is refused); answers capped by size and time as before.
+* **Who**: saving any description is an administrator's (`save_connection_def`), and a package's connection is offered
+  turned off for an administrator to turn on, so the flag is never set by anyone else.
+* Part of the App API 0.3.8 (BD-63): an app's description may carry it; Social's `feeds` connection can drop its
+  "add the host" step.
+
+## BD-66. An app told when an approval is decided
+
+Decided 13 November 2026.
+
+* **The gap**: an app whose record went through an approval policy learned the outcome only by reading it back (Social's
+  review: the post's state, polled).
+* **A record hook**: `DocHook::approval_decided(hc, doc, &ApprovalDecided)`, beside `on_submit` and `after_action`,
+  with a default that does nothing, so every app compiles unchanged. Registered per entity as the other hooks are, so an
+  app hears of its own entities' approvals only (and a workspace's packages lacking the app's are left out as for every
+  hook).
+* **When**: once per request, at its outcome: `approved` (and done), `rejected`, or `failed` (approved, then refused when
+  done, `failure` saying why). Not at a step that leaves the request pending. In the deciding transaction, after the
+  outcome took effect, so the hook sees the record as the decision left it and its writes commit with the decision.
+* **What it is given**: the record, the request's id and what was asked, the outcome, who asked, who decided (and for
+  whom when standing in) and the decider's comment.
+* **A failing hook**: each hook runs in a savepoint; an error rolls back that hook's writes, is logged (WARN) and audited
+  on the record (`approval:hook_failed`, with the hook's name and the error), and the decision commits. A retryable
+  error (serialization, deadlock) is passed on: `decide_approval` retries the whole decision, so a hook runs once for
+  the decision that commits. A hook that must not miss an outcome reads the request again from its own job.
+* Part of the App API 0.3.8 (BD-63).
+
+## BD-67. Expressions that nest run on a stack of their own
+
+Decided 13 November 2026.
+
+* **The fault**: saving Social's Telegram description overflowed a 2 MiB thread (the size of a server's worker) in a
+  debug build; its tests passed only on 16 MiB. The cause: its `publish` result is one CEL expression picking among a
+  dozen answers by nested `?:`, and CEL's parser goes through a dozen grammar rules for each level, with large frames.
+  Compiling it took between 2 and 4 MiB; evaluating it recurses as deep. Nothing else in the 33 network descriptions
+  came near (templates, serde of nested steps and the rest of validation were measured on 2 MiB).
+* **The fix, where every expression goes through**: `ferrum_meta::Expr` compiles, and runs, an expression with more
+  than four levels of `?`, `(` or `[` on a stack of its own (`stacker::grow`, 16 MiB of address space, of which only
+  the pages touched are used; `stacker` was already in the tree through `pest`). Every place an expression is checked
+  or run (rules, conditions, a description's results and mappings, steps) is covered, on any thread. Flat expressions
+  run where they are, as before. The limits (`MAX_NESTING` 32, `MAX_OPERATORS` 512) stay, and the deepest nesting
+  they allow compiles on 2 MiB.
+* Tests: `ferrum-meta` compiles and runs a dozen nested `?:` and the deepest allowed nesting on a 2 MiB thread (it aborts
+  with a stack overflow without the fix); `ferrum-kernel`'s `descriptions_small_stack` loads, validates and works out
+  the result of the Telegram description (a fixture) on 2 MiB.
+
+## BD-68. A 2xx answer that is a refusal, in the service's words
+
+Decided 13 November 2026.
+
+* **The gap**: Slack (`ok: false`), GraphQL services (`errors`), VK (`error`), Twitch and Kick (`is_sent: false`) and
+  TikTok Business (`code != 0`) answer 200 when they refuse; `error_at` was read only on a failing status, so the
+  descriptions made a missing id fail the call and the person read "the answer has no id".
+* **The shape** (on the operation, beside `error_at` and `temporary`): `refused_if`, a CEL expression (the language of
+  `result`'s `expr`) over `answer`, `headers`, `status` and `inputs`; `temporary_if`, which refusals are "later"
+  (status or expression); `error`, an expression giving the words, in place of `error_at`'s pointer. `error_at` (item
+  12 of the request) is now read on such an answer too, and `error` is the expression form of it; one mechanism.
+* **Expressions that cannot be worked out** (an answer without the key) count as false, and words fall back to
+  `error_at`, then to the answer: a description is not refused at run time for the shape of an answer it did not
+  expect. They are compiled when the description is saved. Words are masked as every error is.
+* **Steps**: each step's operation says its own; a refused step ends the operation as before (`No` or `Later`).
+* Part of the App API 0.3.8 (BD-63).
+
+## BD-69. A stable order for lists built from maps, and reading steps read
+
+Decided 13 November 2026.
+
+* **Order**: a JSON object becomes a CEL map, whose entries `.map()` and `.filter()` visit in no order of their own, so
+  a list made from one (WordPress's content types) came out in any order. A record's maps were already written back
+  with sorted keys; lists need the expression to say. Two functions: `sort(list)` (null, numbers, text, the rest by how
+  they print) and `sortBy(list, key)` (maps by one key), in every expression, not only connections'.
+* **Reading steps**: an operation made of steps counted as changing something whatever its steps did, so every reading
+  one (`account`, `metrics`) said `"changes": false` by hand. Now an operation of steps changes something when one of its
+  steps' operations does (by its own `changes`, else its method); `changes` said on the operation still decides.
+  Nothing that wrote before reads now: a step that writes makes the whole operation one that writes and needs a key.
+* Part of the App API 0.3.8 (BD-63).
+
+## BD-70. Date arithmetic in templates
+
+Decided 13 November 2026.
+
+* **The gap**: a description asking for "the last seven days" or "since the start of today" could only format the
+  clock (`strftime`), not move it.
+* **Three filters on a moment** (RFC 3339, `now` or any answer's): `add_time("<signed n><s|m|h|d|w>")`,
+  `start_of(unit)` and `end_of(unit)` for `hour`, `day`, `week` (from Monday) and `month`, in UTC; they chain with
+  `strftime` (`now | add_time('-1d') | start_of('day') | strftime('%s')`). On `now` they move the clock fixed at the
+  key's first attempt (BD-56), so a retry asks for the same window. No months or years in `add_time`: their length
+  varies; `start_of('month')` covers the common case. The workspace's own time zone is not applied: a service's windows
+  are its own, usually UTC.
+* **Step inputs** (item 18 of the request): a step's inputs and a body's template filter alike
+  (`selectattr('content_type', 'startingwith', 'image/')` keeps the images in both); the case reported was not
+  reproduced with the shape given, and a test keeps the two equal.
+* Part of the App API 0.3.8 (BD-63).
+
+## BD-71. The server's upload ceiling, and a file part's own
+
+Decided 13 November 2026.
+
+* **The gap**: a file part was capped at 25 MB whatever the operator set, while chunked uploads followed
+  `FERRUM_CONNECTION_UPLOAD_MB`; the setting was documented only in the API reference, where an administrator does not
+  look.
+* **One ceiling**: what one request sends of stored files in all is `FERRUM_CONNECTION_UPLOAD_MB` (25 MB, or more where
+  raised); a file part may declare `max_bytes` up to 1 GiB, and is sent only as far as that ceiling. A file past it is
+  refused naming the setting, so the person's administrator knows what to raise. A part that says nothing stays at
+  10 MB; nothing that worked before changes.
+* **Where an operator finds it**: docs/operations.md's configuration table (with `FERRUM_CONNECTION_HOSTS`, which was
+  missing too), the Compose file, the Kubernetes deployment and the Helm chart's secret keys.
+* Part of the App API 0.3.8 (BD-63).
+
+## BD-72. A provider's own names for the client and its scopes
+
+Decided 13 November 2026.
+
+* **The gap**: TikTok calls the client's id `client_key`; Slack wants scopes joined by commas. `params` cannot set
+  either (the flow sets them), so neither could sign in.
+* **Two words on the provider**: `client_id_param` (the parameter's name on the authorisation address and on every
+  token request, the exchange and the refresh alike; `client_id` unless said) and `scope_separator` (a space unless
+  said; a comma, a plus or a semicolon). `params` still cannot set what the flow sets, the renamed parameter included.
+  A client proving itself with basic authentication is unchanged.
+* Part of the App API 0.3.8 (BD-63).
+
+## BD-73. A token's scheme for one operation
+
+Decided 13 November 2026.
+
+* **The gap**: some services take their token as `Bearer` on most calls and another way on some (`OAuth <token>`, the
+  token alone); the scheme was the auth's, for every operation.
+* **On the operation**: `auth_scheme` replaces the scheme in `Authorization` for that operation's requests (a page of a
+  pull's `Link` too); empty sends the token alone. Only where the auth is a token sent in `Authorization` (bearer,
+  OAuth without DPoP, a session's default header): with basic, a header secret, a signature or DPoP the scheme is part
+  of what proves the call, and the description is refused. The token stays masked as before.
+* Part of the App API 0.3.8 (BD-63).
+
+## BD-74. A limit per operation
+
+Decided 13 November 2026.
+
+* **The gap**: a service with a tight limit on posting and a loose one on reading could be described only by the
+  tighter one for everything, or a separate connection for posting.
+* **The shape**: an operation's `limit` (`per`/`every`, `concurrent`), as the description's (BD-57), counted apart under
+  the operation's name (`conn_rate.operation`, `''` for the description's; the concurrency locks are named apart too).
+  A request takes the description's turn first, then the operation's; one refused by the operation's has used one of
+  the description's (it counts calls asked, as the description's always did). The refusal names which limit
+  (`<connection>'s <operation> takes 1 calls each 60 s`) and says when to come back.
+* Part of the App API 0.3.8 (BD-63).
+
+## BD-75. A form part for each item of a list, and the step cap
+
+Decided 13 November 2026.
+
+* **The gap**: a form had a fixed set of parts, so Discord, Tumblr and Telegram had one operation for each number of
+  files (1 to 10), and Telegram's publish spent all twelve steps choosing among them and stopped at nine.
+* **A part for each item**: a file part's `each` (an expression, as a step's `for_each`) repeats the part for each item
+  of a list in one request; the part's name, `file` and `name` are templates over `item` and `index`. Values for each
+  item already came from `form_fields` (a template giving a list of `{name, value}`), which a loop fills; nothing new
+  was needed there. At most 50 parts from one `each`; every file counts against the request's ceiling (BD-71).
+* **The step cap stays at twelve, fixed**: with a part for each item and `for_each` on a step, an operation no longer
+  needs a step per count, and none of the 33 network descriptions needs more than twelve otherwise. A per-description
+  setting would let one description make many requests under one key with one answer, which retries, resumption and
+  "may have been sent" all reason about per step; a fixed bound keeps that reasoning the same for every description.
+  Raising it is a platform change, with a reason, not a description's choice.
+* Part of the App API 0.3.8 (BD-63).
+
+## BD-76. Request headers named by an answer
+
+Decided 13 November 2026.
+
+* **The gap**: some uploads hand back the headers the upload must carry (Whop's `upload_headers`, a signed S3 form's
+  headers); a description's headers were fixed templates.
+* **The shape**: an operation's `headers_from`, a template giving a JSON object, added to that operation's request only
+  (a step passes the earlier answer's map as an input). Values are strings (others written as JSON), null skipped.
+* **Never credentials**: it may not set `Authorization`, `Proxy-Authorization`, `Cookie`, `DPoP`, `Host`,
+  `Content-Length`, `Transfer-Encoding`, `Connection` or the header the connection's auth uses, nor a value with a line
+  break; the template may not name `secret`, `auth.` or `account.` (checked when saved). So the connection's own
+  credentials never travel this way; with `credentials: false` the request carries only what the answer named.
+* **Masked**: the values join what that request's capture, errors and result hide. The earlier answer that gave them is
+  an answer like any other: the platform cannot know beforehand that a field of it is a secret.
+* Part of the App API 0.3.8 (BD-63).
+
+## BD-77. Kept sign-in values in results
+
+Decided 13 November 2026.
+
+* **The gap**: what a sign-in kept (`keep`: an open id, the account's handle) reached templates (`auth.<name>`) but not a
+  `result`'s expressions, so a permalink built from the handle could not be made.
+* **Results read them**: a result expression gets `auth` (the kept fields) and `account`, loaded only when a result
+  names them.
+* **Secret unless said**: a kept value appears in a result as dots wherever it shows (masking, as the secrets), unless
+  the provider (or a session) lists it in `not_secret`, which must name fields it keeps. A handle is public; an open id
+  or a device id may not be, and the platform cannot tell, so the default stays hidden.
+* Part of the App API 0.3.8 (BD-63).
+
+## BD-78. An inbound address's verification handshake
+
+Decided 13 November 2026.
+
+* **The gap**: some services (Meta's webhooks, WebSub hubs) check an address before delivering to it: a GET carrying a
+  verify token and a challenge, which the address must echo. Inbound addresses took POSTs only.
+* **The shape**: the description's `handshake: {token, challenge, secret, expect?}`, beside `inbound` (which apps build
+  in code, so it takes no new field), names the query parameters and the
+  connection secret the token must equal; `expect` lists parameters that must be there as given. `GET` on the inbound
+  address answers the challenge as `text/plain` (nosniff, at most 512 characters) when the token matches, compared in
+  constant time; anything else (a wrong token, a missing `expect`, no handshake declared, an unknown or turned-off
+  connection) gets the same `401` as a refused delivery and counts as refused. Rate-limited with the deliveries.
+* The deliveries themselves are verified as before (`verify`); the handshake proves nothing about them.
+* Part of the App API 0.3.8 (BD-63).

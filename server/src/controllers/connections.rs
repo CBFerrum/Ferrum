@@ -72,11 +72,14 @@ struct Limit {
     limit: Option<i64>,
 }
 
-/// `GET /api/admin/connections/{id}/log?limit=`: the calls made and the calls received, newest first.
+/// `GET /api/admin/connections/{id}/log?limit=`: the calls made, the calls received and the files' public addresses the
+/// calls made (BD-64), newest first.
 async fn log(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Query(q): Query<Limit>) -> ApiResult<Response> {
     let k = &app_state(&app)?.kernel;
     let limit = q.limit.unwrap_or(100);
-    Ok(Json(json!({"calls": k.connection_log(&ctx, id, limit).await?, "received": k.connection_inbound_log(&ctx, id, limit).await?})).into_response())
+    Ok(Json(json!({"calls": k.connection_log(&ctx, id, limit).await?, "received": k.connection_inbound_log(&ctx, id, limit).await?,
+        "addresses": k.connection_addresses(&ctx, id, limit).await?}))
+    .into_response())
 }
 
 /// `GET /api/admin/connections/{id}/pulls`: each pull's cursor, last and next run, and last error.
@@ -170,6 +173,19 @@ async fn inbound(State(app): State<AppContext>, Path(id): Path<Uuid>, headers: H
     inbound_answer(&st.kernel, &st.public_limiter, &headers, id, &body).await
 }
 
+/// `GET /api/connections/inbound/{id}?…`: a service's check before it delivers (BD-78): the challenge as plain text, or
+/// the same 401 as any refusal.
+async fn handshake(State(app): State<AppContext>, Path(id): Path<Uuid>, Query(q): Query<BTreeMap<String, String>>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.public_limiter.check(&format!("{}|connections", client_ip(&headers))).await?;
+    let challenge = st.kernel.connection_handshake(id, &q).await?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8"), (axum::http::header::HeaderName::from_static("x-content-type-options"), "nosniff")],
+        challenge,
+    )
+        .into_response())
+}
+
 /// What an inbound call is answered: every refusal the same 401, counted; one accepted, `{accepted: true}`.
 pub async fn inbound_answer(k: &Kernel, limiter: &RateLimiter, headers: &HeaderMap, id: Uuid, body: &[u8]) -> ApiResult<Response> {
     limiter.check(&format!("{}|connections", client_ip(headers))).await?;
@@ -193,5 +209,5 @@ pub fn routes() -> Routes {
         .add("/connections", get(personal))
         .add("/connections/callback", get(callback))
         .add("/connections/{id}/connect", post(connect).delete(disconnect))
-        .add("/connections/inbound/{id}", post(inbound))
+        .add("/connections/inbound/{id}", post(inbound).get(handshake))
 }

@@ -637,7 +637,48 @@ impl Kernel {
             }
         }
         let r = by_id(tx, ctx.tenant, req.id).await?;
+        if matches!(r.status.as_str(), "approved" | "rejected" | "failed") {
+            let decided = crate::hooks::ApprovalDecided {
+                request: r.id,
+                action: &r.action,
+                outcome: &r.status,
+                failure: r.failure.as_deref(),
+                requester: r.requester,
+                decided_by: ctx.user,
+                on_behalf_of: behalf,
+                comment,
+            };
+            self.tell_hooks(ctx, tx, &ent, id, &decided).await?;
+        }
         summary(tx, ctx.tenant, &ent, &r).await
+    }
+
+    /// The app's hooks on the entity told of an approval's outcome (BD-66), each in a savepoint: one that fails is undone
+    /// alone, logged and audited, and the decision stands. A failure worth trying again (a conflict between
+    /// transactions) is passed on, so the whole decision is tried again and the hook runs once for the one that commits.
+    async fn tell_hooks(&self, ctx: &Ctx, tx: &mut Tx, ent: &std::sync::Arc<EffEntity>, id: Uuid, decided: &crate::hooks::ApprovalDecided<'_>) -> Result<()> {
+        let hooks = self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages);
+        if hooks.is_empty() {
+            return Ok(());
+        }
+        let doc = self.get_tx(&crate::actions::system(ctx), tx, &ent.def.name, id, true).await?;
+        for h in &hooks {
+            sqlx::query("savepoint approval_hook").execute(&mut **tx).await?;
+            let mut hc = crate::hooks::HookCtx { kernel: self, ctx, tx: &mut *tx, entity: ent };
+            match h.approval_decided(&mut hc, &doc, decided).await {
+                Ok(()) => {
+                    sqlx::query("release savepoint approval_hook").execute(&mut **tx).await?;
+                }
+                Err(e) if e.is_retryable() => return Err(e),
+                Err(e) => {
+                    sqlx::query("rollback to savepoint approval_hook").execute(&mut **tx).await?;
+                    tracing::warn!(entity = %ent.def.name, record = %id, hook = h.name(), "an app's hook on an approval's outcome failed: {e}");
+                    let said = json!({"request": decided.request, "outcome": decided.outcome, "hook": h.name(), "error": e.to_string()});
+                    crate::audit::record(tx, ctx, &ent.def.name, id, "approval:hook_failed", None, said).await?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Completes an approved submit, cancel or action (`req`) of record `id` as its requester at this moment, not as the

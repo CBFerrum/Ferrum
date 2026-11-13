@@ -150,7 +150,7 @@ several workspaces in turn and is left as it is.
 
 ## Metadata — `/api/meta`
 
-* `GET /api/meta` → `{version, packages, modules: [{name, label, icon, order, items: ["EntityName" | "report:<name>"], package, description?, color?, create?, assistant?: {instructions, suggestions?}, portal?}], entities: [{name, label, label_plural, kind, module, icon, description, submittable, custom, permissions}], warnings}` (`description`: what the record type is for, which the help center at `/data/help/` searches). A workspace's own menus (`define_module`, below) are among `modules` with `package: "tenant"` and their own `description`, `color`, `create` and `assistant`; a package's module has none of those.
+* `GET /api/meta` → `{version, packages, modules: [{name, label, icon, order, items: ["EntityName" | "report:<name>"], package, description?, color?, create?, assistant?: {instructions, suggestions?}, portal?}], entities: [{name, label, label_plural, kind, module, icon, description, submittable, custom, permissions}], warnings}` (`description`: what the record type is for, which the help center at `/data/help/` searches). A workspace's own menus (`define_module`, below) are among `modules` with `package: "tenant"` and their own `description`, `color`, `create` and `assistant`; a package's module has none of those. A module also carries `pages: [{app, id, path, label, icon, after}]` when its app declares rows for pages of its own interface (`shell.menu`, [BD-63](builder/decisions.md#bd-63-a-left-menu-row-for-an-apps-own-page-and-the-app-api-038)) that this person sees: a member who may use the app and holds one of the row's `roles` (none: any such member; administrators: all). The frame draws each after the module's item it names in `after` (an entity, `report:<name>`, another row's id), else first in the order declared, routed inside the app's own page and loaded from anywhere else (`/{path}`).
 * `GET /api/meta/{Entity}` → full description used to render forms and lists:
   `{name, label, label_plural, kind (master|document|child|settings|ledger), module, title_field, submittable, mergeable, linked_from: [{entity, label, field, field_label}] (the lists the caller may read that link here; `field` is a filter path, so `items.item` for a child table's row), company_scoped, numbering, list: {columns, sort}, form: [{label, fields, columns (1-4), collapsible, tab?, visible_if?}], search_fields, rules, actions: [{name, label, docstatus[], permission, confirm?, condition?, read_only?, params?, group?, roles?, refuse_if?, effects? (administrators only), may_run}], workflow?: {initial_state, states: [{name, docstatus, edit_roles, editable? (the only fields a person changes in the state), required? (what it needs to be entered and saved)}], transitions: [{action, from, to, roles, condition?, not_creator, not_creator_of? (links, `field` or `table.field`, whose records the person taking it may not have raised), params? (what it asks for, as an action's), effects? (what it does, as a configured action's), approval? (who must agree first, [Approvals](#approvals-on-a-transition)), may_take (whether the caller may take it, as taking it asks)}]}, fields: [Field], children: {tableField: {entity, label, fields: [Field]}}, permissions: {read|write|create|delete|submit|cancel|export|import: "none"|"own"|"all"}}`
   An action's `may_run` says whether the caller may press it at all: its permission or a role's rule naming it, and its `roles`, as running it checks them (an administrator always may); `condition`, `docstatus` and `refuse_if` are judged per record, so a form evaluates them on the record it shows. A configured action's `effects` (what it writes) go to administrators only.
@@ -264,6 +264,22 @@ policies as part of the workflow; `GET /api/customize/definition/{Entity}` retur
 * **Away**: `POST /api/away` sets one (above); `GET /api/away` → `[{starts_on, ends_on, current, substitute, substitute_name, reason}]`, the caller's
   periods today and to come; `DELETE /api/away` → `{cleared: n}` takes them back (`?starts_on=` one of them). An
   administrator adds `?user=` for anyone; anyone else gets 403 for another person.
+
+**An app told of the outcome** ([BD-66](builder/decisions.md#bd-66-an-app-told-when-an-approval-is-decided)): a
+`DocHook` on the entity gets `approval_decided(hc, doc, &ApprovalDecided {request, action, outcome, failure, requester,
+decided_by, on_behalf_of, comment})` once per request, when it reaches `approved`, `rejected` or `failed` (approved but
+refused when done), in the deciding transaction after the outcome took effect, with the record as it now stands. Every
+kind of request (a transition, a submit or cancel, an action) and every app's hooks on the entity alike. A hook's error
+does not undo the decision: what the hook wrote is rolled back (a savepoint), the failure is logged and audited as
+`approval:hook_failed`, and the decision stands; a conflict between transactions retries the whole decision, so the hook
+runs once for the decision that commits. A step decided before the last (two of three) tells nothing.
+
+```rust
+async fn approval_decided(&self, hc: &mut HookCtx<'_>, doc: &Doc, d: &ApprovalDecided<'_>) -> Result<()> {
+    if d.outcome == "approved" { /* schedule the post */ }
+    Ok(())
+}
+```
 
 ### Approval before a document is submitted or cancelled
 
@@ -1138,10 +1154,17 @@ bearer, secret}`, `{type: signed, header, secret, timestamp_header?, encoding: h
 `<timestamp>.<body>`, or the body) or `{type: oauth, …}` (below); each `secret` names one of `secrets`. An operation's
 `method` is GET, POST, PUT, PATCH or DELETE; its `path` starts with `/` and every value it prints is percent-encoded;
 `query`, `headers`, `body` (a template giving JSON) and `form` are templates over `inputs`, `secret` and `key`;
-`result` maps names to JSON pointers (none: the whole answer); `changes` (every method but GET unless said) means it
+`result` maps names to JSON pointers (none: the whole answer); `changes` (every method but GET unless said; an operation of
+steps when one of its steps' operations changes something, [BD-69](builder/decisions.md#bd-69-a-stable-order-for-lists-built-from-maps-and-reading-steps-read)) means it
 needs a key. `{"test": true}` with a `fixture: {status, body}` per operation answers from that and calls nobody.
 Calls go to `https` only, to the base's host and `allowed_hosts`, never to a private, loopback, link-local or reserved
 address unless the operator names the host in `FERRUM_CONNECTION_HOSTS` (which also allows plain http to it).
+A description with `"any_host": true` reads any public host instead
+([BD-65](builder/decisions.md#bd-65-credential-free-reads-of-any-public-host)), as a feed reader must: only with `auth:
+none`, no secrets (given or kept, and `PATCH …/secrets` refused), no template naming `secret.`, `auth.` or `account.`, no
+inbound address, and every operation a GET sending nothing (no body, form or file); everything else of the guard is as
+ever (https, public addresses pinned, each redirect checked again, answers size-capped). Only administrators save
+descriptions, and a package's comes turned off for one to turn on.
 
 | Method & path | Notes |
 |---|---|
@@ -1168,6 +1191,7 @@ their own sign-ins, whose tokens go and are revoked at the provider where it say
 | `DELETE /api/connections/{id}/connect` | disconnects (the workspace's: administrators) → `{revoked}` |
 | `GET /api/connections/callback` | where the provider sends the browser back; a page, no redirect |
 | `POST /api/connections/inbound/{id}` | no session: a call from outside → `{accepted: true}`, or `401 this call was not accepted` whatever the reason |
+| `GET /api/connections/inbound/{id}?…` | no session: the check a service makes before it delivers, where the description declares `handshake: {token, challenge, secret, expect?}` beside its `inbound` (`{"token": "hub.verify_token", "challenge": "hub.challenge", "secret": "verify", "expect": {"hub.mode": "subscribe"}}`): the challenge as plain text when the token equals the named secret (compared in constant time) and `expect` holds, else the same `401` ([BD-78](builder/decisions.md#bd-78-an-inbound-addresss-verification-handshake)); rate-limited as the POST |
 
 **Calling** — an app: `ferrum_kernel::connections::call(&kernel, &ctx, Some("erp"), &Call { connection: "carrier".into(),
 operation: "create_label".into(), inputs: json!({"weight": 2, "ref": "P-9"}), key: Some(format!("label:{id}")),
@@ -1287,6 +1311,22 @@ in `url` (a template; one an earlier answer gave), held to the connection's host
 sends it without the connection's credentials (an address signed already); `form_fields` (a template giving an
 object, or a list of `{name, value}`) adds a signed upload form's fields before `form`'s.
 
+**Headers an answer names** ([BD-76](builder/decisions.md#bd-76-request-headers-named-by-an-answer)): `headers_from`
+is a template giving a JSON object of headers for that operation's request only, from an earlier answer passed in as
+an input (`"headers_from": "{{ inputs.upload_headers | json }}"`); it may not set `Authorization`, `Cookie`, `DPoP`,
+`Host`, the framing headers or the auth's own header, nor name `secret`, `auth.` or `account.`, and its values are
+masked in captures and errors as secrets are.
+
+**A part for each item** ([BD-75](builder/decisions.md#bd-75-a-form-part-for-each-item-of-a-list-and-the-step-cap)): a
+file part with `each` (an expression giving a list) repeats in one multipart request, its name a template over `item`
+and `index` (from 0), as its `file` and `name` are; `form_fields` gives a value for each item the same way (a list of
+`{name, value}` made in a loop). At most 50 parts from one `each`, the files within the request's ceiling:
+
+```json
+"form_fields": "[{% for m in inputs.media %}{\"name\": \"caption{{ loop.index0 }}\", \"value\": {{ m.caption | json }}}{% if not loop.last %},{% endif %}{% endfor %}]",
+"form": {"files[{{ index }}]": {"file": "{{ item.id }}", "each": "inputs.media", "name": "f{{ index }}.jpg"}}
+```
+
 **Waiting** ([BD-54](builder/decisions.md#bd-54-a-step-that-waits)): a step on a reading operation may wait until its
 answer says it is ready: `"wait": {"until": "result.status == 'FINISHED'", "fail_if": "result.status in ['ERROR',
 'EXPIRED']", "every_secs": 5, "within_secs": 600, "attempts": 100}` (expressions over `result`, `answer`, `headers` and
@@ -1315,6 +1355,9 @@ that also mean it worked). A chunk whose answer was lost goes on from what `offs
 service holds (a number, or `bytes=0-<last>`; none with a 2xx: the upload is complete, that answer the result), or
 starts the upload again from the step `restart_from` names under new keys (at most twice), or stops, saying so. Files
 sent in chunks may be up to `FERRUM_CONNECTION_UPLOAD_MB` (25 MB unless the operator says); a chunk is at most 25 MB.
+A file part (`{"file": …, "max_bytes": …}`) is 10 MB unless it says; it may say more than 25 MB, and is then sent only as
+far as `FERRUM_CONNECTION_UPLOAD_MB` (what one request sends of files in all), past which the call is refused naming the
+setting ([BD-71](builder/decisions.md#bd-71-the-servers-upload-ceiling-and-a-file-parts-own)).
 
 **Functions and the clock** ([BD-56](builder/decisions.md#bd-56-template-functions-and-the-clock)): templates and step
 expressions have `now` (RFC 3339, UTC, milliseconds) and `today`, fixed at the first attempt of the call's key, so a
@@ -1322,7 +1365,9 @@ retry sends the same moment; answers' and mappings' expressions have them too (t
 (hex), `hmac(key, "hex" | "base64" | "base64url")` (SHA-256), `base64`, `base64url`, `base32`, `urlencode`, `tid` (a
 13-character id that sorts by time, from the key and its clock: `{{ key | tid }}`), `length_in("chars" | "graphemes" |
 "utf16" | "bytes")`, `entities(unit)` (the links, mentions and tags in a text: `[{type, text, value, start, end}]`,
-offsets in that unit), `truncate(n, end?)` (by graphemes), `strftime(format)` (of a moment), besides the template
+offsets in that unit), `truncate(n, end?)` (by graphemes), `strftime(format)` (of a moment), `add_time("-7d")` (a
+moment moved by whole `s`, `m`, `h`, `d` or `w`), `start_of(unit)` and `end_of(unit)` (`hour`, `day`, `week` from
+Monday, `month`, in UTC; [BD-70](builder/decisions.md#bd-70-date-arithmetic-in-templates)), besides the template
 language's own (`replace`, `split`, `join`, `default`, `json`, …). A record keyed from the call and a facet in bytes:
 
 ```json
@@ -1333,7 +1378,10 @@ language's own (`replace`, `split`, `join`, `default`, `json`, …). A record ke
 an app's `connections::call`, the `call` effect and the gate get `RetryAfter(why, seconds)` when the service's
 `Retry-After` (or the connection's limit) says when to come back, `Unavailable` when nothing does. `"limit": {"per": 300,
 "every": 900, "concurrent": 2}` on a description: at most `per` requests in each window of `every` seconds and
-`concurrent` at once, counted in the database so every worker shares them; a request past them is not sent.
+`concurrent` at once, counted in the database so every worker shares them; a request past them is not sent. An
+operation may carry a `limit` of its own besides (a tight one on posting, the description's on everything;
+[BD-74](builder/decisions.md#bd-74-a-limit-per-operation)): a request takes the description's turn, then the
+operation's, each counted apart.
 
 **XML and forms** ([BD-59](builder/decisions.md#bd-59-xml-and-form-answers)): `"answer": "xml"` reads the answer as
 XML into JSON's shape, so pointers, picks, `items_at` and mappings work on it: `{<root>: …}`, an element its text when
@@ -1359,7 +1407,44 @@ answer's (a long-lived token for a short one); `refresh: "refresh_long"` refresh
 itself) instead of the token address, with or without a refresh token; `registration: "register_app"` registers the
 platform's client at this server with an operation of its own (given `inputs.redirect_uri`, `scopes`, `client_name`;
 its result's `client_id` and `client_secret` kept, once), for a server whose registration is not RFC 7591's;
-`never_expires: true` ignores the answer's expiry. These operations sign in: they are never called as operations.
+`never_expires: true` ignores the answer's expiry; `client_id_param: "client_key"` names the client's id as the
+provider does on the authorisation address and token requests, and `scope_separator: ","` joins scopes with commas
+([BD-72](builder/decisions.md#bd-72-a-providers-own-names-for-the-client-and-its-scopes)). A `result` expression reads
+`auth.<kept>` and `account` too; kept values are hidden in a result unless named in `not_secret` (a handle a permalink
+is made from: `"not_secret": ["handle"]`, on the provider or a session;
+[BD-77](builder/decisions.md#bd-77-kept-sign-in-values-in-results)). These operations sign in:
+they are never called as operations.
+
+**A 2xx answer that is a refusal** ([BD-68](builder/decisions.md#bd-68-a-2xx-answer-that-is-a-refusal-in-the-services-words)):
+`refused_if` is a CEL expression over `answer`, `headers`, `status` and `inputs` that turns an answer whose status
+worked into a refusal (`"has(answer.ok) && !answer.ok"`, `"has(answer.errors)"`, `"answer.code != 0"`); `error_at` (a
+pointer) or `error` (an expression, `"answer.errors[0].message"`) then gives its words, on any status; `temporary_if`
+says which refusals are "later" (`"answer.errors[0].extensions.code == 'THROTTLED'"`), besides the statuses in
+`temporary`. An expression that cannot be worked out (a key the answer lacks) counts as false; use `has()`.
+
+**Another scheme for one operation** ([BD-73](builder/decisions.md#bd-73-a-tokens-scheme-for-one-operation)):
+`auth_scheme: "OAuth"` sends the connection's token as `Authorization: OAuth <token>` for that operation (`""`: the
+token alone), where the auth is a token (bearer, OAuth without DPoP, a session in `authorization`); refused otherwise.
+
+**A stored file's public address** ([BD-64](builder/decisions.md#bd-64-a-stored-files-short-lived-public-address-for-a-service-that-pulls-it)),
+for a service that pulls media by address instead of taking bytes. An operation's `public_files` names them; its
+templates read `public_files.<name>`, and a step's `inputs` too (pass it on to the step that sends it):
+
+```json
+"publish_image": {"method": "POST", "path": "/{{ inputs.account }}/media",
+  "public_files": {"photo": {"file": "{{ inputs.file }}", "minutes": 30, "end_with_call": true}},
+  "body": "{\"image_url\": {{ public_files.photo | json }}}", "result": {"id": "/id"}}
+```
+
+Each is `{PUBLIC_URL}/files/pull/{id}?s=<HMAC of the id under the server's key>`: good for that one file only, for
+`minutes` (60 unless said, at most 360), read without signing in with the file's type and length and byte ranges
+(`Range`, `206`), never cached; `end_with_call: true` ends it once the call has its answer (worked or refused; one that
+waits for the service keeps it). The caller must be able to read the file (as for a file part). A keyed call made again
+gets the address it made while it has ten minutes left. Altered, ended or past its time, the address answers 404 alike.
+The connection's log (`GET /api/admin/connections/{id}/log`) gives `addresses: [{at, operation, name, key, file, entity,
+record_id, user_id, expires_at, ended_at}]`, never the address; the signature is hidden in captures, errors and results
+wherever it appears (as written or percent-encoded). A server without `PUBLIC_URL` refuses the call: a service cannot
+pull a file from localhost. Works with the local file store and S3 alike (the server streams the object).
 
 ### Moving an app's own HTTP client onto a connection
 
@@ -1771,11 +1856,12 @@ CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/s
 workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`. A package that uses any of this
 (`layout_file`, `page`, `letterhead`, `copies`, `enabled`, a LetterHead or PrintSettings record in its seed) needs
 the app API version 0.3.3: its app says `platform: ">=0.3.3, <0.4"` (an older server refuses the fields it does not
-know). The app API is 0.3.7 now: what each version carries is in
+know). The app API is 0.3.8 now: what each version carries is in
 [BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034)
 (0.3.4), [BD-51](builder/decisions.md#bd-51-the-connector-hubs-instances-move-and-the-app-api-035) (0.3.5) and
 [BD-52](builder/decisions.md#bd-52-a-link-limited-by-another-field-of-the-record-and-the-app-api-036) (0.3.6) and
-[BD-62](builder/decisions.md#bd-62-connections-part-three-and-the-app-api-037) (0.3.7).
+[BD-62](builder/decisions.md#bd-62-connections-part-three-and-the-app-api-037) (0.3.7) and
+[BD-63](builder/decisions.md#bd-63-a-left-menu-row-for-an-apps-own-page-and-the-app-api-038) to BD-66 (0.3.8).
 
 ### Moving an app's print layout or file to a document template
 

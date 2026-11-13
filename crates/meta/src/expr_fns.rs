@@ -40,6 +40,8 @@ pub(crate) const NAMES: &[&str] = &[
     "padStart",
     "padEnd",
     "concat",
+    "sort",
+    "sortBy",
     "__isEmpty",
     "__coalesce",
     "__entered",
@@ -194,12 +196,47 @@ fn call(name: &str, a: &[C]) -> Result<C, String> {
             }
             C::String(Arc::new(out))
         }
+        // A list in a stable order (BD-69): a map's entries come out of `.map()` in no order of their own.
+        "sort" | "sortBy" => {
+            let (C::List(items), key) = (a.first().unwrap_or(&C::Null), a.get(1)) else { return Err("sorts a list".into()) };
+            arity(if name == "sort" { 1 } else { 2 })?;
+            let by = |v: &C| -> C {
+                match (v, key) {
+                    (C::Map(m), Some(C::String(k))) => m.map.get(&cel::objects::Key::String(k.clone())).cloned().unwrap_or(C::Null),
+                    _ => v.clone(),
+                }
+            };
+            let mut out: Vec<C> = items.iter().cloned().collect();
+            out.sort_by(|x, y| order(&by(x), &by(y)));
+            C::List(Arc::new(out))
+        }
         "__isEmpty" => {
             arity(1)?;
             C::Bool(is_empty(&a[0]))
         }
         "__coalesce" => a.iter().find(|v| !is_empty(v)).cloned().unwrap_or(C::Null),
         _ => return Err("unknown function".into()),
+    })
+}
+
+/// How [`call`]'s `sort` orders two values: null first, then numbers, then text, then the rest by how they print.
+fn order(x: &C, y: &C) -> std::cmp::Ordering {
+    let rank = |v: &C| match v {
+        C::Null => 0,
+        C::Int(_) | C::UInt(_) | C::Float(_) => 1,
+        C::String(_) => 2,
+        _ => 3,
+    };
+    let num = |v: &C| match v {
+        C::Int(i) => *i as f64,
+        C::UInt(u) => *u as f64,
+        C::Float(f) => *f,
+        _ => 0.0,
+    };
+    rank(x).cmp(&rank(y)).then_with(|| match (x, y) {
+        (C::String(a), C::String(b)) => a.cmp(b),
+        _ if rank(x) == 1 => num(x).total_cmp(&num(y)),
+        _ => format!("{x:?}").cmp(&format!("{y:?}")),
     })
 }
 
