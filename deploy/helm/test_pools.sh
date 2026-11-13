@@ -206,6 +206,23 @@ refuses "the pooler 2 x 40, ferrum 9 x (30 + 6)" --set database.pooler.enabled=t
 tpl --set database.pooler.enabled=true --set database.pooler.used=false --set autoscaling.maxReplicas=7 > "$tmp/unused.yaml"
 grep -q 'kind: Pooler' "$tmp/unused.yaml" && ! grep -q FERRUM_DATABASE_DIRECT_URL "$tmp/unused.yaml"
 python3 scripts/check_manifests.py "$tmp/unused.yaml"
+echo "the read address points the server at the standbys, never the migrate Job, and needs a standby"
+tpl --set database.readReplicas.enabled=true --set migrate.enabled=true --set autoscaling.maxReplicas=8 --is-upgrade > "$tmp/ro.yaml"
+python3 scripts/check_manifests.py "$tmp/ro.yaml"
+python3 - "$tmp/ro.yaml" <<'PY2'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+env = lambda d: {e["name"]: e for e in d["spec"]["template"]["spec"]["containers"][0]["env"]}
+e = env(next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ferrum"))
+assert "@ferrum-db-ro.ferrum:5432/" in e["FERRUM_DATABASE_READ_URL"]["value"], e["FERRUM_DATABASE_READ_URL"]
+assert e["FERRUM_DATABASE_READ_MAX_LAG_SECS"]["value"] == "10"
+names = list(e)
+assert names.index("FERRUM_DB_PASSWORD") < names.index("FERRUM_DATABASE_READ_URL"), "a variable is used before it is set"
+assert "FERRUM_DATABASE_READ_URL" not in env(next(d for d in docs if d["kind"] == "Job"))
+PY2
+tpl --set database.readReplicas.enabled=true --set database.pooler.enabled=true | grep -c "name: FERRUM_DB_PASSWORD" | grep -qx 1
+! tpl | grep -q FERRUM_DATABASE_READ_URL
+refuses "database.readReplicas needs database.instances of 2 or more" --set database.readReplicas.enabled=true --set database.instances=1
 refuses "needs database.enabled" --set database.pooler.enabled=true --set database.enabled=false --set database.urlSecret.name=x
 refuses "is the name of another part of the chart" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"db-pooler"}]'
 

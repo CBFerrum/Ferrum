@@ -232,6 +232,12 @@ database:
     resources:
       requests: {cpu: 100m, memory: 64Mi}
       limits: {memory: 256Mi}
+  # Reports and the reading of exports from the standbys (CloudNativePG's read-only service, `-ro`): sets
+  # FERRUM_DATABASE_READ_URL. Each read goes there only while the standby is within maxLagSeconds and has
+  # replayed what the primary had committed when the read began; otherwise to the primary. Needs instances >= 2.
+  readReplicas:
+    enabled: false
+    maxLagSeconds: 10
   # How the database starts, read once when the Cluster is created (docs/operations.md, "Moving from one
   # shape to another"). Keep the same values on later upgrades.
   #   empty     a new, empty database

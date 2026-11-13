@@ -105,6 +105,22 @@ generates is letters and digits only, so it needs no escaping in the address. */
       name: {{ .Values.metricsEngine.tokenSecret.name }}
       key: {{ .Values.metricsEngine.tokenSecret.key }}
 {{- end }}
+{{- if and .Values.database.enabled .Values.database.readReplicas.enabled (not .direct) }}
+{{- if lt (int .Values.database.instances) 2 }}
+{{- fail "database.readReplicas needs database.instances of 2 or more: one instance has no standby to read from" }}
+{{- end }}
+{{- $n := include "ferrum.fullname" . -}}
+{{- if not (and .Values.database.pooler.enabled .Values.database.pooler.used) }}
+- name: FERRUM_DB_USER
+  valueFrom: {secretKeyRef: {name: {{ $n }}-db-app, key: username}}
+- name: FERRUM_DB_PASSWORD
+  valueFrom: {secretKeyRef: {name: {{ $n }}-db-app, key: password}}
+- name: FERRUM_DB_NAME
+  valueFrom: {secretKeyRef: {name: {{ $n }}-db-app, key: dbname}}
+{{- end }}
+- {name: FERRUM_DATABASE_READ_URL, value: "postgresql://$(FERRUM_DB_USER):$(FERRUM_DB_PASSWORD)@{{ $n }}-db-ro.{{ .Release.Namespace }}:5432/$(FERRUM_DB_NAME)"}
+- {name: FERRUM_DATABASE_READ_MAX_LAG_SECS, value: {{ .Values.database.readReplicas.maxLagSeconds | quote }}}
+{{- end }}
 {{- with .Values.extraEnv }}
 {{ toYaml . }}
 {{- end }}
