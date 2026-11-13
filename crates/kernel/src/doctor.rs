@@ -49,6 +49,10 @@ const RESERVED_CONNECTIONS: i32 = 20;
 /// Fewer connections than this per replica and requests wait behind the replica's own work: its job workers and
 /// event loops can hold seven at once. With four, a server could not answer its health check.
 pub const POOL_FLOOR: u32 = 10;
+
+/// What one server replica opens besides its pool (`FERRUM_DB_MAX_CONNECTIONS`): the side pool's 4 and Loco's own 2
+/// (docs/operations.md, "Database role").
+pub const BESIDE_POOL: u32 = crate::db::SIDE_CONNECTIONS + 2;
 /// Read before anyone's workspace is known, so they hold a tenant's id without row-level security:
 /// the host a request came to, and slugs retired for good. Their migrations say why.
 const CLUSTER_TABLES: [&str; 2] = ["tenant_host", "tenant_slug_retired"];
@@ -65,7 +69,7 @@ impl Kernel {
         } else {
             Finding::warning("database.version", format!("PostgreSQL {}, and Ferrum is tested on 17", version / 10000), "Upgrade PostgreSQL to 17.")
         });
-        out.push(if (pool_size as i32 + 4) * 2 + 20 <= max_connections {
+        out.push(if ((pool_size + BESIDE_POOL) * 2 + 20) as i32 <= max_connections {
             Finding::ok("database.connections", format!("{max_connections} allowed, {pool_size} per replica"))
         } else {
             Finding::warning(

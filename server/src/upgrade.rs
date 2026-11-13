@@ -75,7 +75,7 @@ pub async fn verify(k: &Kernel) -> Result<()> {
 
 /// Runs the steps; returns each with the workspaces it was waiting for.
 pub async fn run(k: &Kernel) -> Result<Vec<(&'static str, usize)>> {
-    let mut conn = k.db.pool.acquire().await?;
+    let mut conn = k.db.direct.acquire().await?;
     sqlx::query("select pg_advisory_lock($1)").bind(LOCK).execute(&mut *conn).await?;
     let out = async {
         let mut waiting = Vec::new();

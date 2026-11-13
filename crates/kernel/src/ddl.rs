@@ -405,7 +405,8 @@ pub async fn lacks(db: &Db, catalog: &Catalog) -> Result<Vec<String>> {
 }
 
 pub async fn sync(db: &Db, catalog: &Catalog, force: bool) -> Result<SyncReport> {
-    let mut conn = db.pool.acquire().await?;
+    // A session lock, and `create index concurrently` outside any transaction: the direct address.
+    let mut conn = db.direct.acquire().await?;
     sqlx::query("select pg_advisory_lock($1)").bind(SYNC_LOCK).execute(&mut *conn).await?;
     let result = sync_locked(&mut conn, catalog, force).await;
     let _ = sqlx::query("select pg_advisory_unlock($1)").bind(SYNC_LOCK).execute(&mut *conn).await;

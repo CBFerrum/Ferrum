@@ -198,6 +198,20 @@ pub struct Settings {
     /// or `https:`). Empty: the server's address when it is https.
     #[serde(default)]
     pub push_contact: String,
+    /// `FERRUM_DATABASE_DIRECT_URL`: PostgreSQL itself, for LISTEN, session locks and migrations, when `DATABASE_URL` is
+    /// a pooler in transaction mode. Empty: `DATABASE_URL`.
+    #[serde(default)]
+    pub database_direct_url: String,
+    /// `FERRUM_DATABASE_READ_URL`: a replica reports and exports may read from. Empty: none.
+    #[serde(default)]
+    pub database_read_url: String,
+    /// `FERRUM_DATABASE_READ_MAX_LAG_SECS`: past this replay lag, they read from the primary.
+    #[serde(default = "default_read_max_lag")]
+    pub database_read_max_lag_secs: u64,
+}
+
+fn default_read_max_lag() -> u64 {
+    10
 }
 
 fn default_session_days() -> u32 {

@@ -97,6 +97,12 @@ services:
       FERRUM_ASSISTANT_EFFORT: ${FERRUM_ASSISTANT_EFFORT:-}
       FERRUM_ASSISTANT_FALLBACKS: ${FERRUM_ASSISTANT_FALLBACKS:-}
       FERRUM_ASSISTANT_CALLS_PER_HOUR: ${FERRUM_ASSISTANT_CALLS_PER_HOUR:-}
+      # With PgBouncer (transaction mode) as DATABASE_URL: PostgreSQL itself, for LISTEN, session locks and
+      # migrations. And a replica reports and exports may read from, while within the lag limit (seconds).
+      # docs/operations.md, "Deployment shapes".
+      FERRUM_DATABASE_DIRECT_URL: ${FERRUM_DATABASE_DIRECT_URL:-}
+      FERRUM_DATABASE_READ_URL: ${FERRUM_DATABASE_READ_URL:-}
+      FERRUM_DATABASE_READ_MAX_LAG_SECS: ${FERRUM_DATABASE_READ_MAX_LAG_SECS:-10}
     ports:
       - "${FERRUM_PORT:-8080}:5150"
     volumes:

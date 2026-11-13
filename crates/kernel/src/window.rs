@@ -189,7 +189,7 @@ pub(crate) struct Deciding(PgConnection);
 impl Deciding {
     pub(crate) async fn lock(db: &crate::Db) -> Result<Deciding> {
         // Detached: if this start fails half-way, the connection closes and the lock goes with it.
-        let mut conn = db.pool.acquire().await?.detach();
+        let mut conn = db.direct.acquire().await?.detach();
         wait(&mut conn, "pg_try_advisory_lock").await?;
         Ok(Deciding(conn))
     }
@@ -219,7 +219,7 @@ impl Kernel {
     /// migrates in between; `None` for a guest, which skips them. Refused when a newer build that does not let this
     /// one in has migrated the database since this one started.
     pub async fn hold_start(&self) -> Result<Option<StartHold>> {
-        let mut conn = self.db.pool.acquire().await?.detach();
+        let mut conn = self.db.direct.acquire().await?.detach();
         wait(&mut conn, "pg_try_advisory_lock_shared").await?;
         let unknown = self.db.unknown_migrations().await?;
         let rec = recorded(&mut conn).await;

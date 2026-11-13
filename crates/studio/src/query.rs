@@ -1459,6 +1459,7 @@ pub(crate) mod tests {
             settings: None,
             egress: None,
             read_only: false,
+            origin: None,
         }
     }
 

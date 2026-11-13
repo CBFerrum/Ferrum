@@ -9,7 +9,6 @@
 use dashmap::DashMap;
 use ferrum_kernel::{Db, Error, Result};
 use serde_json::{Value, json};
-use sqlx::postgres::PgListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::mpsc::error::TrySendError;
@@ -208,21 +207,17 @@ impl SocketHub {
         let hub = self.clone();
         tokio::spawn(async move {
             loop {
-                let mut listener = match PgListener::connect_with(&db.pool).await {
+                let mut listener = match db.listen(CHANNEL).await {
                     Ok(l) => l,
                     Err(e) => {
                         tracing::warn!("socket listener: {e}");
                         tokio::select! { _ = shutdown.changed() => return, _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => continue }
                     }
                 };
-                if let Err(e) = listener.listen(CHANNEL).await {
-                    tracing::warn!("socket listener: {e}");
-                    continue;
-                }
                 loop {
                     tokio::select! {
                         _ = shutdown.changed() => return,
-                        n = listener.recv() => match n {
+                        n = ferrum_kernel::db::notification(&mut listener) => match n {
                             Ok(n) => hub.on_notification(n.payload()),
                             Err(e) => {
                                 tracing::warn!("socket listener lost its connection: {e}");

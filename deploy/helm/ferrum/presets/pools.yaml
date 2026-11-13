@@ -1,7 +1,10 @@
 # Four pools on one gateway. `general` keeps today's names and answers what no other pool's route takes;
 # `public` answers the portal host; `finance` answers the API calls of the apps named (matched on the
 # X-Ferrum-UI header; use your apps' ids); `worker` runs the background work. Every pool holds every app.
-# Connections: 4 x 34 + 3 x 24 + 2 x 34 + 2 x 24 + 20 = 344 of 370.
+# Connections: every pool 18 + 6 each, one more pod each in a
+# rollout: (4 + 1 + 3 + 1 + 2 + 1 + 2 + 1) x 24 + 20 = 380 of 380.
+# Four pools need smaller ones than the default 30 to fit the role without a pooler.
+dbMaxConnections: 18
 pools:
   - name: general
     background: "off"
@@ -9,7 +12,6 @@ pools:
   - name: public
     background: "off"
     autoscaling: {minReplicas: 2, maxReplicas: 3}
-    dbMaxConnections: 20
     routes:
       - {gateway: public, hostnames: [portal.example.com]}
   - name: finance
@@ -21,4 +23,3 @@ pools:
     background: only
     autoscaling: {enabled: false}
     replicas: 2
-    dbMaxConnections: 20

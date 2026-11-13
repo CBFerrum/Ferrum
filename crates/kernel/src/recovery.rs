@@ -315,7 +315,8 @@ impl Kernel {
             return Err(Error::field("note", "say why"));
         }
         let tenant = ctx.tenant;
-        let source = Db::connect(DbConfig { url: source_url.to_string(), max_connections: 2, ..Default::default() }).await?;
+        let source =
+            Db::connect(DbConfig { url: source_url.to_string(), max_connections: 2, direct_url: Some(source_url.to_string()), ..Default::default() }).await?;
         if which(&source).await? == which(&self.db).await? {
             return Err(Error::Conflict("that is this database, not a copy of it".into()));
         }

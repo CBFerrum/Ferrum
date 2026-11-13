@@ -94,6 +94,11 @@ spec:
             - {name: FERRUM_OFFICE_ORIGIN, value: "https://office.example.com"}
             - {name: FERRUM_DB_MAX_CONNECTIONS, value: "30"}
             - {name: LOG_LEVEL, value: "info"}
+            # With PgBouncer (transaction mode) as DATABASE_URL, PostgreSQL itself; a replica for reports and
+            # exports, and its lag limit in seconds (docs/operations.md, "Deployment shapes"):
+            # - {name: FERRUM_DATABASE_DIRECT_URL, value: "postgresql://…@ferrum-db-rw:5432/ferrum"}
+            # - {name: FERRUM_DATABASE_READ_URL, value: "postgresql://…@ferrum-db-ro:5432/ferrum"}
+            # - {name: FERRUM_DATABASE_READ_MAX_LAG_SECS, value: "10"}
           resources:
             requests: {cpu: 250m, memory: 256Mi}
             limits: {memory: 1Gi}
