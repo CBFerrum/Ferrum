@@ -138,6 +138,9 @@ pub struct Provider {
     /// What scopes are joined with: a space unless said (`,` for a provider that wants commas).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope_separator: Option<String>,
+    /// Kept fields that are not secret (a handle a permalink is made from): a result may show them (BD-77).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_secret: Vec<String>,
 }
 
 impl Provider {
@@ -171,6 +174,9 @@ impl Provider {
         }
         if self.keep.iter().any(|k| !is_name(k) || ["access_token", "refresh_token"].contains(&k.as_str())) {
             return Some("auth.provider.keep names fields of the token answer (not the tokens)".into());
+        }
+        if self.not_secret.iter().any(|n| !self.keep.contains(n)) {
+            return Some("auth.provider.not_secret names fields it keeps".into());
         }
         if self.client_secret.as_deref().is_some_and(|s| !is_name(s)) {
             return Some("auth.provider.client_secret names one of the connection's secrets".into());

@@ -397,7 +397,21 @@ pub enum Auth {
         /// Fields of the login's answer kept with the tokens: `auth.<name>` (BD-61).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keep: Vec<String>,
+        /// Kept fields that are not secret (BD-77): a result may show them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        not_secret: Vec<String>,
     },
+}
+
+impl Auth {
+    /// What a sign-in keeps, and which of it is not secret (BD-77).
+    fn kept(&self) -> (&[String], &[String]) {
+        match self {
+            Auth::Oauth { provider, .. } => (&provider.keep, &provider.not_secret),
+            Auth::Session { keep, not_secret, .. } => (keep, not_secret),
+            _ => (&[], &[]),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -812,6 +826,10 @@ impl Description {
             && let Some(p) = self.any_host_problem()
         {
             return Some(format!("any_host: {p}"));
+        }
+        let (keep, plain) = self.auth.kept();
+        if plain.iter().any(|n| !keep.contains(n)) {
+            return Some("auth: not_secret names fields it keeps".into());
         }
         let token = matches!(&self.auth, Auth::Bearer { .. } | Auth::Session { header: None, .. })
             || matches!(&self.auth, Auth::Oauth { provider, .. } if !provider.dpop);
@@ -1749,7 +1767,32 @@ impl Kernel {
         let headers = Value::Object(a.headers.iter().map(|(h, v)| (h.clone(), Value::String(v.clone()))).collect());
         let connection = json!({"name": conn.name, "id": conn.id});
         let (now, today) = clock_vars(Utc::now());
-        let vars = [("answer", &a.body), ("headers", &headers), ("inputs", inputs), ("connection", &connection), ("now", &now), ("today", &today)];
+        // The signed-in account and what its sign-in kept (BD-77), read only when a result names them; kept values not
+        // declared `not_secret` are hidden wherever the result shows them.
+        let said = op.result.values().any(|p| p.contains("auth.") || p.contains("account"));
+        let (account, auth) = if said { self.account_vars(conn, ctx).await? } else { (Value::Null, json!({})) };
+        let (_, plain) = conn.desc.auth.kept();
+        let hidden: Vec<String> = auth
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(k, _)| !plain.contains(k))
+            .filter_map(|(_, v)| match v {
+                Value::String(s) => Some(s.clone()),
+                Value::Null => None,
+                other => Some(other.to_string()),
+            })
+            .collect();
+        let vars = [
+            ("answer", &a.body),
+            ("headers", &headers),
+            ("inputs", inputs),
+            ("connection", &connection),
+            ("now", &now),
+            ("today", &today),
+            ("auth", &auth),
+            ("account", &account),
+        ];
         let mut out = Map::new();
         for (name, pick) in &op.result {
             let p = Pick::of(pick).map_err(Error::invalid)?.spec(false);
@@ -1760,7 +1803,7 @@ impl Kernel {
             if p.required && v.is_null() {
                 return Err(Error::invalid(format!("the answer has no {name}")));
             }
-            out.insert(name.clone(), v);
+            out.insert(name.clone(), masked(&v, &hidden));
         }
         Ok(Value::Object(out))
     }

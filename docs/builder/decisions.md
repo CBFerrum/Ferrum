@@ -1948,3 +1948,16 @@ Decided 13 November 2026.
 * **Masked**: the values join what that request's capture, errors and result hide. The earlier answer that gave them is
   an answer like any other: the platform cannot know beforehand that a field of it is a secret.
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-77. Kept sign-in values in results
+
+Decided 13 November 2026.
+
+* **The gap**: what a sign-in kept (`keep`: an open id, the account's handle) reached templates (`auth.<name>`) but not a
+  `result`'s expressions, so a permalink built from the handle could not be made.
+* **Results read them**: a result expression gets `auth` (the kept fields) and `account`, loaded only when a result
+  names them.
+* **Secret unless said**: a kept value appears in a result as dots wherever it shows (masking, as the secrets), unless
+  the provider (or a session) lists it in `not_secret`, which must name fields it keeps. A handle is public; an open id
+  or a device id may not be, and the platform cannot tell, so the default stays hidden.
+* Part of the App API 0.3.8 (BD-63).
