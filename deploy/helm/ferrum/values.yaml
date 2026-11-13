@@ -75,6 +75,16 @@ pools: []
 #   nodeSelector: {}
 #   tolerations: []
 #   priorityClassName: ""
+#   zone: ""                   # a name from `zones`: FERRUM_ZONE, and the pod label ferrum.dev/zone
+
+# Zones (docs/plan/topology.md, D4): name -> rule, given to every pool as FERRUM_ZONES (JSON). A rule:
+# {staff: all | none | [app, ...], admin: true|false, scim: true|false, networks: [cidr, ...]}.
+# Empty: one unnamed zone admitting everyone, as before.
+zones: {}
+# public: {staff: none}
+# office: {staff: all}
+zoneDefault: ""   # FERRUM_ZONE_DEFAULT: the zone of a request no host or network places
+zoneMode: ""      # FERRUM_ZONE_MODE: enforce (the server's default) or report
 
 # Only the Gateway's proxies and Prometheus may reach the server; it may reach the database, the
 # PDF renderer, DNS and HTTPS/SMTP endpoints.
