@@ -689,7 +689,9 @@ impl PluginHost {
         let ctx = if m.entities.is_empty() {
             ctx
         } else {
-            fresh = k.load_ctx(ctx.tenant, ctx.user, None, ctx.request_id.clone()).await?;
+            // The installing administrator of this same request, again with the new entities in the
+            // schema: in the zone the request came in by, so it is admitted, or refused, as before.
+            fresh = k.reload(ctx, None).await?;
             &fresh
         };
 
