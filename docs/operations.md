@@ -165,8 +165,10 @@ helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
 * *Migrations.* Off by default: every pod migrates itself as it starts. `migrate.enabled` adds a Helm hook Job that runs
   `ferrum task migrate` before an install or upgrade (`migrate.args`) and sets `FERRUM_MIGRATE_AT_START=false` on the
   server (`migrate.serverEnv`), so the pods only check that the database is ready and refuse to start, naming the
-  command, when it is not. On a first install with `database.enabled` the hook runs before the database exists and
-  fails: use it for upgrades, or with a database of your own (`database.urlSecret`).
+  command, when it is not. On a first install with `database.enabled` the database does not exist yet when hooks run,
+  so that one install has no Job and the pods migrate themselves; every `helm upgrade` after it uses the Job. (Tools
+  that render with `helm template` and never mark an upgrade, such as some GitOps setups, then never get the Job:
+  the pods keep migrating themselves, which is safe.)
 
 `bash deploy/helm/test.sh` (CI runs it) fails when the chart and `deploy/k8s` differ in resources, environment variables,
 ports, probes, security context or resources.

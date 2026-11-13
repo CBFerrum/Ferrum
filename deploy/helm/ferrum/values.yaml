@@ -245,8 +245,8 @@ metricsEngine:
 # server's pods also get `serverEnv`, FERRUM_MIGRATE_AT_START=false: they no longer migrate as they
 # start, only check that the Job did, and refuse to start (naming the command) when it has not.
 # Off, each pod migrates itself at start, as the Compose files do.
-# With database.enabled the Cluster does not exist yet on the first install (hooks run first), so
-# the Job would fail: enable it for upgrades, or for a database of your own (database.urlSecret).
+# With database.enabled the Cluster does not exist yet on the first install (hooks run first), so on
+# that install the chart renders no Job and the pods migrate themselves; every upgrade after uses the Job.
 migrate:
   enabled: false
   args: ["task", "migrate"]

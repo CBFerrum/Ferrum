@@ -77,10 +77,14 @@ PY
 
 echo "migration job is a pre-install,pre-upgrade hook, and off by default"
 ! tpl -f "$tmp/digest.yaml" | grep -q 'kind: Job'
-tpl -f "$tmp/digest.yaml" --set migrate.enabled=true | grep -q 'helm.sh/hook: pre-install,pre-upgrade'
+tpl -f "$tmp/digest.yaml" --set migrate.enabled=true --is-upgrade | grep -q 'helm.sh/hook: pre-install,pre-upgrade'
+tpl -f "$tmp/digest.yaml" --set migrate.enabled=true,database.enabled=false,database.urlSecret.name=db | grep -q 'helm.sh/hook: pre-install,pre-upgrade'
+
+echo "on the first install with the chart's own database (not there yet when hooks run), the pods migrate themselves"
+! tpl -f "$tmp/digest.yaml" --set migrate.enabled=true | grep -qE 'kind: Job|FERRUM_MIGRATE_AT_START'
 
 echo "enabling it runs the migrate task and stops the server from migrating itself"
-tpl -f "$tmp/digest.yaml" --set migrate.enabled=true > "$tmp/m.yaml"
+tpl -f "$tmp/digest.yaml" --set migrate.enabled=true --is-upgrade > "$tmp/m.yaml"
 python3 - "$tmp/m.yaml" <<'PY'
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]

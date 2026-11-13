@@ -116,9 +116,10 @@ Call with (list . pool). */}}
 {{- toYaml $env -}}
 {{- end -}}
 
-{{/* "true" when the migrate Job is rendered. */}}
+{{/* "true" when the migrate Job is rendered. Not on the first install with the chart's own database: the
+hook would run before the database exists, so the pods migrate themselves that once. */}}
 {{- define "ferrum.migrateJob" -}}
-{{- if .Values.migrate.enabled }}true{{ end -}}
+{{- if and .Values.migrate.enabled (or (not .Values.database.enabled) .Release.IsUpgrade) }}true{{ end -}}
 {{- end -}}
 
 {{/*
