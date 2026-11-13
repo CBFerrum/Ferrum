@@ -150,7 +150,8 @@ pub struct Limit {
 const TURN_WAIT: Duration = Duration::from_secs(10);
 
 /// The keys of an operation that are [`More`]'s.
-const MORE: [&str; 11] = ["steps", "url", "success", "credentials", "form_fields", "answer", "lists", "public_files", "refused_if", "temporary_if", "error"];
+const MORE: [&str; 12] =
+    ["steps", "url", "success", "credentials", "form_fields", "answer", "lists", "public_files", "refused_if", "temporary_if", "error", "auth_scheme"];
 
 /// Read as derived, each operation's [`More`] keys taken apart first.
 impl<'de> Deserialize<'de> for Description {
@@ -233,6 +234,10 @@ pub struct More {
     /// An expression giving a refusal's words (`answer.errors[0].message`), in place of `error_at`'s pointer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The scheme its token is sent under in `Authorization` in place of `Bearer` (`OAuth`, `Token`; empty: the token
+    /// alone), for a connection whose auth is a token (BD-73).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_scheme: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +261,7 @@ static NO_MORE: More = More {
     refused_if: None,
     temporary_if: None,
     error: None,
+    auth_scheme: None,
 };
 
 impl More {
@@ -268,6 +274,9 @@ impl More {
         }
         if let Some(p) = self.public_files.iter().find_map(|(n, p)| p.problem(n)) {
             return Some(p);
+        }
+        if self.auth_scheme.as_deref().is_some_and(|s| s.len() > 30 || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))) {
+            return Some("auth_scheme is a word such as OAuth, or empty".into());
         }
         if let Some(p) = [&self.refused_if, &self.temporary_if, &self.error]
             .into_iter()
@@ -748,6 +757,11 @@ impl Description {
         {
             return Some(format!("any_host: {p}"));
         }
+        let token = matches!(&self.auth, Auth::Bearer { .. } | Auth::Session { header: None, .. })
+            || matches!(&self.auth, Auth::Oauth { provider, .. } if !provider.dpop);
+        if !token && let Some(n) = self.operations.keys().find(|n| self.more(n).auth_scheme.is_some()) {
+            return Some(format!("{n}: auth_scheme is for a connection whose auth is a token (bearer, oauth, a session's)"));
+        }
         if self.timeout_ms.is_some_and(|t| t == 0 || t > MAX_TIMEOUT_MS) {
             return Some(format!("timeout_ms is 1 to {MAX_TIMEOUT_MS}"));
         }
@@ -1099,6 +1113,16 @@ pub(crate) fn at(v: &Value, pointer: Option<&str>) -> Option<String> {
         Value::String(s) => Some(s.clone()),
         Value::Null => None,
         other => Some(other.to_string()),
+    }
+}
+
+/// The token in `Authorization` sent under `scheme` in place of the one the auth gave (BD-73): empty, the token alone.
+fn rescheme(headers: &mut [(String, String)], scheme: Option<&str>) {
+    let Some(scheme) = scheme else { return };
+    for (_, v) in headers.iter_mut().filter(|(h, _)| h.eq_ignore_ascii_case("authorization")) {
+        if let Some((_, token)) = v.split_once(' ') {
+            *v = if scheme.is_empty() { token.to_string() } else { format!("{scheme} {token}") };
+        }
     }
 }
 
@@ -1785,8 +1809,9 @@ impl Kernel {
             for (h, v) in conn.desc.headers.iter().chain(&op.headers) {
                 headers.push((h.clone(), r(v)?));
             }
-            let more = self.authenticate(ctx, conn, &mut headers, None, &reqwest::Method::GET, &url).await?;
-            return Ok((Request { method: reqwest::Method::GET, url, headers, body: None }, more));
+            let hidden = self.authenticate(ctx, conn, &mut headers, None, &reqwest::Method::GET, &url).await?;
+            rescheme(&mut headers, more.auth_scheme.as_deref());
+            return Ok((Request { method: reqwest::Method::GET, url, headers, body: None }, hidden));
         }
         // A whole address (one an earlier answer gave) is taken as it is: the guard holds it to the connection's hosts.
         let address = match &more.url {
@@ -1856,6 +1881,7 @@ impl Kernel {
         } else {
             self.authenticate(ctx, conn, &mut headers, body.as_ref().map(|b| b.0.as_slice()), &method, &url).await?
         };
+        rescheme(&mut headers, more.auth_scheme.as_deref());
         Ok((Request { method, url, headers, body }, hidden))
     }
 
