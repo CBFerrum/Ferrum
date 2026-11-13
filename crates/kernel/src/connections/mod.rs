@@ -1245,21 +1245,17 @@ impl Kernel {
             return Err(Error::invalid(format!("{} changes something at the service, so it needs a key", c.operation)));
         }
         let given = digest(&inputs);
-        if let Some(key) = key.filter(|_| changes)
-            && let Some((was, result)) = self.done_before(&conn, &c.operation, key).await?
-        {
-            return if was == given {
-                Ok(result)
-            } else {
-                Err(Error::Conflict(format!("the key {key} was used for {} with other inputs: a new request needs a new key", c.operation)))
-            };
-        }
-        // One worker makes a key at a time; its clock is fixed at its first attempt.
+        // One worker makes a key at a time, and a key that went through answers what it gave; its clock is fixed at
+        // its first attempt.
         let (mut held, mut clock) = (None, Utc::now());
         if let Some(key) = key.filter(|_| changes) {
             held = Some(self.hold_key(&conn, &c.operation, key).await?.ok_or_else(|| Error::RetryAfter(format!("the call {key} is being made"), 5))?);
             if let Some((was, result)) = self.done_before(&conn, &c.operation, key).await? {
-                return if was == given { Ok(result) } else { Err(Error::Conflict(format!("the key {key} was used for {} with other inputs", c.operation))) };
+                return if was == given {
+                    Ok(result)
+                } else {
+                    Err(Error::Conflict(format!("the key {key} was used for {} with other inputs: a new request needs a new key", c.operation)))
+                };
             }
             let a = self.key_attempt(&conn, &c.operation, key, &given).await?;
             if !more.steps.is_empty() && a.digest != given {
