@@ -612,6 +612,11 @@ impl Kernel {
         let (ent, plan) = match plan {
             Ok(p) => p,
             Err(e) => {
+                // A newer build may read what this one cannot: its moments are left for it, not passed (window.rs).
+                if self.newer_build_here().await? {
+                    tracing::debug!(%tenant, automation = %id, "scheduled automation left for a newer build: {e}");
+                    return Ok(false);
+                }
                 // The entity or the field has gone since it was saved: nothing is due until it is saved again.
                 tracing::warn!(%tenant, automation = %id, "scheduled automation cannot be looked at: {e}");
                 finish(now).execute(&mut *tx).await?;

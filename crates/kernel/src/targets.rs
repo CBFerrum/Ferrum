@@ -253,6 +253,10 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(tenant).await?;
         let key = "tenant_id = $2 and entity = $3 and record_id = $4 and target = $5";
         if !schema.entity(entity).is_some_and(|e| e.def.targets.iter().any(|t| t.name == name)) {
+            // Unknown here, but perhaps a newer build's: kept for it (window.rs).
+            if self.newer_build_here().await? {
+                return Ok(false);
+            }
             // The target or its entity is gone: its rounds go with it.
             sqlx::query("delete from record_target where tenant_id = $1 and entity = $2 and record_id = $3 and target = $4")
                 .bind(tenant)

@@ -320,6 +320,12 @@ pub fn cluster_schema(catalog: &Catalog) -> Result<Schema> {
     effective::build(catalog, &all, &[], 0).map_err(|e| Error::Internal(format!("catalog: {e}")))
 }
 
+/// The words for constraint refusals, for a start that does not sync (a guest, or one that does not migrate).
+pub fn words(catalog: &Catalog) -> Result<()> {
+    constraint_messages(&cluster_schema(catalog)?);
+    Ok(())
+}
+
 fn fingerprint(catalog: &Catalog) -> String {
     format!("{}:{DDL_VERSION}", catalog.fingerprint())
 }
@@ -339,11 +345,15 @@ pub async fn sync(db: &Db, catalog: &Catalog, force: bool) -> Result<SyncReport>
 }
 
 async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) -> Result<SyncReport> {
+    // Only forward: a build older than the one that last synced changes nothing (window.rs).
+    crate::window::refuse_older(conn).await?;
     let current: Option<String> = sqlx::query_scalar("select value from cluster_state where key = 'catalog_fingerprint'").fetch_optional(&mut *conn).await?;
     let fingerprint = fingerprint(catalog);
     let schema = cluster_schema(catalog)?;
     constraint_messages(&schema);
     if !force && current.as_deref() == Some(fingerprint.as_str()) {
+        // A build with the same catalog still says that it is here, so older ones can tell.
+        crate::window::record(conn).await?;
         return Ok(SyncReport { skipped: true, ..Default::default() });
     }
     let mut ddl = Ddl { conn, report: SyncReport::default(), constraints: HashSet::new(), policies: HashSet::new(), columns: HashMap::new() };
@@ -503,6 +513,7 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
     .bind(&fingerprint)
     .execute(&mut *ddl.conn)
     .await?;
+    crate::window::record(ddl.conn).await?;
     for w in &ddl.report.warnings {
         tracing::warn!("schema sync: {w}");
     }
