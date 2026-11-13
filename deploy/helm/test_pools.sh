@@ -125,6 +125,48 @@ refuses "cannot be background: only" --set-json 'pools=[{"name":"web","backgroun
 refuses "has no routes" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"b","background":"only","routes":[{"apps":["x"]}]}]'
 refuses "both take all of host h.example.com" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"b","routes":[{"hostnames":["h.example.com"]}]},{"name":"c","routes":[{"hostnames":["h.example.com"]}]}]'
 
+echo "the database starts empty by default, or from another server or a backup, and refuses what a mode lacks"
+src=(--set database.bootstrap.source.host=old.example.com --set database.bootstrap.source.passwordSecret.name=old-db)
+for mode in import copy recovery; do
+  extra=()
+  case $mode in
+    import) extra=("${src[@]}" --set database.bootstrap.source.user=postgres) ;;
+    copy) extra=("${src[@]}" --set database.bootstrap.source.user=streaming_replica) ;;
+    recovery) extra=(--set database.backup.serverName=ferrum-db-2 --set database.bootstrap.recovery.targetTime="2026-11-14 10:00:00+00") ;;
+  esac
+  tpl --set database.bootstrap.mode=$mode "${extra[@]}" > "$tmp/db-$mode.yaml"
+done
+tpl > "$tmp/db-empty.yaml"
+python3 - "$tmp" <<'PY2'
+import sys, yaml
+def cluster(mode):
+    docs = [d for d in yaml.safe_load_all(open(f"{sys.argv[1]}/db-{mode}.yaml")) if d]
+    return next(d for d in docs if d["kind"] == "Cluster")["spec"]
+assert cluster("empty")["bootstrap"] == {"initdb": {"database": "ferrum", "owner": "ferrum"}}
+assert "externalClusters" not in cluster("empty")
+c = cluster("import")
+assert c["bootstrap"]["initdb"]["import"] == {"type": "microservice", "databases": ["ferrum"], "source": {"externalCluster": "origin"}}, c
+assert c["externalClusters"][0]["connectionParameters"]["host"] == "old.example.com"
+assert c["externalClusters"][0]["password"] == {"name": "old-db", "key": "password"}
+c = cluster("copy")
+assert c["bootstrap"] == {"pg_basebackup": {"source": "origin", "database": "ferrum", "owner": "ferrum"}}, c
+assert c["externalClusters"][0]["connectionParameters"]["user"] == "streaming_replica"
+c = cluster("recovery")
+assert c["bootstrap"]["recovery"]["recoveryTarget"] == {"targetTime": "2026-11-14 10:00:00+00"}, c
+assert c["externalClusters"][0]["plugin"]["parameters"] == {"barmanObjectName": "ferrum-backups", "serverName": "ferrum-db"}
+# The recovered cluster writes its own backups under its new name, never over the ones it reads.
+assert c["plugins"][0]["parameters"] == {"barmanObjectName": "ferrum-backups", "serverName": "ferrum-db-2"}, c["plugins"]
+assert "serverName" not in cluster("empty")["plugins"][0]["parameters"]
+PY2
+refuses "set database.bootstrap.source.host" --set database.bootstrap.mode=import
+refuses "a superuser: row-level security" --set database.bootstrap.mode=import --set database.bootstrap.source.host=h
+refuses "REPLICATION and LOGIN" --set database.bootstrap.mode=copy --set database.bootstrap.source.host=h
+refuses "source.passwordSecret.name" --set database.bootstrap.mode=copy --set database.bootstrap.source.host=h --set database.bootstrap.source.user=r
+refuses "set database.backup.serverName to a new name" --set database.bootstrap.mode=recovery
+refuses 'not "restore"' --set database.bootstrap.mode=restore
+# Reading another cluster's backups needs no new name.
+tpl --set database.bootstrap.mode=recovery --set database.bootstrap.recovery.serverName=old-db > /dev/null
+
 echo "an app's calls are matched on X-Ferrum-UI, anchored, and other paths stay with the host"
 python3 - "$tmp/pools.yaml" <<'PY'
 import re, sys, yaml

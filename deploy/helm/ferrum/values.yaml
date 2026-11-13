@@ -185,6 +185,37 @@ database:
     credentialsSecret: ferrum-backup-s3  # keys ACCESS_KEY_ID, ACCESS_SECRET_KEY
     retention: 30d
     schedule: "0 0 2 * * *"            # six fields, seconds first
+    # The name this cluster's backups and WAL go under in destinationPath (empty: "<fullname>-db"). A new
+    # cluster refuses to archive where one of the same name already did: give it a new name when it starts
+    # from a copy or a backup of a cluster that wrote there.
+    serverName: ""
+  # How the database starts, read once when the Cluster is created (docs/operations.md, "Moving from one
+  # shape to another"). Keep the same values on later upgrades.
+  #   empty     a new, empty database
+  #   import    a dump of one database from a running PostgreSQL (pg_dump, then pg_restore here); any
+  #             version up to imageName's. The server treats the result as restored from a backup and holds
+  #             mail, webhooks, jobs and commands until an operator releases them.
+  #   copy      a physical copy of a running PostgreSQL (pg_basebackup), which must run imageName's major
+  #             version (17) on the same architecture with the same tablespaces, allow a replication
+  #             connection from this cluster in pg_hba.conf and have max_wal_senders free for two. It keeps
+  #             the database's identity, but starts on a new timeline: the server holds as after a restore
+  #             unless FERRUM_HOLD_ON_TIMELINE is false. Stop writes to the source first.
+  #   recovery  the newest state, or the state at targetTime, from the backups in object storage (the Barman
+  #             Cloud plugin, as this chart backs up). Held as after a restore.
+  bootstrap:
+    mode: empty
+    source:                    # import and copy: the existing server, reachable from this cluster
+      host: ""
+      port: 5432
+      database: ferrum         # the database to import or, for copy, the one the application uses
+      user: ""                 # import: a superuser (row-level security hides rows from any other role);
+                               # copy: a role with REPLICATION and LOGIN
+      passwordSecret: {name: "", key: password}   # a Secret you created, holding that role's password
+      sslmode: prefer
+    recovery:
+      objectStore: ""          # an ObjectStore holding the backups; empty: this chart's own "<fullname>-backups"
+      serverName: ""           # the name they were taken under; empty: "<fullname>-db"
+      targetTime: ""           # e.g. "2026-11-14 10:00:00+00"; empty: up to the last archived change
 
 # The PDF renderer (Gotenberg). The server needs it for print formats.
 pdf:

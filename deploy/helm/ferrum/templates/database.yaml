@@ -19,10 +19,7 @@ spec:
     size: {{ $d.storageSize }}
   walStorage:
     size: {{ $d.walStorageSize }}
-  bootstrap:
-    initdb:
-      database: ferrum
-      owner: ferrum
+  {{- include "ferrum.dbBootstrap" . | nindent 2 }}
   managed:
     roles:
       - name: ferrum
@@ -41,6 +38,9 @@ spec:
       isWALArchiver: true
       parameters:
         barmanObjectName: {{ $n }}-backups
+        {{- with $d.backup.serverName }}
+        serverName: {{ . }}
+        {{- end }}
 ---
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup

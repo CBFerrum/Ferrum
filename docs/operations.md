@@ -482,6 +482,12 @@ A failover to a synchronous replica is also a new timeline, and loses nothing. S
 `FERRUM_HOLD_ON_TIMELINE=false` if that is the only way a timeline changes here. Then an in-place
 point-in-time restore is not noticed, so run the steps below by hand after one.
 
+A database the Helm chart starts from another one (`database.bootstrap.mode`, "Moving from one shape to
+another") is held the same way: `import` makes a database this server never knew, and `recovery` and `copy`
+start on a new timeline. A `copy` keeps the database's identity, so with `FERRUM_HOLD_ON_TIMELINE=false` it
+is not held, and neither is a `recovery`, whose base backup has the same identity as the cluster it came
+from. Release the hold with `ferrum task release_restore` once you know nothing will be sent twice.
+
 A database restored from a backup brings back whatever was erased since it was taken, and lets back in
 whoever left since, so do this before people, integrations or the assistant reach it:
 
