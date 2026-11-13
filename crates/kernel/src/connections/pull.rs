@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -67,7 +68,30 @@ pub struct Pull {
     /// What each item becomes; else the connection's inbound mapping.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map: Option<Mapping>,
+    /// More inputs for its operation, each an expression over `account` (the signed-in account), `auth` (what its
+    /// sign-in kept), `now` and `today` (BD-60).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, String>,
+    /// A second operation asked for each item of a page before it is mapped (BD-60): its result is the item's `as`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub each: Option<Each>,
 }
+
+/// A reading operation asked for each item, its inputs expressions over `item` and what [`Pull::inputs`] reads; at
+/// most `max` items a page (10; at most [`MAX_EACH`]): a page with more fails the run, saying so.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Each {
+    pub operation: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, String>,
+    #[serde(rename = "as")]
+    pub into: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<usize>,
+}
+
+const MAX_EACH: usize = 50;
 
 impl Pull {
     pub(crate) fn problem(&self, desc: &super::Description) -> Option<String> {
@@ -96,6 +120,22 @@ impl Pull {
         }
         if self.cursor == Cursor::Token && self.next_at.is_none() {
             return at("a token cursor says where the next one is (next_at)".into());
+        }
+        if let Some(i) = self.inputs.keys().find(|i| !op.inputs.is_empty() && !op.inputs.contains(i)) {
+            return at(format!("{} takes no input {i}", self.operation));
+        }
+        if let Some(e) = &self.each {
+            let ok = desc.operations.get(&e.operation).is_some_and(|_| !desc.changes(&e.operation) && desc.more(&e.operation).steps.is_empty())
+                && !desc.signs_in_with(&e.operation);
+            if !ok {
+                return at(format!("each: {} is an operation that reads, in one request", e.operation));
+            }
+            if e.max.is_some_and(|m| !(1..=MAX_EACH).contains(&m)) || !is_name(&e.into) {
+                return at(format!("each: max is 1 to {MAX_EACH}, and `as` a name"));
+            }
+        }
+        if let Some(p) = self.inputs.values().chain(self.each.iter().flat_map(|e| e.inputs.values())).find_map(|e| super::steps::expression_problem(e)) {
+            return at(p);
         }
         if self.map.is_none() && desc.inbound.as_ref().and_then(|i| i.map.as_ref()).is_none() {
             return at("it has a map, or the connection's inbound has one".into());
@@ -237,15 +277,23 @@ impl Kernel {
                 .flatten();
         tx.commit().await?;
         let (mut items, mut pages, mut error, mut later, mut wait) = (0usize, 0u32, None, false, None);
+        // What its expressions read: the signed-in account, what its sign-in kept, the clock.
+        let (account, auth) = self.account_vars(&conn, &ctx).await?;
+        let (now, today) = super::clock_vars(started);
+        let vars = json!({"account": account, "auth": auth, "now": now, "today": today});
+        let mut given = serde_json::Map::new();
+        for (n, e) in &pull.inputs {
+            given.insert(n.clone(), super::steps::evaluate(e, &vars)?);
+        }
         while pages < pull.max_pages.unwrap_or(DEFAULT_PAGES) {
             pages += 1;
-            let mut inputs = serde_json::Map::new();
+            let mut inputs = given.clone();
             if let Some(c) = &cursor {
                 inputs.insert(pull.cursor_input.clone(), json!(c));
             }
             let given = json!(cursor);
             let page = Page { cursor: &given, address: cursor.as_deref().filter(|_| pull.by_link()) };
-            let answer = match self
+            let mut answer = match self
                 .perform(&ctx, &conn, &pull.operation, &Value::Object(inputs), None, super::Extra { page: Some(page), ..Default::default() }, None, None)
                 .await?
             {
@@ -275,6 +323,19 @@ impl Kernel {
                 }
                 _ => None,
             };
+            if let Some(e) = &pull.each {
+                match self.each_item(&ctx, &conn, e, &pull.items_at, &mut answer.body, &vars).await? {
+                    Outcome::Ok(..) => {}
+                    Outcome::Later(why, after) => {
+                        (error, later, wait) = (Some(why), true, after);
+                        break;
+                    }
+                    Outcome::No(why) => {
+                        error = Some(why);
+                        break;
+                    }
+                }
+            }
             let mut tx = self.db.system_tenant_tx(tenant).await?;
             match self.apply_mapping(&ctx, &mut tx, &map, &answer.body, &conn).await {
                 Ok(n) => items += n,
@@ -379,6 +440,34 @@ impl Kernel {
             });
         }
         Ok(json!({"pages": pages, "items": items, "error": error}))
+    }
+
+    /// Asks `each.operation` for every item at `items_at` in `body`, putting its result in the item as `each.as`.
+    async fn each_item(&self, ctx: &Ctx, conn: &super::Loaded, each: &Each, items_at: &str, body: &mut Value, vars: &Value) -> Result<Outcome> {
+        let max = each.max.unwrap_or(10);
+        let done = || Ok(Outcome::Ok(Value::Null, Box::new(super::steps::empty_answer()?)));
+        let Some(items) = body.pointer_mut(items_at).and_then(Value::as_array_mut) else { return done() };
+        if items.len() > max {
+            return Ok(Outcome::No(format!("{} items on a page, more than the {max} its each asks about", items.len())));
+        }
+        for (i, item) in items.iter_mut().enumerate() {
+            let mut v = vars.clone();
+            v["item"] = item.clone();
+            let mut inputs = serde_json::Map::new();
+            for (n, e) in &each.inputs {
+                inputs.insert(n.clone(), super::steps::evaluate(e, &v)?);
+            }
+            match self.perform(ctx, conn, &each.operation, &Value::Object(inputs), None, super::Extra::default(), None, None).await? {
+                Outcome::Ok(result, _) => {
+                    if let Some(o) = item.as_object_mut() {
+                        o.insert(each.into.clone(), result);
+                    }
+                }
+                Outcome::Later(why, after) => return Ok(Outcome::Later(format!("item {}: {why}", i + 1), after)),
+                Outcome::No(why) => return Ok(Outcome::No(format!("item {}: {why}", i + 1))),
+            }
+        }
+        done()
     }
 
     /// Runs a pull now (an administrator's "pull now"): queued at once.

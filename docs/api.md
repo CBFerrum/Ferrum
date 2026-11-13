@@ -1343,6 +1343,14 @@ child given twice is a list, and so is one named in `"lists": ["item", "entry"]`
 `"/link/0/@href"`. No document type is read. `"answer": "form"` reads `a=1&b=2` as `{"a": "1", "b": "2"}`, `"text"` as
 the text; `json` (the default) as before.
 
+**A pull that asks per item, and the account** ([BD-60](builder/decisions.md#bd-60-a-pull-that-asks-for-each-item-and-the-signed-in-account)):
+a pull's `"inputs": {"user": "account"}` gives its operation inputs as expressions over `account` (what the sign-in
+named: `provider.account_at`), `auth` (what it kept, BD-61), `now` and `today`; `"each": {"operation": "numbers",
+"inputs": {"id": "item.id"}, "as": "numbers", "max": 10}` asks a reading operation for each item of a page and puts its
+result in the item before it is mapped (`item.numbers.likes`); a page with more than `max` items (10; at most 50)
+fails the run, saying so, and asks nothing. An operation's templates read `account` and `auth` too:
+`"path": "/users/{{ account }}/posts"`.
+
 ### Moving an app's own HTTP client onto a connection
 
 Social, ERP's carriers and the service apps each build requests themselves. To move one:

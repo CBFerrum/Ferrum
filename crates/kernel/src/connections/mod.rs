@@ -1631,6 +1631,13 @@ impl Kernel {
         let page = extra.page;
         let (now, today) = clock_vars(extra.now.unwrap_or_else(Utc::now));
         let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key, "now": now, "today": today});
+        // The signed-in account and what its sign-in kept, read only when the operation's words name them.
+        let said = serde_json::to_string(op).unwrap_or_default() + &serde_json::to_string(more).unwrap_or_default();
+        if !bare && (said.contains("account") || said.contains("auth.")) {
+            let (account, auth) = self.account_vars(conn, ctx).await?;
+            vars["account"] = account;
+            vars["auth"] = auth;
+        }
         if let Some(p) = page {
             vars["cursor"] = p.cursor.clone();
         }
