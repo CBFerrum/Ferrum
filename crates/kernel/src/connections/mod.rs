@@ -55,6 +55,8 @@ pub(crate) const MAX_RETRY_AFTER: u64 = 3600;
 /// sends of files, at most 25 MB in all.
 const DEFAULT_FILE_BYTES: u64 = 10 << 20;
 pub(crate) const MAX_FILE_BYTES: u64 = 25 << 20;
+/// The most a file part may declare (BD-71): sent only up to the server's ceiling (`FERRUM_CONNECTION_UPLOAD_MB`).
+const DECLARED_FILE_BYTES: u64 = 1 << 30;
 /// The statuses that mean "try again later", when a description says none.
 pub(crate) const TEMPORARY: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
 /// The longest a debug capture stays on, and how much of a body it keeps.
@@ -531,15 +533,16 @@ pub struct FilePart {
     /// Else its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
-    /// The largest it may be (10 MB, at most 25 MB).
+    /// The largest it may be: 10 MB unless said; more than 25 MB only as far as the server's ceiling
+    /// (`FERRUM_CONNECTION_UPLOAD_MB`, BD-71).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<u64>,
 }
 
 impl FilePart {
     fn problem(&self) -> Option<String> {
-        if self.max_bytes.is_some_and(|b| b == 0 || b > MAX_FILE_BYTES) {
-            return Some(format!("a file's max_bytes is 1 to {MAX_FILE_BYTES}"));
+        if self.max_bytes.is_some_and(|b| b == 0 || b > DECLARED_FILE_BYTES) {
+            return Some(format!("a file part's max_bytes is 1 to {DECLARED_FILE_BYTES}"));
         }
         if self.content_type.as_deref().is_some_and(|c| c.parse::<reqwest::header::HeaderValue>().is_err() || !c.contains('/')) {
             return Some("a file's content_type is a media type".into());
@@ -966,6 +969,12 @@ impl Answer {
 }
 
 impl Kernel {
+    /// What one request may send of stored files (BD-71): 25 MB, or more where the operator raised
+    /// `FERRUM_CONNECTION_UPLOAD_MB`.
+    pub(crate) fn upload_ceiling(&self) -> u64 {
+        self.settings.connection_upload_bytes.max(MAX_FILE_BYTES)
+    }
+
     /// Whether the operator named this host (`FERRUM_CONNECTION_HOSTS`): then a private address and plain http are
     /// allowed for it, and for it alone.
     fn operator_allows(&self, host: &str) -> bool {
@@ -1711,7 +1720,14 @@ impl Kernel {
         let given = render(&part.file, vars)?;
         let id: Uuid = given.trim().parse().map_err(|_| Error::invalid(format!("{given} is not a stored file")))?;
         let info = self.file_info(ctx, id).await.map_err(|_| Error::invalid(format!("the file {id} is not one you may send")))?;
+        let ceiling = self.upload_ceiling();
         let cap = part.max_bytes.unwrap_or(DEFAULT_FILE_BYTES).min(*budget);
+        if part.max_bytes.is_some_and(|m| m > ceiling) && info.size as u64 > ceiling && range.is_none_or(|r| r.0 != id) {
+            return Err(Error::invalid(format!(
+                "{} is larger than the {ceiling} bytes this server sends in one request (an operator raises FERRUM_CONNECTION_UPLOAD_MB)",
+                info.name
+            )));
+        }
         // A chunk of it (a step's range): only that range is read, whatever the file's size.
         let range = range.filter(|r| r.0 == id);
         let size = range.map_or(info.size, |r| r.2 as i64);
@@ -1793,7 +1809,7 @@ impl Kernel {
         if let (Some(h), Some(k)) = (&op.idempotency_header, key) {
             headers.push((h.clone(), k.to_string()));
         }
-        let mut budget = MAX_FILE_BYTES;
+        let mut budget = self.upload_ceiling();
         let body = match &op.body {
             Some(b) => match spec_of::<FilePart>(b) {
                 Some(part) => {
@@ -2510,7 +2526,7 @@ mod tests {
                 .is_some()
         );
         assert!(
-            serde_json::from_value::<Description>(json!({"test": true, "operations": {"a": {"body": {"file": "x", "max_bytes": 1 << 30}}}}))
+            serde_json::from_value::<Description>(json!({"test": true, "operations": {"a": {"body": {"file": "x", "max_bytes": (1u64 << 30) + 1}}}}))
                 .unwrap()
                 .problem()
                 .is_some()
