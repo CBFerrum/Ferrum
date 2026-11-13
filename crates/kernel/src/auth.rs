@@ -130,6 +130,8 @@ pub struct CtxCore {
     pub until: Option<DateTime<Utc>>,
     /// A portal person or a guest.
     pub outside: bool,
+    /// The account's kind (`app_user.kind`): zones admit staff or not by it.
+    pub kind: String,
 }
 
 /// A records key's scope (`records:Customer=read+write;SalesInvoice=read`): the entities it may
@@ -212,6 +214,13 @@ impl Kernel {
 
     /// The password step of signing in.
     pub async fn sign_in(&self, tenant_slug: &str, email: &str, password: &str) -> Result<SignIn> {
+        self.sign_in_at(tenant_slug, email, password, false).await
+    }
+
+    /// [`Kernel::sign_in`] where staff are refused (a zone that admits none, crate::zones): a staff
+    /// account is then treated as one that does not exist, before its password is read. The answer
+    /// and the time it takes are those of an unknown address, and nothing counts toward its lockout.
+    pub async fn sign_in_at(&self, tenant_slug: &str, email: &str, password: &str, refuse_staff: bool) -> Result<SignIn> {
         let denied = || Error::Unauthorized("invalid tenant, email or password".into());
         let email = email.trim().to_lowercase();
         let mut tx = self.db.system_tx().await?;
@@ -228,19 +237,20 @@ impl Kernel {
             two_factor_required: bool,
             sso_required: bool,
             is_admin: bool,
+            kind: String,
         }
         let user: Option<U> = sqlx::query_as(
             "select u.tenant_id, u.id, u.password_hash, u.is_active, u.token_version, \
              coalesce(u.locked_until > now(), false) as locked, t.status = 'active' as tenant_active, \
              u.totp_enabled_at is not null as two_factor, coalesce(t.settings->'require_two_factor' = 'true'::jsonb, false) as two_factor_required, \
-             coalesce(t.settings->'require_sso' = 'true'::jsonb, false) as sso_required, u.is_admin \
+             coalesce(t.settings->'require_sso' = 'true'::jsonb, false) as sso_required, u.is_admin, u.kind \
              from app_user u join tenant t on t.id = u.tenant_id where t.slug = $1 and u.email = $2",
         )
         .bind(tenant_slug.trim().to_lowercase())
         .bind(&email)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(u) = user else {
+        let Some(u) = user.filter(|u| !(refuse_staff && crate::zones::is_staff(&u.kind))) else {
             tx.commit().await?;
             let _ = verify_password(password.to_string(), DUMMY_HASH.to_string()).await;
             return Err(denied());
@@ -590,12 +600,59 @@ impl Kernel {
             perms: Arc::new(perms),
             until,
             outside,
+            kind,
         })
     }
 
-    /// Builds the request context; `token_version` (from a session token) must match the user's
-    /// current version, which is bumped on logout-all / password change / deactivation.
+    /// Builds a context for work that has no request behind it: jobs, schedules, tasks, tests. This
+    /// is "inside": no zone applies. A request builds its context with [`Kernel::request_ctx`], which a
+    /// test of the server holds every request path to. `token_version` (from a session token) must
+    /// match the user's current version, which is bumped on logout-all / password change /
+    /// deactivation.
     pub async fn load_ctx(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>, request_id: String) -> Result<Ctx> {
+        let core = self.core(tenant, user, token_version).await?;
+        self.ctx_of(&core, tenant, user, request_id, None).await
+    }
+
+    /// Builds a request's context: [`Kernel::load_ctx`], then admission in the request's zone
+    /// (`entry`, crate::zones). Decided per request, after the per-person cache, never cached by
+    /// person: the same person may arrive in another zone with the next request. The context
+    /// carries the entry (`Ctx::zone`).
+    pub async fn request_ctx(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>, request_id: String, entry: &Arc<crate::zones::Entry>) -> Result<Ctx> {
+        let core = self.core(tenant, user, token_version).await?;
+        self.admit(&core.kind, tenant, user, entry).await?;
+        self.ctx_of(&core, tenant, user, request_id, Some(entry.clone())).await
+    }
+
+    /// `ctx`'s person as they stand now, in the zone `ctx` came in by (none: inside).
+    pub async fn reload(&self, ctx: &Ctx, token_version: Option<i32>) -> Result<Ctx> {
+        match &ctx.zone {
+            Some(entry) => self.request_ctx(ctx.tenant, ctx.user, token_version, ctx.request_id.clone(), entry).await,
+            None => self.load_ctx(ctx.tenant, ctx.user, token_version, ctx.request_id.clone()).await,
+        }
+    }
+
+    /// Level 1 of zones: staff (crate::zones::is_staff) are refused where the zone admits none, on
+    /// every credential, with one refusal that names the workspace's staff address when it has
+    /// one. In report mode they are admitted, counted and logged. Outside people and machines are
+    /// never refused here.
+    pub async fn admit(&self, kind: &str, tenant: Uuid, user: Uuid, entry: &crate::zones::Entry) -> Result<()> {
+        if !crate::zones::is_staff(kind) || entry.admits_staff() {
+            return Ok(());
+        }
+        crate::zones::count_refusal(entry, tenant, user);
+        if !entry.refuses_staff() {
+            return Ok(());
+        }
+        // The address is a courtesy: not finding it refuses all the same.
+        let address = self.staff_address(tenant, &entry.zones.admitting_staff()).await.unwrap_or_else(|e| {
+            tracing::warn!("the staff address of a workspace: {e}");
+            None
+        });
+        Err(crate::zones::refusal(address))
+    }
+
+    async fn core(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>) -> Result<Arc<CtxCore>> {
         let key = (tenant, user);
         let cached = self.users.get(&key).filter(|c| c.1.elapsed() < self.settings.ctx_ttl && c.0.until.is_none_or(|u| Utc::now() < u)).map(|c| c.0.clone());
         let core = match cached {
@@ -612,6 +669,10 @@ impl Kernel {
             self.users.remove(&key);
             return Err(Error::Unauthorized("session expired; please sign in again".into()));
         }
+        Ok(core)
+    }
+
+    async fn ctx_of(&self, core: &CtxCore, tenant: Uuid, user: Uuid, request_id: String, zone: Option<Arc<crate::zones::Entry>>) -> Result<Ctx> {
         let schema = self.registry.schema(tenant).await?;
         Ok(Ctx {
             egress: None,
@@ -633,7 +694,46 @@ impl Kernel {
             depth: 0,
             settings: None,
             origin: None,
+            zone,
         })
+    }
+
+    /// `ferrum task grant_admin` / `revoke_admin`: the operator makes a member of a workspace an
+    /// administrator, or makes one no longer, when the workspace cannot (its administrators are
+    /// gone). Recorded in the workspace's audit trail as the system's, with `reason`. The last
+    /// administrator is never removed. Returns the person's id.
+    pub async fn operator_admin(&self, tenant_slug: &str, email: &str, admin: bool, reason: &str) -> Result<Uuid> {
+        let reason = reason.trim();
+        if reason.is_empty() || reason.chars().count() > 500 {
+            return Err(Error::field("reason", "say why, in up to 500 characters"));
+        }
+        let (tenant, _) = self.tenant_by_slug(tenant_slug).await?;
+        let email = email.trim().to_lowercase();
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        // Locked, so two of these at once cannot both remove "the other" last administrator.
+        let people: Vec<(Uuid, String, bool, bool, String)> =
+            sqlx::query_as("select id, email::text, is_admin, is_active, kind from app_user where tenant_id = $1 and (is_admin or email = $2) for update")
+                .bind(tenant)
+                .bind(&email)
+                .fetch_all(&mut *tx)
+                .await?;
+        let Some((user, _, is_admin, active, kind)) = people.iter().find(|p| p.1 == email).cloned() else {
+            return Err(Error::NotFound(format!("{email} in {tenant_slug}")));
+        };
+        if admin && (kind != "member" || !active) {
+            return Err(Error::invalid("only an active member can be an administrator"));
+        }
+        if !admin && is_admin && !people.iter().any(|p| p.0 != user && p.2 && p.3 && p.4 == "member") {
+            return Err(Error::invalid("this is the workspace's last administrator; make someone else one first"));
+        }
+        sqlx::query("update app_user set is_admin = $3 where tenant_id = $1 and id = $2").bind(tenant).bind(user).bind(admin).execute(&mut *tx).await?;
+        let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
+        let action = if admin { "grant_admin" } else { "revoke_admin" };
+        crate::audit::record(&mut tx, &system, "User", user, action, None, serde_json::json!({"email": email, "reason": reason, "by": "operator"})).await?;
+        notify_users(&mut tx, tenant, Some(user)).await?;
+        tx.commit().await?;
+        self.users.remove(&(tenant, user));
+        Ok(user)
     }
 
     /// Every replica drops cached users when another replica changes them (roles, scopes,

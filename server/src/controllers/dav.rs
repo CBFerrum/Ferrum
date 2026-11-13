@@ -13,6 +13,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
+use ferrum_kernel::zones::Credential;
 use ferrum_kernel::{Ctx, Error};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
@@ -31,10 +32,15 @@ async fn person(st: &AppState, headers: &HeaderMap) -> ApiResult<Option<Ctx>> {
     if let Some((email, password)) = decoded.as_deref().and_then(|d| d.split_once(':'))
         && let Ok((s, scope)) = st.kernel.verify_api_key(password.trim()).await
         && scope.as_deref().is_none_or(|scope| scope == "dav")
-        && let Ok(ctx) = st.kernel.load_ctx(s.tenant, s.user, Some(s.token_version), request_id(headers)).await
-        && ctx.email.eq_ignore_ascii_case(email.trim())
     {
-        found = Some(ctx);
+        let credential = if scope.is_some() { Credential::Dav } else { Credential::ApiKey };
+        let entry = crate::zone::entry(st, headers, credential).await;
+        match st.kernel.request_ctx(s.tenant, s.user, Some(s.token_version), request_id(headers), &entry).await {
+            Ok(ctx) if ctx.email.eq_ignore_ascii_case(email.trim()) => found = Some(ctx),
+            // A zone's refusal is said as such: the key is good.
+            Err(e @ Error::Refused { .. }) => return Err(e.into()),
+            _ => {}
+        }
     }
     match found {
         Some(ctx) => {

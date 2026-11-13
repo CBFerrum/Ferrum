@@ -49,6 +49,8 @@ impl ApiError {
                 tracing::warn!("service unavailable: {e}");
                 json!({"error": e.code(), "message": e.to_string()})
             }
+            // A zone's refusal names where the credential works (crates/kernel/src/zones.rs).
+            Error::Refused { code: "zone", pointer, .. } => json!({"error": "zone", "message": e.to_string(), "staff_address": pointer}),
             Error::Refused { pointer: Some(pointer), .. } => json!({"error": e.code(), "message": e.to_string(), "pointer": pointer}),
             _ => json!({"error": e.code(), "message": e.to_string()}),
         };

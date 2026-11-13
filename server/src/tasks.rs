@@ -245,7 +245,10 @@ impl Task for Doctor {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
-        let findings = crate::doctor::report(&st, ctx).await.map_err(refused)?;
+        let mut findings = crate::doctor::report(&st, ctx).await.map_err(refused)?;
+        // `public:https://a,https://b`: the public addresses, checked through their gateway (zones).
+        let public: Vec<String> = vars.cli_arg("public").map(|p| p.split(',').map(str::to_string).collect()).unwrap_or_default();
+        findings.extend(crate::doctor::zone_findings(&public).await);
         if vars.cli_arg("format").is_ok_and(|f| f == "json") {
             println!("{}", serde_json::to_string_pretty(&findings).map_err(refused)?);
         } else {
@@ -642,6 +645,75 @@ impl Task for AppReleases {
         for l in apps(ctx)?.release_lines(vars.cli_arg("app").ok()).await.map_err(refused)? {
             println!("{l}");
         }
+        Ok(())
+    }
+}
+
+/// A task's `zone:` (crate::zone): one of `FERRUM_ZONES`, or `none`.
+fn zone_arg(st: &crate::state::AppState, vars: &Vars) -> Result<Option<String>> {
+    match vars.cli_arg("zone").map_err(|_| Error::Message("say zone:<a zone of FERRUM_ZONES> or zone:none".into()))? {
+        "none" => Ok(None),
+        z if st.zones.has(z) => Ok(Some(z.to_string())),
+        z => Err(Error::Message(format!("FERRUM_ZONES names no zone {z:?}: say one of them, or zone:none"))),
+    }
+}
+
+/// `add_host tenant:<slug> host:<name> target:<shell|portal|site:app> zone:<zone|none>`: a host the
+/// operator vouches for, served as verified and never checked (docs/operations.md, "Zones").
+pub struct AddHost;
+
+#[async_trait]
+impl Task for AddHost {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "add_host".into(), detail: "Add a host only your own network resolves, served as verified, in a zone".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let zone = zone_arg(&st, vars)?;
+        let host = vars.cli_arg("host")?;
+        st.kernel.add_operator_host(vars.cli_arg("tenant")?, host, vars.cli_arg("target")?, zone.as_deref()).await.map_err(refused)?;
+        println!("{host} added, in zone {}", zone.as_deref().unwrap_or("none"));
+        Ok(())
+    }
+}
+
+/// `set_host_zone host:<name> zone:<zone|none>`: the zone a host's requests are in.
+pub struct SetHostZone;
+
+#[async_trait]
+impl Task for SetHostZone {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "set_host_zone".into(), detail: "Put a workspace's host in a zone, or in none".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let zone = zone_arg(&st, vars)?;
+        let host = vars.cli_arg("host")?;
+        st.kernel.set_host_zone(host, zone.as_deref()).await.map_err(refused)?;
+        println!("{host} is in zone {} (other replicas see it within 20 seconds)", zone.as_deref().unwrap_or("none"));
+        Ok(())
+    }
+}
+
+/// `grant_admin tenant:<slug> email:<address> reason:<text>` and `revoke_admin` (same arguments):
+/// the operator's way back in when a workspace has lost its administrators, audited as the system's.
+pub struct OperatorAdmin(pub bool);
+
+#[async_trait]
+impl Task for OperatorAdmin {
+    fn task(&self) -> TaskInfo {
+        if self.0 {
+            TaskInfo { name: "grant_admin".into(), detail: "Make a member of a workspace an administrator, with a reason for the audit trail".into() }
+        } else {
+            TaskInfo { name: "revoke_admin".into(), detail: "Make an administrator of a workspace no longer one (never the last), with a reason".into() }
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let reason = vars.cli_arg("reason").map_err(|_| Error::Message("say why: reason:\"…\" (it goes in the workspace's audit trail)".into()))?;
+        let email = vars.cli_arg("email")?;
+        k.operator_admin(vars.cli_arg("tenant")?, email, self.0, reason).await.map_err(refused)?;
+        println!("{email} {} an administrator", if self.0 { "is now" } else { "is no longer" });
         Ok(())
     }
 }

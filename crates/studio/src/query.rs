@@ -1460,6 +1460,7 @@ pub(crate) mod tests {
             egress: None,
             read_only: false,
             origin: None,
+            zone: None,
         }
     }
 

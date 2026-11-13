@@ -1131,7 +1131,7 @@ async fn standing(env: &Env, first: &Ctx, signed_in: i32, begun: Option<&Ctx>) -
     if policy.off {
         return Err(Error::Forbidden("the assistant was turned off for this workspace".into()));
     }
-    let now = k.load_ctx(first.tenant, first.user, Some(signed_in), first.request_id.clone()).await.map_err(|e| match e {
+    let now = k.reload(first, Some(signed_in)).await.map_err(|e| match e {
         Error::Unauthorized(m) | Error::Forbidden(m) => Error::Forbidden(format!("you can no longer use the assistant here: {m}")),
         other => other,
     })?;

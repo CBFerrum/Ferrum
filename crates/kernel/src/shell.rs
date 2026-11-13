@@ -36,6 +36,8 @@ pub struct DeviceSession {
     pub expires_at: DateTime<Utc>,
     pub user_agent: String,
     pub ip: String,
+    /// The zone it was opened in (crate::zones), if any.
+    pub zone: Option<String>,
 }
 
 /// What a valid browser session adds to who the person is.
@@ -161,13 +163,18 @@ impl Kernel {
     /// person) and returns its id (the cookie's token names it). Signing in proves the person, so
     /// a new session counts as stepped up.
     pub async fn open_session(&self, s: &Session, ttl: Duration, user_agent: &str, ip: &str, actor: Option<Uuid>) -> Result<Uuid> {
+        self.open_session_in(s, ttl, user_agent, ip, actor, None).await
+    }
+
+    /// [`Kernel::open_session`] in a zone (crate::zones), recorded on the session.
+    pub async fn open_session_in(&self, s: &Session, ttl: Duration, user_agent: &str, ip: &str, actor: Option<Uuid>, zone: Option<&str>) -> Result<Uuid> {
         let id = Uuid::now_v7();
         let ua: String = user_agent.chars().filter(|c| !c.is_control()).take(300).collect();
         let ip: String = ip.chars().take(64).collect();
         let mut tx = self.db.tenant_tx(s.tenant).await?;
         sqlx::query(
-            "insert into user_session (tenant_id, id, user_id, actor, step_up_at, expires_at, user_agent, ip) \
-             values ($1, $2, $3, $4, now(), now() + make_interval(secs => $5), $6, $7)",
+            "insert into user_session (tenant_id, id, user_id, actor, step_up_at, expires_at, user_agent, ip, zone) \
+             values ($1, $2, $3, $4, now(), now() + make_interval(secs => $5), $6, $7, $8)",
         )
         .bind(s.tenant)
         .bind(id)
@@ -176,6 +183,7 @@ impl Kernel {
         .bind(ttl.as_secs_f64())
         .bind(ua)
         .bind(ip)
+        .bind(zone)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -240,7 +248,7 @@ impl Kernel {
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows = sqlx::query_as(
-            "select id, user_id, actor, created_at, last_seen_at, expires_at, user_agent, ip from user_session \
+            "select id, user_id, actor, created_at, last_seen_at, expires_at, user_agent, ip, zone from user_session \
              where tenant_id = $1 and user_id = $2 and revoked_at is null and expires_at > now() order by last_seen_at desc limit 200",
         )
         .bind(ctx.tenant)
@@ -306,23 +314,37 @@ impl Kernel {
     /// Where a host name leads: a verified custom domain or a subdomain of a workspace, a released
     /// host still redirecting, or nothing of ours (the caller decides about a default workspace).
     pub async fn route_host(&self, host: &str) -> Result<HostRoute> {
-        let Some(host) = normalize_host(host) else { return Ok(HostRoute::Unknown) };
+        Ok(self.host_row(host).await?.0)
+    }
+
+    /// The zone of a host that serves a workspace (`tenant_host.zone`, docs/operations.md, "Zones"),
+    /// cached as [`Kernel::route_host`] is.
+    pub async fn host_zone(&self, host: &str) -> Result<Option<String>> {
+        Ok(match self.host_row(host).await? {
+            (HostRoute::Serve { .. }, zone) => zone,
+            _ => None,
+        })
+    }
+
+    async fn host_row(&self, host: &str) -> Result<(HostRoute, Option<String>)> {
+        let Some(host) = normalize_host(host) else { return Ok((HostRoute::Unknown, None)) };
         if let Some(e) = self.hosts.get(&host)
-            && e.1.elapsed() < CACHE_TTL
+            && e.2.elapsed() < CACHE_TTL
         {
-            return Ok(e.0.clone());
+            return Ok((e.0.clone(), e.1.clone()));
         }
         let mut tx = self.db.system_tx().await?;
-        type Row = (Uuid, String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+        type Row = (Uuid, String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>, Option<String>);
         let row: Option<Row> = sqlx::query_as(
-            "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at from tenant_host h join tenant t on t.id = h.tenant_id where h.host = $1",
+            "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at, h.zone from tenant_host h join tenant t on t.id = h.tenant_id where h.host = $1",
         )
         .bind(&host)
         .fetch_optional(&mut *tx)
         .await?;
+        let zone = row.as_ref().and_then(|r| r.5.clone());
         let route = match row {
             None => HostRoute::Unknown,
-            Some((tenant, _, target, _, Some(released))) => {
+            Some((tenant, _, target, _, Some(released), _)) => {
                 if Utc::now() - released < chrono::Duration::days(HOST_REDIRECT_DAYS) {
                     let to: Option<String> = sqlx::query_scalar(
                         "select host from tenant_host where tenant_id = $1 and target = $2 and is_primary and released_at is null \
@@ -337,15 +359,15 @@ impl Kernel {
                     HostRoute::Unknown
                 }
             }
-            Some((tenant, kind, target, verified, None)) if kind == "subdomain" || verified.is_some() => HostRoute::Serve { tenant, target },
+            Some((tenant, kind, target, verified, None, _)) if kind == "subdomain" || verified.is_some() => HostRoute::Serve { tenant, target },
             Some(_) => HostRoute::Unknown,
         };
         tx.commit().await?;
         if self.hosts.len() > 100_000 {
-            self.hosts.retain(|_, v| v.1.elapsed() < CACHE_TTL);
+            self.hosts.retain(|_, v| v.2.elapsed() < CACHE_TTL);
         }
-        self.hosts.insert(host, (route.clone(), Instant::now()));
-        Ok(route)
+        self.hosts.insert(host, (route.clone(), zone.clone(), Instant::now()));
+        Ok((route, zone))
     }
 
     /// The workspace a host name serves the shell for (verified custom domain or subdomain).
@@ -434,6 +456,56 @@ impl Kernel {
         }
     }
 
+    /// `ferrum task add_host`: a host the operator vouches for (kind `operator`), for a name that only
+    /// resolves inside a private network. It is served as verified at once and never checked. `zone`:
+    /// the zone its requests are in (crate::zones), or none.
+    pub async fn add_operator_host(&self, tenant_slug: &str, host: &str, target: &str, zone: Option<&str>) -> Result<()> {
+        let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a host name"))?;
+        let site = target.strip_prefix("site:").is_some_and(|a| {
+            a.len() >= 2
+                && a.len() <= 40
+                && a.starts_with(|c: char| c.is_ascii_lowercase())
+                && a.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        });
+        if !(target == "shell" || target == "portal" || site) {
+            return Err(Error::field("target", "must be shell, portal or site:{app}"));
+        }
+        let (tenant, _) = self.tenant_by_slug(tenant_slug).await?;
+        let mut tx = self.db.system_tx().await?;
+        self.claimable(&mut tx, &host).await?;
+        sqlx::query("insert into tenant_host (host, tenant_id, kind, target, verify_token, verified_at, zone) values ($1, $2, 'operator', $3, '', now(), $4)")
+            .bind(&host)
+            .bind(tenant)
+            .bind(target)
+            .bind(zone)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| match &e {
+                sqlx::Error::Database(db) if db.code().as_deref() == Some("23514") => Error::field("host", "is not a host name"),
+                _ => Error::from(e),
+            })?;
+        tx.commit().await?;
+        self.hosts.remove(&host);
+        Ok(())
+    }
+
+    /// `ferrum task set_host_zone`: the zone a host's requests are in (crate::zones), or none. Only
+    /// the operator sets it: a workspace's administrator has no way to.
+    pub async fn set_host_zone(&self, host: &str, zone: Option<&str>) -> Result<()> {
+        let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a host name"))?;
+        let mut tx = self.db.system_tx().await?;
+        let n = sqlx::query("update tenant_host set zone = $2 where host = $1 and released_at is null")
+            .bind(&host)
+            .bind(zone)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        // ponytail: this replica forgets it now; the others within the host cache's 20 seconds.
+        self.hosts.remove(&host);
+        if n == 0 { Err(Error::NotFound(format!("host {host}"))) } else { Ok(()) }
+    }
+
     /// Adds a custom domain to the caller's workspace, unverified until [`Kernel::host_checked`]
     /// finds it pointing here. `target`: `shell`, `portal` or `site:{app}`.
     pub async fn add_host(&self, ctx: &Ctx, host: &str, target: &str) -> Result<TenantHost> {
@@ -514,6 +586,26 @@ impl Kernel {
         .await?;
         tx.commit().await?;
         Ok(hosts)
+    }
+
+    /// Where a workspace's staff work, for a refusal to name: a host serving its shell whose zone is
+    /// one of `zones` (those that admit staff), its primary one first. A host with no zone of its
+    /// own is never named: which zone it is in depends on the replica and the caller.
+    pub async fn staff_address(&self, tenant: Uuid, zones: &[String]) -> Result<Option<String>> {
+        if zones.is_empty() {
+            return Ok(None);
+        }
+        let mut tx = self.db.system_tx().await?;
+        let h = sqlx::query_scalar(
+            "select host from tenant_host where tenant_id = $1 and target = 'shell' and zone = any($2) and released_at is null \
+             and (kind = 'subdomain' or verified_at is not null) order by is_primary desc, host limit 1",
+        )
+        .bind(tenant)
+        .bind(zones)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(h)
     }
 
     /// The primary host of a workspace for `target`, if it has one.

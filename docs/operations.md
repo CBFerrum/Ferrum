@@ -65,6 +65,10 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_HOOKS_HOST` | no | The host other services call back (`hooks.example.com`): webhooks and `/api/public/…` calls, a mail or calendar connector's sign-in return (`/api/connections/callback`), the addresses services pull files from. Default `hooks.{base}` for pages and public calls with `FERRUM_BASE_DOMAIN`, else `PUBLIC_URL`; connectors and pulled files use `PUBLIC_URL` unless this is set. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_PASSKEY_RP` | no | The passkeys' relying party, a domain (`example.com`): passkeys made on it or a host under it work on every host under it. Default none: each host is its own, as before. Never the base domain. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_LINK_HOST` | no | The host every mailed, notified or printed link goes through (`go.example.com`): links become `https://{it}/go/{workspace}/{s\|p}/…`, which lead on to wherever the workspace is when someone follows them. Default none: links name the workspace's host, as before. See [Names that should never change](#names-that-should-never-change) |
+| `FERRUM_ZONES` | no | Zones, JSON: zone name → rule, `{"public": {"staff": "none"}, "office": {"staff": "all", "networks": ["10.0.0.0/8"]}}`. Default none: everyone is admitted everywhere, as before. See [Zones](#zones) |
+| `FERRUM_ZONE` | no | The zone this replica is in for every request (one of `FERRUM_ZONES`). Default none: each request's host, network or the default decides |
+| `FERRUM_ZONE_DEFAULT` | no | The zone of a request no host and no network places, on replicas without `FERRUM_ZONE`. Default none: admitted as without zones |
+| `FERRUM_ZONE_MODE` | no | `enforce` (the default) refuses what a zone's rule refuses; `report` admits it, and counts and logs it |
 | `FERRUM_PLANS` | no | The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up) |
 | `FERRUM_SIGNUP` | no | `open` lets people make workspaces of their own at `accounts.{base}/signup`; default `closed`. Needs `FERRUM_BASE_DOMAIN` and mail |
 | `FERRUM_SIGNUP_DOMAINS`, `FERRUM_SIGNUP_PACKAGES`, `FERRUM_SIGNUP_PLAN`, `FERRUM_SIGNUP_PER_ADDRESS` | with sign-up | The address domains sign-ups come from (comma-separated; empty: any), what a new workspace installs besides the core, the plan it starts on (one of `FERRUM_PLANS`), and how many workspaces one address may make (default 3) |
@@ -1090,7 +1094,7 @@ connections call.
 
 **Zones.** `zones` becomes `FERRUM_ZONES`, `zoneDefault` `FERRUM_ZONE_DEFAULT`, `zoneMode` `FERRUM_ZONE_MODE`,
 and a pool's `zone` its `FERRUM_ZONE` (the zone every request to that pool is in). What the server does with
-them is in [docs/plan/topology.md](plan/topology.md), D4.
+them is in [Zones](#zones).
 
 **Secrets from a secret store.** `secrets.externalSecret.enabled` makes the server's Secret
 (`secrets.existingSecret`) with the External Secrets Operator, from `dataFrom` or `data` in the store
@@ -1103,6 +1107,104 @@ written to, and has not run yet). Whether Envoy Gateway
 orders the app routes over the default ones as the Gateway API says, whether the network policies admit
 exactly the private gateway's proxies, the internal load balancer annotations, a move between presets under
 traffic, and the External Secrets Operator have not been run.
+
+## Zones
+
+A zone is a named place a request arrives in, with a rule for who is admitted there. Every replica holds
+every app, so routing alone does not keep anyone out: the server refuses. The usual use is two zones. The
+public gateway reaches a pool in a zone that admits no staff, and serves the portal, the shop, public pages
+and callbacks there. Staff work through a private gateway, inside your network, in a zone that admits them.
+A staff password or key stolen and tried from the internet then opens nothing.
+
+**Staff** are accounts of kind `member` and `support` (support access), administrators included. **Outside
+people** are `portal` and `guest` accounts; **machines** are `service` accounts. Zones never change what
+outside people and machines get.
+
+**Settings.** `FERRUM_ZONES` is JSON, zone name → rule. A rule:
+
+| Key | Meaning | Default |
+|---|---|---|
+| `staff` | `all` or `none`. A list of apps is not in this build: the server refuses to start with one | `all` |
+| `admin` | Whether administrators are admitted. Only `true` with `staff: all` and `false` with `staff: none` are in this build | as `staff` |
+| `scim` | In a zone that admits no staff, an identity provider's key (scope `scim`) is admitted all the same | `false` |
+| `networks` | Addresses that place a caller in this zone, `10.0.0.0/8` or `2001:db8::/32`. Two zones may not share an address | none |
+
+`FERRUM_ZONE` pins a replica: every request it serves is in that zone (the chart sets it from a pool's
+`zone`). `FERRUM_ZONE_DEFAULT` is the zone of a request nothing else places, on replicas without a pin.
+`FERRUM_ZONE_MODE` is `enforce` or `report`. Anything the server does not plainly understand refuses to
+start, saying what: an unknown key, a pin or default that names no zone, a network that is not one.
+
+**Which zone a request is in**, in this order: the replica's pin; else the zone of the host it came to
+(set with `ferrum task set_host_zone`); else the first zone whose `networks` hold the caller's address;
+else the default; else none, which admits everyone, as without zones. The caller's address is the one the
+server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS`, and nothing else the client sends counts. When
+the host's zone cannot be read, staff are refused.
+
+**What a zone with `staff: none` does.**
+* A staff credential is refused there, whatever its kind: the browser's session, a session token, an API
+  key of any scope (one of scope `scim` only where the rule says `scim: true`), an app token, an OAuth or
+  MCP token, an app password of calendar and contacts apps, a socket's credential. The answer is `403`
+  with error `zone` and, when the workspace has a `shell` host in a zone that admits staff,
+  `staff_address` naming it. It is checked where the request's context is built, on every request.
+* Signing in as staff fails as a wrong password does, before the password is read, the same for a right
+  and a wrong one, taking the time an unknown address takes, and nothing counts toward the account's
+  lockout. The second step and passkeys are refused the same way, before their code or signature is
+  checked. Single sign-on, a sign-in handed over from the accounts host, and OAuth codes and refresh
+  tokens are refused too, answered as a failed one is, before any session or token is made. Emailed
+  codes go to portal people only. The accounts host is not served there (only staff use it), so no
+  password-reset mail starts from it either.
+* A staff page (the shell, an app, administration, `/login` for staff) is a plain page that says this
+  part of the workspace is opened at its staff address, and offers the portal's sign-in when there is a
+  portal.
+* The portal, sites, public pages, published lists, forms, `/go/` links, signed action links, callbacks,
+  signed inbound calls and the interface's files work as everywhere.
+* A replica pinned to such a zone refuses to start with `FERRUM_RUN_BACKGROUND` on: saved automations,
+  schedules and jobs run as the staff who set them up.
+* Work with no request behind it (jobs, schedules, tasks) is not refused: it runs where background work
+  runs.
+
+**Report mode first.** Start with `FERRUM_ZONE_MODE=report`: nothing is refused, and every staff
+credential that would have been is logged (person, workspace, zone, kind of credential, address; never a
+secret) and counted in `ferrum_zone_refusals_total{zone,mode,credential}` on `/metrics`. When the count
+holds only what you expect, switch to `enforce`. The zone is recorded on each browser session and shown
+in the list of a person's devices.
+
+**Checking it.** `GET /_zone` answers on any host, without a session, the zone the request is in, its
+rule for staff and administrators, and the caller's address as the server sees it. `ferrum task doctor
+public:https://shop.example.com,https://portal.example.com` asks it through each public address. It
+warns when an address is answered from a zone that admits staff, and when a made-up `X-Forwarded-For` is
+believed: `FERRUM_PROXY_HOPS` is then too high, and a caller could choose its address, and with it any
+zone placed by network. Without `public:` the doctor calls nothing.
+
+**Hosts.** Only the operator puts a host in a zone; a workspace's administrator cannot (the hosts API
+ignores a `zone`).
+
+```bash
+# A name only your own network resolves: served as verified, never checked over the internet.
+ferrum task add_host tenant:acme host:erp.internal.example.com target:shell zone:office
+# Any host of a workspace, into a zone or out of all of them (other replicas see it within 20 seconds).
+ferrum task set_host_zone host:shop.example.com zone:public
+ferrum task set_host_zone host:shop.example.com zone:none
+```
+
+Each replica keeps a host's zone for up to 20 seconds, so a move between zones takes that long to hold
+everywhere. Set a host's zone before you point traffic at it, and take traffic away from a host before
+moving it into a zone that admits staff. A refusal names a workspace's staff address only when one of its
+`shell` hosts has a zone that admits staff: give the private host its zone.
+
+**Administrators lost.** When a workspace has no administrator left who can sign in, the operator makes
+another member one, with a reason that goes into the workspace's audit trail as the system's. The last
+administrator is never removed.
+
+```bash
+ferrum task grant_admin tenant:acme email:ana@acme.example reason:"Ravi left; ticket 4411"
+ferrum task revoke_admin tenant:acme email:ravi@acme.example reason:"left the company"
+```
+
+**What zones do not protect against.** A replica that is broken into reaches the whole database, whatever
+its zone: zones keep staff credentials from working in the wrong place, not a compromised server from
+reading. A pool in a public zone still holds every app's code. Staff working from the private network are
+admitted with whatever their rights are. Background work runs with staff rights wherever it runs.
 
 ## Moving from one shape to another
 
