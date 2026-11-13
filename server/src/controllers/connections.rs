@@ -72,11 +72,14 @@ struct Limit {
     limit: Option<i64>,
 }
 
-/// `GET /api/admin/connections/{id}/log?limit=`: the calls made and the calls received, newest first.
+/// `GET /api/admin/connections/{id}/log?limit=`: the calls made, the calls received and the files' public addresses the
+/// calls made (BD-64), newest first.
 async fn log(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Query(q): Query<Limit>) -> ApiResult<Response> {
     let k = &app_state(&app)?.kernel;
     let limit = q.limit.unwrap_or(100);
-    Ok(Json(json!({"calls": k.connection_log(&ctx, id, limit).await?, "received": k.connection_inbound_log(&ctx, id, limit).await?})).into_response())
+    Ok(Json(json!({"calls": k.connection_log(&ctx, id, limit).await?, "received": k.connection_inbound_log(&ctx, id, limit).await?,
+        "addresses": k.connection_addresses(&ctx, id, limit).await?}))
+    .into_response())
 }
 
 /// `GET /api/admin/connections/{id}/pulls`: each pull's cursor, last and next run, and last error.

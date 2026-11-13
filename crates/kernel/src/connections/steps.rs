@@ -385,7 +385,7 @@ impl Kernel {
         ctx: &Ctx,
         conn: &Loaded,
         name: &str,
-        inputs: &Value,
+        (inputs, public): (&Value, &Value),
         key: Option<&str>,
         clock: DateTime<Utc>,
         about: Option<(&str, Uuid)>,
@@ -406,7 +406,7 @@ impl Kernel {
         let steps = &conn.desc.more(name).steps;
         while let Some(step) = steps.get(i) {
             let (now, today) = super::clock_vars(clock);
-            let vars = json!({"inputs": inputs, "steps": done, "key": key, "now": now, "today": today});
+            let vars = json!({"inputs": inputs, "steps": done, "key": key, "now": now, "today": today, "public_files": public});
             if let Some(w) = &step.when
                 && !truthy(&evaluate(w, &vars)?)
             {

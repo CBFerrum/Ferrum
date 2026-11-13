@@ -437,6 +437,7 @@ impl Kernel {
             + self.purge_exports().await?
             + self.purge_connection_events().await?
             + self.purge_connections().await?
+            + self.purge_public_files().await?
             + self.prune_occurrences().await?;
         if purged > 0 {
             tracing::info!(purged, "old events purged");
