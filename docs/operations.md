@@ -1106,8 +1106,10 @@ ferrum task set_host_zone host:shop.example.com zone:public
 ferrum task set_host_zone host:shop.example.com zone:none
 ```
 
-A refusal names a workspace's staff address only when one of its `shell` hosts has a zone that admits
-staff: give the private host its zone.
+Each replica keeps a host's zone for up to 20 seconds, so a move between zones takes that long to hold
+everywhere. Set a host's zone before you point traffic at it, and take traffic away from a host before
+moving it into a zone that admits staff. A refusal names a workspace's staff address only when one of its
+`shell` hosts has a zone that admits staff: give the private host its zone.
 
 **Administrators lost.** When a workspace has no administrator left who can sign in, the operator makes
 another member one, with a reason that goes into the workspace's audit trail as the system's. The last
