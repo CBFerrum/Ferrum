@@ -59,6 +59,19 @@ async fn scenario() {
     accounts_host(&k, acme).await;
     hooks_host(&k, acme).await;
     link_host(&k, acme).await;
+    framing_hosts(&k, acme).await;
+}
+
+/// An isolated app may be framed by every host that serves the workspace's shell, its main one first.
+async fn framing_hosts(k: &Arc<Kernel>, acme: uuid::Uuid) {
+    let s = k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+    let admin = k.load_ctx(acme, s.user, Some(s.token_version), "it".into()).await.unwrap();
+    assert_eq!(k.serving_hosts(acme, "shell").await.unwrap(), vec!["acme.erp.test".to_string()]);
+    k.add_host(&admin, "staff.acme.test", "shell").await.unwrap();
+    assert_eq!(k.serving_hosts(acme, "shell").await.unwrap(), vec!["acme.erp.test".to_string()], "not before it is verified");
+    k.host_checked("staff.acme.test", true).await.unwrap();
+    assert_eq!(k.serving_hosts(acme, "shell").await.unwrap(), vec!["acme.erp.test".to_string(), "staff.acme.test".to_string()]);
+    assert_eq!(k.serving_hosts(acme, "portal").await.unwrap(), vec!["help.acme.test".to_string()]);
 }
 
 /// `FERRUM_LINK_HOST`: off, links are the workspace's host and the path, as before; on, they go

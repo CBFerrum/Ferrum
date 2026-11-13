@@ -660,7 +660,7 @@ in the app's id; any other keeps the sandboxed frame), and its pages frame that 
 origin every path the server does not keep serves the app's page, with `#ferrum-bootstrap`
 `{v, app: {id, version, release, title}, workspace: {slug, name, origin}, oauth: {authorize, token,
 client_id, redirect_uri}}`, and its release's files by name; the policy allows `'self'` only and
-`frame-ancestors` the workspace's origins. Of the server's paths only `/api/v1/…`, `/api/meta/…`,
+`frame-ancestors` the workspace's origins (every host that serves its shell, and `PUBLIC_URL`). Of the server's paths only `/api/v1/…`, `/api/meta/…`,
 `/api/ext/{app}/…`, `POST /oauth/token` and `POST /oauth/revoke` answer there (the rest is 404), and
 no cookie is read or set on it.
 

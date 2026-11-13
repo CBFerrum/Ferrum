@@ -26,13 +26,11 @@ pub async fn serve_app_host(st: &AppState, headers: &HeaderMap, path: &str) -> A
     serve(st, headers, host, &app, &slug, path).await.map(Some)
 }
 
-/// The workspace's own origins: its main host, and the server's public address.
+/// The workspace's own origins: every host that serves its shell (its main one first, which the
+/// app signs in against), and the server's public address. Each may frame the app.
 async fn workspace_origins(st: &AppState, tenant: Uuid) -> ApiResult<Vec<String>> {
     let scheme = if st.shell.secure { "https" } else { "http" };
-    let mut out = Vec::new();
-    if let Some(h) = st.kernel.primary_host(tenant, "shell").await? {
-        out.push(format!("{scheme}://{h}"));
-    }
+    let mut out: Vec<String> = st.kernel.serving_hosts(tenant, "shell").await?.into_iter().map(|h| format!("{scheme}://{h}")).collect();
     if let Some(o) = st.kernel.settings.public_url.as_deref().and_then(super::plugins::plain_origin)
         && !out.contains(&o)
     {
