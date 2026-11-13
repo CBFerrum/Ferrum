@@ -1,8 +1,8 @@
 # W4: the Studio product (8 November 2026)
 
 Software evidence only, run on the owner's development machine (macOS, PostgreSQL 17.9) from the worktrees
-`ERP/flc/ferrum` (branch `logic/w4-studio`, based on Ferrum `0a87c1c`) and `ERP/flc/web` (branch
-`logic/w4-studio`, based on Ferrum-Frontend `c59c9a2`). Temporal Server 1.32.2 ran as the CLI's dev server
+`ERP/flc/ferrum` (branch `logic/w4-studio`, based on Ferrum `d06c9a2`) and `ERP/flc/web` (branch
+`logic/w4-studio`, based on Ferrum-Frontend `43d7779`). Temporal Server 1.32.2 ran as the CLI's dev server
 (`temporal` 1.10.0, namespace `ferrum-flc`). The walks used the real `ferrum` binary built with
 `--no-default-features --features studio,process`, serving the Frontend's built apps, on port 5170 with the
 database `ferrum_flc_walk`, signed in through the login page as ordinary roles of the workspace `acme`.

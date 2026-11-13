@@ -3,7 +3,7 @@
   "file": "Ferrum_Only_Closure_Review_2026-11-09.zip (CLOSURE_REGISTER.json)",
   "sha256": "1fb162a82d06365004070c4fab360d1735c210931f7a4efd87cbc460a811b85c",
   "prepared": "2026-11-09",
-  "core_revision": "19fecde9e379ce870baa7ccc8f6b46dffa881bc1",
+  "core_revision": "f568f04e922c73274b2b64363b81de483f74cd12",
   "scope_in": [
    "Ferrum business applications",
    "shared domain and policy",
@@ -36,8 +36,8 @@
    "requirement": "Persist unresolved rejection/dependency state with the queued business operation. Require explicit correction or disposition before completion. Keep the server authoritative.",
    "acceptance": "AT-FEO-001",
    "evidence_sources": [
-    "https://github.com/CBFerrum/ferrum-app-field-service/blob/f366150114ac9c01860ce86a21a749b2e33670f2/ui/src/offline.ts",
-    "https://github.com/CBFerrum/ferrum-app-field-service/blob/f366150114ac9c01860ce86a21a749b2e33670f2/ui/src/held.ts"
+    "https://github.com/CBFerrum/ferrum-app-field-service/blob/1d62cae18d1853297592a1073dbf9ea37d4739dd/ui/src/offline.ts",
+    "https://github.com/CBFerrum/ferrum-app-field-service/blob/1d62cae18d1853297592a1073dbf9ea37d4739dd/ui/src/held.ts"
    ],
    "dependencies": []
   },
@@ -52,7 +52,7 @@
    "requirement": "Use a durable rejected-work queue with the original payload, reason, author and retry/export/discard choices. Retention and sign-out handling must respect device policy without silently losing field evidence.",
    "acceptance": "AT-FEO-002",
    "evidence_sources": [
-    "https://github.com/CBFerrum/ferrum-app-field-service/blob/f366150114ac9c01860ce86a21a749b2e33670f2/ui/src/offline.ts"
+    "https://github.com/CBFerrum/ferrum-app-field-service/blob/1d62cae18d1853297592a1073dbf9ea37d4739dd/ui/src/offline.ts"
    ],
    "dependencies": []
   },
@@ -67,8 +67,8 @@
    "requirement": "Carry a durable operation ID and payload digest to the server; atomically store receipt and effect. Persist local-to-server child-row mappings and coordinate multiple tabs/devices as required.",
    "acceptance": "AT-FEO-003",
    "evidence_sources": [
-    "https://github.com/CBFerrum/ferrum-app-field-service/blob/f366150114ac9c01860ce86a21a749b2e33670f2/ui/src/offline.ts",
-    "https://github.com/CBFerrum/ferrum-app-field-service/blob/f366150114ac9c01860ce86a21a749b2e33670f2/ui/src/held.ts"
+    "https://github.com/CBFerrum/ferrum-app-field-service/blob/1d62cae18d1853297592a1073dbf9ea37d4739dd/ui/src/offline.ts",
+    "https://github.com/CBFerrum/ferrum-app-field-service/blob/1d62cae18d1853297592a1073dbf9ea37d4739dd/ui/src/held.ts"
    ],
    "dependencies": []
   },
@@ -83,7 +83,7 @@
    "requirement": "Return policy unavailable or use explicitly authorized bounded last-known-good policy; never weaken restrictions on failure. Propagate policy revision and invalidation.",
    "acceptance": "AT-FEO-004",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/server/src/assistant.rs"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/server/src/assistant.rs"
    ],
    "dependencies": []
   },
@@ -98,7 +98,7 @@
    "requirement": "Persist a stable scan cursor/cycle or use an eligible-work queue, with fair retry for blocked records. Respect legal holds, changes during scanning and deterministic pagination.",
    "acceptance": "AT-FEO-005",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/crates/kernel/src/retention.rs"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/crates/kernel/src/retention.rs"
    ],
    "dependencies": []
   },
@@ -113,7 +113,7 @@
    "requirement": "Use one domain transaction or an explicitly recoverable merge plan with one reviewed payload and receipt. Make merged aliases visible consistently in reports and integrations.",
    "acceptance": "AT-FEO-006",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -128,7 +128,7 @@
    "requirement": "Preserve held evidence across update, erase, uninstall and tenant destruction. Allow legitimate operational updates only with the required preserved version. Add a deliberate hold-aware destruction gate.",
    "acceptance": "AT-FEO-007",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -143,7 +143,7 @@
    "requirement": "Represent missing required weights as unknown. For weight-controlled dispatch, block or require approved measured evidence rather than silently treating unknown as zero.",
    "acceptance": "AT-FEO-008",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -158,7 +158,7 @@
    "requirement": "Publish owners and stable identifiers, effective-dated relationship models and mapping rules. Distinguish a real-world person from their employee/customer/supplier roles. Migrate references without rewriting immutable business history.",
    "acceptance": "AT-FEO-009",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -173,8 +173,8 @@
    "requirement": "Give hooks stable dependencies. For each mutation classify owning transaction, validation, authorization, audit, version/conflict behavior, outbox and compensation. Do not ban justified ledger or engine SQL.",
    "acceptance": "AT-FEO-010",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -189,7 +189,7 @@
    "requirement": "Keep flexible document schemas but use checked domain types for money/currency, quantity/UOM, account, business date, tenant and operation identity at consequential APIs.",
    "acceptance": "AT-FEO-011",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -204,8 +204,8 @@
    "requirement": "Implement each app’s revocation/handover policy without impersonating the former employee. Separate person-owned tasks from explicitly company-owned processes.",
    "acceptance": "AT-FEO-012",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/crates/kernel/src/lifecycle.rs"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/crates/kernel/src/lifecycle.rs"
    ],
    "dependencies": []
   },
@@ -220,7 +220,7 @@
    "requirement": "Provide a strict enterprise profile with separate emergency administration, transaction-level separation, explicit conflict remediation, protected linked titles and permission-aware snippets/counts.",
    "acceptance": "AT-FEO-013",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -235,7 +235,7 @@
    "requirement": "Test selected IdPs, certificate/key rotation, recovery and provider outage. Publish exact SAML/SCIM scope and exclusions rather than requiring every optional protocol feature.",
    "acceptance": "AT-FEO-014",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -250,8 +250,8 @@
    "requirement": "Keep lawful purposes distinct and require every automated send path to ask one authoritative decision at delivery time. Do not block necessary transactional messages with an indiscriminate marketing flag.",
    "acceptance": "AT-FEO-015",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/crates/kernel/src/retention.rs"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/crates/kernel/src/retention.rs"
    ],
    "dependencies": []
   },
@@ -266,7 +266,7 @@
    "requirement": "Inventory every sensitive source and derivative. Provide candidate review for ambiguous name matches, exact scoped erasure for proven matches, and visible exclusions. Reapply current restrictions after restore.",
    "acceptance": "AT-FEO-016",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -281,8 +281,8 @@
    "requirement": "Provide an operator exception queue, bounded retry/replay, tenant fairness for heavy native jobs, current recipient checks, schedule semantics and complete correlation across records/jobs/connectors.",
    "acceptance": "AT-FEO-017",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -297,7 +297,7 @@
    "requirement": "Obtain accountant-owned expected outcomes for transaction, reversal, close, multi-currency, tax and statutory cases. Version effective rules and configuration per jurisdiction.",
    "acceptance": "AT-FEO-018",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -312,7 +312,7 @@
    "requirement": "Publish a precise supported accounting profile and implement the missing book-specific reports, eliminations and lifecycle operations needed by it. Preserve append-only corrections.",
    "acceptance": "AT-FEO-019",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -327,7 +327,7 @@
    "requirement": "Keep an immutable-history profile or implement a separate controlled revaluation/reposting profile where needed. Expose dates, valuation consequences and permitted correction actions.",
    "acceptance": "AT-FEO-020",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -342,7 +342,7 @@
    "requirement": "Add supplier acknowledgments/revisions where promised, three-way match tolerances, partial receipt/quality rejection, invoice dispute and duplicate-number recovery into one workflow.",
    "acceptance": "AT-FEO-021",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -357,7 +357,7 @@
    "requirement": "Add the selected warehouse’s reservation, pick/pack, substitute, packaging, shipping and recall workflows by extending the existing stock owner, not another inventory engine.",
    "acceptance": "AT-FEO-022",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -372,7 +372,7 @@
    "requirement": "Qualify native plan-to-produce with scrap, rework, alternate materials, subcontracting and actual costs. Add batch/process features only under a defined product profile.",
    "acceptance": "AT-FEO-023",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -387,7 +387,7 @@
    "requirement": "Expose those restrictions clearly; qualify split/merge/disposal, impairment/value adjustments, maintenance history and book-specific reporting needed by supported customers.",
    "acceptance": "AT-FEO-024",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -402,7 +402,7 @@
    "requirement": "Complete revision, discount authority, duplicate-party, expiration, partial fulfillment, cancelled sale, credit exposure and renewal boundaries across CRM and ERP.",
    "acceptance": "AT-FEO-025",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -417,7 +417,7 @@
    "requirement": "Define offline stock allocations or explicit controlled oversell rules, signed/versioned price books, device identities, operation receipts and human reconciliation. Show stale prices/availability.",
    "acceptance": "AT-FEO-026",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -432,7 +432,7 @@
    "requirement": "Qualify payment authorization/capture/failure/refund/dispute and reconciliation, including amount/currency checks, delayed/repeated webhooks and unknown outcomes.",
    "acceptance": "AT-FEO-027",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -447,7 +447,7 @@
    "requirement": "Implement recurring collection, dunning, changes/proration and entitlement rules where promised, or explicitly support invoice-renewal subscriptions. Add usage/tiered plans only as required.",
    "acceptance": "AT-FEO-028",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -462,7 +462,7 @@
    "requirement": "Bind approved baselines/change orders to budget/date effects and resource calendars using actual work schedules, leave, holidays and allocations.",
    "acceptance": "AT-FEO-029",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -477,7 +477,7 @@
    "requirement": "Choose explicit entitlement policies with auditable overrides. Add assignment/presence where useful and preserve unsaved replies on conflicts.",
    "acceptance": "AT-FEO-030",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -492,9 +492,9 @@
    "requirement": "After queue repairs, complete offline day/work-order startup, map integration, parts/expenses, customer proof and exception reconciliation on real supported mobile browsers.",
    "acceptance": "AT-FEO-031",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/ferrum-app-field-service/blob/f366150114ac9c01860ce86a21a749b2e33670f2/ui/src/offline.ts",
-    "https://github.com/CBFerrum/ferrum-app-field-service/blob/f366150114ac9c01860ce86a21a749b2e33670f2/ui/src/held.ts"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/ferrum-app-field-service/blob/1d62cae18d1853297592a1073dbf9ea37d4739dd/ui/src/offline.ts",
+    "https://github.com/CBFerrum/ferrum-app-field-service/blob/1d62cae18d1853297592a1073dbf9ea37d4739dd/ui/src/held.ts"
    ],
    "dependencies": [
     "FEO-001",
@@ -513,7 +513,7 @@
    "requirement": "Define consistent booking/deposit semantics, material calendar conflict handling, recurring paid appointments and cancellation/no-show policies.",
    "acceptance": "AT-FEO-032",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -528,7 +528,7 @@
    "requirement": "Finish a jurisdiction’s effective-date rules, payroll adjustments, final settlement, statutory reports and bank acknowledgment/reconciliation before claiming support.",
    "acceptance": "AT-FEO-033",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -543,8 +543,8 @@
    "requirement": "Use shared calendars and explicit expiring delegation. Notify certificate/qualification renewals and prevent work where expired qualifications matter.",
    "acceptance": "AT-FEO-034",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -559,8 +559,8 @@
    "requirement": "Build a representative compatibility corpus, declare unsupported formats/features, and qualify collaborative concurrency, recovery, formula precision and export round trips. Do not build duplicate editors.",
    "acceptance": "AT-FEO-035",
    "evidence_sources": [
-    "https://github.com/CBFerrum/ferrum-app-drive/blob/731a46475770cc4475cfc54d48f5bb9c6f126a1a/README.md",
-    "https://github.com/CBFerrum/ferrum-app-docs/blob/2895bace4aff7ad7067e635b8e38b1e758064886/README.md"
+    "https://github.com/CBFerrum/ferrum-app-drive/blob/60b808fb57be8e19171d7f3d3e44216188a59a58/README.md",
+    "https://github.com/CBFerrum/ferrum-app-docs/blob/124d902aa99aeaaa0d62abba56566d69c93cb654/README.md"
    ],
    "dependencies": []
   },
@@ -575,9 +575,9 @@
    "requirement": "Distinguish independent organization-owned grants from creator-derived grants; define expiry, ownership handover and offboarding behavior per sharing profile.",
    "acceptance": "AT-FEO-036",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/ferrum-app-drive/blob/731a46475770cc4475cfc54d48f5bb9c6f126a1a/README.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/crates/kernel/src/lifecycle.rs"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/ferrum-app-drive/blob/60b808fb57be8e19171d7f3d3e44216188a59a58/README.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/crates/kernel/src/lifecycle.rs"
    ],
    "dependencies": []
   },
@@ -592,7 +592,7 @@
    "requirement": "Qualify live calls/recording/transcription, processing disclosure, retention and deletion; complete mail deliverability/transport configuration checks and mobile/reconnect behavior.",
    "acceptance": "AT-FEO-037",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -607,7 +607,7 @@
    "requirement": "Generate the signing artifact from the approved revision or require an explicit equivalence review bound to its exact hash. Include obligations, amendments and redline/multiple approvers where promised.",
    "acceptance": "AT-FEO-038",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -622,7 +622,7 @@
    "requirement": "Publish separate evidence levels. Qualify certificate-based and long-term verification through a selected service only when offered; handle signer replacement/delegation and expiry explicitly.",
    "acceptance": "AT-FEO-039",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -637,7 +637,7 @@
    "requirement": "Integrate existing Forms, DAM/Drive, translations and review workflows into the CMS rather than adding separate engines. Version public form schemas and submissions.",
    "acceptance": "AT-FEO-040",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -652,7 +652,7 @@
    "requirement": "Qualify a selected channel cohort and capability matrix, provider consent/scopes, review, rate limits, corrections and reporting; advertise unsupported formats honestly.",
    "acceptance": "AT-FEO-041",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -667,7 +667,7 @@
    "requirement": "Add shared resource pickers, appropriate new-member publication policy, subject/release linkage and audience-aware portal navigation. Preserve server-side authorization regardless of navigation.",
    "acceptance": "AT-FEO-042",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -682,7 +682,7 @@
    "requirement": "Qualify supported discovery tools and reconciliation; add incident business calendars/pauses, linked customer tickets and multiple-approver changes where needed.",
    "acceptance": "AT-FEO-043",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -697,7 +697,7 @@
    "requirement": "Add consented evidence collection from identity, finance and operations; tie objectives to governed definitions; distinguish technical evidence from external certification.",
    "acceptance": "AT-FEO-044",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -712,7 +712,7 @@
    "requirement": "Complete direct reservations, housekeeping/room readiness, deposits and unified folio charging; qualify channel integrations independently.",
    "acceptance": "AT-FEO-045",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -727,7 +727,7 @@
    "requirement": "Add menu modifiers, kitchen routing, split/merge/check settlement and recipe consumption on existing stock/payment owners.",
    "acceptance": "AT-FEO-046",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -742,7 +742,7 @@
    "requirement": "Connect admission, family consent, fee schedule, learning and academic reporting with scoped guardian access.",
    "acceptance": "AT-FEO-047",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -757,7 +757,7 @@
    "requirement": "Complete the chosen administrative profile and data safeguards. Treat clinical records/decision support as a separate explicitly reviewed program, not a hidden checklist item.",
    "acceptance": "AT-FEO-048",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -772,7 +772,7 @@
    "requirement": "Connect contracts, quantities, commitments, claims, costs and agreed retention to ERP/Projects.",
    "acceptance": "AT-FEO-049",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -787,7 +787,7 @@
    "requirement": "Connect approved payable/expense evidence, explicit apportionment rules and owner statement/reconciliation. Preserve current rich implementation.",
    "acceptance": "AT-FEO-050",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -802,7 +802,7 @@
    "requirement": "Model restricted/designated funds with actual accounting dimensions or accounts, grant restrictions and receipt rules; reuse Commerce and ERP.",
    "acceptance": "AT-FEO-051",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -817,7 +817,7 @@
    "requirement": "Implement the promised appeal/escalation and payment experience where missing; classify public register fields and retention by approved policy.",
    "acceptance": "AT-FEO-052",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -832,7 +832,7 @@
    "requirement": "Integrate a selected routing provider and supported mobile profile, retain delivery evidence, publish realistic route/load semantics and reconcile collection returns.",
    "acceptance": "AT-FEO-053",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -847,8 +847,8 @@
    "requirement": "Keep Ferrum supervisory. Qualify actual equipment, reconnection, durable commands, clocks, key rotation, update recovery, throughput and site security with appropriate specialists.",
    "acceptance": "AT-FEO-054",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -863,7 +863,7 @@
    "requirement": "Provide typed visual controls for all advertised business-author features, with explicit advanced-source mode for unsupported constructs; keep lossless round-tripping.",
    "acceptance": "AT-FEO-055",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -878,8 +878,8 @@
    "requirement": "Version and diff every customization type; provide test-workspace promotion, dependency checks, migration plans for open work and reversible activation where semantically possible.",
    "acceptance": "AT-FEO-056",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -894,7 +894,7 @@
    "requirement": "Package native procurement, return, onboarding, contract and quality workflows on the existing capability owner; add scoped recovery roles and explicit handover.",
    "acceptance": "AT-FEO-057",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -909,8 +909,8 @@
    "requirement": "Publish and exercise a supported self-hosted durable-runtime topology, worker bounds, authentication, history replay, backup/reconciliation and version upgrades.",
    "acceptance": "AT-FEO-058",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/maintenance.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/maintenance.md"
    ],
    "dependencies": []
   },
@@ -925,7 +925,7 @@
    "requirement": "Revalidate user status, grant/policy revision, approved model destination and capability at every consequential boundary; stop or rebuild work when they change.",
    "acceptance": "AT-FEO-059",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/server/src/assistant.rs"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/server/src/assistant.rs"
    ],
    "dependencies": []
   },
@@ -940,7 +940,7 @@
    "requirement": "Tag context with provenance, source version, sensitivity and permitted purpose. Rebuild a current authorized view; retained archives must not automatically become reusable model context.",
    "acceptance": "AT-FEO-060",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/server/src/assistant.rs"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/server/src/assistant.rs"
    ],
    "dependencies": []
   },
@@ -955,8 +955,8 @@
    "requirement": "Unify tool effect/authority with trusted capability definitions. Apply full supported schema validation and reject malformed/null/nested values before effects; treat third-party hints as non-authoritative.",
    "acceptance": "AT-FEO-061",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/server/src/assistant.rs",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/server/src/assistant.rs",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -971,7 +971,7 @@
    "requirement": "Reserve bounded allowances atomically, reconcile actual usage and release on failure. Cap inference/repair/time across a task. Buffer or inspect output according to the promised disclosure profile.",
    "acceptance": "AT-FEO-062",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/server/src/assistant.rs"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/server/src/assistant.rs"
    ],
    "dependencies": []
   },
@@ -986,9 +986,9 @@
    "requirement": "Build versioned skill releases, separate grants, approved knowledge sources, provenance/ACL/freshness, candidate lessons and derived-index deletion using existing identity/events/Logic. A vector index is an implementation option, not an authorization layer.",
    "acceptance": "AT-FEO-063",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md",
-    "https://github.com/CBFerrum/ferrum-app-intelligence/blob/a0056b3123e043b4b167f843878b7324c8f716b3/README.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md",
+    "https://github.com/CBFerrum/ferrum-app-intelligence/blob/94f762a8c3982b64cc58fa67be92f70f7bad1e1f/README.md"
    ],
    "dependencies": []
   },
@@ -1003,8 +1003,8 @@
    "requirement": "Use a provider key and controlled budget for held-out business, ambiguity, multilingual, injection, refusal and failure cases. Compare model/prompt/skill revisions before promotion.",
    "acceptance": "AT-FEO-064",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/ferrum-app-intelligence/blob/a0056b3123e043b4b167f843878b7324c8f716b3/README.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/ferrum-app-intelligence/blob/94f762a8c3982b64cc58fa67be92f70f7bad1e1f/README.md"
    ],
    "dependencies": []
   },
@@ -1019,9 +1019,9 @@
    "requirement": "Make dashboard cards, objectives, scheduled reports and AI bind to the same semantic revision, currency, period/grain and viewer scope. Clearly label ad-hoc uncertified analysis.",
    "acceptance": "AT-FEO-065",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md",
-    "https://github.com/CBFerrum/ferrum-app-metrics/blob/2709639ec64a94cddb31e979c3ce0584abb1ffac/docs/engine.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md",
+    "https://github.com/CBFerrum/ferrum-app-metrics/blob/c6465299a1d3b76144fe49087e2e5462be43ea31/docs/engine.md"
    ],
    "dependencies": []
   },
@@ -1036,8 +1036,8 @@
    "requirement": "Add source onboarding/freshness/partition contracts, required external series and reproducible export pagination/checkpoints. Preserve scan-time row/column authority and memory/time bounds.",
    "acceptance": "AT-FEO-066",
    "evidence_sources": [
-    "https://github.com/CBFerrum/ferrum-app-metrics/blob/2709639ec64a94cddb31e979c3ce0584abb1ffac/docs/engine.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/ferrum-app-metrics/blob/c6465299a1d3b76144fe49087e2e5462be43ea31/docs/engine.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -1052,7 +1052,7 @@
    "requirement": "Add consented delegated OAuth, refresh rotation/revocation, provider-account budgets, capability-specific deletion semantics, by-reference media and per-connection destinations.",
    "acceptance": "AT-FEO-067",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -1067,7 +1067,7 @@
    "requirement": "Choose required payment, identity, productivity, shipping and accounting connectors based on supported customer journeys. Retain API/version/account-type evidence and maintenance ownership.",
    "acceptance": "AT-FEO-068",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -1082,7 +1082,7 @@
    "requirement": "Publish reproducible versioned packages, templates, API/event contracts, compatibility tests and private/local registry paths for self-hosters. Certify native/WASM/metadata/service trust separately.",
    "acceptance": "AT-FEO-069",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -1097,7 +1097,7 @@
    "requirement": "Finish customer challenge recovery, invoices/refunds/disputes and publisher settlement only for the commercial store scope; do not block free/internal Ferrum on this optional service.",
    "acceptance": "AT-FEO-070",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -1112,8 +1112,8 @@
    "requirement": "Maintain SBOM/provenance, exact copied/adapted source history, notices and release obligations; obtain qualified review of SDK/plugin distribution terms. Do not infer obligations from a badge.",
    "acceptance": "AT-FEO-071",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/maintenance.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/maintenance.md"
    ],
    "dependencies": []
   },
@@ -1128,8 +1128,8 @@
    "requirement": "Provide industry setup, task help, useful empty states, cross-app navigation, unified approvals/tasks and recovery queues; use capabilities to tailor portal and launcher content.",
    "acceptance": "AT-FEO-072",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -1144,8 +1144,8 @@
    "requirement": "Automate ordinary-role happy/negative paths against the exact image; cover permissions, time zones, mobile, reconnect, upgrade and recovery. Keep manual exploratory evidence separate.",
    "acceptance": "AT-FEO-073",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -1160,8 +1160,8 @@
    "requirement": "Run real assistive-technology task sessions and native-language review; translate domain metadata and content separately; validate numbers/dates, mixed-direction text and complex controls.",
    "acceptance": "AT-FEO-074",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -1176,8 +1176,8 @@
    "requirement": "Test actual supported browsers/devices, durable pending data, session changes, clock expiry, storage eviction and background synchronization. Distinguish cached reads from unsent business evidence.",
    "acceptance": "AT-FEO-075",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/ferrum-app-field-service/blob/f366150114ac9c01860ce86a21a749b2e33670f2/ui/src/offline.ts"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/ferrum-app-field-service/blob/1d62cae18d1853297592a1073dbf9ea37d4739dd/ui/src/offline.ts"
    ],
    "dependencies": []
   },
@@ -1192,7 +1192,7 @@
    "requirement": "Build source mapping, staged validation, attachments/identity imports, opening balances, stock valuation, open documents, delta cutover and reconciliation with repeatable rollback/exit.",
    "acceptance": "AT-FEO-076",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -1207,7 +1207,7 @@
    "requirement": "Run clean-host and actual no-internet installations with exact dependency artifacts, certificate setup, mail/storage/scan/engine checks and actionable doctor output.",
    "acceptance": "AT-FEO-077",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md"
    ],
    "dependencies": []
   },
@@ -1222,8 +1222,8 @@
    "requirement": "Restore records, ledgers, files, customizations, keys, process history and integration cursors into isolation; apply current holds/revocations/deletions before releasing effects.",
    "acceptance": "AT-FEO-078",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -1238,8 +1238,8 @@
    "requirement": "Instrument correlated operations without sensitive data, define profile SLOs, run mixed noisy-tenant/large-dataset/end-of-period workloads and verify alerts with operator response.",
    "acceptance": "AT-FEO-079",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md"
    ],
    "dependencies": []
   },
@@ -1254,9 +1254,9 @@
    "requirement": "Build once, qualify exact artifacts, require review/checks, publish compatibility/deprecation windows and test previous-to-current upgrades including backfills and schema boundaries.",
    "acceptance": "AT-FEO-080",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/maintenance.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/maintenance.md"
    ],
    "dependencies": []
   },
@@ -1271,7 +1271,7 @@
    "requirement": "Add a second capable maintainer, role-specific runbooks, vulnerability handling and an explicit supported-version commitment. Practice recovery by someone other than the author.",
    "acceptance": "AT-FEO-081",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/maintenance.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/maintenance.md"
    ],
    "dependencies": []
   },
@@ -1286,10 +1286,10 @@
    "requirement": "Use capability/profile ownership with supersedes links and exact source/artifact/test evidence. Recheck a claimed missing feature before implementation; never change a status merely to clear the backlog.",
    "acceptance": "AT-FEO-082",
    "evidence_sources": [
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/capabilities.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/limits.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/traceability.md",
-    "https://github.com/CBFerrum/Ferrum/blob/19fecde9e379ce870baa7ccc8f6b46dffa881bc1/docs/logic/maintenance.md"
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/capabilities.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/limits.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/traceability.md",
+    "https://github.com/CBFerrum/Ferrum/blob/f568f04e922c73274b2b64363b81de483f74cd12/docs/logic/maintenance.md"
    ],
    "dependencies": []
   }

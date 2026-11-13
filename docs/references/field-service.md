@@ -1,6 +1,6 @@
 # Field Service: references
 
-**Compared with:** OCA field-service `ad68b39d0218` (`referance/field-service/oca-field-service`, 34 modules, Odoo 19 manifests; reference paths below start there) against Ferrum Field Service `eff11f53f2ec` (`ferrum-app-field-service`, working tree, clean; Ferrum paths start at the ERP folder), the records frame in `ferrum/web` `9ecf5bfc8404` and the platform `ferrum` `2a701db8901a` (both have uncommitted edits, `ListView.tsx` among them; only the files named were read). **Date:** 2026-11-01
+**Compared with:** OCA field-service `ad68b39d0218` (`referance/field-service/oca-field-service`, 34 modules, Odoo 19 manifests; reference paths below start there) against Ferrum Field Service `9cb41f28b79f` (`ferrum-app-field-service`, working tree, clean; Ferrum paths start at the ERP folder), the records frame in `ferrum/web` `c04c986d788c` and the platform `ferrum` `81b7f7c8cd38` (both have uncommitted edits, `ListView.tsx` among them; only the files named were read). **Date:** 2026-11-01
 
 ## What Ferrum has
 

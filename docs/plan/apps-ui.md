@@ -241,7 +241,7 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     in place, and the catalog's state. Checked in Chrome.
   * The records frame leaves notifications to the bar (one bell): CRM 0.3.3, Helpdesk 0.3.2,
     HR 0.3.2 and Projects 0.3.2 are rebuilt with it, and the image's interfaces come from
-    Ferrum-Frontend a8d4dda.
+    Ferrum-Frontend db924b9.
   * Notifications (§12.8): every notification has a kind (the platform's mention, assignment,
     comment, watch, automation and general; apps' `shell.notification` as `{app}.{id}`), and each
     person chooses per kind: in the bar, email at once, a daily email digest, or off. The bell in the
@@ -341,7 +341,7 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     own, and the isolation checks above hold; opened alone, it goes to consent, comes back to where it
     was with cards, survives a reload, renews, refuses a replayed refresh token (revoking the family)
     and signs in again.
-  * The store's review (ferrum-store b3f63e6): a submission whose interface the platform would not
+  * The store's review (ferrum-store cf1f5ab): a submission whose interface the platform would not
     serve is rejected (`ferrum_apps::ui::from_bundle`, shared with the platform), and moderators see
     the interface's files and size, its `ui.csp` origins, its routes and shell points (`shell.public`
     flagged as open to anyone with the link) and the automatic look at its page

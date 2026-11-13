@@ -46,8 +46,8 @@ Rules every add-on keeps:
 
 ## L0. The shared parts, before any second country
 
-**Built (31 October 2026):** Ferrum 1b532f4 and b5b2d3f, Ferrum-Frontend 9ecf5bf, ERP 7a2a70c and
-4aae57a (ERP 0.3.0, India 0.2.0), Commerce 6c74dbd, Point of Sale 0.2.3; pinned by the Ferrum commit
+**Built (31 October 2026):** Ferrum e26fb2f and 4226865, Ferrum-Frontend c04c986, ERP 5e3ea56 and
+5e97ad3 (ERP 0.3.0, India 0.2.0), Commerce 26c175d, Point of Sale 0.2.3; pinned by the Ferrum commit
 that marks this. What was built differs from the table in one place: a country stays the name
 people type, and a read-only `country_code` (ISO 3166-1 alpha-2, `ferrum_domain::countries`, with the
 other names people type) follows it on every save, so nothing that reads or writes `country` changes;
@@ -83,7 +83,7 @@ POS's, CRM's and Commerce's tests still pass.
 
 ## L1. The European Union (`eu`): the rules members share
 
-**Built (31 October 2026):** ERP 34d813d (ERP 0.4.0, the European Union add-on 0.1.0, crate
+**Built (31 October 2026):** ERP 2201227 (ERP 0.4.0, the European Union add-on 0.1.0, crate
 `ferrum-eu` in `addons/eu`), compiled into Ferrum by the commit that marks this. What it does:
 
 * Which VAT a sale or purchase of a company in a member state takes, line by line: at home; goods
@@ -142,11 +142,11 @@ invoice validates against EN 16931's rules and goes to a Peppol test access poin
 | Romania | RO e-Factura between businesses since 2024; SAF-T (D406) | clearance | ANAF |
 | Hungary | real-time invoice reporting (Online Számla) | reporting | NAV |
 
-**Germany built (31 October 2026):** ERP 6f045dd (Germany 0.1.0, crate `ferrum-de` in `addons/de`, on
+**Germany built (31 October 2026):** ERP 4e2af20 (Germany 0.1.0, crate `ferrum-de` in `addons/de`, on
 the EU's): XRechnung 3.0 checked against KoSIT's BR-DE rules (taken from its schematron), small
 businesses (§ 19 UStG) and the domestic reverse charge (§ 13b UStG). The other member states follow.
 
-**Belgium, Italy, Poland and Romania built (1 November 2026):** ERP 2db8112, crate `ferrum-eu-members`
+**Belgium, Italy, Poland and Romania built (1 November 2026):** ERP d820d87, crate `ferrum-eu-members`
 (`addons/eu-members`, one app per member state on the EU's, sharing what member states add at home:
 small businesses' exemptions and the domestic reverse charge with their invoice notes). Belgium:
 Peppol on submit between Belgian businesses, enterprise numbers and 0208 IDs. Italy: FatturaPA
@@ -156,20 +156,20 @@ queued for the company's KSeF channel. Romania: CIUS-RO with ISO 3166-2:RO count
 sectors, queued for ANAF. Not yet: the channels themselves (SDI, KSeF's API 2.0, ANAF's OAuth), Italy's
 FPA12, split payment and withholding, and France, Spain, Portugal, Croatia, Greece, Hungary.
 
-**Portugal built (1 November 2026):** ERP b926b7e, `ferrum-eu-members` `pt`: certified invoices: series
+**Portugal built (1 November 2026):** ERP 19af0f1, `ferrum-eu-members` `pt`: certified invoices: series
 communicated to the AT with their validation codes, ATCUD, the RSA-SHA1 signature chained over each
 series (Despacho 8632/2014; matches openssl on the Despacho's record), the hash characters and the
 certificate's mention, the QR code's message (Portaria 195/2020), NIF checks, article 53 and the
 construction reverse charge. Romania's ANAF e-Factura connection (OAuth, upload, status) is in ERP
-fa6232f. Not yet: SAF-T (PT), the AT's series communication web service, Açores and Madeira rates.
+6503516. Not yet: SAF-T (PT), the AT's series communication web service, Açores and Madeira rates.
 
-**Tax rates as data (1 November 2026):** ERP 954e587 (ERP 0.4.1). A Tax Rate record (country,
+**Tax rates as data (1 November 2026):** ERP 30676ce (ERP 0.4.1). A Tax Rate record (country,
 optional region, category, rate, from and to) wins over a localization's built-in rate for that
 day (`ferrum_app_erp::localization::rates`; a region's over the whole country's), so a new rate is
 a record, not a release. The thirteen countries of `ferrum-countries` read it. Next: Canada, the
 UK and the US; then categories, thresholds and exemption texts as data.
 
-**Spain and France built (1 November 2026):** ERP 572204b and c062e2b, in `ferrum-eu-members`. Spain:
+**Spain and France built (1 November 2026):** ERP c2ba942 and 447a81c, in `ferrum-eu-members`. Spain:
 VERI*FACTU invoicing records chained by AEAT's SHA-256 fingerprint (its test vectors pass),
 cancellation records, the verification QR code, records queued for the company's AEAT connection;
 the recargo de equivalencia; the Canary Islands, Ceuta and Melilla outside the VAT area. France:
@@ -184,7 +184,7 @@ against a fake authority and the authority's sandbox, and its official validator
 
 ## L3. The United Kingdom (`gb`)
 
-**Built (31 October 2026):** ERP 649d799 (the United Kingdom 0.1.0, crate `ferrum-gb` in `addons/gb`):
+**Built (31 October 2026):** ERP b16b9a9 (the United Kingdom 0.1.0, crate `ferrum-gb` in `addons/gb`):
 VAT at 20%, 5%, zero and exempt, the CIS reverse charge, exports and services abroad, imports of
 services reverse-charged; VAT returns (nine boxes from the books) filed through HMRC's MTD API as
 hmrc/vat-api defines it, with OAuth sign-in and refresh and the fraud prevention headers (the
@@ -201,7 +201,7 @@ carry what the law asks.
 
 ## L4. The United States (`us`)
 
-**Built (31 October 2026):** ERP 9e923ac (the United States 0.1.0, crate `ferrum-us` in `addons/us`):
+**Built (31 October 2026):** ERP bb68865 (the United States 0.1.0, crate `ferrum-us` in `addons/us`):
 sales tax by destination (origin within origin-based states) at the ZIP code's combined rate from the
 states' rate tables (US Rate Table takes a state's table as published; without a ZIP code's rate,
 submitting refuses where local taxes apply), only where the company is registered; exemption
@@ -232,7 +232,7 @@ voids at the service; the nexus report and 1099s come out right.
 
 ## L5. Canada (`ca`)
 
-**Built (31 October 2026):** ERP a5283b6 (Canada 0.1.0, crate `ferrum-ca` in `addons/ca`): GST 5%,
+**Built (31 October 2026):** ERP a07def4 (Canada 0.1.0, crate `ferrum-ca` in `addons/ca`): GST 5%,
 HST by province (13% Ontario; 15% New Brunswick, Newfoundland and Labrador, Prince Edward Island;
 14% Nova Scotia from 1 April 2025), PST in British Columbia (7%) and Saskatchewan (6%), RST in
 Manitoba (7%) where the company is registered, QST 9.975% in Quebec; goods taxed where delivered,
@@ -246,7 +246,7 @@ province take the right taxes.
 
 ## L6. South East Asia (one add-on each)
 
-**Built (31 October 2026):** ERP 713f2b5, crate `ferrum-countries` (`addons/countries`): one app per
+**Built (31 October 2026):** ERP 35fb5e3, crate `ferrum-countries` (`addons/countries`): one app per
 country (`sg`, `my`, `id`, `th`, `ph`, `vn`) on a shared engine for VAT and GST that work the common
 way (dated rates by item category on one or more tax rows, exports, recoverable or not, the reverse
 charge on services from abroad, registration numbers checked, each country's return worked out
@@ -270,13 +270,13 @@ authority and the authority's sandbox where there is one.
 
 ## L7. Elsewhere
 
-**Built (31 October 2026):** on the same engine (ERP 713f2b5): Saudi Arabia (`sa`, ZATCA's return
+**Built (31 October 2026):** on the same engine (ERP 35fb5e3): Saudi Arabia (`sa`, ZATCA's return
 boxes), the United Arab Emirates (`ae`, the VAT 201 by emirate), Australia (`au`, the BAS's GST
 labels, ABN check), New Zealand (`nz`, the GST101A, IRD number check), Japan (`jp`, 10% and 8% on
 rows of their own so tax is worked out once per rate per invoice, the T-number), Mexico (`mx`, IVA
 on a cash basis from payments, the RFC) and China (`cn`, 13%, 9%, 6%, small-scale taxpayers, the
 credit code's check). Peppol PINT e-invoices for Singapore, Australia, New Zealand, Japan and the
-UAE (ERP bf03c35) and Malaysia's MyInvois connector (ERP 1484877: submission, validation,
+UAE (ERP ffbf61e) and Malaysia's MyInvois connector (ERP 1484877: submission, validation,
 cancellation within 72 hours) are built. Not yet: Fatoora phase 2, CFDI 4.0 with a PAC, fapiao,
 Indonesia's Coretax, Vietnam's and the Philippines' e-invoices; Brazil. Japan's food rate cut from 1 April 2027 is enacted but its rate is not in
 the table yet (items' own rates cover it).

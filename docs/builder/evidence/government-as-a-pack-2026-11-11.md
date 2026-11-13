@@ -8,7 +8,7 @@ two bespoke pages). It was measured on paper the day before ([government-retail-
 16 same, 11 different, 11 cannot of 38). Since then the builder gained `invoke` (BD-13), `links.<field>`
 with `append_line` and `set_line` (BD-14), service targets (BD-04), a workspace's own menu marked for the
 portal (BD-12, BD-02), published lists (BD-15) and lines within lines (BD-06). This rebuilds the app with the
-calls an administrator makes, on Ferrum main at 08c923a with ERP's real packages, and measures it again,
+calls an administrator makes, on Ferrum main at c5f5214 with ERP's real packages, and measures it again,
 behaviour by behaviour, on a running kernel. No Rust, SQL or plugin is in the pack.
 
 - The pack: [packs/government/government.pack.json](../../../packs/government/government.pack.json)

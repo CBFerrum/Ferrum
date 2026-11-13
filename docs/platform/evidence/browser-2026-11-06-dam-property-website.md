@@ -1,7 +1,7 @@
 # A browser on a running server, 6 November 2026 (afternoon): Digital Assets' view page, Property's owners' portal, Website on its own domain
 
 The walk server (port 5191) ran PR 88's build: DAM 0.5.0, Property 0.6.0 and Website 0.1.3, with
-the shell at Frontend 3d36821. The walk used workspace walk-intranet in the desktop app's browser
+the shell at Frontend 0e61bba. The walk used workspace walk-intranet in the desktop app's browser
 pane (Chromium), signed in as its administrator, and then as a portal person who signed in with an
 e-mailed code.
 

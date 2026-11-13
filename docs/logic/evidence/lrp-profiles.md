@@ -10,8 +10,8 @@ running server over HTTP as people signed in as themselves:
 Their output is kept beside this page: [lrp-walk.txt](lrp-walk.txt), [logic-load.txt](logic-load.txt) and
 [restore-drill.txt](restore-drill.txt).
 
-They first ran when W8 landed, at Ferrum `edbc786`, and again once the registry's open rows were closed
-([closing-gaps.md](closing-gaps.md), batch 3, at `40ff6d7`). They ran a third time for batch 4 (`cf284fa`), with
+They first ran when W8 landed, at Ferrum `917358c`, and again once the registry's open rows were closed
+([closing-gaps.md](closing-gaps.md), batch 3, at `6180385`). They ran a third time for batch 4 (`ac7f97a`), with
 Metrics' engine running beside the server as a process of its own, and a fourth time on the build below, once the
 interface took the screen-reader fixes. This page and the three outputs are from that fourth run.
 
@@ -19,14 +19,14 @@ interface took the screen-reader fixes. This page and the three outputs are from
 
 - **Server:** `cargo build -p ferrum-server --features process`, which is every default app (the countries,
   the business apps, Operations, Edge, Metrics, Intelligence, Studio, …) with the process runtime, at Ferrum
-  `60dd8ac`. Its dependencies were built at opt-level 1 (`--config 'profile.dev.package."*".opt-level=1'`) so the
+  `f6475aa`. Its dependencies were built at opt-level 1 (`--config 'profile.dev.package."*".opt-level=1'`) so the
   build fitted this machine's disk; the timings below are a little quicker for it than batch 3's.
 - **Pins:**
-  - Ferrum-Frontend `58d2786`;
-  - ferrum-app-edge `867bca9` (0.6.1);
+  - Ferrum-Frontend `af1f749`;
+  - ferrum-app-edge `e74740c` (0.6.1);
   - ferrum-app-metrics `2709639` (0.7.2);
-  - ferrum-app-intelligence `a0056b3` (0.2.1);
-  - ferrum-app-objectives `f8e0444` (0.7.0);
+  - ferrum-app-intelligence `94f762a` (0.2.1);
+  - ferrum-app-objectives `91c8463` (0.7.0);
   - the rest as `docs/registry/release-manifest.yaml` pins them.
 
   `scripts/release_evidence.py qualified` compares this build with the one at hand

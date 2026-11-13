@@ -81,7 +81,7 @@ and then proves them by building verticals as configuration.
 
 ## 2. What the builder already has
 
-Checked at `origin/main` 0e2e8a8.
+Checked at `origin/main` 2318717.
 
 | Part | Where | What it gives |
 |---|---|---|

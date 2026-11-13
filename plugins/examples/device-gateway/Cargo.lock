@@ -12,7 +12,7 @@ dependencies = [
 [[package]]
 name = "ferrum-plugin-sdk"
 version = "0.3.0"
-source = "git+https://github.com/CBFerrum/ferrum-sdk#15402df36b98724924d06c68a34855ff60d07065"
+source = "git+https://github.com/CBFerrum/ferrum-sdk#d0de10a9d545d25bbffe8bf03ac3d2859d92c54c"
 dependencies = [
  "serde_json",
 ]

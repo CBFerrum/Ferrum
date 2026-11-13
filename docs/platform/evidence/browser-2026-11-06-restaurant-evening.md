@@ -2,7 +2,7 @@
 
 Restaurants (FERRUM-INDUSTRY-002) had run only inside Restaurant's suite, through the API. This walk
 took an evening through the pages, on the walk server: a debug build of Ferrum PR 89 on one
-machine, with its own database (`ferrum_walk`), the shell from Ferrum-Frontend a76295e and Restaurant
+machine, with its own database (`ferrum_walk`), the shell from Ferrum-Frontend b39fffb and Restaurant
 0.1.7 as pinned. The workspace's clock is UTC and the browser's was India's. It ran from 09:25 to
 09:50 UTC.
 
@@ -40,7 +40,7 @@ Restaurant 0.2.0 (ferrum-app-restaurant PR 2) fixes each of these:
 
 ## The fixes, checked on their build
 
-On Ferrum PR 89 at 66e3097, with Restaurant 0.2.0, at 21:00 UTC: an order for Table 2 of
+On Ferrum PR 89 at c57ae78, with Restaurant 0.2.0, at 21:00 UTC: an order for Table 2 of
 "lemonade" in lower case and a tiramisu was written "Lemonade" as the menu writes it, and sent with
 "Sent to Bar and Pastry, for Table 2". The lemonades voided, the bar's ticket was Voided and left
 the kitchen's page, the pastry's stayed "Table 2 · 1 × Tiramisu". Setting the tiramisu to Served by

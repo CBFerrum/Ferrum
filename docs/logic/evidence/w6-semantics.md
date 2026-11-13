@@ -1,8 +1,8 @@
 # W6: analytical semantics (8 November 2026)
 
 Software evidence only, from the worktree `ERP/flc/metrics` (CBFerrum/ferrum-app-metrics, branch
-`logic/w6-semantics`, based on Metrics `5ac511f`, 0.4.5), built against Ferrum's main (`a0c6aa5`) from the
-local checkout and merged as CBFerrum/ferrum-app-metrics#4 (`c2b0b66`, Metrics 0.5.0).
+`logic/w6-semantics`, based on Metrics `6013d9e`, 0.4.5), built against Ferrum's main (`872c836`) from the
+local checkout and merged as CBFerrum/ferrum-app-metrics#4 (`59f3038`, Metrics 0.5.0).
 
 ## What ran
 
@@ -12,7 +12,7 @@ cargo test --test metrics_it           # passed
 cargo test --test datasets_it          # passed
 cargo test --test composed_it          # passed
 cargo clippy --all-targets -- -D warnings; cargo fmt --all -- --check
-# in Ferrum, with Metrics pinned at c2b0b66 and Edge at 17a7c41
+# in Ferrum, with Metrics pinned at 59f3038 and Edge at 1e8249e
 cargo check --locked -p ferrum-server  # every default feature
 python3 scripts/registry.py check
 ```

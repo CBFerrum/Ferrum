@@ -1,14 +1,14 @@
 # W0: baseline, reuse map and decisions (8 November 2026)
 
 Software evidence only. Run on the owner's development machine (macOS, PostgreSQL 17.9) from the
-worktree `ERP/flc/ferrum`, branch `logic/w0-baseline`, based on Ferrum `a3236e6`.
+worktree `ERP/flc/ferrum`, branch `logic/w0-baseline`, based on Ferrum `2c8f5d4`.
 
 ## The package
 
 `Ferrum_Logic_Platform_v2_Claude_Package.zip`: CRC checked and all 27 entries of its `SHA256SUMS` match.
 Its three loose documents (`BUILDER_UX.md`, `CLAUDE_START_HERE.md`, `DATA_AND_API_CONTRACTS.md`) are the
 same bytes as the copies inside it, and `Ferrum_Logic_Platform_v2_Complete_Plan.md` is every document
-concatenated. Its research snapshot (Ferrum `6d65c1f`) is two commits behind the `main` read here.
+concatenated. Its research snapshot (Ferrum `8433052`) is two commits behind the `main` read here.
 
 ## FLC-BASE-001 and FLC-BASE-002
 
@@ -34,7 +34,7 @@ python3 scripts/registry.py generate && python3 scripts/registry.py check
 
 The 124 requirements are in `docs/registry/flc.yaml` with what the code already does for each, checked
 by the same rules as the platform program's. Cross-repository citations were checked against each
-repository's `origin/main` (Edge `b69698f`, Metrics `b708d7c`, Cloud `c64e0bc`, Frontend `155518c`),
+repository's `origin/main` (Edge `b55ff86`, Metrics `9b21245`, Cloud `51d342e`, Frontend `046a3a2`),
 because several local checkouts lag theirs and `registry.py` reads working trees.
 
 ## Found while reading, confirmed at `main`

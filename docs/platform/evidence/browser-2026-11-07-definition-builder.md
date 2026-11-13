@@ -7,9 +7,9 @@ Studio's report builder there.
 
 The walk had two parts, both on the walk server's database (`ferrum_walk`), in workspace walk,
 signed in as its administrator:
-1. Before PR 91 was on the server: Ferrum main 138554d with the shell from PR 45's branch, the
+1. Before PR 91 was on the server: Ferrum main 819d181 with the shell from PR 45's branch, the
    field's `widget` set in the page's cached metadata, since that server did not send it yet.
-2. On this PR's build (691ecb1, the shell from Ferrum-Frontend a64416a, Metrics 0.3.2), with
+2. On this PR's build (93d0081, the shell from Ferrum-Frontend 204b713, Metrics 0.3.2), with
    nothing set by hand.
 
 ## What was walked

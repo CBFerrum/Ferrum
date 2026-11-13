@@ -1,7 +1,7 @@
 # W2: the compiler, customer rules and event chains (8 November 2026)
 
 Software evidence only, run on the owner's development machine (macOS, PostgreSQL 17.9) from the worktree
-`ERP/flc/ferrum`, branch `logic/w2-compiler`, based on Ferrum `fc2a953`. Databases `ferrum_flc_kernel_test`,
+`ERP/flc/ferrum`, branch `logic/w2-compiler`, based on Ferrum `163ed8e`. Databases `ferrum_flc_kernel_test`,
 `ferrum_flc_studio_test`, `ferrum_flc_plugins_test` and `ferrum_flc_mcp_test`, reset by each suite.
 
 ## What ran

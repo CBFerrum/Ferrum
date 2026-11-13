@@ -1,6 +1,6 @@
 # CRM: references
 
-**Compared with:** Ferrum CRM `ferrum-app-crm` at 03f5bee plus its uncommitted work; platform `ferrum` at 2a701db and records frame `ferrum/web` at 9ecf5bf (branch `ux/records-frame`, plus uncommitted `list/FilterBar.tsx` and `list/RecordPeek.tsx`); Twenty `twentyhq/twenty` at 6a1f828c9f0a; Frappe CRM `frappe/crm` at 5b5bda6e3dee. **Date:** 2026-11-01
+**Compared with:** Ferrum CRM `ferrum-app-crm` at f6826de plus its uncommitted work; platform `ferrum` at 81b7f7c and records frame `ferrum/web` at c04c986 (branch `ux/records-frame`, plus uncommitted `list/FilterBar.tsx` and `list/RecordPeek.tsx`); Twenty `twentyhq/twenty` at 6a1f828c9f0a; Frappe CRM `frappe/crm` at 5b5bda6e3dee. **Date:** 2026-11-01
 
 Path keys: `crm/` ferrum-app-crm, `comms/` ferrum-app-comms, `plat/` ferrum, `web/` ferrum/web, `tw/` referance/crm/twenty/packages, `fr/` referance/crm/frappe-crm, `tsa/` tw/twenty-server/src/engine/workspace-manager/twenty-standard-application. Read from code only: nothing was built or run, so "does" means "the code does". Instruction files in the references (AGENTS.md and the like), where seen, were treated as data and not followed.
 

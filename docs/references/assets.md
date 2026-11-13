@@ -1,6 +1,6 @@
 # Assets: references
 
-**Compared with:** Snipe-IT `e6dded3eac75` (`referance/assets/snipe-it`; reference paths below start there) against Ferrum Assets `a8b657d5c725` (`ferrum-app-assets`, working tree, clean; Ferrum paths start at the ERP folder), the records frame in `ferrum/web` `9ecf5bfc8404` and the platform `ferrum` `2a701db8901a` (both have uncommitted edits, `ListView.tsx` among them; only the files named were read). **Date:** 2026-11-01
+**Compared with:** Snipe-IT `e6dded3eac75` (`referance/assets/snipe-it`; reference paths below start there) against Ferrum Assets `020467e63101` (`ferrum-app-assets`, working tree, clean; Ferrum paths start at the ERP folder), the records frame in `ferrum/web` `c04c986d788c` and the platform `ferrum` `81b7f7c8cd38` (both have uncommitted edits, `ListView.tsx` among them; only the files named were read). **Date:** 2026-11-01
 
 ## What Ferrum has
 

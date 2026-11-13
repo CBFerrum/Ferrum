@@ -8,13 +8,13 @@
 # Confirmed when each workstream starts, and each `confirmed` below says what was built once all nine had landed
 # (W0-W8, 8 November 2026): reused, extended, migrated, moved or new, and no area with two owners.
 read_at:
-  CBFerrum/Ferrum: d120f95 (confirmed; first read at a3236e6207)
-  CBFerrum/Ferrum-Frontend: 2f201d5
-  CBFerrum/ferrum-app-edge: 17a7c41
-  CBFerrum/ferrum-app-metrics: c2b0b66
-  CBFerrum/ferrum-app-intelligence: 02c6227
-  CBFerrum/ferrum-app-erp: a20a9c4ce7
-  CBFerrum/ferrum-app-cloud: c64e0bcdd5 (private)
+  CBFerrum/Ferrum: a924d07 (confirmed; first read at 2c8f5d4ed0)
+  CBFerrum/Ferrum-Frontend: 4ae0e39
+  CBFerrum/ferrum-app-edge: 1e8249e
+  CBFerrum/ferrum-app-metrics: 59f3038
+  CBFerrum/ferrum-app-intelligence: eddafcd
+  CBFerrum/ferrum-app-erp: d9d110d897
+  CBFerrum/ferrum-app-cloud: 51d342ec78 (private)
 areas:
   - area: Native business actions
     existing: [crates/meta/src/types.rs (ActionDef, ActionParam), crates/kernel/src/doc.rs (run_action_tx, transition_tx), crates/mcp/src/lib.rs]

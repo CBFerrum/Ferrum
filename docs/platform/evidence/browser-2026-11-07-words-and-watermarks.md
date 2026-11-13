@@ -1,7 +1,7 @@
 # A browser on a running server, 7 November 2026: interface words, duplicates, renditions, watermarks, grades and pivots
 
 The walk server was rebuilt on this PR's lock: every app at its main, each app's interface built
-with Ferrum-Frontend d5d98f2 (PRs 47 and 48), on Ferrum main with PRs 94 and 95. All of it was in
+with Ferrum-Frontend 8a1c2e7 (PRs 47 and 48), on Ferrum main with PRs 94 and 95. All of it was in
 workspace walk, signed in as its administrator, from 17:00 UTC.
 
 ## What was walked

@@ -1,8 +1,8 @@
 # A browser on a running server, 9 November 2026: what needs a person (FEO-017)
 
 The walk server was a debug build of the server crate without its compiled-in apps
-(`--no-default-features`), from this change's branch on Ferrum main 96dd164. Its interface was built from
-Ferrum-Frontend's `feo/exceptions` branch on main 7a008a6. The database was the walk's own
+(`--no-default-features`), from this change's branch on Ferrum main c1815c2. Its interface was built from
+Ferrum-Frontend's `feo/exceptions` branch on main 833854a. The database was the walk's own
 (`ferrum_feo_walk`), on port 5193, and the development mailer was a stub.
 
 Workspace `walk` was made with `ferrum task create_tenant`, against that checked database, and seeded

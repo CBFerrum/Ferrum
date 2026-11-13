@@ -1,8 +1,8 @@
 # W8: migration, release and operations (8 November 2026)
 
 Software evidence only, run on the owner's development machine (macOS, PostgreSQL 17.9) from the worktrees
-`ERP/flc/ferrum` (branch `logic/w8-operations`, based on Ferrum `53ecdf7`) and `ERP/flc/web` (branch
-`logic/w8-operations`, merged as CBFerrum/Ferrum-Frontend#57, `dd70c28`). Temporal Server 1.32.2 ran as the
+`ERP/flc/ferrum` (branch `logic/w8-operations`, based on Ferrum `ace1b39`) and `ERP/flc/web` (branch
+`logic/w8-operations`, merged as CBFerrum/Ferrum-Frontend#57, `3d29a49`). Temporal Server 1.32.2 ran as the
 CLI's dev server (`temporal` 1.10.0, SQLite, namespace `ferrum-flc`). Each suite had a database of its own
 (`ferrum_flc_kernel_test`, `ferrum_flc_studio_test`, `ferrum_flc_process_test`, …), reset by the suite.
 
@@ -157,7 +157,7 @@ a solution starting on new orders, and the next order's event, given to it, star
 `replica-misses-an-activation` (the replica's own version again) is caught.
 
 **Intelligence 0.1.1.** The boot log showed the App Manager leaving Intelligence out: its summary was longer
-than 200 characters. CBFerrum/ferrum-app-intelligence#2 (`02c6227`) shortened it, Ferrum pins it, and the boot
+than 200 characters. CBFerrum/ferrum-app-intelligence#2 (`eddafcd`) shortened it, Ferrum pins it, and the boot
 log no longer says so.
 
 ## The package's acceptance cases

@@ -1,8 +1,8 @@
 # A browser on a running server, 9 November 2026: what an update changes under customizations and waiting records (FEO-056)
 
 The walk server was a debug build of the server crate without its compiled-in apps
-(`--no-default-features`), from this change's branch on Ferrum main 529ee29. Its interface was built from
-Ferrum-Frontend's `feo/customization-conflicts` branch on main a501ad3. The database was the walk's own
+(`--no-default-features`), from this change's branch on Ferrum main 8a729a6. Its interface was built from
+Ferrum-Frontend's `feo/customization-conflicts` branch on main 75c086c. The database was the walk's own
 (`ferrum_feo_walk`), on port 5193, with the development defaults for apps: uploads reach the cluster,
 and unsigned ones are allowed. The administrator of workspace `walk` was signed in from an earlier walk.
 

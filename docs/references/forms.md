@@ -1,6 +1,6 @@
 # Forms: references
 
-**Compared with:** formbricks/formbricks `fa289168d436` (apps/web, packages) against ferrum-app-forms 0.1.0 (working tree, `173e5f2`) and the records frame in ferrum (`2a701db`). **Date:** 2026-11-01
+**Compared with:** formbricks/formbricks `fa289168d436` (apps/web, packages) against ferrum-app-forms 0.1.0 (working tree, `9b21e66`) and the records frame in ferrum (`81b7f7c`). **Date:** 2026-11-01
 
 ## What Ferrum has
 

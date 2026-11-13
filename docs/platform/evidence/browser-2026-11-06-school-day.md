@@ -2,7 +2,7 @@
 
 Education (FERRUM-INDUSTRY-004) had run only inside its own suite, through the API. This walk took a
 school's day through its pages, on the walk server: a debug build of Ferrum PR 89 on one machine,
-with its own database (`ferrum_walk`), the shell from Ferrum-Frontend a76295e and Education 0.1.8 as
+with its own database (`ferrum_walk`), the shell from Ferrum-Frontend b39fffb and Education 0.1.8 as
 pinned. The workspace's clock is UTC and the browser's was India's. It ran from 09:52 to 10:02 UTC.
 
 One person, the workspace's administrator, worked as the office, the admissions officer and the teacher.
@@ -34,7 +34,7 @@ One person, the workspace's administrator, worked as the office, the admissions 
 
 ## The fixes, checked on their build
 
-On Ferrum PR 89 at 66e3097, with Education 0.2.0, at 20:59 UTC: a second applicant approved and
+On Ferrum PR 89 at c57ae78, with Education 0.2.0, at 20:59 UTC: a second applicant approved and
 admitted on their page said "Now Approved", then "Now Admitted; made STU-2026-00003", where it had
 said "done". The 09:00 class's roll call, opened at /school/class/{class}, was headed "09:00 to
 10:00 · Mathematics · 6A · Room 101 · Mr Daniel Weiss" and listed Lea Novak present. Marked Late and

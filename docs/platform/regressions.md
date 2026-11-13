@@ -1,7 +1,7 @@
 # Earlier findings, against the assembled release
 
 The handoff asks that earlier findings be checked against what is assembled, not taken from a report. The
-assembly is Ferrum `d723eb9`, pinning ERP `d124642` and IoT Edge `45ea519`; Edge's `main` is `fbe1e99`, which
+assembly is Ferrum `013d784`, pinning ERP `6d88161` and IoT Edge `7938d5e`; Edge's `main` is `c9998a6`, which
 changes only tests. Everything here ran on 2 November 2026, on simulators. **Nothing ran on equipment.**
 
 | Finding | Where it is fixed | What proves it | Result |

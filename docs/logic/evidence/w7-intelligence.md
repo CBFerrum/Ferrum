@@ -1,8 +1,8 @@
 # W7: Intelligence (8 November 2026)
 
 Software evidence only, from a new public repository, CBFerrum/ferrum-app-intelligence (AGPL-3.0-only),
-created for this workstream as decided on 8 November. Built against Ferrum's main (`2a3c246`) and Metrics
-`c2b0b66`, merged as CBFerrum/ferrum-app-intelligence#1 (`3f16218`, Intelligence 0.1.0), and compiled into
+created for this workstream as decided on 8 November. Built against Ferrum's main (`7d3feb0`) and Metrics
+`59f3038`, merged as CBFerrum/ferrum-app-intelligence#1 (`cb90ab1`, Intelligence 0.1.0), and compiled into
 the server by default (feature `intelligence`, which needs `metrics`).
 
 No model was called. Questions are understood by the app's rules; a model provider plugs in behind the same
@@ -14,7 +14,7 @@ No model was called. Questions are understood by the app's rules; a model provid
 ```bash
 cargo test                                   # the rules' unit test; evals_it against a real database
 cargo clippy --all-targets -- -D warnings; cargo fmt --all -- --check
-# in Ferrum, with Intelligence pinned at 3f16218
+# in Ferrum, with Intelligence pinned at cb90ab1
 cargo clippy --locked -p ferrum-server -- -D warnings   # every default feature, intelligence among them
 python3 scripts/registry.py check
 ```

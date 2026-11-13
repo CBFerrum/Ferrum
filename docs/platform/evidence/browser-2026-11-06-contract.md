@@ -3,7 +3,7 @@
 Construction (FERRUM-INDUSTRY-007) had run only inside its own suite, through the API. This walk
 took a contract from its estimate to its retention through the pages, on the walk server: a debug
 build of Ferrum PR 89 on one machine, with its own database (`ferrum_walk`), the shell from
-Ferrum-Frontend a76295e and Construction 0.1.6 as pinned. The workspace's clock is UTC and the
+Ferrum-Frontend b39fffb and Construction 0.1.6 as pinned. The workspace's clock is UTC and the
 browser's was India's. It ran from 19:59 to 20:15 UTC.
 
 One person, the workspace's administrator, worked as the contracts manager and the site manager.

@@ -66,7 +66,7 @@ then simulates each with what the real run read standing in:
   - Compares each qualification's recorded build with the build at hand: a digest of Ferrum's code, and the commit
     of the frontend and of every repository Cargo.lock builds.
   - When anything changed, it names it and fails until the scripts are run again and `--stamp` records the build.
-  - The profile qualification is stamped at `0e8e898`, the build the six profiles ran on. It reads stale now, as it
+  - The profile qualification is stamped at `96a8f1d`, the build the six profiles ran on. It reads stale now, as it
     should, since this batch changed Ferrum's code; it is run again at the end of these batches.
 - `scripts/licenses.py check` now also fails on any deploy image that is not an engine approved in
   `docs/registry/engines.yaml`. It found Moto in the kind cluster unrecorded; it is recorded as test-only.
@@ -154,8 +154,8 @@ while a second waits behind the claim.
 
 ## Batch 3: the apps' rows
 
-Edge, Intelligence and Metrics each merged their part, and Ferrum pins them: IoT Edge 96b4eb4 (#15), Intelligence
-6ea3c51 (0.2.0, #3), Metrics 848c2a3 (0.6.0, #5).
+Edge, Intelligence and Metrics each merged their part, and Ferrum pins them: IoT Edge f24058b (#15), Intelligence
+af900b2 (0.2.0, #3), Metrics b661cd0 (0.6.0, #5).
 
 **IoT Edge.**
 - *A flow's lookups have an age (FLC-EDGE-008).* `enrich` takes `fresh`: a value seen longer ago, or at no known
@@ -165,7 +165,7 @@ Edge, Intelligence and Metrics each merged their part, and Ferrum pins them: IoT
   it is short, and given room again it takes up the command that waited. Mutant caught:
   `short-of-disk-keeps-samples`.
 - *No step moves equipment (FLC-EDGE-012).* A write step, a set step naming a device and a math step writing to one
-  are each refused when the flow is read. Mutant caught, run by hand against Edge 96b4eb4:
+  are each refused when the flow is read. Mutant caught, run by hand against Edge f24058b:
   `steps-take-unknown-fields`.
 - *No formula reads a clock (FLC-COMP-003).* The gateway's formulas refuse `now()`, `rand()` and `today()`.
 - *Authenticated observation (FLC-EDGE-001)* was already shown, and the row now says so.
@@ -211,7 +211,7 @@ Edge, Intelligence and Metrics each merged their part, and Ferrum pins them: IoT
   - Mutants caught: `review-hides-conflict`, `duplicate-defined-twice`, `unknown-aggregate-approximated`,
     `calculated-column-taken`, `import-without-rights`.
 
-**A metric read the same everywhere (Objectives 0.7.0, #8, f8e0444).** Objectives measured a key result by a
+**A metric read the same everywhere (Objectives 0.7.0, #8, 91c8463).** Objectives measured a key result by a
 certified metric by running the metric's query itself. A converted metric would have measured it as a sum of the
 amounts as they are, and a composed one could not measure it at all.
 - It now asks Metrics for the value, with the key result's owner's rights, as Intelligence does.
@@ -245,7 +245,7 @@ All local, against Ferrum's main:
 DataFusion had been recorded as blocked on this machine's disk. Built without debug information, Wren's engine
 and DataFusion take 1.5 GB, so the plan's W6 item was built as it describes (ADR L-07): an isolated service.
 
-**Metrics' engine (Metrics 0.7.0, #6, 624e1a5; FLC-SEM-005, -006, -007, -010).** `ferrum-metrics-engine`, in the
+**Metrics' engine (Metrics 0.7.0, #6, 4cfabeb; FLC-SEM-005, -006, -007, -010).** `ferrum-metrics-engine`, in the
 Metrics repository, plans a metric's query through its Wren semantic model with Wren's own engine
 (`wren-semantic-core` 0.5.1, pinned) and runs it on DataFusion 55 over the operator's CSV and Parquet datasets.
 - *Rights in the scan (FLC-SEM-005).* A Data Steward describes each dataset as an External Source: the rows each
@@ -293,7 +293,7 @@ Metrics repository, plans a metric's query through its Wren semantic model with 
       that does not.
 - *Freshness (FLC-SEM-007).* Every answer says when each dataset was last written. A value from data older than
   its source allows carries it under `stale`, and so does a composed metric over it and one of the records. An
-  Intelligence answer says so in its `limits` (Intelligence 0.2.1, #4, a0056b3). With the engine gone, there is
+  Intelligence answer says so in its `limits` (Intelligence 0.2.1, #4, 94f762a). With the engine gone, there is
   no value, said so. The KPI page says it too: it names the stale sources, and says when a metric has no value
   now, with the reason, instead of seeming to load (Metrics 0.7.1, #7; without repeating its name, 0.7.2).
   - Mutants caught: `written-at-unsaid`, `stale-never-said`, `stale-answer-unsaid`, `stale-limits-lost`.
@@ -327,7 +327,7 @@ Metrics repository, plans a metric's query through its Wren semantic model with 
 **What GitHub's checks had found.** Ferrum's own checks run here before each merge. Two of GitHub's jobs had
 failed on main since W7 and W8, and the checks run here had covered neither.
 - *audit:* `scripts/check_apps.py` wants each app's README to have a changelog row for its version. Edge (0.6.0),
-  Intelligence and Metrics had none. They now do: Edge 0.6.1 (#16, 867bca9), Intelligence 0.2.1, Metrics 0.7.0.
+  Intelligence and Metrics had none. They now do: Edge 0.6.1 (#16, e74740c), Intelligence 0.2.1, Metrics 0.7.0.
   It now reads 53 apps, none short of the contract.
 - *image:* the smoke test's backup failed with `tar: .: file changed as we read it`. The erasure journal is
   written by the outbox's worker after the erasure commits, and it was landing in the files while `tar` read
@@ -365,7 +365,7 @@ failed on main since W7 and W8, and the checks run here had covered neither.
 
 ## After batch 4
 
-- GitHub's checks on main passed for batch 4 (Ferrum #116, `0339fe0`): rust, saml, editors, audit, image (its
+- GitHub's checks on main passed for batch 4 (Ferrum #116, `8cde2a1`): rust, saml, editors, audit, image (its
   smoke test with the attachments backup fixed) and promote. The cluster deploy to kind then passed, for the
   first time since W7.
 - Metrics' engine image is public: CBFerrum's package policy now allows public packages, at the owner's
@@ -380,7 +380,7 @@ failed on main since W7 and W8, and the checks run here had covered neither.
 123 of the 124 rows are verified. The last waits on people: a screen-reader audit with assistive-technology
 users (FLC-UI-004, BLOCK-ACCESSIBILITY-AUDIT).
 
-What software could add has been added (Frontend #61, `58d2786`, pinned here). A virtual screen reader
+What software could add has been added (Frontend #61, `af1f749`, pinned here). A virtual screen reader
 (Guidepup's) reads the guided editor, the task page and the run page from their accessibility trees, item by
 item.
 - It checks that every control has a name, that a task's subject is read before its decision buttons, that a

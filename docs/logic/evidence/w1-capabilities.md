@@ -1,7 +1,7 @@
 # W1: the capability catalog and its gate (8 November 2026)
 
 Software evidence only, run on the owner's development machine (macOS, PostgreSQL 17.9) from the worktree
-`ERP/flc/ferrum`, branch `logic/w1-capabilities`, based on Ferrum `b794872`. Databases `ferrum_flc_kernel_test`
+`ERP/flc/ferrum`, branch `logic/w1-capabilities`, based on Ferrum `71e438d`. Databases `ferrum_flc_kernel_test`
 and `ferrum_flc_studio_test`, reset by each suite.
 
 ## What ran

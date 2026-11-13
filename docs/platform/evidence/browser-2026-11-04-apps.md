@@ -8,7 +8,7 @@ It ran against a database of its own (`ferrum_walk`, never `ferrum_dev`) with th
 - a bootstrap token and a secret key made for the run, kept out of the record;
 - the development mailer, which keeps mail in the outbox.
 
-The interfaces were Ferrum-Frontend main at 45670f4 (PR 16, the launcher's icons) with PR 17 on top. A
+The interfaces were Ferrum-Frontend main at c733db5 (PR 16, the launcher's icons) with PR 17 on top. A
 workspace, *Walk*, was made through `POST /api/tenants` with the packages control, social, metrics,
 objectives, dam, government, contracts, grc and itsm (and what they depend on). It was driven in the desktop
 app's browser pane at `accounts.localhost:5191` and `walk.localhost:5191`.
@@ -30,7 +30,7 @@ app's browser pane at `accounts.localhost:5191` and `walk.localhost:5191`.
 
 - Governance and Risk's home asked for findings with the operator `neq`, which the platform's filters do not
   know (they take `!=`, `<>` or `ne`), so the page showed an error instead of its register. Property's home
-  had the same mistake. Both now use `!=` (ferrum-app-grc 821735f, ferrum-app-property 3501483), and after a
+  had the same mistake. Both now use `!=` (ferrum-app-grc 4755e20, ferrum-app-property 3501483), and after a
   rebuild the register showed. A scan of every app's interface found no other operator the platform does not
   take. The apps' scenario tests run their rules in Rust, not their pages' queries, so nothing caught it.
 - With nothing in them, the Control Plane's cells, Metrics' certified metrics and Objectives' tree showed a

@@ -1,7 +1,7 @@
 # A browser on a running server, 8 November 2026: every app's own words in Arabic and Hindi, a SCORM package, a guest's series, an erasure through a restore
 
-The walk server was rebuilt on Ferrum main 6d65c1f (PR 100). Every app is at its main, and each
-app's interface is built with Ferrum-Frontend 5b22e7b (PRs 51 to 53). The server's own pages and
+The walk server was rebuilt on Ferrum main 8433052 (PR 100). Every app is at its main, and each
+app's interface is built with Ferrum-Frontend 389b2af (PRs 51 to 53). The server's own pages and
 the bar are translated (PR 99). The binary is a debug build of the server crate. The database is
 the walk's own (`ferrum_walk`), and object storage is `ferrum-otel/storage`.
 

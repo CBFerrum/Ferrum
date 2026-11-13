@@ -1,8 +1,8 @@
 # Point of Sale: references
 
-**Compared with:** yrestom/POS-Awesome at `a86fd291ab18` (`referance/pos/posawesome`, GPL-3.0) and Ferrum Point of Sale 0.2.3 at `699f13d0a8a4` (`ferrum-app-pos`, branch `privacy/declarations`, working tree clean). **Date:** 2026-11-01
+**Compared with:** yrestom/POS-Awesome at `a86fd291ab18` (`referance/pos/posawesome`, GPL-3.0) and Ferrum Point of Sale 0.2.3 at `c422e19f87b4` (`ferrum-app-pos`, branch `privacy/declarations`, working tree clean). **Date:** 2026-11-01
 
-Paths: POS Awesome paths start at `referance/pos/posawesome/posawesome/`; `pos/X.vue` means `public/js/posapp/components/pos/X.vue` and `posapp.py` means `posawesome/api/posapp.py`. Ferrum paths are inside `ferrum-app-pos` unless they start with `ferrum/` (the platform at `5ebc51a9960c`) or `erp-platform/` (the ERP app at `993017fc502a`, clean). `referance/_inventory/` holds no route list for these apps, so absences below come from directory listings and grep.
+Paths: POS Awesome paths start at `referance/pos/posawesome/posawesome/`; `pos/X.vue` means `public/js/posapp/components/pos/X.vue` and `posapp.py` means `posawesome/api/posapp.py`. Ferrum paths are inside `ferrum-app-pos` unless they start with `ferrum/` (the platform at `2990be1f8889`) or `erp-platform/` (the ERP app at `386dd3700309`, clean). `referance/_inventory/` holds no route list for these apps, so absences below come from directory listings and grep.
 
 ## What Ferrum has
 

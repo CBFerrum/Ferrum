@@ -1,8 +1,8 @@
 # W5: business-critical edge pipelines (8 November 2026)
 
 Software evidence only, run on the owner's development machine (macOS, PostgreSQL 17.9) from the worktree
-`ERP/flc/edge` (CBFerrum/ferrum-app-edge, branch `logic/w5-pipelines`, based on Edge `764ec2e`, 0.5.9),
-built against Ferrum's main (`8eb013c`) from the local checkout, and merged as CBFerrum/ferrum-app-edge#14 (`17a7c41`). No equipment, no field protocol and no
+`ERP/flc/edge` (CBFerrum/ferrum-app-edge, branch `logic/w5-pipelines`, based on Edge `49cb686`, 0.5.9),
+built against Ferrum's main (`af3136b`) from the local checkout, and merged as CBFerrum/ferrum-app-edge#14 (`1e8249e`). No equipment, no field protocol and no
 real power cut were involved: the power cuts are process aborts at named crash points on the gateway's
 real journal file, which is what a simulator can show and no more (BLOCK-INDUSTRIAL-HARDWARE).
 
@@ -18,7 +18,7 @@ cargo clippy --workspace --all-targets --features ferrum-site/failpoints -- -D w
 cargo fmt --all -- --check
 (cd ui && npm run typecheck && npm test && npm run build && npm run check)   # 45 passed; dist/ rebuilt
 python3 scripts/registry.py check                             # in Ferrum
-cargo clippy --locked -p ferrum-server --no-default-features --features edge -- -D warnings   # in Ferrum, Edge pinned at 17a7c41
+cargo clippy --locked -p ferrum-server --no-default-features --features edge -- -D warnings   # in Ferrum, Edge pinned at 1e8249e
 ```
 
 ## What it showed

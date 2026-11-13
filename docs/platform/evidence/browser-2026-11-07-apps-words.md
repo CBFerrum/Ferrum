@@ -1,7 +1,7 @@
 # A browser on a running server, 7 November 2026, late: apps' own words, a once-shown link, English right to left, a case gone overdue
 
 The walk server was rebuilt on this PR's lock: every app at its main, each app's interface built
-with Ferrum-Frontend 6537d65 (PR 49), on Ferrum main with PR 97 and this PR's fix to it.
+with Ferrum-Frontend 1f5981d (PR 49), on Ferrum main with PR 97 and this PR's fix to it.
 
 The machine restarted at 17:45 UTC, and the walk server's secret key went with the scratch folder
 it was kept in. The server was started with a new one, so secrets sealed before can no longer be

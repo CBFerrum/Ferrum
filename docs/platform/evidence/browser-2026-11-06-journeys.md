@@ -111,7 +111,7 @@ The workspace's time zone is UTC; the browser's was India's.
 
 ## The fixes, checked on their build
 
-On the build of Ferrum PR 82 (its pins, with the shell built from Ferrum-Frontend bb60115), Campaigns
+On the build of Ferrum PR 82 (its pins, with the shell built from Ferrum-Frontend 20d08e5), Campaigns
 was updated to 0.3.3 in the App Manager. The first campaign's Results then showed it: 2 sent and
 delivered, 1 opened, 1 clicked (the offer link, 2 clicks in all, one of them a script reading its
 redirect), 1 unsubscribed, no bounces or complaints. The Hotel newsletter form, saved with "city,

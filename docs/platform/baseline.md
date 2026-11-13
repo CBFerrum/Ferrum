@@ -7,29 +7,29 @@ Head, pin, build and installed version are four separate facts: none is inferred
 
 | Repository | Visibility | Default head | Checkout | Local commit | Dirty | Pinned by this platform commit |
 |---|---|---|---|---|---|---|
-| CBFerrum/Ferrum | PUBLIC | `d4b5f505f4` | ferrum | `f0cf528597` on platform/baseline-images | 0 | `-` |
-| CBFerrum/Ferrum-Frontend | PUBLIC | `296a539a50` | ferrum/web | `7893e1293e` on shell/landmarks-rtl | 0 | `-` |
-| CBFerrum/ferrum-app-assets | PUBLIC | `d3f5bae353` | ferrum-app-assets | `d3f5bae353` on main | 0 | `d3f5bae353` |
-| CBFerrum/ferrum-app-bookings | PUBLIC | `ea6f3bdb87` | ferrum-app-bookings | `ea6f3bdb87` on main | 0 | `ea6f3bdb87` |
-| CBFerrum/ferrum-app-campaigns | PUBLIC | `80a70cfdbd` | ferrum-app-campaigns | `80a70cfdbd` on main | 0 | `80a70cfdbd` |
-| CBFerrum/ferrum-app-cloud | PRIVATE | `0f821d8fb7` | ferrum-app-cloud | `0f821d8fb7` on main | 0 | `-` |
-| CBFerrum/ferrum-app-commerce | PUBLIC | `6c4f45f5c9` | ferrum-app-commerce | `6c4f45f5c9` on main | 0 | `6c4f45f5c9` |
-| CBFerrum/ferrum-app-comms | PUBLIC | `887282ce1b` | ferrum-app-comms | `887282ce1b` on main | 0 | `887282ce1b` |
-| CBFerrum/ferrum-app-crm | PUBLIC | `94b306e353` | ferrum-app-crm | `94b306e353` on main | 0 | `94b306e353` |
-| CBFerrum/ferrum-app-docs | PUBLIC | `6766a8d90a` | ferrum-app-docs | `6766a8d90a` on main | 0 | `6766a8d90a` |
-| CBFerrum/ferrum-app-drive | PUBLIC | `ac48a9d4ee` | ferrum-app-drive | `ac48a9d4ee` on main | 0 | `ac48a9d4ee` |
-| CBFerrum/ferrum-app-edge | PUBLIC | `782c0b0079` | docs-work/ferrum-app-edge | `4e1c261adf` on edge/journey | 0 | `45ea51926e` **behind** |
-| CBFerrum/ferrum-app-erp | PUBLIC | `d124642223` | docs-work/ferrum-app-erp | `d124642223` on main | 0 | `d124642223` |
-| CBFerrum/ferrum-app-field-service | PUBLIC | `b6317a0fc4` | ferrum-app-field-service | `b6317a0fc4` on main | 0 | `b6317a0fc4` |
-| CBFerrum/ferrum-app-forms | PUBLIC | `c6da819cb3` | ferrum-app-forms | `c6da819cb3` on main | 0 | `c6da819cb3` |
-| CBFerrum/ferrum-app-helpdesk | PUBLIC | `11bfe134ca` | ferrum-app-helpdesk | `11bfe134ca` on main | 0 | `11bfe134ca` |
-| CBFerrum/ferrum-app-hr | PUBLIC | `c9f7f78800` | ferrum-app-hr | `c9f7f78800` on main | 0 | `c9f7f78800` |
-| CBFerrum/ferrum-app-lms | PUBLIC | `c125e96981` | ferrum-app-lms | `c125e96981` on main | 0 | `c125e96981` |
-| CBFerrum/ferrum-app-pos | PUBLIC | `65ebe6944b` | ferrum-app-pos | `65ebe6944b` on main | 0 | `65ebe6944b` |
-| CBFerrum/ferrum-app-projects | PUBLIC | `8b32fb57ae` | ferrum-app-projects | `8b32fb57ae` on main | 0 | `8b32fb57ae` |
-| CBFerrum/ferrum-app-sign | PUBLIC | `426401a968` | ferrum-app-sign | `426401a968` on main | 0 | `426401a968` |
-| CBFerrum/ferrum-sdk | PUBLIC | `32976aed55` | ferrum-sdk | `d4497b6e46` on plugins/delivery-and-replacement | 2 | `-` |
-| CBFerrum/ferrum-store | PRIVATE | `88b922a94d` | ferrum-store | `88b922a94d` on main | 0 | `-` |
+| CBFerrum/Ferrum | PUBLIC | `8cf228ed88` | ferrum | `12b06e8504` on platform/baseline-images | 0 | `-` |
+| CBFerrum/Ferrum-Frontend | PUBLIC | `88e17b4d35` | ferrum/web | `904886a7b2` on shell/landmarks-rtl | 0 | `-` |
+| CBFerrum/ferrum-app-assets | PUBLIC | `d90a96ad75` | ferrum-app-assets | `d90a96ad75` on main | 0 | `d90a96ad75` |
+| CBFerrum/ferrum-app-bookings | PUBLIC | `5ba7b0a7ee` | ferrum-app-bookings | `5ba7b0a7ee` on main | 0 | `5ba7b0a7ee` |
+| CBFerrum/ferrum-app-campaigns | PUBLIC | `cf675d018a` | ferrum-app-campaigns | `cf675d018a` on main | 0 | `cf675d018a` |
+| CBFerrum/ferrum-app-cloud | PRIVATE | `abda176cea` | ferrum-app-cloud | `abda176cea` on main | 0 | `-` |
+| CBFerrum/ferrum-app-commerce | PUBLIC | `bb03dadbac` | ferrum-app-commerce | `bb03dadbac` on main | 0 | `bb03dadbac` |
+| CBFerrum/ferrum-app-comms | PUBLIC | `8e1f062307` | ferrum-app-comms | `8e1f062307` on main | 0 | `8e1f062307` |
+| CBFerrum/ferrum-app-crm | PUBLIC | `7ceb7b607b` | ferrum-app-crm | `7ceb7b607b` on main | 0 | `7ceb7b607b` |
+| CBFerrum/ferrum-app-docs | PUBLIC | `62df5044ea` | ferrum-app-docs | `62df5044ea` on main | 0 | `62df5044ea` |
+| CBFerrum/ferrum-app-drive | PUBLIC | `a34255df9f` | ferrum-app-drive | `a34255df9f` on main | 0 | `a34255df9f` |
+| CBFerrum/ferrum-app-edge | PUBLIC | `1f33f661e8` | docs-work/ferrum-app-edge | `756f557a10` on edge/journey | 0 | `7938d5ea94` **behind** |
+| CBFerrum/ferrum-app-erp | PUBLIC | `6d881615d5` | docs-work/ferrum-app-erp | `6d881615d5` on main | 0 | `6d881615d5` |
+| CBFerrum/ferrum-app-field-service | PUBLIC | `3ab1fa6e28` | ferrum-app-field-service | `3ab1fa6e28` on main | 0 | `3ab1fa6e28` |
+| CBFerrum/ferrum-app-forms | PUBLIC | `cab44d01f6` | ferrum-app-forms | `cab44d01f6` on main | 0 | `cab44d01f6` |
+| CBFerrum/ferrum-app-helpdesk | PUBLIC | `f3b3fbf21b` | ferrum-app-helpdesk | `f3b3fbf21b` on main | 0 | `f3b3fbf21b` |
+| CBFerrum/ferrum-app-hr | PUBLIC | `99f4a4cbe3` | ferrum-app-hr | `99f4a4cbe3` on main | 0 | `99f4a4cbe3` |
+| CBFerrum/ferrum-app-lms | PUBLIC | `a1343003cc` | ferrum-app-lms | `a1343003cc` on main | 0 | `a1343003cc` |
+| CBFerrum/ferrum-app-pos | PUBLIC | `1d019e2d48` | ferrum-app-pos | `1d019e2d48` on main | 0 | `1d019e2d48` |
+| CBFerrum/ferrum-app-projects | PUBLIC | `879217670e` | ferrum-app-projects | `879217670e` on main | 0 | `879217670e` |
+| CBFerrum/ferrum-app-sign | PUBLIC | `d508355a37` | ferrum-app-sign | `d508355a37` on main | 0 | `d508355a37` |
+| CBFerrum/ferrum-sdk | PUBLIC | `ab54e1e415` | ferrum-sdk | `1e58ca2898` on plugins/delivery-and-replacement | 2 | `-` |
+| CBFerrum/ferrum-store | PRIVATE | `9b216daf62` | ferrum-store | `9b216daf62` on main | 0 | `-` |
 
 ## Uncommitted work, preserved
 
@@ -61,10 +61,10 @@ Head, pin, build and installed version are four separate facts: none is inferred
 
 ## Artifacts
 
-Frontend pinned by the Dockerfile: `296a539a509f02f078f7680fc5b1dab7dabde31a`.
+Frontend pinned by the Dockerfile: `88e17b4d35424bbdb0bd5526b940f9154431227a`.
 
-- `ghcr.io/cbferrum/ferrum`: `latest` is `sha256:e8f36a47375a05851cfd39042493fa96fa8dc5ff52f7d33bed41b1c7be540611` (2026-11-03T13:40:57Z); 20 commits tagged among its last hundred versions, the newest `5f785e4`
-- `ghcr.io/cbferrum/ferrum-editors`: `latest` is `sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19` (2026-11-01T11:39:26Z); 49 commits tagged among its last hundred versions, the newest `b48d736`
+- `ghcr.io/cbferrum/ferrum`: `latest` is `sha256:e8f36a47375a05851cfd39042493fa96fa8dc5ff52f7d33bed41b1c7be540611` (2026-11-03T13:40:57Z); 20 commits tagged among its last hundred versions, the newest `760e756`
+- `ghcr.io/cbferrum/ferrum-editors`: `latest` is `sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19` (2026-11-01T11:39:26Z); 49 commits tagged among its last hundred versions, the newest `0d6581a`
 
 ## Installed
 

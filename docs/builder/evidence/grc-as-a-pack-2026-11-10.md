@@ -3,7 +3,7 @@
 Can an industry app that is Rust code today be delivered as configuration alone? The app measured is
 `ferrum-app-grc` 0.1.14 ("Governance and Risk": seven entities and a settings record, three roles, five
 document hooks, six actions on two entities, a daily upkeep, about 500 lines of Rust, one bespoke page). It
-was rebuilt with the calls an administrator makes, on Ferrum main at 660efe5, with nothing else: one
+was rebuilt with the calls an administrator makes, on Ferrum main at 46a2592, with nothing else: one
 customization batch (8 custom entities, 15 checks), 11 role rules for 3 roles, 4 scheduled automations,
 one solution of 3 rules (reviewed by a second administrator), and one Studio space. No Rust, SQL or plugin
 is in the pack.

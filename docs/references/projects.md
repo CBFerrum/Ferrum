@@ -1,6 +1,6 @@
 # Projects: references
 
-**Compared with:** Huly (`hcengineering/platform` e637ee7471b5, EPL-2.0); Plane (`makeplane/plane` b98e1defb0e0, AGPL-3.0); Ferrum Projects (`ferrum-app-projects` 7671c79 plus uncommitted planning work); the records frame (`ferrum/web` 9ecf5bf on `ux/records-frame`, plus uncommitted `list/FilterBar.tsx` and `list/RecordPeek.tsx`); platform `ferrum` f0234e1. **Date:** 2026-11-01
+**Compared with:** Huly (`hcengineering/platform` e637ee7471b5, EPL-2.0); Plane (`makeplane/plane` b98e1defb0e0, AGPL-3.0); Ferrum Projects (`ferrum-app-projects` 9b7589b plus uncommitted planning work); the records frame (`ferrum/web` c04c986 on `ux/records-frame`, plus uncommitted `list/FilterBar.tsx` and `list/RecordPeek.tsx`); platform `ferrum` 96c4350. **Date:** 2026-11-01
 
 Static reading only: nothing was built or run, so feel and speed are inferred from source (not verified in a browser). `referance/_inventory/` has no route list for Huly or Plane, so routes come from `referance/projects/plane/apps/web/app/routes/core.ts` (Plane; `extended.ts` beside it is empty) and the navigator in `HM/tracker/src/index.ts` (Huly). Path key, all under `/Users/chinmoybhuyan/Desktop/Personal/ERP/`: `P/` = `referance/projects/plane/apps/web/components/`, `PA/` = `referance/projects/plane/apps/api/plane/`, `PT/` = `referance/projects/plane/packages/`, `H/` = `referance/projects/huly/plugins/`, `HM/` = `referance/projects/huly/models/`, `HS/` = `referance/projects/huly/server-plugins/`, `F/` = `ferrum/web/src/app/`, `A/` = `ferrum-app-projects/`.
 

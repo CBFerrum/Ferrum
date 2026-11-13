@@ -2,7 +2,7 @@
 
 The help center (FERRUM-UX-003) had not been opened on a running server since it was built. Every
 list's and form's Help link goes to `/data/help/{entity}`. On the walk server's earlier build of
-Ferrum PR 89 (before 6620da3; the shell from Ferrum-Frontend a76295e), opening one at 20:40 UTC led
+Ferrum PR 89 (before d0772f2; the shell from Ferrum-Frontend b39fffb), opening one at 20:40 UTC led
 to the records frame's first page, "Records: Open a list from an app, or from people". The server read
 "help" as the name of an app whose records are shown under `/data/`, found none, and redirected.
 
@@ -14,7 +14,7 @@ unit test keeps help among them.
 
 ## Checked on the build that has it
 
-On PR 89 at 66e3097, at 20:58 UTC:
+On PR 89 at c57ae78, at 20:58 UTC:
 
 | Check | What it showed |
 |---|---|

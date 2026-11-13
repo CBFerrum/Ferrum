@@ -1,8 +1,8 @@
 # Bookings: references
 
-**Compared with:** calcom/cal.com at `f972feefa137` (`referance/bookings/cal.com`, MIT; its README calls the tree Cal.diy) and Ferrum Bookings 0.1.1 plus the unreleased repeat series at `98e2caad6b55` (`ferrum-app-bookings`, branch `bookings/series`, working tree clean). **Date:** 2026-11-01
+**Compared with:** calcom/cal.com at `f972feefa137` (`referance/bookings/cal.com`, MIT; its README calls the tree Cal.diy) and Ferrum Bookings 0.1.1 plus the unreleased repeat series at `eec1009fbedd` (`ferrum-app-bookings`, branch `bookings/series`, working tree clean). **Date:** 2026-11-01
 
-Paths: cal.com paths start at `referance/bookings/cal.com/`. Ferrum paths are inside `ferrum-app-bookings` unless they start with `ferrum/` (the platform at `5ebc51a9960c`; its frame `ferrum/web` is at `311bf43afcef` with a few uncommitted edits, so only committed behaviour is claimed), `ferrum-app-comms/` (`0b9c7d707d3b`) or `ferrum-app-commerce/` (`bdc6efe9afca`). `referance/_inventory/` holds no route list for these apps, so absences below come from directory listings and grep.
+Paths: cal.com paths start at `referance/bookings/cal.com/`. Ferrum paths are inside `ferrum-app-bookings` unless they start with `ferrum/` (the platform at `2990be1f8889`; its frame `ferrum/web` is at `00166d3ba92b` with a few uncommitted edits, so only committed behaviour is claimed), `ferrum-app-comms/` (`c88bbbc86c7d`) or `ferrum-app-commerce/` (`bdc6efe9afca`). `referance/_inventory/` holds no route list for these apps, so absences below come from directory listings and grep.
 
 ## What Ferrum has
 

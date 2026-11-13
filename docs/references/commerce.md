@@ -1,8 +1,8 @@
 # Commerce: references
 
-**Compared with:** medusajs/medusa at `7e797dfd591d` (`referance/commerce/medusa`, MIT with an enterprise carve-out) and Ferrum Commerce 0.3.2 at `bdc6efe9afca` (`ferrum-app-commerce`, branch `payments/exceptions`, working tree clean; the tree moved one commit past `823fbb143dd8` while this was written, and the page describes the new state). **Date:** 2026-11-01
+**Compared with:** medusajs/medusa at `7e797dfd591d` (`referance/commerce/medusa`, MIT with an enterprise carve-out) and Ferrum Commerce 0.3.2 at `bdc6efe9afca` (`ferrum-app-commerce`, branch `payments/exceptions`, working tree clean; the tree moved one commit past `45e971aa4972` while this was written, and the page describes the new state). **Date:** 2026-11-01
 
-Paths: Medusa paths start at `referance/commerce/medusa/packages/`, and `routes/` means `admin/dashboard/src/routes/`. Ferrum paths are inside `ferrum-app-commerce` unless they start with `ferrum/` (the platform at `5ebc51a9960c`; its frame `ferrum/web` is at `311bf43afcef` with a few uncommitted edits, so only committed behaviour is claimed) or `erp-platform/` (the ERP app at `993017fc502a`, clean). `referance/_inventory/` holds no route list for these apps, so absences below come from directory listings and grep.
+Paths: Medusa paths start at `referance/commerce/medusa/packages/`, and `routes/` means `admin/dashboard/src/routes/`. Ferrum paths are inside `ferrum-app-commerce` unless they start with `ferrum/` (the platform at `2990be1f8889`; its frame `ferrum/web` is at `00166d3ba92b` with a few uncommitted edits, so only committed behaviour is claimed) or `erp-platform/` (the ERP app at `386dd3700309`, clean). `referance/_inventory/` holds no route list for these apps, so absences below come from directory listings and grep.
 
 ## What Ferrum has
 

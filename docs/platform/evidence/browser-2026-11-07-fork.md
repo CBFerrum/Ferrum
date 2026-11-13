@@ -2,8 +2,8 @@
 
 The walk server (port 5191) ran Ferrum PR 89's builds: first with Property 0.7.1, Retail 0.3.1 and
 Government 0.2.1 pinned, then from 7 November with Logistics 0.3.0 as well (PR 89's head
-66e3097). It was rebuilt at 02:34–02:38 IST on 7 November on Ferrum main 138554d (PR 89 and PR 90
-merged, the shell on Ferrum-Frontend 922fcfb), after which the App Manager offered Property 0.7.2
+c57ae78). It was rebuilt at 02:34–02:38 IST on 7 November on Ferrum main 819d181 (PR 89 and PR 90
+merged, the shell on Ferrum-Frontend 6cfda39), after which the App Manager offered Property 0.7.2
 and Retail 0.3.2. The walk used workspace walk-intranet in the desktop app's browser pane
 (Chromium 152), signed in as its administrator, and on the portal as Olive Owner and Priya Vendor
 with codes from the development mailer's outbox. ERP had no company there, so the walk made one
@@ -101,9 +101,9 @@ invoice with.
 | A visit missed | APT-2026-00003 (Asha with Raj at 11:00) → Did Not Come | No Show, nothing billed. It was accepted at 03:35, before the visit's time (see Found and fixed). |
 | A practitioner's own view | Mira given Practitioner and signed in; reception had checked Asha in for 10:00 (Mira) and 12:00 (Raj) | Her menu: Home, Appointments, Patients, Patient Consents, Practitioners, Appointment Types. Her own visit: Complete the Visit made it Completed, its invoice drafted. Raj's visit: refused, "the visit's practitioner completes it" (the toast on the page, 403 by the API). Booking a visit herself: 403 "not permitted to create appointment". |
 
-## On the pins build (Ferrum 691ecb1, 7 November, from 03:58)
+## On the pins build (Ferrum 93d0081, 7 November, from 03:58)
 
-The server was rebuilt on the pins branch (691ecb1): every app at its 7 November main, the shell on Ferrum-Frontend a64416a. In walk-intranet's App Manager, Logistics went 0.3.0 → 0.3.3, Control Plane 0.4.1 → 0.5.2, Government 0.2.1 → 0.2.4, Healthcare 0.1.7 → 0.1.10, Property 0.7.2 → 0.7.4 and Retail 0.3.2 → 0.3.4, each in place.
+The server was rebuilt on the pins branch (93d0081): every app at its 7 November main, the shell on Ferrum-Frontend 204b713. In walk-intranet's App Manager, Logistics went 0.3.0 → 0.3.3, Control Plane 0.4.1 → 0.5.2, Government 0.2.1 → 0.2.4, Healthcare 0.1.7 → 0.1.10, Property 0.7.2 → 0.7.4 and Retail 0.3.2 → 0.3.4, each in place.
 
 | What | Where | Seen |
 |---|---|---|
@@ -138,15 +138,15 @@ The server was rebuilt on the pins branch (691ecb1): every app at its 7 November
 
 | Found | Fix |
 |---|---|
-| Retail: Ship It refused an order naming no warehouse (422, `items[0].warehouse is required`), because ERP's "Create Delivery Note" copies the order's warehouse. The action dialog showed nothing. | Retail 0.3.2 (3e3c5c6) maps the store's delivery note itself, every line from the store; a collect order names the order's conflicts first. The dialog's silence is fixed in Ferrum-Frontend PR 44. Walked on 0.3.2 (above). |
-| Property: Reconcile's "Charged" came from the budget's share worked out once (504.11), while the invoices bore 504.10. | Property 0.7.2 (803b5fa) reconciles against what the invoices bore. |
+| Retail: Ship It refused an order naming no warehouse (422, `items[0].warehouse is required`), because ERP's "Create Delivery Note" copies the order's warehouse. The action dialog showed nothing. | Retail 0.3.2 (ffeb9de) maps the store's delivery note itself, every line from the store; a collect order names the order's conflicts first. The dialog's silence is fixed in Ferrum-Frontend PR 44. Walked on 0.3.2 (above). |
+| Property: Reconcile's "Charged" came from the budget's share worked out once (504.11), while the invoices bore 504.10. | Property 0.7.2 (264e1e5) reconciles against what the invoices bore. |
 | Property: the index review said "104 over 100" without the 3% cap that set the figure. | Property 0.7.2: "held to its cap of 3%". |
 | Property: Owner Payout Item showed under "Additional fields". | Property 0.7.2: its own heading, Owners. |
-| Property: the owners' portal showed A2 at "1,000 monthly" after its rent was indexed to 1,030; "Your home" read the starting rent too. | Property 0.7.3 (415009f, PR 9): both portals show the rent in effect on the workspace's day, its reviews counted. Seen on the pins build (above). |
+| Property: the owners' portal showed A2 at "1,000 monthly" after its rent was indexed to 1,030; "Your home" read the starting rent too. | Property 0.7.3 (b99aef5, PR 9): both portals show the rent in effect on the workspace's day, its reviews counted. Seen on the pins build (above). |
 | An action with a confirmation and parameters (Reconcile) asked twice. | Ferrum-Frontend PR 44: it asks once. |
-| Logistics: a stop's Return Note offered every delivery note, not only draft returns; a proof sent at once still toasted "A proof kept on this phone was sent." | Logistics 0.3.1 (61d3573). |
-| Logistics: the home never linked Fleet Costs (reachable only by its address) and showed "Cost 223.2". | Logistics 0.3.2 (8525dd6, PR 5): a Fleet costs link, and costs, days and readings formatted; with it, a signature drawn on the driver's page, kept offline with the proof. Both walked on the pins build (above). |
-| Retail: Your franchise read "sales 100000 · fees 7000". | Retail 0.3.3 (5afe493, PR 4): sales and fees as money. Seen on the pins build. |
-| Government: "Apply for a permit" read "fee 0" for a type with none. | Government 0.2.3 (ea3b7d5, PR 3): its fee as money, or "no fee". Seen on the pins build. |
-| Healthcare: Did Not Come was accepted hours before the visit's time. | Healthcare 0.1.10 (7a4c0d3, PR 3): refused before the visit begins on the workspace's clock. Seen on the pins build. |
-| A new form showed a checkbox whose default is `1` unticked, yet saved it ticked: Control's new incident looked private and was saved public. | The Frontend's prefill ticks a box on `true`, 1 or "1" (the Frontend PR of 7 November); Control Plane 0.5.1 (78c44dc, PR 7) and Social 0.6.2 default to `true`. Control's new incident seen ticked on the pins build. |
+| Logistics: a stop's Return Note offered every delivery note, not only draft returns; a proof sent at once still toasted "A proof kept on this phone was sent." | Logistics 0.3.1 (67934c8). |
+| Logistics: the home never linked Fleet Costs (reachable only by its address) and showed "Cost 223.2". | Logistics 0.3.2 (8b0413d, PR 5): a Fleet costs link, and costs, days and readings formatted; with it, a signature drawn on the driver's page, kept offline with the proof. Both walked on the pins build (above). |
+| Retail: Your franchise read "sales 100000 · fees 7000". | Retail 0.3.3 (8e1cfbf, PR 4): sales and fees as money. Seen on the pins build. |
+| Government: "Apply for a permit" read "fee 0" for a type with none. | Government 0.2.3 (a09ddb1, PR 3): its fee as money, or "no fee". Seen on the pins build. |
+| Healthcare: Did Not Come was accepted hours before the visit's time. | Healthcare 0.1.10 (9a35683, PR 3): refused before the visit begins on the workspace's clock. Seen on the pins build. |
+| A new form showed a checkbox whose default is `1` unticked, yet saved it ticked: Control's new incident looked private and was saved public. | The Frontend's prefill ticks a box on `true`, 1 or "1" (the Frontend PR of 7 November); Control Plane 0.5.1 (3a5d23a, PR 7) and Social 0.6.2 default to `true`. Control's new incident seen ticked on the pins build. |

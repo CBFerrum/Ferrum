@@ -2,7 +2,7 @@
 
 The measure of the builder ([the plan](../../plan/builder-first.md), "As revised"): a business nobody
 wrote an app for, built by an administrator with no code. The server was built from Ferrum's main at
-f5a5fe6 (`--no-default-features --features studio,forms`) with the interfaces of Ferrum-Frontend's
+306fdda (`--no-default-features --features studio,forms`) with the interfaces of Ferrum-Frontend's
 `bf/authoring` (merged as its PR 67), on this machine, port 5195, its own database. Workspaces "Iron Gym
 B" (core, ERP's packages) and "Iron Gym C" (the same and Studio). Nothing here ran on a cluster, with a
 real mailer or with a second person.

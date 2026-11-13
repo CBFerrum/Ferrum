@@ -1,6 +1,6 @@
 # LMS: references
 
-**Compared with:** frappe/lms `cf5a078c2c64` (lms/, frontend/src) against ferrum-app-lms 0.1.0 ("Learn", working tree, `af1cbf2`) and the records frame in ferrum (`2a701db`). **Date:** 2026-11-01
+**Compared with:** frappe/lms `cf5a078c2c64` (lms/, frontend/src) against ferrum-app-lms 0.1.0 ("Learn", working tree, `cc098b9`) and the records frame in ferrum (`81b7f7c`). **Date:** 2026-11-01
 
 ## What Ferrum has
 

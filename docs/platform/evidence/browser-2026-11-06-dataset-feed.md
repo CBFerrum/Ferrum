@@ -1,8 +1,8 @@
 # A browser on a running server, 6 November 2026: a governed dataset and the warehouse feed
 
 Metrics' datasets and its warehouse feed (FERRUM-ECOSYSTEM-010) had run only inside its suite.
-This walk took them on the walk server: Ferrum PR 89 at 66e3097, with its own database
-(`ferrum_walk`), the shell from Ferrum-Frontend a76295e and Metrics 0.3.1 as pinned, at 21:05 UTC.
+This walk took them on the walk server: Ferrum PR 89 at c57ae78, with its own database
+(`ferrum_walk`), the shell from Ferrum-Frontend b39fffb and Metrics 0.3.1 as pinned, at 21:05 UTC.
 Metrics was installed in an earlier walk, with one metric certified then (Open IT incidents).
 
 One person, the workspace's administrator, worked as the dataset's author. The feed was read with

@@ -5,8 +5,8 @@ What is true of each requirement is in the registry; this says what happened and
 
 ## 2026-11-08: every app's own words in Arabic and Hindi; the server's pages and the bar too; assistant notes and field groups; a guest's series; an erasure through a restore
 
-**State:** Ferrum PRs 99 and 100 are merged (main 6d65c1f), on Ferrum-Frontend PRs 51 to 53 (main
-5b22e7b, which FRONTEND_REV names). Every app was released twice: first with its own words in Arabic
+**State:** Ferrum PRs 99 and 100 are merged (main 8433052), on Ferrum-Frontend PRs 51 to 53 (main
+389b2af, which FRONTEND_REV names). Every app was released twice: first with its own words in Arabic
 and Hindi, then with its note for the assistant. Bookings was released a third time with guests'
 series. This PR is documents only: the walk, the registry, and the restore procedure, fixed. No
 release was tagged.
@@ -18,7 +18,7 @@ release was tagged.
 | Ferrum PR 99 | The server's own pages and the bar in the person's language (`server/shell/locales`, 324 words); Operations' words through `t()` with its own catalogs |
 | Ferrum PR 100 | Every app pinned at its main. `Kernel::import_rows` (imports at bulk priority, tested). `deploy/smoke.sh` erases a customer between the database's backup and the files', and checks the restore and `reapply_erasures`. Registry: FERRUM-AI-003, AI-006, PLATFORM-014, BOOKINGS-002, UX-009 |
 | Every app | Its own words in Arabic and Hindi (`ui/src/locales`, 7,949 words in all), drawn once they are in. Its note for the assistant (`contributes.shell.assistant`). HR, Healthcare, Education, Nonprofit and Logistics: personal, clinical, identity and pay fields in field groups, granted to every role that read them. HR's reports keep to the egress policy. Bookings 0.4.15: guests book a series |
-| How it was checked | Frontend: typecheck, 465 tests, the build and the audit, per PR. Ferrum: fmt, clippy, and the whole suite one target at a time against fresh databases, 79 targets passed, for PR 99 at 5cd5b27 and for PR 100 at fe759d1. Every app: its interface's typecheck, tests, build and check. Apps with package or code changes (HR, Healthcare, Education, Nonprofit, Logistics, Bookings): the whole `app_ci.sh`. Every manifest: `ferrum_apps::AppManifest::parse` |
+| How it was checked | Frontend: typecheck, 465 tests, the build and the audit, per PR. Ferrum: fmt, clippy, and the whole suite one target at a time against fresh databases, 79 targets passed, for PR 99 at 47be038 and for PR 100 at 7ba3a8a. Every app: its interface's typecheck, tests, build and check. Apps with package or code changes (HR, Healthcare, Education, Nonprofit, Logistics, Bookings): the whole `app_ci.sh`. Every manifest: `ferrum_apps::AppManifest::parse` |
 | Translations | Made by the model, batch by batch, against the words each page asks for. Not yet reviewed by native speakers |
 
 **Evidence:** the walk; Ferrum-Frontend `packages/build/vite.test.ts` and `src/lib/i18n.test.ts`; Ferrum `crates/kernel/tests/jobs_it.rs` (imports); ferrum-app-hr `tests/hr_it.rs` (reports for a provider); ferrum-app-bookings `tests/bookings_it.rs` and `ui/src/guest/booking.test.ts` (guests' series).
@@ -28,7 +28,7 @@ release was tagged.
 ## 2026-11-07, late: apps' own words for a workspace to translate; once-shown links kept; English isolated right to left
 
 **State:** this PR follows PRs 96 and 97. Its lock takes every app at its main of the late evening
-of 7 November, each app's interface built with Ferrum-Frontend 6537d65 (PR 49), which FRONTEND_REV
+of 7 November, each app's interface built with Ferrum-Frontend 1f5981d (PR 49), which FRONTEND_REV
 now names: every app a patch, its own words through the kit's `t()`. It carries one Rust change: `GET
 /api/shell/words` leaves out an app whose words cannot be read, rather than failing. No release was
 tagged.
@@ -38,7 +38,7 @@ tagged.
 | Journeys | Walked on this PR's build ([the walk](../platform/evidence/browser-2026-11-07-apps-words.md)): Drive's own "Upload" in the workspace's Arabic; Field Service's English sentences keeping their full stops right to left; Share It Outside's link shown in a dialog to copy; Government's case gone overdue at midnight in Kolkata |
 | Ferrum PR 97 | `GET /api/shell/words`: each of the workspace's apps' own words, from its interface release's `words.json`, for administrators |
 | Frontend PR 49 | The app build writes `dist/words.json`; Interface words lists any app's words under "Words of"; an action's once-shown link, code, token or secret opens a dialog with a copy button; `t()` isolates untranslated text on right-to-left pages; the pivot values' checkboxes named; "Save 1 word" |
-| Every app | Rebuilt on 6537d65, a patch each, its own words through `t()`: 5,325 places in 40 apps, made by a codemod that, with TypeScript's type checker, turns text and the plain values in it into one sentence (`t("Organized by {by}", { by })`). Each app's typecheck and tests passed before its release |
+| Every app | Rebuilt on 1f5981d, a patch each, its own words through `t()`: 5,325 places in 40 apps, made by a codemod that, with TypeScript's type checker, turns text and the plain values in it into one sentence (`t("Organized by {by}", { by })`). Each app's typecheck and tests passed before its release |
 | How it was checked | Ferrum PR 97: fmt and clippy for the server. Frontend PR 49: typecheck, 458 tests, the build and the audit. Every app: its interface's typecheck and tests in the sweep |
 | The machine | It restarted at 17:45 UTC, and the scratch folder went with it: helper scripts (recovered from the session's record), the walk server's secret key (made anew: secrets sealed before no longer open) and the walk passwords |
 
@@ -49,7 +49,7 @@ tagged.
 ## 2026-11-07, evening: a workspace's own interface words; duplicates named; watermarks; key results graded; datasets that pivot
 
 **State:** this PR follows PRs 94 and 95. Its lock takes every app at its main of the evening of 7
-November, each app's interface built with Ferrum-Frontend d5d98f2 (PRs 47 and 48), which
+November, each app's interface built with Ferrum-Frontend 8a1c2e7 (PRs 47 and 48), which
 FRONTEND_REV now names. With them: Digital Assets 0.8.0 and 0.8.1, Objectives 0.6.0 and 0.6.1,
 Metrics 0.4.0 and 0.4.1, Government 0.2.7 and 0.2.8, and every other app a patch. No release was
 tagged.
@@ -65,7 +65,7 @@ tagged.
 | Objectives 0.6.0 | Scores on 1 to 5 or as letters, and key results graded with their objective (FERRUM-ECOSYSTEM-011) |
 | Metrics 0.4.0 | A dataset pivots over the values it names, and compares a period with the one before (FERRUM-ECOSYSTEM-010) |
 | Government 0.2.7 | Pass This Stage's Stage comes empty (the other session's fix) |
-| Every app | Rebuilt on d5d98f2, a patch each. Apps' own screens go by the line's start and end, except what they place by coordinates (boards, timelines, charts, canvases, handles). The conversion is `rtl_convert.py`, run before each build; 239 lines across 20 apps |
+| Every app | Rebuilt on 8a1c2e7, a patch each. Apps' own screens go by the line's start and end, except what they place by coordinates (boards, timelines, charts, canvases, handles). The conversion is `rtl_convert.py`, run before each build; 239 lines across 20 apps |
 | How it was checked | Each PR above passed its CI on this machine before it merged, at the head that was checked: `scripts/app_ci.sh` for the apps; clippy and the kernel's and Studio's suites for Ferrum; typecheck, the tests, the build and the audit for the Frontend. Digital Assets 0.8.0 failed there once, on a unit test's threshold, and once for disk, before it passed |
 
 **Evidence:** the walk; Ferrum `crates/kernel/tests/collab_it.rs` (the words, a base and a
@@ -79,7 +79,7 @@ regional language, the duplicate's words, the tag rule) and `crates/studio/tests
 ## 2026-11-07, night: pages right to left; the records pages in Arabic and Hindi; PDFs' first pages; stages side by side
 
 **State:** this PR follows PR 92. Its lock takes every app at its main of the night of 7 November,
-each app's interface built with Ferrum-Frontend 63280d3 (PR 46), which FRONTEND_REV now names:
+each app's interface built with Ferrum-Frontend 9d80f4f (PR 46), which FRONTEND_REV now names:
 Digital Assets 0.7.0, Logistics 0.3.4 and 0.3.5, Property 0.7.5 and 0.7.6, Government 0.2.5 and
 0.2.6, and every other app a patch.
 No release was tagged.
@@ -94,7 +94,7 @@ No release was tagged.
 | Property 0.7.5 | A period across two budget years bears each year's days at that year's rate (FERRUM-INDUSTRY-008) |
 | Government 0.2.5 | Review stages side by side (FERRUM-INDUSTRY-010) |
 | The Control Plane 0.5.2 | A release rolled out to the status page walked: qualified by a second person, rolled out in waves by a Fleet Operator, its coming maintenance shown in each cell's window, gone while halted and back when resumed (FERRUM-CLOUD-004) |
-| Every app | Rebuilt on 63280d3, a patch each: its pages mirror right to left, and the records pages' words in Arabic and Hindi |
+| Every app | Rebuilt on 9d80f4f, a patch each: its pages mirror right to left, and the records pages' words in Arabic and Hindi |
 | How it was checked | Each app PR above passed its CI on this machine before it merged, at the head that was checked (`scripts/app_ci.sh`); Government PR 4 failed twice there first (a test that did not compile, then a role the test had not declared) and was fixed on its branch |
 
 **Evidence:** the walks; Ferrum-Frontend `src/lib/i18n.test.ts` (both catalogs hold every word the
@@ -106,7 +106,7 @@ interface asks for; the arrow keys along the line); `ferrum-app-dam:src/renditio
 ## 2026-11-07: Logistics offline with the server stopped; partners see apps' own health; definitions built, not typed; every app rebuilt
 
 **State:** this PR follows PRs 89 to 91. Its lock takes every app at its main of 7 November, each
-app's interface built with Ferrum-Frontend a64416a (PR 45), which FRONTEND_REV now names. With
+app's interface built with Ferrum-Frontend 204b713 (PR 45), which FRONTEND_REV now names. With
 them: Logistics 0.3.1 to 0.3.3, the Control Plane 0.5.0 to 0.5.2, IoT Edge 0.5.0 and 0.5.1,
 Property 0.7.3 and 0.7.4, Retail 0.3.3 and 0.3.4, Government 0.2.3 and 0.2.4, Healthcare 0.1.9 and
 0.1.10, Social 0.6.2, Metrics 0.3.2, and every other app a patch. No release was tagged.
@@ -121,13 +121,13 @@ Property 0.7.3 and 0.7.4, Retail 0.3.3 and 0.3.4, Government 0.2.3 and 0.2.4, He
 | Healthcare 0.1.10 | A visit is marked missed only once it has begun: Did Not Come was accepted hours before (from the 7 November walk) |
 | Logistics 0.3.1 | Return notes offered only where they belong; a proof sent at once says "Proof saved." (from the 7 November walk) |
 | Logistics 0.3.2 | A signature drawn on the driver's page, kept offline with the proof; the home links Fleet Costs and shows costs formatted (from the 7 November walk) |
-| Logistics 0.3.3 | Rebuilt with Ferrum-Frontend a64416a; the 0.3.2 signature pad walked offline on this PR's build: drawn with no photo, saved while the server was stopped, sent by itself once it answered |
+| Logistics 0.3.3 | Rebuilt with Ferrum-Frontend 204b713; the 0.3.2 signature pad walked offline on this PR's build: drawn with no photo, saved while the server was stopped, sent by itself once it answered |
 | Ferrum PR 90, Control Plane 0.5.0, IoT Edge 0.5.0 | Installed apps' own health in the support report; IoT Edge's gateways counted there and in a customer's health for partners (FERRUM-IND-021) |
 | Control Plane 0.5.1 | A new incident's Public box shows ticked, as it is saved (from the 7 November walk) |
 | Control Plane 0.4.1 | Its public status page walked: cells reporting without sign-in, a public incident and its update, the page turning "All systems operational" by itself once resolved, the JSON cached publicly for 30 seconds and naming no customer (FERRUM-CLOUD-004) |
 | Ferrum PR 91, Frontend PR 45, Metrics 0.3.2 | A field may say how forms edit it (`widget`). `studio_query` on a json field shows Studio's report builder in place, with the first rows the query gives beside it, or the JSON for those who prefer it, and in a workspace without Studio. Metrics' metric and dataset definitions are built so, not typed (FERRUM-ECOSYSTEM-010) |
 | Frontend PR 45 | A new record's box whose default is 1 shows ticked, as the server saves it: `default: 1` showed unticked and saved ticked, so an incident meant to stay internal was published. Control's and Social's defaults are now `true` too |
-| Every app | Rebuilt on a64416a, a patch each: PR 45's ticked default, and for those not yet on 922fcfb, PR 44's action dialog (every refusal said, one dialog for parameters and a confirmation) |
+| Every app | Rebuilt on 204b713, a patch each: PR 45's ticked default, and for those not yet on 6cfda39, PR 44's action dialog (every refusal said, one dialog for parameters and a confirmation) |
 | How it was checked | Each app PR above passed its CI on this machine before it merged, at the head that was checked (`scripts/app_ci.sh`, `gh pr merge --match-head-commit`). Its interface check is the kit's own `check` against the sources' digest, as GitHub's ui job runs it: a rebuilt bundle's CSS differs between machines (Tailwind's classes), its JavaScript does not. It tests `--workspace` when the workflow does, finds the test databases a suite reads by its own default, and patches every platform crate. IoT Edge's suites ran one test binary at a time, the two failpoint suites with their feature, and `cargo audit` inside the repository. Its brokers (NATS, RabbitMQ, Kafka, InfluxDB, ClickHouse, S3) were not run here: those tests return early without their service. Cloud's interface was checked in the sweep; its Rust has not changed since its last passing GitHub run (4 November) |
 
 **Evidence:** the walks; `crates/meta/src/catalog.rs` (a widget only on a json field);
@@ -140,7 +140,7 @@ missed only once begun); Ferrum-Frontend `src/app/prefill.test.ts` and `src/app/
 ## 2026-11-06, evening: a clinic's day; records headed by a link; a person's own clock; every app rebuilt
 
 **State:** this PR follows PR 88. Its lock takes every app at its main of 6 November's evening, each
-app's interface built with Ferrum-Frontend a76295e (PRs 42 and 43), which FRONTEND_REV now names:
+app's interface built with Ferrum-Frontend b39fffb (PRs 42 and 43), which FRONTEND_REV now names:
 Healthcare 0.1.7, Government 0.2.1, Retail 0.3.1, Digital Assets 0.6.1, Property 0.7.1, Metrics 0.3.1,
 Objectives 0.5.2, Commerce 0.7.9, the Control Plane 0.4.1, Restaurant 0.2.0, Logistics 0.3.0, Retail 0.3.2,
 Property 0.7.2, and the rest a patch each. No release was tagged.
@@ -153,7 +153,7 @@ Property 0.7.2, and the rest a patch each. No release was tagged.
 | This PR | An Item Price is headed by its item's name; the store set up through its pages (evidence in the order walk) |
 | Frontend PR 42 | A local domain added in Domains says it works at once |
 | Healthcare 0.1.7 | What the walk found: the home page's day was UTC's; patients' names came from a list of at most 500; an empty clinic said nothing; a visit under way looked editable, the server refusing the change on save; new appointments now default to today |
-| Every app | Rebuilt on a76295e: times on a person's own clock. Commerce, the Control Plane, Digital Assets, Property and Retail took today from UTC's calendar on some screens, now the workspace's day (`todayIso`); Logistics has the same, told to the session working on it |
+| Every app | Rebuilt on b39fffb: times on a person's own clock. Commerce, the Control Plane, Digital Assets, Property and Retail took today from UTC's calendar on some screens, now the workspace's day (`todayIso`); Logistics has the same, told to the session working on it |
 | Retail 0.3.0 | Ship from store, returns to any store, Stock by Store and goods a collection lacks brought from another store; transfers taken in parts, what never arrived written off (FERRUM-INDUSTRY-003) |
 | Property 0.7.0 | Owners' statements: rent collected less the management fee and the expenses charged, billed as the owner's share and seen on the portal (FERRUM-INDUSTRY-008) |
 | Digital Assets 0.6.0 | The place and people a file shows and its licence's terms, read from XMP and IPTC; approval waits for releases when people are named (FERRUM-ECOSYSTEM-012) |
@@ -186,7 +186,7 @@ voided ticket, a state set by hand, the delivery held until made); `server/src/c
 
 **State:** this PR follows PR 85. Its lock takes Commerce 0.7.8 and Website 0.1.3 (their handlers serve
 pages), Digital Assets 0.5.0, Property 0.6.0, the Control Plane 0.4.0, Objectives 0.4.0 and Social
-0.6.0. FRONTEND_REV takes Ferrum-Frontend PR 41 (3d36821). No release was tagged.
+0.6.0. FRONTEND_REV takes Ferrum-Frontend PR 41 (0e61bba). No release was tagged.
 
 | Where | What |
 |---|---|
@@ -209,13 +209,13 @@ the shopper's mails for the order, its shipping and a refund, and none for a ref
 ## 2026-11-06, morning: the tenant's life on the image; one clock for every member's page
 
 **State:** this PR follows PR 84. Its lock takes every app at its main of 6 November's morning, each
-app's interface built with Ferrum-Frontend 24c3951 (PR 40), which FRONTEND_REV now names: the
+app's interface built with Ferrum-Frontend d350579 (PR 40), which FRONTEND_REV now names: the
 Control Plane 0.3.1, Property 0.5.0, Objectives 0.3.1, Social 0.5.1, Digital Assets 0.4.0, Intranet
 0.1.3, Website 0.1.2, the thirteen apps below and the rest a patch each. No release was tagged.
 
 | Where | What |
 |---|---|
-| The image | The tenant's life walked through the pages on the released image (main at 5a6c4b7): sign-up with its e-mailed code, the free plan's people limit refusing a fourth, a larger plan, closing, read-only, deletion after the keep date ([the walk](../platform/evidence/image-2026-11-06-lifecycle.md)); FERRUM-JOURNEY-012 is implemented, waiting on a reviewer |
+| The image | The tenant's life walked through the pages on the released image (main at 4515774): sign-up with its e-mailed code, the free plan's people limit refusing a fourth, a larger plan, closing, read-only, deletion after the keep date ([the walk](../platform/evidence/image-2026-11-06-lifecycle.md)); FERRUM-JOURNEY-012 is implemented, waiting on a reviewer |
 | This PR | What the walk found: a closed workspace names who closed it by their e-mail, not an id; its refusal says the account is closed or restricted, not "until it is settled"; an operator's task gives each field's reason, not only "validation failed". Admin → Domains offers a public site only for the apps that serve one, and a `site:{app}` domain is refused for any other (found walking Intranet and Website) |
 | Frontend PR 40 | Every member's page shows the workspace's clock, naming its zone when the browser's is another, and date-and-time boxes read it; an app's pages take the clock from the page; `formatMoment` for screens with their own shapes. A draft numbered on submit is headed as a draft; an add-on's record says its app is not installed |
 | Thirteen apps | Their own screens on the workspace's clock: Helpdesk 0.7.2 (with the conversation's days), CRM 0.6.6, Projects 0.6.7, Commerce 0.7.7, Bookings 0.4.6, Campaigns 0.3.5 (its schedule box too), Docs 0.7.2, Drive 0.14.2, Forms 0.2.5, HR 0.8.3, Point of Sale 0.4.2, Sign 0.2.7, IoT Edge 0.4.6 (a chart's axis on its whole hours). Public pages, outsiders' portals and Comms' calendar and chat keep the reader's own |
@@ -239,7 +239,7 @@ under the server's base is refused, so it needs a real name.
 
 **State:** this PR follows PR 82. Its lock takes every app at its main of 6 November's night: Commerce
 0.7.5, Metrics 0.2.0, Social 0.4.0, Digital Assets 0.3.0, and 38 apps' interfaces rebuilt with
-Ferrum-Frontend bb60115 (ERP 0.14.3, Campaigns 0.3.4, HR 0.8.2 and the rest a patch each). No release
+Ferrum-Frontend 20d08e5 (ERP 0.14.3, Campaigns 0.3.4, HR 0.8.2 and the rest a patch each). No release
 was tagged.
 
 | Where | What |
@@ -249,7 +249,7 @@ was tagged.
 | Metrics 0.2.0 | Certified metrics delivered to who follows them on the workspace's day (FERRUM-ECOSYSTEM-010) |
 | Social 0.3.0, 0.4.0 | A Bluesky connector beside Mastodon's, and a picture with alt text on a post (FERRUM-ECOSYSTEM-005) |
 | Digital Assets 0.3.0 | An approved asset shared outside the workspace by a link for one recipient (FERRUM-ECOSYSTEM-012) |
-| Interfaces | Every app's interface rebuilt with Ferrum-Frontend bb60115, so record pages read empty numbers as the server does and settings open as their one record |
+| Interfaces | Every app's interface rebuilt with Ferrum-Frontend 20d08e5, so record pages read empty numbers as the server does and settings open as their one record |
 
 **Next:** the tenant's life on the image is still to walk.
 
@@ -258,7 +258,7 @@ was tagged.
 **State:** this PR follows PRs 79 and 81. Its lock takes Campaigns 0.3.3, CRM 0.6.4, HR 0.8.1,
 Hospitality 0.2.0, Projects 0.6.5, Sign 0.2.5, Bookings 0.4.4, Education 0.1.5, Field Service 0.4.1, Learn 0.6.2, Drive 0.14.0,
 Objectives 0.2.1, Digital Assets 0.2.0, ITSM 0.2.0 (with its connector to Assets), Property 0.2.0,
-Retail 0.2.0 and the Control Plane 0.2.0. FRONTEND_REV takes Frontend PRs 36 to 39 (bb60115). No release was
+Retail 0.2.0 and the Control Plane 0.2.0. FRONTEND_REV takes Frontend PRs 36 to 39 (20d08e5). No release was
 tagged.
 
 | Where | What |
@@ -407,7 +407,7 @@ outside the workspace, which it is.
 
 ## 2026-11-05, late: state field rules, backfills, a subscription's revenue over its days, and the people seven apps hold
 
-**State:** this PR follows PR 64. Its lock takes ERP 0.14.1, the personal-data declarations of seven apps, and every app's interface rebuilt with Ferrum-Frontend 00dea07; FRONTEND_REV takes Frontend PRs 27 to 29. No release was tagged.
+**State:** this PR follows PR 64. Its lock takes ERP 0.14.1, the personal-data declarations of seven apps, and every app's interface rebuilt with Ferrum-Frontend ae13c69; FRONTEND_REV takes Frontend PRs 27 to 29. No release was tagged.
 
 | Where | What |
 |---|---|
@@ -418,7 +418,7 @@ outside the workspace, which it is.
 | This PR: exports | An export goes on without a file the storage no longer has, naming it in the manifest (`files_missing`) instead of failing; the server tells a missing object (not found) from storage being down. An erasure marks the exports it deleted, so none offers files that are gone |
 | ERP 0.14.0 | Subscription invoice lines carry the days they bill, so a plan whose item defers its revenue bills (it could not) and is earned day by day; a refund's credit note gives back over the days it credits, recognised negative; a line takes its item's deferral when added with its period; MRR reads plans as they stood, with expansion, contraction and net revenue retention (FERRUM-ECOSYSTEM-009, FERRUM-ERP-006) |
 | Healthcare 0.1.3, Government 0.1.5, Contracts 0.1.5, Control Plane 0.1.5, Logistics 0.1.3, Property 0.1.4, Restaurant 0.1.3 | Personal-data declarations: patients (and their appointments, consents and fee validities through them, kept as medical records), applicants, permit holders and citizens (drafts erased, the rest kept as public records), counterparties, hosted customers' contacts, drivers, repair reporters, and guests known by phone alone (FERRUM-PRIVACY-002) |
-| Every app's interface | Rebuilt with Ferrum-Frontend 00dea07 (PR 28), a patch release each: Assets, Bookings, Campaigns, Cloud, Commerce, Comms, Construction, Contracts, Control Plane, CRM, DAM, Docs, Drive, Edge, Education, ERP 0.14.1, Field Service, Forms, Government, GRC, Healthcare, Helpdesk, Hospitality, HR, ITSM, LMS, Logistics, Metrics, Nonprofit, Objectives, POS, Projects, Property, Restaurant, Retail, Sign and Social: record forms show a workflow state's kept fields read-only and its needed ones required |
+| Every app's interface | Rebuilt with Ferrum-Frontend ae13c69 (PR 28), a patch release each: Assets, Bookings, Campaigns, Cloud, Commerce, Comms, Construction, Contracts, Control Plane, CRM, DAM, Docs, Drive, Edge, Education, ERP 0.14.1, Field Service, Forms, Government, GRC, Healthcare, Helpdesk, Hospitality, HR, ITSM, LMS, Logistics, Metrics, Nonprofit, Objectives, POS, Projects, Property, Restaurant, Retail, Sign and Social: record forms show a workflow state's kept fields read-only and its needed ones required |
 | Frontend PRs 27 to 29 | The erasure's confirmation and result name the stored exports it deletes; fields a workflow state keeps are read-only and what it needs is required; the backfills' report on the Packages tab; the workspace export made, followed and downloaded from the Workspace tab (it had no place in the interface), saying when it was deleted, expired or left files out |
 
 **Evidence:**
@@ -606,10 +606,10 @@ apps are on the store's main branch. No release was tagged.
 | ferrum-store | Paid apps: plans by verified publishers who say who supports the app, purchases with the buyer's country's tax, licences the store signs, renewals with a week of grace, refunds within 14 days, disputes decided by an administrator, payouts net of tax and a 15% commission (FERRUM-EXT-009, partial: no real payment provider) |
 | This PR | Control and Social compiled in; the shell draws server, share-2 and plug; FRONTEND_REV at Ferrum-Frontend PR 17's merge; the Integration Hub's history, `GET /api/admin/connections/{id}/activity`, which Ferrum-Frontend PR 17 shows on each connection (FERRUM-ECOSYSTEM-004, partial) |
 | This PR: licences | The App Manager installs or upgrades an app a store sells only with a live licence for the workspace: `PUT /api/admin/apps/{id}/licence` keeps one once the store's signature, the app and one of the workspace's own hosts check out; each installation asks the store again, whether the app comes from the store or from the cluster where another workspace installed it; a store that cannot say whether it sells the app refuses the installation rather than letting it through; every licence is read again with the revocation list (FERRUM-EXT-009) |
-| ferrum-store 049459d | Stripe as the payment provider: a card saved on Stripe's page and told by its signed webhook, off-session charges keyed for Stripe's idempotency and retried with the key, a payment not taken at once cancelled, a refused renewal tried again with a new key, refunds (FERRUM-EXT-009; tested against a stand-in of Stripe's API) |
+| ferrum-store 2cc31ca | Stripe as the payment provider: a card saved on Stripe's page and told by its signed webhook, off-session charges keyed for Stripe's idempotency and retried with the key, a payment not taken at once cancelled, a refused renewal tried again with a new key, refunds (FERRUM-EXT-009; tested against a stand-in of Stripe's API) |
 | ferrum-app-hr 0.6.0 | Income tax slabs take a rebate and cesses and surcharges; India's new regime for FY 2025-26, as the Income Tax Department's page prints it, is a fixture the engine is checked against (FERRUM-VERIFY-002, now partial) |
 | The walk's fixes | Ferrum-Frontend PRs 18 to 20 (labels name their fields, linked titles show their titles, Connections refresh while work waits, "1 record", the native line in words); Control 0.1.1, Government 0.1.1, Property 0.1.1, Social 0.2.1 and 0.2.2, Contracts 0.1.1, Objectives 0.1.1 |
-| Every app rebuilt | The 36 apps with interfaces rebuilt against Ferrum-Frontend 80ff179 as patch releases, since each bundles its own record pages; this PR's lock takes them. FRONTEND_REV at PR 20's merge (16b5c57) |
+| Every app rebuilt | The 36 apps with interfaces rebuilt against Ferrum-Frontend 89b7cc7 as patch releases, since each bundles its own record pages; this PR's lock takes them. FRONTEND_REV at PR 20's merge (355dfca) |
 
 **Evidence:**
 - Control's scenario test runs the control plane in one workspace and a customer's in another, reached over HTTP with the key its administrator granted (`grant_support`), answered as the server answers one, each request on the customer's log. A rollout goes through two windows, halts when a cell falls ill while soaking and when one misses its window, and another finishes.
@@ -669,7 +669,7 @@ apps are on the store's main branch. No release was tagged.
 | Ferrum PR 55 | The five compiled in; FRONTEND_REV at Ferrum-Frontend PR 15's merge |
 
 **Evidence:**
-- Each app's scenario test passed against Postgres with Ferrum 808cd94; Contracts' with Sign installed, sending through Sign's real action.
+- Each app's scenario test passed against Postgres with Ferrum 3fe3238; Contracts' with Sign installed, sending through Sign's real action.
 - Mutants by hand, all caught after fixes: Government 24, Retail 22, IT Services 36 (all on the first run), Governance and Risk 27, Contracts 29. The first runs found eight checks the scenarios never reached; each is tested now.
 
 **Not done:** the apps in a browser; ECOSYSTEM-004, -005, -010, -011, -012, EXT-009, CLOUD-001, -004, PARTNER-001, IND-021.
@@ -886,7 +886,7 @@ payment and tax providers wait on keys only the owner can obtain.
 
 Platform first: the apps' declarations use `retain`, which older platforms refuse.
 
-1. `CBFerrum/Ferrum`, branch `platform/foundation`, on `origin/main` 2f1917d.
+1. `CBFerrum/Ferrum`, branch `platform/foundation`, on `origin/main` 5d3a25b.
 2. `privacy/declarations` in sign, lms, pos, hr (with a test fix), drive, projects, assets, commerce,
    field-service, comms.
 3. `bookings/series` in ferrum-app-bookings.
@@ -897,23 +897,23 @@ checked for shape, and `promote` needs `id-token` and attestations, so watch tha
 editors job now pushes `candidate-*` tags, which `promote` does not remove.
 
 Local `main` in the main checkout still holds 8e6205c, the plugin-sealing commit that was never
-pushed. It is `acc2063` on this branch, so once that merges, reset local `main` to origin.
+pushed. It is `21aaf92` on this branch, so once that merges, reset local `main` to origin.
 
 ### What this work built
 
 | Commit | Requirements |
 |---|---|
-| acc2063 | `FERRUM-IDENTITY-017` |
-| 176d7c7 | `FERRUM-PLATFORM-017`, `FERRUM-EXT-002`, `FERRUM-EXT-003`, `FERRUM-EXT-004` |
-| 0128cfc | `FERRUM-PLATFORM-012` to `015`, `FERRUM-PLATFORM-018` |
-| 0f28652 | `FERRUM-RELEASE-001`, `002`, `006` |
-| 4527f53 | `FERRUM-IDENTITY-002` to `004` |
-| 924f3d7 | `FERRUM-VERIFY-001` |
-| 83faa02 | Workstream 1: the registry and working documents |
-| fc50add | `FERRUM-IDENTITY-010`, `011`, `013`, `017`, `018` |
-| 20ef873 | `FERRUM-PRIVACY-002`, `004`, `006` |
-| 08525bb | Rotation reaches containers; API reference |
-| bookings/series 40fcc5d | `FERRUM-BOOKINGS-002` |
+| 21aaf92 | `FERRUM-IDENTITY-017` |
+| c701c80 | `FERRUM-PLATFORM-017`, `FERRUM-EXT-002`, `FERRUM-EXT-003`, `FERRUM-EXT-004` |
+| ceea099 | `FERRUM-PLATFORM-012` to `015`, `FERRUM-PLATFORM-018` |
+| dbe1119 | `FERRUM-RELEASE-001`, `002`, `006` |
+| 7f07729 | `FERRUM-IDENTITY-002` to `004` |
+| b7c0097 | `FERRUM-VERIFY-001` |
+| 4a88f86 | Workstream 1: the registry and working documents |
+| a8f9f80 | `FERRUM-IDENTITY-010`, `011`, `013`, `017`, `018` |
+| da548d9 | `FERRUM-PRIVACY-002`, `004`, `006` |
+| 5de6c85 | Rotation reaches containers; API reference |
+| bookings/series bfb6961 | `FERRUM-BOOKINGS-002` |
 
 ### Evidence
 

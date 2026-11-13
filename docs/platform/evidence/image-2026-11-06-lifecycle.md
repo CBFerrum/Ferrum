@@ -4,7 +4,7 @@ The tenant lifecycle (FERRUM-JOURNEY-012) had been walked in the kernel's suite 
 once in a browser on a server built on one machine ([4 November](browser-2026-11-04.md)). This time it
 ran on the image CI publishes: `ghcr.io/cbferrum/ferrum:latest`, digest
 `sha256:cb3318e8b8726b67eef86d5b5298bf83868116977f90f695de3a5bd31fbf32dc`, built at 01:58 UTC from
-main at 5a6c4b7 (PR 81), for amd64. It was pulled from GHCR and run with `deploy/docker-compose.yml`
+main at 4515774 (PR 81), for amd64. It was pulled from GHCR and run with `deploy/docker-compose.yml`
 under Docker on one Mac (colima, amd64 through Rosetta), with the stack's own Postgres 17, Mailpit
 for mail over SMTP, the base domain `localhost` on port 8080, and two plans in `FERRUM_PLANS`: free
 (3 people, 100 MB of files, 100,000 assistant tokens) and team (50 people). Nothing in the image was

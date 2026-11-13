@@ -4,9 +4,9 @@ FERRUM-UX-006 said that pages had not been checked one by one right to left. Thi
 walk server's records pages in Arabic, in workspace walk, signed in as its administrator, whose
 own language was set to العربية on the Account page (and set back to the workspace's afterwards).
 It ran twice:
-1. On Ferrum main 5b035b8 with the shell from Ferrum-Frontend a64416a. The page took `lang="ar"`
+1. On Ferrum main 1915711 with the shell from Ferrum-Frontend 204b713. The page took `lang="ar"`
    and `dir="rtl"`.
-2. On the same server, with the shell from Ferrum-Frontend PR 46 (63280d3), which carries what the
+2. On the same server, with the shell from Ferrum-Frontend PR 46 (9d80f4f), which carries what the
    first walk found.
 
 ## What was walked

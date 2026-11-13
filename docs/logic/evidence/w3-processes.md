@@ -1,7 +1,7 @@
 # W3: durable processes and human work (8 November 2026)
 
 Software evidence only, run on the owner's development machine (macOS, PostgreSQL 17.9) from the worktree
-`ERP/flc/ferrum`, branch `logic/w3-processes`, based on Ferrum `0414ed5`. Temporal Server 1.32.2, the
+`ERP/flc/ferrum`, branch `logic/w3-processes`, based on Ferrum `a3b054d`. Temporal Server 1.32.2, the
 version the spike qualified on PostgreSQL, ran as the CLI's dev server (`temporal` 1.10.0, SQLite, namespace
 `ferrum-flc`). Databases `ferrum_flc_kernel_test`, `ferrum_flc_process_test`, `ferrum_flc_studio_test`,
 `ferrum_flc_plugins_test` and `ferrum_flc_mcp_test`, reset by each suite.

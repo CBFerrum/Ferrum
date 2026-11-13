@@ -4,7 +4,7 @@ Governance and Risk was rebuilt as a pack and measured on a running kernel
 ([findings](grc-as-a-pack-2026-11-10.md)). This is the cheaper measurement for the next two candidates
 of the plan's proof step: each app's behaviours read from its source (`ferrum-app-government` 0.3.0,
 `ferrum-app-retail`) and judged against the builder as [docs/api.md](../../api.md) describes it at
-Ferrum `c2017c7`. **Nothing was built or run.** Rows marked "inferred" rest on a reading of the
+Ferrum `92c480b`. **Nothing was built or run.** Rows marked "inferred" rest on a reading of the
 documents. Its purpose is the list at the end: what the builder needs next, by the behaviours it blocks.
 
 Same: a person gets the same thing. Different: they would notice. Cannot: one platform capability is

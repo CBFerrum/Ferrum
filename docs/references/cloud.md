@@ -2,7 +2,7 @@
 
 **Compared with:** Forgejo v17.0.1, Gitea v28.3.0, GitLab (its documentation), Caddy, kamal-proxy, Pingora,
 instant-acme, Coolify, Railpack, BuildKit, Knative Serving, Falco's rules, k6 and cargo-mutants, read on
-2026-11-03 through their public repositories, against Ferrum Cloud `0f821d8` (`ferrum-app-cloud`, main).
+2026-11-03 through their public repositories, against Ferrum Cloud `abda176` (`ferrum-app-cloud`, main).
 None is in `referance/` yet: this disk has about 200 MB free and `referance/fetch.sh` stops under 1.5 GB.
 Reference paths below are in each project's own repository.
 

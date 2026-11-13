@@ -1,6 +1,6 @@
 # Campaigns: references
 
-**Compared with:** knadh/listmonk `86ef53b46b06`, mautic/mautic `ee2b5b60dd24` against ferrum-app-campaigns 0.1.1 (working tree, `8030dd3695fe`) and the records frame in ferrum (`2a701db8901a`, `web/src/app`). **Date:** 2026-11-01
+**Compared with:** knadh/listmonk `86ef53b46b06`, mautic/mautic `ee2b5b60dd24` against ferrum-app-campaigns 0.1.1 (working tree, `fdd4eb57ab05`) and the records frame in ferrum (`81b7f7c8cd38`, `web/src/app`). **Date:** 2026-11-01
 
 ## What Ferrum has
 

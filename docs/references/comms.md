@@ -1,6 +1,6 @@
 # Comms: references
 
-**Compared with:** stalwartlabs/stalwart `23b69755cb3c`, livekit-examples/meet `aed896b0fecd`, zulip/zulip `c803cca1ceac` against ferrum-app-comms 0.7.5 (working tree, `0b9c7d707d3b`). **Date:** 2026-11-01
+**Compared with:** stalwartlabs/stalwart `23b69755cb3c`, livekit-examples/meet `aed896b0fecd`, zulip/zulip `c803cca1ceac` against ferrum-app-comms 0.7.5 (working tree, `c88bbbc86c7d`). **Date:** 2026-11-01
 
 ## What Ferrum has
 

@@ -2,7 +2,7 @@
 
 Nonprofits (FERRUM-INDUSTRY-011) had run only inside Nonprofit's suite, through the API. This walk
 took a year's giving through its pages, on the walk server: a debug build of Ferrum PR 89 on one
-machine, with its own database (`ferrum_walk`), the shell from Ferrum-Frontend a76295e and Nonprofit
+machine, with its own database (`ferrum_walk`), the shell from Ferrum-Frontend b39fffb and Nonprofit
 0.1.7 as pinned. The workspace's clock is UTC and the browser's was India's. It ran from 10:04 to
 19:58 UTC, with a break between the donation's submission and its cancelling.
 

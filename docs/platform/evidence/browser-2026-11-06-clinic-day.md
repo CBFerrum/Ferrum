@@ -2,7 +2,7 @@
 
 Healthcare (FERRUM-INDUSTRY-005) had run only inside its own suite, through the API. This walk took
 a clinic's day through the pages, on the walk server: a debug build of Ferrum PR 88 on one machine,
-with its own database (`ferrum_walk`), the shell from Ferrum-Frontend 3d36821, and Healthcare 0.1.6
+with its own database (`ferrum_walk`), the shell from Ferrum-Frontend 0e61bba, and Healthcare 0.1.6
 as pinned. The workspace's clock is UTC and the browser's was India's. It ran from 08:43 to 09:10 UTC.
 
 One person, the workspace's administrator, worked as the clinic's manager and at its reception.
@@ -23,7 +23,7 @@ One person, the workspace's administrator, worked as the clinic's manager and at
 
 | Finding | Now |
 |---|---|
-| The home page's day was UTC's calendar day (`new Date().toISOString()`), not the workspace's: an evening reception west of Greenwich, or an early one east of it, would see the wrong day | Healthcare 0.1.7 (ferrum-app-healthcare PR 2): `todayIso`, the workspace's day as the server counts it. The same mistake was in Commerce, the Control Plane, Digital Assets, Property and Retail, fixed in their rebuilds on Ferrum-Frontend a76295e, and in Logistics, told to the session working on it |
+| The home page's day was UTC's calendar day (`new Date().toISOString()`), not the workspace's: an evening reception west of Greenwich, or an early one east of it, would see the wrong day | Healthcare 0.1.7 (ferrum-app-healthcare PR 2): `todayIso`, the workspace's day as the server counts it. The same mistake was in Commerce, the Control Plane, Digital Assets, Property and Retail, fixed in their rebuilds on Ferrum-Frontend b39fffb, and in Logistics, told to the session working on it |
 | Patients' names on the day's page came from a list of at most 500 patients, so a larger clinic would see blank names | Healthcare 0.1.7: from each appointment's own link title |
 | An empty clinic showed a bare heading, with nothing saying where to start | Healthcare 0.1.7: "No practitioners yet", saying to add a practitioner with their hours and an appointment type, and linking to it. A practitioner with nothing booked says "Nothing booked." |
 | A completed visit's patient, practitioner, type, date and time looked editable. The server refused the change on save ("a visit under way or over keeps its patient, practitioner and time"). Its minutes past midnight, an internal check, were shown | Healthcare 0.1.7: read-only on the page once the visit is checked in, completed, cancelled or missed; the minutes are hidden. A new appointment is for today unless another day is chosen |
@@ -31,7 +31,7 @@ One person, the workspace's administrator, worked as the clinic's manager and at
 
 ## The fixes, checked on their build
 
-On a debug build of this PR, with Healthcare 0.1.7 and the shell from Ferrum-Frontend a76295e, on
+On a debug build of this PR, with Healthcare 0.1.7 and the shell from Ferrum-Frontend b39fffb, on
 the same walk server and data, from 09:22 to 09:35 UTC:
 
 | Check | What it showed |

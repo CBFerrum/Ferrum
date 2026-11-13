@@ -72,10 +72,10 @@ connector uses), and eu-1's tooling was a loop posting its readings: neither is 
 | "Support access ends not given" on the customer's page, "support access ends not given: ask them for a new health key" on the partner's | ferrum-app-control 0.1.3: "Support access is not given", or "has ended" |
 | A second statement for a month refused as "Northwind Partners's statement for October 2026 has been issued" | Control 0.1.3: "Northwind Partners already has its statement for October 2026" |
 | The signed contract linked Sign's sealed PDF, kept with Sign's audit: Dana, who approved the contract, was refused it ("not permitted to read signevent") | ferrum-app-contracts 0.1.3: the contract keeps a copy of its own |
-| IoT Edge's CI failed twice on its rebuild with "deadlock detected" at boot: two tests of one binary reset the database at once | ferrum-app-edge 858f1ca: the tests of a binary take turns |
-| A paid app could be bought, refunded and disputed only through the store's API, and its licence given only through Ferrum's | ferrum-store c252993: buying on the app's page, Your purchases, publishers' answers and administrators' decisions in the pages; this PR: the install plan lists the sold apps and their licences; Ferrum-Frontend PR 21: the install dialog asks for the licence, and an installed app whose licence lapsed says so |
+| IoT Edge's CI failed twice on its rebuild with "deadlock detected" at boot: two tests of one binary reset the database at once | ferrum-app-edge 4a69379: the tests of a binary take turns |
+| A paid app could be bought, refunded and disputed only through the store's API, and its licence given only through Ferrum's | ferrum-store e57e837: buying on the app's page, Your purchases, publishers' answers and administrators' decisions in the pages; this PR: the install plan lists the sold apps and their licences; Ferrum-Frontend PR 21: the install dialog asks for the licence, and an installed app whose licence lapsed says so |
 | The licence's end read "2026-12-05T06:09:46Z" | Ferrum-Frontend PR 21: "5 Dec 2026" |
-| A refunded purchase still read "Ends 2026-12-05" | ferrum-store f9655ac |
+| A refunded purchase still read "Ends 2026-12-05" | ferrum-store 7c84119 |
 | Your orders was offered on the portal and drew a blank page: the workspace had ERP recorded at 0.7.1, so the shell served 0.7.1's interface while the server ran ERP 0.8.0's code and manifest, whose page that interface does not know | PR 58: a compiled-in app's interface is this build's, as its code and manifest are |
 | An order billed in full before it was received read "To deliver" | ERP PR 8 (0.9.0): "Billed, to deliver" |
 | A deferred invoice was refused for a company made before ERP 0.9.0: it had no Deferred Revenue account, and Create Standard Chart of Accounts, which the refusal points to, did nothing for a company that has accounts. The refusal named the default by its field key | ERP PR 10 (0.10.1): the action adds the standard accounts a company lacks and links its empty defaults (walked: Deferred Revenue, Prepaid Expenses, Accrued Income and Accrued Expenses added with their numbers, both defaults linked); PR 58: the refusal names the defaults in words |
@@ -111,7 +111,7 @@ read, and shows ("no shared cell in eu has room").
 ## What it does not show
 
 - Each app bundles its own record pages, so the Frontend fixes reach an app when it is built again.
-  All 36 apps with interfaces were rebuilt against Ferrum-Frontend 80ff179 as patch releases and this
+  All 36 apps with interfaces were rebuilt against Ferrum-Frontend 89b7cc7 as patch releases and this
   PR's lock takes them; after the rebuild, Governance and Risk's acceptance read "Single cell for the
   EU region" under its number.
 - Stripe: the walk paid through the store's test provider. Stripe itself was not reached; the store's

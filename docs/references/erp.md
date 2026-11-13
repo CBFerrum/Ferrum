@@ -1,6 +1,6 @@
 # ERP: references
 
-**Compared with:** ERPNext `b23972f80f5c` (frappe/erpnext `develop`, 17.0.0-dev; `referance/erp/erpnext` links to `upstream/erpnext` and is not in `INDEX.md`, so the commit comes from its `.git`; reference paths below start at `referance/erp/erpnext/erpnext/`) against Ferrum ERP `993017fc502a` (`erp-platform`, working tree, clean; Ferrum paths start at the ERP folder), the records frame in `ferrum/web` `9ecf5bfc8404` and the platform `ferrum` `2a701db8901a` (both have uncommitted edits, `ListView.tsx` among them; only the files named were read). **Date:** 2026-11-01
+**Compared with:** ERPNext `b23972f80f5c` (frappe/erpnext `develop`, 17.0.0-dev; `referance/erp/erpnext` links to `upstream/erpnext` and is not in `INDEX.md`, so the commit comes from its `.git`; reference paths below start at `referance/erp/erpnext/erpnext/`) against Ferrum ERP `386dd3700309` (`erp-platform`, working tree, clean; Ferrum paths start at the ERP folder), the records frame in `ferrum/web` `c04c986d788c` and the platform `ferrum` `81b7f7c8cd38` (both have uncommitted edits, `ListView.tsx` among them; only the files named were read). **Date:** 2026-11-01
 
 ## What Ferrum has
 

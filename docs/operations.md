@@ -858,7 +858,7 @@ fails when a level misses a target:
 | 10 | 1% | 300 ms | 120 |
 | 50 | 1% | 2,000 ms | 100 |
 
-The targets leave room for a shared runner's variance. On 2026-11-06 (run 42135552923, `b1e8843`),
+The targets leave room for a shared runner's variance. On 2026-11-06 (run 42135552923, `93d6faf`),
 10 clients got 349 requests a second at p95 72 ms (p99 113 ms), and 50 clients 272 a second at
 p95 518 ms (p99 764 ms), with no errors. The targets catch a release that got slower than that by
 several times. They are not a sizing guide: a production replica has its own cores and database.

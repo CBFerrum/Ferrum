@@ -2,7 +2,7 @@
 
 What stands between Ferrum and supported, complete business operations, as a review of 9 November 2026
 found it (`Ferrum_Only_Closure_Review_2026-11-09.zip`, digest in [catalog.json](catalog.json)), and what
-has been done about each part since. The review read source and documents at `19fecde`; it ran one
+has been done about each part since. The review read source and documents at `f568f04`; it ran one
 extracted piece of Field Service and nothing else, so what it says is a dated baseline to check, not a
 list of proven bugs. Its scope is Ferrum's apps, shared policy, customization, AI and analytics, office
 and collaboration, extensions, industrial apps and running Ferrum yourself. It leaves out Dikidex, cloud

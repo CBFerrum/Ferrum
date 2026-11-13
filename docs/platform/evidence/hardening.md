@@ -39,7 +39,7 @@ written to find them, and each would have reached production with every suite gr
 
 ## Mutants
 
-At `449c173`, the full set: 172 of 179 caught. One survivor was a mutant that had stopped meaning what it said. Six were real gaps
+At `5a1d458`, the full set: 172 of 179 caught. One survivor was a mutant that had stopped meaning what it said. Six were real gaps
 in the tests, each closed here: a reader passing open work, a position passing open work, an unproved domain being routed, the
 management plane being reachable, a leaver reaching a resource, and an unenrolled connector carrying traffic. The results for the
 mutants added since are in `FCP-QUAL-007`.

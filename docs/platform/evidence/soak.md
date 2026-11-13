@@ -1,7 +1,7 @@
 # Soak, 3 November 2026: three hours, every check passing
 
 J12 (docs/platform/journeys.yaml) in software: soak run 41719722922 of `.github/workflows/soak.yml`, on the
-image of `main` at 808cd94 (tagged `latest` when the run began, 21:15 UTC), with PR 45's list
+image of `main` at 3fe3238 (tagged `latest` when the run began, 21:15 UTC), with PR 45's list
 order. Three workspaces of different weight on one Compose stack on one CI runner, through a
 database restart, a backup read back while serving, and the server replaced. The run before it,
 without PR 45, failed two checks and slowed as the data grew (p95 of the heavy workspace from 347 ms

@@ -1,6 +1,6 @@
 # Sign: references
 
-**Compared with:** documenso/documenso `503cd1aa1c75` (apps/remix, packages) and docusealco/docuseal `13a1835c006e` (app/, lib/) against ferrum-app-sign 0.1.0 (working tree, `3928c10`) and the records frame in ferrum (`2a701db`). **Date:** 2026-11-01
+**Compared with:** documenso/documenso `503cd1aa1c75` (apps/remix, packages) and docusealco/docuseal `13a1835c006e` (app/, lib/) against ferrum-app-sign 0.1.0 (working tree, `691c67d`) and the records frame in ferrum (`81b7f7c`). **Date:** 2026-11-01
 
 ## What Ferrum has
 

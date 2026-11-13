@@ -3,7 +3,7 @@
 Online order to return (FERRUM-JOURNEY-006) had run only inside Commerce's suite, through the API.
 This walk took it through the pages, on the walk server: a debug build of Ferrum PR 85 (one clock,
 the image walk's fixes) on one machine, with its own database (`ferrum_walk`), the shell from
-Ferrum-Frontend 24c3951 and Commerce 0.7.7 as pinned. The workspace's clock is UTC; the browser's
+Ferrum-Frontend d350579 and Commerce 0.7.7 as pinned. The workspace's clock is UTC; the browser's
 was India's. From 07:32 to 07:50 UTC.
 
 Two people: the workspace's administrator, as the shop's manager at the desk, and Mila Weber, a
@@ -34,7 +34,7 @@ shopper with no account, on the store's own host in a browser with no session th
 ## The fixes, checked on their build
 
 On the walk server built from Ferrum PR 88 (Commerce 0.7.8, Website 0.1.3, the shell at
-Ferrum-Frontend 3d36821), from 08:16 to 08:21 UTC:
+Ferrum-Frontend 0e61bba), from 08:16 to 08:21 UTC:
 
 | Check | What it showed |
 |---|---|

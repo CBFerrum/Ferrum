@@ -2,7 +2,7 @@
 
 IT Services (FERRUM-ECOSYSTEM-003) had its home page drawn in a browser on 4 November, with its
 flows untried there. This walk took them on the walk server: a debug build of Ferrum PR 89 on one
-machine, with its own database (`ferrum_walk`), the shell from Ferrum-Frontend a76295e and IT
+machine, with its own database (`ferrum_walk`), the shell from Ferrum-Frontend b39fffb and IT
 Services 0.2.3 as pinned. The workspace's clock is UTC and the browser's was India's. It ran from
 20:15 to 20:35 UTC.
 
