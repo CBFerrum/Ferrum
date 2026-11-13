@@ -335,13 +335,27 @@ impl Db {
         Ok(tx)
     }
 
+    /// Runs a whole read (its transactions opened with [`Db::read_tx`]) and, when it failed after reading from the read
+    /// address, once more on the primary ([`crate::replica::once_more_on_primary`]).
+    pub async fn reading<T, F, Fut>(&self, read: F) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        let mut read = read;
+        match &self.read {
+            Some(r) => crate::replica::once_more_on_primary(r, read).await,
+            None => read().await,
+        }
+    }
+
     /// A read-only tenant transaction for reading only: reports, and the reading of a workspace's export. On the read
     /// address (`FERRUM_DATABASE_READ_URL`) when it is a replica within its lag limit that has replayed everything the
     /// primary had committed when this began, so that whoever has just written sees it; otherwise on the primary.
     /// Never for a read that a write in the same transaction must see.
     pub async fn read_tx(&self, tenant: Uuid, timeout_ms: u64) -> Result<Tx> {
         use crate::replica::{Health, Served};
-        if let Some(r) = &self.read {
+        if let Some(r) = self.read.as_ref().filter(|_| !crate::replica::primary_only()) {
             let why = match r.health().await {
                 Health::Fresh(lag) => {
                     // Where the primary is now: the replica must have replayed that far.

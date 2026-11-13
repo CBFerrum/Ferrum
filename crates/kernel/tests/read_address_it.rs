@@ -36,6 +36,38 @@ async fn reads_go_to_a_fresh_replica_and_to_the_primary_otherwise() {
     assert_eq!(checked(tx.unwrap()).await, tenant.to_string(), "the workspace is set as on the primary");
     assert_eq!((lag, count(Served::Replica)), (Some(Duration::from_millis(300)), 1), "{:?}", reads.counts());
 
+    // A read that fails after reading from the replica runs once more, on the primary only, and never a third time;
+    // a fault of the read's own comes back from the primary as it was.
+    let attempts = std::sync::atomic::AtomicU32::new(0);
+    let read = |fail: fn() -> ferrum_kernel::Error| {
+        let (db, attempts) = (&db, &attempts);
+        move || async move {
+            let n = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(db.read_tx(tenant, 1000).await?);
+            if n == 0 { Err(fail()) } else { Ok(n) }
+        }
+    };
+    let before = count(Served::Replica);
+    let conflict = || ferrum_kernel::Error::Retryable("canceling statement due to conflict with recovery".into());
+    let (out, lag) = ferrum_kernel::replica::noting(db.reading(read(conflict))).await;
+    assert_eq!((out.unwrap(), lag), (1, None), "answered by the primary");
+    assert_eq!((count(Served::Replica), count(Served::Conflict)), (before + 1, 1), "the second read was the primary's");
+    attempts.store(0, std::sync::atomic::Ordering::SeqCst);
+    let own = |_| async { Err::<u32, _>(ferrum_kernel::Error::Forbidden("this report sums up every Customer".into())) };
+    let tries = std::sync::atomic::AtomicU32::new(0);
+    let out = db
+        .reading(|| {
+            let n = tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let db = &db;
+            async move {
+                drop(db.read_tx(tenant, 1000).await?);
+                own(n).await
+            }
+        })
+        .await;
+    assert!(matches!(out, Err(ferrum_kernel::Error::Forbidden(_))), "{out:?}");
+    assert_eq!((tries.load(std::sync::atomic::Ordering::SeqCst), count(Served::Failed)), (2, 1), "once more, never a third time");
+
     // Past the limit (10 s by default): the primary.
     reads.assume_lag(Some(Duration::from_secs(11)));
     let (tx, lag) = ferrum_kernel::replica::noting(db.read_tx(tenant, 1000)).await;

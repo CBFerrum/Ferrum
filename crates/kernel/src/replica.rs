@@ -38,9 +38,16 @@ pub enum Served {
     NotReplica,
     /// The replica had not replayed the primary's latest commits within [`CATCH_UP`].
     Behind,
+    /// A read failed on the replica and ran again on the primary: a conflict (a standby's recovery cancelling it,
+    /// SQLSTATE 40001), a statement cancelled or timed out, a lost connection, or anything else.
+    Conflict,
+    Cancelled,
+    Lost,
+    Failed,
 }
 
-const SERVED: [Served; 5] = [Served::Replica, Served::Down, Served::Lagging, Served::NotReplica, Served::Behind];
+const SERVED: [Served; 9] =
+    [Served::Replica, Served::Down, Served::Lagging, Served::NotReplica, Served::Behind, Served::Conflict, Served::Cancelled, Served::Lost, Served::Failed];
 
 impl Served {
     pub fn label(self) -> &'static str {
@@ -50,6 +57,20 @@ impl Served {
             Served::Lagging => "lagging",
             Served::NotReplica => "not_replica",
             Served::Behind => "behind",
+            Served::Conflict => "replica_conflict",
+            Served::Cancelled => "replica_cancelled",
+            Served::Lost => "replica_lost",
+            Served::Failed => "replica_failed",
+        }
+    }
+
+    /// Why a read that failed on the replica runs again on the primary.
+    pub fn failed(e: &crate::Error) -> Served {
+        match e {
+            crate::Error::Retryable(_) => Served::Conflict,
+            crate::Error::Unavailable(m) if m.contains("cancelled") => Served::Cancelled,
+            crate::Error::Unavailable(_) => Served::Lost,
+            _ => Served::Failed,
         }
     }
 }
@@ -72,7 +93,7 @@ pub struct Reads {
     seen: Mutex<Option<(Instant, Health)>>,
     /// Tests: a lag to take for the replica's, in place of looking.
     assumed: Mutex<Option<Duration>>,
-    counts: [AtomicU64; 5],
+    counts: [AtomicU64; 9],
     warned: AtomicBool,
 }
 
@@ -132,22 +153,70 @@ impl Reads {
     }
 }
 
+/// What the reads of one piece of work did: the largest lag of a replica read from, and whether they must stay on
+/// the primary (a second attempt).
+#[derive(Clone, Copy, Default)]
+struct Reading {
+    lag: Option<Duration>,
+    primary: bool,
+}
+
 tokio::task_local! {
-    static READ_LAG: std::cell::Cell<Option<Duration>>;
+    static READING: std::cell::Cell<Reading>;
 }
 
 /// Runs `f`, and says the largest lag of the replica any of its reads went to (`None`: every read was the primary's).
 pub async fn noting<F: std::future::Future>(f: F) -> (F::Output, Option<Duration>) {
-    READ_LAG
-        .scope(std::cell::Cell::new(None), async {
+    scoped(Reading::default(), f).await
+}
+
+async fn scoped<F: std::future::Future>(start: Reading, f: F) -> (F::Output, Option<Duration>) {
+    READING
+        .scope(std::cell::Cell::new(start), async {
             let out = f.await;
-            (out, READ_LAG.with(|c| c.get()))
+            (out, READING.with(|c| c.get().lag))
         })
         .await
 }
 
 pub(crate) fn note(lag: Duration) {
-    let _ = READ_LAG.try_with(|c| c.set(Some(c.get().map_or(lag, |l| l.max(lag)))));
+    let _ = READING.try_with(|c| {
+        let r = c.get();
+        c.set(Reading { lag: Some(r.lag.map_or(lag, |l| l.max(lag))), ..r })
+    });
+}
+
+/// Whether the work in progress reads from the primary only.
+pub(crate) fn primary_only() -> bool {
+    READING.try_with(|c| c.get().primary).unwrap_or(false)
+}
+
+/// Runs `read` (whole: it opens its own transactions with `Db::read_tx`); when it fails after reading from a replica,
+/// runs it once more on the primary only, whatever the error, and gives that answer. A read that is wrong in itself
+/// (a bad report, a refusal) fails the same way there, so it is never hidden; nothing is tried a third time.
+pub async fn once_more_on_primary<T, F, Fut>(reads: &Reads, mut read: F) -> crate::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = crate::Result<T>>,
+{
+    if primary_only() {
+        return read().await;
+    }
+    let (out, lag) = scoped(Reading::default(), read()).await;
+    match out {
+        Err(e) if lag.is_some() => {
+            let why = Served::failed(&e);
+            tracing::warn!(why = why.label(), "a read failed on the replica, reading again from the primary: {e}");
+            reads.served(why);
+            scoped(Reading { lag: None, primary: true }, read()).await.0
+        }
+        out => {
+            if let Some(lag) = lag {
+                note(lag);
+            }
+            out
+        }
+    }
 }
 
 #[cfg(test)]
@@ -168,6 +237,15 @@ mod tests {
         // A primary, whatever it says about lag.
         assert_eq!(judge(false, Some(0.0), max), Health::NotReplica);
         assert_eq!(judge(false, None, max), Health::NotReplica);
+    }
+
+    #[test]
+    fn a_failure_on_the_replica_is_named() {
+        use crate::Error;
+        assert_eq!(Served::failed(&Error::Retryable("canceling statement due to conflict with recovery".into())), Served::Conflict);
+        assert_eq!(Served::failed(&Error::Unavailable("query took too long and was cancelled".into())), Served::Cancelled);
+        assert_eq!(Served::failed(&Error::Unavailable("database unreachable: reset".into())), Served::Lost);
+        assert_eq!(Served::failed(&Error::Forbidden("no".into())), Served::Failed);
     }
 
     #[tokio::test]

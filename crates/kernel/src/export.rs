@@ -257,74 +257,94 @@ impl JobHandler for ExportJob {
         if !ctx.is_admin {
             return Err(Error::Forbidden("exporting a workspace is for administrators".into()));
         }
-        // All of it, whatever record scopes the administrator happens to have.
-        let all = Ctx::system(ctx.tenant, ctx.schema.clone());
-        let erasures = k.last_erasure(ctx.tenant).await?;
-        let mut parts = Parts::new(k, &ctx, job.id);
-        let mut entities = Vec::new();
-        let total = all.schema.entities.len();
-        for (i, (name, ent)) in all.schema.entities.iter().enumerate() {
-            if ent.def.kind == EntityKind::Child || ent.table.is_empty() {
-                continue;
-            }
-            let (mut file, mut count, mut cursor) = (0, 0usize, None::<String>);
-            loop {
-                let (rows, next) = k.whole_records(&all, name, !ent.children.is_empty(), cursor).await?;
-                count += rows.len();
-                if !rows.is_empty() {
-                    parts.add(&format!("records/{name}/{file:06}.jsonl"), &lines(&rows)?).await?;
-                    file += 1;
+        // A read that fails on a replica makes the export once more from the primary, without what it had stored.
+        let mut first = true;
+        k.db.reading(|| {
+            let again = !std::mem::replace(&mut first, false);
+            let ctx = &ctx;
+            async move {
+                if again {
+                    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+                    drop_exports(&mut tx, ctx.tenant, Some(job.id)).await?;
+                    tx.commit().await?;
                 }
-                cursor = next;
-                if cursor.is_none() {
-                    break;
-                }
+                make(k, job, ctx).await
             }
-            if count > 0 {
-                entities.push(json!({"entity": name, "records": count}));
-            }
-            job.progress(k, json!({"step": "records", "done": i + 1, "total": total})).await?;
-        }
+        })
+        .await
+    }
+}
 
-        // What the API does not read: each table in one snapshot, so a journal comes out balanced.
-        let ledgers = all.schema.entities.values().filter(|e| e.def.kind == EntityKind::Ledger).map(|e| e.table.clone());
-        let engines: Vec<String> = ledgers.chain(all.schema.export_tables.iter().cloned()).collect();
-        for table in &engines {
-            // Reading only, so on a replica when there is one fit to read from (`Db::read_tx`).
-            let mut tx = k.db.read_tx(ctx.tenant, TABLE_TIMEOUT_MS).await?;
-            let sql = format!("select to_jsonb(t) - 'tenant_id' from {} t where t.tenant_id = $1", q(table));
-            let mut rows = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(sql)).bind(ctx.tenant).fetch(&mut *tx);
-            let (mut page, mut file, mut count) = (Vec::with_capacity(TABLE_PAGE), 0, 0usize);
-            while let Some(row) = rows.try_next().await? {
-                page.push(row);
-                count += 1;
-                if page.len() == TABLE_PAGE {
-                    parts.add(&format!("tables/{table}/{file:06}.jsonl"), &lines(&page)?).await?;
-                    page.clear();
-                    file += 1;
-                }
-            }
-            drop(rows);
-            tx.commit().await?;
-            if !page.is_empty() {
-                parts.add(&format!("tables/{table}/{file:06}.jsonl"), &lines(&page)?).await?;
-            }
-            if count > 0 {
-                entities.push(json!({"table": table, "records": count}));
-            }
+/// One attempt at a workspace's export.
+async fn make(k: &Kernel, job: &Job, ctx: &Ctx) -> Result<Value> {
+    // All of it, whatever record scopes the administrator happens to have.
+    let all = Ctx::system(ctx.tenant, ctx.schema.clone());
+    let erasures = k.last_erasure(ctx.tenant).await?;
+    let mut parts = Parts::new(k, ctx, job.id);
+    let mut entities = Vec::new();
+    let total = all.schema.entities.len();
+    for (i, (name, ent)) in all.schema.entities.iter().enumerate() {
+        if ent.def.kind == EntityKind::Child || ent.table.is_empty() {
+            continue;
         }
-
-        for (name, _, sql) in TABLES {
-            let mut tx = k.db.read_tx(ctx.tenant, k.db.config.statement_timeout_ms).await?;
-            let rows: Vec<Value> = sqlx::query_scalar(*sql).bind(ctx.tenant).fetch_all(&mut *tx).await?;
-            tx.commit().await?;
-            parts.add(&format!("{name}.jsonl"), &lines(&rows)?).await?;
-        }
-
-        let (mut after, mut file) = (0i64, 0);
+        let (mut file, mut count, mut cursor) = (0, 0usize, None::<String>);
         loop {
-            let mut tx = k.db.read_tx(ctx.tenant, k.db.config.statement_timeout_ms).await?;
-            let rows: Vec<(i64, Value)> = sqlx::query_as(
+            let (rows, next) = k.whole_records(&all, name, !ent.children.is_empty(), cursor).await?;
+            count += rows.len();
+            if !rows.is_empty() {
+                parts.add(&format!("records/{name}/{file:06}.jsonl"), &lines(&rows)?).await?;
+                file += 1;
+            }
+            cursor = next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        if count > 0 {
+            entities.push(json!({"entity": name, "records": count}));
+        }
+        job.progress(k, json!({"step": "records", "done": i + 1, "total": total})).await?;
+    }
+
+    // What the API does not read: each table in one snapshot, so a journal comes out balanced.
+    let ledgers = all.schema.entities.values().filter(|e| e.def.kind == EntityKind::Ledger).map(|e| e.table.clone());
+    let engines: Vec<String> = ledgers.chain(all.schema.export_tables.iter().cloned()).collect();
+    for table in &engines {
+        // Reading only, so on a replica when there is one fit to read from (`Db::read_tx`).
+        let mut tx = k.db.read_tx(ctx.tenant, TABLE_TIMEOUT_MS).await?;
+        let sql = format!("select to_jsonb(t) - 'tenant_id' from {} t where t.tenant_id = $1", q(table));
+        let mut rows = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(sql)).bind(ctx.tenant).fetch(&mut *tx);
+        let (mut page, mut file, mut count) = (Vec::with_capacity(TABLE_PAGE), 0, 0usize);
+        while let Some(row) = rows.try_next().await? {
+            page.push(row);
+            count += 1;
+            if page.len() == TABLE_PAGE {
+                parts.add(&format!("tables/{table}/{file:06}.jsonl"), &lines(&page)?).await?;
+                page.clear();
+                file += 1;
+            }
+        }
+        drop(rows);
+        tx.commit().await?;
+        if !page.is_empty() {
+            parts.add(&format!("tables/{table}/{file:06}.jsonl"), &lines(&page)?).await?;
+        }
+        if count > 0 {
+            entities.push(json!({"table": table, "records": count}));
+        }
+    }
+
+    for (name, _, sql) in TABLES {
+        let mut tx = k.db.read_tx(ctx.tenant, k.db.config.statement_timeout_ms).await?;
+        let rows: Vec<Value> = sqlx::query_scalar(*sql).bind(ctx.tenant).fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        parts.add(&format!("{name}.jsonl"), &lines(&rows)?).await?;
+    }
+
+    let (mut after, mut file) = (0i64, 0);
+    loop {
+        let mut tx = k.db.read_tx(ctx.tenant, k.db.config.statement_timeout_ms).await?;
+        let rows: Vec<(i64, Value)> = sqlx::query_as(
                 "select id, jsonb_build_object('id', id, 'at', at, 'actor', actor, 'entity', entity, 'record_id', record_id, 'action', action, 'version', version, \
                  'diff', diff, 'hash', encode(hash, 'hex'), 'prev_hash', encode(prev_hash, 'hex')) from audit_event where tenant_id = $1 and id > $2 order by id limit $3",
             )
@@ -333,82 +353,81 @@ impl JobHandler for ExportJob {
             .bind(AUDIT_PAGE)
             .fetch_all(&mut *tx)
             .await?;
-            tx.commit().await?;
-            let Some((last, _)) = rows.last() else { break };
-            after = *last;
-            let events: Vec<Value> = rows.into_iter().map(|r| r.1).collect();
-            parts.add(&format!("audit/{file:06}.jsonl"), &lines(&events)?).await?;
-            file += 1;
-        }
-        job.progress(k, json!({"step": "files", "done": 0})).await?;
-
-        let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-        let files: Vec<(Uuid, String, String, String, Option<String>, Option<Uuid>)> = sqlx::query_as(
-            "select id, file_name, content_type, storage_key, entity, record_id from file_object where tenant_id = $1 and entity is distinct from $2 order by id",
-        )
-        .bind(ctx.tenant)
-        .bind(EXPORT_ENTITY)
-        .fetch_all(&mut *tx)
-        .await?;
-        let workspace: (String, String) = sqlx::query_as("select slug, name from tenant where id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
-        let carried: Vec<&str> = all
-            .schema
-            .entities
-            .values()
-            .flat_map(|e| std::iter::once(e.table.as_str()).chain(e.children.values().map(|c| c.table.as_str())))
-            .chain(engines.iter().map(String::as_str))
-            .chain(TABLES.iter().map(|t| t.1))
-            // `custom_key` is what custom records' unique keys hold, made again from the records.
-            .chain(["audit_event", "file_object", "tenant", "custom_key"])
-            .collect();
-        let left_out: Vec<String> = sqlx::query_scalar(
-            "select c.relname::text from pg_class c join pg_attribute a on a.attrelid = c.oid and a.attname = 'tenant_id' and not a.attisdropped \
-             where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') and not c.relispartition and not c.relname = any($1) order by 1",
-        )
-        .bind(&carried as &[&str])
-        .fetch_all(&mut *tx)
-        .await?;
         tx.commit().await?;
-        let store = k.file_store()?.clone();
-        let (mut index, mut missing) = (Vec::with_capacity(files.len()), Vec::new());
-        for (i, (id, name, ctype, key, entity, record)) in files.iter().enumerate() {
-            // A file storage has lost is named, not a reason to give the customer nothing.
-            match store.get(key).await {
-                Ok(bytes) => {
-                    parts.add(&format!("files/{id}"), &bytes).await?;
-                    index.push(json!({"id": id, "file_name": name, "content_type": ctype, "entity": entity, "record_id": record}));
-                }
-                Err(Error::NotFound(_)) => missing.push(json!({"id": id, "file_name": name, "entity": entity, "record_id": record})),
-                Err(e) => return Err(e),
-            }
-            if i % 100 == 99 {
-                job.progress(k, json!({"step": "files", "done": i + 1, "total": files.len()})).await?;
-            }
-        }
-        parts.add("files/index.jsonl", &lines(&index)?).await?;
-        let manifest = json!({
-            "format": 1,
-            "workspace": {"slug": workspace.0, "name": workspace.1},
-            "exported_at": chrono::Utc::now().to_rfc3339(),
-            "packages": ctx.schema.packages,
-            "entities": entities,
-            "files": index.len(),
-            "not_included": ["passwords and sign-in factors", "secret field values", "sealed settings", "API keys", "sessions"],
-            "tables_left_out": left_out,
-            "files_missing": missing,
-        });
-        parts.add("manifest.json", &serde_json::to_vec_pretty(&manifest).map_err(Error::internal)?).await?;
-        parts.close().await?;
-        // An erasure meanwhile deleted what was stored of this, but not what it had read and not yet
-        // stored: it starts again, reading what the erasure left.
-        if k.last_erasure(ctx.tenant).await? != erasures {
-            let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-            drop_exports(&mut tx, ctx.tenant, Some(job.id)).await?;
-            tx.commit().await?;
-            return Err(Error::Wait("a personal-data erasure landed while this export was made; it is made again".into(), 0));
-        }
-        Ok(json!({"parts": parts.stored, "entities": entities, "files": index.len(), "files_missing": missing.len(), "expires_in_days": EXPORT_DAYS}))
+        let Some((last, _)) = rows.last() else { break };
+        after = *last;
+        let events: Vec<Value> = rows.into_iter().map(|r| r.1).collect();
+        parts.add(&format!("audit/{file:06}.jsonl"), &lines(&events)?).await?;
+        file += 1;
     }
+    job.progress(k, json!({"step": "files", "done": 0})).await?;
+
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let files: Vec<(Uuid, String, String, String, Option<String>, Option<Uuid>)> = sqlx::query_as(
+        "select id, file_name, content_type, storage_key, entity, record_id from file_object where tenant_id = $1 and entity is distinct from $2 order by id",
+    )
+    .bind(ctx.tenant)
+    .bind(EXPORT_ENTITY)
+    .fetch_all(&mut *tx)
+    .await?;
+    let workspace: (String, String) = sqlx::query_as("select slug, name from tenant where id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
+    let carried: Vec<&str> = all
+        .schema
+        .entities
+        .values()
+        .flat_map(|e| std::iter::once(e.table.as_str()).chain(e.children.values().map(|c| c.table.as_str())))
+        .chain(engines.iter().map(String::as_str))
+        .chain(TABLES.iter().map(|t| t.1))
+        // `custom_key` is what custom records' unique keys hold, made again from the records.
+        .chain(["audit_event", "file_object", "tenant", "custom_key"])
+        .collect();
+    let left_out: Vec<String> = sqlx::query_scalar(
+        "select c.relname::text from pg_class c join pg_attribute a on a.attrelid = c.oid and a.attname = 'tenant_id' and not a.attisdropped \
+             where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') and not c.relispartition and not c.relname = any($1) order by 1",
+    )
+    .bind(&carried as &[&str])
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let store = k.file_store()?.clone();
+    let (mut index, mut missing) = (Vec::with_capacity(files.len()), Vec::new());
+    for (i, (id, name, ctype, key, entity, record)) in files.iter().enumerate() {
+        // A file storage has lost is named, not a reason to give the customer nothing.
+        match store.get(key).await {
+            Ok(bytes) => {
+                parts.add(&format!("files/{id}"), &bytes).await?;
+                index.push(json!({"id": id, "file_name": name, "content_type": ctype, "entity": entity, "record_id": record}));
+            }
+            Err(Error::NotFound(_)) => missing.push(json!({"id": id, "file_name": name, "entity": entity, "record_id": record})),
+            Err(e) => return Err(e),
+        }
+        if i % 100 == 99 {
+            job.progress(k, json!({"step": "files", "done": i + 1, "total": files.len()})).await?;
+        }
+    }
+    parts.add("files/index.jsonl", &lines(&index)?).await?;
+    let manifest = json!({
+        "format": 1,
+        "workspace": {"slug": workspace.0, "name": workspace.1},
+        "exported_at": chrono::Utc::now().to_rfc3339(),
+        "packages": ctx.schema.packages,
+        "entities": entities,
+        "files": index.len(),
+        "not_included": ["passwords and sign-in factors", "secret field values", "sealed settings", "API keys", "sessions"],
+        "tables_left_out": left_out,
+        "files_missing": missing,
+    });
+    parts.add("manifest.json", &serde_json::to_vec_pretty(&manifest).map_err(Error::internal)?).await?;
+    parts.close().await?;
+    // An erasure meanwhile deleted what was stored of this, but not what it had read and not yet
+    // stored: it starts again, reading what the erasure left.
+    if k.last_erasure(ctx.tenant).await? != erasures {
+        let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+        drop_exports(&mut tx, ctx.tenant, Some(job.id)).await?;
+        tx.commit().await?;
+        return Err(Error::Wait("a personal-data erasure landed while this export was made; it is made again".into(), 0));
+    }
+    Ok(json!({"parts": parts.stored, "entities": entities, "files": index.len(), "files_missing": missing.len(), "expires_in_days": EXPORT_DAYS}))
 }
 
 impl Kernel {

@@ -1019,14 +1019,17 @@ when three things hold: the address is a replica (it is replaying), its lag, loo
 each replica of the server, is within `FERRUM_DATABASE_READ_MAX_LAG_SECS` (10), and it has replayed
 everything the primary had committed when the read began (it may wait half a second for it). So whoever has
 just written sees it in the next report. Otherwise the read goes to the primary, and
-`ferrum_db_reads_total{to="primary",why=…}` says why (`down`, `lagging`, `not_replica`, `behind`;
+`ferrum_db_reads_total{to="primary",why=…}` says why (`down`, `lagging`, `not_replica`, `behind`, and the
+replica failures below;
 `{to="replica"}` counts the others). An address that is not a replica (the primary, or another database) is
 never read from: the server warns once and reads from the primary. A report read from a replica says how far
 behind it was in `X-Ferrum-Replica-Lag-Ms`. The read pool holds up to 10 connections per replica of the
-server, on the standby, not the primary. A report running when the standby goes away fails as it would on the
-primary, and the next reads go to the primary. A long report can still be cancelled by the standby replaying a
-change it conflicts with (PostgreSQL's `max_standby_streaming_delay`); it then fails, and running it again
-reads from the primary only if the standby is lagging by then. Not tried against a real lagging standby: the
+server, on the standby, not the primary. A report, a Studio query or an export whose read fails on the
+standby for any reason (the connection lost, a statement cancelled or timed out, the standby's replay
+cancelling it with a conflict, PostgreSQL's `max_standby_streaming_delay`) runs once more on the primary,
+never a third time, counted as `why="replica_conflict"`, `replica_cancelled`, `replica_lost` or
+`replica_failed`; an export first deletes what it had stored. A read that is wrong in itself (a bad report, a
+refusal) fails the same way on the primary, so its error is the one the caller gets. Not tried against a real lagging standby: the
 choice was tested with an injected lag, and the reading with the read address on the same test database.
 
 **Worker scaling on waiting work.** A pool with `background: only` can scale with KEDA (installed

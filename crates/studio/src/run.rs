@@ -22,11 +22,15 @@ use uuid::Uuid;
 /// Compiles and runs a spec for `ctx`.
 pub async fn run(k: &Kernel, ctx: &Ctx, spec: &Spec) -> Result<Value> {
     let plan = compile(ctx, spec)?;
-    let mut tx = ferrum_domain::reports::read_tx(k, ctx).await?;
-    let out = execute(&mut tx, ctx, &plan).await;
-    // Read-only: nothing to keep; a failed statement has already aborted it.
-    let _ = tx.rollback().await;
-    out
+    // Failing on a replica, it runs once more on the primary.
+    k.db.reading(|| async {
+        let mut tx = ferrum_domain::reports::read_tx(k, ctx).await?;
+        let out = execute(&mut tx, ctx, &plan).await;
+        // Read-only: nothing to keep; a failed statement has already aborted it.
+        let _ = tx.rollback().await;
+        out
+    })
+    .await
 }
 
 /// [`run`] in the caller's transaction (an install's, which sees what it made).
