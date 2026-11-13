@@ -1310,6 +1310,16 @@ in `url` (a template; one an earlier answer gave), held to the connection's host
 sends it without the connection's credentials (an address signed already); `form_fields` (a template giving an
 object, or a list of `{name, value}`) adds a signed upload form's fields before `form`'s.
 
+**A part for each item** ([BD-75](builder/decisions.md#bd-75-a-form-part-for-each-item-of-a-list-and-the-step-cap)): a
+file part with `each` (an expression giving a list) repeats in one multipart request, its name a template over `item`
+and `index` (from 0), as its `file` and `name` are; `form_fields` gives a value for each item the same way (a list of
+`{name, value}` made in a loop). At most 50 parts from one `each`, the files within the request's ceiling:
+
+```json
+"form_fields": "[{% for m in inputs.media %}{\"name\": \"caption{{ loop.index0 }}\", \"value\": {{ m.caption | json }}}{% if not loop.last %},{% endif %}{% endfor %}]",
+"form": {"files[{{ index }}]": {"file": "{{ item.id }}", "each": "inputs.media", "name": "f{{ index }}.jpg"}}
+```
+
 **Waiting** ([BD-54](builder/decisions.md#bd-54-a-step-that-waits)): a step on a reading operation may wait until its
 answer says it is ready: `"wait": {"until": "result.status == 'FINISHED'", "fail_if": "result.status in ['ERROR',
 'EXPIRED']", "every_secs": 5, "within_secs": 600, "attempts": 100}` (expressions over `result`, `answer`, `headers` and

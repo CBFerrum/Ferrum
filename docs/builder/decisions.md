@@ -1915,3 +1915,20 @@ Decided 13 November 2026.
   the description's (it counts calls asked, as the description's always did). The refusal names which limit
   (`<connection>'s <operation> takes 1 calls each 60 s`) and says when to come back.
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-75. A form part for each item of a list, and the step cap
+
+Decided 13 November 2026.
+
+* **The gap**: a form had a fixed set of parts, so Discord, Tumblr and Telegram had one operation for each number of
+  files (1 to 10), and Telegram's publish spent all twelve steps choosing among them and stopped at nine.
+* **A part for each item**: a file part's `each` (an expression, as a step's `for_each`) repeats the part for each item
+  of a list in one request; the part's name, `file` and `name` are templates over `item` and `index`. Values for each
+  item already came from `form_fields` (a template giving a list of `{name, value}`), which a loop fills; nothing new
+  was needed there. At most 50 parts from one `each`; every file counts against the request's ceiling (BD-71).
+* **The step cap stays at twelve, fixed**: with a part for each item and `for_each` on a step, an operation no longer
+  needs a step per count, and none of the 33 network descriptions needs more than twelve otherwise. A per-description
+  setting would let one description make many requests under one key with one answer, which retries, resumption and
+  "may have been sent" all reason about per step; a fixed bound keeps that reasoning the same for every description.
+  Raising it is a platform change, with a reason, not a description's choice.
+* Part of the App API 0.3.8 (BD-63).
