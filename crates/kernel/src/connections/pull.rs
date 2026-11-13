@@ -76,8 +76,8 @@ impl Pull {
             return at("its name and cursor_input are lower case letters, digits and _".into());
         }
         let Some(op) = desc.operations.get(&self.operation) else { return at(format!("there is no operation {}", self.operation)) };
-        if op.changes() {
-            return at(format!("{} changes something; a pull only reads", self.operation));
+        if op.changes() || !op.steps.is_empty() {
+            return at(format!("{} changes something or has steps; a pull only reads, one request a page", self.operation));
         }
         if desc.signs_in_with(&self.operation) {
             return at(format!("{} is how the connection signs in", self.operation));
@@ -245,7 +245,10 @@ impl Kernel {
             }
             let given = json!(cursor);
             let page = Page { cursor: &given, address: cursor.as_deref().filter(|_| pull.by_link()) };
-            let answer = match self.perform(&ctx, &conn, &pull.operation, &Value::Object(inputs), None, Some(page), None, None).await? {
+            let answer = match self
+                .perform(&ctx, &conn, &pull.operation, &Value::Object(inputs), None, super::Extra { page: Some(page), ..Default::default() }, None, None)
+                .await?
+            {
                 Outcome::Ok(_, answer) => answer,
                 Outcome::Later(why, after) => {
                     (error, later, wait) = (Some(why), true, after);

@@ -1451,3 +1451,39 @@ Decided 13 November 2026.
   none for that key.
 * **The App API is 0.3.6**; an app using `from` says `platform: ">=0.3.6, <0.4"`. 0.3.6 carries `{from: …}` in
   `link_filters`.
+
+## BD-53. An operation of steps
+
+Decided 13 November 2026. Social needs uploads registered before their bytes, containers before publishing, a reply
+that names the post it answers: two or three requests, a later one reading an earlier answer
+(docs/references/social.md).
+
+* **A step is another operation** of the same connection, called with inputs that are expressions over `inputs`,
+  `steps` and `key`. Why not requests written inside the step: everything an operation already says (files, picks,
+  `error_at`, `temporary`, `idempotency_header`) works for a step unchanged, and each step can be tried on its own.
+  Why expressions and not templates: a step passes values (an object, a list, a number) to the next, which a template
+  would turn to text. The expressions are minijinja's, the templates' own language, so the template functions (BD-56)
+  work in both.
+* **Kept per key**: each step is a call under `<key>:<step>` whose result is kept with the call log's entry, masked
+  like every result, and the operation's own result under its key. A step that finished is never made again under
+  that key. Why the call log and not a new store: it already keeps a keyed call for good (`conn_call_once`), and its
+  90-day upkeep spares those.
+* **A lost answer** (`conn_attempt.sending` still set): the request may have been delivered. Clear when the service
+  answered 4xx or 503 (it did nothing) or the call was never sent. Otherwise the step is sent again only with an
+  `idempotency_header` (the service takes the key once) or after its `confirm` read-back does not prove it; with
+  neither, the call fails and says so. Why fail rather than guess: publishing twice is the fault Postiz needed twelve
+  workflow versions to remove (`postiz.md` 3.6-3.7); a person can look, and a new key starts again.
+* **One worker per key**: every keyed call that changes something takes `pg_try_advisory_xact_lock` on its key for
+  its length; another worker is told `RetryAfter` 5 s, and then finds the stored answer. The lock holds one database
+  connection while the call runs (ponytail: one connection per call in flight; a lease row if pools run short).
+* **An address from an answer**: `url` in place of `path` (a template, not percent-encoded), checked by the guard
+  against the base's host and `allowed_hosts` like a redirect; `credentials: false` for an address signed already
+  (an S3 form refuses a second authentication); `form_fields` for a signed form's fields, in their order.
+* Bounded: at most 12 steps; a step's operation has no steps of its own; pulls take an operation of one request.
+
+Tests (`connections_steps_it` `steps`): register, put the bytes to the address the answer gave, post; the post
+answered "later" once and resumed without the register or the upload again; the same key answered from the log, other
+inputs refused; each step's answer kept, the token resting nowhere; a lost answer not sent again, proved by reading
+back, sent again under its own key with an idempotency header; an address off the connection's hosts refused; two
+workers on one key, one sending; wrong steps refused when saved.
+
