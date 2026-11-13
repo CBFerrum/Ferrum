@@ -4,6 +4,7 @@
 {{- $root := . }}
 {{- $pooled := not (empty .Values.pools) }}
 {{- $pools := (include "ferrum.pools" . | fromJson).pools }}
+{{- $routing := include "ferrum.routing" . | fromJson }}
 {{- range $i, $p := $pools }}
 {{- $n := $p.obj }}
 {{- $f := include "ferrum.fullname" $root }}
@@ -163,9 +164,23 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
+        {{- if $pooled }}
+        {{- range (get $routing.admits $p.name) }}
+        # The proxies of the gateway {{ . }}, the only gateway whose routes lead here.
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ $.Values.networkPolicy.gatewayNamespace }}}
+          podSelector:
+            matchLabels: {gateway.envoyproxy.io/owning-gateway-name: {{ . }}, gateway.envoyproxy.io/owning-gateway-namespace: {{ $.Release.Namespace }}}
+        {{- end }}
+        {{- range .Values.networkPolicy.monitoringNamespaces }}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ . }}}
+        {{- end }}
+        {{- else }}
         {{- range .Values.networkPolicy.ingressNamespaces }}
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: {{ . }}}
+        {{- end }}
         {{- end }}
         {{- if and .Values.office.enabled $p.first }}
         # The online editor's WOPI calls.
@@ -204,9 +219,20 @@ spec:
     - ports:
         - {port: 53, protocol: UDP}
         - {port: 53, protocol: TCP}
+    {{- if .Values.networkPolicy.egressAnyHost }}
     - ports:
         - {port: 443}
         - {port: 587}
+    {{- else if .Values.networkPolicy.egressCIDRs }}
+    # HTTPS and mail submission only to these networks (networkPolicy.egressCIDRs).
+    - to:
+        {{- range .Values.networkPolicy.egressCIDRs }}
+        - ipBlock: {cidr: {{ . }}}
+        {{- end }}
+      ports:
+        - {port: 443}
+        - {port: 587}
+    {{- end }}
     {{- if .Values.metricsEngine.enabled }}
     - to:
         - podSelector:

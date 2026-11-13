@@ -96,6 +96,14 @@ zoneMode: ""      # FERRUM_ZONE_MODE: enforce (the server's default) or report
 networkPolicy:
   enabled: true
   ingressNamespaces: [envoy-gateway-system, monitoring]   # the Gateway's proxies; Prometheus
+  # With pools, each pool admits only the Envoy proxies of the gateways whose routes lead to it (Envoy
+  # Gateway's owning-gateway labels, in this namespace), Prometheus, and, for the first pool, the editor.
+  gatewayNamespace: envoy-gateway-system
+  monitoringNamespaces: [monitoring]
+  # The server may reach any host on 443 (HTTPS) and 587 (mail). false: only the networks in egressCIDRs
+  # (include object storage, mail, and every service your connections call).
+  egressAnyHost: true
+  egressCIDRs: []
 
 # Needs the Prometheus operator. Also scrapes the database's exporter when database.enabled.
 serviceMonitor:
