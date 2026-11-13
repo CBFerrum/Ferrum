@@ -20,11 +20,18 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 async fn kernel() -> Arc<Kernel> {
+    boot(None, true).await
+}
+
+/// A kernel with `FERRUM_PASSKEY_RP` (`rp`), on a fresh database (`reset`) or the one already there.
+async fn boot(rp: Option<&str>, reset: bool) -> Arc<Kernel> {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    if reset {
+        sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    }
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), ..Default::default() };
+    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), passkey_rp: rp.map(str::to_string), ..Default::default() };
     Kernel::boot(db, catalog, HookRegistry::default(), settings, None).await.expect("boot")
 }
 
@@ -193,4 +200,64 @@ async fn passkeys_make_and_sign_in() {
     k.change_passkey(&ana, id, None).await.unwrap();
     let o = k.passkey_sign_in_options(rp).await.unwrap();
     assert!(k.passkey_sign_in(request(&o), &origins, &laptop.get(&o, rp, origin, ana_id), None).await.is_err(), "removed");
+
+    relying_parties().await;
+}
+
+/// `FERRUM_PASSKEY_RP`: a passkey made on a host before it was set keeps working there; one made
+/// under it works on every host under it; a host outside it keeps its own; a host that only ends
+/// with the same letters is refused.
+async fn relying_parties() {
+    let k = boot(None, true).await;
+    let acme = k.create_tenant(tenant("acme")).await.expect("tenant");
+    let s = k.login("acme", "admin@acme.test", "Correct-Horse-9").await.unwrap();
+    let admin = k.load_ctx(acme, s.user, Some(s.token_version), "it".into()).await.unwrap();
+    let (erp, shop) = ("https://erp.acme.test", "https://shop.acme.test");
+
+    // Before the setting: the host is the relying party.
+    assert_eq!(k.passkey_rp("erp.acme.test:443"), "erp.acme.test");
+    let mut old = Device::new();
+    let o = k.passkey_options(&admin, &k.passkey_rp("erp.acme.test"), "Acme").await.unwrap();
+    k.add_passkey(&admin, request(&o), &[erp.into()], &old.create(&o, erp), "old").await.unwrap();
+    let offer = k.passkey_sign_in_offer("erp.acme.test").await.unwrap();
+    assert!(offer.get("also").is_none(), "one relying party, one request");
+
+    // The setting turned on.
+    let k = boot(Some("acme.test"), false).await;
+    assert_eq!(
+        (k.passkey_rp("erp.acme.test"), k.passkey_rp("acme.test"), k.passkey_rp("other.example")),
+        ("acme.test".into(), "acme.test".into(), "other.example".into())
+    );
+    assert_eq!(k.passkey_rp("evilacme.test"), "evilacme.test");
+    // The older passkey: offered as the second request, and it signs in on its host.
+    let offer = k.passkey_sign_in_offer("erp.acme.test").await.unwrap();
+    assert_eq!((offer["publicKey"]["rpId"].clone(), offer["also"]["publicKey"]["rpId"].clone()), (json!("acme.test"), json!("erp.acme.test")));
+    let also = &offer["also"];
+    let session = k.passkey_sign_in(request(also), &[erp.into()], &old.get(also, "erp.acme.test", erp, admin.user), Some(acme)).await.unwrap();
+    assert_eq!(session.user, admin.user);
+    // Signed for the configured party with a credential stored under the host: refused.
+    let offer = k.passkey_sign_in_offer("erp.acme.test").await.unwrap();
+    assert!(k.passkey_sign_in(request(&offer), &[erp.into()], &old.get(&offer, "acme.test", erp, admin.user), None).await.is_err(), "its own party only");
+
+    // A new one is made for the configured party, and works on two hosts under it.
+    let mut new = Device::new();
+    let o = k.passkey_options(&admin, &k.passkey_rp("erp.acme.test"), "Acme").await.unwrap();
+    assert_eq!(o["publicKey"]["rp"]["id"], json!("acme.test"));
+    k.add_passkey(&admin, request(&o), &[erp.into()], &new.create(&o, erp), "new").await.unwrap();
+    for (host, origin) in [("erp.acme.test", erp), ("shop.acme.test", shop)] {
+        let offer = k.passkey_sign_in_offer(host).await.unwrap();
+        let s = k.passkey_sign_in(request(&offer), &[origin.into()], &new.get(&offer, "acme.test", origin, admin.user), None).await.unwrap();
+        assert_eq!(s.user, admin.user, "{host}");
+    }
+    // A host outside it falls back to itself, and has nothing older to offer.
+    let offer = k.passkey_sign_in_offer("other.example").await.unwrap();
+    assert_eq!(offer["publicKey"]["rpId"], json!("other.example"));
+    assert!(offer.get("also").is_none());
+    // A hostile host that merely ends with the same letters: refused even with the right key and
+    // the right party's data, at sign-in and at registration.
+    let offer = k.passkey_sign_in_offer("erp.acme.test").await.unwrap();
+    let evil = "https://evilacme.test";
+    assert!(k.passkey_sign_in(request(&offer), &[evil.into()], &new.get(&offer, "acme.test", evil, admin.user), None).await.is_err());
+    let o = k.passkey_options(&admin, "acme.test", "Acme").await.unwrap();
+    assert!(k.add_passkey(&admin, request(&o), &[evil.into()], &Device::new().create(&o, evil), "evil").await.is_err());
 }

@@ -157,6 +157,26 @@ pub struct Settings {
     /// `hooks.{base}`; a host the cluster does not know leads nowhere. Empty: shapes A and A′.
     #[serde(default)]
     pub base_domain: String,
+    /// The host where people sign in once, as their Ferrum account (`FERRUM_ACCOUNTS_HOST`), with
+    /// or without a base domain: every host of every workspace hands sign-in to it. Empty:
+    /// `accounts.{base}` with a base domain, else none (each host signs in on its own).
+    #[serde(default)]
+    pub accounts_host: String,
+    /// The host other services call back (`FERRUM_HOOKS_HOST`): webhooks, connectors' sign-in
+    /// returns, files they pull. Empty: `hooks.{base}` with a base domain (pages only; connectors
+    /// still use `PUBLIC_URL` there, as before), else `PUBLIC_URL`'s host.
+    #[serde(default)]
+    pub hooks_host: String,
+    /// The passkeys' relying party (`FERRUM_PASSKEY_RP`), a domain: passkeys made on it or on a
+    /// host under it are made for it, so they work on every host under it. Empty: each host is
+    /// its own relying party. A passkey always keeps the one it was made for.
+    #[serde(default)]
+    pub passkey_rp: String,
+    /// The host every emailed, notified or printed link goes through (`FERRUM_LINK_HOST`):
+    /// `https://{it}/go/{workspace}/{s|p}/…` leads on to the workspace's current host. Empty:
+    /// links name the workspace's host, as before.
+    #[serde(default)]
+    pub link_host: String,
     /// This cluster's region (`eu`, `in`…), as the directory names it.
     #[serde(default)]
     pub region: String,

@@ -174,6 +174,15 @@ pub struct KernelSettings {
     /// The accounts host (`accounts.{base}`), where sign-ins may come back to as well as to a
     /// workspace's own hosts and the public address.
     pub accounts_host: Option<String>,
+    /// The origin other services call back (`https://{FERRUM_HOOKS_HOST}`), when it is set on its
+    /// own; else they call the public address ([`KernelSettings::callback_base`]).
+    pub hooks_url: Option<String>,
+    /// The passkeys' relying party for the hosts under it (`FERRUM_PASSKEY_RP`); none: each host is
+    /// its own ([`crate::passkey::rp_for`]).
+    pub passkey_rp: Option<String>,
+    /// The host every link that leaves the system for a person goes through (`FERRUM_LINK_HOST`):
+    /// `/go/{workspace}/{s|p}/…` there leads on to the workspace's current host ([`Kernel::person_link`]).
+    pub link_host: Option<String>,
     /// The operator's plans by name: each a set of quotas ([`plans`]).
     pub plans: serde_json::Map<String, serde_json::Value>,
     /// Who may make a workspace of their own ([`signup`]).
@@ -190,6 +199,27 @@ pub struct KernelSettings {
     /// Migrate the database and sync the schema as the kernel boots (the default). Off, boot changes no schema and
     /// refuses to start on a database `ferrum task migrate` has not brought to this build ([`Kernel::boot`]).
     pub migrate_at_start: bool,
+}
+
+impl KernelSettings {
+    /// Where other services call back (an OAuth connector's return address, the addresses they pull
+    /// files from): the hooks host when it is set, else the public address; none without either.
+    /// Every callback address the kernel builds starts with it.
+    pub fn callback_base(&self) -> Option<String> {
+        self.hooks_url.as_deref().or(self.public_url.as_deref()).map(|u| u.trim().trim_end_matches('/').to_string()).filter(|u| !u.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod callback_tests {
+    #[test]
+    fn callbacks_come_to_the_hooks_host_when_it_is_set() {
+        let mut s = super::KernelSettings { public_url: Some("https://erp.acme.com/".into()), ..Default::default() };
+        assert_eq!(s.callback_base().as_deref(), Some("https://erp.acme.com"), "as before");
+        s.hooks_url = Some("https://hooks.acme.com".into());
+        assert_eq!(s.callback_base().as_deref(), Some("https://hooks.acme.com"));
+        assert_eq!(super::KernelSettings::default().callback_base(), None);
+    }
 }
 
 impl Default for KernelSettings {
@@ -211,6 +241,9 @@ impl Default for KernelSettings {
             push_contact: None,
             hold_on_timeline: true,
             accounts_host: None,
+            hooks_url: None,
+            passkey_rp: None,
+            link_host: None,
             plans: serde_json::Map::new(),
             signup: signup::SignupPolicy::default(),
             chain_depth: 8,

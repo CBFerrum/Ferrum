@@ -103,7 +103,7 @@ impl Kernel {
         if more.public_files.is_empty() {
             return Ok(Made::default());
         }
-        let base = self.settings.public_url.as_deref().map(|u| u.trim_end_matches('/').to_string()).ok_or_else(|| {
+        let base = self.settings.callback_base().ok_or_else(|| {
             Error::Unavailable("this server has no public address (PUBLIC_URL), and a service cannot pull a file from localhost: an operator sets one".into())
         })?;
         let vars = json!({"inputs": inputs, "key": key});

@@ -165,8 +165,8 @@ pub(crate) async fn page_bootstrap(
         boot["locale"]["words"] = Value::Object(words);
     }
     // Where outside callers reach the workspace's endpoints (`/api/public/{workspace}/…`): the
-    // hooks host in shapes B and C, else the server's public address.
-    boot["api"]["hooks"] = json!(st.shell.hooks_origin(headers).or_else(|| st.kernel.settings.public_url.clone()));
+    // hooks host (`FERRUM_HOOKS_HOST`, or `hooks.{base}`), else where the kernel's callbacks go.
+    boot["api"]["hooks"] = json!(st.shell.hooks_origin(headers).or_else(|| st.kernel.settings.callback_base()));
     // Shapes B and C: the accounts host, where the person's other workspaces are.
     boot["api"]["accounts"] = json!(st.shell.accounts_origin(headers));
     // A host that belongs to one workspace (registered, or the server's one): what browsers keep
@@ -364,6 +364,10 @@ async fn page(
     Query(q): Query<Vec<(String, String)>>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    // The link host answers `/go/` whatever else it is (accounts, hooks, a workspace's host).
+    if st.shell.is_go(&headers, &path) {
+        return go(&st, &headers, &uri).await;
+    }
     if let Some(res) = super::origins::serve_app_host(&st, &headers, &path).await? {
         return Ok(res);
     }
@@ -1043,6 +1047,22 @@ fn app_icon(q: &[(String, String)]) -> Response {
 
 fn query<'a>(q: &'a [(String, String)], key: &str) -> Option<&'a str> {
     q.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+}
+
+/// `/go/{workspace}/{s|p}/…` on the link host (`FERRUM_LINK_HOST`): no session; on to the
+/// workspace's current host for that audience ([`shell::Shell::go_target`]), `302`; else 404.
+/// Rate-limited per client address like other public addresses.
+async fn go(st: &AppState, headers: &HeaderMap, uri: &Uri) -> ApiResult<Response> {
+    st.public_limiter.check(&format!("{}|go", crate::extract::client_ip(headers))).await?;
+    let rest = uri.path().strip_prefix("/go/").unwrap_or_default();
+    let Some(to) = st.shell.go_target(rest, uri.query()).await? else { return Ok(not_found(uri.path())) };
+    let Ok(location) = HeaderValue::from_str(&to) else { return Ok(not_found(uri.path())) };
+    let mut res = StatusCode::FOUND.into_response();
+    let h = res.headers_mut();
+    h.insert(header::LOCATION, location);
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    Ok(res)
 }
 
 /// `/login?next=…`: the sign-in page; someone already signed in goes on.

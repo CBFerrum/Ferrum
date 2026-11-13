@@ -500,6 +500,22 @@ impl Kernel {
         Ok(())
     }
 
+    /// Every host that serves a workspace for `target` now (a subdomain, or a verified domain, not
+    /// released), its main one first.
+    pub async fn serving_hosts(&self, tenant: Uuid, target: &str) -> Result<Vec<String>> {
+        let mut tx = self.db.system_tx().await?;
+        let hosts = sqlx::query_scalar(
+            "select host from tenant_host where tenant_id = $1 and target = $2 and released_at is null and (kind = 'subdomain' or verified_at is not null) \
+             order by is_primary desc, host",
+        )
+        .bind(tenant)
+        .bind(target)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(hosts)
+    }
+
     /// The primary host of a workspace for `target`, if it has one.
     pub async fn primary_host(&self, tenant: Uuid, target: &str) -> Result<Option<String>> {
         let mut tx = self.db.system_tx().await?;

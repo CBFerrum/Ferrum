@@ -222,6 +222,35 @@ fn signin_label(tenant: Uuid, state_digest: &str) -> String {
     format!("conn_signin:{tenant}:{state_digest}")
 }
 
+const STATE_LABEL: &str = "connection sign-in state";
+
+/// A sign-in's `state` that names where it started: `{random}.{workspace|host, base64url}.{mac}`,
+/// signed with the server key so nobody can change either.
+fn state_from(key: &crate::secret::SecretKey, tenant: Uuid, host: &str) -> String {
+    let said = URL_SAFE_NO_PAD.encode(format!("{tenant}|{host}"));
+    let nonce = random();
+    let mac = key.fingerprint(STATE_LABEL, &format!("{nonce}.{said}"));
+    format!("{nonce}.{said}.{mac}")
+}
+
+/// The workspace and host a `state` of [`state_from`] names, when its signature holds.
+fn state_names(key: &crate::secret::SecretKey, state: &str) -> Option<(Uuid, String)> {
+    let mut parts = state.splitn(3, '.');
+    let (nonce, said, mac) = (parts.next()?, parts.next()?, parts.next()?);
+    let want = key.fingerprint(STATE_LABEL, &format!("{nonce}.{said}"));
+    if want.len() != mac.len() || !subtle_eq(want.as_bytes(), mac.as_bytes()) {
+        return None;
+    }
+    let said = String::from_utf8(URL_SAFE_NO_PAD.decode(said).ok()?).ok()?;
+    let (tenant, host) = said.split_once('|')?;
+    Some((tenant.parse().ok()?, host.to_string()))
+}
+
+/// Compares in time that does not depend on where the bytes differ.
+fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+}
+
 /// What a token address said.
 enum Granted {
     Tokens(Value),
@@ -282,16 +311,24 @@ impl Kernel {
     pub fn connection_callback(&self) -> Result<String> {
         let base = self
             .settings
-            .public_url
-            .as_deref()
+            .callback_base()
             .ok_or_else(|| Error::Unavailable("signing in to an account needs the server's public address (PUBLIC_URL)".into()))?;
-        Ok(format!("{}{CALLBACK}", base.trim_end_matches('/')))
+        Ok(format!("{base}{CALLBACK}"))
     }
 
     /// Starts a sign-in to connection `id`'s account for the person `ctx` in browser session `session`: the address to
     /// send their browser to. The workspace's account is an administrator's to connect; a person connects their own
     /// where the connection lets them use it.
     pub async fn connect_start(&self, ctx: &Ctx, id: Uuid, session: Uuid) -> Result<String> {
+        self.connect_start_on(ctx, id, session, None).await
+    }
+
+    /// [`Kernel::connect_start`] from a page on `host`: the `state` names the workspace and that
+    /// host, signed, so the return address (on the public address or the hooks host, where the
+    /// person may have no session) can pass the browser on to the host it started from
+    /// ([`Kernel::connection_state_host`]), where the session and every check of
+    /// [`Kernel::connect_finish`] are.
+    pub async fn connect_start_on(&self, ctx: &Ctx, id: Uuid, session: Uuid, host: Option<&str>) -> Result<String> {
         let conn = self.load_connection(ctx.tenant, &id.to_string()).await?;
         let (provider, owner) = oauth(&conn)?;
         let owner_id = match owner {
@@ -312,7 +349,8 @@ impl Kernel {
         let conn = if provider.client_id.trim().is_empty() { self.register_client(&conn, &redirect).await? } else { conn };
         let (provider, _) = oauth(&conn)?;
         let (client_id, _) = client(&conn, provider)?;
-        let (state, verifier) = (random(), random());
+        let host = host.and_then(crate::shell::normalize_host);
+        let (state, verifier) = (host.map_or_else(random, |h| state_from(key, ctx.tenant, &h)), random());
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let state_digest = digest(&state);
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
@@ -344,6 +382,12 @@ impl Kernel {
             }
         }
         Ok(url.into())
+    }
+
+    /// The workspace and the host a sign-in started on, when its `state` names them under this
+    /// server's key ([`Kernel::connect_start_on`]); nothing for any other state.
+    pub fn connection_state_host(&self, state: &str) -> Option<(Uuid, String)> {
+        state_names(self.settings.secret_key.as_ref()?, state)
     }
 
     /// The provider sent the browser back: the sign-in `state` started must be this person's, in this browser session,
@@ -1110,6 +1154,23 @@ pub(crate) fn handler(kind: &str) -> Option<Arc<dyn JobHandler>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_state_names_where_it_started_and_cannot_be_changed() {
+        let key = crate::secret::SecretKey::new([7u8; 32]);
+        let t = Uuid::now_v7();
+        let state = state_from(&key, t, "erp.acme.com");
+        assert_eq!(state_names(&key, &state), Some((t, "erp.acme.com".to_string())));
+        assert!(state.len() < 300, "{}", state.len());
+        assert_ne!(state, state_from(&key, t, "erp.acme.com"), "each one its own");
+        assert_eq!(state_names(&crate::secret::SecretKey::new([8u8; 32]), &state), None, "another key");
+        let (nonce, rest) = state.split_once('.').unwrap();
+        let (_, mac) = rest.split_once('.').unwrap();
+        let forged = format!("{nonce}.{}.{mac}", URL_SAFE_NO_PAD.encode(format!("{t}|evil.example")));
+        assert_eq!(state_names(&key, &forged), None, "the host changed");
+        assert_eq!(state_names(&key, &random()), None, "a state that names nothing");
+        assert_eq!(state_names(&key, "a.b"), None);
+    }
 
     #[test]
     fn expiries_and_providers_are_read() {

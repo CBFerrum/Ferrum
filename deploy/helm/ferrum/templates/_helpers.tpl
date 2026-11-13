@@ -75,6 +75,18 @@ generates is letters and digits only, so it needs no escaping in the address. */
 - {name: FERRUM_S3_ENDPOINT, value: {{ . | quote }}}
 {{- end }}
 - {name: PUBLIC_URL, value: {{ .Values.publicUrl | quote }}}
+{{- with .Values.names.accountsHost }}
+- {name: FERRUM_ACCOUNTS_HOST, value: {{ . | quote }}}
+{{- end }}
+{{- with .Values.names.hooksHost }}
+- {name: FERRUM_HOOKS_HOST, value: {{ . | quote }}}
+{{- end }}
+{{- with .Values.names.passkeyRp }}
+- {name: FERRUM_PASSKEY_RP, value: {{ . | quote }}}
+{{- end }}
+{{- with .Values.names.linkHost }}
+- {name: FERRUM_LINK_HOST, value: {{ . | quote }}}
+{{- end }}
 {{- if .Values.pdf.enabled }}
 - {name: FERRUM_PDF_URL, value: "http://{{ include "ferrum.fullname" . }}-pdf:3000"}
 {{- end }}

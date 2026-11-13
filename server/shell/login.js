@@ -414,8 +414,19 @@ async function passkey() {
   const button = document.getElementById("ferrum-passkey");
   if (button) button.disabled = true;
   try {
-    const { request, publicKey } = await post("/api/auth/passkey/options", {});
-    const cred = await navigator.credentials.get({ publicKey: { ...publicKey, challenge: b64.decode(publicKey.challenge) } });
+    const offer = await post("/api/auth/passkey/options", {});
+    const ask = (o) => navigator.credentials.get({ publicKey: { ...o.publicKey, challenge: b64.decode(o.publicKey.challenge) } });
+    // `also`: passkeys made for this host before the server named a domain for them (they keep
+    // theirs). The device is asked for those when it offers none for the domain.
+    let request = offer.request;
+    let cred = await ask(offer).catch((e) => {
+      if (!offer.also || e?.name !== "NotAllowedError") throw e;
+      return null;
+    });
+    if (!cred && offer.also) {
+      request = offer.also.request;
+      cred = await ask(offer.also);
+    }
     if (!cred) return;
     const r = cred.response;
     const response = {

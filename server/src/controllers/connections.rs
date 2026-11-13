@@ -124,8 +124,8 @@ fn session(sid: Option<Uuid>) -> Result<Uuid, ApiError> {
 
 /// `POST /api/connections/{id}/connect`: from the browser, signed in → `{url}` to send the browser to. The workspace's
 /// account is an administrator's; a person's own is theirs.
-async fn connect(BrowserSession(ctx, sid): BrowserSession, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
-    let url = app_state(&app)?.kernel.connect_start(&ctx, id, session(sid)?).await?;
+async fn connect(BrowserSession(ctx, sid): BrowserSession, State(app): State<AppContext>, headers: HeaderMap, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    let url = app_state(&app)?.kernel.connect_start_on(&ctx, id, session(sid)?, crate::shell::request_host(&headers)).await?;
     Ok(Json(json!({"url": url})).into_response())
 }
 
@@ -149,15 +149,43 @@ fn page(text: &str, status: StatusCode) -> Response {
     (status, [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], html).into_response()
 }
 
-/// `GET /api/connections/callback?state=&code=`: where the provider sends the browser back, the one exact address. It
-/// goes nowhere else: a page says how it went.
-async fn callback(BrowserSession(ctx, sid): BrowserSession, State(app): State<AppContext>, Query(b): Query<Back>) -> ApiResult<Response> {
-    callback_page(&app_state(&app)?.kernel, &ctx, sid, &b).await
+/// `GET /api/connections/callback?state=&code=`: where the provider sends the browser back, the one exact address
+/// (on the public address, or the hooks host). A sign-in started on another host of the workspace goes on there, to
+/// the same path with the same query, where the person's session is; the host comes from the signed `state` and must
+/// still serve that workspace. Otherwise a page says how it went.
+async fn callback(State(app): State<AppContext>, headers: HeaderMap, uri: axum::http::Uri, Query(b): Query<Back>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    if let Some(to) = started_elsewhere(&st.kernel, &st.shell, &headers, uri.query(), b.state.as_deref()).await? {
+        let mut res = StatusCode::FOUND.into_response();
+        res.headers_mut().insert(header::LOCATION, axum::http::HeaderValue::from_str(&to).map_err(|e| ApiError(Error::internal(e.to_string())))?);
+        res.headers_mut().insert(header::REFERRER_POLICY, axum::http::HeaderValue::from_static("no-referrer"));
+        return Ok(res);
+    }
+    let (ctx, sid) = crate::extract::caller_on(&st, &axum::http::Method::GET, &headers).await?;
+    callback_page(&st.kernel, &ctx, sid, &b).await
+}
+
+/// The same return address (with the request's `query`) on the host the sign-in started from, when that is another
+/// host that still serves the workspace the signed `state` names; `None`: answer here.
+pub async fn started_elsewhere(
+    k: &Kernel,
+    shell: &crate::shell::Shell,
+    headers: &HeaderMap,
+    query: Option<&str>,
+    state: Option<&str>,
+) -> ApiResult<Option<String>> {
+    let Some((tenant, host)) = state.filter(|s| s.len() <= 1024).and_then(|s| k.connection_state_host(s)) else { return Ok(None) };
+    let here = crate::shell::request_host(headers).and_then(ferrum_kernel::shell::normalize_host);
+    if here.as_deref() == Some(host.as_str()) || shell.workspace_at(&host).await? != Some(tenant) {
+        return Ok(None);
+    }
+    let Some(origin) = shell.origin_of(&host, headers) else { return Ok(None) };
+    Ok(Some(format!("{origin}{}?{}", ferrum_kernel::connections::oauth::CALLBACK, query.unwrap_or_default())))
 }
 
 /// What the callback answers the person `ctx` in browser session `sid`.
 pub async fn callback_page(k: &Kernel, ctx: &Ctx, sid: Option<Uuid>, b: &Back) -> ApiResult<Response> {
-    let Some(state) = b.state.as_deref().filter(|s| !s.is_empty() && s.len() <= 200) else {
+    let Some(state) = b.state.as_deref().filter(|s| !s.is_empty() && s.len() <= 1024) else {
         return Ok(page("This sign-in was not started here.", StatusCode::BAD_REQUEST));
     };
     Ok(match k.connect_finish(ctx, session(sid)?, state, b.code.as_deref(), b.error.as_deref()).await {
