@@ -71,6 +71,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APPS_BASE` | no | A domain under which isolated apps get origins of their own, `{app}--{workspace}.{base}` (`example-apps.net`); see "Apps with interfaces of their own". Empty (the default): isolated apps run in sandboxed frames. `localhost` works in development |
 | `FERRUM_UI_SOURCE` | no | Development: a server listing built interfaces (`index.json`, as Ferrum-Frontend's `npm run build:apps` writes `dist-apps/`), fetched at start-up and every ten minutes, files checked against their digests |
 | `FERRUM_DATABASE_DIRECT_URL` | with a pooler | PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler* |
+| `FERRUM_DATABASE_READ_URL` | no | A replica that reports and the reading of exports may use, while it is within the lag limit and has replayed what the primary had committed when the read began; otherwise they read from the primary. Empty (the default): none. See "Deployment shapes", *Read address* |
+| `FERRUM_DATABASE_READ_MAX_LAG_SECS` | no | The replay lag past which those reads go to the primary (default 10) |
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
@@ -976,6 +978,50 @@ PodMonitor). With the pooler, PostgreSQL sees `instances x poolSize` connections
 (default 8: 5 listeners, 1 session lock and 2 apps' upkeep; 6 + `FERRUM_UPKEEP_CONCURRENCY` if you change
 that) from each replica, and the budget counts that instead of `dbMaxConnections + 6`. `dbMaxConnections` is then what each replica opens to the
 pooler; keep the sum over every replica under `maxClientConnections` times `instances`.
+
+*What goes direct, and why.* In transaction mode PgBouncer gives each transaction whichever server connection
+is free, so anything that lives in one session longer than a transaction breaks through it: a LISTEN hears
+nothing, a session lock stays on a server connection another client then gets (in a test run through PgBouncer
+without the direct address, a start's lock was left held and the next start waited on it for good), and
+startup settings are refused. So, when `FERRUM_DATABASE_DIRECT_URL` names another address than `DATABASE_URL`:
+
+| Through the pooler (`DATABASE_URL`) | Direct (`FERRUM_DATABASE_DIRECT_URL`) |
+|---|---|
+| Every transaction: requests, background work, reports. Each sets its own workspace, statement timeout, `lock_timeout` (10 s) and `idle_in_transaction_session_timeout` (60 s) in its first statement, and none counts on the server connection of the one before | The 5 listeners (metadata, users, plugin sockets, live updates, co-editing) |
+| The side pool and Loco's own pool (neither keeps a session) | Session advisory locks: the two-version window's, the migrations', the schema sync's (whose `create index concurrently` runs outside a transaction), the upgrade steps', apps' upkeep, app revocations |
+| Statements outside a transaction (`pg_notify`, rate-limit counters): they get the database's own `lock_timeout`, not 10 s | |
+
+The server sends no startup `options` and no `extra_float_digits` through the pooler (PgBouncer refuses
+parameters it does not track), so PgBouncer needs no `ignore_startup_parameters`. It needs: version 1.21 or
+later, `pool_mode = transaction`, `max_prepared_statements` above 0 (sqlx prepares every statement), and
+the server's role and database. Checked with PgBouncer 1.26.1 on 14 November 2026 (README, *Testing*).
+
+*When a connection fails.* A direct address that does not answer at start stops the start, saying
+`FERRUM_DATABASE_DIRECT_URL`; Kubernetes starts the pod again. One that drops later: each listener notices
+(it is never quietly reconnected), connects again with a back-off (metadata from 250 ms doubling to 10 s,
+the others every 2 s) and recovers as before: metadata and users drop every cached copy, co-editing reads every
+open document again, and live updates and plugin sockets are best effort (a page refreshes later). A session
+lock whose connection drops is let go by PostgreSQL; its work is tried again in the next round. A pooler that
+restarts in the middle of a transaction ends it: PostgreSQL rolls it back, the request fails (503, or retried
+like any lost connection), and nothing half done stays.
+
+**Read address.** `database.readReplicas.enabled` sets `FERRUM_DATABASE_READ_URL` to CloudNativePG's
+read-only service (`ferrum-db-ro`, the standbys), and the chart refuses it with one instance, which has no
+standby. Reports (`/api/reports`, apps' reports, Studio's queries and dashboards) and the reading of a
+workspace's export then read there, in read-only transactions that set the workspace as on the primary,
+when three things hold: the address is a replica (it is replaying), its lag, looked at every 2 seconds on
+each replica of the server, is within `FERRUM_DATABASE_READ_MAX_LAG_SECS` (10), and it has replayed
+everything the primary had committed when the read began (it may wait half a second for it). So whoever has
+just written sees it in the next report. Otherwise the read goes to the primary, and
+`ferrum_db_reads_total{to="primary",why=…}` says why (`down`, `lagging`, `not_replica`, `behind`;
+`{to="replica"}` counts the others). An address that is not a replica (the primary, or another database) is
+never read from: the server warns once and reads from the primary. A report read from a replica says how far
+behind it was in `X-Ferrum-Replica-Lag-Ms`. The read pool holds up to 10 connections per replica of the
+server, on the standby, not the primary. A report running when the standby goes away fails as it would on the
+primary, and the next reads go to the primary. A long report can still be cancelled by the standby replaying a
+change it conflicts with (PostgreSQL's `max_standby_streaming_delay`); it then fails, and running it again
+reads from the primary only if the standby is lagging by then. Not tried against a real lagging standby: the
+choice was tested with an injected lag, and the reading with the read address on the same test database.
 
 **Worker scaling on waiting work.** A pool with `background: only` can scale with KEDA (installed
 separately): `keda: {enabled: true}` on the pool, `autoscaling: {enabled: false}` beside it, and the rest from

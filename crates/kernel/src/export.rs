@@ -290,7 +290,8 @@ impl JobHandler for ExportJob {
         let ledgers = all.schema.entities.values().filter(|e| e.def.kind == EntityKind::Ledger).map(|e| e.table.clone());
         let engines: Vec<String> = ledgers.chain(all.schema.export_tables.iter().cloned()).collect();
         for table in &engines {
-            let mut tx = k.db.tenant_tx_with_timeout(ctx.tenant, TABLE_TIMEOUT_MS).await?;
+            // Reading only, so on a replica when there is one fit to read from (`Db::read_tx`).
+            let mut tx = k.db.read_tx(ctx.tenant, TABLE_TIMEOUT_MS).await?;
             let sql = format!("select to_jsonb(t) - 'tenant_id' from {} t where t.tenant_id = $1", q(table));
             let mut rows = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(sql)).bind(ctx.tenant).fetch(&mut *tx);
             let (mut page, mut file, mut count) = (Vec::with_capacity(TABLE_PAGE), 0, 0usize);
@@ -314,7 +315,7 @@ impl JobHandler for ExportJob {
         }
 
         for (name, _, sql) in TABLES {
-            let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+            let mut tx = k.db.read_tx(ctx.tenant, k.db.config.statement_timeout_ms).await?;
             let rows: Vec<Value> = sqlx::query_scalar(*sql).bind(ctx.tenant).fetch_all(&mut *tx).await?;
             tx.commit().await?;
             parts.add(&format!("{name}.jsonl"), &lines(&rows)?).await?;
@@ -322,7 +323,7 @@ impl JobHandler for ExportJob {
 
         let (mut after, mut file) = (0i64, 0);
         loop {
-            let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+            let mut tx = k.db.read_tx(ctx.tenant, k.db.config.statement_timeout_ms).await?;
             let rows: Vec<(i64, Value)> = sqlx::query_as(
                 "select id, jsonb_build_object('id', id, 'at', at, 'actor', actor, 'entity', entity, 'record_id', record_id, 'action', action, 'version', version, \
                  'diff', diff, 'hash', encode(hash, 'hex'), 'prev_hash', encode(prev_hash, 'hex')) from audit_event where tenant_id = $1 and id > $2 order by id limit $3",

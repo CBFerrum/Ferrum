@@ -67,6 +67,8 @@ settings:
   pdf_url: "<%= get_env(name="FERRUM_PDF_URL", default="") %>"
   db_max_connections: <%= get_env(name="FERRUM_DB_MAX_CONNECTIONS", default="20") %>
   database_direct_url: "<%= get_env(name="FERRUM_DATABASE_DIRECT_URL", default="") %>"
+  database_read_url: "<%= get_env(name="FERRUM_DATABASE_READ_URL", default="") %>"
+  database_read_max_lag_secs: <%= get_env(name="FERRUM_DATABASE_READ_MAX_LAG_SECS", default="10") %>
   bootstrap_token: <%= get_env(name="FERRUM_BOOTSTRAP_TOKEN", default="dev-bootstrap-token") %>
   webhooks_allow_private: true
   sso_allow_private: true

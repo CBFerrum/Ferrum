@@ -33,11 +33,10 @@ pub fn param_def(name: &str) -> Value {
     }
 }
 
-/// A read-only, tenant-isolated transaction with the report timeout, for report queries.
+/// A read-only, tenant-isolated transaction with the report timeout, for report queries: on the read address when
+/// there is one fit to read from (`Db::read_tx`). A report reads only: nothing it writes needs to be seen here.
 pub async fn read_tx(k: &Kernel, ctx: &Ctx) -> Result<Tx> {
-    let mut tx = k.db.tenant_tx_with_timeout(ctx.tenant, REPORT_TIMEOUT_MS).await?;
-    sqlx::query("set transaction read only").execute(&mut *tx).await?;
-    Ok(tx)
+    k.db.read_tx(ctx.tenant, REPORT_TIMEOUT_MS).await
 }
 
 /// Reports contributed by packages outside this crate.

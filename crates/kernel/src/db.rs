@@ -117,6 +117,10 @@ pub struct DbConfig {
     /// The most connections the direct side opens when it is a pool of its own:
     /// [`LISTENERS`] + [`DIRECT_LOCKS`] + apps' upkeep at once (`FERRUM_UPKEEP_CONCURRENCY`, default 2).
     pub direct_connections: u32,
+    /// `FERRUM_DATABASE_READ_URL`: a replica that reports and exports may read from ([`Db::read_tx`]). `None`: none.
+    pub read_url: Option<String>,
+    /// `FERRUM_DATABASE_READ_MAX_LAG_SECS`: past this replay lag those reads go to the primary.
+    pub read_max_lag: Duration,
 }
 
 impl Default for DbConfig {
@@ -132,6 +136,8 @@ impl Default for DbConfig {
             report_timeout_ms: 60_000,
             direct_url: None,
             direct_connections: LISTENERS + DIRECT_LOCKS + 2,
+            read_url: None,
+            read_max_lag: Duration::from_secs(10),
         }
     }
 }
@@ -147,6 +153,8 @@ pub struct Db {
     /// unless `FERRUM_DATABASE_DIRECT_URL` names another address than `DATABASE_URL` (a pooler's), and then a small pool
     /// of its own there ([`DbConfig::direct_connections`]).
     pub direct: sqlx::PgPool,
+    /// The read address's pool and what it last found ([`Db::read_tx`]), when one is set.
+    pub read: Option<Arc<crate::replica::Reads>>,
     pub config: DbConfig,
     /// This region does not hold the right to write (`recovery`): every transaction is read-only, so
     /// nothing has to remember to check.
@@ -221,7 +229,23 @@ impl Db {
                 .await
                 .map_err(|e| Error::Internal(format!("the direct database address (FERRUM_DATABASE_DIRECT_URL) does not answer: {e}")))?,
         };
-        Ok(Db { pooled: direct_url.is_some(), pool, side, direct, config, fenced: Arc::default() })
+        // Connected when first used: a read address that does not answer sends reads to the primary, it stops nothing.
+        let read = match config.read_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+            None => None,
+            Some(r) => Some(Arc::new(crate::replica::Reads::new(
+                PgPoolOptions::new()
+                    .max_connections(crate::replica::READ_CONNECTIONS)
+                    .min_connections(0)
+                    .acquire_timeout(crate::replica::CHECKED_FOR)
+                    .idle_timeout(Some(Duration::from_secs(60)))
+                    .max_lifetime(Some(Duration::from_secs(1800)))
+                    .test_before_acquire(true)
+                    // Like the main pool through a pooler: each transaction sets what it needs.
+                    .connect_lazy_with(url(r, "read database url (FERRUM_DATABASE_READ_URL)")?.extra_float_digits(None)),
+                config.read_max_lag,
+            ))),
+        };
+        Ok(Db { pooled: direct_url.is_some(), pool, side, direct, read, config, fenced: Arc::default() })
     }
 
     /// Whether `direct` is a pool of its own: the main pool then goes through a pooler.
@@ -306,12 +330,47 @@ impl Db {
 
     pub async fn tenant_tx_with_timeout(&self, tenant: Uuid, timeout_ms: u64) -> Result<Tx> {
         let mut tx = self.pool.begin().await?;
-        carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)")
-            .bind(tenant.to_string())
-            .bind(timeout_ms.to_string())
-            .execute(&mut *tx)
-            .await?;
+        as_tenant(&mut tx, tenant, timeout_ms).await?;
         self.stay_fenced(&mut tx).await?;
+        Ok(tx)
+    }
+
+    /// A read-only tenant transaction for reading only: reports, and the reading of a workspace's export. On the read
+    /// address (`FERRUM_DATABASE_READ_URL`) when it is a replica within its lag limit that has replayed everything the
+    /// primary had committed when this began, so that whoever has just written sees it; otherwise on the primary.
+    /// Never for a read that a write in the same transaction must see.
+    pub async fn read_tx(&self, tenant: Uuid, timeout_ms: u64) -> Result<Tx> {
+        use crate::replica::{Health, Served};
+        if let Some(r) = &self.read {
+            let why = match r.health().await {
+                Health::Fresh(lag) => {
+                    // Where the primary is now: the replica must have replayed that far.
+                    let at: String =
+                        sqlx::query_scalar("select (case when pg_is_in_recovery() then pg_last_wal_replay_lsn() else pg_current_wal_lsn() end)::text")
+                            .fetch_one(&self.pool)
+                            .await?;
+                    match on_replica(r, tenant, timeout_ms, &at).await {
+                        Ok(Some(tx)) => {
+                            r.served(Served::Replica);
+                            crate::replica::note(lag);
+                            return Ok(tx);
+                        }
+                        Ok(None) => Served::Behind,
+                        Err(e) => {
+                            tracing::warn!("the read address (FERRUM_DATABASE_READ_URL) failed, reading from the primary: {e}");
+                            r.seen(Health::Down);
+                            Served::Down
+                        }
+                    }
+                }
+                Health::Lagging => Served::Lagging,
+                Health::NotReplica => Served::NotReplica,
+                Health::Down => Served::Down,
+            };
+            r.served(why);
+        }
+        let mut tx = self.tenant_tx_with_timeout(tenant, timeout_ms).await?;
+        sqlx::query("set transaction read only").execute(&mut *tx).await?;
         Ok(tx)
     }
 
@@ -344,11 +403,48 @@ impl Db {
         self.pool.close().await;
         self.side.close().await;
         self.direct.close().await;
+        if let Some(r) = &self.read {
+            r.pool.close().await;
+        }
     }
 
     pub async fn ping(&self) -> Result<()> {
         sqlx::query("select 1").execute(&self.pool).await?;
         Ok(())
+    }
+}
+
+/// Sets the workspace and the statement timeout on a transaction, as every tenant transaction does.
+async fn as_tenant(tx: &mut Tx, tenant: Uuid, timeout_ms: u64) -> Result<()> {
+    carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)")
+        .bind(tenant.to_string())
+        .bind(timeout_ms.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// A read-only tenant transaction on the read address, once it has replayed up to `at` (within
+/// [`crate::replica::CATCH_UP`]; `None` past it).
+async fn on_replica(r: &crate::replica::Reads, tenant: Uuid, timeout_ms: u64, at: &str) -> Result<Option<Tx>> {
+    let mut tx = r.pool.begin().await?;
+    as_tenant(&mut tx, tenant, timeout_ms).await?;
+    sqlx::query("set transaction read only").execute(&mut *tx).await?;
+    let started = std::time::Instant::now();
+    loop {
+        // A primary standing in for a replica (tests) is always caught up with itself.
+        let caught: bool =
+            sqlx::query_scalar("select (case when pg_is_in_recovery() then pg_last_wal_replay_lsn() else pg_current_wal_lsn() end) >= $1::pg_lsn")
+                .bind(at)
+                .fetch_one(&mut *tx)
+                .await?;
+        if caught {
+            return Ok(Some(tx));
+        }
+        if started.elapsed() >= crate::replica::CATCH_UP {
+            return Ok(None);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 

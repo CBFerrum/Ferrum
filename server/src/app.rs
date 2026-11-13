@@ -170,6 +170,8 @@ impl Hooks for App {
             // Unset: the same address as DATABASE_URL, one pool for everything as before.
             direct_url: Some(Some(settings.database_direct_url.trim()).filter(|u| !u.is_empty()).unwrap_or(&ctx.config.database.uri).to_string()),
             direct_connections: ferrum_kernel::db::LISTENERS + ferrum_kernel::db::DIRECT_LOCKS + crate::packages::upkeep_concurrency() as u32,
+            read_url: Some(settings.database_read_url.trim().to_string()).filter(|u| !u.is_empty()),
+            read_max_lag: Duration::from_secs(settings.database_read_max_lag_secs),
             ..Default::default()
         })
         .await
