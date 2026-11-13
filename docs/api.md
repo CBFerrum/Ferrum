@@ -1310,6 +1310,12 @@ in `url` (a template; one an earlier answer gave), held to the connection's host
 sends it without the connection's credentials (an address signed already); `form_fields` (a template giving an
 object, or a list of `{name, value}`) adds a signed upload form's fields before `form`'s.
 
+**Headers an answer names** ([BD-76](builder/decisions.md#bd-76-request-headers-named-by-an-answer)): `headers_from`
+is a template giving a JSON object of headers for that operation's request only, from an earlier answer passed in as
+an input (`"headers_from": "{{ inputs.upload_headers | json }}"`); it may not set `Authorization`, `Cookie`, `DPoP`,
+`Host`, the framing headers or the auth's own header, nor name `secret`, `auth.` or `account.`, and its values are
+masked in captures and errors as secrets are.
+
 **A part for each item** ([BD-75](builder/decisions.md#bd-75-a-form-part-for-each-item-of-a-list-and-the-step-cap)): a
 file part with `each` (an expression giving a list) repeats in one multipart request, its name a template over `item`
 and `index` (from 0), as its `file` and `name` are; `form_fields` gives a value for each item the same way (a list of

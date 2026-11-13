@@ -1932,3 +1932,19 @@ Decided 13 November 2026.
   "may have been sent" all reason about per step; a fixed bound keeps that reasoning the same for every description.
   Raising it is a platform change, with a reason, not a description's choice.
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-76. Request headers named by an answer
+
+Decided 13 November 2026.
+
+* **The gap**: some uploads hand back the headers the upload must carry (Whop's `upload_headers`, a signed S3 form's
+  headers); a description's headers were fixed templates.
+* **The shape**: an operation's `headers_from`, a template giving a JSON object, added to that operation's request only
+  (a step passes the earlier answer's map as an input). Values are strings (others written as JSON), null skipped.
+* **Never credentials**: it may not set `Authorization`, `Proxy-Authorization`, `Cookie`, `DPoP`, `Host`,
+  `Content-Length`, `Transfer-Encoding`, `Connection` or the header the connection's auth uses, nor a value with a line
+  break; the template may not name `secret`, `auth.` or `account.` (checked when saved). So the connection's own
+  credentials never travel this way; with `credentials: false` the request carries only what the answer named.
+* **Masked**: the values join what that request's capture, errors and result hide. The earlier answer that gave them is
+  an answer like any other: the platform cannot know beforehand that a field of it is a secret.
+* Part of the App API 0.3.8 (BD-63).

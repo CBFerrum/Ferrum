@@ -127,6 +127,11 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
         ),
         ("GET", "/v1/ok-false") => (200, String::new(), json!({"ok": false, "error": "channel_not_found"}).to_string()),
         ("GET", "/v1/ok-true") => (200, String::new(), json!({"ok": true, "id": "M-9"}).to_string()),
+        ("POST", "/v1/presign") => {
+            let evil = body["evil"].as_bool().unwrap_or(false);
+            let headers = if evil { json!({"Authorization": "Bearer stolen"}) } else { json!({"x-amz-acl": "private", "x-upload-token": "UT-Hh7-upload"}) };
+            (200, String::new(), json!({"url": format!("http://127.0.0.1:{port}/v1/upload/h"), "headers": headers}).to_string())
+        }
         ("POST", "/v1/album") => (200, String::new(), json!({"ok": true}).to_string()),
         ("POST", "/v1/graphql") => (200, String::new(), json!({"errors": [{"message": "slow down", "extensions": {"code": "THROTTLED"}}]}).to_string()),
         ("GET", "/v1/to-private") => (302, "location: https://10.0.0.1/feed\r\n".into(), String::new()),
@@ -950,6 +955,35 @@ async fn scenario() {
     provider_words(&k, &admin, &base).await;
     schemes(&k, &admin, &base).await;
     repeated_parts(&k, &admin, &base).await;
+    named_headers(&k, &admin, &base).await;
+}
+
+/// BD-76: an upload step whose headers an earlier answer named, for that request only, masked, never credentials.
+async fn named_headers(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let file = k.store_file(admin, None, "v.mp4", "video/mp4", b"VIDEO").await.unwrap()["id"].as_str().unwrap().to_string();
+    let ops = json!({
+        "presign": {"method": "POST", "path": "/presign", "changes": false, "body": "{\"evil\": {{ inputs.evil | json }}}", "result": {"url": "/url", "headers": "/headers"}},
+        "put": {"method": "PUT", "url": "{{ inputs.url }}", "changes": false, "credentials": false, "headers_from": "{{ inputs.headers | json }}", "body": {"file": "{{ inputs.file }}"}},
+        "after": {"path": "/who/U-9"},
+        "upload": {"result": {"done": "/put"}, "steps": [
+            {"name": "presign", "operation": "presign", "inputs": {"evil": "inputs.evil"}},
+            {"name": "put", "operation": "put", "inputs": {"url": "steps.presign.url", "headers": "steps.presign.headers", "file": "inputs.file"}}]}
+    });
+    let desc = json!({"base": base, "auth": {"type": "bearer", "secret": "token"}, "operations": ops});
+    let id = k.save_connection_def(admin, None, &input("named", desc, Some(json!({"token": SECRET})))).await.unwrap();
+    k.debug_connection(admin, id, 5).await.unwrap();
+    connections::call(k, admin, None, &call("named", "upload", json!({"file": file, "evil": false}), Some("u-1"))).await.unwrap();
+    let put = last("PUT /v1/upload/h");
+    assert!(put.contains("x-upload-token: UT-Hh7-upload") && put.contains("x-amz-acl: private") && !put.contains(SECRET), "{put}");
+    connections::call(k, admin, None, &call("named", "after", json!({}), None)).await.unwrap();
+    assert!(!last("GET /v1/who/U-9").contains("x-upload-token"), "for that request only");
+    let log = k.connection_log(admin, id, 20).await.unwrap();
+    let captured = log.iter().find(|c| c["debug"]["request"]["method"] == "PUT").map(|c| c["debug"]["request"].to_string()).unwrap_or_default();
+    assert!(captured.contains("x-upload-token") && !captured.contains("UT-Hh7-upload"), "masked in the request's capture: {captured}");
+    let e = connections::call(k, admin, None, &call("named", "upload", json!({"file": file, "evil": true}), Some("u-2"))).await.unwrap_err();
+    assert!(e.to_string().contains("may not set Authorization"), "{e}");
+    let bad = json!({"base": base, "operations": {"x": {"path": "/x", "headers_from": "{\"a\": {{ secret.token | json }}}"}}});
+    assert!(k.save_connection_def(admin, None, &input("named2", bad, None)).await.is_err());
 }
 
 /// BD-75: one multipart request carrying a part for each file of a list, and a value for each, from the same list.
