@@ -89,7 +89,7 @@ pub use ctx::{Access, Action, Ctx, PermSet, row_scope};
 pub use db::{Db, DbConfig, Trace, Tx, with_retry};
 pub use error::{Error, FieldError, Result};
 pub use ferrum_logic::calendar::Calendar;
-pub use hooks::{DocAccess, DocHook, DocHost, EventSink, HookCtx, HookRegistry, Site, SiteRequest, SiteResponse};
+pub use hooks::{ApprovalDecided, DocAccess, DocHook, DocHost, EventSink, HookCtx, HookRegistry, Site, SiteRequest, SiteResponse};
 pub use process::load_calendar;
 pub use query::{Filter, ListQuery, Op, Page};
 pub use registry::Registry;
@@ -437,6 +437,7 @@ impl Kernel {
             + self.purge_exports().await?
             + self.purge_connection_events().await?
             + self.purge_connections().await?
+            + self.purge_public_files().await?
             + self.prune_occurrences().await?;
         if purged > 0 {
             tracing::info!(purged, "old events purged");

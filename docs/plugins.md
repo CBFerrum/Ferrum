@@ -263,6 +263,8 @@ contributes:
     - {id: quote, path: deals/q, title: Quote}
   shell.portal:                   # pages of the workspace's portal, at /portal/{id}/
     - {id: quotes, title: Your quotes, description: Quotes waiting for you, entity: Deal, open: "q/{id}"}
+  shell.menu:                     # rows of a module's left menu for the app's own pages (0.3.8)
+    - {id: board, module: deals, path: deals/board, label: Board, icon: layout-dashboard, roles: [Sales User], after: Deal}
 ```
 
 * **Routes** are `[a-z][a-z0-9-]{1,30}`, unique on a cluster with their aliases, and never one of the

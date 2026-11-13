@@ -125,8 +125,22 @@ fn route(method: &str, path: &str, raw: &str, port: u16) -> (u16, String, String
 <entry><id>urn:a1</id><title type="text">Atom one</title><link rel="alternate" href="https://news.example/a1"/></entry></feed>"#
                 .into(),
         ),
+        ("GET", "/v1/ok-false") => (200, String::new(), json!({"ok": false, "error": "channel_not_found"}).to_string()),
+        ("GET", "/v1/ok-true") => (200, String::new(), json!({"ok": true, "id": "M-9"}).to_string()),
+        ("POST", "/v1/presign") => {
+            let evil = body["evil"].as_bool().unwrap_or(false);
+            let headers = if evil { json!({"Authorization": "Bearer stolen"}) } else { json!({"x-amz-acl": "private", "x-upload-token": "UT-Hh7-upload"}) };
+            (200, String::new(), json!({"url": format!("http://127.0.0.1:{port}/v1/upload/h"), "headers": headers}).to_string())
+        }
+        ("POST", "/v1/album") => (200, String::new(), json!({"ok": true}).to_string()),
+        ("POST", "/v1/graphql") => (200, String::new(), json!({"errors": [{"message": "slow down", "extensions": {"code": "THROTTLED"}}]}).to_string()),
+        ("GET", "/v1/to-private") => (302, "location: https://10.0.0.1/feed\r\n".into(), String::new()),
+        ("GET", "/v1/to-local") => (302, format!("location: http://localhost:{port}/v1/rss\r\n"), String::new()),
         ("GET", "/v1/dtd") => (200, String::new(), r#"<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>"#.into()),
         ("GET", "/v1/form") => (200, String::new(), "a=1&b=x%20y&token=tok-Ww2".into()),
+        ("POST", "/v1/oauth/token-key") if body_of(raw).is_null() && raw.contains("client_key=ck-1") && !raw.contains("client_id=") => {
+            (200, String::new(), json!({"access_token": "AT-Kk1", "expires_in": 3600, "open_id": "OPEN-Hh2-1", "handle": "ana.example"}).to_string())
+        }
         ("POST", "/v1/oauth/token2") => (200, String::new(), json!({"access_token": "AT-Uu8-access", "account": {"id": "U-7"}}).to_string()),
         ("GET", "/v1/users/U-7/posts") => (200, String::new(), json!({"items": [{"id": "P-1"}, {"id": "P-2"}]}).to_string()),
         ("GET", p) if p.starts_with("/v1/posts/") && p.ends_with("/numbers") => {
@@ -678,6 +692,19 @@ async fn limits(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
     assert_eq!(with(|s| s.inflight.1), 1, "never two at once");
     let bad = json!({"base": base, "limit": {"per": 0, "every": 60}});
     assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("limit"));
+    // BD-74: an operation's own limit, counted apart from the description's and from the other operations.
+    let ops = json!({"post": {"path": "/counted", "limit": {"per": 1, "every": 60}}, "read": {"path": "/ok-true"}});
+    k.save_connection_def(admin, None, &input("oplim", json!({"base": base, "operations": ops, "limit": {"per": 5, "every": 60}}), None)).await.unwrap();
+    connections::call(k, admin, None, &call("oplim", "post", json!({}), None)).await.unwrap();
+    let e = connections::call(k, admin, None, &call("oplim", "post", json!({}), None)).await.unwrap_err();
+    assert!(matches!(&e, Error::RetryAfter(m, _) if m.contains("oplim's post")), "{e:?}");
+    for _ in 0..3 {
+        connections::call(k, admin, None, &call("oplim", "read", json!({}), None)).await.expect("reading is not posting");
+    }
+    let e = connections::call(k, admin, None, &call("oplim", "read", json!({}), None)).await.unwrap_err();
+    assert!(matches!(&e, Error::RetryAfter(m, _) if !m.contains("'s")), "the description's five, the refused post counted: {e:?}");
+    let bad = json!({"base": base, "operations": {"x": {"path": "/x", "limit": {"concurrent": 0}}}});
+    assert!(k.save_connection_def(admin, None, &input("bad", bad, None)).await.unwrap_err().to_string().contains("limit"));
 }
 
 fn query(url: &str) -> BTreeMap<String, String> {
@@ -885,7 +912,7 @@ async fn boot() -> (Arc<Kernel>, Ctx) {
     let social = ferrum_meta::catalog::load_package_files(&files).expect("package");
     let settings = KernelSettings {
         secret_key: Some(SecretKey::new([7u8; 32])),
-        connection_hosts: vec!["127.0.0.1".into()],
+        connection_hosts: vec!["127.0.0.1".into(), "localhost".into()],
         public_url: Some("https://ferrum.example.test".into()),
         connection_upload_bytes: 16,
         ..Default::default()
@@ -923,4 +950,194 @@ async fn scenario() {
     xml_answers(&k, &admin, &base).await;
     pull_each(&k, &admin, &base).await;
     signing_in(&k, &admin, &base).await;
+    any_host(&k, &admin, port).await;
+    refusals(&k, &admin, &base).await;
+    provider_words(&k, &admin, &base).await;
+    schemes(&k, &admin, &base).await;
+    repeated_parts(&k, &admin, &base).await;
+    named_headers(&k, &admin, &base).await;
+    handshake(&k, &admin).await;
+}
+
+/// BD-78: the check a service makes before it delivers: the challenge echoed when the token matches, else refused alike.
+async fn handshake(k: &Arc<Kernel>, admin: &Ctx) {
+    let d = json!({"test": true, "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "hook"},
+        "map": {"entity": "Post", "by": {"external_id": "item.id"}, "set": {"title": "item.title"}}},
+        "handshake": {"token": "hub.verify_token", "challenge": "hub.challenge", "secret": "verify", "expect": {"hub.mode": "subscribe"}}});
+    let id = k.save_connection_def(admin, None, &input("hooked", d, Some(json!({"hook": "tok-Ww1-hook", "verify": "vt-Pp3-verify"})))).await.unwrap();
+    let q = |token: &str, mode: &str| -> BTreeMap<String, String> {
+        [("hub.verify_token", token), ("hub.challenge", "1158201444"), ("hub.mode", mode)].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    };
+    assert_eq!(k.connection_handshake(id, &q("vt-Pp3-verify", "subscribe")).await.unwrap(), "1158201444");
+    for (token, mode) in [("vt-Pp3-verifx", "subscribe"), ("", "subscribe"), ("vt-Pp3-verify", "unsubscribe"), ("tok-Ww1-hook", "subscribe")] {
+        assert!(matches!(k.connection_handshake(id, &q(token, mode)).await, Err(Error::Unauthorized(_))), "{token} {mode}");
+    }
+    assert!(matches!(k.connection_handshake(Uuid::now_v7(), &q("vt-Pp3-verify", "subscribe")).await, Err(Error::Unauthorized(_))), "unknown alike");
+}
+
+/// BD-76: an upload step whose headers an earlier answer named, for that request only, masked, never credentials.
+async fn named_headers(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let file = k.store_file(admin, None, "v.mp4", "video/mp4", b"VIDEO").await.unwrap()["id"].as_str().unwrap().to_string();
+    let ops = json!({
+        "presign": {"method": "POST", "path": "/presign", "changes": false, "body": "{\"evil\": {{ inputs.evil | json }}}", "result": {"url": "/url", "headers": "/headers"}},
+        "put": {"method": "PUT", "url": "{{ inputs.url }}", "changes": false, "credentials": false, "headers_from": "{{ inputs.headers | json }}", "body": {"file": "{{ inputs.file }}"}},
+        "after": {"path": "/who/U-9"},
+        "upload": {"result": {"done": "/put"}, "steps": [
+            {"name": "presign", "operation": "presign", "inputs": {"evil": "inputs.evil"}},
+            {"name": "put", "operation": "put", "inputs": {"url": "steps.presign.url", "headers": "steps.presign.headers", "file": "inputs.file"}}]}
+    });
+    let desc = json!({"base": base, "auth": {"type": "bearer", "secret": "token"}, "operations": ops});
+    let id = k.save_connection_def(admin, None, &input("named", desc, Some(json!({"token": SECRET})))).await.unwrap();
+    k.debug_connection(admin, id, 5).await.unwrap();
+    connections::call(k, admin, None, &call("named", "upload", json!({"file": file, "evil": false}), Some("u-1"))).await.unwrap();
+    let put = last("PUT /v1/upload/h");
+    assert!(put.contains("x-upload-token: UT-Hh7-upload") && put.contains("x-amz-acl: private") && !put.contains(SECRET), "{put}");
+    connections::call(k, admin, None, &call("named", "after", json!({}), None)).await.unwrap();
+    assert!(!last("GET /v1/who/U-9").contains("x-upload-token"), "for that request only");
+    let log = k.connection_log(admin, id, 20).await.unwrap();
+    let captured = log.iter().find(|c| c["debug"]["request"]["method"] == "PUT").map(|c| c["debug"]["request"].to_string()).unwrap_or_default();
+    assert!(captured.contains("x-upload-token") && !captured.contains("UT-Hh7-upload"), "masked in the request's capture: {captured}");
+    let e = connections::call(k, admin, None, &call("named", "upload", json!({"file": file, "evil": true}), Some("u-2"))).await.unwrap_err();
+    assert!(e.to_string().contains("may not set Authorization"), "{e}");
+    let bad = json!({"base": base, "operations": {"x": {"path": "/x", "headers_from": "{\"a\": {{ secret.token | json }}}"}}});
+    assert!(k.save_connection_def(admin, None, &input("named2", bad, None)).await.is_err());
+}
+
+/// BD-75: one multipart request carrying a part for each file of a list, and a value for each, from the same list.
+async fn repeated_parts(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let mut files = vec![];
+    for (i, body) in ["AAA", "BBB", "CCC"].into_iter().enumerate() {
+        files.push(k.store_file(admin, None, &format!("p{i}.jpg"), "image/jpeg", body.as_bytes()).await.unwrap()["id"].as_str().unwrap().to_string());
+    }
+    let op = json!({"method": "POST", "path": "/album", "changes": false,
+        "headers": {"content-type": "multipart/form-data"},
+        "form_fields": "[{% for f in inputs.media %}{\"name\": \"caption{{ loop.index0 }}\", \"value\": \"#{{ loop.index }}\"}{% if not loop.last %},{% endif %}{% endfor %}]",
+        "form": {"files[{{ index }}]": {"file": "{{ item }}", "each": "inputs.media", "name": "f{{ index }}.jpg"}}});
+    k.save_connection_def(admin, None, &input("album", json!({"base": base, "operations": {"send": op}}), None)).await.unwrap();
+    connections::call(k, admin, None, &call("album", "send", json!({"media": files}), None)).await.unwrap();
+    let sent = parts(&last("POST /v1/album"));
+    assert_eq!(
+        sent.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
+        ["caption0=#1", "caption1=#2", "caption2=#3", "files[0]=AAA", "files[1]=BBB", "files[2]=CCC"]
+    );
+    assert!(last("POST /v1/album").contains("filename=\"f2.jpg\""));
+    let bad = json!({"base": base, "operations": {"x": {"method": "POST", "path": "/x", "form": {"f": {"file": "x", "each": "inputs.(("}}}}});
+    assert!(k.save_connection_def(admin, None, &input("album2", bad, None)).await.is_err(), "checked when saved");
+}
+
+/// BD-73: an operation that sends the token under another scheme, or alone.
+async fn schemes(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let ops = json!({"plain": {"path": "/who/U-9"}, "oauth": {"path": "/who/U-9", "auth_scheme": "OAuth"}, "alone": {"path": "/who/U-9", "auth_scheme": ""}});
+    let desc = json!({"base": base, "auth": {"type": "bearer", "secret": "token"}, "operations": ops});
+    k.save_connection_def(admin, None, &input("schemes", desc, Some(json!({"token": SECRET})))).await.unwrap();
+    for (op, sent) in [("plain", "Bearer "), ("oauth", "OAuth "), ("alone", "")] {
+        connections::call(k, admin, None, &call("schemes", op, json!({}), None)).await.unwrap();
+        assert!(last("GET /v1/who/U-9").contains(&format!("authorization: {sent}{SECRET}\r\n")), "{op}: {}", last("GET /v1/who/U-9"));
+    }
+    let basic =
+        json!({"base": base, "auth": {"type": "basic", "username": "u", "secret": "token"}, "operations": {"x": {"path": "/x", "auth_scheme": "OAuth"}}});
+    let e = k.save_connection_def(admin, None, &input("schemes2", basic, None)).await.unwrap_err();
+    assert!(e.to_string().contains("auth_scheme"), "{e}");
+}
+
+/// BD-72: a provider that calls the client's id `client_key` and joins scopes with commas.
+async fn provider_words(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let provider = json!({"authorize_url": "https://id.example.test/authorize", "token_url": format!("{base}/oauth/token-key"), "client_id": "ck-1",
+                          "client_id_param": "client_key", "scope_separator": ",", "scopes": ["user.info.basic", "video.publish"],
+                          "keep": ["open_id", "handle"], "not_secret": ["handle"]});
+    // BD-77: what the sign-in kept, in a result; a value not said to be no secret is hidden there.
+    let ops = json!({"post": {"path": "/ok-true", "result": {"id": "/id", "link": {"expr": "'https://x.example/@' + auth.handle + '/' + answer.id"},
+                     "open": {"expr": "auth.open_id"}}}});
+    let id = k
+        .save_connection_def(admin, None, &input("keyed", json!({"base": base, "auth": {"type": "oauth", "provider": provider}, "operations": ops}), None))
+        .await
+        .unwrap();
+    let session = Uuid::now_v7();
+    let asked = query(&k.connect_start(admin, id, session).await.unwrap());
+    assert_eq!((asked.get("client_key").map(String::as_str), asked.get("scope").map(String::as_str)), (Some("ck-1"), Some("user.info.basic,video.publish")));
+    assert!(!asked.contains_key("client_id"), "{asked:?}");
+    k.connect_finish(admin, session, &asked["state"], Some("CODE-K"), None).await.expect("exchanged with client_key");
+    let r = connections::call(k, admin, None, &call("keyed", "post", json!({}), None)).await.unwrap();
+    assert_eq!(r, json!({"id": "M-9", "link": "https://x.example/@ana.example/M-9", "open": "••••••"}));
+    let mut wrong = provider.clone();
+    wrong["not_secret"] = json!(["nope"]);
+    assert!(k.save_connection_def(admin, Some(id), &input("keyed", json!({"base": base, "auth": {"type": "oauth", "provider": wrong}}), None)).await.is_err());
+    let mut bad = json!({"authorize_url": "https://id.example.test/a", "token_url": "https://id.example.test/t", "client_id": "x", "scope_separator": "|"});
+    let e = k
+        .save_connection_def(admin, None, &input("keyed2", json!({"base": base, "auth": {"type": "oauth", "provider": bad.clone()}}), None))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("scope_separator"), "{e}");
+    bad["scope_separator"] = json!(",");
+    bad["params"] = json!({"client_key": "y"});
+    bad["client_id_param"] = json!("client_key");
+    assert!(k.save_connection_def(admin, None, &input("keyed2", json!({"base": base, "auth": {"type": "oauth", "provider": bad}}), None)).await.is_err());
+}
+
+/// BD-68: a 2xx answer that is a refusal, in the service's words, temporary or not.
+async fn refusals(k: &Arc<Kernel>, admin: &Ctx, base: &str) {
+    let ops = json!({
+        "post": {"path": "/ok-false", "refused_if": "has(answer.ok) && !answer.ok", "error_at": "/error", "result": {"id": {"at": "/id", "required": true}}},
+        "fine": {"path": "/ok-true", "refused_if": "has(answer.ok) && !answer.ok", "result": {"id": "/id"}},
+        "query": {"method": "POST", "path": "/graphql", "body": "{}", "changes": false, "refused_if": "has(answer.errors)",
+                  "temporary_if": "has(answer.errors) && answer.errors[0].extensions.code == 'THROTTLED'", "error": "answer.errors[0].message"},
+    });
+    k.save_connection_def(admin, None, &input("refusing", json!({"base": base, "operations": ops}), None)).await.unwrap();
+    let e = connections::call(k, admin, None, &call("refusing", "post", json!({}), None)).await.unwrap_err();
+    assert!(matches!(&e, Error::Validation(_) | Error::Invalid(_)) && e.to_string().contains("channel_not_found"), "the service's words: {e:?}");
+    assert!(!e.to_string().contains("has no id"), "{e}");
+    assert_eq!(connections::call(k, admin, None, &call("refusing", "fine", json!({}), None)).await.unwrap(), json!({"id": "M-9"}));
+    let e = connections::call(k, admin, None, &call("refusing", "query", json!({}), None)).await.unwrap_err();
+    assert!(matches!(&e, Error::Unavailable(m) if m.contains("slow down")), "temporary, in its words: {e:?}");
+    // BD-71: a part may declare more than 25 MB; it is sent only as far as the server's ceiling.
+    let big = k.store_file(admin, None, "big.bin", "application/octet-stream", &vec![7u8; 26 << 20]).await.unwrap()["id"].as_str().unwrap().to_string();
+    let up = json!({"base": base, "operations": {"up": {"method": "POST", "path": "/posts", "changes": false, "body": {"file": "{{ inputs.f }}", "max_bytes": 50 << 20}}}});
+    k.save_connection_def(admin, None, &input("big", up, None)).await.expect("50 MB declared");
+    let e = connections::call(k, admin, None, &call("big", "up", json!({"f": big}), None)).await.unwrap_err();
+    assert!(e.to_string().contains("FERRUM_CONNECTION_UPLOAD_MB"), "{e}");
+    let bad = json!({"base": base, "operations": {"x": {"path": "/x", "refused_if": "answer.ok &&"}}});
+    assert!(k.save_connection_def(admin, None, &input("refusing2", bad, None)).await.is_err(), "checked when saved");
+}
+
+/// BD-65: a description with no auth and no secrets reads any public host, by GET, without credentials, the guard as ever.
+async fn any_host(k: &Arc<Kernel>, admin: &Ctx, port: u16) {
+    let base = format!("http://127.0.0.1:{port}/v1");
+    let read = json!({"url": "{{ inputs.url }}", "answer": "xml"});
+    let feed = |any: bool| input("anyfeed", json!({"base": base, "any_host": any, "operations": {"read": read}}), None);
+    let elsewhere = json!({"url": format!("http://localhost:{port}/v1/rss")});
+    // Without the flag, a host besides the base's is refused, and its redirects are held to the base's host.
+    k.save_connection_def(admin, None, &feed(false)).await.unwrap();
+    let e = connections::call(k, admin, None, &call("anyfeed", "read", elsewhere.clone(), None)).await.unwrap_err();
+    assert!(e.to_string().contains("not one of the hosts"), "{e}");
+    let e = connections::call(k, admin, None, &call("anyfeed", "read", json!({"url": format!("{base}/to-local")}), None)).await.unwrap_err();
+    assert!(e.to_string().contains("not one of the hosts"), "{e}");
+    // With it: any host, a redirect to another host too.
+    let id = k.save_connection_def(admin, Some(conn_id(k, admin, "anyfeed").await), &feed(true)).await.unwrap();
+    let r = connections::call(k, admin, None, &call("anyfeed", "read", elsewhere, None)).await.unwrap();
+    assert!(r.to_string().contains("First & best"), "{r}");
+    connections::call(k, admin, None, &call("anyfeed", "read", json!({"url": format!("{base}/to-local")}), None)).await.expect("redirected elsewhere");
+    // The guard is unchanged: a redirect to a private address, plain http to a host the operator did not open.
+    let e = connections::call(k, admin, None, &call("anyfeed", "read", json!({"url": format!("{base}/to-private")}), None)).await.unwrap_err();
+    assert!(e.to_string().contains("private"), "{e}");
+    let e = connections::call(k, admin, None, &call("anyfeed", "read", json!({"url": "http://example.com/feed"}), None)).await.unwrap_err();
+    assert!(e.to_string().contains("https only"), "{e}");
+    // Refused the flag: any auth, any secret, a template naming one, anything but GET.
+    let refused = |desc: Value, secrets: Option<Value>| async move {
+        let mut d = json!({"base": "https://feeds.example.com", "any_host": true, "operations": {"read": {"url": "{{ inputs.url }}"}}});
+        d.as_object_mut().unwrap().extend(desc.as_object().unwrap().clone());
+        k.save_connection_def(admin, None, &input("feeds2", d, secrets)).await.unwrap_err().to_string()
+    };
+    assert!(refused(json!({"auth": {"type": "bearer", "secret": "t"}}), None).await.contains("any_host"));
+    assert!(refused(json!({}), Some(json!({"t": "x"}))).await.contains("any_host"));
+    assert!(refused(json!({"headers": {"x-key": "{{ secret.t }}"}}), None).await.contains("any_host"));
+    assert!(refused(json!({"operations": {"post": {"method": "POST", "url": "{{ inputs.url }}", "body": "{}"}}}), None).await.contains("any_host"));
+    let e = k.merge_connection_secrets(admin, id, &[("t".to_string(), "x".to_string())].into(), &[]).await.unwrap_err();
+    assert!(e.to_string().contains("any_host"), "{e}");
+}
+
+async fn conn_id(k: &Kernel, admin: &Ctx, name: &str) -> Uuid {
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let id = sqlx::query_scalar("select id from conn where tenant_id = $1 and name = $2").bind(admin.tenant).bind(name).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    id
 }

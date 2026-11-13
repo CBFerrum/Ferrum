@@ -1493,7 +1493,7 @@ impl Kernel {
             } else {
                 None
             };
-            let reach = crate::connections::Reach { hosts: vec![], timeout: Duration::from_secs(20), max_bytes: 1 << 20 };
+            let reach = crate::connections::Reach { hosts: vec![], any: false, timeout: Duration::from_secs(20), max_bytes: 1 << 20 };
             let a = self.fetch(crate::connections::Request { method, url, headers, body }, &reach).await?;
             Ok::<_, Error>((a.status, a.body))
         }

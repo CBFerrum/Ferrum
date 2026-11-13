@@ -339,6 +339,37 @@ async fn download_public(State(app): State<AppContext>, Path(id): Path<Uuid>, he
     Ok(resp)
 }
 
+/// `GET /files/pull/{id}?s=…`: a file's short-lived public address a connection's call made (BD-64), for the service
+/// pulling it: no session, its type and length, ranges, never cached; not found alike when the signature is wrong, the
+/// address ended or past its time.
+async fn download_pulled(
+    State(app): State<AppContext>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    pulled_response(&st.kernel, &st.objects, id, q.get("s").map_or("", String::as_str), &headers).await
+}
+
+/// The answer [`download_pulled`] gives, from the kernel and the object store (tests mount it on their own).
+pub async fn pulled_response(
+    k: &ferrum_kernel::Kernel,
+    objects: &crate::objects::Objects,
+    id: Uuid,
+    signature: &str,
+    headers: &HeaderMap,
+) -> ApiResult<Response> {
+    let f = k.pulled_file(id, signature).await?;
+    let mut resp = crate::objects::streamed_response(StatusCode::OK, objects.stream(&f.key, super::sites::range(headers)).await?);
+    let h = resp.headers_mut();
+    file_headers(h, &f.content_type, &f.name, true);
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    h.insert("x-robots-tag", HeaderValue::from_static("noindex, nofollow"));
+    Ok(resp)
+}
+
 /// What a file a browser would run is served under: it runs nothing and loads nothing but images of this origin.
 pub const FILE_SANDBOX: &str = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox";
 
@@ -451,6 +482,7 @@ pub fn routes() -> Routes {
         .add("/api/files/uploads/{id}/complete", post(complete_upload))
         .add("/files/{id}", get(download))
         .add("/files/public/{id}", get(download_public))
+        .add("/files/pull/{id}", get(download_pulled))
 }
 
 #[cfg(test)]

@@ -81,6 +81,31 @@ pub trait DocHook: Send + Sync {
     async fn after_action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, result: &mut Value) -> Result<()> {
         Ok(())
     }
+    /// An approval on a record of this entity reached its outcome (BD-66), once, in the deciding transaction, after the
+    /// outcome took effect (the transition taken, the submit or action done or failed, the record moved on rejection):
+    /// `doc` is the record as it now stands. An error here does not undo the decision: what the hook wrote is rolled
+    /// back, the failure is logged and audited (`approval:hook_failed`), and the decision stands.
+    async fn approval_decided(&self, hc: &mut HookCtx<'_>, doc: &Doc, decided: &ApprovalDecided<'_>) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// What [`DocHook::approval_decided`] is told.
+#[derive(Debug, Clone)]
+pub struct ApprovalDecided<'a> {
+    /// The approval request's id (`/api/approvals/…`).
+    pub request: Uuid,
+    /// What was asked: a transition's action, `submit`, `cancel`, or the entity's action.
+    pub action: &'a str,
+    /// `approved` (and done), `rejected`, or `failed` (approved, but doing it was refused: `failure` says why).
+    pub outcome: &'a str,
+    pub failure: Option<&'a str>,
+    /// Who asked; who took the deciding step, and for whom when standing in.
+    pub requester: Option<Uuid>,
+    pub decided_by: Uuid,
+    pub on_behalf_of: Option<Uuid>,
+    /// The decider's comment (a rejection always has one).
+    pub comment: Option<&'a str>,
 }
 
 /// Consumes outbox events after webhooks and automations (e.g. plugin subscriptions). Delivery is
