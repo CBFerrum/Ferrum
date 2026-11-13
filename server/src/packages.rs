@@ -680,7 +680,11 @@ mod tests {
     /// with a limit of one run one app after another.
     #[tokio::test]
     async fn replicas_share_upkeep_app_by_app() {
-        let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+        // The locks are sessions': on the direct address, as `spawn` gives them (`FERRUM_TEST_DATABASE_DIRECT_URL` when the
+        // suite runs through a pooler).
+        let url = std::env::var("FERRUM_TEST_DATABASE_DIRECT_URL")
+            .or_else(|_| std::env::var("FERRUM_TEST_DATABASE_URL"))
+            .unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
         let pool = || sqlx::postgres::PgPoolOptions::new().max_connections(8).connect(&url);
         let (one, two) = (pool().await.expect("connect"), pool().await.expect("connect"));
         let spans: Spans = Default::default();

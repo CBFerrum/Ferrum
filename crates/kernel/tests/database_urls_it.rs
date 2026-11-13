@@ -3,7 +3,13 @@
 //! and what needs a session (LISTEN, the start's locks, migrations) goes direct; a listener whose connection is lost
 //! says so, and its replica drops what it may have missed.
 //!
-//! It runs against `FERRUM_TEST_DATABASE_URL`, the main pool on the same database under another address.
+//! It runs against `FERRUM_TEST_DATABASE_URL` alone (the main pool on the same database under another address), then the
+//! same with the main pool through PgBouncer in transaction mode, `FERRUM_TEST_POOLER_URL`, in front of
+//! `FERRUM_TEST_DATABASE_URL`'s database; that second part is skipped, saying so, without it:
+//!
+//! ```text
+//! FERRUM_TEST_POOLER_URL=postgres://ferrum:ferrum@127.0.0.1:6439/ferrum_test cargo test -p ferrum-kernel --test database_urls_it
+//! ```
 
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, HookRegistry, Kernel, KernelSettings};
@@ -21,11 +27,18 @@ fn run(main: String) {
     rt.block_on(async { tokio::spawn(scenario(main)).await.unwrap() });
 }
 
+/// One test, the two cases one after the other: both reset the same database.
 #[test]
 fn the_session_side_goes_direct() {
     // The same database under another address: the server takes it for a pooler's.
     let url = direct_url();
     run(format!("{url}{}application_name=main", if url.contains('?') { '&' } else { '?' }));
+    match std::env::var("FERRUM_TEST_POOLER_URL") {
+        Ok(pooler) if !pooler.trim().is_empty() => run(pooler),
+        _ => eprintln!(
+            "through a pooler: skipped; set FERRUM_TEST_POOLER_URL to a PgBouncer in transaction mode in front of FERRUM_TEST_DATABASE_URL's database"
+        ),
+    }
 }
 
 async fn connect(main: &str) -> Db {
