@@ -887,6 +887,19 @@ PodMonitor). With the pooler, PostgreSQL sees `instances x poolSize` connections
 below counts that instead of `dbMaxConnections + 4`. `dbMaxConnections` is then what each replica opens to the
 pooler; keep the sum over every replica under `maxClientConnections` times `instances`.
 
+**Worker scaling on waiting work.** A pool with `background: only` can scale with KEDA (installed
+separately): `keda: {enabled: true}` on the pool, `autoscaling: {enabled: false}` beside it, and the rest from
+the top-level `keda` values. The chart renders a `ScaledObject` with two Prometheus triggers on gauges the
+server already exports: `max(ferrum_outbox_pending)` (events not yet handled, one more replica for every
+`keda.outboxPerReplica` of them) and `max(ferrum_jobs_oldest_waiting_seconds)` (how long the oldest due job
+has waited, more replicas while it is above `keda.jobWaitSeconds`). Every replica reports the same figures,
+read from the database, so the queries take the largest, never the sum. Prometheus must scrape the server
+(`serviceMonitor`) and be reachable at `keda.prometheusAddress`; `keda.triggers` replaces both triggers with
+your own. `keda.minReplicas` is at least 1, because schedules and upkeep show in no gauge. The outbox gauge
+also counts events waiting to be retried, so a backlog of failing deliveries keeps workers up; an exact
+trigger would need a gauge of events due now (`available_at <= now()`), which the server does not export yet.
+`keda.maxReplicas` is what the connection budget counts.
+
 **What the chart refuses, and why:**
 
 | Message | Meaning |
@@ -902,6 +915,8 @@ pooler; keep the sum over every replica under `maxClientConnections` times `inst
 | `… takes all of the gateway's own hosts` | A route with no hosts, paths or apps: make that pool the gateway's `defaultPool` |
 | `pools … both take all of host …` | Two pools cannot both answer the whole of one host |
 | `the pools may open … database connections` | The connection budget above |
+| `a KEDA ScaledObject and an autoscaler must never both scale one Deployment` | Set `autoscaling: {enabled: false}` on a pool with `keda` |
+| `keda scales on waiting background work …` / `set keda.prometheusAddress` / `keda.minReplicas must be at least 1` | `keda` is for `background: only` pools, needs a Prometheus to ask, and keeps one worker |
 | `database.pooler … needs database.enabled` | The pooler is CloudNativePG's; in front of your own database, run PgBouncer yourself |
 | `database.bootstrap.mode …: set …` | A way of starting the database lacks what it reads ("Moving from one shape to another") |
 | `… where this cluster would also write its own` | A recovery from this chart's own backups needs a new `database.backup.serverName` |

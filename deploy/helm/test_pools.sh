@@ -202,6 +202,32 @@ refuses "the pooler 2 x 45" --set database.pooler.enabled=true --set-json 'datab
 refuses "needs database.enabled" --set database.pooler.enabled=true --set database.enabled=false --set database.urlSecret.name=x
 refuses "is the name of another part of the chart" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"db-pooler"}]'
 
+echo "a background pool can scale on waiting work with KEDA, never beside an autoscaler"
+kedaon=(-f "$chart/presets/split.yaml" --set keda.prometheusAddress=http://prom:9090 --set-json 'pools[1]={"name":"worker","background":"only","autoscaling":{"enabled":false},"keda":{"enabled":true,"maxReplicas":3},"dbMaxConnections":20}')
+tpl "${kedaon[@]}" > "$tmp/keda.yaml"
+python3 scripts/check_manifests.py "$tmp/keda.yaml"
+python3 - "$tmp/keda.yaml" <<'PY2'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+so = [d for d in docs if d["kind"] == "ScaledObject"]
+assert [d["metadata"]["name"] for d in so] == ["ferrum-worker"], so
+spec = so[0]["spec"]
+assert spec["scaleTargetRef"] == {"name": "ferrum-worker"} and spec["minReplicaCount"] == 1 and spec["maxReplicaCount"] == 3
+for t in spec["triggers"]:
+    # Every replica reports the same database-wide figure: the largest, never the sum.
+    assert t["type"] == "prometheus" and t["metadata"]["query"].startswith("max(") and "sum(" not in t["metadata"]["query"], t
+assert {t["metadata"]["query"].split("{")[0] for t in spec["triggers"]} == {"max(ferrum_outbox_pending", "max(ferrum_jobs_oldest_waiting_seconds"}
+worker = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ferrum-worker")
+assert "replicas" not in worker["spec"], "KEDA owns the worker's replicas"
+assert not [d for d in docs if d["kind"] == "HorizontalPodAutoscaler" and d["spec"]["scaleTargetRef"]["name"] == "ferrum-worker"]
+PY2
+tpl "${kedaon[@]}" --set-json 'keda.triggers=[{"type":"cron","metadata":{"timezone":"UTC","start":"0 8 * * *","end":"0 18 * * *","desiredReplicas":"2"}}]' | grep -q 'type: cron'
+refuses "must never both scale one Deployment" -f "$chart/presets/split.yaml" --set keda.prometheusAddress=x --set-json 'pools[1]={"name":"worker","background":"only","replicas":1,"keda":{"enabled":true,"maxReplicas":2},"autoscaling":{"maxReplicas":2}}'
+refuses "for a pool with background: only" -f "$chart/presets/split.yaml" --set keda.prometheusAddress=x --set-json 'pools[0]={"name":"web","background":"off","autoscaling":{"enabled":false},"keda":{"enabled":true}}'
+refuses "set keda.prometheusAddress" -f "$chart/presets/split.yaml" --set-json 'pools[1]={"name":"worker","background":"only","autoscaling":{"enabled":false},"keda":{"enabled":true,"maxReplicas":2}}'
+refuses "keda.minReplicas must be at least 1" "${kedaon[@]}" --set keda.minReplicas=0
+refuses "worker 9 x (20 + 4)" "${kedaon[@]}" --set keda.maxReplicas=9 --set-json 'pools[1]={"name":"worker","background":"only","autoscaling":{"enabled":false},"keda":{"enabled":true},"dbMaxConnections":20}'
+
 echo "an app's calls are matched on X-Ferrum-UI, anchored, and other paths stay with the host"
 python3 - "$tmp/pools.yaml" <<'PY'
 import re, sys, yaml

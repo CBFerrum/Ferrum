@@ -68,4 +68,17 @@ wide[1]["spec"]["pgbouncer"]["parameters"]["reserve_pool_size"] = "50"
 assert [p for p in problems(cluster + [wide, big, through("ferrum", 30)]) if "440" in p], problems(cluster + [wide, big, through("ferrum", 30)])
 # A replica that does not use the pooler still counts in full beside it: + 3 x 34 = 442.
 assert [p for p in problems(pooled + [server("Deployment", "ferrum-old", 30, replicas=3)]) if "all together" in p and "442" in p]
+
+# A KEDA ScaledObject counts as an autoscaler: at its maxReplicaCount, never beside an HPA or fixed replicas.
+def scaled(name, most):
+    return ("chart", {"kind": "ScaledObject", "metadata": {"name": name}, "spec": {"scaleTargetRef": {"name": name}, "maxReplicaCount": most}})
+
+
+worker = server("Deployment", "ferrum-worker", 20)
+assert problems(cluster + [hpa, server("Deployment", "ferrum", 30), worker, scaled("ferrum-worker", 2)]) == []
+# 8 x 34 + 5 x 24 + 20 = 412
+assert [p for p in problems(cluster + [hpa, server("Deployment", "ferrum", 30), worker, scaled("ferrum-worker", 5)]) if "412" in p]
+assert any("two things now own" in p for p in problems(cluster + [server("Deployment", "ferrum-worker", 20, replicas=2), scaled("ferrum-worker", 2)]))
+both = ("chart", {"kind": "HorizontalPodAutoscaler", "metadata": {"name": "w"}, "spec": {"scaleTargetRef": {"kind": "Deployment", "name": "ferrum-worker"}, "maxReplicas": 2}})
+assert any("both scale" in p for p in problems(cluster + [worker, both, scaled("ferrum-worker", 2)]))
 print("the manifests say what they mean")

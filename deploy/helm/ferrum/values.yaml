@@ -78,6 +78,7 @@ pools: []
 #   background: both           # both | off (FERRUM_RUN_BACKGROUND=false: API only) | only (no Service, no routes)
 #   replicas: 3                # used when autoscaling.enabled is false
 #   autoscaling: {enabled: true, minReplicas: 3, maxReplicas: 10}
+#   keda: {enabled: false}       # background: only pools: scale on waiting work (`keda` below)
 #   resources: {requests: {cpu: 250m, memory: 256Mi}}
 #   dbMaxConnections: 30       # FERRUM_DB_MAX_CONNECTIONS for this pool
 #   pdb: {enabled: true, maxUnavailable: 1}
@@ -91,6 +92,23 @@ pools: []
 #       hostnames: []          # whole hosts (with no paths or apps); empty: the gateway's own hosts
 #       paths: []              # path prefixes
 #       apps: []               # app ids, matched on the X-Ferrum-UI header ({app}@{version})
+
+# Scaling a pool with `background: only` on how much work waits, with KEDA (installed separately; the chart
+# installs no part of it). A pool turns it on with `keda: {enabled: true}` and takes the rest from here; it
+# must then have `autoscaling: {enabled: false}`, since an autoscaler and KEDA would both own its replicas.
+# The triggers read the server's gauges through Prometheus (the ServiceMonitor and PodMonitor above). Every
+# replica reports the same figures, which it reads from the database, so the queries take `max`, never `sum`.
+#   ferrum_outbox_pending              events not yet handled (also those waiting to be retried)
+#   ferrum_jobs_oldest_waiting_seconds how long the oldest job that is due has waited (0: none)
+keda:
+  minReplicas: 1               # at least 1: schedules and upkeep show in no gauge, so none would wake a worker
+  maxReplicas: 4               # counted in the connection budget
+  pollingInterval: 30
+  cooldownPeriod: 300
+  prometheusAddress: ""        # e.g. http://prometheus-operated.monitoring.svc:9090
+  outboxPerReplica: 500        # one more replica for every this many events waiting
+  jobWaitSeconds: 60           # more replicas while the oldest due job has waited longer than this
+  triggers: []                 # KEDA triggers that replace the two above (ScaledObject spec.triggers)
 
 # Zones (docs/plan/topology.md, D4): name -> rule, given to every pool as FERRUM_ZONES (JSON). A rule:
 # {staff: all | none | [app, ...], admin: true|false, scim: true|false, networks: [cidr, ...]}.

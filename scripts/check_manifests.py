@@ -68,6 +68,15 @@ def problems(docs):
     found = []
     workloads = {(d["kind"], d["metadata"]["name"]): (f, d) for f, d in docs if d.get("kind") in ("Deployment", "StatefulSet")}
     scalers = [d for _, d in docs if d.get("kind") == "HorizontalPodAutoscaler"]
+    # A KEDA ScaledObject makes an autoscaler of its own: count it as one, at its maxReplicaCount (KEDA's
+    # default 100), and never beside another on the same workload.
+    for so in (d for _, d in docs if d.get("kind") == "ScaledObject"):
+        ref = so["spec"]["scaleTargetRef"]
+        target = {"kind": ref.get("kind", "Deployment"), "name": ref["name"]}
+        if any(h["spec"]["scaleTargetRef"]["kind"] == target["kind"] and h["spec"]["scaleTargetRef"]["name"] == target["name"] for h in scalers):
+            found.append(f"{so['metadata']['name']}: a ScaledObject and another autoscaler both scale {target['kind']}/{target['name']}")
+            continue
+        scalers.append({"metadata": so["metadata"], "spec": {"scaleTargetRef": target, "maxReplicas": so["spec"].get("maxReplicaCount", 100)}})
     for hpa in scalers:
         target = hpa["spec"]["scaleTargetRef"]
         entry = workloads.get((target["kind"], target["name"]))

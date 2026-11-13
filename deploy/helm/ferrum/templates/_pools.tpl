@@ -44,6 +44,13 @@ Call with the root context: include "ferrum.pools" . | fromJson
 {{- /* Booleans set to false are kept: merge would treat them as unset. */ -}}
 {{- $as := mergeOverwrite (deepCopy $v.autoscaling) (deepCopy ($p.autoscaling | default dict)) -}}
 {{- if and $p.autoscaling (hasKey $p.autoscaling "enabled") -}}{{- $_ := set $as "enabled" $p.autoscaling.enabled -}}{{- end -}}
+{{- $keda := mergeOverwrite (deepCopy ($v.keda | default dict)) (deepCopy ($p.keda | default dict)) -}}
+{{- if $keda.enabled -}}
+{{- if ne $bg "only" -}}{{- fail (printf "pool %s: keda scales on waiting background work, so it is for a pool with background: only" $name) -}}{{- end -}}
+{{- if $as.enabled -}}{{- fail (printf "pool %s: a KEDA ScaledObject and an autoscaler must never both scale one Deployment: set autoscaling: {enabled: false}" $name) -}}{{- end -}}
+{{- if lt (int $keda.minReplicas) 1 -}}{{- fail (printf "pool %s: keda.minReplicas must be at least 1: schedules and upkeep show in no gauge, so nothing would wake a worker" $name) -}}{{- end -}}
+{{- if and (not $keda.triggers) (not $keda.prometheusAddress) -}}{{- fail (printf "pool %s: set keda.prometheusAddress, the Prometheus that scrapes the server, or give keda.triggers" $name) -}}{{- end -}}
+{{- end -}}
 {{- $pdb := mergeOverwrite (deepCopy $v.pdb) (deepCopy ($p.pdb | default dict)) -}}
 {{- if and $p.pdb (hasKey $p.pdb "enabled") -}}{{- $_ := set $pdb "enabled" $p.pdb.enabled -}}{{- end -}}
 {{- $out = append $out (dict
@@ -54,6 +61,7 @@ Call with the root context: include "ferrum.pools" . | fromJson
   "zone" ($p.zone | default "" | toString)
   "replicas" (hasKey $p "replicas" | ternary $p.replicas $v.replicas)
   "autoscaling" $as
+  "keda" $keda
   "resources" ($p.resources | default $v.resources)
   "pdb" $pdb
   "dbMaxConnections" (hasKey $p "dbMaxConnections" | ternary $p.dbMaxConnections $v.dbMaxConnections)
@@ -78,6 +86,7 @@ counts only its direct connections and the pooler its own. Checked with pools or
 {{- end -}}
 {{- range $out -}}
 {{- $r := ternary .autoscaling.maxReplicas .replicas .autoscaling.enabled | int -}}
+{{- if and .keda .keda.enabled }}{{ $r = int .keda.maxReplicas }}{{ end -}}
 {{- if $pl.enabled -}}
 {{- $need = add $need (mul $r (int $pl.directConnectionsPerReplica)) -}}
 {{- $parts = append $parts (printf "%s %d x %d direct" (.name | default "ferrum") $r (int $pl.directConnectionsPerReplica)) -}}
