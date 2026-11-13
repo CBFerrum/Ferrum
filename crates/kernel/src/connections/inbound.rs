@@ -355,6 +355,7 @@ impl Kernel {
         }
         let empty = json!({});
         let connection = json!({"name": conn.name, "id": conn.id});
+        let (now, today) = super::clock_vars(chrono::Utc::now());
         let outside;
         let ctx = if map.outside {
             outside = Ctx { origin: Some("outside".into()), ..ctx.clone() };
@@ -364,7 +365,7 @@ impl Kernel {
         };
         for (i, item) in items.iter().enumerate() {
             let at = |e| crate::pack::about(&format!("item {}", i + 1), e);
-            let picked = map.pick(item, &[("payload", payload), ("item", item), ("connection", &connection)]).map_err(at)?;
+            let picked = map.pick(item, &[("payload", payload), ("item", item), ("connection", &connection), ("now", &now), ("today", &today)]).map_err(at)?;
             let extra = [("payload", payload), ("item", item), ("picked", &picked), ("connection", &connection)];
             crate::automation::run_step(self, ctx, tx, &map.entity, None, (&empty, &empty), &empty, &extra, "inbound", map.step()).await.map_err(at)?;
         }

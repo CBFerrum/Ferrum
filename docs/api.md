@@ -1314,6 +1314,19 @@ service holds (a number, or `bytes=0-<last>`; none with a 2xx: the upload is com
 starts the upload again from the step `restart_from` names under new keys (at most twice), or stops, saying so. Files
 sent in chunks may be up to `FERRUM_CONNECTION_UPLOAD_MB` (25 MB unless the operator says); a chunk is at most 25 MB.
 
+**Functions and the clock** ([BD-56](builder/decisions.md#bd-56-template-functions-and-the-clock)): templates and step
+expressions have `now` (RFC 3339, UTC, milliseconds) and `today`, fixed at the first attempt of the call's key, so a
+retry sends the same moment; answers' and mappings' expressions have them too (the moment they run). Filters: `sha256`
+(hex), `hmac(key, "hex" | "base64" | "base64url")` (SHA-256), `base64`, `base64url`, `base32`, `urlencode`, `tid` (a
+13-character id that sorts by time, from the key and its clock: `{{ key | tid }}`), `length_in("chars" | "graphemes" |
+"utf16" | "bytes")`, `entities(unit)` (the links, mentions and tags in a text: `[{type, text, value, start, end}]`,
+offsets in that unit), `truncate(n, end?)` (by graphemes), `strftime(format)` (of a moment), besides the template
+language's own (`replace`, `split`, `join`, `default`, `json`, …). A record keyed from the call and a facet in bytes:
+
+```json
+"body": "{\"rkey\": {{ key | tid | json }}, \"createdAt\": {{ now | json }}, \"facets\": {{ inputs.text | entities('bytes') | json }}}"
+```
+
 ### Moving an app's own HTTP client onto a connection
 
 Social, ERP's carriers and the service apps each build requests themselves. To move one:
