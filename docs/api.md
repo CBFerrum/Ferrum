@@ -1351,6 +1351,16 @@ result in the item before it is mapped (`item.numbers.likes`); a page with more 
 fails the run, saying so, and asks nothing. An operation's templates read `account` and `auth` too:
 `"path": "/users/{{ account }}/posts"`.
 
+**Sign-in extras** ([BD-61](builder/decisions.md#bd-61-sign-in-extras)): on `provider`, `keep: ["user_id"]` keeps fields
+of the token answer, sealed with the tokens, for templates and pulls as `auth.user_id` (a session's `keep` names fields
+of its login's answer); a token answer written as a form is read as one; `after: ["exchange"]` makes operations after
+the code is exchanged (given `inputs.access_token`, `refresh_token`, `client_id`), each result's names replacing the
+answer's (a long-lived token for a short one); `refresh: "refresh_long"` refreshes with an operation (a GET with the token
+itself) instead of the token address, with or without a refresh token; `registration: "register_app"` registers the
+platform's client at this server with an operation of its own (given `inputs.redirect_uri`, `scopes`, `client_name`;
+its result's `client_id` and `client_secret` kept, once), for a server whose registration is not RFC 7591's;
+`never_expires: true` ignores the answer's expiry. These operations sign in: they are never called as operations.
+
 ### Moving an app's own HTTP client onto a connection
 
 Social, ERP's carriers and the service apps each build requests themselves. To move one:
@@ -1761,10 +1771,11 @@ CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/s
 workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`. A package that uses any of this
 (`layout_file`, `page`, `letterhead`, `copies`, `enabled`, a LetterHead or PrintSettings record in its seed) needs
 the app API version 0.3.3: its app says `platform: ">=0.3.3, <0.4"` (an older server refuses the fields it does not
-know). The app API is 0.3.6 now: what each version carries is in
+know). The app API is 0.3.7 now: what each version carries is in
 [BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034)
 (0.3.4), [BD-51](builder/decisions.md#bd-51-the-connector-hubs-instances-move-and-the-app-api-035) (0.3.5) and
-[BD-52](builder/decisions.md#bd-52-a-link-limited-by-another-field-of-the-record-and-the-app-api-036) (0.3.6).
+[BD-52](builder/decisions.md#bd-52-a-link-limited-by-another-field-of-the-record-and-the-app-api-036) (0.3.6) and
+[BD-62](builder/decisions.md#bd-62-connections-part-three-and-the-app-api-037) (0.3.7).
 
 ### Moving an app's print layout or file to a document template
 
