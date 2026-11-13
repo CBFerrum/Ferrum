@@ -112,7 +112,7 @@ and one each in Bookings, DAM, Field Service and Forms.
 | commerce | `src/coupon.rs:147` | `update e_coupon_code` | `redeem` | engine work: statuses, counts, queues, upkeep |
 | commerce | `src/coupon.rs:163` | `update e_coupon_code` | `release` | engine work: statuses, counts, queues, upkeep |
 | commerce | `src/payment.rs:677` | `update e_payment_request` | `on_cancel` | consequence of an audited document operation (hook) |
-| commerce | `src/store.rs:378` | `update e_item` | `mark_delivery_charge` | engine work: statuses, counts, queues, upkeep |
+| commerce | `src/store.rs:373` | `update e_item` | `mark_delivery_charge` | engine work: statuses, counts, queues, upkeep |
 | commerce | `src/upkeep.rs:292` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
 | commerce | `src/upkeep.rs:315` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/calendars.rs:163` | `update e_calendar_event` | `ensure_default` | engine work: statuses, counts, queues, upkeep |
@@ -169,10 +169,10 @@ and one each in Bookings, DAM, Field Service and Forms.
 | edge | `src/reports.rs:220` | `update e_edge_report_schedule` | `noted` | engine work: statuses, counts, queues, upkeep |
 | edge | `src/site.rs:374` | `update e_device_definition` | `allow_joining` | records its own audit or activity entry |
 | edge | `src/site.rs:477` | `update e_edge_dashboard` | `set_share` | records its own audit or activity entry |
-| erp | `addons/finance/src/bank.rs:77` | `update e_bank_account` | `after_save` | consequence of an audited document operation (hook) |
-| erp | `addons/finance/src/dunning.rs:100` | `update e_dunning_type` | `after_save` | consequence of an audited document operation (hook) |
-| erp | `addons/finance/src/dunning.rs:399` | `update e_dunning` | `upkeep` | engine work: statuses, counts, queues, upkeep |
-| erp | `addons/finance/src/dunning.rs:406` | `update e_dunning` | `upkeep` | engine work: statuses, counts, queues, upkeep |
+| erp | `addons/finance/src/bank.rs:75` | `update e_bank_account` | `after_save` | consequence of an audited document operation (hook) |
+| erp | `addons/finance/src/dunning.rs:92` | `update e_dunning_type` | `after_save` | consequence of an audited document operation (hook) |
+| erp | `addons/finance/src/dunning.rs:388` | `update e_dunning` | `upkeep` | engine work: statuses, counts, queues, upkeep |
+| erp | `addons/finance/src/dunning.rs:395` | `update e_dunning` | `upkeep` | engine work: statuses, counts, queues, upkeep |
 | erp | `addons/finance/src/lib.rs:77` | `update e_supplier` | `erase` | consequence of an audited document operation (hook) |
 | erp | `addons/mes/src/runs.rs:745` | `update e_production_revision` | `approve` | records its own audit or activity entry |
 | erp | `addons/quality/src/lib.rs:229` | `update e_inspection_plan` | `approve_plan` | consequence of an audited document operation (hook) |
