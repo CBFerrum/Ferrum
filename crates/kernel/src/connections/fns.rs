@@ -178,6 +178,52 @@ pub(crate) fn add(env: &mut Environment<'static>) {
         write!(out, "{}", moment(&v)?.format(&format)).map_err(|_| bad(format!("{format} is not a date format")))?;
         Ok(out)
     });
+    // Date arithmetic on a moment (the fixed `now` too, BD-70): `now | add_time('-7d')`, `now | start_of('day')`.
+    env.add_filter("add_time", |v: String, by: String| -> Result<String, JError> { Ok(shifted(moment(&v)?, &by)?.to_rfc3339()) });
+    env.add_filter("start_of", |v: String, unit: String| -> Result<String, JError> { Ok(bounded(moment(&v)?, &unit, false)?.to_rfc3339()) });
+    env.add_filter("end_of", |v: String, unit: String| -> Result<String, JError> { Ok(bounded(moment(&v)?, &unit, true)?.to_rfc3339()) });
+}
+
+/// `t` moved by `by`: a signed whole number and a unit, `s`, `m`, `h`, `d` or `w` (`-7d`, `90m`, `+1h`).
+fn shifted(t: chrono::DateTime<chrono::Utc>, by: &str) -> Result<chrono::DateTime<chrono::Utc>, JError> {
+    let by = by.trim();
+    let wrong = || bad(format!("{by} is not a duration: a whole number and s, m, h, d or w (-7d, 90m)"));
+    let (n, unit) = by.split_at(by.len().checked_sub(1).ok_or_else(wrong)?);
+    let n: i64 = n.trim_start_matches('+').parse().map_err(|_| wrong())?;
+    let d = match unit {
+        "s" => chrono::Duration::try_seconds(n),
+        "m" => chrono::Duration::try_minutes(n),
+        "h" => chrono::Duration::try_hours(n),
+        "d" => chrono::Duration::try_days(n),
+        "w" => chrono::Duration::try_weeks(n),
+        _ => None,
+    }
+    .ok_or_else(wrong)?;
+    t.checked_add_signed(d).ok_or_else(wrong)
+}
+
+/// The start (or the last second) of `t`'s hour, day, week (from Monday) or month, in UTC.
+fn bounded(t: chrono::DateTime<chrono::Utc>, unit: &str, end: bool) -> Result<chrono::DateTime<chrono::Utc>, JError> {
+    use chrono::{Datelike, Duration, NaiveTime, TimeZone, Timelike};
+    let day = |d: chrono::NaiveDate| chrono::Utc.from_utc_datetime(&d.and_time(NaiveTime::MIN));
+    let (start, next) = match unit {
+        "hour" => {
+            let s = t.with_minute(0).and_then(|t| t.with_second(0)).and_then(|t| t.with_nanosecond(0)).unwrap_or(t);
+            (s, s + Duration::hours(1))
+        }
+        "day" => (day(t.date_naive()), day(t.date_naive()) + Duration::days(1)),
+        "week" => {
+            let s = day(t.date_naive()) - Duration::days(i64::from(t.weekday().num_days_from_monday()));
+            (s, s + Duration::weeks(1))
+        }
+        "month" => {
+            let first = t.date_naive().with_day(1).unwrap_or(t.date_naive());
+            let next = if first.month() == 12 { first.with_year(first.year() + 1).and_then(|d| d.with_month(1)) } else { first.with_month(first.month() + 1) };
+            (day(first), day(next.unwrap_or(first)))
+        }
+        u => return Err(bad(format!("{u} is not hour, day, week or month"))),
+    };
+    Ok(if end { next - Duration::seconds(1) } else { start })
 }
 
 #[cfg(test)]
@@ -186,6 +232,18 @@ mod tests {
 
     fn render(t: &str, vars: serde_json::Value) -> String {
         super::super::render(t, &vars).unwrap()
+    }
+
+    #[test]
+    fn date_arithmetic_on_the_clock() {
+        let v = serde_json::json!({"now": "2026-11-13T17:41:34+00:00"});
+        assert_eq!(render("{{ now | add_time('-7d') }}", v.clone()), "2026-11-06T17:41:34+00:00");
+        assert_eq!(render("{{ now | add_time('+90m') }}", v.clone()), "2026-11-13T19:11:34+00:00");
+        assert_eq!(render("{{ now | start_of('day') }} {{ now | end_of('day') }}", v.clone()), "2026-11-13T00:00:00+00:00 2026-11-13T23:59:59+00:00");
+        assert_eq!(render("{{ now | start_of('week') }} {{ now | end_of('month') }}", v.clone()), "2026-11-09T00:00:00+00:00 2026-11-30T23:59:59+00:00");
+        assert_eq!(render("{{ now | add_time('-1d') | start_of('day') | strftime('%s') }}", v.clone()), "1794441600");
+        assert!(super::super::render("{{ now | add_time('7 days') }}", &v).is_err());
+        assert!(super::super::render("{{ now | start_of('year') }}", &v).is_err());
     }
 
     #[test]
