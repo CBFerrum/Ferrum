@@ -871,8 +871,16 @@ differences from a provider waiting for a person, the tenant count, and
 `ferrum_operation_failures_total{package, entity, operation, kind}`: submits, cancels, actions and
 workflow steps on records that did not go through since the process started, `refused` by their own
 rules (an invoice with no account to post to, a stale version) or a `fault` (logged with its cause).
-Who may not do something, and records that are not there, are not counted. Take request rates and
-latencies from the gateway controller's metrics. Suggested alerts:
+Who may not do something, and records that are not there, are not counted.
+`ferrum_http_request_duration_seconds{app, class}` is a histogram of the requests this replica answered
+(its `_count` is how many, its `_sum` how long they took in all; buckets from 5 ms to 10 s). `class` is one
+of `page`, `records`, `app` (an app's own endpoints), `files`, `live` (sockets: the time to open one),
+`admin`, `sign-in`, `public` and `other`. `app` is the app the path names (`/api/app/{package}`,
+`/api/ext/{app}`, a page's route), else the app in the `x-ferrum-ui` header its screens send when that is an
+app compiled into this build, else `other`; apps installed from a store count as `other`. A header names
+nothing new: the series are at most (apps compiled in + 1) × 9 × 14, and only those with requests are
+written. There is no label for a workspace. The gateway controller's own metrics still say what reached the
+gateway. Suggested alerts:
 
 | Alert | Condition |
 |---|---|

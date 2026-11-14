@@ -20,6 +20,7 @@ pub mod openapi;
 pub mod packages;
 pub mod process;
 pub mod request_log;
+pub mod request_metrics;
 pub mod search;
 pub mod shell;
 pub mod shell_words;

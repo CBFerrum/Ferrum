@@ -286,6 +286,7 @@ impl Hooks for App {
         probe_storage(&storage).await;
         let objects = Arc::new(crate::objects::Objects::new(&settings).map_err(|e| Error::Message(format!("object storage: {e}")))?);
         let storage = Arc::new(storage);
+        crate::request_metrics::Requests::install(crate::request_metrics::Requests::new(&crate::appmgr::compiled_natives()));
         let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())
             .map_err(Error::Message)?;
         let shell = Arc::new(crate::shell::Shell::new(kernel.clone(), storage.clone(), &settings, &ctx.config.server.host));
@@ -528,7 +529,9 @@ impl Hooks for App {
             .layer(axum::middleware::from_fn(traced))
             // A signed-out page goes by the browser's language (sign-in, a status page).
             .layer(axum::middleware::from_fn(crate::shell_words::browser))
-            .layer(axum::middleware::from_fn(move |req, next| app_origins(apps_base.clone(), req, next))))
+            .layer(axum::middleware::from_fn(move |req, next| app_origins(apps_base.clone(), req, next)))
+            // Outermost: a request's whole time, by app and kind (/metrics).
+            .layer(axum::middleware::from_fn(crate::request_metrics::count)))
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {

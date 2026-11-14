@@ -222,7 +222,8 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
         job_wait.unwrap_or(0.0),
         st.shares.refused.load(std::sync::atomic::Ordering::Relaxed)
     );
-    let mut resp = body.into_response();
+    // Requests by app and kind, at the end (crate::request_metrics).
+    let mut resp = format!("{body}{}", crate::request_metrics::text()).into_response();
     resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; version=0.0.4"));
     Ok(resp)
 }
