@@ -758,7 +758,7 @@ async fn shapes(base: &AppContext, st: &AppState) {
     assert!(status.is_redirection() && location.starts_with("/login"), "its own sign-in: {status} {location}");
 
     // An address in use that comes to forward: those signed in there keep it for its leaving period, as when one is
-    // removed; everyone else goes on to the main address at once.
+    // removed; everyone else goes on to the main address at once, as they will after it, by a redirect no browser keeps.
     let (status, body) = patch(FIELD, json!({"forward": true, "apps": null, "label": null})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let changed: Value = serde_json::from_str(&body).unwrap();
@@ -767,7 +767,9 @@ async fn shapes(base: &AppContext, st: &AppState) {
     assert!(!status.is_redirection(), "still served to those signed in there: {status}");
     assert_eq!(bootstrap(&html)["host"]["leaving"]["to"], "http://beta.ferrum.test", "and told where to go");
     let (status, location, ..) = get(FIELD, "/crm/", None).await;
-    assert_eq!((status, location.as_str()), (StatusCode::PERMANENT_REDIRECT, "http://beta.ferrum.test/crm/"));
+    assert_eq!((status, location.as_str()), (StatusCode::FOUND, "http://beta.ferrum.test/crm/"), "never a 308 a browser keeps");
+    let status = get(FIELD, "/", Some("not-a-session")).await.0;
+    assert!(status.is_redirection() && status != StatusCode::PERMANENT_REDIRECT, "a dead cookie: a redirect no browser keeps too ({status})");
     sql(&k, &format!("update tenant_host set leaving_until = now() - interval '1 second' where host = '{FIELD}'")).await;
     k.release_hosts(uuid::Uuid::nil()).await.unwrap(); // clears this replica's host cache
     let (status, location, ..) = get(FIELD, "/data/", Some(&nina_field)).await;

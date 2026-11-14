@@ -281,8 +281,9 @@ query), anything else → `404` naming it; only `/.well-known/ferrum-domain` pas
 - Portal and `site:`: refused (`check_shape`). `apps` and `label`: refused together with `forward` (no bar shows them);
   `home` stays meaningful.
 - An address that served and comes to forward first gets its leaving period (`leaving_until` on the live row, the leaving
-  machinery: those signed in there are served and told; others `308`), so offline work kept for it is not lost. Turned
-  off: `leaving_until` cleared, it serves at once.
+  machinery: those signed in there are served and told), so offline work kept for it is not lost. A visitor's page there
+  (no session cookie) is answered by the middleware as after the period, `302` to its landing: a `308` would be kept by
+  the browser and skip the landing for good. Turned off: `leaving_until` cleared, it serves at once.
 - Never named as a serving or staff address (`serving_hosts`, `staff_address`); a move re-makes it forwarding.
 - An older build ignores `forward` and serves the workspace there: nothing protective is lost, so no floor. It could
   make a forwarding address the main one (its succession knows no `forward`); a main address never forwards, so that
@@ -318,7 +319,6 @@ it; the list's limit names no row).
 | A domain proven once comes back by pointing alone: if its owner changes and the new owner points it here, it opens the old workspace again | The row never left that workspace; seven failed checks unverify it, and the new owner can ask the operator to release it |
 | An older build ignores `host_quarantine` and the record | `FERRUM_DOMAIN_PROOF=record`, set explicitly, puts a floor in place; by default none (the upgrade rolls back freely), and operations.md says an older build, while it runs, checks the old way and knows no quarantine |
 | A deleted sandbox's slug stays free (documented: refresh by the same name) | Not changed: a sandbox has only the operator's `{as}.{base}` |
-| During a forwarding address's leaving period visitors get `308`, which browsers keep: turning forwarding off soon after leaves them going to the main address | The leaving machinery as it is; after the period every answer is `302` (`no-store`) |
 | A forwarding address in a zone that admits no staff names the main address to anyone | As a leaving address does; the main address's own zone still decides who is admitted there |
 
 ## Not doing

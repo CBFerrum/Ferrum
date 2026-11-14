@@ -3247,8 +3247,9 @@ as on any address: it still needs its certificate and, for a domain of the works
   refused for the portal and a site, and together with `apps` or `label`, which would mean nothing without a bar. `home`
   is where `/` goes. It needs a main address to send people to.
 * An address that already served, set to forward, first has its leaving period (`FERRUM_HOST_LEAVING_DAYS`), as a removed
-  one has: those signed in there go on until it ends, told so under the bar, and everyone else is sent on (`308`). Turned
-  off, it is an address like any other again at once.
+  one has: those signed in there go on until it ends, told so under the bar, and everyone else's pages are sent on as they
+  will be after it (`302`, which no browser keeps; a removed address answers `308`). Turned off, it is an address like any
+  other again at once.
 * It always leads to the current main address, which it can never become: making it the main one is refused, and when the
   main address is removed the one that takes its place is never a forwarding one. With no main address left it answers
   `404` to everything.

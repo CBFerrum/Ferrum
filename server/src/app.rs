@@ -711,18 +711,30 @@ async fn per_address(limiter: Arc<RateLimiter>, req: axum::extract::Request, nex
 /// (`302`) to the workspace's main address, `/` to the address's `home` there (its app's first launcher route; Home without
 /// one), any other path with its query as it came. Anything else, the API among it, is `404` naming the main address. Its
 /// proof (`/.well-known/ferrum-domain`) answers as on any address. The rest of the server takes it for a moved address.
+/// One that served before still has its leaving period, serving those signed in there; a visitor's page is sent on here
+/// already, as it will be once the period ends, with this redirect no browser keeps, never a removed address's `308`.
 async fn forwarding(st: Arc<AppState>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::http::{HeaderValue, Method, StatusCode, header};
     use axum::response::IntoResponse;
+    use ferrum_kernel::shell::HostRoute;
     let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
-    let Ok(ferrum_kernel::shell::HostRoute::Forward { tenant, to, home }) = st.kernel.route_host(host).await else { return next.run(req).await };
     let path = req.uri().path();
+    let server = ["/api", "/oauth", "/ws", "/mcp", "/files", "/.well-known", "/metrics"].iter().any(|p| path == *p || path.starts_with(&format!("{p}/")));
+    let page = matches!(*req.method(), Method::GET | Method::HEAD) && !server && !path.starts_with("/_");
+    let (tenant, to, home) = match st.kernel.route_host(host).await {
+        Ok(HostRoute::Forward { tenant, to, home }) => (tenant, to, home),
+        Ok(HostRoute::Leaving { tenant, to, .. }) if page && crate::shell::session_cookie(req.headers(), st.shell.secure).is_none() => {
+            match (st.kernel.host_shown(host).await, st.kernel.host_zone(host).await) {
+                (Ok(Some(shown)), Ok(zone)) if shown.shape.forward => (tenant, to, shown.shape.home.filter(|_| zone.is_none())),
+                _ => return next.run(req).await,
+            }
+        }
+        _ => return next.run(req).await,
+    };
     if path == "/.well-known/ferrum-domain" {
         return next.run(req).await;
     }
     let main = to.as_deref().and_then(|h| st.shell.origin_of(h, req.headers()));
-    let server = ["/api", "/oauth", "/ws", "/mcp", "/files", "/.well-known", "/metrics"].iter().any(|p| path == *p || path.starts_with(&format!("{p}/")));
-    let page = matches!(*req.method(), Method::GET | Method::HEAD) && !server && !path.starts_with("/_");
     let Some(main) = main.filter(|_| page) else {
         let said = match &to {
             Some(h) => format!(
