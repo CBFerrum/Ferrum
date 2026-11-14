@@ -17,6 +17,7 @@ use loco_rs::environment::Environment;
 use serde_json::{Value, json};
 use sha2::Digest;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 const PASSWORD: &str = "Correct-Horse-9";
 const HOST: &str = "erp.acme.test";
@@ -390,4 +391,67 @@ async fn scenario() {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(trail, ["create", "networks"], "audited");
+
+    // ── 3. Idle timeout ──
+    for bad in [json!(4), json!(-1), json!(20000), json!("15")] {
+        let (status, _) = call(&r, Method::PUT, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), Some(json!({"idle_minutes": bad}))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "idle_minutes {bad}");
+    }
+    let (status, answer) = call(&r, Method::PUT, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), Some(json!({"idle_minutes": 15}))).await;
+    assert_eq!((status, serde_json::from_str::<Value>(&answer).unwrap()["idle_minutes"].clone()), (StatusCode::OK, json!(15)));
+    // A browser session, and the page's bearer token bound to it.
+    let (_, page, cookie) = sign_in(&r, INSIDE, "member@acme.test", PASSWORD, true).await;
+    let (cookie, bound) = (cookie.unwrap(), page["token"].as_str().unwrap().to_string());
+    let secret = base.config.auth.as_ref().unwrap().jwt.as_ref().unwrap().secret.clone();
+    let sid: Uuid = loco_rs::auth::jwt::JWT::new(&secret).validate(&cookie).unwrap().claims.claims["sid"].as_str().unwrap().parse().unwrap();
+    let seen = |ago: i64| {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.tenant_tx(acme).await.unwrap();
+            sqlx::query("update user_session set last_seen_at = now() - make_interval(mins => $2::int) where id = $1")
+                .bind(sid)
+                .bind(ago as i32)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    let last_seen = || {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.tenant_tx(acme).await.unwrap();
+            let (at, revoked): (chrono::DateTime<chrono::Utc>, bool) =
+                sqlx::query_as("select last_seen_at, revoked_at is not null from user_session where id = $1").bind(sid).fetch_one(&mut *tx).await.unwrap();
+            tx.commit().await.unwrap();
+            (chrono::Utc::now() - at, revoked)
+        }
+    };
+    // A socket's recheck is not activity: it leaves the session's last use where it was.
+    seen(3).await;
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(header::HOST, HOST.parse().unwrap());
+    headers.insert("x-forwarded-for", INSIDE.parse().unwrap());
+    let entry = ferrum_server::extract::socket_entry(&st, &headers).await;
+    ferrum_server::extract::ctx_from_token(&st, &bound, "it".into(), &entry, false).await.expect("a socket of a live session");
+    assert!(last_seen().await.0 > chrono::Duration::minutes(2), "a recheck does not keep a session alive");
+    // A request is: it moves the last use on.
+    // (A replica keeps its answer about a session for 20 seconds.)
+    tokio::time::sleep(std::time::Duration::from_secs(21)).await;
+    assert_eq!(call(&r, Method::GET, "/api/auth/me", INSIDE, Cred::Cookie(&cookie), None).await.0, StatusCode::OK);
+    assert!(last_seen().await.0 < chrono::Duration::minutes(1), "a request is activity");
+    // Idle longer than allowed: ended, for the socket and every request, and it does not come back.
+    seen(16).await;
+    tokio::time::sleep(std::time::Duration::from_secs(21)).await;
+    let socket = ferrum_server::extract::ctx_from_token(&st, &bound, "it".into(), &entry, false).await;
+    assert!(matches!(&socket, Err(e) if e.0.status() == 401), "the socket's recheck stops it: {:?}", socket.err());
+    assert!(last_seen().await.1, "the session is ended");
+    let (status, answer) = call(&r, Method::GET, "/api/auth/me", INSIDE, Cred::Cookie(&cookie), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert!(answer.contains("sign in again"), "the answer the interface already handles: {answer}");
+    seen(0).await;
+    assert_eq!(call(&r, Method::GET, "/api/auth/me", INSIDE, Cred::Cookie(&cookie), None).await.0, StatusCode::UNAUTHORIZED, "it cannot come back");
+    assert_eq!(call(&r, Method::GET, "/api/auth/me", INSIDE, Cred::Bearer(&holds[0].key), None).await.0, StatusCode::OK, "API keys are not sessions");
+    let (status, _) = call(&r, Method::PUT, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), Some(json!({"idle_minutes": 0}))).await;
+    assert_eq!(status, StatusCode::OK);
 }

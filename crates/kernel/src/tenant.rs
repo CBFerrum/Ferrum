@@ -374,6 +374,8 @@ impl Kernel {
             "offline": settings.get("offline").cloned().unwrap_or_else(|| serde_json::json!({"allowed": true, "hours": 72})),
             "messages": settings.get("messages").cloned().unwrap_or_else(|| serde_json::json!({})),
             // The networks staff may work from (crate::gate); no networks: off.
+            // Minutes of no use after which a browser session ends (0: never, as before).
+            "idle_minutes": settings.get("idle_minutes").and_then(Value::as_i64).unwrap_or(0),
             "staff_networks": crate::gate::StaffNetworks::parse(settings.get("staff_networks")).map_err(Error::Internal)?.to_value(),
         }))
     }
@@ -459,6 +461,15 @@ impl Kernel {
                         ));
                     }
                     clean.insert(k.clone(), if nets.is_off() { Value::Null } else { nets.to_value() });
+                }
+                // Browser sessions unused this many minutes end (0: never).
+                "idle_minutes" => {
+                    let (lo, hi) = (crate::shell::IDLE_MIN_MINUTES, crate::shell::IDLE_MAX_MINUTES);
+                    let m = v
+                        .as_i64()
+                        .filter(|m| *m == 0 || (lo..=hi).contains(m))
+                        .ok_or_else(|| Error::field(k.clone(), format!("must be 0 (never) or {lo} to {hi} minutes")))?;
+                    clean.insert(k.clone(), serde_json::json!(m));
                 }
                 other => return Err(Error::field(other, "unknown setting")),
             }

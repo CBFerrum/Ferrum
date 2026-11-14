@@ -1216,6 +1216,7 @@ on every request. With no networks it is off, as before.
 | Workspace setting (`GET`/`PUT /api/admin/settings`) | Meaning | Default |
 |---|---|---|
 | `staff_networks` | `{"networks": ["10.0.0.0/8", "2001:db8::/32"], "mode": "enforce"}`, at most 100 networks; `mode` `enforce` or `report` | none: off |
+| `idle_minutes` | A browser session unused this many minutes ends: 0 (never) or 5 to 10080 | 0 |
 
 **What it holds.** People's credentials of staff accounts (members and administrators): the browser's
 session, session tokens, OAuth and MCP tokens that act for a person, app passwords of calendar and contacts
@@ -1246,6 +1247,17 @@ trail:
 ```bash
 ferrum task clear_staff_networks tenant:acme reason:"office moved; ticket 5120"
 ```
+
+**Idle sessions.** With `idle_minutes` set, a browser session nobody has used for that long is ended (so it
+cannot come back) the next time it is presented, with the answer "this device was signed out; please sign in
+again" that the interface already handles; tokens a page holds for that session end with it. A request
+through the session is use. A socket is not use of its own, so a tab left open with live updates does not
+keep a session alive: a live-updates socket of an ended or idle session closes at its next check, within a
+minute. A co-editing socket counts the messages the person's editor sends (their typing, their cursor) as
+use. A session's last use is written at most once a minute where the timeout is on (every five minutes
+otherwise), and a replica keeps its answer about a session for 20 seconds, so a session ends within about two
+minutes either side of the timeout; that is why the shortest timeout is five minutes. API keys and OAuth
+tokens are not browser sessions and do not end this way.
 
 **How soon a change holds.** Each replica keeps a person's settings with their roles for up to 30 seconds.
 Saving the networks, or clearing them with the task, tells every replica to drop what it keeps for that

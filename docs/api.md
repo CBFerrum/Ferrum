@@ -706,7 +706,8 @@ applies from each person's next sign-in; `require_sso` refuses password sign-in 
 administrators and needs an enabled single sign-on provider). `staff_networks`
 (`{"networks": ["10.0.0.0/8", …], "mode": "enforce" | "report"}`, or `null` for none) is the networks staff
 may work from ([operations](operations.md#staff-networks)); a save in `enforce` is refused (422) unless the
-caller's own address is inside it. A credential refused by it gets `403` with error `network`.
+caller's own address is inside it. A credential refused by it gets `403` with error `network`. `idle_minutes` (0, or 5 to 10080) ends browser sessions unused that long; such a session's next request gets
+`401` "this device was signed out; please sign in again".
 
 Domains ([operations](operations.md#custom-domains)): `GET /api/admin/domains` → `{domains: [{host,
 kind (subdomain or custom), target (shell, portal, site:{app}), is_primary, verify_token, status

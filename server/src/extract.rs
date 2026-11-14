@@ -63,7 +63,9 @@ impl TokenSession {
 /// The session a token (session JWT, cookie token or `fk_` API key) carries. The ticket between
 /// the two steps of signing in is no session at all; a cookie's token names a browser session
 /// that must still be valid.
-async fn session_of(st: &crate::state::AppState, token: &str, address: &str) -> Result<TokenSession, ApiError> {
+/// `active`: whether this use is the person's activity, which keeps a browser session from going idle
+/// (a request is; a socket's recheck is not).
+async fn session_of(st: &crate::state::AppState, token: &str, address: &str, active: bool) -> Result<TokenSession, ApiError> {
     if token.starts_with("fk_") {
         let (s, scope) = st.kernel.verify_api_key_from(token, address).await?;
         // Support keys go through like anyone's: the role behind them decides what they reach.
@@ -96,7 +98,7 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str) -> 
     let (sid, bound) = (claim("sid")?, claim("bsid")?);
     st.user_limiter.check_local(&format!("{tenant}|{user}"))?;
     if let Some(device) = sid.or(bound) {
-        st.kernel.check_session(tenant, user, device).await?;
+        st.kernel.check_session_as(tenant, user, device, active).await?;
     }
     let app = match claims.get("app") {
         None => None,
@@ -140,9 +142,10 @@ async fn only_through_the_api(st: &crate::state::AppState, ctx: &Ctx, method: &s
 
 /// Resolves a token (session JWT, cookie token or `fk_` API key) to the caller's context. Sockets
 /// use it for both kinds, in the zone their upgrade request came in by (`entry`); HTTP requests go
-/// through [`Auth`], which also checks where each kind may come from.
-pub async fn ctx_from_token(st: &crate::state::AppState, token: &str, request_id: String, entry: &Arc<Entry>) -> Result<Ctx, ApiError> {
-    let t = session_of(st, token, &entry.address).await?;
+/// through [`Auth`], which also checks where each kind may come from. A socket is not activity of its
+/// own: `active` only when the person did something through it (a co-editing change).
+pub async fn ctx_from_token(st: &crate::state::AppState, token: &str, request_id: String, entry: &Arc<Entry>, active: bool) -> Result<Ctx, ApiError> {
+    let t = session_of(st, token, &entry.address, active).await?;
     no_app_token(&t)?;
     if t.setup_only {
         return Err(ApiError(Error::Forbidden("set up two-factor sign-in first; this workspace requires it".into())));
@@ -210,7 +213,7 @@ async fn caller_with_app(
     if from_cookie && !crate::shell::may_change(method, headers) {
         return Err(ApiError(Error::Forbidden("this request did not come from this site's own pages".into())));
     }
-    let t = session_of(st, &token, &client_ip(headers)).await?;
+    let t = session_of(st, &token, &client_ip(headers), true).await?;
     let mismatch = if from_cookie { t.sid.is_none() || t.bound.is_some() } else { t.sid.is_some() };
     if mismatch {
         return Err(ApiError(Error::Unauthorized(
@@ -253,12 +256,12 @@ impl FromRequestParts<AppContext> for BrowserSession {
 pub async fn socket_credential(st: &crate::state::AppState, headers: &HeaderMap, entry: &Arc<Entry>) -> Result<Option<(String, Ctx)>, ApiError> {
     let rid = request_id(headers);
     if let Some(token) = bearer(headers) {
-        let ctx = ctx_from_token(st, &token, rid, entry).await?;
+        let ctx = ctx_from_token(st, &token, rid, entry, false).await?;
         return Ok(Some((token, ctx)));
     }
     match crate::shell::session_cookie(headers, st.shell.secure) {
         Some(token) if crate::shell::origin_is_host(headers) => {
-            let t = session_of(st, &token, &entry.address).await?;
+            let t = session_of(st, &token, &entry.address, false).await?;
             no_app_token(&t)?;
             if t.sid.is_none() || t.bound.is_some() || t.setup_only {
                 return Err(ApiError(Error::Unauthorized("invalid session cookie".into())));
@@ -349,7 +352,7 @@ impl FromRequestParts<AppContext> for SetupAuth {
             let (ctx, _) = caller(&st, parts).await?;
             return Ok(SetupAuth(ctx, None));
         };
-        let t = session_of(&st, &token, &client_ip(&parts.headers)).await?;
+        let t = session_of(&st, &token, &client_ip(&parts.headers), true).await?;
         no_app_token(&t)?;
         if t.sid.is_some() {
             return Err(ApiError(Error::Unauthorized("this token works only as the browser's session cookie".into())));
