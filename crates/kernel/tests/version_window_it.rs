@@ -387,6 +387,14 @@ async fn floors() {
     assert!(in_effect(&db).await.is_empty());
     assert_eq!(settled(&db).await, window::compatible_from());
 
+    // Sandboxes: the floor stays until the last one is deleted.
+    k.require_floor(&window::SANDBOX, "sandbox-a").await.unwrap();
+    k.require_floor(&window::SANDBOX, "sandbox-b").await.unwrap();
+    k.release_floor(&window::SANDBOX, "sandbox-a").await.unwrap();
+    keeps_out(&db, &window::SANDBOX).await;
+    k.release_floor(&window::SANDBOX, "sandbox-b").await.unwrap();
+    assert!(in_effect(&db).await.is_empty());
+
     // Concurrency: holders raised and released at once, over and over, leave exactly what is held and the right value.
     for round in 0..10 {
         let holders: Vec<String> = (0..6).map(|i| format!("h{i}")).collect();

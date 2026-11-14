@@ -61,6 +61,12 @@ pub struct Floor {
     pub temporary: bool,
 }
 
+/// Sandboxes that must never send anything. Not on main yet: the date of the commit that added this.
+// called by `copy_workspace` (require, holder: the sandbox's workspace id) and `delete_sandbox` (release, same holder),
+// wired when the sandbox change merges.
+pub const SANDBOX: Floor =
+    Floor { feature: "sandbox", since: "2026-11-14T06:26:16Z", what: "sandboxes never send mail, messages or calls to anyone outside", temporary: true };
+
 /// Every floor this build knows.
 pub const FLOORS: &[&Floor] = &[
     &crate::zones::FLOOR,
@@ -71,6 +77,7 @@ pub const FLOORS: &[&Floor] = &[
     &crate::gate::IDLE_FLOOR,
     &crate::gate::BREAK_GLASS_FLOOR,
     &crate::workspace_move::FLOOR,
+    &SANDBOX,
 ];
 
 fn parse(s: &str) -> DateTime<Utc> {

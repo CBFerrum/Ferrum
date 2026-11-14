@@ -69,10 +69,10 @@ the two differ, this file wins.
   each either impossible or covered by the check.
 - **Floors (14 November 2026).** A rollback must never silently drop a protection that is switched on. Each
   protection an older build in the window does not enforce (zones levels 1 and 2, staff networks, key networks, the
-  idle timeout, break-glass, a planned move's fence, a moving workspace's freeze) has a floor: a hand-kept
+  idle timeout, break-glass, a planned move's fence, a moving workspace's freeze, sandboxes) has a floor: a hand-kept
   date next to the feature, the committer date of the merge that first enforced it on main (a branch commit's date
   would let in main builds made between it and the merge). `window::require` puts it in `window_floor` where the
-  protection is switched on; temporary ones (moves) are held per holder and go with the last
+  protection is switched on; temporary ones (moves, sandboxes) are held per holder and go with the last
   (`window::release`). The floors act through the value every window-aware build already reads: the recorded
   `schema_compatible_from` is the later of the syncing build's own `COMPATIBLE_FROM` (kept as
   `schema_compatible_from_own`) and the latest floor, and only `record`, `require`, `release` and

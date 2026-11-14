@@ -506,6 +506,7 @@ before a floor is refused at start, the older ones included.
 | `key_networks` | an API key is given networks | 2026-11-14T03:09:38Z |
 | `move_fence` | `plan_move` marks the database (until cancelled, adopted or not followed) | 2026-11-14T01:33:19Z |
 | `workspace_freeze` | `move_workspace` starts, on both sides (until it arrives, at the target; until `finish_move`, at the source; both at an abort) | 2026-11-14T04:00:04Z |
+| `sandbox` | a sandbox is made (until the last one is deleted) | 2026-11-14T06:26:16Z |
 
 * **What a refused rollback says.** The usual refusal (*Start a build from … or newer*), and, from a build that knows
   floors, which protections are switched on and since which build. A build from before floors existed prints only the
