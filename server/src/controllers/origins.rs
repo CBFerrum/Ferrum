@@ -17,12 +17,8 @@ use uuid::Uuid;
 
 /// The answer when the request's host is an app's origin of its own; `None` for any other host.
 pub async fn serve_app_host(st: &AppState, headers: &HeaderMap, path: &str) -> ApiResult<Option<Response>> {
-    let base = st.settings.apps_base.trim();
-    if base.is_empty() {
-        return Ok(None);
-    }
     let Some(host) = shell::request_host(headers) else { return Ok(None) };
-    let Some((app, slug)) = shell::app_origin_of(host, base) else { return Ok(None) };
+    let Some((app, slug)) = st.shell.app_host(host).await? else { return Ok(None) };
     serve(st, headers, host, &app, &slug, path).await.map(Some)
 }
 
@@ -89,7 +85,7 @@ async fn serve(st: &AppState, headers: &HeaderMap, host: &str, app_id: &str, slu
     // how to sign in.
     let entry: ferrum_apps::ui::EntryTemplate = serde_json::from_value(release.entry.clone())
         .map_err(|e| ApiError(Error::internal(format!("interface release {} of {}: {e}", release.digest, app.id))))?;
-    let Some(me) = shell::app_origin(&app.id, slug, &st.settings.apps_base, host, st.shell.secure) else { return Ok(gone()) };
+    let Some(me) = st.shell.app_origin_for(&app.id, slug, host).await? else { return Ok(gone()) };
     let main = workspace.first().cloned().unwrap_or_default();
     let title = app.items("shell.app").find_map(|i| i.get("title").and_then(serde_json::Value::as_str)).unwrap_or(&app.manifest.name);
     let boot = json!({

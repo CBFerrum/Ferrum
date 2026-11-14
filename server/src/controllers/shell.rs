@@ -190,6 +190,24 @@ pub(crate) async fn page_bootstrap(
     // A host that belongs to one workspace (registered, or the server's one): what browsers keep
     // for its origin is that workspace's (§7.2). A shared host (shape A′) serves several in turn.
     boot["host"]["bound"] = json!(matches!(st.shell.place(headers).await, Ok(Place::Workspace(_) | Place::Portal(_))));
+    // What this address shows (docs/operations.md, "Addresses of a workspace"), as far as the person may open it there: an
+    // app their zone leaves out is never named. `main`: this is the workspace's main address (or its only one); `main_url`
+    // leads there from an address that lists some apps only, for the rest.
+    let (mut home, mut listed, mut label, mut main) = (None, None, None, true);
+    if let Some(shown) = st.kernel.host_shown(host).await.map_err(err)? {
+        let apps = st.apps.shell_apps_for(ctx).await.map_err(err)?;
+        home = shown.shape.home.filter(|h| shell::home_route(&apps, ctx, &kind, h).is_some());
+        listed = shown.shape.apps.map(|l| l.into_iter().filter(|id| apps.iter().any(|a| &a.id == id)).collect::<Vec<_>>());
+        (label, main) = (shown.shape.label, shown.primary);
+        if listed.is_some() && !main {
+            let to = st.kernel.primary_host(ctx.tenant, "shell").await.map_err(err)?;
+            boot["host"]["main_url"] = json!(to.and_then(|h| st.shell.origin_of(&h, headers)));
+        }
+    }
+    boot["host"]["home"] = json!(home);
+    boot["host"]["apps"] = json!(listed);
+    boot["host"]["label"] = json!(label);
+    boot["host"]["main"] = json!(main);
     // An address in its leaving period (docs/operations.md, "Changing or removing an address"): where the
     // workspace is now, and the moment this one stops serving, for the bar to say so.
     if let Some((to, until)) = st.shell.leaving(headers).await.map_err(err)? {
@@ -246,9 +264,35 @@ async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query
     if shell::session_cookie(&headers, st.shell.secure).is_some()
         && let Ok((ctx, device)) = caller_on(&st, &Method::GET, &headers).await
     {
+        if let Some(to) = address_home(&st, &headers, &ctx, &uri).await? {
+            return Ok(found_at(&to));
+        }
         return shell_page(&st, &headers, ctx, device, "", None).await;
     }
     Ok(to_login(&uri))
+}
+
+/// `/` on an address whose `home` is an app (docs/operations.md, "Addresses of a workspace"): that app's page, for someone
+/// who may open it there (a member with its roles, in a zone that shows it), the query kept; `None`: Home, as anywhere.
+async fn address_home(st: &AppState, headers: &HeaderMap, ctx: &Ctx, uri: &Uri) -> ApiResult<Option<String>> {
+    let Some(host) = shell::request_host(headers) else { return Ok(None) };
+    let Some(home) = st.kernel.host_shown(host).await?.and_then(|s| s.shape.home) else { return Ok(None) };
+    let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
+    let apps = st.apps.shell_apps_for(ctx).await?;
+    Ok(shell::home_route(&apps, ctx, &kind, &home).map(|r| match uri.query() {
+        Some(q) => format!("{r}?{q}"),
+        None => r,
+    }))
+}
+
+/// A `302` to a path of this host, which no cache keeps: where it leads depends on who asks and on settings that change.
+fn found_at(to: &str) -> Response {
+    let mut res = StatusCode::FOUND.into_response();
+    if let Ok(location) = HeaderValue::from_str(to) {
+        res.headers_mut().insert(header::LOCATION, location);
+    }
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
 }
 
 /// The shell's own pages (`/`, `/store/`, `/admin/`, `/account/`, `/data/`), from the shell's
@@ -475,6 +519,12 @@ async fn page(
         return app_worker(&st, &ctx, found, first).await;
     }
     let Some((app, item, alias)) = found else {
+        // A short path of the workspace (docs/operations.md, "Addresses of a workspace", short paths): asked only where no app's route is, so an app
+        // that comes to claim the segment wins. On every `shell` address, for whoever is signed in there.
+        let rest_raw = uri.path().strip_prefix(&format!("/{first}")).unwrap_or_default();
+        if let Some(to) = shell::short_path_location(&st.kernel.short_paths(ctx.tenant).await?, first, rest_raw, uri.query()) {
+            return Ok(found_at(&to));
+        }
         let actions: Vec<(&str, &str)> = if ctx.is_admin { vec![("Open the App Manager", "/store/")] } else { vec![] };
         let (boot, _) = match page_bootstrap(&st, &headers, &ctx, device, json!(null), "status").await {
             Ok(b) => b,
@@ -570,7 +620,7 @@ async fn page(
             Err(r) => return Ok(r),
         };
         // With an apps base (shape D) the app has an origin of its own, framed here.
-        let own = shell::app_origin(&app.id, &ws.slug, &st.settings.apps_base, shell::request_host(&headers).unwrap_or_default(), st.shell.secure);
+        let own = st.shell.app_origin_for(&app.id, &ws.slug, shell::request_host(&headers).unwrap_or_default()).await?;
         let under = format!("/{}{}", rest.unwrap_or_default(), uri.query().map(|q| format!("?{q}")).unwrap_or_default());
         let framed = own.as_deref().map(|o| (o, under.as_str()));
         return Ok(not_modified(&headers, shell::isolated_page(&boot, &app.id, &release.digest, &title, &origins, framed)));

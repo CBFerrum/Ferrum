@@ -4,7 +4,8 @@
 //! records its name; nothing here charges anyone. A plan's quotas are whole numbers, each held where
 //! the thing is made: `people` (active members, a database trigger), `storage_bytes` (files),
 //! `ai_tokens_month` (the assistant), `devices` and `measurements_per_day` (Operations). One left
-//! out has no limit.
+//! out has no limit, except `addresses` (live addresses of a workspace, crate::shell), which is 20
+//! when left out, as before plans could say it.
 
 use crate::error::{Error, Result};
 use crate::{Ctx, Kernel, audit};
@@ -12,7 +13,7 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 /// The quotas a plan may set.
-pub const QUOTAS: &[&str] = &["people", "storage_bytes", "ai_tokens_month", "devices", "measurements_per_day"];
+pub const QUOTAS: &[&str] = &["people", "storage_bytes", "ai_tokens_month", "devices", "measurements_per_day", "addresses"];
 
 /// Checks the operator's plans: each a set of whole-number quotas this knows.
 pub fn validate(plans: &Map<String, Value>) -> std::result::Result<(), String> {

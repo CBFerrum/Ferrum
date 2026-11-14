@@ -292,7 +292,9 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
         format!("insert into sso_provider (tenant_id, id, label, issuer, client_id, client_secret) values ($1, '{provider}', 'Company', 'https://idp.example', 'ferrum', '{}')", key_a.seal(&format!("sso|{t}|{provider}"), "client-secret").unwrap()),
         "insert into contact_consent (tenant_id, email, purpose, granted, source) values ($1, 'no-mail@buyer.test', 'marketing', false, 'it')".to_string(),
         "insert into tenant_host (host, tenant_id, kind, target, is_primary, verify_token, verified_at) values ('erp.acme.example', $1, 'custom', 'shell', true, 'x', now())".to_string(),
-        "update tenant set settings = settings || '{\"require_sso\": true, \"require_two_factor\": true}' where id = $1".to_string(),
+        // A name under the base with what it shows, and short paths (docs/operations.md, "Addresses of a workspace").
+        "insert into tenant_host (host, tenant_id, kind, target, verify_token, verified_at, base_name, home, label) values ('sales--acme.example.test', $1, 'subdomain', 'shell', '', now(), 'sales', 'crm', 'Sales')".to_string(),
+        "update tenant set settings = settings || '{\"require_sso\": true, \"require_two_factor\": true, \"paths\": [{\"alias\": \"deals\", \"target\": \"/crm/\"}]}' where id = $1".to_string(),
     ] {
         sqlx::query(sqlx::AssertSqlSafe(q)).bind(t).execute(&mut *tx).await.unwrap();
     }
@@ -466,6 +468,13 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
         HostRoute::Serve { tenant: t, target: "shell".into() },
         "the live address stays the live workspace's"
     );
+    // Its names are the live workspace's too: the sandbox has its own subdomain only. Short paths, settings like any
+    // other, lead within whichever address they are opened on, so they come along.
+    assert_eq!(a.route_host("sales--acme.example.test").await.unwrap(), HostRoute::Serve { tenant: t, target: "shell".into() });
+    let names: Vec<(String,)> = sql(&a, "select host from tenant_host where tenant_id = $1", sb).await;
+    assert_eq!(names, vec![("acme-try.example.test".to_string(),)]);
+    assert_eq!(a.short_paths(sb).await.unwrap(), a.short_paths(t).await.unwrap());
+    assert_eq!(a.short_paths(sb).await.unwrap().len(), 1);
     let (session, _) = a.verify_api_key_from(&api_key, "127.0.0.1").await.unwrap();
     assert_eq!(session.tenant, t, "the integration's key is the live workspace's alone");
     assert_eq!(a.sandbox_mark(sb).await.unwrap(), Some(json!({"of": "acme", "until": until, "name": "Acme"})), "the source is held here: its name too");

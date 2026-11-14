@@ -300,7 +300,7 @@ pub struct Kernel {
     /// Browser sessions checked recently: (tenant, session) → (what a valid one adds, when checked).
     pub(crate) sessions: DashMap<(Uuid, Uuid), (Option<(Uuid, shell::SessionState)>, Instant)>,
     /// Host names looked up recently → where they lead.
-    pub(crate) hosts: DashMap<String, (shell::HostRoute, Option<String>, Instant)>,
+    pub(crate) hosts: DashMap<String, (shell::HostRoute, Option<String>, shell::HostShown, Instant)>,
     pub(crate) files: std::sync::OnceLock<Arc<dyn files::FileStore>>,
     /// The directory workspace, once known (identity.rs).
     pub(crate) directory: std::sync::OnceLock<Uuid>,

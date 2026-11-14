@@ -39,9 +39,15 @@ impl NewTenant {
 }
 
 /// A workspace's name as its addresses use it: 2-63 lowercase letters, digits or hyphens, and none the cluster keeps.
+/// Never two hyphens together: `{name}--{slug}` is a workspace's own name under the base domain (crate::shell
+/// `name_under_base`), which no other workspace's slug may ever be. Workspaces made before keep theirs: the host table's
+/// one row per name keeps any clash out.
 pub(crate) fn check_slug(slug: &str) -> Result<()> {
     if !SLUG.is_match(slug) {
         return Err(Error::field("slug", "use 2-63 lowercase letters, digits or hyphens"));
+    }
+    if slug.contains("--") {
+        return Err(Error::field("slug", "use single hyphens: two together are kept for the workspace's other addresses"));
     }
     if crate::identity::RESERVED_SLUGS.contains(&slug) {
         return Err(Error::field("slug", "is a name the cluster keeps for itself"));
@@ -633,6 +639,14 @@ mod tests {
         assert_eq!(names(kept), vec!["core"], "only core is left; crm upgrades and sales installs");
         // Not a version, or unknown to this build: never kept (as `package_behind` says, differing is all that can be told).
         assert!(super::newer_here(&have(&[("crm", "dev"), ("gone", "9.0.0")]), &closure(&["crm", "gone"]), build).is_empty());
+    }
+
+    #[test]
+    fn a_new_slug_never_has_two_hyphens_together() {
+        assert!(super::check_slug("acme-labs").is_ok());
+        for bad in ["sales--acme", "a--", "accounts", "A", "a"] {
+            assert!(super::check_slug(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

@@ -251,6 +251,8 @@ pub struct Shell {
     hooks_host: Option<String>,
     /// The host of the server's public address (`PUBLIC_URL`): the one workspace's (shape A).
     public_host: Option<String>,
+    /// Where isolated apps get origins of their own (`FERRUM_APPS_BASE`, shape D), as a lowercase name.
+    apps_base: Option<String>,
     /// The host links go through (`FERRUM_LINK_HOST`), answering `/go/` whatever else it is.
     link_host: Option<String>,
     /// This cluster's region, and the other regions' accounts hosts by name.
@@ -378,6 +380,7 @@ impl Shell {
             accounts_host: accounts_host(settings),
             hooks_host: hooks_host(settings),
             public_host: public_host(public_url),
+            apps_base: Some(settings.apps_base.trim().trim_matches('.').to_ascii_lowercase()).filter(|b| !b.is_empty()),
             link_host: host_setting("FERRUM_LINK_HOST", &settings.link_host).ok().flatten(),
             region: settings.region.trim().to_ascii_lowercase(),
             regions: parse_regions(&settings.regions),
@@ -417,6 +420,49 @@ impl Shell {
     /// One of the cluster's own hosts (accounts, hooks, links), which no workspace may claim.
     pub fn is_own_host(&self, bare: &str) -> bool {
         [&self.accounts_host, &self.hooks_host, &self.link_host].into_iter().flatten().any(|h| h == bare)
+    }
+
+    /// Names no address under the base domain may take (docs/operations.md, "Addresses of a workspace"): the kernel's
+    /// (`accounts`, `www`, `mail` …), the slugs the cluster keeps, and the first label of each of this server's own hosts
+    /// under the base.
+    pub fn reserved_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = ferrum_kernel::shell::RESERVED_NAMES.iter().chain(ferrum_kernel::identity::RESERVED_SLUGS).map(|s| s.to_string()).collect();
+        if let Some(base) = &self.base {
+            for h in [&self.accounts_host, &self.hooks_host, &self.link_host].into_iter().flatten() {
+                if let Some(first) = h.strip_suffix(&format!(".{base}")).filter(|f| !f.contains('.')) {
+                    out.push(first.to_string());
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Whether the names workspaces give themselves under the base domain (`{name}--{slug}.{base}`) have the very form of
+    /// isolated apps' own origins (`{app}--{workspace}.{apps base}`): only where the apps base is the base domain itself.
+    pub fn names_like_app_origins(&self) -> bool {
+        self.base.is_some() && self.base == self.apps_base
+    }
+
+    /// The isolated app and workspace whose own origin `host` is (shape D), unless it is one of a workspace's addresses:
+    /// where the two forms are alike ([`Shell::names_like_app_origins`]) an address wins, and that app keeps to its
+    /// sandboxed frame ([`Shell::app_origin_for`]). The one place that decides between them.
+    pub async fn app_host(&self, host: &str) -> Result<Option<(String, String)>> {
+        let Some(apps_base) = self.apps_base.as_deref() else { return Ok(None) };
+        let Some(found) = app_origin_of(host, apps_base) else { return Ok(None) };
+        if self.names_like_app_origins() && !matches!(self.kernel.route_host(host).await?, HostRoute::Unknown) {
+            return Ok(None);
+        }
+        Ok(Some(found))
+    }
+
+    /// The origin an isolated app of workspace `slug` has of its own ([`app_origin`], on the port `host` carries), unless
+    /// that name is one of a workspace's addresses ([`Shell::app_host`]).
+    pub async fn app_origin_for(&self, app: &str, slug: &str, host: &str) -> Result<Option<String>> {
+        let Some(apps_base) = self.apps_base.as_deref() else { return Ok(None) };
+        let Some(origin) = app_origin(app, slug, apps_base, host, self.secure) else { return Ok(None) };
+        Ok(self.app_host(&format!("{app}--{slug}.{apps_base}")).await?.map(|_| origin))
     }
 
     /// The request came to the link host (`FERRUM_LINK_HOST`).
@@ -1011,6 +1057,64 @@ pub fn find_route<'a>(apps: &'a [ShellApp], route: &str) -> Option<(&'a ShellApp
         }
     }
     None
+}
+
+// ───────────────────────── what an address shows, and short paths ─────────────────────────
+
+/// The apps an address can land on (`home`) or list (`apps`), among `apps` (a person's: what their zone shows): each
+/// with a launcher route, as `(id, name, route)` (docs/operations.md, "Addresses of a workspace").
+pub fn home_choices(apps: &[ShellApp]) -> Vec<(String, String, String)> {
+    apps.iter()
+        .filter_map(|a| {
+            let route = a.items("shell.app").find_map(|i| i.get("route").and_then(Value::as_str))?;
+            Some((a.id.clone(), a.manifest.name.clone(), route.to_string()))
+        })
+        .collect()
+}
+
+/// Where `/` takes a person on an address whose `home` is `home`: that app's first launcher route they may use
+/// (`/{route}/`), among `apps` (theirs: what their zone shows); `None` (Home) when they may open none of it.
+pub fn home_route(apps: &[ShellApp], ctx: &Ctx, kind: &str, home: &str) -> Option<String> {
+    let a = apps.iter().find(|a| a.id == home)?;
+    a.items("shell.app").filter(|i| may_use(ctx, kind, i)).find_map(|i| i.get("route").and_then(Value::as_str)).map(|r| format!("/{r}/"))
+}
+
+/// First path segments a short path may not take, besides any app's: the core's (`is_reserved_route`: `api`, `portal`,
+/// `login`, `_…` …), the shell's pages, and the server's own routes outside them.
+pub fn segment_kept(seg: &str) -> bool {
+    ferrum_apps::shell::is_reserved_route(seg) || SHELL_ROUTES.contains(&seg) || seg == "healthz"
+}
+
+/// The app among `manifests` whose route or route alias `seg` is (an app's public pages live under its routes).
+pub fn route_owner<'a>(manifests: impl IntoIterator<Item = &'a AppManifest>, seg: &str) -> Option<&'a str> {
+    manifests.into_iter().find(|m| m.routes().iter().any(|(r, aliases)| r == seg || aliases.iter().any(|a| a == seg))).map(|m| m.id.as_str())
+}
+
+/// Whether a short path may lead to `target` (docs/operations.md, "Addresses of a workspace", short paths): a path of this host ([`target_shaped`])
+/// whose first segment is Home (`/`), one of the shell's pages (`/data/`, `/store/`, `/admin/`, `/account/`), `/open/`, or
+/// a route of one of `apps` (the saver's). Never the portal, sign-in, the API or the server's files.
+///
+/// [`target_shaped`]: ferrum_kernel::shell::target_shaped
+pub fn target_allowed(apps: &[ShellApp], target: &str) -> bool {
+    if !ferrum_kernel::shell::target_shaped(target) {
+        return false;
+    }
+    let first = target[1..].split(['/', '?']).next().unwrap_or_default();
+    first.is_empty() || SHELL_ROUTES.contains(&first) || first == "open" || find_route(apps, first).is_some()
+}
+
+/// Where a short path sends `/{first}{rest}?{query}` (`rest`: the request's path after `/{first}`, as it came, empty or
+/// starting with `/`): its target with the rest after it and the request's query after the target's own. `None` when no
+/// short path is `first`, or when the result would not be a plain path of this host.
+pub fn short_path_location(paths: &[ferrum_kernel::shell::ShortPath], first: &str, rest: &str, query: Option<&str>) -> Option<String> {
+    let p = paths.iter().find(|p| p.alias == first)?;
+    let (path, own) = p.target.split_once('?').map_or((p.target.as_str(), None), |(a, q)| (a, Some(q)));
+    let mut to = if rest.is_empty() { path.to_string() } else { format!("{}{rest}", path.trim_end_matches('/')) };
+    let q: Vec<&str> = [own, query].into_iter().flatten().filter(|q| !q.is_empty()).collect();
+    if !q.is_empty() {
+        to = format!("{to}?{}", q.join("&"));
+    }
+    (safe_next(&to) == to).then_some(to)
 }
 
 /// `/{route}/` for an app's routes, as the bootstrap gives them.
@@ -2213,6 +2317,65 @@ mod tests {
         // Docs where Drive has no interface (an older Drive): on its own.
         let (of, list) = families(&[docs, comms]);
         assert!(of.is_empty() && list.is_empty(), "{of:?} {list:?}");
+    }
+
+    #[test]
+    fn an_address_lands_on_an_app_the_person_may_open_and_offers_apps_with_routes() {
+        let comms = app(&manifest(
+            "comms",
+            "ui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {id: mail, route: mail, title: Mail, roles: [Mailer]}\n    - {id: chat, route: chat, title: Chat}\n",
+        ));
+        let helpdesk = app(&manifest("helpdesk", "packages: [helpdesk]\n"));
+        let apps = [comms.clone(), helpdesk];
+        assert_eq!(home_choices(&apps), vec![("comms".to_string(), "comms".to_string(), "mail".to_string())], "records-only apps have no route to land on");
+        let schema = Arc::new(ferrum_meta::Schema::default());
+        let mut member = Ctx::system(Uuid::nil(), schema.clone());
+        member.is_admin = false;
+        assert_eq!(home_route(&apps, &member, "member", "comms").as_deref(), Some("/chat/"), "the first route they may use");
+        member.roles = vec!["Mailer".into()];
+        assert_eq!(home_route(&apps, &member, "member", "comms").as_deref(), Some("/mail/"));
+        assert_eq!(home_route(&apps, &member, "portal", "comms"), None, "members only: everyone else gets Home");
+        assert_eq!(home_route(&apps, &member, "member", "crm"), None, "an app they do not have (or their zone leaves out)");
+    }
+
+    #[test]
+    fn short_paths_keep_to_free_segments_and_lead_into_the_workspace() {
+        use ferrum_kernel::shell::ShortPath;
+        let crm = app(&manifest("crm", "ui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {id: crm, route: crm, title: CRM, aliases: [sales-app]}\n"));
+        let drive = app(&manifest(
+            "drive",
+            "ui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {id: drive, route: drive, title: Drive}\n  shell.public:\n    - {id: share, path: drive/s}\n",
+        ));
+        for kept in ["api", "portal", "login", "admin", "data", "store", "account", "open", "assistant", "healthz", "_ui", "app", "s"] {
+            assert!(segment_kept(kept), "{kept}");
+        }
+        assert!(!segment_kept("sales"));
+        let manifests = [crm.manifest.as_ref(), drive.manifest.as_ref()];
+        assert_eq!(route_owner(manifests, "crm"), Some("crm"));
+        assert_eq!(route_owner(manifests, "sales-app"), Some("crm"), "a route's alias");
+        assert_eq!(route_owner(manifests, "drive"), Some("drive"), "where its public pages are too");
+        assert_eq!(route_owner(manifests, "sales"), None);
+        let apps = [crm];
+        for ok in ["/", "/crm/", "/crm/e/Lead?view=mine", "/sales-app/x", "/data/e/Customer", "/store/", "/admin/", "/account/", "/open/Lead"] {
+            assert!(target_allowed(&apps, ok), "{ok}");
+        }
+        for bad in ["/portal/", "/login", "/api/v1/Lead", "/_ui/x", "/files/x", "/public/x", "/helpdesk/", "//evil.example", "https://evil.example/", "crm"] {
+            assert!(!target_allowed(&apps, bad), "{bad}");
+        }
+        let paths = [
+            ShortPath { alias: "sales".into(), target: "/crm/".into() },
+            ShortPath { alias: "leads".into(), target: "/crm/e/Lead?view=mine".into() },
+            ShortPath { alias: "start".into(), target: "/".into() },
+        ];
+        let to = |first: &str, rest: &str, q: Option<&str>| short_path_location(&paths, first, rest, q);
+        assert_eq!(to("sales", "", None).as_deref(), Some("/crm/"));
+        assert_eq!(to("sales", "/", Some("x=1")).as_deref(), Some("/crm/?x=1"), "the query kept");
+        assert_eq!(to("sales", "/e/Lead/42", None).as_deref(), Some("/crm/e/Lead/42"), "the rest after the target");
+        assert_eq!(to("leads", "", Some("q=a")).as_deref(), Some("/crm/e/Lead?view=mine&q=a"), "the target's own query first");
+        assert_eq!(to("start", "/x", None).as_deref(), Some("/x"));
+        assert_eq!(to("start", "//evil.example", None), None, "never another host");
+        assert_eq!(to("start", "/\\evil.example", None), None);
+        assert_eq!(to("nothing", "", None), None);
     }
 
     #[test]

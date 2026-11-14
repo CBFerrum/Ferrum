@@ -1368,7 +1368,8 @@ believed: `FERRUM_PROXY_HOPS` is then too high, and a caller could choose its ad
 zone placed by network. Without `public:` the doctor calls nothing.
 
 **Hosts.** Only the operator puts a host in a zone; a workspace's administrator cannot (the hosts API
-ignores a `zone`).
+refuses a `zone`, shows each address's zone read-only, and leaves the operator's addresses alone: Addresses
+of a workspace).
 
 ```bash
 # A name only your own network resolves: served as verified, never checked over the internet. The first host of
@@ -3025,9 +3026,10 @@ it) and signed with the server's VAPID key.
 
 ## Custom domains
 
-Administrators give a workspace its own addresses under Administration → Domains
+Administrators give a workspace its own addresses under Administration → Addresses
 ([plan](plan/apps-ui.md) §7): for the workspace (`shell`), its portal (`portal`) or an app's public
-site (`site:{app}`), at most 20 per workspace.
+site (`site:{app}`), within its limit of addresses (Addresses of a workspace, which also says what each
+`shell` address shows and how names under the base domain work).
 
 * **Pointing a domain**: a CNAME record to the cluster's address (the host of `PUBLIC_URL`, shown on
   the page), or A/AAAA records to the same addresses for an apex domain.
@@ -3055,8 +3057,8 @@ site (`site:{app}`), at most 20 per workspace.
   }
   ```
 
-  `/_tls/ask?domain=` answers 200 only for a workspace's subdomain, a working custom domain, one being
-  verified, or a removed one still redirecting, so nobody can make the edge request certificates for
+  `/_tls/ask?domain=` answers 200 only for a workspace's subdomain or name under the base domain, a working
+  custom domain, one being verified, or a removed one still redirecting, so nobody can make the edge request certificates for
   other names. On Kubernetes, put Caddy (or another edge with on-demand TLS) in front of the
   `ferrum` service; with cert-manager instead, each custom domain needs its own Ingress and
   Certificate, which an operator adds when the domain is verified.
@@ -3094,7 +3096,7 @@ removed address leaves in three steps:
    owner opens there (the bar keeps which workspace an address's storage is for); during the leaving
    period the address still answers as the same workspace, so nothing is wiped.
 
-* **Removing**: Administration → Domains, or `DELETE /api/admin/domains/{host}` ([api.md](api.md)), which
+* **Removing**: Administration → Addresses, or `DELETE /api/admin/domains/{host}` ([api.md](api.md)), which
   answers until when the address is leaving. Administrators remove custom domains; the operator releases
   any address, a subdomain too, with
   `ferrum task release_host host:<name> [leaving_days:<n>]` (default the setting; `0`: it redirects at
@@ -3119,6 +3121,98 @@ removed address leaves in three steps:
   period and treats such an address as already released: it redirects at once. That is the safe direction
   (nothing is served that should not be, only the draining stops early), so no floor is needed for it.
 
+## Addresses of a workspace
+
+A workspace answers on several addresses, and its administrators choose what each one shows (Administration →
+Domains; [api.md](api.md#administration-administrators-only)). An address that opens the workspace (target `shell`) is
+the whole workspace: every app opens on it at its usual path, so links, record cards, side panels and the live connection
+work on whichever address a person is on. An address only chooses where a person lands and what the bar lists.
+
+| Kind | What it is | Who adds it | Works |
+|---|---|---|---|
+| `subdomain` | `{slug}.{base}`, made with the workspace; or a name it gives itself under the base, `{name}--{slug}.{base}` | the server; administrators | at once |
+| `custom` | a domain of the workspace's own (`erp.acme.com`) | administrators | once the server has fetched its proof (Custom domains) |
+| `operator` | a name only a private network resolves | the operator (`ferrum task add_host`, see Zones) | at once, never checked |
+
+Each address has a target: `shell` (the workspace), `portal` (portal pages only) or `site:{app}` (an app's public site).
+
+**What a `shell` address shows.** Three settings, each optional:
+
+* `home`: the app `/` opens there (its launcher route, with the query kept). Someone who may not open that app there (no
+  role for it, or a zone that leaves it out) gets Home, as on any address. Home itself is then at the main address.
+* `apps`: the apps the launcher and the bar's search list there, with one more entry that opens the workspace's main
+  address for every other app.
+* `label`: a short name shown beside the workspace's in the bar ("Acme · Sales") and in the list of addresses.
+
+**An address is not a wall.** `apps` chooses what the bar lists, not what opens: a page of another app opened by a link,
+a bookmark, a notification or a typed path opens on that address as anywhere, with the person's own rights. To keep staff
+out of apps on an address, the operator puts the address in a zone (Zones); only the operator does. Administrators see
+each address's zone and cannot change it, and cannot change or remove an operator's address. In a zone that leaves apps
+out, what an address shows never names them: its `home` falls back to Home, its `apps` lose them, and the
+administration screen offers only the zone's apps.
+
+**Names under the base domain.** With `FERRUM_BASE_DOMAIN`, administrators add names as `{name}--{slug}.{base}`, one
+part of the address: `sales--acme.ferrum.cloud`. Such a name works at once (the cluster owns the base domain, so there is
+nothing to prove), the base's wildcard certificate covers it (`/_tls/ask` says yes for it too), and the accounts host hands
+sign-ins to it like any `shell` address. It is never another workspace's: it ends in the workspace's own slug, a slug is
+never used by another workspace (one renamed or deleted is retired for good), and no slug made since this form exists may
+hold two hyphens together. Workspaces whose slugs already hold `--` keep them; the server keeps one row per address, so
+whoever has an address first keeps it.
+
+* A name is 1 to 30 lowercase letters, digits and single hyphens, not at either end, and `{name}--{slug}` at most 63
+  characters. `accounts`, `hooks`, `www`, `api`, `admin`, `login`, `mail`, `xn` and the first part of the server's own
+  hosts are refused.
+* Where `FERRUM_APPS_BASE` is the base domain itself, isolated apps' own origins have the same form
+  (`{app}--{slug}.{base}`). A name that is the id of an app compiled in, available on the cluster or uploaded to the
+  workspace is refused, and an address always wins over an app's origin: an app that comes later with that id keeps to
+  its sandboxed frame. Give apps a base of their own (Apps with interfaces of their own) and none of this arises.
+* Removing a name starts its leaving period, as for any address (above). The workspace may add it again at once: no other
+  workspace can ever have it.
+* Without a base domain there are no such names; domains of the workspace's own work as before.
+
+**Short paths.** `/{alias}` and `/{alias}/…` on every `shell` address of the workspace lead (`302`, the query kept, the
+rest of the path after the target) to a path of the workspace: `/sales` → `/crm/`.
+
+* An alias is 2 to 30 lowercase letters, digits and hyphens, starting with a letter. It may not be a segment the server
+  keeps (`api`, `portal`, `login`, `admin`, `data`, `store`, `account`, `open`, `healthz` …) nor the route or route alias
+  of an app the workspace has or the server has compiled in.
+* A target is `/` (Home), a page of the shell (`/data/…`, `/store/…`, `/admin/…`, `/account/…`), `/open/…`, or a path
+  under the route of one of the workspace's apps (`/crm/`, `/crm/e/Lead?view=mine`). Never the portal, sign-in, the API,
+  the server's files, another host, or a `#` part.
+* At most 50, saved as one list and checked together: a refusal names the alias at fault.
+* An app that comes later and takes the segment wins: its page opens there, the short path stops working, the list marks
+  it (`works: false`) and `ferrum task doctor` warns (`paths.shadowed`).
+* Someone signed out signs in first and is then led on. It is a redirect on purpose: the address bar shows the real path,
+  apps need nothing, and no short path can hide an app.
+
+**Signing in on several addresses.** The session cookie belongs to one address, on purpose. A person signs in on each
+address they use; with an accounts host that is one redirect and no prompt. For the browser each address is a place of
+its own: its own storage and offline work, its own service worker and notifications on a device, and its own live
+connection, so someone with two addresses open has two. Mail and notification links use the main address (or the link
+host), as before.
+
+**Limits.** At most 20 live addresses of every kind, or what the workspace's plan says (`addresses`, Plans and sign-up),
+and 50 short paths. While a workspace is closed or restricted its addresses keep answering and stay as they are: nobody
+but the operator changes them.
+
+**Every change** (an address added, what it shows changed, one removed, the short paths saved) is on the workspace's
+audit trail as administration, with who made it and what changed.
+
+**When the workspace moves, is copied, renamed, closed or deleted.**
+
+* Moved to another installation (Moving one workspace): its names travel with it, and the target gives each the same name
+  under its own base domain, showing what it showed; the copies under the source's base cannot reach the target, so the
+  target lets go of them. At the source every address says the workspace has moved and leads to its main address at the
+  target. Short paths travel with its settings.
+* A sandbox gets none of the live workspace's addresses (only `{as}.{base}`); short paths come with its settings.
+* Renamed (its slug changed by hand: there is no task for it): its names keep their form and keep leading to it, and no
+  other workspace can ever form them; new names take the new slug.
+* Deleted: its addresses go with it. Its names can never be formed again, its slug being retired.
+
+**Certificates.** Caddy's on-demand TLS gets one certificate per name it is asked for. Under one base domain that can reach
+the certificate authority's limits per domain (Let's Encrypt allows 50 a week for one registered domain): serve the base
+with a wildcard certificate (DNS-01), which covers every name under it.
+
 ## Many workspaces: subdomains and Ferrum accounts
 
 With `FERRUM_BASE_DOMAIN` (shapes B and C of [the plan](plan/apps-ui.md) §7), a cluster serves many
@@ -3128,9 +3222,11 @@ workspaces, each at its own address, and people sign in once for all of them ([A
   workspace is made), `accounts.{base}` for signing in, the account chooser and each person's own
   security, and `hooks.{base}` for outside callers (webhooks and other calls that name their workspace
   in the path; no pages, no sessions). Any other host answers 404, so DNS left pointing at the cluster
-  shows nobody's workspace. The slugs `accounts`, `hooks`, `www` and `api` are kept; a custom domain
-  under the base domain is refused. Workspaces' verified custom domains ([Custom domains](#custom-domains))
-  sign in through the accounts host as well, each with a session of its own.
+  shows nobody's workspace. The slugs `accounts`, `hooks`, `www` and `api` are kept, and a new slug never
+  holds two hyphens together, which a workspace's own names under the base use (`sales--acme.{base}`,
+  [Addresses of a workspace](#addresses-of-a-workspace)); a custom domain under the base domain is refused.
+  Workspaces' verified custom domains ([Custom domains](#custom-domains)) and names under the base sign in
+  through the accounts host as well, each with a session of its own.
 * **DNS and certificates.** A wildcard record `*.{base}` to the edge, and a wildcard certificate:
   cert-manager needs a DNS-01 solver for it (a Gateway listener with hostname `*.{base}` and the
   `cert-manager.io/cluster-issuer` annotation, as `deploy/kind/kustomization.yaml` adds for the test
@@ -3457,8 +3553,9 @@ ferrum task set_plan slug:acme plan:team
 | `storage_bytes` | Storing a file |
 | `ai_tokens_month` | Each step of the assistant; a workspace may set itself less (`assistant_monthly_tokens`), not more |
 | `devices`, `measurements_per_day` | Operations: adding a device, and recording measurements |
+| `addresses` | Adding an address: live addresses of every kind (Addresses of a workspace). Left out, 20, as before plans could say it |
 
-A quota left out of a plan has no limit. Moving a workspace to a smaller plan takes nothing away: past a quota, nothing
+A quota left out of a plan has no limit, except `addresses`. Moving a workspace to a smaller plan takes nothing away: past a quota, nothing
 more of it is added until there is room. Nothing here charges anyone: prices and invoices are the operator's.
 
 With `FERRUM_SIGNUP=open` (and a base domain and mail), anyone with an address at one of `FERRUM_SIGNUP_DOMAINS` can make a

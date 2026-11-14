@@ -574,6 +574,12 @@ Pages, for browsers, with the session cookie:
   redirects to `/{route}/`; an alias, to the route.
 * `GET /{route}/sw.js` → the app's own service worker, or one that removes itself where nothing the
   person may use lives any more.
+* `GET /` on a `shell` address whose `home` is an app ([operations](operations.md#addresses-of-a-workspace)) → `302`
+  to that app's first launcher route the person may use (`/crm/`, the query kept); Home, as anywhere, for someone who
+  may not open it there.
+* `GET /{alias}[/…]`, a short path of the workspace, on any of its `shell` addresses, signed in → `302` to its target
+  with the rest of the path after it and the query after the target's own (`/sales/e/Lead?x=1` → `/crm/e/Lead?x=1`).
+  Only where no app's route is: an app that takes the segment wins. Signed out: sign-in first.
 * `GET /open/{entity}/{id}` → `303` to the screen of an app that shows the record and that the
   person may use (`?via={app}` first, then `priority`, then install order), else the shell's
   records page if the person may read the entity: the records of the app it belongs to when that
@@ -613,6 +619,11 @@ Pages, for browsers, with the session cookie:
 * `GET /login?next=` → the sign-in page. On the portal's host, and on the way to `/portal/`, it
   offers an emailed code first. A sandbox's says so in its heading ("Sign in to Acme (sandbox)") and
   in `workspace.sandbox` of its boot.
+* What the address shows, in every signed-in page's bootstrap: `host.home` (the app `/` lands on, only when the person
+  may open it there), `host.apps` (the apps the bar lists there, those the person's zone shows; `null`: all),
+  `host.label` (its name beside the workspace's), `host.main` (whether it is the workspace's main address, or the only
+  address it is reached at) and, from an address that lists some apps only, `host.main_url` (the main address's
+  origin, for the launcher's way to every other app). The bar lists the launcher's and its search's apps by them.
 * A sandbox's pages (docs/operations.md, "A sandbox of a workspace"): the bootstrap, a signed-in page's
   and a public page's alike, carries `sandbox: {of, until, name}` (the workspace it is a copy of, as the
   command named it, its last day, `YYYY-MM-DD`, and the source's name when this installation holds it,
@@ -753,18 +764,57 @@ Audit log: `GET /api/admin/audit?category=&before=&limit=` → `{events, next_be
 topics name `audit.sign_in`, `audit.administration`, `audit.records`, `audit.access` or `audit.*` receives each such event of the
 workspace as its body; `*` does not include them.
 
-Domains ([operations](operations.md#custom-domains)): `GET /api/admin/domains` → `{domains: [{host,
-kind (subdomain or custom), target (shell, portal, site:{app}), is_primary, verify_token, status
-(verified, pending, failing, leaving, released), verified_at, checked_at, failures, released_at,
-leaving_until, created_at}], point_to, sites: [{app, title}]}`, `sites` being the apps here with a public site;
-`POST {host, target}` adds a custom domain (201), a `site:{app}` only for one of those; `DELETE
-/api/admin/domains/{host}` removes one → `{host, leaving_until}`: one in use keeps serving the people
-signed in there until `leaving_until`, then redirects (`null`: it stopped at once, being never verified or
-with `FERRUM_HOST_LEAVING_DAYS=0`); the main address hands its place to another of the workspace's first.
-(Before, this answered `204`.) `PUT …/{host}/primary` makes a working one the main address
-of its kind; `POST …/{host}/check` checks it now → `{host, answers}`. Public:
-`GET /.well-known/ferrum-domain` answers the token of the custom domain the request reached, and
-`GET /_tls/ask?domain=` answers 200 when the edge may get a certificate for that host.
+Domains: the workspace's addresses ([operations](operations.md#addresses-of-a-workspace), [custom
+domains](operations.md#custom-domains)). What a `shell` address shows chooses where people land and what the bar
+lists there, never what opens: every app opens on every `shell` address, and only the operator puts an address in a
+zone.
+
+* `GET /api/admin/domains` → `{domains: [{host, kind, target, primary, is_primary, status, zone, home, apps, label,
+  base_name, can: {edit, remove, make_primary}, verify_token, verified_at, checked_at, failures, released_at,
+  leaving_until, created_at}], point_to, sites: [{app, title}], base, name_form, reserved_names, homes: [{id, name,
+  route}], limits: {addresses, paths}, used: {addresses, paths}}`.
+  * `kind`: `subdomain` (the workspace's `{slug}.{base}`, or a name it gave itself under the base, which has
+    `base_name`), `custom` (a domain of its own) or `operator` (the operator's, `ferrum task add_host`). `target`:
+    `shell`, `portal` or `site:{app}`. `primary` (and, as before, `is_primary`): the main address of its target.
+    `status`: `verified`, `pending`, `failing`, `leaving` or `released`. `zone`: the zone's name, or `null`; read only.
+  * `home`, `apps`, `label`: what a `shell` address shows (`null`: Home, every app, no name), naming only apps the
+    caller's zone shows.
+  * `can`: `edit` (a live `shell` address that is not the operator's), `remove` (a live custom domain or name under
+    the base), `make_primary` (a live, working address that is not the main one).
+  * `base`: the base domain, or `null`; `name_form`: the form a new name takes there (`{name}--acme.ferrum.cloud`), or
+    `null` without a base. `reserved_names`: names refused. `homes`: the apps that can be a `home` or be in `apps`,
+    those with a launcher route that the caller's zone shows. `limits` and `used`: addresses (live, every kind; the
+    plan's `addresses` quota, else 20) and short paths (50). `sites`: the apps here with a public site.
+* `POST /api/admin/domains` `{host, target?, home?, apps?, label?}` adds a domain of the workspace's own (verified
+  before it works); `{name, target?, home?, apps?, label?}` a name under the base domain, `{name}--{slug}.{base}`, live
+  at once (the name is 1 to 30 lowercase letters, digits and single hyphens; one that is an app's id is refused where
+  the apps base is the base domain). `target` is `shell` unless given, a `site:{app}` only for one of `sites`; `home`,
+  `apps` and `label` only for `shell`, `home` and each of `apps` one of `homes`, at most 50 apps, `label` 1 to 40
+  characters. → `201` and the address as the list shows it. `zone` is refused (`422`): only the operator puts an
+  address in a zone. Past the limit: `422`, "a workspace has at most N addresses".
+* `PATCH /api/admin/domains/{host}` `{home?, apps?, label?}` changes what a live `shell` address shows: a key left out
+  stays, `null` clears it (`apps: null` lists every app). → the address as the list shows it. `zone` or any other key:
+  `422`. An operator's address: `403`, "this address is the operator's: only the operator changes or removes it".
+* `DELETE /api/admin/domains/{host}` removes a custom domain or a name under the base → `{host, leaving_until}`: one in
+  use keeps serving the people signed in there until `leaving_until`, then redirects (`null`: it stopped at once, being
+  never verified or with `FERRUM_HOST_LEAVING_DAYS=0`); the main address hands its place to another of the workspace's
+  first. (Before, this answered `204`.) An operator's address: `403`; the workspace's own subdomain: `404`.
+* `PUT …/{host}/primary` makes a working one the main address of its kind; `POST …/{host}/check` checks a custom
+  domain now → `{host, answers}`.
+* `GET /api/admin/paths` → `{paths: [{alias, target, works}], limit: 50, taken}`: the workspace's short paths
+  (`works`: false once an app has taken the segment, whose page then opens there), and `taken`, the first segments the
+  server keeps and the routes of the apps here and compiled in. `PUT /api/admin/paths` `{paths: [{alias, target}]}`
+  replaces the whole list → `{paths}`. An alias: 2 to 30 lowercase letters, digits and hyphens, starting with a letter,
+  not one of `taken`, given once. A target: `/`, `/data/…`, `/store/…`, `/admin/…`, `/account/…`, `/open/…` or a path
+  under the route of one of the workspace's apps; never `/portal/…`, sign-in, the API, another host or a `#` part. At
+  most 50. A refusal (`422`) names the alias at fault.
+* While the workspace is closed or restricted, every change is refused (`403`). Every change is on the audit trail
+  (category `administration`: `WorkspaceDomain` `add`, `shape` with `before` and `after`, `remove`, `primary`;
+  `WorkspacePaths` `set` with `before` and `after`).
+
+Public: `GET /.well-known/ferrum-domain` answers the token of the custom domain the request reached, and
+`GET /_tls/ask?domain=` answers 200 when the edge may get a certificate for that host (a subdomain or name under the
+base, a working or pending custom domain, one leaving or redirecting).
 
 Single sign-on: `/api/admin/sso` (GET → `{providers: [{id, label, protocol, issuer, client_id, has_secret,
 saml_metadata, domains, auto_create, default_roles, enabled, single_logout_out, single_logout_in, linked_users,

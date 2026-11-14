@@ -281,6 +281,15 @@ async fn a_workspace_moves_to_another_installation_and_back() {
         .execute(&mut *tx)
         .await
         .unwrap();
+    // A name it gave itself under A's base domain then (docs/operations.md, "Addresses of a workspace"), with what it shows.
+    sqlx::query(
+        "insert into tenant_host (host, tenant_id, kind, target, verify_token, verified_at, base_name, home, apps, label) \
+         values ('sales--acme.us.example', $1, 'subdomain', 'shell', '', now(), 'sales', 'crm', array['crm'], 'Sales')",
+    )
+    .bind(t)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
     // Ann's Ferrum account lives in A's region, eu.
     let ann = Uuid::now_v7();
     sqlx::query("insert into app_user (tenant_id, id, email, full_name, email_verified_at) select id, $1, 'admin@acme.test', 'Ann', now() from tenant where slug = 'accounts'")
@@ -526,6 +535,13 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     assert!(b.moved_away(t).await.unwrap());
     // A has a base domain: the workspace answers under it there, and B's addresses send people to it.
     assert_eq!(a.route_host("acme.eu.example").await.unwrap(), HostRoute::Serve { tenant: t, target: "shell".into() });
+    // Its names come with it under A's base, showing what they showed; the copies under the other base cannot reach A, so
+    // A lets go of them.
+    assert_eq!(a.route_host("sales--acme.eu.example").await.unwrap(), HostRoute::Serve { tenant: t, target: "shell".into() });
+    let shown = a.host_shown("sales--acme.eu.example").await.unwrap().expect("a shell address");
+    assert_eq!((shown.shape.home.as_deref(), shown.shape.apps, shown.shape.label.as_deref()), (Some("crm"), Some(vec!["crm".to_string()]), Some("Sales")));
+    let old: Vec<(bool,)> = sql(&a, "select released_at is not null from tenant_host where host = 'sales--acme.us.example' and tenant_id = $1", t).await;
+    assert_eq!(old, vec![(true,)]);
     // (B's replicas keep their answer for a host 20 s: what they will say from then on is what B recorded.)
     let to: Vec<(Option<String>,)> = sql(&b, "select moved_to from workspace_move where workspace = $1", t).await;
     assert_eq!(to, vec![(Some("acme.eu.example".into()),)]);
