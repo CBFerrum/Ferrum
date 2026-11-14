@@ -771,10 +771,11 @@ pub(crate) async fn with_ways(st: &AppState, headers: &HeaderMap, res: Response)
         }
         None => Vec::new(),
     };
+    // The answer is written anew from its mark and sent as it is: the body in hand may already be compressed.
     let (mut parts, body) = res.into_parts();
-    let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else { return Response::from_parts(parts, axum::body::Body::empty()) };
-    let Ok(v) = serde_json::from_slice::<Value>(&bytes) else { return Response::from_parts(parts, axum::body::Body::from(bytes)) };
+    let Some(crate::error::StepUpAsked(v)) = parts.extensions.remove() else { return Response::from_parts(parts, body) };
     parts.headers.remove(header::CONTENT_LENGTH);
+    parts.headers.remove(header::CONTENT_ENCODING);
     Response::from_parts(parts, axum::body::Body::from(ways_body(v, ways, device.is_some()).to_string()))
 }
 
