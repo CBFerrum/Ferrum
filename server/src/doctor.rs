@@ -259,6 +259,9 @@ pub async fn service_findings(st: &AppState) -> Vec<Finding> {
     out
 }
 
+/// How long a workspace's move may stand still between steps before the doctor reports it.
+const MOVE_QUIET: std::time::Duration = std::time::Duration::from_secs(3600);
+
 /// How many of the newest files the doctor looks for in storage (`ferrum task check_files` looks for all).
 const NEWEST_FILES: u32 = 200;
 
@@ -290,6 +293,18 @@ pub async fn move_findings(k: &ferrum_kernel::Kernel) -> Result<Vec<Finding>, fe
                 "On the copy: `ferrum task adopt_move reason:\"...\"` (before the mark runs out at the time plan_move printed). On the source: nothing.",
             ),
         });
+    }
+    // A workspace's move that stopped half way (docs/operations.md, Moving one workspace).
+    for (slug, side, state, since, _) in k.stalled_moves(MOVE_QUIET).await? {
+        let run = if side == "source" { "on the installation it is going to" } else { "here, with FERRUM_MOVE_SOURCE_* set as before" };
+        out.push(Finding::warning(
+            "workspace_move",
+            format!(
+                "the move of {slug} has stood {state} since {since}, and no move_workspace runs on it: it stays frozen until the move goes on or is undone. \
+                 Run `ferrum task move_workspace tenant:{slug} resume:yes` {run} to finish it, or the same with abort:yes to undo it"
+            ),
+            "Finish or undo the move (docs/operations.md, Moving one workspace).",
+        ));
     }
     let (unopened, complete) = k.unopened_secrets().await?;
     let total: u64 = unopened.iter().map(|u| u.count).sum();

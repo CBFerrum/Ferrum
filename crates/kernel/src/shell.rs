@@ -215,11 +215,12 @@ impl Kernel {
             return e.0.filter(|(owner, _)| *owner == user).map(|(_, state)| state).ok_or_else(expired);
         }
         let mut tx = self.db.tenant_tx(tenant).await?;
-        type Row = (Uuid, DateTime<Utc>, Option<Uuid>, Option<DateTime<Utc>>, i32);
-        // A setting that cannot be read as a number fails the query, which refuses.
+        type Row = (Uuid, DateTime<Utc>, Option<Uuid>, Option<DateTime<Utc>>, i32, bool);
+        // A setting that cannot be read as a number fails the query, which refuses. A workspace that takes no changes
+        // just now (moving, or the database fenced) is still read: its sessions are checked, not written.
         let row: Option<Row> = sqlx::query_as(
             "select user_id, last_seen_at, actor, step_up_at, \
-             (select coalesce((settings->>'idle_minutes')::int, 0) from tenant where id = $1) from user_session \
+             (select coalesce((settings->>'idle_minutes')::int, 0) from tenant where id = $1), current_setting('transaction_read_only') = 'on' from user_session \
              where tenant_id = $1 and id = $2 and revoked_at is null and expires_at > now()",
         )
         .bind(tenant)
@@ -227,7 +228,8 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let idle = row.as_ref().map_or(0, |r| i64::from(r.4));
-        if let Some(r) = row.as_ref().filter(|r| r.0 == user && idle > 0 && Utc::now() - r.1 > chrono::Duration::minutes(idle)) {
+        let writable = row.as_ref().is_some_and(|r| !r.5);
+        if let Some(r) = row.as_ref().filter(|r| writable && r.0 == user && idle > 0 && Utc::now() - r.1 > chrono::Duration::minutes(idle)) {
             self.end_idle(&mut tx, tenant, sid, r.1).await?;
             tx.commit().await?;
             self.sessions.insert((tenant, sid), (None, Instant::now()));
@@ -238,6 +240,7 @@ impl Kernel {
         let every = if idle > 0 { SEEN_EVERY_IDLE } else { SEEN_EVERY };
         if let Some((seen, _)) = state
             && active
+            && writable
             && Utc::now() - seen > every
         {
             sqlx::query("update user_session set last_seen_at = now() where tenant_id = $1 and id = $2").bind(tenant).bind(sid).execute(&mut *tx).await?;
@@ -342,7 +345,7 @@ impl Kernel {
     /// Deletes sessions that ended more than a week ago (maintenance).
     pub async fn purge_sessions(&self) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
-        sqlx::query("delete from sso_logout_seen where seen_at < now() - interval '1 day'").execute(&mut *tx).await?;
+        sqlx::query("delete from sso_logout_seen where seen_at < now() - interval '1 day' and not ferrum_workspace_held(tenant_id)").execute(&mut *tx).await?;
         sqlx::query("delete from sso_sid where created_at < now() - interval '90 days'").execute(&mut *tx).await?;
         let n = sqlx::query("delete from user_session where expires_at < now() - interval '7 days' or revoked_at < now() - interval '7 days'")
             .execute(&mut *tx)
@@ -380,9 +383,11 @@ impl Kernel {
             return Ok((e.0.clone(), e.1.clone()));
         }
         let mut tx = self.db.system_tx().await?;
-        type Row = (Uuid, String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>, Option<String>);
+        type Row = (Uuid, String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>, Option<String>, bool, Option<String>);
+        // A workspace that moved to another installation (workspace_move.rs) answers as moved on every host it had here.
         let row: Option<Row> = sqlx::query_as(
-            "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at, h.zone from tenant_host h join tenant t on t.id = h.tenant_id where h.host = $1",
+            "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at, h.zone, m.workspace is not null, m.moved_to from tenant_host h \
+             join tenant t on t.id = h.tenant_id left join workspace_move m on m.workspace = h.tenant_id and m.state = 'moved' where h.host = $1",
         )
         .bind(&host)
         .fetch_optional(&mut *tx)
@@ -390,7 +395,9 @@ impl Kernel {
         let zone = row.as_ref().and_then(|r| r.5.clone());
         let route = match row {
             None => HostRoute::Unknown,
-            Some((tenant, _, target, _, Some(released), _)) => {
+            // To its address there when it has another one; otherwise the address still points here, and only says so.
+            Some((tenant, .., true, to)) => HostRoute::Moved { tenant, to: to.filter(|to| *to != host) },
+            Some((tenant, _, target, _, Some(released), ..)) => {
                 if Utc::now() - released < chrono::Duration::days(HOST_REDIRECT_DAYS) {
                     let to: Option<String> = sqlx::query_scalar(
                         "select host from tenant_host where tenant_id = $1 and target = $2 and is_primary and released_at is null \
@@ -405,7 +412,7 @@ impl Kernel {
                     HostRoute::Unknown
                 }
             }
-            Some((tenant, kind, target, verified, None, _)) if kind == "subdomain" || verified.is_some() => HostRoute::Serve { tenant, target },
+            Some((tenant, kind, target, verified, None, ..)) if kind == "subdomain" || verified.is_some() => HostRoute::Serve { tenant, target },
             Some(_) => HostRoute::Unknown,
         };
         tx.commit().await?;

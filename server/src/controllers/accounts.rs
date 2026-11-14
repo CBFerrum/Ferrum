@@ -307,7 +307,9 @@ async fn directory(State(app): State<AppContext>, Query(q): Query<Vec<(String, S
     let st = app_state(&app)?;
     let Some(bare) = query(&q, "host").and_then(normalize_host) else { return Ok(StatusCode::NOT_FOUND.into_response()) };
     let ours = match st.kernel.route_host(&bare).await? {
-        HostRoute::Serve { .. } | HostRoute::Moved { .. } => true,
+        HostRoute::Serve { .. } => true,
+        // A workspace that moved to another installation is that one's now (workspace_move.rs).
+        HostRoute::Moved { tenant, .. } => !st.kernel.moved_away(tenant).await?,
         HostRoute::Unknown => st.shell.is_own_host(&bare),
     };
     if !ours {

@@ -223,14 +223,14 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         // Asked to stop, with nobody left to tell (a job handed back counts: it is running nowhere).
-        sqlx::query("update job set status = 'cancelled', finished_at = now(), lease_token = null where cancel_requested and not undo_on_cancel and (status = 'queued' or (status = 'running' and lease_until < now()))")
+        sqlx::query("update job set status = 'cancelled', finished_at = now(), lease_token = null where cancel_requested and not undo_on_cancel and (status = 'queued' or (status = 'running' and lease_until < now())) and not ferrum_workspace_held(tenant_id)")
             .execute(&mut *tx)
             .await?;
         // Their workers died, and that was their last attempt.
         let lost: Vec<(Uuid, Option<Uuid>, String)> = sqlx::query_as(
             "update job set status = 'failed', finished_at = now(), lease_token = null, \
              last_error = coalesce(last_error || '; ', '') || 'its worker was lost on the last attempt' \
-             where status = 'running' and lease_until < now() and attempts >= max_attempts returning tenant_id, created_by, kind",
+             where status = 'running' and lease_until < now() and attempts >= max_attempts and not ferrum_workspace_held(tenant_id) returning tenant_id, created_by, kind",
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -247,7 +247,7 @@ impl Kernel {
                select (select j.tenant_id from job j where j.tenant_id > w.tenant_id and j.status in ('queued', 'running') order by j.tenant_id limit 1) \
                from waiting w where w.tenant_id is not null), \
              picked as ( \
-               select claimed.tenant_id, claimed.id from (select tenant_id from waiting where tenant_id is not null order by random()) w \
+               select claimed.tenant_id, claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) order by random()) w \
                cross join lateral (select j.tenant_id, j.id from job j where j.tenant_id = w.tenant_id and (not j.cancel_requested or j.undo_on_cancel) \
                  and (j.build_date is null or j.build_date <= $5) \
                  and ((j.status = 'queued' and j.run_at <= now()) or (j.status = 'running' and j.lease_until < now())) \
@@ -516,7 +516,11 @@ impl Kernel {
     /// Forgets jobs that ended over `keep_days` ago.
     pub(crate) async fn purge_jobs(&self, keep_days: i32) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
-        let n = sqlx::query("delete from job where finished_at < now() - make_interval(days => $1)").bind(keep_days).execute(&mut *tx).await?.rows_affected();
+        let n = sqlx::query("delete from job where finished_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
+            .bind(keep_days)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
         tx.commit().await?;
         Ok(n)
     }

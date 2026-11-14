@@ -314,7 +314,8 @@ pub async fn anchor_day(db: &Db, day: NaiveDate) -> Result<usize> {
     let mut tx = db.system_tx().await?;
     let tenants: Vec<Uuid> = sqlx::query_scalar(
         "select distinct tenant_id from audit_event where at >= $1::date and at < $1::date + 1 \
-         and not exists (select 1 from audit_anchor x where x.tenant_id = audit_event.tenant_id and x.day = $1::date)",
+         and not exists (select 1 from audit_anchor x where x.tenant_id = audit_event.tenant_id and x.day = $1::date) \
+         and not ferrum_workspace_held(tenant_id)",
     )
     .bind(day)
     .fetch_all(&mut *tx)

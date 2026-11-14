@@ -89,6 +89,7 @@ pub mod value;
 pub mod views;
 pub mod webpush;
 pub mod window;
+pub mod workspace_move;
 pub mod zones;
 
 pub use ctx::{Access, Action, Ctx, PermSet, row_scope};

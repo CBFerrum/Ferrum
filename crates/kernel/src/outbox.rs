@@ -340,7 +340,7 @@ impl Kernel {
                        order by o.tenant_id limit 1) \
                from waiting w where w.tenant_id is not null) \
              update outbox set available_at = now() + make_interval(secs => $1) where id in ( \
-               select claimed.id from (select tenant_id from waiting where tenant_id is not null order by random()) w \
+               select claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) order by random()) w \
                cross join lateral (select o.id from outbox o where o.tenant_id = w.tenant_id and o.processed_at is null and not o.dead \
                  and o.available_at <= now() and (o.build_date is null or o.build_date <= $4) \
                  order by o.priority, o.id limit $2 for update skip locked) claimed \
@@ -376,7 +376,7 @@ impl Kernel {
             let lease: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
                 "update outbox set available_at = now() + make_interval(secs => $3) \
                  where id = $1 and available_at = $2 and processed_at is null and not dead \
-                   and not exists (select 1 from platform_move) returning available_at",
+                   and not exists (select 1 from platform_move) and not ferrum_workspace_held(tenant_id) returning available_at",
             )
             .bind(ev.id)
             .bind(ev.lease)
@@ -751,7 +751,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let due: Vec<Due> = sqlx::query_as(
             "with claimed as (select tenant_id, id from webhook_delivery where status = 'pending' and next_attempt_at <= now() \
-               order by next_attempt_at limit 20 for update skip locked), \
+               and not ferrum_workspace_held(tenant_id) order by next_attempt_at limit 20 for update skip locked), \
              leased as (update webhook_delivery d set next_attempt_at = now() + make_interval(secs => $1) from claimed c \
                where d.tenant_id = c.tenant_id and d.id = c.id returning d.tenant_id, d.id, d.webhook_id, d.topic, d.payload, d.attempts) \
              select l.tenant_id, l.id, l.webhook_id, l.topic, l.payload, l.attempts, w.url, w.secret from leased l \
@@ -867,25 +867,32 @@ impl Kernel {
     /// Deletes processed outbox rows, delivered webhooks and expired idempotency keys.
     pub async fn purge_old_events(&self, keep_days: i32) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
-        let mut n =
-            sqlx::query("delete from outbox where processed_at < now() - make_interval(days => $1)").bind(keep_days).execute(&mut *tx).await?.rows_affected();
-        n += sqlx::query("delete from webhook_delivery where status = 'delivered' and updated_at < now() - make_interval(days => $1)")
+        let mut n = sqlx::query("delete from outbox where processed_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
             .bind(keep_days)
             .execute(&mut *tx)
             .await?
             .rows_affected();
-        n += sqlx::query("delete from event_receipt where received_at < now() - make_interval(days => $1)")
+        n += sqlx::query("delete from webhook_delivery where status = 'delivered' and updated_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
+            .bind(keep_days)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        n += sqlx::query("delete from event_receipt where received_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
             .bind(keep_days)
             .execute(&mut *tx)
             .await?
             .rows_affected();
         // A receipt answers a request sent again for as long as a device's work may wait offline.
-        n += sqlx::query("delete from idempotency_key where created_at < now() - make_interval(days => $1)")
+        n += sqlx::query("delete from idempotency_key where created_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
             .bind(crate::receipt::RECEIPT_DAYS)
             .execute(&mut *tx)
             .await?
             .rows_affected();
-        n += sqlx::query("delete from event_chain where first_at < now() - make_interval(days => $1)").bind(keep_days).execute(&mut *tx).await?.rows_affected();
+        n += sqlx::query("delete from event_chain where first_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
+            .bind(keep_days)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
         tx.commit().await?;
         Ok(n)
     }

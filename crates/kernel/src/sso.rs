@@ -820,6 +820,10 @@ impl Kernel {
             tx.commit().await?;
             return Err(again("this sign-in was started in another browser"));
         }
+        if let Err(e) = self.refuse_if_moving(tenant).await {
+            tx.commit().await?;
+            return Err(e);
+        }
         let (_, p) = self.sign_in_provider(&mut tx, Some(tenant), None, provider).await?;
         tx.commit().await?;
         if p.protocol == Protocol::Saml {

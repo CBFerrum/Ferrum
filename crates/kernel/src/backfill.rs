@@ -98,7 +98,7 @@ impl Kernel {
     pub(crate) async fn start_backfills(&self) -> Result<usize> {
         let tenants: Vec<Uuid> = {
             let mut tx = self.db.system_tx().await?;
-            let t = sqlx::query_scalar("select id from tenant order by id").fetch_all(&mut *tx).await?;
+            let t = sqlx::query_scalar("select id from tenant where not ferrum_workspace_held(id) order by id").fetch_all(&mut *tx).await?;
             tx.commit().await?;
             t
         };

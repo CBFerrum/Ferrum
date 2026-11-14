@@ -330,7 +330,7 @@ impl Docs {
     async fn sweep(&self, k: &Arc<Kernel>) -> Result<()> {
         let mut tx = k.db.system_tx().await?;
         let due: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
-            "select tenant_id, package, id from coedit_doc where saved_seq < seq and updated_at < now() - interval '10 minutes' \
+            "select tenant_id, package, id from coedit_doc where saved_seq < seq and updated_at < now() - interval '10 minutes' and not ferrum_workspace_held(tenant_id) \
              order by saved_at nulls first, updated_at limit 50",
         )
         .fetch_all(&mut *tx)

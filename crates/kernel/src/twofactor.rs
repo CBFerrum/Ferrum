@@ -312,6 +312,7 @@ impl Kernel {
     /// [`Kernel::second_factor`] from `from`: a wrong code is on the audit trail with where it came from.
     pub async fn second_factor_from(&self, tenant: Uuid, user: Uuid, token_version: i32, code: &str, from: &crate::gate::Arrival) -> Result<Session> {
         let again = || Error::Unauthorized("sign in again".into());
+        self.refuse_if_moving(tenant).await?;
         let mut tx = self.db.system_tx().await?;
         #[derive(sqlx::FromRow)]
         struct U {

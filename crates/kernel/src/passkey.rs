@@ -431,6 +431,7 @@ impl Kernel {
         if p.rp_id != rp_id || tenant.is_some_and(|t| t != p.tenant_id) {
             return Err(refused("it belongs to another address"));
         }
+        self.refuse_if_moving(p.tenant_id).await?;
         if let Some(handle) = res["userHandle"].as_str().filter(|h| !h.is_empty())
             && B64.decode(handle.trim_end_matches('=')).ok().as_deref() != Some(p.user_id.as_bytes().as_slice())
         {
