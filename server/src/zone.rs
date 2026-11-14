@@ -101,6 +101,32 @@ pub async fn resolve(mut zones: ferrum_kernel::zones::Zones, k: &ferrum_kernel::
     Ok(zones)
 }
 
+/// Where `ctx`'s zone limits staff to some apps and enforces it (level 2), those apps' ids; `None` elsewhere, and for
+/// outside people and machines, whose contexts are never limited.
+pub fn limited_to(ctx: &ferrum_kernel::Ctx) -> Option<&Vec<String>> {
+    ctx.perms.limit.as_ref().filter(|l| !l.report)?;
+    ctx.zone.as_ref()?.limit()?.1.apps.as_ref()
+}
+
+/// A plugin's signed-in endpoint or socket where `ctx`'s zone limits staff to some apps: refused, as a hidden
+/// package's app endpoint is, unless an app the zone names installed it. A plugin no app installed is refused there.
+pub async fn plugin_admitted(st: &AppState, ctx: &ferrum_kernel::Ctx, plugin: &str) -> Result<(), crate::error::ApiError> {
+    let Some(apps) = limited_to(ctx) else { return Ok(()) };
+    let p = st.plugins.plugin(&st.kernel.db, ctx.tenant, plugin).await?;
+    let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
+    let app: Option<String> = sqlx::query_scalar("select app_id from tenant_app where tenant_id = $1 and plugin_id = $2")
+        .bind(ctx.tenant)
+        .bind(p.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(ferrum_kernel::Error::from)?;
+    tx.commit().await.map_err(ferrum_kernel::Error::from)?;
+    if app.is_some_and(|a| apps.contains(&a)) {
+        return Ok(());
+    }
+    Err(crate::error::ApiError(st.kernel.zone_refusal(ctx.tenant, &st.zones).await))
+}
+
 /// `GET /_zone`, on any host and with no session: the zone this request is in, whether it admits
 /// staff and administrators, and the caller's address as the server sees it (`ferrum task doctor`
 /// checks a public address with it). No secrets; limited like the other public endpoints.
