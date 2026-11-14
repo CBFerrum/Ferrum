@@ -1146,6 +1146,18 @@ pub(crate) async fn run_step(
     execute(k, ctx, tx, entity, record, (raw, doc), user, extra, key, step.action).await
 }
 
+/// [`Kernel::invoke_tx`] for an `invoke` effect, boxed as a trait object with a type that can be named. The gate leads back
+/// here (an app's action is an action, with effects of its own), so without it a future that runs an action is proved `Send`
+/// around that circle and through everything below it (E0275, the compiler's recursion limit).
+fn invoke_boxed<'a>(
+    k: &'a Kernel,
+    ctx: &'a Ctx,
+    tx: &'a mut crate::db::Tx,
+    inv: &'a crate::capability::Invocation,
+) -> futures::future::BoxFuture<'a, Result<crate::capability::Receipt>> {
+    Box::pin(k.invoke_tx(ctx, tx, inv))
+}
+
 /// Runs one action as `ctx` in `tx`, its expressions over `doc` (the record as CEL sees it; `raw`, as stored), `user` and `extra`
 /// (a configured action's `params`, earlier effects' `results`). Returns the record it made or wrote,
 /// `{entity, id, number}`, an `invoke`'s result (its effect key `key` unless it names one), or null.
@@ -1384,7 +1396,7 @@ pub(crate) async fn execute(
             };
             let inv = crate::capability::Invocation::new(capability.as_str(), Value::Object(values)).key(key);
             // Boxed: an app's action reached through the gate is an action, which may run effects of its own.
-            return match Box::pin(k.invoke_tx(ctx, tx, &inv)).await {
+            return match invoke_boxed(k, ctx, tx, &inv).await {
                 Ok(r) => Ok(r.result),
                 // Whoever pressed (a portal person too) is told in plain words; a key and a capability id are the
                 // workspace's set-up, said to an administrator and the log (docs/api.md, "Once").

@@ -1116,7 +1116,15 @@ impl Kernel {
     /// `Unavailable` (worth trying again); a refused address or an answer too large is `Invalid`.
     ///
     /// Made for `tenant`: refused for a sandbox, which reaches nothing outside (sandbox.rs).
-    pub(crate) async fn fetch(&self, tenant: Uuid, mut req: Request, reach: &Reach) -> Result<Answer> {
+    ///
+    /// A boxed trait object on purpose: the HTTP client's types nest some fifty deep, and an action's effects, a capability
+    /// and MCP await this many calls up; a future proved `Send` through all of that passed the compiler's recursion limit
+    /// (E0275). Behind the box the proof stops here, for every caller (pdf.rs boxes its renderer call the same way).
+    pub(crate) fn fetch<'a>(&'a self, tenant: Uuid, req: Request, reach: &'a Reach) -> futures::future::BoxFuture<'a, Result<Answer>> {
+        Box::pin(self.exchange(tenant, req, reach))
+    }
+
+    async fn exchange(&self, tenant: Uuid, mut req: Request, reach: &Reach) -> Result<Answer> {
         self.outward(tenant).await?;
         let mut reach = reach.clone();
         if reach.hosts.is_empty() {
