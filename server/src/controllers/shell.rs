@@ -85,6 +85,10 @@ async fn auth_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)
         res
     };
     let Place::Workspace(tenant) = st.shell.place(headers).await? else { return Ok(nowhere()) };
+    // No session starts on an address that is going away.
+    if st.shell.leaving(headers).await?.is_some() {
+        return Ok(failed("This address is going away. Sign in at the workspace's new address."));
+    }
     let (Some(code), Some(state)) = (query(q, "code"), query(q, "state")) else { return Ok(failed("The link is incomplete.")) };
     let kept = name.as_deref().and_then(|n| shell::cookie(headers, n)).unwrap_or_default();
     let (kept_state, next) = kept.split_once('.').unwrap_or_default();
@@ -181,6 +185,11 @@ pub(crate) async fn page_bootstrap(
     // A host that belongs to one workspace (registered, or the server's one): what browsers keep
     // for its origin is that workspace's (§7.2). A shared host (shape A′) serves several in turn.
     boot["host"]["bound"] = json!(matches!(st.shell.place(headers).await, Ok(Place::Workspace(_) | Place::Portal(_))));
+    // An address in its leaving period (docs/operations.md, "Changing or removing an address"): where the
+    // workspace is now, and the moment this one stops serving, for the bar to say so.
+    if let Some((to, until)) = st.shell.leaving(headers).await.map_err(err)? {
+        boot["host"]["leaving"] = json!({"to": to, "until": until});
+    }
     // Web Push (§12.5): the key a device subscribes with, and whether this one has. None for
     // callers without a browser session, or a server without a secret key.
     boot["offline"] = offline(st, ctx, &kind).await.map_err(err)?;
@@ -1164,6 +1173,13 @@ async fn login(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, Stri
     }
     if shell::session_cookie(headers, st.shell.secure).is_some() && caller_on(st, &Method::GET, headers).await.is_ok() {
         return Ok(Redirect::to(&next).into_response());
+    }
+    // An address in its leaving period offers no sign-in: on to the new one, as once it has moved.
+    if let Some((to, _)) = st.shell.leaving(headers).await? {
+        return Ok(match to {
+            Some(to) => Redirect::to(&format!("{to}{}", path_and_query(uri))).into_response(),
+            None => nowhere(),
+        });
     }
     // Shapes B and C: members sign in at the accounts host; portal people here, with a code.
     if let (Place::Workspace(_), Some(accounts)) = (&place, st.shell.accounts_origin(headers))

@@ -45,6 +45,18 @@ engines:
     read: postgres/postgres COPYRIGHT (the PostgreSQL License)
     terms: None beyond the licence
     decided_in: docs/plan/architecture.md
+  - image: ghcr.io/cloudnative-pg/postgresql
+    name: PostgreSQL, as the CloudNativePG project packages it for its operator (the cluster's `imageName`)
+    license: PostgreSQL AND Apache-2.0
+    read: postgres/postgres COPYRIGHT (the PostgreSQL License); cloudnative-pg/postgres-containers LICENSE (Apache-2.0, the image's build files)
+    terms: None beyond the licences
+    decided_in: docs/operations.md
+  - image: ghcr.io/cloudnative-pg/pgbouncer
+    name: PgBouncer, as the CloudNativePG operator runs it for a Pooler (no file here names it; the operator chooses the image)
+    license: ISC AND Apache-2.0
+    read: pgbouncer/pgbouncer COPYRIGHT (ISC License); cloudnative-pg/pgbouncer-containers LICENSE (Apache-2.0, the image's build files)
+    terms: None beyond the licences; it runs only when database.pooler.enabled is set
+    decided_in: docs/operations.md
   - image: temporalio/server
     name: Temporal server (Full Process profile)
     license: MIT

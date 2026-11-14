@@ -71,3 +71,4 @@ settings:
   sso_allow_private: true
   run_background: false
   files_dir: <%= get_env(name="FERRUM_FILES_DIR", default="../target/test-storage") %>
+  host_leaving_days: <%= get_env(name="FERRUM_HOST_LEAVING_DAYS", default="14") %>

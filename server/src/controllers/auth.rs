@@ -92,6 +92,11 @@ pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &Heade
     // no token where its zone admits no staff; refused as a wrong password is, before anything below
     // could say more about the account.
     let entry = crate::zone::sign_in(st, headers, s.tenant, s.user).await.map_err(|()| crate::zone::sign_in_failed())?;
+    // No browser session starts on an address in its leaving period (its sign-in page sends people on to
+    // the new one); refused as a wrong password is. API clients' tokens are not the host's, and go on as before.
+    if from_page(headers) && st.shell.leaving(headers).await?.is_some() {
+        return Err(crate::zone::sign_in_failed());
+    }
     // Shapes B and C: someone whose workspace account joined their Ferrum account signs in at the
     // accounts host, with that account's credentials; the workspace's own, unused since, open
     // nothing (for pages and API clients alike).

@@ -149,7 +149,14 @@ host belongs to one workspace (registered, or the server's one). On such a host 
 remembers the workspace in the browser, and should the host ever answer for another one (a released
 address's next owner), it clears everything the browser kept for the origin (local and session
 storage, IndexedDB, caches, service workers) before going on; a shared host (shape A′) serves
-several workspaces in turn and is left as it is.
+several workspaces in turn and is left as it is. On an address in its leaving period
+([operations](operations.md#changing-or-removing-an-address)), a signed-in page's bootstrap also carries
+`host.leaving: {to, until}`: the origin of the workspace's main address of that kind now (`null` when it has
+none) and the moment this address stops serving (RFC 3339); the bar says so on every page. It is absent
+everywhere else. Such an address answers as before to a request with the session cookie; without one, pages
+go on to `to` with `308`, its `/login` sends people there, and page sign-ins (`POST /api/auth/login`, a
+passkey, a code) answer `401` as a wrong password does, so no session starts on it. API clients' tokens work
+as on any host.
 
 ## Metadata — `/api/meta`
 
@@ -596,9 +603,10 @@ Pages, for browsers, with the session cookie:
   offers an emailed code first. A sandbox's says so in its heading ("Sign in to Acme (sandbox)") and
   in `workspace.sandbox` of its boot.
 * A sandbox's pages (docs/operations.md, "A sandbox of a workspace"): the bootstrap, a signed-in page's
-  and a public page's alike, carries `sandbox: {of, until}` (the workspace it is a copy of, as the
-  command named it, and its last day, `YYYY-MM-DD`); `sandbox: null` for a live workspace. The
-  interface shows a banner from it.
+  and a public page's alike, carries `sandbox: {of, until, name}` (the workspace it is a copy of, as the
+  command named it, its last day, `YYYY-MM-DD`, and the source's name when this installation holds it,
+  else `null`); `sandbox: null` for a live workspace. The bar shows a strip from it on every page and
+  starts the page's title with "Sandbox ·".
 * `GET /portal/` → the workspace's portal ([plan](plan/apps-ui.md) §9.1): the pages the apps give
   this person (`shell.portal`), straight to the only one for a portal person who has one; `GET
   /portal/{id}/…` → that page, the app's interface with `<ferrum-portal-bar>` (the workspace, the
@@ -730,10 +738,13 @@ workspace as its body; `*` does not include them.
 
 Domains ([operations](operations.md#custom-domains)): `GET /api/admin/domains` → `{domains: [{host,
 kind (subdomain or custom), target (shell, portal, site:{app}), is_primary, verify_token, status
-(verified, pending, failing, released), verified_at, checked_at, failures, released_at,
-created_at}], point_to, sites: [{app, title}]}`, `sites` being the apps here with a public site;
+(verified, pending, failing, leaving, released), verified_at, checked_at, failures, released_at,
+leaving_until, created_at}], point_to, sites: [{app, title}]}`, `sites` being the apps here with a public site;
 `POST {host, target}` adds a custom domain (201), a `site:{app}` only for one of those; `DELETE
-/api/admin/domains/{host}` removes one; `PUT …/{host}/primary` makes a working one the main address
+/api/admin/domains/{host}` removes one → `{host, leaving_until}`: one in use keeps serving the people
+signed in there until `leaving_until`, then redirects (`null`: it stopped at once, being never verified or
+with `FERRUM_HOST_LEAVING_DAYS=0`); the main address hands its place to another of the workspace's first.
+(Before, this answered `204`.) `PUT …/{host}/primary` makes a working one the main address
 of its kind; `POST …/{host}/check` checks it now → `{host, answers}`. Public:
 `GET /.well-known/ferrum-domain` answers the token of the custom domain the request reached, and
 `GET /_tls/ask?domain=` answers 200 when the edge may get a certificate for that host.

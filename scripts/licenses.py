@@ -101,8 +101,10 @@ def refused_images(files: dict, engines: list) -> list:
         if chart and "/templates/" in path:
             continue
         pattern = r"[^#]*\brepository:\s*([^\s,}]+)" if chart else r"\s*image:\s*(\S+)"
+        # CloudNativePG names its PostgreSQL image as `imageName:`, in a chart's values and in plain manifests alike.
+        operand = r"\s*imageName:\s*(\S+)"
         for line in text.splitlines():
-            m = re.match(pattern, line)
+            m = re.match(pattern, line) or re.match(operand, line)
             if m and image_of(m.group(1)) not in approved:
                 bad.append(f"{path}: {image_of(m.group(1))} is not an engine approved in docs/registry/engines.yaml")
     return bad
@@ -122,6 +124,9 @@ def self_test() -> None:
     chart = {"deploy/helm/x/values.yaml": "image:\n  repository: postgres\n  tag: ''\npdf:\n  image: {repository: redis, tag: '7'}\n# repository: mysql\n"}
     assert refused_images(chart, [engine]) == ["deploy/helm/x/values.yaml: redis is not an engine approved in docs/registry/engines.yaml"], "a chart's images are its values' repositories"
     assert refused_images({"deploy/helm/x/templates/a.yaml": "  image: {{ include \"x.image\" . }}\n"}, [engine]) == [], "and its templates name none"
+    operand = {"deploy/k8s/db.yaml": "  imageName: ghcr.io/cloudnative-pg/postgresql:17\n"}
+    assert refused_images(operand, [engine]) == ["deploy/k8s/db.yaml: ghcr.io/cloudnative-pg/postgresql is not an engine approved in docs/registry/engines.yaml"], "an operator's imageName is an image too"
+    assert refused_images({"deploy/helm/x/values.yaml": "database:\n  imageName: postgres:17\n"}, [engine]) == [], "in a chart's values as well"
     assert refused_images({}, [dict(engine, license="SSPL-1.0")]), "an engine under a licence nobody accepted is not approved"
     assert refused_images({}, [dict(engine, decided_in="")]), "nor one without its decision"
 

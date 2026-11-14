@@ -64,6 +64,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_ACCOUNTS_HOST` | no | The host where people sign in once, with their Ferrum account (`id.example.com`), with or without a base domain: every host of every workspace sends sign-in there. Default `accounts.{base}` with `FERRUM_BASE_DOMAIN`, else none (each host signs in on its own). See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_HOOKS_HOST` | no | The host other services call back (`hooks.example.com`): webhooks and `/api/public/…` calls, a mail or calendar connector's sign-in return (`/api/connections/callback`), the addresses services pull files from. Default `hooks.{base}` for pages and public calls with `FERRUM_BASE_DOMAIN`, else `PUBLIC_URL`; connectors and pulled files use `PUBLIC_URL` unless this is set. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_PASSKEY_RP` | no | The passkeys' relying party, a domain (`example.com`): passkeys made on it or a host under it work on every host under it. Default none: each host is its own, as before. Never the base domain. See [Names that should never change](#names-that-should-never-change) |
+| `FERRUM_HOST_LEAVING_DAYS` | no | How long a removed address keeps serving the people already signed in there, so that what their browsers kept for it is sent, before it redirects (default 14 days; 0: it redirects at once, as before; at most 365). See [Changing or removing an address](#changing-or-removing-an-address) |
 | `FERRUM_LINK_HOST` | no | The host every mailed, notified or printed link goes through (`go.example.com`): links become `https://{it}/go/{workspace}/{s\|p}/…`, which lead on to wherever the workspace is when someone follows them. Default none: links name the workspace's host, as before. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_ZONES` | no | Zones, JSON: zone name → rule, `{"public": {"staff": "none"}, "office": {"staff": "all", "networks": ["10.0.0.0/8"]}}`. Default none: everyone is admitted everywhere, as before. See [Zones](#zones) |
 | `FERRUM_ZONE` | no | The zone this replica is in for every request (one of `FERRUM_ZONES`). Default none: each request's host, network or the default decides |
@@ -1982,6 +1983,13 @@ in with their passwords, and an administrator sets one for whoever has none. Sta
 The interface is told it is a sandbox (`sandbox` in the bootstrap, docs/api.md), the workspace's name ends in
 "(sandbox)" (an administrator may change it), and its sign-in page says "sandbox".
 
+**How it looks.** Every page with the bar has a strip under it, in the theme's warning colours, that cannot be
+hidden: "Sandbox: a copy of {the source's name, or its name there when the source is on another installation}.
+Nothing sent from here leaves the system. It is deleted after {its last day}." The bar grows by the strip before the
+app below draws, so nothing moves, and the page's title starts with "Sandbox ·" (an app that sets its own title gets
+it back). Portal pages show the same strip under their own header, where a tester acts as a customer. Public pages,
+which have no bar, carry neither.
+
 **Personal data.** A sandbox is a second copy of people's data, so it has an end: `until` is required, at most 90 days
 ahead. `ferrum task doctor` reports sandboxes past their day (`sandbox.expired`); nothing deletes them by itself. When a
 person's data is exported or erased in the source workspace, the answer lists the sandboxes of it this installation
@@ -2915,11 +2923,56 @@ site (`site:{app}`), at most 20 per workspace.
   other names. On Kubernetes, put Caddy (or another edge with on-demand TLS) in front of the
   `ferrum` service; with cert-manager instead, each custom domain needs its own Ingress and
   Certificate, which an operator adds when the domain is verified.
-* **Removing** a working domain releases it: it redirects to the workspace's main address of the same
-  kind for 90 days, and no workspace can claim it for a year, so old links and data in browsers never
-  reach a new owner. A domain that never worked is simply dropped.
+* **Removing** a working domain releases it, after a leaving period (below). A domain that never worked
+  is simply dropped.
 * **Main address**: one working domain of each kind is the main one: links in mail and redirects use
   it, and the workspace's other addresses of that kind lead to it.
+
+### Changing or removing an address
+
+What a browser keeps belongs to the address it was kept for: uploads waiting to be sent, a till's sales
+and price book made offline, a document's unsent edits, the service worker and the push subscription. The
+moment an address only redirects, its pages never load there again, and none of that is ever sent. So a
+removed address leaves in three steps:
+
+1. **Leaving period** (`FERRUM_HOST_LEAVING_DAYS`, 14 days by default). People already signed in on the
+   address go on as before: pages, the API and live updates work, so each app sends what it kept the way
+   it does whenever it is opened online. Every page says, under the bar, that the address is moving, to
+   where, and the day it stops; asks anyone who worked offline on this device to open each app once; shows
+   how many uploads this device still has to send (the bar's own queue), then that everything has been
+   sent; and offers the same page at the new address. The notice can be hidden on a page; it comes back on
+   the next. Nobody starts anything there: a visit without a session goes on to the new address with a
+   `308`, as after the move, the sign-in page sends people on to the new address, and no sign-in (password,
+   passkey, code, or the accounts host's handoff) makes a session on it.
+2. **Redirect**, for 90 days after the leaving period: every page goes on (`308`) to the workspace's main
+   address of the same kind, the rest of the address kept. A browser's session there no longer opens
+   anything (`401` on the API).
+3. **Quarantine**: no workspace can claim the name until a year after the leaving period ends, so old
+   links and data in browsers never reach a new owner. When another workspace does claim it, the bar
+   wipes everything the first one left in a browser for that address the first time a page of the new
+   owner opens there (the bar keeps which workspace an address's storage is for); during the leaving
+   period the address still answers as the same workspace, so nothing is wiped.
+
+* **Removing**: Administration → Domains, or `DELETE /api/admin/domains/{host}` ([api.md](api.md)), which
+  answers until when the address is leaving. Administrators remove custom domains; the operator releases
+  any address, a subdomain too, with
+  `ferrum task release_host host:<name> [leaving_days:<n>]` (default the setting; `0`: it redirects at
+  once). Both are in the workspace's audit trail.
+* **The main address** hands its place on first: to the workspace's oldest subdomain of the same kind,
+  else its oldest working custom domain, so links in mail and redirects always lead somewhere. With none
+  left, that kind has no main address, and the removed one answers `410` after its leaving period.
+* **`FERRUM_HOST_LEAVING_DAYS=0`**: no leaving period; a removed address redirects at once, as before the
+  setting. At most 365.
+* **API clients** (tokens, keys) are not tied to an address: they work on the leaving address, and after
+  it, for as long as the address still reaches the server. Point them at the new address.
+* **Service workers and push subscriptions** live and die with the old address: a browser keeps them per
+  address, and nothing carries them over. On the new address notifications on this device are off until the
+  person turns them on again (the bell's settings), which installs the worker there. A notification
+  that the old subscription still shows after the move opens its page on the old address, which sends it
+  on to the same page at the new one, where the person signs in.
+* An older build (one running during a rollback, or a replica not yet upgraded) does not know the leaving
+  period and treats such an address as already released: it redirects at once. That is the safe direction
+  (nothing is served that should not be, only the draining stops early), so no floor is needed for it.
 
 ## Many workspaces: subdomains and Ferrum accounts
 

@@ -328,5 +328,17 @@
   "The connection stopped responding.": "توقف الاتصال عن الاستجابة.",
   "Waiting for the connection to come back.": "بانتظار عودة الاتصال.",
   "The upload stopped: the page sending it was closed or left.": "توقف الرفع: أُغلقت الصفحة التي كانت ترسله أو غادرتها.",
-  "Trying again…": "تجري المحاولة مرة أخرى…"
+  "Trying again…": "تجري المحاولة مرة أخرى…",
+  "a copy of {name}. Nothing sent from here leaves the system. It is deleted after {until}.": "نسخة من {name}. لا يغادر النظامَ شيءٌ يُرسَل من هنا. تُحذف بعد {until}.",
+  "Sandbox": "بيئة تجريبية",
+  "This address is moving to {to}. It stops working here on {until}.": "ينتقل هذا العنوان إلى {to}. يتوقف عن العمل هنا في {until}.",
+  "This address stops working on {until}.": "يتوقف هذا العنوان عن العمل في {until}.",
+  "If you worked offline on this device, open each app once so it can send your work.": "إذا عملت دون اتصال على هذا الجهاز، فافتح كل تطبيق مرة واحدة ليرسل عملك.",
+  "Hide this notice on this page": "إخفاء هذا التنبيه في هذه الصفحة",
+  "Hide": "إخفاء",
+  "Open this page at the new address": "افتح هذه الصفحة على العنوان الجديد",
+  "This address is changing": "هذا العنوان يتغير",
+  "Everything from this device has been sent.": "أُرسل كل شيء من هذا الجهاز.",
+  "1 upload still to send.": "ما زال ملف واحد بانتظار الإرسال.",
+  "{n} uploads still to send.": "ما زالت {n} ملفات بانتظار الإرسال."
 }

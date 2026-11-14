@@ -25,6 +25,32 @@ function tr(english, vars) {
 }
 const params = new URLSearchParams(location.search);
 
+// ── Pure helpers: server/shell/runtime.test.mjs runs this block on its own, so it uses nothing else here. ──
+
+/** The origin guard's step for a host bound to one workspace (§7.2): `before` is the workspace this origin's
+ *  storage was kept for. The same workspace keeps it (a released host in its leaving period still answers as
+ *  its own); the first visit remembers it; another workspace (the host's next owner) wipes it. */
+function originStep(id, before) {
+  return before === id ? "keep" : before === null ? "remember" : "wipe";
+}
+
+/** The uploads of `who` this device still holds unsent: waiting, going, or failed (the file kept for Retry). */
+function stillToSend(list, who) {
+  return list.filter((u) => u.owner === who && u.state !== "done" && u.state !== "cancelled").length;
+}
+
+/** This page at the workspace's new address: that origin, then this page's path, query and fragment. */
+function movedUrl(to, loc) {
+  return `${new URL(to).origin}${loc.pathname}${loc.search}${loc.hash}`;
+}
+
+/** A page's title with `mark` before it, once. */
+function marked(title, mark) {
+  return title.startsWith(mark) ? title : `${mark}${title}`;
+}
+
+// ── end of the pure helpers ──
+
 // This origin's workspace (§7.2): a host of one workspace's that ever answers for another than
 // before (a released host's next owner, a year on) gets nothing the earlier one left in this
 // browser: everything stored for the origin goes, and the page starts again on a clean slate.
@@ -39,8 +65,9 @@ const originWiped = (() => {
   } catch {
     return null;
   }
-  if (before === id) return null;
-  if (before === null) {
+  const step = originStep(id, before);
+  if (step === "keep") return null;
+  if (step === "remember") {
     try {
       localStorage.setItem(ORIGIN_WORKSPACE, id);
     } catch {}
@@ -408,6 +435,24 @@ button.ghost { background: transparent; box-shadow: inset 0 0 0 1px var(--ferrum
   .searchbox { inset-inline: 4px; margin-inline: 0; width: auto; }
 }
 @media (prefers-reduced-motion: reduce) { .rgroup svg { animation: none; } }
+/* Under the bar, over the page (nothing below moves): the acting-as line, and an address's leaving notice. */
+.below { position: absolute; top: var(--ferrum-bar-height, 48px); left: 0; right: 0; display: grid; }
+.below .banner { position: static; }
+.leaving { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 12px; font-size: 13px; line-height: 18px;
+  background: var(--ferrum-warning-soft, #fff4d6); color: var(--ferrum-warning, #8f5700); border-bottom: 1px solid var(--ferrum-border, #dee3ea); box-shadow: var(--ferrum-shadow); }
+.leaving .ltext { display: grid; gap: 2px; flex: 1 1 320px; min-width: 0; }
+.leaving p { margin: 0; }
+.leaving .lup { font-weight: 600; }
+.leaving .acts { display: flex; gap: 4px; margin-inline-start: auto; }
+.leaving button, .leaving a.btn { color: inherit; height: 28px; font-size: 13px; }
+.leaving a.btn { box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 35%, transparent); }
+.leaving button:hover, .leaving a.btn:hover { background: color-mix(in srgb, currentColor 12%, transparent); color: inherit; }
+/* A sandbox's strip: in the bar's own height (the page below is laid out under it from the start), never hidden. */
+:host([sandbox]) .bar { height: calc(100% - 24px); }
+.strip { display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 12px; font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden;
+  background: var(--ferrum-warning-soft, #fff4d6); color: var(--ferrum-warning, #8f5700); border-bottom: 1px solid var(--ferrum-border, #dee3ea); }
+.strip strong { flex: none; font-weight: 600; }
+.strip span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 `;
 
 // Icons from Lucide (lucide.dev, ISC license, Copyright (c) Lucide Icons and Contributors): the
@@ -1141,7 +1186,11 @@ class FerrumBar extends HTMLElement {
     this.side = el("aside", { class: "side", "aria-label": tr("Side panel"), hidden: true });
     this.noticeEl = el("div", { class: "notice", role: "status", hidden: true });
     root.append(style, bar, this.launcher, this.menu, this.createMenu, this.tray, this.searchPanel, this.inboxPanel, this.side, this.noticeEl);
-    if (person.actor) root.append(el("div", { class: "banner", role: "note", text: tr("You are acting as {name}. Everything you do is recorded with both names.", { name: person.name }) }));
+    if (boot?.sandbox) bar.after(this.sandboxStrip());
+    this.below = el("div", { class: "below" });
+    root.append(this.below);
+    if (person.actor) this.below.append(el("div", { class: "banner", role: "note", text: tr("You are acting as {name}. Everything you do is recorded with both names.", { name: person.name }) }));
+    if (boot?.host?.leaving && person.id) this.below.append(this.leavingNotice(boot.host.leaving));
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this.closePanels(true);
     });
@@ -1195,6 +1244,54 @@ class FerrumBar extends HTMLElement {
     // The launcher's data, early but not in the way; at once when a side panel was open in this tab.
     if (rememberedPanel()) loadShell().then(() => (rememberedPanel() && !openPanel ? openSidepanel(rememberedPanel()) : null));
     else (window.requestIdleCallback ?? ((f) => setTimeout(f, 1500)))(() => loadShell());
+  }
+
+  /** A sandbox says so on every page (docs/operations.md, "A sandbox of a workspace"): a strip in the bar's height,
+   *  which grows by it before the page below is drawn, and the page's title. Not dismissible. */
+  sandboxStrip() {
+    const sb = boot.sandbox;
+    this.setAttribute("sandbox", "");
+    const sheet = document.createElement("style");
+    sheet.textContent = "@media screen { :root { --ferrum-bar-height: 72px; } ferrum-bar[compact] { --ferrum-bar-height: 64px; } }";
+    document.head.append(sheet);
+    const lang = boot?.locale?.language ?? undefined;
+    const until = /^\d{4}-\d{2}-\d{2}$/.test(sb.until ?? "") ? new Date(`${sb.until}T00:00:00`).toLocaleDateString(lang, { day: "numeric", month: "long", year: "numeric" }) : String(sb.until ?? "");
+    const text = tr("a copy of {name}. Nothing sent from here leaves the system. It is deleted after {until}.", { name: sb.name || sb.of || "", until });
+    const mark = `${tr("Sandbox")} · `;
+    const title = document.querySelector("title") ?? document.head.appendChild(document.createElement("title"));
+    const keep = () => {
+      if (!document.title.startsWith(mark)) document.title = marked(document.title, mark);
+    };
+    keep();
+    // An app (or the shell) that sets its own title gets the mark back at once.
+    new MutationObserver(keep).observe(title, { childList: true, characterData: true, subtree: true });
+    return el("div", { class: "strip", role: "note", title: text }, el("strong", { text: `${tr("Sandbox")}:` }), el("span", { text }));
+  }
+
+  /** An address in its leaving period (docs/operations.md, "Changing or removing an address"): on every page, until
+   *  the person hides it there; what this device still holds for the address, and the same page at the new one. */
+  leavingNotice(leaving) {
+    const lang = boot?.locale?.language ?? undefined;
+    let until = "";
+    try {
+      until = new Date(leaving.until).toLocaleString(lang, { dateStyle: "long", timeStyle: "short", timeZone: boot?.locale?.display_timezone || undefined });
+    } catch {
+      until = new Date(leaving.until).toLocaleString(lang);
+    }
+    const to = leaving.to ? new URL(leaving.to).host : null;
+    const said = [
+      to ? tr("This address is moving to {to}. It stops working here on {until}.", { to, until }) : tr("This address stops working on {until}.", { until }),
+      tr("If you worked offline on this device, open each app once so it can send your work."),
+    ].join(" ");
+    // A live region filled after it is in the page: read out once, when the page opens.
+    const message = el("p", { role: "status" });
+    setTimeout(() => (message.textContent = said), 300);
+    this.leavingUploads = el("p", { class: "lup" });
+    const hide = el("button", { type: "button", "aria-label": tr("Hide this notice on this page"), title: tr("Hide"), onclick: () => (box.remove(), this.launchBtn.focus()) }, icon("x", 16));
+    const open = leaving.to ? el("a", { class: "btn", href: movedUrl(leaving.to, location) }, icon("external-link", 14), el("span", { text: tr("Open this page at the new address") })) : null;
+    const box = el("div", { class: "leaving", role: "region", "aria-label": tr("This address is changing") }, el("div", { class: "ltext" }, message, this.leavingUploads), el("div", { class: "acts" }, open, hide));
+    queueMicrotask(() => drawUploads());
+    return box;
   }
 
   skip(e) {
@@ -2294,6 +2391,8 @@ async function runUpload(id) {
 const WAITING = () => tr("Waiting for the connection to come back.");
 
 let pumping = false;
+// The queue in IndexedDB has been read once on this page (before that, nothing can be said of it).
+let uploadsRead = false;
 async function pumpUploads() {
   if (pumping || hostKind === "public" || !boot?.person) return;
   pumping = true;
@@ -2326,6 +2425,7 @@ async function pumpUploads() {
     }
   } finally {
     pumping = false;
+    uploadsRead = true;
     drawUploads();
   }
 }
@@ -2522,6 +2622,11 @@ const sizeText = (n) => (n >= 1024 ** 3 ? tr("{v1} GB", { v1: (n / 1024 ** 3).to
 /** The bar's upload indicator and its tray. */
 function drawUploads() {
   const b = bar();
+  // A leaving address: what of this device's uploads is still to send, once the queue has been read.
+  if (b?.leavingUploads) {
+    const n = stillToSend([...uploads.values()], owner());
+    b.leavingUploads.textContent = !uploadsRead ? "" : n === 0 ? tr("Everything from this device has been sent.") : n === 1 ? tr("1 upload still to send.") : tr("{n} uploads still to send.", { n });
+  }
   if (!b?.tray) return;
   const list = [...uploads.values()].filter(mine).sort((x, y) => x.created - y.created);
   const active = list.filter((u) => !FINISHED.has(u.state));

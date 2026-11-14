@@ -74,6 +74,8 @@ pub struct TenantHost {
     pub failures: i32,
     pub released_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// A released host still serves the people signed in there until then ([`Kernel::release_host`]).
+    pub leaving_until: Option<DateTime<Utc>>,
 }
 
 /// Where a host name leads.
@@ -84,6 +86,9 @@ pub enum HostRoute {
     /// A released host still redirecting: to the workspace's primary host for the same target
     /// (`None` when the workspace has none any more).
     Moved { tenant: Uuid, to: Option<String> },
+    /// A released host in its leaving period: it still serves `target` to the people already signed in
+    /// there, until `until`, and redirects everyone else to `to` (as [`HostRoute::Moved`]).
+    Leaving { tenant: Uuid, target: String, to: Option<String>, until: DateTime<Utc> },
     /// Not one of ours, or quarantined.
     Unknown,
 }
@@ -370,7 +375,7 @@ impl Kernel {
     /// cached as [`Kernel::route_host`] is.
     pub async fn host_zone(&self, host: &str) -> Result<Option<String>> {
         Ok(match self.host_row(host).await? {
-            (HostRoute::Serve { .. }, zone) => zone,
+            (HostRoute::Serve { .. } | HostRoute::Leaving { .. }, zone) => zone,
             _ => None,
         })
     }
@@ -383,10 +388,10 @@ impl Kernel {
             return Ok((e.0.clone(), e.1.clone()));
         }
         let mut tx = self.db.system_tx().await?;
-        type Row = (Uuid, String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>, Option<String>, bool, Option<String>);
+        type Row = (Uuid, String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>, Option<String>, bool, Option<String>, Option<DateTime<Utc>>);
         // A workspace that moved to another installation (workspace_move.rs) answers as moved on every host it had here.
         let row: Option<Row> = sqlx::query_as(
-            "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at, h.zone, m.workspace is not null, m.moved_to from tenant_host h \
+            "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at, h.zone, m.workspace is not null, m.moved_to, h.leaving_until from tenant_host h \
              join tenant t on t.id = h.tenant_id left join workspace_move m on m.workspace = h.tenant_id and m.state = 'moved' where h.host = $1",
         )
         .bind(&host)
@@ -396,9 +401,11 @@ impl Kernel {
         let route = match row {
             None => HostRoute::Unknown,
             // To its address there when it has another one; otherwise the address still points here, and only says so.
-            Some((tenant, .., true, to)) => HostRoute::Moved { tenant, to: to.filter(|to| *to != host) },
-            Some((tenant, _, target, _, Some(released), ..)) => {
-                if Utc::now() - released < chrono::Duration::days(HOST_REDIRECT_DAYS) {
+            Some((tenant, .., true, to, _)) => HostRoute::Moved { tenant, to: to.filter(|to| *to != host) },
+            // Its leaving period first, then the redirect window from its end.
+            Some((tenant, _, target, _, Some(released), .., leaving)) => {
+                let now = Utc::now();
+                if now - leaving.unwrap_or(released) < chrono::Duration::days(HOST_REDIRECT_DAYS) {
                     let to: Option<String> = sqlx::query_scalar(
                         "select host from tenant_host where tenant_id = $1 and target = $2 and is_primary and released_at is null \
                          and (kind = 'subdomain' or verified_at is not null)",
@@ -407,7 +414,10 @@ impl Kernel {
                     .bind(&target)
                     .fetch_optional(&mut *tx)
                     .await?;
-                    HostRoute::Moved { tenant, to }
+                    match leaving {
+                        Some(until) if until > now => HostRoute::Leaving { tenant, target, to, until },
+                        _ => HostRoute::Moved { tenant, to },
+                    }
                 } else {
                     HostRoute::Unknown
                 }
@@ -435,7 +445,7 @@ impl Kernel {
     pub async fn list_hosts(&self, ctx: &Ctx) -> Result<Vec<TenantHost>> {
         let mut tx = self.db.system_tx().await?;
         let rows = sqlx::query_as(
-            "select host, kind, target, is_primary, verify_token, verified_at, checked_at, failures, released_at, created_at \
+            "select host, kind, target, is_primary, verify_token, verified_at, checked_at, failures, released_at, created_at, leaving_until \
              from tenant_host where tenant_id = $1 order by created_at",
         )
         .bind(ctx.tenant)
@@ -492,10 +502,11 @@ impl Kernel {
         Ok(added)
     }
 
-    /// Refuses a host that is in use, or released and still redirecting or quarantined.
+    /// Refuses a host that is in use, or released and still leaving, redirecting or quarantined (counted from the
+    /// end of its leaving period).
     async fn claimable(&self, tx: &mut crate::db::Tx, host: &str) -> Result<()> {
         let row: Option<Option<DateTime<Utc>>> =
-            sqlx::query_scalar("select released_at from tenant_host where host = $1").bind(host).fetch_optional(&mut **tx).await?;
+            sqlx::query_scalar("select greatest(released_at, leaving_until) from tenant_host where host = $1").bind(host).fetch_optional(&mut **tx).await?;
         match row {
             None => Ok(()),
             Some(None) => Err(Error::Conflict("this domain is already in use".into())),
@@ -762,42 +773,98 @@ impl Kernel {
         Ok(!matches!(self.route_host(host).await?, HostRoute::Unknown) || self.host_token(host).await?.is_some())
     }
 
-    /// Removes a custom domain from the caller's workspace. It is released, not forgotten: it
-    /// redirects for [`HOST_REDIRECT_DAYS`] and stays quarantined for [`HOST_QUARANTINE_DAYS`],
-    /// so old links and data in browsers never reach a new owner.
-    pub async fn remove_host(&self, ctx: &Ctx, host: &str) -> Result<()> {
+    /// Removes a custom domain from the caller's workspace. It is released, not forgotten: it keeps
+    /// serving the people signed in there for its leaving period (`FERRUM_HOST_LEAVING_DAYS`), then
+    /// redirects for [`HOST_REDIRECT_DAYS`] and stays quarantined for [`HOST_QUARANTINE_DAYS`], so
+    /// work kept in browsers can be sent and old links and data never reach a new owner. Returns the
+    /// end of the leaving period, if it has one (a domain never verified is simply dropped).
+    pub async fn remove_host(&self, ctx: &Ctx, host: &str) -> Result<Option<DateTime<Utc>>> {
         if !ctx.is_admin {
             return Err(Error::Forbidden("administrator access required".into()));
         }
         let host = normalize_host(host).ok_or_else(|| Error::NotFound("no such domain".into()))?;
         let mut tx = self.db.system_tx().await?;
-        // Never verified: nothing can depend on it, so it is simply dropped.
-        let dropped =
-            sqlx::query("delete from tenant_host where host = $1 and tenant_id = $2 and kind = 'custom' and verified_at is null and released_at is null")
-                .bind(&host)
-                .bind(ctx.tenant)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
-        let released = if dropped == 0 {
-            sqlx::query(
-                "update tenant_host set released_at = now(), is_primary = false where host = $1 and tenant_id = $2 and kind = 'custom' and released_at is null",
-            )
-            .bind(&host)
-            .bind(ctx.tenant)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected()
-        } else {
-            0
-        };
-        if dropped + released == 0 {
-            return Err(Error::NotFound("no such domain".into()));
-        }
-        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "remove", None, serde_json::json!({"host": host})).await?;
+        let until = self.release_in(&mut tx, ctx.tenant, &host, true, self.settings.host_leaving_days).await?;
+        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "remove", None, serde_json::json!({"host": host, "leaving_until": until}))
+            .await?;
         tx.commit().await?;
-        self.hosts.remove(&host);
-        Ok(())
+        self.hosts.clear();
+        Ok(until)
+    }
+
+    /// `ferrum task release_host`: releases any host of a workspace (a subdomain too), with a leaving period of
+    /// `leaving_days` (the setting's when `None`), audited as the system's. Returns the workspace and the end of
+    /// the leaving period, if it has one.
+    pub async fn release_host(&self, host: &str, leaving_days: Option<i64>) -> Result<(Uuid, Option<DateTime<Utc>>)> {
+        let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a host name"))?;
+        let days = leaving_days.unwrap_or(self.settings.host_leaving_days);
+        if !(0..=365).contains(&days) {
+            return Err(Error::field("leaving_days", "must be from 0 to 365"));
+        }
+        let mut tx = self.db.system_tx().await?;
+        let tenant: Uuid = sqlx::query_scalar("select tenant_id from tenant_host where host = $1 and released_at is null")
+            .bind(&host)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("host {host}")))?;
+        let until = self.release_in(&mut tx, tenant, &host, false, days).await?;
+        let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
+        crate::audit::record_admin(
+            &mut tx,
+            &system,
+            "WorkspaceDomain",
+            tenant,
+            "remove",
+            None,
+            serde_json::json!({"host": host, "leaving_until": until, "by": "operator"}),
+        )
+        .await?;
+        tx.commit().await?;
+        self.hosts.clear();
+        Ok((tenant, until))
+    }
+
+    /// Releases one host of `tenant` in `tx`: a custom domain never verified is dropped (nothing can depend on
+    /// it); any other is released with a leaving period of `days` (none at 0). A primary host hands its place to
+    /// another host of the workspace for the same target first (a subdomain before a custom domain, then the
+    /// oldest), so links and redirects keep leading somewhere; with none left, the target has no primary, as
+    /// before. `custom_only`: an administrator's removal, which reaches only the workspace's custom domains.
+    async fn release_in(&self, tx: &mut crate::db::Tx, tenant: Uuid, host: &str, custom_only: bool, days: i64) -> Result<Option<DateTime<Utc>>> {
+        // The workspace's live hosts are locked in one order, so two releases at once wait for each other
+        // instead of each handing the primary to the other's host.
+        let live: Vec<(String, String, String, bool, bool, DateTime<Utc>)> = sqlx::query_as(
+            "select host, kind, target, is_primary, verified_at is not null, created_at from tenant_host where tenant_id = $1 and released_at is null order by host for update",
+        )
+        .bind(tenant)
+        .fetch_all(&mut **tx)
+        .await?;
+        let Some((_, kind, target, primary, verified, _)) = live.iter().find(|h| h.0 == host).filter(|h| !custom_only || h.1 == "custom") else {
+            return Err(Error::NotFound("no such domain".into()));
+        };
+        if kind == "custom" && !verified {
+            sqlx::query("delete from tenant_host where host = $1").bind(host).execute(&mut **tx).await?;
+            return Ok(None);
+        }
+        if *primary {
+            let next = live
+                .iter()
+                .filter(|h| h.0 != host && h.2 == *target && (h.1 == "subdomain" || h.4))
+                .min_by_key(|h| (h.1 != "subdomain", h.5))
+                .map(|h| h.0.clone());
+            sqlx::query("update tenant_host set is_primary = false where host = $1").bind(host).execute(&mut **tx).await?;
+            if let Some(next) = next {
+                sqlx::query("update tenant_host set is_primary = true where host = $1").bind(&next).execute(&mut **tx).await?;
+            }
+        }
+        let until: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "update tenant_host set released_at = now(), is_primary = false, \
+             leaving_until = case when $2 > 0 then now() + make_interval(days => $2::int) end where host = $1 returning leaving_until",
+        )
+        .bind(host)
+        .bind(days)
+        .fetch_one(&mut **tx)
+        .await?;
+        Ok(until)
     }
 
     /// Releases every host of a workspace (it was renamed away from them, or deleted).
