@@ -203,17 +203,25 @@ test("the dialog offers the ways the server lists, in its order, and only what t
   );
 });
 
-test("only the proof for the sign-in again this dialog started is taken from the window", () => {
-  const state = "su.AbCdEf0123456789";
+test("the proof is taken from the window only from this origin, and only for the request this dialog made", () => {
+  const origin = "https://acme.ferrum.cloud";
+  const dialog = "dlg-0123456789abcdefXYZ";
+  const state = "su.AbCdEf0123456789-_xyz";
   const code = "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5";
-  assert.deepEqual(providerProof({ state, code }, state), { state, code });
-  assert.equal(providerProof({ state: "su.another", code }, state), null, "another dialog's sign-in");
-  assert.equal(providerProof({ state, code: "<script>" }, state), null);
-  assert.equal(providerProof({ state, code: "short" }, state), null);
-  assert.equal(providerProof({ state }, state), null);
-  assert.equal(providerProof(null, state), null);
-  assert.equal(providerProof("su.x", state), null);
-  assert.equal(providerProof({ state: null, code }, null), null, "no sign-in started");
+  const from = (data, o = origin) => ({ origin: o, data });
+  assert.deepEqual(providerProof(from({ dialog, state, code }), origin, dialog), { state, code });
+  assert.equal(providerProof(from({ dialog, state, code }, "https://evil.example"), origin, dialog), null, "another origin");
+  assert.equal(providerProof(from({ dialog, state, code }, "null"), origin, dialog), null, "an opaque origin");
+  assert.equal(providerProof({ data: { dialog, state, code } }, origin, dialog), null, "no origin at all");
+  assert.equal(providerProof(from({ dialog: "dlg-another-dialog-value", state, code }), origin, dialog), null, "another dialog's request");
+  assert.equal(providerProof(from({ state, code }), origin, dialog), null, "a message that names no request");
+  assert.equal(providerProof(from({ dialog, state, code }), origin, null), null, "nothing asked: nothing taken");
+  assert.equal(providerProof(from({ dialog: "", state, code }), origin, ""), null, "an empty value names nothing");
+  assert.equal(providerProof(from({ dialog, state, code: "<script>alert(1)</script>" }), origin, dialog), null);
+  assert.equal(providerProof(from({ dialog, state, code: "short" }), origin, dialog), null);
+  assert.equal(providerProof(from({ dialog, state: null, code }), origin, dialog), null);
+  assert.equal(providerProof(from("su.x"), origin, dialog), null);
+  assert.equal(providerProof(null, origin, dialog), null);
 });
 
 test("a passkey's or the provider's proof is posted and read as the password's is", async () => {
@@ -225,5 +233,5 @@ test("a passkey's or the provider's proof is posted and read as the password's i
   assert.deepEqual(await sendProof(send, "/api/auth/step-up/passkey", { request: "r1", credential: { id: "c" } }), { ok: true });
   assert.deepEqual(sent.pop(), ["/api/auth/step-up/passkey", { request: "r1", credential: { id: "c" } }]);
   assert.deepEqual(await sendProof(send, "/api/auth/step-up/provider/finish", { state: "s", code: "c" }), { ok: false, say: "wrong" });
+  assert.deepEqual(sent.pop(), ["/api/auth/step-up/provider/finish", { state: "s", code: "c" }], "no authenticator code is sent unasked");
 });
-

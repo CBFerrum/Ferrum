@@ -157,8 +157,8 @@ async function sendProof(send, path, body) {
 
 /** What the dialog offers, in the server's order of preference (`ways` from the step-up refusal, or
  *  `GET /api/auth/step-up/ways`): a passkey only where this browser can use one (`webauthn`), the password (`code`: the
- *  code from an authenticator app is asked too), signing in again with the provider by its name. Anything else is
- *  left out. No list at all (an answer without `ways`): the password, as before. */
+ *  code from an authenticator app is asked too), signing in again with the provider by its name. Anything else, and a
+ *  way said twice, is left out. No list at all (an answer without `ways`): the password, as before. */
 function stepUpChoices(ways, webauthn) {
   if (!Array.isArray(ways)) return [{ way: "password", code: false }];
   const out = [];
@@ -171,11 +171,16 @@ function stepUpChoices(ways, webauthn) {
   return out;
 }
 
-/** The proof that the small window's last page (`/api/auth/step-up/provider/done`) hands over on this origin's
- *  "ferrum-step-up" channel: `{state, code}` when it answers the sign-in again this dialog started (`state`), else null. */
-function providerProof(data, state) {
-  if (typeof state !== "string" || !state || data === null || typeof data !== "object" || data.state !== state) return null;
-  return typeof data.code === "string" && /^[A-Za-z0-9_-]{16,200}$/.test(data.code) ? { state, code: data.code } : null;
+/** The proof the small window's last page (`/api/auth/step-up/provider/done`) hands over on the "ferrum-step-up"
+ *  channel, from a `message` event: `{state, code}` only when it comes from this page's own `origin` and names the
+ *  request the dialog made (`dialog`: a value of the dialog's own, which only the server and that page are told; never
+ *  the provider), else null. Any other window, of any origin, is not heard. */
+function providerProof(message, origin, dialog) {
+  const data = message?.data;
+  if (typeof dialog !== "string" || dialog.length < 16 || typeof origin !== "string" || message?.origin !== origin) return null;
+  if (data === null || typeof data !== "object" || data.dialog !== dialog) return null;
+  const token = (v) => typeof v === "string" && /^[A-Za-z0-9._-]{16,200}$/.test(v);
+  return token(data.state) && token(data.code) ? { state: data.state, code: data.code } : null;
 }
 
 // ── end of the pure helpers ──
@@ -3016,12 +3021,14 @@ const STEP_UP_SAYS = {
   unfinished: tr("Signing in again did not finish. Try again."),
 };
 
-// A passkey's binary fields travel as base64url (as login.js sends them).
-const fromBase64url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
-const toBase64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+// A passkey's binary fields travel as base64url (as login.js sends them), and so does the dialog's own value.
+const base64url = {
+  decode: (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0)),
+  encode: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+};
 
-/** Confirms it is you with a passkey on this device (or a phone nearby): the server's challenge for this session, the
- *  device's answer posted back. What to say when it did not work, as [`sendProof`] answers. */
+/** Confirms it is you with a passkey on this device (or a phone nearby): the server's challenge for this session and
+ *  person, the device's answer posted back. What to say when it did not work, as [`sendProof`] answers. */
 async function passkeyStepUp() {
   let offer;
   try {
@@ -3035,7 +3042,7 @@ async function passkeyStepUp() {
   try {
     const o = offer.publicKey;
     cred = await navigator.credentials.get({
-      publicKey: { ...o, challenge: fromBase64url(o.challenge), allowCredentials: (o.allowCredentials ?? []).map((c) => ({ ...c, id: fromBase64url(c.id) })) },
+      publicKey: { ...o, challenge: base64url.decode(o.challenge), allowCredentials: (o.allowCredentials ?? []).map((c) => ({ ...c, id: base64url.decode(c.id) })) },
     });
   } catch (e) {
     return { ok: false, say: e?.name === "NotAllowedError" || e?.name === "AbortError" ? "nopasskey" : "failed" };
@@ -3043,56 +3050,50 @@ async function passkeyStepUp() {
   if (!cred) return { ok: false, say: "nopasskey" };
   const a = cred.response;
   const response = {
-    clientDataJSON: toBase64url(a.clientDataJSON),
-    authenticatorData: toBase64url(a.authenticatorData),
-    signature: toBase64url(a.signature),
-    userHandle: a.userHandle ? toBase64url(a.userHandle) : null,
+    clientDataJSON: base64url.encode(a.clientDataJSON),
+    authenticatorData: base64url.encode(a.authenticatorData),
+    signature: base64url.encode(a.signature),
+    userHandle: a.userHandle ? base64url.encode(a.userHandle) : null,
   };
-  const r = await sendProof(pageFetch, "/api/auth/step-up/passkey", { request: offer.request, credential: { id: cred.id, rawId: toBase64url(cred.rawId), type: cred.type, response } });
+  const credential = { id: cred.id, rawId: base64url.encode(cred.rawId), type: cred.type, response };
+  const r = await sendProof(pageFetch, "/api/auth/step-up/passkey", { request: offer.request, credential });
   return r.ok || r.say !== "wrong" ? r : { ok: false, say: "passkey" };
 }
 
-/** Confirms it is you by signing in again with the identity provider, in a small window the click opens (the page
- *  behind keeps its unsaved work): the window ends on a page of this site that hands over the proof, which is then
- *  posted. `say` shows what is going on; `stopped` resolves when the dialog closes, which stops waiting. */
-async function providerStepUp(say, stopped) {
+/** Starts signing in again with the identity provider, in a small window the click opens (the page behind keeps its
+ *  unsaved work). The window is opened before anything is awaited, while the click still lets a page open one, and is
+ *  cut off from this page before it goes anywhere. `wait(dialog, win)` is told the value only this dialog, the server
+ *  and the window's last page know (the proof must carry it), and the window. What to say meanwhile, as [`sendProof`]
+ *  says it. */
+async function providerStepUp(wait) {
   const win = window.open("about:blank", "ferrum-step-up", "popup,width=520,height=680");
   if (!win) return { ok: false, say: "blocked" };
-  let started;
   try {
-    const r = await pageFetch("/api/auth/step-up/provider", { method: "POST", credentials: "same-origin", headers: { accept: "application/json" } });
-    if (!r.ok) throw r.status;
-    started = await r.json();
-    win.location.replace(started.url);
-  } catch (status) {
-    win.close();
+    win.opener = null;
+  } catch {}
+  const dialog = base64url.encode(crypto.getRandomValues(new Uint8Array(18)));
+  let started = null;
+  let status = 0;
+  try {
+    const r = await pageFetch("/api/auth/step-up/provider", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ dialog }),
+    });
+    status = r.status;
+    if (r.ok) started = await r.json();
+  } catch {}
+  if (typeof started?.url !== "string") {
+    try {
+      win.close();
+    } catch {}
     return { ok: false, say: status === 429 ? "busy" : "failed" };
   }
-  say("waiting");
-  const proof = await new Promise((resolve) => {
-    let channel = null;
-    const timer = setInterval(() => {
-      if (win.closed) say("closed");
-    }, 700);
-    const done = (value) => {
-      clearInterval(timer);
-      channel?.close();
-      resolve(value);
-    };
-    try {
-      channel = new BroadcastChannel("ferrum-step-up");
-      channel.onmessage = (e) => {
-        const p = providerProof(e.data, started.state);
-        if (p) done(p);
-      };
-    } catch {
-      done(null);
-    }
-    stopped.then(() => done(null));
-  });
-  if (!proof) return { ok: false, say: "unfinished" };
-  const r = await sendProof(pageFetch, "/api/auth/step-up/provider/finish", proof);
-  return r.ok || r.say === "busy" ? r : { ok: false, say: "unfinished" };
+  if (win.closed) return { ok: false, say: "closed" };
+  win.location.replace(started.url);
+  wait(dialog, win);
+  return { ok: false, say: "waiting" };
 }
 
 // The bar's dialogs' look (theme.css `dialog[data-ferrum-dialog]`, the choice of app in `choose`), in a shadow root of
@@ -3111,11 +3112,10 @@ h2 { margin: 0 0 4px; font-size: 15px; line-height: 22px; font-weight: 600; }
 p { margin: 0 0 12px; color: var(--ferrum-muted, #596273); }
 label { display: block; margin: 0 0 4px; font-weight: 500; }
 .row { margin: 0 0 12px; }
+.or { margin: 0 0 12px; text-align: center; }
 input { width: 100%; height: var(--ferrum-control-h, 36px); padding: 0 10px; border: 1px solid var(--ferrum-border-control, #7c899c);
   border-radius: var(--ferrum-radius-sm, 6px); background: var(--ferrum-surface, #fff); color: inherit; font: inherit; }
 .error { min-height: 20px; color: var(--ferrum-danger, #c4314b); }
-.or { margin: 0 0 12px; text-align: center; }
-button.way { width: 100%; height: var(--ferrum-control-h, 36px); }
 .error:empty { margin: 0; min-height: 0; }
 .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 button { height: var(--ferrum-control-h-sm, 32px); padding: 0 12px; border: 1px solid var(--ferrum-border, #dee3ea); border-radius: var(--ferrum-radius-sm, 6px);
@@ -3123,6 +3123,7 @@ button { height: var(--ferrum-control-h-sm, 32px); padding: 0 12px; border: 1px 
 button:hover { background: var(--ferrum-surface-2, #eff1f5); }
 button.primary { border-color: transparent; background: var(--ferrum-primary, #3157d5); color: var(--ferrum-primary-text, #fff); }
 button.primary:hover { background: var(--ferrum-primary-hover, #2447b3); }
+button.way { width: 100%; height: var(--ferrum-control-h, 36px); }
 button[disabled] { opacity: .5; cursor: progress; }
 button:focus-visible, input:focus-visible { outline: var(--ferrum-focus-outline, 2px solid #3157d5); outline-offset: 2px; }
 @media print { dialog { display: none; } }
@@ -3137,9 +3138,9 @@ function focusedDeep() {
 
 /** "Confirm it is you", in the ways the server says the person has (`refusal.ways`; as the Frontend's `ConfirmItsYou`):
  *  a passkey, the password (and the code from their authenticator app when the server asks for it), signing in again
- *  with their identity provider. One way: just that. None: the plain message. A native modal dialog: its role, the
- *  page behind it inert (focus stays in it), Escape cancels. Resolves true once the server accepted a proof, false when
- *  the person cancelled or closed it. */
+ *  with their identity provider in a small window. One way: just that. None: the plain message, and Close. A native
+ *  modal dialog: its role, the page behind it inert (focus stays in it), Escape cancels. Resolves true once the server
+ *  accepted a proof, false when the person cancelled or closed it. */
 function askItsYou(refusal) {
   return new Promise((resolve) => {
     const back = focusedDeep();
@@ -3147,18 +3148,16 @@ function askItsYou(refusal) {
     const root = host.attachShadow({ mode: "open" });
     const dialog = el("dialog", { "aria-labelledby": "su-title", "aria-describedby": "su-why" });
     const choices = stepUpChoices(refusal?.ways, !!(window.PublicKeyCredential && window.isSecureContext));
-    const passwordWay = choices.find((c) => c.way === "password");
+    const passwordFirst = choices[0]?.way === "password";
     const password = el("input", { id: "su-password", type: "password", autocomplete: "current-password", required: true });
     const code = el("input", { id: "su-code", inputmode: "numeric", autocomplete: "one-time-code" });
     const codeRow = el("div", { class: "row", hidden: true }, el("label", { for: "su-code", text: tr("Code from your authenticator app") }), code);
     const error = el("p", { class: "error", role: "alert" });
-    const confirmButton = el("button", { type: "submit", class: "primary", text: tr("Confirm") });
+    const confirmButton = el("button", { type: "submit", class: passwordFirst ? "primary" : undefined, text: tr("Confirm") });
     const buttons = [];
     let proved = false;
     let sending = false;
     let needsCode = false;
-    let closed;
-    const stopped = new Promise((r) => (closed = r));
     const say = (what) => (error.textContent = STEP_UP_SAYS[what] ?? STEP_UP_SAYS.failed);
     const busy = (on) => {
       sending = on;
@@ -3180,11 +3179,42 @@ function askItsYou(refusal) {
       say(r.say);
       after?.(r);
     };
+    // Signing in again: the window of the latest try, and the value its proof must carry. The proof comes on this
+    // origin's channel (it works even where the provider's pages cut the window off from this page); waiting never
+    // holds the dialog, so the person can try again, or another way, at any time.
+    let expected = null;
+    let popup = null;
+    let channel = null;
+    let watching = 0;
+    const wait = (dialogValue, win) => {
+      expected = dialogValue;
+      popup = win;
+      try {
+        channel ??= new BroadcastChannel("ferrum-step-up");
+        channel.onmessage = (e) => {
+          const proof = providerProof(e, location.origin, expected);
+          if (!proof) return;
+          expected = null;
+          attempt(async () => {
+            const r = await sendProof(pageFetch, "/api/auth/step-up/provider/finish", proof);
+            return r.ok || r.say === "busy" ? r : { ok: false, say: "unfinished" };
+          });
+        };
+      } catch {
+        say("failed");
+      }
+      clearInterval(watching);
+      watching = setInterval(() => {
+        if (!popup?.closed) return;
+        clearInterval(watching);
+        if (expected) say("closed");
+      }, 700);
+    };
     const form = el("form", {
       novalidate: true,
       onsubmit: (e) => {
         e.preventDefault();
-        if (!passwordWay) return;
+        if (!choices.some((c) => c.way === "password")) return;
         if (!password.value) return password.focus();
         attempt(
           () => proveItsYou(pageFetch, password.value, needsCode ? code.value.trim() : ""),
@@ -3207,23 +3237,23 @@ function askItsYou(refusal) {
       if (ways.length) ways.push(el("p", { class: "or", text: tr("Or") }));
       if (c.way === "password") {
         ways.push(el("div", { class: "row" }, el("label", { for: "su-password", text: tr("Password") }), password), codeRow);
-      } else {
-        const label = c.way === "passkey" ? tr("Use a passkey") : tr("Sign in again with {provider}", { provider: c.name });
-        const b = el("button", {
-          type: "button",
-          class: `way${ways.length ? "" : " primary"}`,
-          text: label,
-          onclick: () => attempt(c.way === "passkey" ? passkeyStepUp : () => providerStepUp(say, stopped)),
-        });
-        buttons.push(b);
-        ways.push(el("div", { class: "row" }, b));
+        continue;
       }
+      const b = el("button", {
+        type: "button",
+        class: ways.length ? "way" : "way primary",
+        text: c.way === "passkey" ? tr("Use a passkey") : tr("Sign in again with {provider}", { provider: c.name }),
+        // Synchronous up to the window's opening: the click is what lets the page open it.
+        onclick: () => attempt(c.way === "passkey" ? passkeyStepUp : () => providerStepUp(wait)),
+      });
+      buttons.push(b);
+      ways.push(el("div", { class: "row" }, b));
     }
-    const why = !choices.length
-      ? Array.isArray(refusal?.ways) && refusal.ways.length
+    const why = choices.length
+      ? tr("To continue, confirm it is you.")
+      : Array.isArray(refusal?.ways) && refusal.ways.length
         ? tr("This browser cannot use a passkey, your only way to confirm it is you here. Use another browser, or ask an administrator.")
-        : tr("You have no way to confirm it is you here. Ask an administrator to set one up for you.")
-      : tr("To continue, confirm it is you.");
+        : tr("You have no way to confirm it is you here. Ask an administrator to set one up for you.");
     form.append(
       el("h2", { id: "su-title", text: tr("Confirm it is you") }),
       el("p", { id: "su-why", text: why }),
@@ -3233,13 +3263,18 @@ function askItsYou(refusal) {
         "div",
         { class: "actions" },
         el("button", { type: "button", text: choices.length ? tr("Cancel") : tr("Close"), onclick: () => dialog.close() }),
-        ...(passwordWay ? [confirmButton] : []),
+        ...(choices.some((c) => c.way === "password") ? [confirmButton] : []),
       ),
     );
     dialog.append(form);
-    // Escape and the browser's own closing come here too: anything but a proof is a no.
+    // Escape and the browser's own closing come here too: anything but a proof is a no. A window still open goes too.
     dialog.addEventListener("close", () => {
-      closed();
+      expected = null;
+      clearInterval(watching);
+      channel?.close();
+      try {
+        popup?.close();
+      } catch {}
       host.remove();
       try {
         back?.focus?.();
@@ -3249,7 +3284,7 @@ function askItsYou(refusal) {
     root.append(el("style", { text: STEP_UP_CSS }), dialog);
     document.body.append(host);
     dialog.showModal();
-    (choices[0]?.way === "password" ? password : buttons[0] ?? dialog.querySelector("button"))?.focus();
+    (passwordFirst ? password : (buttons[0] ?? dialog.querySelector("button")))?.focus();
   });
 }
 
