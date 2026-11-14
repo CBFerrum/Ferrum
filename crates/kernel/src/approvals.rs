@@ -85,6 +85,13 @@ struct Request {
     zone: Option<String>,
 }
 
+/// Marks what `tx` queues from here on with zone `zone` (crate::zones, level 2; `None`: none), returning the mark it had.
+async fn in_zone(tx: &mut Tx, zone: Option<&str>) -> Result<Option<String>> {
+    let was: Option<String> = sqlx::query_scalar("select nullif(current_setting('ferrum.zone', true), '')").fetch_one(&mut **tx).await?;
+    sqlx::query("select set_config('ferrum.zone', $1, true)").bind(zone.unwrap_or_default()).execute(&mut **tx).await?;
+    Ok(was)
+}
+
 const COLUMNS: &str =
     "id, entity, record_id, action, from_state, requester, params, policy, steps, status, created_at, document, failure, on_action, sealed, zone";
 
@@ -630,13 +637,16 @@ impl Kernel {
                 save_steps(tx, ctx.tenant, req.id, &steps, "approved").await?;
                 tell(self, tx, ctx, (policy.message.as_deref(), "approved"), &[requester], &format!("Approved: {} {record_title}", req.action), entity, id)
                     .await?;
-                // Once, here: the request is no longer pending, so nothing completes it again.
+                // Once, here: the request is no longer pending, so nothing completes it again. What completing it queues
+                // (events, jobs) is marked with the zone the request was made in, as its rights are, not the decider's.
+                let decider = in_zone(tx, req.zone.as_deref()).await?;
                 if req.document || req.on_action {
                     self.complete_document(ctx, tx, entity, id, &req, &record_title).await?;
                 } else {
                     let system = self.on_behalf(ctx, &req).await?;
                     Box::pin(self.take_tx(&system, tx, entity, id, &req.action, None, &req.params, Some(req.id))).await?;
                 }
+                in_zone(tx, decider.as_deref()).await?;
             } else {
                 save_steps(tx, ctx.tenant, req.id, &steps, "pending").await?;
             }
