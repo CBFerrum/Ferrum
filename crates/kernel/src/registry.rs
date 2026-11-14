@@ -152,6 +152,14 @@ impl Registry {
             schema.warnings.push(SchemaWarning { entity: m.clone(), message: format!("package {m} is installed but no longer available on this cluster") });
         }
         schema.audit_topics = audit_topics;
+        // Step-up rules and recorded reads (crate::controls), from the settings read above: no statement of their own.
+        let (controls, wrong) = crate::controls::load(&settings);
+        schema.controls = controls;
+        if let Some(wrong) = wrong {
+            schema
+                .warnings
+                .push(SchemaWarning { entity: "tenant".into(), message: format!("{wrong}; every entity is treated as marked until it is saved again") });
+        }
         schema.fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
         // Every workspace uses the shell: today's web app has left /app/ (docs/plan/apps-ui.md U4b).
         // The `shell_v2` setting stays as it was, for the release before, which still has it.

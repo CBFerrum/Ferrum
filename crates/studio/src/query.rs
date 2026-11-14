@@ -1461,6 +1461,8 @@ pub(crate) mod tests {
             read_only: false,
             origin: None,
             zone: None,
+            proof: Default::default(),
+            reads: Default::default(),
         }
     }
 

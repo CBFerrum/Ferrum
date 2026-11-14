@@ -441,7 +441,8 @@ impl Kernel {
         let schema = self.registry.schema(tenant).await?;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         let Some(link) = find(&mut tx, tenant, token, false).await? else { return Ok(None) };
-        let sys = Ctx::system(tenant, schema.clone());
+        // Whoever holds the link reads the record: recorded as nobody's, through the link (crate::controls).
+        let sys = Ctx::system(tenant, schema.clone()).recorded_via("link");
         let Some(ent) = schema.entity(&link.entity).cloned() else { return Ok(None) };
         let doc = match self.get_tx(&sys, &mut tx, &link.entity, link.record_id, false).await {
             Ok(d) => d,

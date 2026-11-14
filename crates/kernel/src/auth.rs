@@ -860,11 +860,24 @@ impl Kernel {
 
     async fn ctx_of(&self, core: &CtxCore, tenant: Uuid, user: Uuid, request_id: String, zone: Option<Arc<crate::zones::Entry>>) -> Result<Ctx> {
         let schema = self.registry.schema(tenant).await?;
+        // What this request queues is done later in this zone (crate::db::Trace): one that narrows staff or asks them to
+        // step up.
+        if let Some(name) = zone.as_deref().and_then(crate::zones::Entry::marked) {
+            crate::db::Trace::mark_zone(&name);
+        }
+        // Whom step-up rules ask (crate::controls): a request's person, or a client that cannot step up. A person's
+        // browser session says when they last proved who they are ([`Ctx::proved`]); until it does, they have not.
+        let proof = match zone.as_deref().map(|e| e.credential) {
+            None | Some(crate::zones::Credential::Queued) => crate::controls::Proof::Inside,
+            Some(c) if core.kind == "service" || crate::controls::cannot_step_up(c) => crate::controls::Proof::Machine,
+            Some(_) => crate::controls::Proof::Person { at: None, staff: crate::zones::is_staff(&core.kind) },
+        };
+        if proof != crate::controls::Proof::Inside {
+            crate::db::Trace::mark_step_up(proof.mark(0));
+        }
         // Level 2 of zones: staff admitted where the zone narrows them, on every request (never cached by person).
         let (is_admin, roles, perms) = match zone.as_deref().and_then(|e| e.limit().map(|(n, r)| (e, n, r))) {
             Some((entry, name, rule)) => {
-                // What this request queues is done later in this zone (crate::db::Trace).
-                crate::db::Trace::mark_zone(name);
                 if crate::zones::is_staff(&core.kind) {
                     self.narrowed(core, &schema, entry.zones.mode == crate::zones::Mode::Report, name, rule)
                 } else {
@@ -894,6 +907,8 @@ impl Kernel {
             settings: None,
             origin: None,
             zone,
+            proof,
+            reads: Default::default(),
         })
     }
 
@@ -1110,8 +1125,10 @@ impl Kernel {
         Ok(ended.len() as u64)
     }
 
+    /// Drops a person's cached context and their cached browser sessions (a step-up, a sign-out).
     pub fn invalidate_user(&self, tenant: Uuid, user: Uuid) {
         self.users.remove(&(tenant, user));
+        self.sessions.retain(|k, v| k.0 != tenant || v.0.is_some_and(|(owner, _)| owner != user));
     }
 
     pub fn invalidate_tenant_users(&self, tenant: Uuid) {

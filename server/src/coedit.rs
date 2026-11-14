@@ -765,6 +765,7 @@ async fn serve(st: AppState, package: String, doc: String, pre: Option<(String, 
         stored: 0,
         acked: 0,
         refused: false,
+        step_up: host.entity().map(|e| (e.to_string(), ctx.clone())),
     };
     let mut rx = room.tx.subscribe();
     if conn.hello(&mut sink).await.is_ok() {
@@ -828,6 +829,9 @@ struct Conn<'a> {
     acked: u64,
     /// A change was refused: the client is not told "stored" again.
     refused: bool,
+    /// The entity the document is a record of, and the person as last checked: a change needs the step-up the
+    /// workspace or the zone asks for when it is made (crates/kernel/src/controls.rs).
+    step_up: Option<(String, Ctx)>,
 }
 
 impl Conn<'_> {
@@ -917,7 +921,13 @@ impl Conn<'_> {
                 _ = keepalive.tick() => sink.send(Ws::Ping(Vec::new().into())).await.is_ok(),
                 _ = recheck.tick() => {
                     let now = match ctx_from_token(st, token.0, Uuid::now_v7().to_string(), token.1, std::mem::take(&mut active)).await {
-                        Ok(fresh) => host.access(self.k, &fresh, self.room.key.doc).await.map_err(ApiError),
+                        Ok(fresh) => {
+                            // A step-up made since counts from now on.
+                            if let Some((_, ctx)) = &mut self.step_up {
+                                *ctx = fresh.clone();
+                            }
+                            host.access(self.k, &fresh, self.room.key.doc).await.map_err(ApiError)
+                        }
                         Err(e) => Err(e),
                     };
                     match now {
@@ -1052,6 +1062,12 @@ impl Conn<'_> {
             if !step || inserts {
                 taken.refusal = Some("You can only view this document; your changes were not saved.");
             }
+            return Ok(());
+        }
+        if let Some((entity, ctx)) = &self.step_up
+            && ctx.check_step_up(entity, "write").is_err()
+        {
+            taken.refusal = Some("Confirm it is you to change this document; your latest changes were not saved.");
             return Ok(());
         }
         // Deleting is always allowed: it is how a document too large shrinks.
@@ -1251,7 +1267,7 @@ mod tests {
 
     fn conn<'a>(k: &'a Arc<Kernel>, docs: &'a Docs, room: &'a Arc<Room>, id: u64, author: Uuid, access: DocAccess) -> Conn<'a> {
         let user = json!({"id": author, "name": "Ana Rao", "color": colour(author)});
-        Conn { k, replica: &docs.replica, room, id, user, author, access, received: 0, queued: 0, stored: 0, acked: 0, refused: false }
+        Conn { k, replica: &docs.replica, room, id, user, author, access, received: 0, queued: 0, stored: 0, acked: 0, refused: false, step_up: None }
     }
 
     /// Two replicas on one PostgreSQL (`FERRUM_COEDIT_TEST_DATABASE_URL`, default

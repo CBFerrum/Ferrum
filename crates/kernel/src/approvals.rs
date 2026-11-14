@@ -875,6 +875,8 @@ impl Kernel {
             return Err(refused);
         };
         let full = self.get_tx(&crate::actions::system(ctx), &mut tx, entity, id, false).await?;
+        // The approver's read, as the system reads it for them (crate::controls).
+        crate::controls::record_read(&mut tx, ctx, entity, crate::controls::Read::One(id)).await?;
         let mut doc = self.mask(ctx, &ent, full.clone());
         for f in &policy.show {
             if let Some(v) = full.get(f) {
