@@ -711,7 +711,9 @@ caller's own address is inside it. A credential refused by it gets `403` with er
 
 Audit log: `GET /api/admin/audit?category=&before=&limit=` → `{events, next_before}`, newest first, at most
 500 (`limit`, 100 by default); `category` is `sign_in`, `administration` or `records`; pass `next_before` as
-`before` for the next page. Each event is in the format of [the audit sink](operations.md#sending-the-audit-log-elsewhere).
+`before` for the next page. Each event is in the format of [the audit sink](operations.md#sending-the-audit-log-elsewhere). A webhook whose
+topics name `audit.sign_in`, `audit.administration`, `audit.records` or `audit.*` receives each such event of the
+workspace as its body; `*` does not include them.
 
 Domains ([operations](operations.md#custom-domains)): `GET /api/admin/domains` → `{domains: [{host,
 kind (subdomain or custom), target (shell, portal, site:{app}), is_primary, verify_token, status

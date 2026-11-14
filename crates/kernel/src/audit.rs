@@ -90,9 +90,9 @@ pub async fn record_as(
             .await?;
     let at = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
     let hash = event_hash(prev.as_deref(), &body(tenant, &at, actor, entity, record_id, action, version, &diff));
-    sqlx::query(
+    let id: i64 = sqlx::query_scalar(
         "insert into audit_event (tenant_id, at, actor, entity, record_id, action, version, diff, request_id, prev_hash, hash) \
-         values ($1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+         values ($1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id",
     )
     .bind(tenant)
     .bind(&at)
@@ -104,9 +104,24 @@ pub async fn record_as(
     .bind(&diff)
     .bind(request_id)
     .bind(prev)
-    .bind(hash)
-    .execute(&mut **tx)
+    .bind(&hash)
+    .fetch_one(&mut **tx)
     .await?;
+    // A workspace's own sink: its webhooks subscribed to its audit events (`audit.sign_in`, `audit.administration`,
+    // `audit.records`, or `audit.*`), delivered as every webhook is. Queued only when one is there.
+    let topic = format!("audit.{}", category(entity));
+    let wanted: bool = sqlx::query_scalar(
+        "select exists (select 1 from webhook where tenant_id = $1 and is_active and app is null and topics && array[$2, 'audit.*']::text[])",
+    )
+    .bind(tenant)
+    .bind(&topic)
+    .fetch_one(&mut **tx)
+    .await?;
+    if wanted {
+        let at = chrono::DateTime::parse_from_rfc3339(&at).map_err(Error::internal)?.with_timezone(&Utc);
+        let row: EventRow = (tenant, id, at, actor, entity.to_string(), record_id, action.to_string(), Some(diff), Some(request_id.to_string()), hash);
+        crate::outbox::enqueue(tx, tenant, &topic, None, None, event_json(&row)).await?;
+    }
     Ok(())
 }
 

@@ -69,6 +69,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_ZONE` | no | The zone this replica is in for every request (one of `FERRUM_ZONES`). Default none: each request's host, network or the default decides |
 | `FERRUM_ZONE_DEFAULT` | no | The zone of a request no host and no network places, on replicas without `FERRUM_ZONE`. Default none: admitted as without zones |
 | `FERRUM_ZONE_MODE` | no | `enforce` (the default) refuses what a zone's rule refuses; `report` admits it, and counts and logs it |
+| `FERRUM_AUDIT_SINK_URL` | no | Where every workspace's audit events are sent, in order, as they are written (`https://siem.example.com/ferrum`). Default none: nothing is sent. See [Sending the audit log elsewhere](#sending-the-audit-log-elsewhere) |
+| `FERRUM_AUDIT_SINK_SECRET` | with the sink | The key the batches are signed with (HMAC-SHA256), at least 16 characters; the receiver checks it |
 | `FERRUM_PLANS` | no | The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up) |
 | `FERRUM_SIGNUP` | no | `open` lets people make workspaces of their own at `accounts.{base}/signup`; default `closed`. Needs `FERRUM_BASE_DOMAIN` and mail |
 | `FERRUM_SIGNUP_DOMAINS`, `FERRUM_SIGNUP_PACKAGES`, `FERRUM_SIGNUP_PLAN`, `FERRUM_SIGNUP_PER_ADDRESS` | with sign-up | The address domains sign-ups come from (comma-separated; empty: any), what a new workspace installs besides the core, the plan it starts on (one of `FERRUM_PLANS`), and how many workspaces one address may make (default 3) |
@@ -1277,6 +1279,53 @@ Saving the networks, or clearing them with the task, tells every replica to drop
 workspace at once, so a narrowing, a widening and a clearing all hold within moments; if a replica missed
 the notice (its database connection dropped), within 30 seconds. A sign-in reads the setting from the
 database each time.
+
+## Sending the audit log elsewhere
+
+Every workspace's audit trail can also go to another system as it is written: a security monitoring tool, a
+log store. Two ways, both off unless set.
+
+**For the operator: every workspace.** Set `FERRUM_AUDIT_SINK_URL` (https; plain http only to `localhost`, a
+collector beside the server) and `FERRUM_AUDIT_SINK_SECRET` (at least 16 characters). The server refuses to
+start with a URL and no secret. The URL is the operator's own setting, so it may name an address inside your
+network, unlike a workspace's webhooks; it is resolved once per batch and called with no redirects, as webhooks
+are. The first time a replica with it starts, sending begins with the events written from then on.
+
+* Batches of up to 500 events are POSTed as newline-delimited JSON (`application/x-ndjson`), one event per line,
+  with `X-Ferrum-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of '<t>.<body>' with the secret>`. Check the
+  signature, comparing in constant time, and refuse a timestamp more than five minutes old: that stops a replay.
+* **In order, at least once.** Events go in the order their transactions finished, and one batch waits for the
+  receiver's `2xx` before the next. A batch whose answer was lost, or whose sender stopped right after it, comes
+  again: drop events whose `id` you have already kept. Nothing is skipped.
+* **One sender.** It runs only where background work runs (`FERRUM_RUN_BACKGROUND`), and one replica at a time
+  holds the cursor in the database; the others wait their turn. Sending never slows or holds up anything that
+  writes. While a newer build has the database (the two-version window), the older build sends nothing, and the
+  newer one's replicas do.
+* **When the receiver is down,** the sender tries again after 2, 4, 8 … seconds, up to five minutes, and logs
+  "sending the audit log". `ferrum_audit_sink_behind_seconds` on `/metrics` says how long the oldest event not yet
+  sent has waited, and `ferrum task doctor` warns once that is more than 15 minutes.
+
+**For a workspace's administrators: their workspace only.** A webhook (Administration → Webhooks, `POST
+/api/admin/webhooks`) whose topics name `audit.sign_in`, `audit.administration`, `audit.records`, or `audit.*` for
+all three, gets each of the workspace's audit events of those kinds, one per delivery, signed and retried as every
+webhook is, through the outbound guard. A webhook of `*` and an app's webhooks never get them.
+
+**The event.**
+
+```json
+{"id": "48213", "workspace": "0195f5d0-…", "at": "2026-11-14T09:30:12.004211Z", "category": "sign_in",
+ "entity": "SignIn", "record": "0195f5d0-…", "action": "signed_in", "actor": "0195f5d0-…", "request_id": null,
+ "details": {"address": "203.0.113.7", "user_agent": "Mozilla/5.0 …", "zone": null, "method": "password"},
+ "hash": "9f2c…"}
+```
+
+`id` is unique across the installation and never reused. `category` is `sign_in`, `administration` (people,
+roles, settings, keys, apps, connections and the like) or `records` (changes to a workspace's records). `entity`
+and `record` say what it is about, `action` what happened, `actor` who did it (none for the system), `details` what
+changed, and `hash` is the event's place in the record's hash chain. **Personal data:** `actor` and `record` can
+name people; `details` holds the values that changed, which can be anyone's data, and for sign-ins the address and
+browser. An erasure blanks values in the trail here, not in a copy already sent: the receiver's own retention and
+erasure apply to what it keeps.
 
 ## Moving from one shape to another
 

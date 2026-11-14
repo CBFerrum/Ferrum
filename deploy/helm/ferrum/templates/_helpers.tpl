@@ -65,6 +65,8 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{ include "ferrum.secretEnv" (list . "FERRUM_CONNECTION_UPLOAD_MB" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_OPS_TELEMETRY_DAYS" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_RETIRED_SECRET_KEYS" true) }}
+{{ include "ferrum.secretEnv" (list . "FERRUM_AUDIT_SINK_URL" true) }}
+{{ include "ferrum.secretEnv" (list . "FERRUM_AUDIT_SINK_SECRET" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_BOOTSTRAP_TOKEN" false) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_METRICS_TOKEN" false) }}
 {{ include "ferrum.secretEnv" (list . "AWS_ACCESS_KEY_ID" false) }}

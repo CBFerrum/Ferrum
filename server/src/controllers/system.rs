@@ -194,6 +194,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     apps.push_str(&crate::zone::metrics_text());
     apps.push_str(&crate::zone::network_metrics_text());
     apps.push_str(&crate::zone::unknown_sign_in_metrics_text());
+    apps.push_str(&crate::zone::audit_sink_metrics_text(&st.kernel).await);
     apps.push_str(&logic);
     apps.push_str(&reads);
     let body = format!(

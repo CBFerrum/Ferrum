@@ -572,4 +572,243 @@ async fn scenario() {
         sqlx::query_scalar("select count(*) from audit_event where entity = 'SignIn' and record_id = $1").bind(gone).fetch_one(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     assert!(kept >= 1, "the events stay");
+
+    // ── 5. Sending the audit log elsewhere ──
+    let rx = Receiver::start().await;
+    // (a) The operator's sink: two replicas of it on this database.
+    let sink = ferrum_kernel::audit_sink::Sink::parse(&format!("{}/sink", rx.base), SINK_SECRET).unwrap();
+    let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+    let replica = || {
+        let (url, sink) = (url.clone(), sink.clone());
+        async move {
+            let db = ferrum_kernel::Db::connect(ferrum_kernel::DbConfig { url, max_connections: 4, ..Default::default() }).await.unwrap();
+            let catalog = ferrum_meta::Catalog::load_dir(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages")).unwrap();
+            let settings =
+                ferrum_kernel::KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), audit_sink: sink, ..Default::default() };
+            Kernel::boot(db, catalog, ferrum_kernel::HookRegistry::default(), settings, None).await.unwrap()
+        }
+    };
+    let (k1, k2) = (replica().await, replica().await);
+    assert_eq!(k.audit_sink_once().await.unwrap(), ferrum_kernel::audit_sink::Turn::Off, "off without the setting");
+    assert_eq!(k1.audit_sink_once().await.unwrap(), ferrum_kernel::audit_sink::Turn::Sent(0), "the first turn starts the cursor at now");
+    let write = |n: usize| {
+        let (k, admin) = (k.clone(), admin.clone());
+        async move {
+            let mut ids = vec![];
+            for i in 0..n {
+                let tz = if i % 2 == 0 { "Asia/Kolkata" } else { "UTC" };
+                k.update_tenant_settings(&admin, json!({"timezone": tz}).as_object().unwrap()).await.unwrap();
+                let mut tx = k.db.tenant_tx(acme).await.unwrap();
+                let id: i64 = sqlx::query_scalar("select max(id) from audit_event where tenant_id = $1").bind(acme).fetch_one(&mut *tx).await.unwrap();
+                tx.commit().await.unwrap();
+                ids.push(id);
+            }
+            ids
+        }
+    };
+    let first = write(5).await;
+    let mut sent = 0;
+    while let ferrum_kernel::audit_sink::Turn::Sent(n @ 1..) = k1.audit_sink_once().await.unwrap() {
+        sent += n;
+    }
+    assert!(sent >= 5, "{sent}");
+    let got = rx.ids("/sink");
+    assert!(first.iter().all(|i| got.contains(i)), "every event: {first:?} in {got:?}");
+    let mut sorted = got.clone();
+    sorted.sort();
+    assert_eq!(got, sorted, "in order");
+    let lines = rx.lines("/sink");
+    let one: Value = serde_json::from_str(&lines[0]).unwrap();
+    for field in ["id", "workspace", "at", "category", "entity", "record", "action", "actor", "details", "hash"] {
+        assert!(one.get(field).is_some(), "{field} in {one}");
+    }
+    assert!(rx.all_signed(), "every batch is signed with the secret");
+    assert!(!lines.iter().any(|l| l.contains(SINK_SECRET)), "no secret in an event");
+    // A crash between the receiver's yes and the cursor's write: the batch comes again (a duplicate id, no gap).
+    let cursor = |v: Option<String>| {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.system_tx().await.unwrap();
+            let now: String = sqlx::query_scalar("select value from cluster_state where key = 'audit_sink_cursor'").fetch_one(&mut *tx).await.unwrap();
+            if let Some(v) = v {
+                sqlx::query("update cluster_state set value = $1 where key = 'audit_sink_cursor'").bind(v).execute(&mut *tx).await.unwrap();
+            }
+            tx.commit().await.unwrap();
+            now
+        }
+    };
+    let before = cursor(None).await;
+    let second = write(2).await;
+    while let ferrum_kernel::audit_sink::Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
+    cursor(Some(before)).await;
+    while let ferrum_kernel::audit_sink::Turn::Sent(1..) = k2.audit_sink_once().await.unwrap() {}
+    let got = rx.ids("/sink");
+    for id in &second {
+        assert_eq!(got.iter().filter(|g| *g == id).count(), 2, "{id} sent again after the lost cursor");
+    }
+    // The receiver down: nothing moves, and it is said; up again: it goes on from where it was.
+    rx.set_failing(true);
+    let third = write(1).await;
+    assert!(k1.audit_sink_once().await.is_err(), "the receiver refused");
+    assert!(k1.audit_sink_behind().await.unwrap().unwrap() >= 0.0);
+    assert!(!rx.ids("/sink").contains(&third[0]));
+    rx.set_failing(false);
+    while let ferrum_kernel::audit_sink::Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
+    assert_eq!(rx.ids("/sink").iter().filter(|g| **g == third[0]).count(), 1, "sent once it answers");
+    assert_eq!(k1.audit_sink_behind().await.unwrap(), Some(0.0), "nothing waits");
+    // Two replicas at once: one sends, the other finds the cursor taken; never the same batch twice.
+    rx.set_delay(1500);
+    let fourth = write(3).await;
+    let (a, b) = tokio::join!(k1.audit_sink_once(), k2.audit_sink_once());
+    let turns = [a.unwrap(), b.unwrap()];
+    assert!(turns.contains(&ferrum_kernel::audit_sink::Turn::Busy), "{turns:?}");
+    assert_eq!(rx.max_in_flight(), 1, "one sender at a time");
+    rx.set_delay(0);
+    while let ferrum_kernel::audit_sink::Turn::Sent(1..) = k2.audit_sink_once().await.unwrap() {}
+    for id in &fourth {
+        assert_eq!(rx.ids("/sink").iter().filter(|g| *g == id).count(), 1, "{id} once");
+    }
+    let (_, metrics) = call(&r, Method::GET, "/metrics", INSIDE, Cred::None, None).await;
+    assert!(!metrics.contains("ferrum_audit_sink_behind_seconds"), "only where the sink is set");
+    assert!(k1.doctor(10).await.unwrap().iter().any(|f| f.check == "audit.sink"), "the doctor reports it");
+
+    // (b) A workspace's own sink: a webhook on its audit topics, only its events, only the chosen categories.
+    let other = k
+        .create_tenant(NewTenant {
+            slug: "other".into(),
+            name: "Other".into(),
+            admin_email: "admin@other.test".into(),
+            admin_password: PASSWORD.into(),
+            admin_name: None,
+            packages: vec![],
+            settings: None,
+        })
+        .await
+        .unwrap();
+    let os = k.login("other", "admin@other.test", PASSWORD).await.unwrap();
+    let other_admin = k.load_ctx(other, os.user, None, "it".into()).await.unwrap();
+    let (status, answer) = call(
+        &r,
+        Method::POST,
+        "/api/admin/webhooks",
+        INSIDE,
+        Cred::Bearer(&admin_token),
+        Some(json!({"name": "siem", "url": format!("{}/hooks", rx.base), "topics": ["audit.sign_in"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{answer}");
+    // And a webhook of everything, which must not get them.
+    call(
+        &r,
+        Method::POST,
+        "/api/admin/webhooks",
+        INSIDE,
+        Cred::Bearer(&admin_token),
+        Some(json!({"name": "all", "url": format!("{}/all", rx.base), "topics": ["*"]})),
+    )
+    .await;
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
+    while k.deliver_webhooks_once().await.unwrap() > 0 {}
+    sign_in(&r, "10.5.0.1", "member@acme.test", PASSWORD, false).await;
+    k.update_tenant_settings(&admin, json!({"timezone": "UTC"}).as_object().unwrap()).await.unwrap();
+    k.update_tenant_settings(&other_admin, json!({"timezone": "UTC"}).as_object().unwrap()).await.unwrap();
+    k.login("other", "admin@other.test", PASSWORD).await.unwrap();
+    k.record_sign_in(other, os.user, "signed_in", "password", &ferrum_kernel::gate::Arrival { address: "10.5.0.2".into(), ..Default::default() })
+        .await
+        .unwrap();
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
+    while k.deliver_webhooks_once().await.unwrap() > 0 {}
+    let hooked: Vec<Value> = rx.lines("/hooks").iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert!(hooked.iter().any(|e| e["details"]["address"] == "10.5.0.1"), "acme's sign-in: {hooked:?}");
+    assert!(hooked.iter().all(|e| e["workspace"] == json!(acme) && e["category"] == "sign_in"), "only acme's, only sign-ins: {hooked:?}");
+    assert!(rx.lines("/all").iter().all(|l| !l.contains("SignIn")), "a webhook of everything gets no audit events");
+}
+
+const SINK_SECRET: &str = "a-sink-secret-of-some-length";
+
+/// A receiver of batches and webhooks: what came, in order, by path; whether each was signed; failing or slow
+/// when asked; how many requests were in flight at most.
+#[derive(Clone)]
+struct Receiver {
+    base: String,
+    state: std::sync::Arc<std::sync::Mutex<RxState>>,
+}
+
+#[derive(Default)]
+struct RxState {
+    bodies: Vec<(String, String)>,
+    unsigned: usize,
+    failing: bool,
+    delay_ms: u64,
+    in_flight: usize,
+    max_in_flight: usize,
+}
+
+impl Receiver {
+    async fn start() -> Receiver {
+        let state = std::sync::Arc::new(std::sync::Mutex::new(RxState::default()));
+        let st = state.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri, headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+            let st = st.clone();
+            async move {
+                let delay = {
+                    let mut s = st.lock().unwrap();
+                    s.in_flight += 1;
+                    s.max_in_flight = s.max_in_flight.max(s.in_flight);
+                    s.delay_ms
+                };
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                let mut s = st.lock().unwrap();
+                s.in_flight -= 1;
+                if s.failing {
+                    return StatusCode::SERVICE_UNAVAILABLE;
+                }
+                let path = uri.path().to_string();
+                let sig = headers.get("x-ferrum-signature").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+                if path == "/sink" {
+                    let ts: i64 = sig.split(',').next().and_then(|t| t.strip_prefix("t=")).and_then(|t| t.parse().ok()).unwrap_or_default();
+                    let want = ferrum_kernel::outbox::signature(SINK_SECRET, ts, &body).unwrap();
+                    let same = want.len() == sig.len() && want.bytes().zip(sig.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0;
+                    if !same {
+                        s.unsigned += 1;
+                    }
+                }
+                let text = String::from_utf8_lossy(&body).into_owned();
+                s.bodies.push((path, text));
+                StatusCode::OK
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Receiver { base, state }
+    }
+
+    /// Each event received on `path`, one per line (a webhook's body is one event).
+    fn lines(&self, path: &str) -> Vec<String> {
+        let s = self.state.lock().unwrap();
+        s.bodies.iter().filter(|(p, _)| p == path).flat_map(|(_, b)| b.lines().map(str::to_string).collect::<Vec<_>>()).filter(|l| !l.is_empty()).collect()
+    }
+
+    fn ids(&self, path: &str) -> Vec<i64> {
+        self.lines(path).iter().map(|l| serde_json::from_str::<Value>(l).unwrap()["id"].as_str().unwrap().parse().unwrap()).collect()
+    }
+
+    fn all_signed(&self) -> bool {
+        self.state.lock().unwrap().unsigned == 0
+    }
+
+    fn set_failing(&self, on: bool) {
+        self.state.lock().unwrap().failing = on;
+    }
+
+    fn set_delay(&self, ms: u64) {
+        let mut s = self.state.lock().unwrap();
+        s.delay_ms = ms;
+        s.max_in_flight = 0;
+    }
+
+    fn max_in_flight(&self) -> usize {
+        self.state.lock().unwrap().max_in_flight
+    }
 }

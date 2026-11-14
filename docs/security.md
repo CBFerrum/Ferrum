@@ -57,6 +57,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 * Sign-ins, second steps, failed and refused attempts of known accounts (capped at three an hour, then a
   summary), break-glass sign-ins and sessions' ends are audit events, with address, browser, zone and method.
   Attempts for unknown addresses are only counted. No secret is ever in them.
+* Audit events can go to the operator's sink (signed batches, in order, at least once, one sender) and to a
+  workspace's own webhooks on `audit.*` topics; never to a `*` webhook or an app's. The sink's secret is never
+  logged or sent.
 * A workspace may end browser sessions idle longer than `idle_minutes` (to within about two minutes); the
   session is revoked, not only refused. A socket's own rechecks are not use.
 

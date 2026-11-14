@@ -134,6 +134,22 @@ pub fn unknown_sign_in_metrics_text() -> String {
     )
 }
 
+/// `ferrum_audit_sink_behind_seconds` for `/metrics`, when the operator's audit sink is set: how long the oldest
+/// event not yet sent has waited (0: none).
+pub async fn audit_sink_metrics_text(k: &ferrum_kernel::Kernel) -> String {
+    match k.audit_sink_behind().await {
+        Ok(Some(s)) => format!(
+            "# HELP ferrum_audit_sink_behind_seconds How long the oldest audit event not yet sent to the audit sink has waited.\n\
+             # TYPE ferrum_audit_sink_behind_seconds gauge\nferrum_audit_sink_behind_seconds {s}\n"
+        ),
+        Ok(None) => String::new(),
+        Err(e) => {
+            tracing::warn!("how far behind the audit sink is: {e}");
+            String::new()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// Every request path builds its context through admission (`Kernel::request_ctx`, or

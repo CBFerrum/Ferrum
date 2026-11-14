@@ -71,6 +71,9 @@ settings:
   zone: "<%= get_env(name="FERRUM_ZONE", default="") %>"
   zone_default: "<%= get_env(name="FERRUM_ZONE_DEFAULT", default="") %>"
   zone_mode: "<%= get_env(name="FERRUM_ZONE_MODE", default="") %>"
+  # Sending the audit log elsewhere (docs/operations.md). Empty: nothing is sent.
+  audit_sink_url: "<%= get_env(name="FERRUM_AUDIT_SINK_URL", default="") %>"
+  audit_sink_secret: "<%= get_env(name="FERRUM_AUDIT_SINK_SECRET", default="") %>"
   packages_dir: <%= get_env(name="FERRUM_PACKAGES_DIR", default="../packages") %>
   # The PDF renderer, as in production: a development server with Gotenberg beside it prints PDFs.
   pdf_url: "<%= get_env(name="FERRUM_PDF_URL", default="") %>"
