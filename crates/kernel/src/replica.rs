@@ -95,11 +95,30 @@ pub struct Reads {
     assumed: Mutex<Option<Duration>>,
     counts: [AtomicU64; 9],
     warned: AtomicBool,
+    /// A read is looking at the address now ([`Reads::health`]).
+    looking: AtomicBool,
+}
+
+/// Lets the next read look again when the look ends, however it ends (a request given up drops it half-way).
+struct Looked<'a>(&'a AtomicBool);
+
+impl Drop for Looked<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl Reads {
     pub(crate) fn new(pool: sqlx::PgPool, max_lag: Duration) -> Reads {
-        Reads { pool, max_lag, seen: Mutex::new(None), assumed: Mutex::new(None), counts: Default::default(), warned: AtomicBool::new(false) }
+        Reads {
+            pool,
+            max_lag,
+            seen: Mutex::new(None),
+            assumed: Mutex::new(None),
+            counts: Default::default(),
+            warned: AtomicBool::new(false),
+            looking: AtomicBool::new(false),
+        }
     }
 
     /// The read address's health, looked at again when the last look is older than [`CHECKED_FOR`].
@@ -107,15 +126,24 @@ impl Reads {
         if let Some(lag) = *self.assumed.lock().unwrap() {
             return judge(true, Some(lag.as_secs_f64()), self.max_lag);
         }
-        if let Some((at, h)) = *self.seen.lock().unwrap()
+        let last = *self.seen.lock().unwrap();
+        if let Some((at, h)) = last
             && at.elapsed() < CHECKED_FOR
         {
             return h;
         }
+        // One look at a time: meanwhile the others go by the last one, so that an address that does not answer holds the
+        // one read that looks (for up to CHECKED_FOR), not every read that comes while it waits.
+        let looking = self.looking.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok();
+        if let (false, Some((_, h))) = (looking, last) {
+            return h;
+        }
+        let _done = looking.then_some(Looked(&self.looking));
         // The lag is 0 while everything received is replayed (an idle primary sends nothing, and the time of the last
-        // transaction replayed would grow without anything being behind).
+        // transaction replayed would grow without anything being behind). Received may be short of replayed: a standby
+        // that started again streams from the start of its last segment, below what it replayed from its own files.
         let look = sqlx::query_as::<_, (bool, Option<f64>)>(
-            "select pg_is_in_recovery(), case when pg_last_wal_receive_lsn() is not null and pg_last_wal_receive_lsn() = pg_last_wal_replay_lsn() \
+            "select pg_is_in_recovery(), case when pg_last_wal_receive_lsn() is not null and pg_last_wal_receive_lsn() <= pg_last_wal_replay_lsn() \
              then 0 else extract(epoch from now() - pg_last_xact_replay_timestamp())::float8 end",
         )
         .fetch_one(&self.pool);
@@ -127,15 +155,20 @@ impl Reads {
             }
             Err(_) => Health::Down,
         };
-        if h == Health::NotReplica && !self.warned.swap(true, Ordering::Relaxed) {
-            tracing::warn!("the read address (FERRUM_DATABASE_READ_URL) is not a replica: reports and exports read from the primary");
-        }
         self.seen(h);
         h
     }
 
     pub(crate) fn seen(&self, h: Health) {
+        if h == Health::NotReplica && !self.warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!("the read address (FERRUM_DATABASE_READ_URL) is not a replica: reports and exports read from the primary");
+        }
         *self.seen.lock().unwrap() = Some((Instant::now(), h));
+    }
+
+    /// Whether a database that is no replica stands in for one (tests, [`Reads::assume_lag`]).
+    pub(crate) fn standing_in(&self) -> bool {
+        self.assumed.lock().unwrap().is_some()
     }
 
     pub(crate) fn served(&self, s: Served) {

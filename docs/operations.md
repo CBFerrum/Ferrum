@@ -1090,8 +1090,9 @@ like any lost connection), and nothing half done stays.
 
 **Read address.** `database.readReplicas.enabled` sets `FERRUM_DATABASE_READ_URL` to CloudNativePG's
 read-only service (`ferrum-db-ro`, the standbys), and the chart refuses it with one instance, which has no
-standby. Reports (`/api/reports`, apps' reports, Studio's queries and dashboards) and the reading of a
-workspace's export then read there, in read-only transactions that set the workspace as on the primary,
+standby. Reports (`/api/reports`, apps' reports, Studio's queries and dashboards) and a workspace's export (its
+ledgers, the tables beside its records and its audit trail; its records come through the record API, from the
+primary) then read there, in read-only transactions that set the workspace as on the primary,
 when three things hold: the address is a replica (it is replaying), its lag, looked at every 2 seconds on
 each replica of the server, is within `FERRUM_DATABASE_READ_MAX_LAG_SECS` (10), and it has replayed
 everything the primary had committed when the read began (it may wait half a second for it). So whoever has
@@ -1099,15 +1100,35 @@ just written sees it in the next report. Otherwise the read goes to the primary,
 `ferrum_db_reads_total{to="primary",why=…}` says why (`down`, `lagging`, `not_replica`, `behind`, and the
 replica failures below;
 `{to="replica"}` counts the others). An address that is not a replica (the primary, or another database) is
-never read from: the server warns once and reads from the primary. A report read from a replica says how far
+never read from: the server warns once and reads from the primary. Each read asks again, in its own transaction,
+whether the address is replaying, so a standby promoted since the last look is never read from as a replica. A read
+that waited its half second in vain sends the reads after it to the primary at once, until the next look (counted
+`lagging`): a standby whose stream from the primary is cut has replayed all it received and measures its own lag as 0.
+A report read from a replica says how far
 behind it was in `X-Ferrum-Replica-Lag-Ms`. The read pool holds up to 10 connections per replica of the
 server, on the standby, not the primary. A report, a Studio query or an export whose read fails on the
 standby for any reason (the connection lost, a statement cancelled or timed out, the standby's replay
 cancelling it with a conflict, PostgreSQL's `max_standby_streaming_delay`) runs once more on the primary,
 never a third time, counted as `why="replica_conflict"`, `replica_cancelled`, `replica_lost` or
 `replica_failed`; an export first deletes what it had stored. A read that is wrong in itself (a bad report, a
-refusal) fails the same way on the primary, so its error is the one the caller gets. Not tried against a real lagging standby: the
-choice was tested with an injected lag, and the reading with the read address on the same test database.
+refusal) fails the same way on the primary, so its error is the one the caller gets.
+
+*Tried against a real standby* (15 November 2026, PostgreSQL 17.9, a primary and a streaming standby on one machine
+made by `scripts/replica_pair.sh`; `crates/kernel/tests/replica_pair_it.rs` repeats it, README *Testing*). A server on
+the pair read a trial balance, a Studio query and an export from the standby (`X-Ferrum-Replica-Lag-Ms` and
+`{to="replica"}`). With the standby's replay paused, a contact just made was in the next query, read from the
+primary after the half-second wait (`behind`), and the reads after it went there at once (`lagging`); once replay
+resumed they went back to the standby. A long read cancelled by the standby's replay (the primary vacuumed rows it
+needed, `max_standby_streaming_delay` 1 s), and one cut by stopping the standby, each answered from the primary on
+their second try (`replica_conflict`, `replica_lost`). With the standby stopped, the first read waited 2 seconds for
+the pool to give up on it (`down`), the next ten took a few milliseconds each, until the next look; one read looks at a
+time, and reads that come meanwhile go by the last look. A promoted standby was never read from again (`not_replica`).
+The real standby showed four faults, fixed since: a standby promoted within 2 seconds of the last look was read from as
+a replica; a standby whose stream was cut made every read wait half a second; a standby started again was judged
+lagging (it streams again from the start of its last segment, below what it has replayed) until the primary next
+wrote; with the standby stopped, every read that came while a look waited for it waited too (8 reads together, 2
+seconds each). Not tried: standbys on other machines, CloudNativePG's `-ro` service, and a pooler in front of the
+standbys.
 
 **Worker scaling on waiting work.** A pool with `background: only` can scale with KEDA (installed
 separately): `keda: {enabled: true}` on the pool, `autoscaling: {enabled: false}` beside it, and the rest from

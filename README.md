@@ -491,6 +491,19 @@ FERRUM_TEST_DATABASE_DIRECT_URL=postgres://ferrum:ferrum@localhost:5432/ferrum_t
   cargo test -p ferrum-kernel --test version_window_it --test outbox_it --test jobs_it
 ```
 
+**Against a real standby.** `scripts/replica_pair.sh up <dir>` makes a private PostgreSQL primary and its streaming
+standby in `<dir>` (it must not exist; PostgreSQL 17's programs from `PG_BIN`, on 127.0.0.1 ports 5441 and 5442 unless
+`REPLICA_PAIR_PORT` says otherwise; the machine's own PostgreSQL is not touched) and writes their addresses to
+`<dir>/env`. `crates/kernel/tests/replica_pair_it.rs` then reads through `FERRUM_DATABASE_READ_URL` with real lag
+(replay paused, the stream cut) and real failures (a recovery conflict, the standby stopped mid-read, the standby
+promoted), and says it skipped otherwise. It ends by promoting the standby, so make the pair again for each run:
+
+```bash
+scripts/replica_pair.sh up /tmp/ferrum-pair && . /tmp/ferrum-pair/env
+cargo test -p ferrum-kernel --test replica_pair_it -- --nocapture
+scripts/replica_pair.sh down /tmp/ferrum-pair
+```
+
 `scripts/smoke.py` is a post-deploy check against a running server (readiness, login, reports,
 idempotency, optimistic locking, and 60 concurrent stock issues racing for 100 units).
 
