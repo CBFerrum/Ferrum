@@ -282,6 +282,57 @@ kind load docker-image ferrum:ci ferrum-editors:ci
 deploy/kind/install.sh && deploy/kind/smoke.sh
 ```
 
+## Running the image and cluster checks on your own machine
+
+What CI's `image` job and the `cluster` workflow run, on one machine with Docker Desktop (or Docker Engine) and no
+GitHub; `scripts/local_ci.sh` runs every other job. From the repository's root, in this order:
+
+1. **Tools.** Docker with Compose v2 and Buildx; curl, openssl, python3 with httpx (`python3 -m pip install httpx`); for
+   the clusters kind 0.33, kubectl and helm. Give Docker 4 CPUs or more, 12 GB of memory and about 60 GB of disk: the
+   build's cache is the largest part, and each of a cluster's four nodes keeps the images it runs.
+2. **The server's image**, as CI builds it, with the commit's date (the two-version window reads it from the image):
+   ```bash
+   docker buildx build --load -t ferrum:ci \
+     --build-arg BUILD_SHA=$(git rev-parse HEAD) --build-arg BUILD_DATE=$(git log -1 --format=%ct) .
+   ```
+   It pulls `rust:1.95-bookworm`, `node:22-bookworm-slim` and `debian:bookworm-slim` (by digest) and fetches
+   Ferrum-Frontend at the Dockerfile's `FRONTEND_REV` (or add `--build-context frontend=<checkout>`). The first build
+   compiles the server and every app in release mode, the longest step by far; its cache stays in Docker's disk (some
+   15 to 20 GB, an estimate) until pruned. On Apple silicon it is an arm64 image, which runs natively.
+3. **The browser editors' server:** `docker buildx build --load -t ferrum-editors:ci deploy/editors` (pulls
+   `python:3.13-alpine` and `nginxinc/nginx-unprivileged:1.27-alpine` and the pinned editor builds).
+4. **The image** (job `image`):
+   ```bash
+   FERRUM_IMAGE=ferrum:ci FERRUM_EDITORS_IMAGE=ferrum-editors:ci SMOKE_MEET=1 deploy/smoke.sh
+   ```
+   It pulls `postgres:17`, `gotenberg/gotenberg:8`, `collabora/code:26.04.5.2.1` and `livekit/livekit-server:v1.13.10`,
+   listens on 127.0.0.1 ports 8080, 9980, 8090 and 7880 (`SMOKE_PORT`, `SMOKE_OFFICE_PORT`, `SMOKE_EDITORS_PORT`,
+   `SMOKE_MEET_PORT` move them), and removes its containers and volumes when it ends. As CI runs it, an upgrade: add
+   `FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest` after `docker login ghcr.io` (the package is private; amd64,
+   emulated on Apple silicon). Its rollback step runs only when that image carries a build date (images from 14 November
+   2026 on): build the commit before as `ferrum:prev` the same way and pass `FERRUM_PREVIOUS_IMAGE=ferrum:prev`.
+5. **The cluster** (job `kind` of `cluster.yml`), with the images built above:
+   ```bash
+   kind create cluster --config deploy/kind/kind.yaml --wait 5m
+   kind load docker-image ferrum:ci ferrum-editors:ci
+   deploy/kind/install.sh && deploy/kind/smoke.sh
+   kind delete cluster
+   ```
+   `install.sh` applies Envoy Gateway v1.9.3, cert-manager v1.21.3, CloudNativePG 1.30.1 and its Barman Cloud plugin
+   v0.15.1, metrics-server v0.9.0, the Prometheus operator's definitions and an S3 emulator (`motoserver/moto:5.2.5`), and
+   their images are pulled; `smoke.sh` adds `ghcr.io/cloudnative-pg/postgresql:17`, gotenberg, collabora and
+   `curlimages/curl:8.21.0`.
+6. **Moving between shapes** (job `pools`), on a cluster of its own:
+   ```bash
+   kind create cluster --config deploy/kind/kind.yaml --wait 5m
+   kind load docker-image ferrum:ci
+   deploy/kind/install.sh && deploy/kind/pools.sh
+   kind delete cluster
+   ```
+7. **Cleaning up.** `kind delete cluster` removes a cluster with its nodes' images; `docker image rm ferrum:ci
+   ferrum-editors:ci` and `docker builder prune` give back the build and its cache, the largest part; `docker system df`
+   shows what is left.
+
 ## A site without internet
 
 Dedicated and on-premises installations run the same images as any other; a site that cannot reach
