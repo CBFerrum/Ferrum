@@ -6,4 +6,14 @@ ignore = [
   # and holds no RSA private key; it verifies providers' RS256 ID tokens with public keys only.
   "RUSTSEC-2023-0071",
   "RUSTSEC-2026-0387",
+  # libsqlite3-sys is in Cargo.lock only because sqlx's features name sqlx-sqlite: nothing here turns SQLite
+  # on, so it is never compiled (cargo tree -i libsqlite3-sys --all-features prints nothing). Its fix (0.39)
+  # is newer than sqlx 0.9, the latest, accepts.
+  "RUSTSEC-2026-0459",
+  # Unmaintained, with no maintained release to move to: pin-utils through async-imap 0.12 (Comms' mail),
+  # smallstr through yrs (third_party/yrs, as upstream's latest), unsafe-libyaml through serde_yaml_ng 0.10
+  # and loco-rs's serde_yaml.
+  "RUSTSEC-2026-0441",
+  "RUSTSEC-2026-0215",
+  "RUSTSEC-2024-0449",
 ]
