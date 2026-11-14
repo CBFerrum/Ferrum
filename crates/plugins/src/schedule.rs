@@ -19,7 +19,7 @@ pub async fn run_due_once(host: &Arc<PluginHost>, k: &Kernel) -> Result<usize> {
     let due: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
         "select s.tenant_id, s.plugin_id, s.name from plugin_schedule s \
          join plugin p on p.tenant_id = s.tenant_id and p.id = s.plugin_id \
-         where p.enabled and s.next_run_at <= now() order by s.next_run_at limit 20 for update of s skip locked",
+         where p.enabled and s.next_run_at <= now() and not ferrum_workspace_held(s.tenant_id) order by s.next_run_at limit 20 for update of s skip locked",
     )
     .fetch_all(&mut *tx)
     .await?;

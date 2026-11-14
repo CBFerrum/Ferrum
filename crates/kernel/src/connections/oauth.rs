@@ -1091,7 +1091,8 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let due: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
             "select t.tenant_id, t.conn_id, t.user_id from conn_token t join conn c on c.tenant_id = t.tenant_id and c.id = t.conn_id \
-             where t.status = 'connected' and t.expires_at is not null and t.expires_at < $1 + make_interval(mins => $2::int) limit 200",
+             where t.status = 'connected' and t.expires_at is not null and t.expires_at < $1 + make_interval(mins => $2::int) \
+               and not ferrum_workspace_held(t.tenant_id) limit 200",
         )
         .bind(now)
         .bind(REFRESH_AHEAD_MINUTES)

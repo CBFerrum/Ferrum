@@ -971,7 +971,8 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         let due: Vec<(Uuid, Uuid, String, Uuid)> = sqlx::query_as(
-            "select tenant_id, id, entity, record_id from approval_request where status = 'pending' and next_due <= $1 order by next_due limit $2",
+            "select tenant_id, id, entity, record_id from approval_request where status = 'pending' and next_due <= $1 \
+             and not ferrum_workspace_held(tenant_id) order by next_due limit $2",
         )
         .bind(now)
         .bind(SWEEP_BATCH)

@@ -174,6 +174,14 @@ impl Objects {
         }
     }
 
+    pub(crate) async fn size(&self, key: &str) -> Result<Option<u64>> {
+        match self.op.stat(key).await {
+            Ok(m) => Ok(Some(m.content_length())),
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(storage_err(e)),
+        }
+    }
+
     async fn delete(&self, key: &str) {
         if let Err(e) = self.op.delete(key).await {
             tracing::warn!(%key, "could not delete an upload's object: {e}");
@@ -511,7 +519,7 @@ pub async fn sweep(k: &Kernel, objects: &Objects) -> Result<usize> {
     let gone: Vec<(Uuid, Uuid, bool)> = sqlx::query_as(
         // Replicas sweep at the same time: each takes rows nobody else holds.
         "delete from file_upload where (tenant_id, id) in (select tenant_id, id from file_upload \
-           where expires_at < now() - interval '5 minutes' order by expires_at limit 500 for update skip locked) \
+           where expires_at < now() - interval '5 minutes' and not ferrum_workspace_held(tenant_id) order by expires_at limit 500 for update skip locked) \
          returning tenant_id, id, parts",
     )
     .fetch_all(&mut *tx)

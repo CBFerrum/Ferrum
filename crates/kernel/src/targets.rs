@@ -226,7 +226,7 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         let due: Vec<(Uuid, String, Uuid, String, i32)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select t.tenant_id, t.entity, t.record_id, t.target, t.round from (select distinct tenant_id from record_target where {OVERDUE}) w \
+            "select t.tenant_id, t.entity, t.record_id, t.target, t.round from (select distinct tenant_id from record_target where {OVERDUE} and not ferrum_workspace_held(tenant_id)) w \
              cross join lateral (select tenant_id, entity, record_id, target, round, due_at from record_target r where r.tenant_id = w.tenant_id and {OVERDUE} \
                order by due_at limit $2) t order by t.due_at limit $3"
         )))
