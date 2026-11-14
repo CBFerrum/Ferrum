@@ -1432,6 +1432,7 @@ command line; none of it is printed):
 ferrum task move_workspace tenant:acme                 # wait:<seconds> (130) for the work in hand at the source
 ferrum task move_workspace tenant:acme resume:yes      # carry on after it stopped, at whatever step
 ferrum task move_workspace tenant:acme abort:yes       # undo, until the point of no return
+ferrum task move_workspace tenant:acme status:yes      # what this side records, changing nothing
 ferrum task finish_move tenant:acme note:"checked at eu-2"   # at the source, later: delete what it left there
 ```
 
@@ -1473,9 +1474,7 @@ visit. Sign-ins of MCP clients and other OAuth clients: they connect again. Code
 uploads in progress. Without regions, the link between members and their Ferrum accounts: they sign in with
 the workspace's password (an administrator sets one for whoever never had one). With regions that trust each
 other, each member keeps their Ferrum account, as a visiting account here (or their own, when it lives here).
-The privacy and access journals stay with the source's storage: they serve a restore of the source.
-Fingerprints a receipt kept of a secret parameter were made with the source's key. Opt-out links in mail
-sent before the move are signed with the source's key, and work here only while it is a retired key here.
+More below, under "What a move cannot carry or guarantee".
 
 **What people notice.** While frozen (minutes for most workspaces), changes answer 503 and are to be retried;
 reading works. After it, they sign in again, at the same address once DNS points here.
@@ -1491,16 +1490,58 @@ no longer lists it.
 it (its rows, and its files unless the storage is shared); nothing deletes it by itself. Keep it until you
 are sure of the new place. To move a workspace back to an installation it left, run `finish_move` there first.
 
-**What the freeze does not stop.** Writes that are not a kernel transaction of the workspace: a sign-in attempt
-(its count of failures), an app's own upkeep (`ferrum_app_*::maintenance`), and the hourly maintenance's other
-steps. Step 6 finds what they changed and refuses, so nothing is lost, and the next run copies afresh; it reads
-the source within one transaction, and a write that lands in the instant between that reading and its commit
-is the one it cannot see.
+**What the freeze stops, and what it cannot.** Every kernel transaction of the workspace is read-only, for
+people and system work alike; every claim of background work across workspaces skips it, and so does the hourly
+maintenance (retention, usage, support access and roles ending, backfills, purges, digests, the audit anchor).
+Every way of signing in to it (password, code, second step, passkey, single sign-on, a Ferrum account entering
+or joining it) answers 503 "this workspace is moving" before it looks anyone up or writes anything, so no
+failure is counted and the answer is the same for every address; an API key still reads, and its last use is
+not recorded. What is left: an app's own upkeep (`maintenance` of each app: Bookings, Campaigns, Comms,
+Contracts, DAM, Edge, Education, ERP, Field Service, Government, GRC, Healthcare, Helpdesk, HR, Intranet, ITSM,
+LMS, Logistics, Metrics, Nonprofit, Objectives, Projects, Property, Social) lists workspaces itself; what it does
+through the kernel's documents and workspace transactions is frozen, and what it writes with its own SQL is
+found by step 6, which refuses and copies afresh. One written in the instant between step 6's reading and its
+commit is lost to the target, and that is harmless: such upkeep is periodic and does its work again on its next
+round wherever the workspace is (partitions, recognising deferred amounts, generating shifts), looking at what
+is recorded, which does not have the lost write. "Sign out everywhere" still ends sessions in a frozen
+workspace; sessions do not travel, so the target needs nothing of it.
+
+**Status, and a move that stopped.** `ferrum task move_workspace tenant:<slug> status:yes` prints what this side
+records (state, since when, the other side), changing nothing. `ferrum task doctor` reports a workspace that has
+stood `leaving` or `arriving` for an hour with no run working on it (`workspace_move`), with the command to
+resume or abort.
+
+**One build.** Every replica on both sides runs one build for as long as the move runs: a build from before this
+one does not know the freeze and would write to a frozen workspace. The move refuses when the two databases were
+last brought up to date by different builds, or work waits for a newer one; it cannot see an older replica that
+is merely running, so check that every pod on both sides runs one image first.
+
+**Sealed values it does not know.** Before copying anything, every text and JSON value of every row of the
+workspace is looked at, one pass per table, for the form a sealed value has (padded base64 of 40 characters or
+more, not plain hex). Those in the places the kernel seals in, it seals again under this installation's key;
+any other column holding one refuses the move, naming the table and column, since it would arrive sealed with a
+key this installation does not hold. A column that holds text of that form which is not sealed is let through
+with `not_sealed:table.column,...`.
 
 **Refused rather than guessed.** A different build on either side; another app or version; a value no key opens;
-erased opt-outs without the source's key here; a workspace named outside its own tables (a private app's
-release); a counter of the whole database other than events', or an event's number kept where this does not
-know of it; an open process run; a name, address or API key prefix this installation has already.
+a sealed value where the kernel does not know how it was sealed; erased opt-outs without the source's key here;
+a workspace named outside its own tables (a private app's release); a counter of the whole database other than
+events', or an event's number kept where this does not know of it; an open process run; a name, address or API
+key prefix this installation has already.
+
+**What a move cannot carry or guarantee.**
+
+* Links already mailed to unsubscribe are signed with the source's key, and receipts keep fingerprints of secret
+  parameters made with it. Put the source's `FERRUM_SECRET_KEY` in this installation's `FERRUM_RETIRED_SECRET_KEYS`
+  and erased people's opt-outs keep holding (the move refuses without it when there are any); fingerprints still
+  tell equal values apart only within the history from before the move, and mailed opt-out links still do not
+  work here, since they are checked against the current key alone.
+* Journals partitioned by date (the books) go into the partitions the target has: a year it has not made
+  refuses the copy, and nothing changes.
+* An open process run lives in the source's workflow service: the move refuses until it ends or is cancelled.
+* An app's own tables travel as rows. What it keeps outside the database, or seals in a way the kernel does not
+  know (refused, above), does not; nor does anything an app counts across the whole database (refused).
+* The privacy and access journals stay in the source's storage; they serve a restore of the source.
 
 ## Capacity
 

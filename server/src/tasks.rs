@@ -888,12 +888,13 @@ async fn move_source(st: &crate::state::AppState, vars: &Vars) -> Result<ferrum_
         files,
         regions,
         base_domain: crate::shell::base_domain(&st.settings),
+        not_sealed: vars.cli_arg("not_sealed").map(|v| v.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect()).unwrap_or_default(),
         wait: std::time::Duration::from_secs(wait),
         stop_after: None,
     })
 }
 
-/// `move_workspace tenant:<slug> [resume:yes] [abort:yes] [wait:<seconds>]`, run where the workspace is going: moves one
+/// `move_workspace tenant:<slug> [resume:yes] [abort:yes] [status:yes] [wait:<seconds>] [not_sealed:<table.column,...>]`, run where the workspace is going: moves one
 /// workspace here from another installation (docs/operations.md, "Moving one workspace").
 pub struct MoveWorkspace;
 
@@ -911,6 +912,12 @@ impl Task for MoveWorkspace {
         let slug = vars.cli_arg("tenant").map_err(|_| Error::Message("which workspace: tenant:<slug>".into()))?;
         // Every argument is `key:value` here: resume:yes, abort:yes.
         let flag = |name: &str| vars.cli_arg(name).is_ok_and(|v| v == "yes");
+        if flag("status") {
+            let k = kernel(ctx)?;
+            let st = k.move_status(slug).await.map_err(refused)?;
+            println!("{}", serde_json::to_string_pretty(&st).unwrap_or_default());
+            return Ok(());
+        }
         let run = match (flag("resume"), flag("abort")) {
             (false, false) => ferrum_kernel::workspace_move::Run::Start,
             (true, false) => ferrum_kernel::workspace_move::Run::Resume,
