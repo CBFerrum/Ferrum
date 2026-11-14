@@ -189,10 +189,10 @@ impl Kernel {
                     tx.commit().await?;
                     return Err(refused());
                 }
-                let ended: Vec<Uuid> = sqlx::query_scalar(
+                let ended: Vec<(Uuid, Uuid)> = sqlx::query_as(
                     "update user_session set revoked_at = now() \
                      where tenant_id = $1 and revoked_at is null and saml is not null and saml->>'provider' = any($2) and saml->>'name_id' = $3 \
-                       and (cardinality($4::text[]) = 0 or saml->>'session_index' = any($4)) returning id",
+                       and (cardinality($4::text[]) = 0 or saml->>'session_index' = any($4)) returning id, user_id",
                 )
                 .bind(tenant)
                 .bind(&on)
@@ -200,12 +200,20 @@ impl Kernel {
                 .bind(&session_indexes)
                 .fetch_all(&mut *tx)
                 .await?;
-                for sid in &ended {
+                for (sid, _) in &ended {
                     sqlx::query("delete from push_subscription where tenant_id = $1 and session_id = $2").bind(tenant).bind(sid).execute(&mut *tx).await?;
                     crate::gate::session_ended(&mut tx, tenant, *sid, "provider").await?;
                 }
+                // Every other replica drops what it holds of these people's sessions when this commits, as for a
+                // step-up (crate::auth::USERS_CHANNEL): a request or a socket there stops at once.
+                let mut people: Vec<Uuid> = ended.iter().map(|(_, user)| *user).collect();
+                people.sort();
+                people.dedup();
+                for user in &people {
+                    crate::auth::notify_users(&mut tx, tenant, Some(*user)).await?;
+                }
                 tx.commit().await?;
-                for sid in &ended {
+                for (sid, _) in &ended {
                     self.sessions.insert((tenant, *sid), (None, Instant::now()));
                 }
                 let key = self.saml_key(tenant).await?;

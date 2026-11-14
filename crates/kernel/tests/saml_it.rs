@@ -36,6 +36,10 @@ fn input(v: Value) -> SsoProviderInput {
     serde_json::from_value(base).unwrap()
 }
 
+fn settings() -> KernelSettings {
+    KernelSettings { secret_key: Some(SecretKey::new([5u8; 32])), sso_allow_private: true, public_url: Some(PUBLIC.into()), ..Default::default() }
+}
+
 /// Where the browser lands after the provider's answer: its `state` and `code`.
 fn landed(url: &str) -> (String, String) {
     assert!(url.starts_with(&format!("{BACK}?")), "{url}");
@@ -420,12 +424,27 @@ async fn single_logout(run: &Run, admin: &ferrum_kernel::Ctx) -> (Uuid, TestIdp)
     assert!(run.k.saml_slo(run.tenant, Incoming::Post { message: &unsigned_post, relay_state: None }).await.is_err());
     assert!(run.live(pat, s1).await && run.live(pat, s2).await && run.live(kim, k1).await && run.live(pat, o1).await, "nothing ended");
 
+    // Another replica holds Pat's session as live (cached), listening for notices as servers do.
+    let url = std::env::var("FERRUM_SAML_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_saml_test".into());
+    let db = Db::connect(DbConfig { url, max_connections: 5, ..Default::default() }).await.expect("connect");
+    let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
+    let replica = Kernel::boot(db, catalog, HookRegistry::default(), settings(), None).await.expect("boot");
+    let (_stop, stopped) = tokio::sync::watch::channel(false);
+    let _listener = replica.spawn_user_listener(stopped);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(replica.check_session(run.tenant, pat, s1).await.is_ok(), "cached as live there");
     // The session it names ends, and the provider gets a signed answer, back by its binding.
     let SloStep::Send(out) = run.k.saml_slo(run.tenant, Incoming::Redirect(&good)).await.unwrap() else { panic!("an answer") };
     assert!(out.url.starts_with("https://slo.samlco.test/slo?") && TestIdp::answer_signed_by_metadata(&out.url, &ours().await), "{out:?}");
     let (answer, relay) = TestIdp::message(&out.url, "SAMLResponse");
     assert!(answer.contains("InResponseTo=\"_lr1\"") && answer.contains("status:Success") && relay == "relay-9", "{answer}");
     assert!(!run.live(pat, s1).await && run.live(pat, s2).await && run.live(kim, k1).await && run.live(pat, o1).await);
+    // The other replica stops it at once too, far within its cache's 20 seconds.
+    let started = std::time::Instant::now();
+    while replica.check_session(run.tenant, pat, s1).await.is_ok() {
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "still live on the other replica after {:?}", started.elapsed());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert_eq!(ended_by_provider(run).await, before + 1, "on the sign-in trail, as ended by the provider");
     // Again: refused, and nothing more ends.
     assert!(run.k.saml_slo(run.tenant, Incoming::Redirect(&good)).await.is_err(), "replayed");
