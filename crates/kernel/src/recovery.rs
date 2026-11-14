@@ -227,9 +227,14 @@ impl Kernel {
         )
         .fetch_one(&self.db.pool)
         .await?;
-        let mut tx = self.db.system_tx().await?;
+        // Writable through a planned move's fence: a copy adopts the move here (moves.rs).
+        let mut tx = self.db.system_tx_through_move().await?;
         let known: Option<(i64, i32, sqlx::postgres::types::Oid)> =
             sqlx::query_as("select system_identifier, timeline, database_oid from platform_incarnation for update").fetch_optional(&mut *tx).await?;
+        if let crate::moves::Start::Done = self.notice_move(&mut tx, (system, timeline, oid.0)).await? {
+            tx.commit().await?;
+            return Ok(());
+        }
         let Some((was_system, was_timeline, was_oid)) = known else {
             sqlx::query("insert into platform_incarnation (system_identifier, timeline, database_oid) values ($1, $2, $3) on conflict do nothing")
                 .bind(system)
@@ -500,9 +505,12 @@ impl Kernel {
         Ok(files)
     }
 
-    /// Whether a restore is waiting for a person. Everything that reaches outside asks this first.
+    /// Whether a restore is waiting for a person, or a move is planned (moves.rs). Everything that reaches outside asks
+    /// this first.
     pub async fn holding(&self) -> Result<bool> {
-        Ok(sqlx::query_scalar("select exists (select 1 from platform_incarnation where held_since is not null)").fetch_one(&self.db.pool).await?)
+        Ok(sqlx::query_scalar("select exists (select 1 from platform_incarnation where held_since is not null) or exists (select 1 from platform_move)")
+            .fetch_one(&self.db.pool)
+            .await?)
     }
 
     /// A person has looked at what came back. What was set aside stays where it is, to replay or not.
@@ -546,6 +554,18 @@ impl Authority {
         let options = PgConnectOptions::from_str(url).map_err(|e| Error::Invalid(format!("the witness address: {e}")))?;
         let witness = PgPoolOptions::new().max_connections(2).acquire_timeout(ttl / 4).connect_lazy_with(options);
         Ok(Authority { witness, cluster: cluster.to_string(), region: region.to_string(), ttl })
+    }
+
+    /// Who holds it now, asking only (a region whose time ran out holds nothing).
+    pub async fn holder(&self) -> Result<Option<String>> {
+        let there: bool = sqlx::query_scalar("select to_regclass('ferrum_authority') is not null").fetch_one(&self.witness).await?;
+        if !there {
+            return Ok(None);
+        }
+        Ok(sqlx::query_scalar("select holder from ferrum_authority where cluster = $1 and expires_at > now()")
+            .bind(&self.cluster)
+            .fetch_optional(&self.witness)
+            .await?)
     }
 
     /// Takes it if nobody has it or the holder's time ran out, or keeps it. The epoch rises only when

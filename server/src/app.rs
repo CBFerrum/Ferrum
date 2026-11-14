@@ -179,6 +179,8 @@ impl Hooks for App {
         })
         .await
         .map_err(|e| Error::Message(format!("database: {e}")))?;
+        // A database fenced for a planned move: the server starts (its start-up steps write), then serves read-only.
+        db.starting(true);
         let catalog = crate::packages::base_catalog(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
         let missing = crate::packages::missing_logic(&catalog);
         if !missing.is_empty() {
@@ -374,6 +376,7 @@ impl Hooks for App {
             assistant: crate::assistant::Assistant::new(crate::assistant::Config::from_env()),
         };
         state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone(), state.objects.clone())));
+        state.kernel.db.starting(false);
         let ctx = ctx.into_builder().storage(storage).build();
         ctx.shared_store.insert(state);
         Ok(ctx)
@@ -595,6 +598,9 @@ impl Hooks for App {
         tasks.register(crate::tasks::AcceptAuthority);
         tasks.register(crate::tasks::ExtractTenant);
         tasks.register(crate::tasks::DeleteTenant);
+        tasks.register(crate::tasks::PlanMove);
+        tasks.register(crate::tasks::CancelMove);
+        tasks.register(crate::tasks::AdoptMove);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

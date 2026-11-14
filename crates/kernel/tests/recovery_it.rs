@@ -145,6 +145,9 @@ fn restores_and_regions() {
         tokio::spawn(a_restored_database_does_not_act_on_its_past()).await.unwrap();
         tokio::spawn(one_workspace_goes_back_alone()).await.unwrap();
         tokio::spawn(only_one_region_writes()).await.unwrap();
+        tokio::spawn(a_planned_move_carries_what_was_waiting()).await.unwrap();
+        tokio::spawn(a_mark_out_of_time_or_unfenced_is_a_restore()).await.unwrap();
+        tokio::spawn(the_fence_falls_between_transactions()).await.unwrap();
     });
 }
 
@@ -488,4 +491,131 @@ async fn only_one_region_writes() {
     stop.send(true).unwrap();
     a_loop.await.unwrap();
     b_loop.await.unwrap();
+}
+
+const DAY: Duration = Duration::from_secs(24 * 3600);
+
+async fn adopted(k: &Kernel) -> i64 {
+    let mut tx = k.db.system_tx().await.unwrap();
+    let n = sqlx::query_scalar("select count(*) from audit_event where action = 'platform.move_adopted'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    n
+}
+
+async fn try_pay(k: &Kernel, tenant: Uuid) -> Result<()> {
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    outbox::enqueue(&mut tx, tenant, "pay", None, None, json!({"amount": 100})).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// A planned move: the copy carries on with what was waiting, once; the source takes nothing more.
+async fn a_planned_move_carries_what_was_waiting() {
+    let (live, copy) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
+    let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
+    let k = kernel(database(&live, true).await, sent.clone(), app.clone()).await;
+    let admin = workspace(&k, "acme").await;
+    drain(&k).await;
+    pay(&k, admin.tenant).await;
+    assert!(k.plan_move(" ", DAY, Duration::ZERO).await.is_err(), "it takes a reason");
+    assert!(k.plan_move("to Kubernetes", Duration::from_secs(60), Duration::ZERO).await.is_err(), "at least an hour");
+    assert!(matches!(k.cancel_move("nothing").await, Err(Error::Conflict(_))), "nothing to cancel");
+    let mark = k.plan_move("to Kubernetes", DAY, Duration::ZERO).await.expect("planned");
+    assert!(mark.fenced_at.is_some());
+    assert!(matches!(k.plan_move("again", DAY, Duration::ZERO).await, Err(Error::Conflict(_))), "planned once");
+
+    // The source takes no changes, and sends nothing.
+    assert!(matches!(try_pay(&k, admin.tenant).await, Err(Error::Unavailable(_))), "fenced");
+    assert!(k.holding().await.unwrap());
+    drain(&k).await;
+    assert_eq!(sent.count.load(Ordering::SeqCst), 0);
+    restore(&backup(&live), &copy).await;
+
+    // Two replicas of the copy start at once: the move is adopted once, nothing is set aside, and what was waiting
+    // goes out once, from the copy.
+    let (moved, told) = (Arc::new(Sent::default()), Arc::new(App::default()));
+    let (one, two) = tokio::join!(async { kernel(database(&copy, false).await, moved.clone(), told.clone()).await }, async {
+        kernel(database(&copy, false).await, moved.clone(), told.clone()).await
+    });
+    assert!(!one.holding().await.unwrap() && !two.holding().await.unwrap(), "no hold");
+    assert_eq!(told.told.load(Ordering::SeqCst), 0, "nothing set aside");
+    assert_eq!(adopted(&one).await, 1, "adopted once");
+    assert!(one.planned_move().await.unwrap().is_none(), "the mark is gone from the copy");
+    drain(&one).await;
+    drain(&two).await;
+    assert_eq!(moved.count.load(Ordering::SeqCst), 1, "what was waiting went out once");
+    try_pay(&two, admin.tenant).await.expect("the copy takes changes");
+    drain(&two).await;
+    assert_eq!(moved.count.load(Ordering::SeqCst), 2);
+    let again = kernel(database(&copy, false).await, moved.clone(), told.clone()).await;
+    assert!(!again.holding().await.unwrap() && adopted(&again).await == 1, "starting again changes nothing");
+
+    // The source stays fenced when it starts again (it starts, then serves read-only).
+    let db = database(&live, false).await;
+    db.starting(true);
+    let source = kernel(db, sent.clone(), app.clone()).await;
+    source.db.starting(false);
+    assert!(matches!(try_pay(&source, admin.tenant).await, Err(Error::Unavailable(_))), "still fenced");
+    assert!(source.holding().await.unwrap());
+    assert!(matches!(source.adopt_move("it is the copy").await, Err(Error::Conflict(_))), "the source is not a copy");
+    assert_eq!(app.told.load(Ordering::SeqCst), 0);
+
+    // Cancelled: the source takes changes again, and sends what it held.
+    source.cancel_move("staying on Compose").await.expect("cancelled");
+    assert!(!source.holding().await.unwrap());
+    try_pay(&source, admin.tenant).await.expect("takes changes");
+    drain(&source).await;
+    assert_eq!(sent.count.load(Ordering::SeqCst), 2);
+}
+
+/// A copy with a mark it may not follow is a restore, held as before: an old backup holding a mark whose time ran out,
+/// and a copy taken before the source stopped taking changes.
+async fn a_mark_out_of_time_or_unfenced_is_a_restore() {
+    let (live, copy) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
+    let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
+    let k = kernel(database(&live, true).await, sent.clone(), app.clone()).await;
+    let admin = workspace(&k, "acme").await;
+    drain(&k).await;
+    pay(&k, admin.tenant).await;
+    k.plan_move("to another cluster", DAY, Duration::ZERO).await.expect("planned");
+    for (change, why) in [
+        ("update platform_move set valid_until = now() - interval '1 hour'", "its time ran out"),
+        ("update platform_move set valid_until = now() + interval '1 day', fenced_at = null", "copied before the fence"),
+    ] {
+        sqlx::query(change).execute(&k.db.pool).await.unwrap();
+        restore(&backup(&live), &copy).await;
+        let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
+        let c = kernel(database(&copy, false).await, sent.clone(), app.clone()).await;
+        assert!(c.holding().await.unwrap(), "{why}: held");
+        assert_eq!(app.told.load(Ordering::SeqCst), 1, "{why}: set aside");
+        assert!(c.planned_move().await.unwrap().is_none(), "{why}: the mark is gone");
+        try_pay(&c, admin.tenant).await.expect("a held copy takes changes, and sends nothing");
+        drain(&c).await;
+        assert_eq!(sent.count.load(Ordering::SeqCst), 0, "{why}");
+    }
+}
+
+/// The fence falls between transactions: one in flight finishes, one that starts meanwhile waits and is fenced.
+async fn the_fence_falls_between_transactions() {
+    let live = url("FERRUM_TEST_DATABASE_URL", "ferrum_test");
+    let k = kernel(database(&live, true).await, Arc::default(), Arc::default()).await;
+    let admin = workspace(&k, "acme").await;
+    let mut open = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let planning = tokio::spawn({
+        let k = k.clone();
+        async move { k.plan_move("to Kubernetes", DAY, Duration::ZERO).await }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!planning.is_finished(), "it waits for the transaction in flight");
+    let late = tokio::spawn({
+        let k = k.clone();
+        async move { try_pay(&k, admin.tenant).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    outbox::enqueue(&mut open, admin.tenant, "pay", None, None, json!({"amount": 1})).await.expect("begun before the fence");
+    open.commit().await.expect("and finishes");
+    planning.await.unwrap().expect("planned");
+    assert!(matches!(late.await.unwrap(), Err(Error::Unavailable(_))), "begun while it waited: fenced");
+    k.cancel_move("rehearsed").await.unwrap();
+    try_pay(&k, admin.tenant).await.expect("lifted");
 }

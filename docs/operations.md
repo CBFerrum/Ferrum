@@ -2424,6 +2424,9 @@ ferrum task app_make_available file:<app.fapp> [allow_unsigned:true]   # make a 
 ferrum task app_upgrade [app:<id>]   # make the newest compatible store releases of the cluster's store apps (or of one app) available
 ferrum task app_revoke app:<id> [version:<v>] reason:"..."   # take a release out of service and disable it everywhere (data kept)
 ferrum task app_releases [app:<id>]  # every release recorded on the cluster, with status and source
+ferrum task plan_move reason:"..." [valid:<hours, 24>] [wait:<seconds, 130>]   # before moving the installation: fence this database (Moving an installation)
+ferrum task cancel_move reason:"..."   # the move does not happen: lift the fence
+ferrum task adopt_move reason:"..."    # on a physical copy of a fenced database: this is the copy, carry on
 ```
 
 **Notifications by email.** A notification someone chose to have by email goes out through the
