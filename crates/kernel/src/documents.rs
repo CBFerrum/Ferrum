@@ -250,7 +250,8 @@ async fn record_vars(
     values: &Map<String, Value>,
 ) -> Result<Value> {
     let ent = k.entity(ctx, &def.entity)?;
-    let sys = Ctx::system(ctx.tenant, ctx.schema.clone());
+    // As the workspace holds it, within the caller's zone (crate::zones, level 2).
+    let sys = Ctx::system_for(ctx);
     let view = if reader == Reader::Person { ctx } else { &sys };
     let mut doc = k.get_tx(view, tx, &def.entity, id, false).await?;
     k.add_titles(view, tx, &ent, std::slice::from_mut(&mut doc)).await?;

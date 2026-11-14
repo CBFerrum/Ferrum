@@ -77,6 +77,27 @@ pub fn set_sources(sources: Vec<(String, std::sync::Arc<dyn ReportSource>)>) -> 
     Ok(())
 }
 
+/// Each report's app's own packages (report name → packages), as the server registers them.
+static OWNERS: std::sync::RwLock<Option<HashMap<String, Vec<String>>>> = std::sync::RwLock::new(None);
+
+/// Sets which packages give each report (its app's own), in place of any set before. Zones (level 2) use it: a report
+/// runs its app's own SQL, so where a zone leaves every one of those packages out it is not listed and not run,
+/// whatever entity it is gated on.
+pub fn set_owners(owners: HashMap<String, Vec<String>>) {
+    if let Ok(mut o) = OWNERS.write() {
+        *o = Some(owners);
+    }
+}
+
+/// Whether `ctx`'s zone reaches report `name`'s app (crate::zones in the kernel, level 2): always where the zone
+/// limits nothing; where it does, only a report whose app is known and has a package the zone shows.
+fn app_seen(ctx: &Ctx, name: &str) -> bool {
+    if ctx.perms.limit.is_none() {
+        return true;
+    }
+    OWNERS.read().ok().and_then(|o| o.as_ref().and_then(|o| o.get(name).cloned())).is_some_and(|ps| ps.iter().any(|p| ctx.sees_package(p)))
+}
+
 fn sources() -> Vec<std::sync::Arc<dyn ReportSource>> {
     SOURCES.read().map(|s| s.clone()).unwrap_or_default()
 }
@@ -138,13 +159,19 @@ pub fn catalog_for(ctx: &Ctx) -> Value {
     let allowed = |entity: &str, n: Narrows| may_run(ctx, entity, n).is_ok();
     let mut list: Vec<Value> = Vec::new();
     for s in sources() {
-        list.extend(s.catalog().into_iter().filter(|e| e.get("entity").and_then(Value::as_str).is_some_and(|ent| allowed(ent, narrows(e)))).map(|mut e| {
-            if let Value::Object(m) = &mut e {
-                m.remove("entity");
-                m.remove("scoped");
-            }
-            e
-        }));
+        list.extend(
+            s.catalog()
+                .into_iter()
+                .filter(|e| e.get("entity").and_then(Value::as_str).is_some_and(|ent| allowed(ent, narrows(e))))
+                .filter(|e| app_seen(ctx, e["name"].as_str().unwrap_or_default()))
+                .map(|mut e| {
+                    if let Value::Object(m) = &mut e {
+                        m.remove("entity");
+                        m.remove("scoped");
+                    }
+                    e
+                }),
+        );
     }
     Value::Array(list)
 }
@@ -154,7 +181,8 @@ async fn run_source(k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, Str
     for s in sources() {
         let Some(entry) = s.catalog().into_iter().find(|e| e["name"] == json!(name)) else { continue };
         let entity = entry["entity"].as_str().unwrap_or_default().to_string();
-        if ctx.schema.entity(&entity).is_none() {
+        // Of an app the caller's zone leaves out: as a report that is not there.
+        if ctx.schema.entity(&entity).is_none() || !app_seen(ctx, name) {
             return Err(Error::NotFound(format!("report {name} (its package is not installed)")));
         }
         may_run(ctx, &entity, narrows(&entry))?;

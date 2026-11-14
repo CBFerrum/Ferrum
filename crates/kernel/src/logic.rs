@@ -758,12 +758,13 @@ async fn aggregated(hc: &mut HookCtx<'_>, active: &Active, phase: Phase, doc: &D
         };
         // A record being created has nothing pointing at it yet; an empty link points at nothing.
         let at = doc.get(a.to_link().unwrap_or("id")).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
-        let ent = hc.ctx.schema.entity(&a.entity).cloned();
+        // Read as the workspace, within the caller's zone: an entity it leaves out (crate::zones, level 2) has nothing.
+        let workspace = Ctx::system_for(hc.ctx);
+        let ent = hc.ctx.schema.entity(&a.entity).filter(|_| workspace.sees(&a.entity)).cloned();
         let (Some(at), Some(ent)) = (at, ent) else {
             out.insert(key, zero);
             continue;
         };
-        let workspace = Ctx::system(hc.ctx.tenant, hc.ctx.schema.clone());
         let scope = crate::ctx::row_scope(&workspace, &ent, Action::Read)?;
         // `{"today": n}` is the workspace's day as the aggregate is read, moved n days; `{"doc": f}` the saved record's f.
         let mut filters = crate::query::parse_filters(&serde_json::to_value(a.filter_for(hc.ctx.today(), doc)).map_err(Error::internal)?)?;

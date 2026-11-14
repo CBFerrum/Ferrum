@@ -78,6 +78,7 @@ async fn ext(
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let tenant = ctx.tenant;
+    crate::zone::plugin_admitted(&st, &ctx, &plugin).await?;
     let reply = st.plugins.handle_http(&st.kernel, tenant, &plugin, call(method, path, query, &headers, body)?, Some(ctx)).await?;
     Ok(to_response(reply))
 }
@@ -130,6 +131,7 @@ async fn socket(
         if ctx.tenant != tenant {
             return Err(ApiError(Error::Forbidden("this token belongs to another workspace".into())));
         }
+        crate::zone::plugin_admitted(&st, &ctx, &plugin).await?;
         Some(ctx)
     };
     if !def.subprotocols.is_empty() {

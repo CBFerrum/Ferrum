@@ -504,7 +504,11 @@ impl Kernel {
                 }
                 "conn" | "message_channel" => null("sealed"),
                 "sso_provider" => null("client_secret"),
-                "approval_request" => null("sealed"),
+                // A sandbox's work is judged by the zone its own requests arrive in, not the one the live workspace's did.
+                "approval_request" => {
+                    null("sealed");
+                    null("zone");
+                }
                 "message_send" => null("pending"),
                 "plugin" => {
                     if let Some(Value::Object(config)) = row.get_mut("config") {

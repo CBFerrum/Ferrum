@@ -223,7 +223,7 @@ async fn app_usable(st: &crate::state::AppState, ctx: &ferrum_kernel::Ctx, app_i
     if st.shell.workspace(ctx.tenant).await?.slug != slug {
         return Ok(Err("This app belongs to another workspace. Sign in to that one to use it."));
     }
-    let apps = st.apps.shell_apps(ctx.tenant).await?;
+    let apps = st.apps.shell_apps_for(ctx).await?;
     let Some(app) = apps.iter().find(|a| a.id == app_id && a.isolated) else { return Ok(Err("This app is not installed in this workspace.")) };
     let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
     if !app.items("shell.app").any(|i| crate::shell::may_use(ctx, &kind, i)) {

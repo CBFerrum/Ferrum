@@ -12,7 +12,7 @@ use ferrum_kernel::shell::HostRoute;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::twofactor::code;
 use ferrum_kernel::workspace_move::MoveSource;
-use ferrum_kernel::zones::{Credential, Entry, Placed};
+use ferrum_kernel::zones::{Credential, Entry, Placed, Zones};
 use ferrum_kernel::{Db, DbConfig, Error, EventSink, HookRegistry, Kernel, KernelSettings, Mailer, Result, Trace};
 use ferrum_meta::Catalog;
 use serde_json::{Value, json};
@@ -512,6 +512,36 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     let (direct, spawned) = request(t).await;
     assert!(direct.is_ok() && spawned.is_ok(), "the live workspace's request");
     assert!(a.vetted_client(&hook_url, true, Duration::from_secs(1), "a task").await.is_ok(), "no workspace named: as for the installation");
+    // In a zone that limits staff to some apps, the sandbox still sends nothing, and says "sandbox": a request's own
+    // call, and a job it queued, which is done in that zone.
+    a.set_zones(Arc::new(Zones::parse(r#"{"desk": {"staff": ["contacts"]}}"#, "", "", "").unwrap()));
+    let in_desk = |tenant: Uuid| {
+        let a = a.clone();
+        let url = hook_url.clone();
+        Trace { correlation: format!("desk-{tenant}"), ..Default::default() }.scope(async move {
+            let entry = Arc::new(Entry {
+                zones: Arc::new(Zones::parse(r#"{"desk": {"staff": ["contacts"]}}"#, "", "", "").unwrap()),
+                placed: Placed::In("desk".into()),
+                address: "10.1.2.3".into(),
+                credential: Credential::Token,
+            });
+            let ctx = a.request_ctx(tenant, pat, None, "desk".into(), &entry).await.unwrap();
+            let mut tx = a.db.tenant_tx(tenant).await.unwrap();
+            ferrum_kernel::jobs::enqueue(&mut tx, tenant, Some(ctx.user), NewJob::new("test.call_out", json!({}))).await.unwrap();
+            tx.commit().await.unwrap();
+            a.vetted_client(&url, true, Duration::from_secs(1), "an app").await.map(|_| ())
+        })
+    };
+    assert!(matches!(in_desk(sb).await, Err(Error::Forbidden(m)) if m.contains(SANDBOX)), "a sandbox's request in a limited zone");
+    assert!(in_desk(t).await.is_ok(), "the live workspace's, in the same zone");
+    let zoned: Vec<(Option<String>,)> =
+        sql(&a, "select zone from job where tenant_id = $1 and kind = 'test.call_out' order by created_at desc limit 1", sb).await;
+    assert_eq!(zoned[0].0.as_deref(), Some("desk"), "the job is the zone's");
+    run(&a, "delete from job where tenant_id = $1 and kind = 'test.call_out'", t).await;
+    while a.run_jobs_once(5).await.unwrap() > 0 {}
+    let failed: Vec<(Option<String>,)> = sql(&a, "select last_error from job where tenant_id = $1 and zone = 'desk'", sb).await;
+    assert!(failed[0].0.as_deref().is_some_and(|m| m.contains(SANDBOX)), "the job in the zone fails saying sandbox: {failed:?}");
+    a.set_zones(Arc::new(Default::default()));
     // An app's upkeep goes through every workspace in turn (as Social, Bookings, Control and Edge do): a sandbox's
     // turn calls nothing outside, the live workspace's next turn still does.
     let turns = ferrum_kernel::sandbox::upkeep(async {

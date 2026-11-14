@@ -614,10 +614,27 @@ impl Kernel {
         // A process run lives in the source's workflow service as well as here: it does not travel.
         let runs: i64 =
             sqlx::query_scalar("select count(*) from logic_run where tenant_id = $1 and finished_at is null").bind(tenant).fetch_one(&mut *tx).await?;
+        // Waiting work asked for in a zone is done in it by name (crate::zones, level 2): a name these settings do not
+        // define would fail it here.
+        let zoned: Vec<String> = sqlx::query_scalar(
+            "select zone from job where tenant_id = $1 and status in ('queued', 'running') and zone is not null \
+             union select zone from outbox where tenant_id = $1 and processed_at is null and not dead and zone is not null \
+             union select zone from approval_request where tenant_id = $1 and status = 'pending' and zone is not null",
+        )
+        .bind(tenant)
+        .fetch_all(&mut *tx)
+        .await?;
         tx.commit().await?;
         if runs > 0 {
             return Err(Error::Conflict(format!(
                 "{runs} process runs of {slug} are open, and live in the source's workflow service too: let them end, or cancel them, first"
+            )));
+        }
+        let lacking = self.zones().lacking(&zoned);
+        if !lacking.is_empty() {
+            return Err(Error::Conflict(format!(
+                "work of {slug} waits to be done in the zones {}, which FERRUM_ZONES here does not define: define them here, or let that work finish first",
+                lacking.join(", ")
             )));
         }
         self.apps_here(source, tenant, slug).await?;

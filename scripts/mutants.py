@@ -138,11 +138,18 @@ REQUEST_LOG_UNIT = ("-p", "ferrum-server", "--lib", "request_log::tests")
 RULE_HIDE = ("-p", "ferrum-kernel", "--test", "rule_hide_it")
 PACKAGED_RULES = ("-p", "ferrum-kernel", "--test", "packaged_rules_it")
 APP_CALLS = ("-p", "ferrum-kernel", "--test", "app_calls_it")
+ZONES2 = ("-p", "ferrum-server", "--test", "zones2_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # Zones, level 2 (docs/operations.md, "Zones"): staff limited to some apps reach nothing else, nor does what acts for them.
+    ("zones2-entity-filter-gone", "crates/kernel/src/doc.rs", "        if ctx.sees(name) {\n            return Ok(ent.clone());", "        if true {\n            return Ok(ent.clone());", ZONES2),
+    ("zones2-worker-forgets-the-zone", "crates/kernel/src/jobs.rs", "k.load_ctx_in(self.tenant_id, user, self.zone.as_deref(), format!(", "k.load_ctx_in(self.tenant_id, user, None, format!(", ZONES2),
+    ("zones2-roles-kept", "crates/kernel/src/auth.rs", "by.is_empty() || by.iter().any(|p| seen.contains(p))", "true", ZONES2),
+    ("zones2-app-endpoint-open", "server/src/controllers/sites.rs", "    if !ctx.sees_package(&package) {", "    if false {", ZONES2),
+    ("zones2-effect-reaches-hidden", "crates/kernel/src/actions.rs", "perms: Arc::new(PermSet { admin: true, limit: ctx.perms.limit.clone(), ..Default::default() }),", "perms: Arc::new(PermSet { admin: true, ..Default::default() }),", ZONES2),
     # BD-29: a connection reaches only public addresses on its own hosts, within its limits, once per key, for whom it says.
     ('conn-private-address-called', 'crates/kernel/src/connections/mod.rs', 'if !open && addrs.iter().any(|a| blocked(a.ip())) {', 'if false && addrs.iter().any(|a| blocked(a.ip())) {', CONNECTIONS),
     ('conn-blocked-ranges-shrunk', 'crates/kernel/src/connections/mod.rs', 'if crate::outbox::is_private(ip) {\n        return true;\n    }', 'if crate::outbox::is_private(ip) {\n        return false;\n    }', CONNECTIONS_UNIT),
@@ -454,7 +461,7 @@ MUTANTS = [
     ("job-cancel-unheard", "crates/kernel/src/jobs.rs", "Ok(Some(true)) => return Ended::Cancelled,", "Ok(Some(true)) => {}", JOBS),
     ("job-internal-error-shown", "crates/kernel/src/jobs.rs", 'Error::Db(_) | Error::Internal(_) => "An internal error occurred".to_string(),', 'Error::Db(_) | Error::Internal(_) => e.to_string(),', JOBS),
     ("job-seen-by-anyone", "crates/kernel/src/jobs.rs", 'format!("{VIEW} and id = $2 and ($3 or created_by = $4)")', 'format!("{VIEW} and id = $2 and ($3 or created_by = $4 or true)")', JOBS),
-    ("job-runs-without-asking-rights", "crates/kernel/src/jobs.rs", 'k.load_ctx(self.tenant_id, user, None, format!("job-{}", self.id)).await.map_err(|e| match e {', 'Ok(Ctx::system(self.tenant_id, k.registry.schema(self.tenant_id).await?)).map_err(|e: Error| match e {', JOBS),
+    ("job-runs-without-asking-rights", "crates/kernel/src/jobs.rs", 'k.load_ctx_in(self.tenant_id, user, self.zone.as_deref(), format!("job-{}", self.id)).await.map_err(|e| match e {', 'Ok(Ctx::system(self.tenant_id, k.registry.schema(self.tenant_id).await?)).map_err(|e: Error| match e {', JOBS),
     ("bulk-pages-shift-under-it", "crates/kernel/src/export.rs", "ids.retain(|id| done.after.is_none_or(|after| *id > after));", "ids.truncate(MAX_BULK);", JOBS),
     ("bulk-restarts-from-nothing", "crates/kernel/src/export.rs", "ids.retain(|id| done.after.is_none_or(|after| *id > after));", "", JOBS),
     ("bulk-events-jump-the-queue", "crates/kernel/src/bulk.rs", "Trace::at_priority(PRIORITY_BULK)\n            .scope(async {", "Trace::default()\n            .scope(async {", JOBS),
@@ -738,7 +745,7 @@ MUTANTS = [
     ("approver-sees-hidden-fields", "crates/kernel/src/approvals.rs", "let mut doc = self.mask(ctx, &ent, full.clone());", "let mut doc = full.clone();", APPROVALS),
     ("document-approval-skipped", "crates/kernel/src/doc.rs", "let Some(a) = ent.document_approvals.get(&on) else {", "let Some(a) = ent.document_approvals.get(&on).filter(|_| false) else {", DOCUMENT_APPROVALS),
     ("document-approval-system-bypasses", "crates/kernel/src/doc.rs", "if ctx.is_system && a.policy.system_bypass {", "if ctx.is_system {", DOCUMENT_APPROVALS),
-    ("document-approval-completes-as-system", "crates/kernel/src/approvals.rs", "Some(u) => self.load_ctx(ctx.tenant, u, None, ctx.request_id.clone()).await,", "Some(_) => Ok(crate::actions::system(ctx)),", DOCUMENT_APPROVALS),
+    ("document-approval-completes-as-system", "crates/kernel/src/approvals.rs", "Some(u) => self.load_ctx_in(ctx.tenant, u, req.zone.as_deref(), ctx.request_id.clone()).await,", "Some(_) => Ok(crate::actions::system(ctx)),", DOCUMENT_APPROVALS),
     ("document-approval-lock-ignored", "crates/kernel/src/approvals.rs", "        if policy.lock {", "        if false {", DOCUMENT_APPROVALS),
     ("calendar-exception-ignored", "crates/logic/src/calendar.rs", "        match self.exceptions.get(&d) {\n            Some(x) if x.open => true,", "        match self.exceptions.get(&d).filter(|_| false) {\n            Some(x) if x.open => true,", LOGIC_UNIT),
     ("calendar-closed-hours-ignored", "crates/logic/src/calendar.rs", "                            if a > cur {\n                                out.push((cur, a));", "                            if a > cur && false {\n                                out.push((cur, a));", LOGIC_UNIT),
@@ -758,7 +765,7 @@ MUTANTS = [
     ("target-breach-through-the-rules", "crates/kernel/src/targets.rs", "match self.keep_targets_tx(&system, &mut tx, entity, record).await {", "match self.update(&system, entity, record, Doc::new(), None).await.map(|_| true) {", TARGETS),
     ("app-webhook-hears-what-changed", "crates/kernel/src/outbox.rs", "else $4 - 'doc' - 'was' end", "else $4 - 'doc' end", SERVICES),
     ("automation-old-unseen", "crates/kernel/src/automation.rs", "(&doc, &cel_doc, cel_old.as_ref())", "(&doc, &cel_doc, None)", TARGETS),
-    ("links-read-as-the-saver", "crates/kernel/src/links.rs", "let workspace = Ctx::system(ctx.tenant, ctx.schema.clone());", "let workspace = ctx.clone();", LINKS),
+    ("links-read-as-the-saver", "crates/kernel/src/links.rs", "let workspace = Ctx::system_for(ctx);", "let workspace = ctx.clone();", LINKS),
     ("links-keep-secrets", "crates/kernel/src/links.rs", "                    m.remove(&f.name);\n", "\n", LINKS),
     # BD-52: a link limited by another field of the record is checked when declared and on every save.
     ("link-from-unchecked", "crates/kernel/src/doc.rs", "if !same_value(&actual, want) {", "if false && !same_value(&actual, want) {", LINKS),

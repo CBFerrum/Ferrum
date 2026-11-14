@@ -44,6 +44,15 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 * A staff sign-in there fails as a wrong password does, before the password is read, without counting
   toward lockout, and in the time an unknown address takes. Refusals of signed-in credentials say only
   that the credential works elsewhere, and where.
+* Where a zone limits staff to some apps, their context is narrowed where it is built, on every request
+  (never cached by person): entities of other packages are not reached by them nor by anything that acts for
+  them (the system's contexts made from theirs, configured effects, `invoke`, automations on their changes,
+  `links.` and rule totals), and answer as missing ones. An entity whose package is not known, an app id that
+  cannot be resolved, a zone name a worker does not hold: hidden or refused, never shown. Jobs, events, process
+  runs and approvals carry the zone of the request that made them, and are done in it. Roles only other apps
+  ship are dropped from the context. Signed-in endpoints of other apps' packages, which run their own SQL, are
+  refused; reports are kept to the packages of the app that gives them. Nobody is an administrator there
+  unless the rule says so.
 * Zones do not protect against a compromised replica: it reaches the whole database.
 
 **Staff networks** ([operations](operations.md#staff-networks))

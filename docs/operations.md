@@ -1145,8 +1145,9 @@ outside people and machines get.
 
 | Key | Meaning | Default |
 |---|---|---|
-| `staff` | `all` or `none`. A list of apps is not in this build: the server refuses to start with one | `all` |
-| `admin` | Whether administrators are admitted. Only `true` with `staff: all` and `false` with `staff: none` are in this build | as `staff` |
+| `staff` | `all`, `none`, or a list of app ids (`["crm", "helpdesk"]`): staff are admitted, limited to those apps | `all` |
+| `admin` | Whether administrators are administrators here. `false` with `staff: all` admits them as members | `true` with `staff: all`, else `false` |
+| `custom` | With a list of apps: whether the workspace's own entities (made in the builder) are seen | `false` |
 | `scim` | In a zone that admits no staff, an identity provider's key (scope `scim`) is admitted all the same | `false` |
 | `networks` | Addresses that place a caller in this zone, `10.0.0.0/8` or `2001:db8::/32`. Two zones may not share an address | none |
 
@@ -1184,9 +1185,72 @@ the host's zone cannot be read, staff are refused.
 * Work with no request behind it (jobs, schedules, tasks) is not refused: it runs where background work
   runs.
 
+**What a zone with a list of apps does (level 2).** `{"staff": ["crm", "helpdesk"]}` admits staff, on every
+credential, but there they see and change only:
+* the records of the listed apps' packages, and of the packages those depend on (that is how the shared ones come
+  in: contacts, customers and suppliers, products, companies and currencies);
+* the workspace's own entities, only when the rule says `custom: true`;
+* what a person needs to work at all: their own account, devices and preferences, their notifications and mentions
+  about records they can read there, and the files of those records.
+
+Everything else is not there: a record of another app answers exactly as a record that does not exist, and its
+entity as one that is not installed. Its app's page is the plain page that names the staff address; its signed-in
+endpoints (`/api/app/{package}/…`, `/api/dav/{package}/…`) are refused with `403` `zone`; its reports, search
+results, record cards, exports, files, MCP tools, notifications, My work items and live updates are left out. A
+person's rights on what is seen are all theirs, as anywhere (named actions, shared records, own-record rules, field
+groups); a role that only another app ships is not theirs there, so code that checks a role by name sees it only
+where the app is. Nobody is an administrator there unless the rule says `admin: true`: the administration pages
+are the plain page and `/api/admin/…` is refused with `403` `zone`. An administrator is a member there, with their
+roles' rights. `{"staff": "all", "admin": false}` is the same with nothing hidden but administration.
+
+What staff set going in such a zone stays in it. Jobs, events (so the automations and sinks that act on them), runs
+of processes and approvals asked for there carry the zone's name, and the work done for them later is done in that
+zone, by name, against the settings of the replica that does it. A replica whose `FERRUM_ZONES` does not hold that
+name fails the work, saying so: keep the same `FERRUM_ZONES` on every pool. A configured button's effects, an
+automation, `invoke`, `links.` in expressions and rule totals act within the zone of the change that set them going:
+a record of an app the zone leaves out is not written, and reads as absent. A link field cannot be set to a record
+of such an app (one already there, left as it was, stays). An approval is decided only by someone who can read the
+record where they are, and completes with the requester's rights in the zone the request was made in. A socket
+keeps the zone it was opened in. Work with no request behind it (schedules, tasks, what an operator runs) is not
+limited.
+
+The apps named are resolved through their manifests (`app.yaml`, `packages`) when the server starts: an app this
+server does not know, a list that is empty, `custom` without a list, refuse to start. An app made available on the
+cluster later can be named after a restart.
+
+What it does not do: it does not split the database; a replica in any zone holds every app's code. Engine lookups
+that no person sees (an app's hooks reading prices or accounts to compute a total) are not limited. Fields another
+app adds to a seen entity, and the ids in link fields to unseen ones, are shown as they are. Notifications sent by mail or by phone
+push are not limited by zone: they leave the system for the person's own mailbox or device, wherever that is. If
+that matters for some kinds, an administrator turns those channels off for them (Administration → Messages, the
+kind's channels), so they arrive in the app only, where the zone holds.
+
+**Which packages are an app's.** Those in its `app.yaml` `packages`, and no others. A connector is an app of its
+own: CRM's connector with ERP is the app `crm-erp` (package `crm_erp`, which depends on `crm` and ERP's `selling`).
+In a zone with `{"staff": ["crm"]}` ERP's records are not there, so where the workspace has the connector, a save
+in CRM whose connector hook writes an ERP record is refused, saying it needs that app's records, which the zone
+leaves out (never "not installed"). Name the connector to let it work: `{"staff": ["crm", "crm-erp"]}` brings in
+what `crm_erp` depends on, ERP's selling and what that depends on, and so their records too.
+
+A two-pool example: sales staff work from anywhere, finance only from the office. One pool in zone `sales`
+(`{"staff": ["crm", "helpdesk"]}`) behind the public gateway, one in zone `office` (`{"staff": "all"}`) behind the
+private one. A salesperson's password taken from the internet opens CRM and Helpdesk and nothing of finance; the
+finance team works through the private address.
+
+```yaml
+zones:
+  sales: {staff: [crm, helpdesk]}
+  office: {staff: all}
+pools:
+  - {name: general, zone: office}
+  - {name: sales, zone: sales, background: "off", routes: [{gateway: public, hostnames: [sales.example.com]}]}
+```
+
 **Report mode first.** Start with `FERRUM_ZONE_MODE=report`: nothing is refused, and every staff
 credential that would have been is logged (person, workspace, zone, kind of credential, address; never a
-secret) and counted in `ferrum_zone_refusals_total{zone,mode,credential}` on `/metrics`. When the count
+secret) and counted in `ferrum_zone_refusals_total{zone,mode,credential}` on `/metrics`; in a zone with a list of apps nothing is
+hidden either, and `ferrum_zone_hidden_total{zone,mode,what}` counts what would have been (`entity`: each check that
+found another app's entity; `admin`: an administrator admitted as one). When the count
 holds only what you expect, switch to `enforce`. The zone is recorded on each browser session and shown
 in the list of a person's devices.
 
@@ -1556,7 +1620,9 @@ referential triggers off for as long as it takes, as for `extract_tenant`
 (`GRANT SET ON PARAMETER session_replication_role TO ferrum`, taken back afterwards). The workspace has no
 process run open (they live in the source's workflow service). A workspace whose erased people's opt-outs are
 kept (as digests under the source's key) needs that key in the target's `FERRUM_RETIRED_SECRET_KEYS` first,
-or the move refuses: without it those people could be sent marketing again.
+or the move refuses: without it those people could be sent marketing again. Waiting work asked for in a zone
+that limits staff (jobs, events, approvals) is done in that zone by name: the move refuses while the target's
+`FERRUM_ZONES` does not define each such zone, until you define it there or let that work finish first.
 
 **Running it.** Run it where the workspace is going, with the source given in the environment (never on the
 command line; none of it is printed):

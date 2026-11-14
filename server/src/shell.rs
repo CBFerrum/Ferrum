@@ -925,6 +925,15 @@ pub fn may_use(ctx: &Ctx, kind: &str, item: &Value) -> bool {
     }
 }
 
+/// Whether `ctx`'s zone shows app `app` (crate::zones, level 2): every app where it limits nothing; else an app
+/// the rule names, or one whose packages are all among those it shows (a shared one, such as contacts). An app with
+/// no packages of its own is not shown unless named.
+pub fn app_seen(ctx: &Ctx, app: &ShellApp) -> bool {
+    let Some(limit) = ctx.perms.limit.as_ref().filter(|l| !l.report) else { return true };
+    let named = ctx.zone.as_ref().and_then(|e| e.limit()).and_then(|(_, r)| r.apps.as_ref()).is_some_and(|apps| apps.contains(&app.id));
+    named || (!app.manifest.packages.is_empty() && app.manifest.packages.iter().all(|p| limit.packages.contains(p)))
+}
+
 /// An enabled app as the shell sees it.
 #[derive(Clone)]
 pub struct ShellApp {
@@ -2253,7 +2262,7 @@ mod tests {
             ctx.is_admin = false;
             let level = |yes: bool| if yes { Access::All } else { Access::None };
             let entities = grants.iter().map(|(e, r, c)| (e.to_string(), EntityAccess { read: level(*r), create: level(*c), ..Default::default() })).collect();
-            ctx.perms = Arc::new(PermSet { admin: false, entities });
+            ctx.perms = Arc::new(PermSet { admin: false, entities, ..Default::default() });
             ctx
         };
         // A reader of one item gets the tile; create rows only where they may create.

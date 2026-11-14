@@ -287,6 +287,11 @@ impl FromRequestParts<AppContext> for Auth {
         let st = app_state(state)?;
         let place = parts.extensions.get::<crate::state::Place>().cloned();
         let (mut ctx, _, token_app, records) = caller_with_app(&st, &parts.method, &parts.headers, place.as_ref()).await?;
+        // Administration where the zone keeps administrators out (crate::zones, level 2): refused as level 1 refuses,
+        // naming where the whole workspace opens. Nobody is an administrator there, so nothing else is lost.
+        if parts.uri.path().starts_with("/api/admin/") && !ctx.is_admin && ctx.zone.as_ref().is_some_and(|e| e.keeps_admins_out()) {
+            return Err(ApiError(st.kernel.zone_refusal(ctx.tenant, &st.zones).await));
+        }
         // A records key: its owner's rights narrowed to what it names, on records and metadata only.
         if let Some(grants) = records {
             if !records_may_call(parts.uri.path()) {

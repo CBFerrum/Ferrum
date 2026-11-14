@@ -277,14 +277,15 @@ impl JobHandler for ExportJob {
 
 /// One attempt at a workspace's export.
 async fn make(k: &Kernel, job: &Job, ctx: &Ctx) -> Result<Value> {
-    // All of it, whatever record scopes the administrator happens to have.
-    let all = Ctx::system(ctx.tenant, ctx.schema.clone());
+    // All of it, whatever record scopes the administrator happens to have; within the zone they asked from (an
+    // administrator admitted where a zone limits staff to some apps exports those apps').
+    let all = Ctx::system_for(ctx);
     let erasures = k.last_erasure(ctx.tenant).await?;
     let mut parts = Parts::new(k, ctx, job.id);
     let mut entities = Vec::new();
     let total = all.schema.entities.len();
     for (i, (name, ent)) in all.schema.entities.iter().enumerate() {
-        if ent.def.kind == EntityKind::Child || ent.table.is_empty() {
+        if ent.def.kind == EntityKind::Child || ent.table.is_empty() || !all.sees(name) {
             continue;
         }
         let (mut file, mut count, mut cursor) = (0, 0usize, None::<String>);

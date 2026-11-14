@@ -145,6 +145,11 @@ async fn app(
     let st = app_state(&app)?;
     let site = st.kernel.hooks.site(&package).filter(|_| ctx.schema.packages.contains(&package)).cloned();
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
+    // The signed-in endpoints of a package the caller's zone leaves out (crate::zones, level 2) run its own SQL, which
+    // no narrowing reaches: refused outright, naming where the whole workspace opens. Its public ones are untouched.
+    if !ctx.sees_package(&package) {
+        return Err(ApiError(st.kernel.zone_refusal(ctx.tenant, &st.zones).await));
+    }
     let tenant = ctx.tenant;
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let req = request(tenant, Some(ctx), method, &uri, path, query, &headers, body)?;

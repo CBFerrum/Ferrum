@@ -159,7 +159,7 @@ fn guest(ctx_schema: Arc<ferrum_meta::Schema>, tenant: Uuid, entity: &str, recor
     ctx.email = String::new();
     ctx.full_name = format!("Guest by link{}", recipient.map(|r| format!(" ({r})")).unwrap_or_default());
     ctx.request_id = format!("link-{}", Uuid::now_v7());
-    ctx.perms = Arc::new(PermSet { admin: false, entities: BTreeMap::from([(entity.to_string(), access)]) });
+    ctx.perms = Arc::new(PermSet { admin: false, entities: BTreeMap::from([(entity.to_string(), access)]), ..Default::default() });
     // Its reads reach this record of the entity and no other.
     ctx.scopes = BTreeMap::from([(entity.to_string(), vec![record])]);
     ctx

@@ -51,6 +51,10 @@ pub struct Trace {
     /// The workspaces this work has served so far (a request's context, a workspace's transaction), shared with the
     /// tasks it spawns: what the kernel's outbound client asks about (crate::sandbox).
     pub serving: Arc<std::sync::Mutex<Vec<Uuid>>>,
+    /// The zone of the request behind this work, when the zone narrows staff (crate::zones, level 2):
+    /// set once the request's context is built ([`Trace::mark_zone`]), and written on the jobs and
+    /// events it queues (`ferrum.zone`), so work done later for it is done in that zone.
+    pub zone: Arc<std::sync::OnceLock<String>>,
 }
 
 tokio::task_local! {
@@ -96,6 +100,21 @@ impl Trace {
         TRACE.try_with(|t| t.serving.lock().map(|w| w.clone()).unwrap_or_else(|_| vec![Uuid::nil()])).ok().filter(|w| !w.is_empty())
     }
 
+    /// Records the zone the current request's context was built in (the first one holds).
+    pub fn mark_zone(zone: &str) {
+        let _ = TRACE.try_with(|t| t.zone.set(zone.to_string()));
+    }
+
+    /// The zone of the current work (none: inside).
+    pub fn zone() -> Option<String> {
+        TRACE.try_with(|t| t.zone.get().cloned()).ok().flatten()
+    }
+
+    /// A zone for a trace of work queued in one ([`Trace::zone`]).
+    pub fn in_zone(zone: Option<String>) -> Arc<std::sync::OnceLock<String>> {
+        Arc::new(zone.map(std::sync::OnceLock::from).unwrap_or_default())
+    }
+
     /// The current trace, with what it sets off at `priority`.
     pub fn at_priority(priority: i16) -> Trace {
         Trace { priority: Some(priority), ..TRACE.try_with(Trace::clone).unwrap_or_default() }
@@ -108,11 +127,13 @@ impl Trace {
 /// `$5` is moving to another installation (`ferrum_workspace_frozen`, asked when `frozen` is set: workspace_move.rs).
 fn carrying(settings: &str, moves: bool, frozen: bool) -> Query<'static, Postgres, PgArguments> {
     let t = TRACE.try_with(Trace::clone).unwrap_or_default();
-    // The depth is a number, written in place, so the settings' parameters still start at $5.
+    // The depth is a number and the zone a name of lowercase letters, digits and dashes (crate::zones checks them; any
+    // other is left out), written in place, so the settings' parameters still start at $5.
+    let zone = t.zone.get().filter(|z| z.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')).map_or("", String::as_str);
     sqlx::query(AssertSqlSafe(format!(
         "select set_config('ferrum.correlation', $1, true), set_config('ferrum.causation', $2, true), \
          set_config('ferrum.traceparent', $3, true), set_config('ferrum.priority', $4, true), \
-         set_config('ferrum.depth', '{}', true), set_config('lock_timeout', '{LOCK_TIMEOUT}', true), \
+         set_config('ferrum.depth', '{}', true), set_config('ferrum.zone', '{zone}', true), set_config('lock_timeout', '{LOCK_TIMEOUT}', true), \
          set_config('idle_in_transaction_session_timeout', '{IDLE_IN_TRANSACTION}', true), {settings}, {} as moving, {} as frozen",
         t.depth,
         if moves { "ferrum_moving()" } else { "false" },

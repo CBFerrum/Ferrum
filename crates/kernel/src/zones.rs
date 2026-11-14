@@ -1,6 +1,8 @@
 //! Zones (docs/operations.md, "Zones"; docs/plan/topology.md, D4): a named place a request arrives
 //! in, with a rule for who is admitted there. Level 1: a zone whose rule is `staff: none` admits no
-//! staff (accounts of kind `member` or `support`, administrators included) on any credential.
+//! staff (accounts of kind `member` or `support`, administrators included) on any credential. Level
+//! 2: a zone whose rule names apps (`staff: ["crm"]`) or keeps administrators out (`admin: false`)
+//! admits staff with their rights narrowed there ([`Rule::limited`], applied in `Kernel::request_ctx`).
 //!
 //! The settings are read and checked once, at start ([`Zones::parse`]); a request's zone is decided
 //! by [`Zones::settled`] and [`Zones::place`], in this order: the replica's pin; else the zone of the
@@ -8,7 +10,7 @@
 //! default; else none (everyone is admitted, as without zones). Nothing the client sends decides it
 //! but its address, as the server's `client_ip` derives it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
@@ -97,12 +99,26 @@ fn masked(ip: IpAddr, prefix: u8) -> IpAddr {
 /// A zone's rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
-    /// `staff: all` (true) or `staff: none` (false). A list of apps is level 2, not in this build.
+    /// Whether staff are admitted at all (`staff: none` is false).
     pub staff: bool,
+    /// `staff: [app, …]`: the apps staff are limited to (level 2). `None`: every app.
+    pub apps: Option<Vec<String>>,
+    /// The packages of `apps`, from the apps' manifests ([`Zones::resolve`]). Until resolved: none,
+    /// so a rule that names apps never shows more than it says.
+    pub packages: BTreeSet<String>,
     pub admin: bool,
+    /// With `apps`: whether the workspace's own entities (made in the builder, of no package) are seen.
+    pub custom: bool,
     /// A key of scope `scim` is admitted in a zone that admits no staff.
     pub scim: bool,
     pub networks: Vec<Net>,
+}
+
+impl Rule {
+    /// Staff are admitted but narrowed here: limited to some apps, or never administrators.
+    pub fn limited(&self) -> bool {
+        self.staff && (self.apps.is_some() || !self.admin)
+    }
 }
 
 /// The zone settings, checked.
@@ -147,6 +163,8 @@ pub enum Credential {
     Socket,
     /// A sign-in about to open a session or hand out a token.
     SignIn,
+    /// Work a request queued (a job, an event), done later in the zone the request was in.
+    Queued,
 }
 
 impl Credential {
@@ -161,6 +179,7 @@ impl Credential {
             Credential::OAuth => "oauth",
             Credential::Socket => "socket",
             Credential::SignIn => "sign_in",
+            Credential::Queued => "queued",
         }
     }
 }
@@ -198,6 +217,22 @@ impl Entry {
         !self.admits_staff() && self.zones.mode == Mode::Enforce
     }
 
+    /// Whether this zone keeps administrators out (level 2, enforced): administration is refused here.
+    pub fn keeps_admins_out(&self) -> bool {
+        self.zones.mode == Mode::Enforce && self.limit().is_some_and(|(_, r)| !r.admin)
+    }
+
+    /// The zone's name, when it narrows staff (level 2): what work queued here is marked with.
+    pub fn marked(&self) -> Option<String> {
+        self.limit().map(|(n, _)| n.to_string())
+    }
+
+    /// The rule of the zone, when it narrows staff admitted here (level 2).
+    pub fn limit(&self) -> Option<(&str, &Rule)> {
+        let name = self.name()?;
+        self.zones.rules.get(name).filter(|r| r.limited()).map(|r| (name, r))
+    }
+
     /// The zone as the refusals metric and the log name it.
     pub fn label(&self) -> &str {
         match &self.placed {
@@ -207,8 +242,6 @@ impl Entry {
         }
     }
 }
-
-const LEVEL_2: &str = "limits staff to some apps or keeps administrators out, which is level 2 of zones, and level 2 is not in this build";
 
 impl Zones {
     /// `FERRUM_ZONES` (JSON), `FERRUM_ZONE`, `FERRUM_ZONE_DEFAULT` and `FERRUM_ZONE_MODE`, checked
@@ -235,28 +268,45 @@ impl Zones {
                 return Err(named("is not a name: use lowercase letters, digits and dashes, up to 63"));
             }
             let serde_json::Value::Object(rule) = rule else { return Err(named("has a rule that is not an object")) };
-            if let Some(k) = rule.keys().find(|k| !["staff", "admin", "scim", "networks"].contains(&k.as_str())) {
-                return Err(named(&format!("has {k:?}, which a rule does not have (staff, admin, scim, networks)")));
+            if let Some(k) = rule.keys().find(|k| !["staff", "admin", "custom", "scim", "networks"].contains(&k.as_str())) {
+                return Err(named(&format!("has {k:?}, which a rule does not have (staff, admin, custom, scim, networks)")));
             }
-            let staff = match rule.get("staff") {
-                None => true,
-                Some(serde_json::Value::String(s)) if s == "all" => true,
-                Some(serde_json::Value::String(s)) if s == "none" => false,
-                Some(serde_json::Value::Array(_)) => return Err(named(LEVEL_2)),
-                Some(_) => return Err(named("has staff that is neither \"all\" nor \"none\"")),
+            let (staff, apps) = match rule.get("staff") {
+                None => (true, None),
+                Some(serde_json::Value::String(s)) if s == "all" => (true, None),
+                Some(serde_json::Value::String(s)) if s == "none" => (false, None),
+                Some(serde_json::Value::Array(list)) => {
+                    let mut apps = vec![];
+                    for a in list {
+                        let id = a.as_str().unwrap_or_default();
+                        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+                            return Err(named(&format!("has {a} in staff, which is not an app's id: write ids like \"crm\"")));
+                        }
+                        if !apps.contains(&id.to_string()) {
+                            apps.push(id.to_string());
+                        }
+                    }
+                    if apps.is_empty() {
+                        return Err(named("has an empty list of apps in staff: write \"none\" to admit no staff"));
+                    }
+                    (true, Some(apps))
+                }
+                Some(_) => return Err(named("has staff that is neither \"all\", \"none\" nor a list of apps")),
             };
             let flag = |key: &str| match rule.get(key) {
                 None => Ok(None),
                 Some(serde_json::Value::Bool(b)) => Ok(Some(*b)),
                 Some(_) => Err(named(&format!("has {key} that is not true or false"))),
             };
-            let admin = flag("admin")?.unwrap_or(staff);
-            if staff && !admin {
-                return Err(named(LEVEL_2));
-            }
+            let admin = flag("admin")?.unwrap_or(staff && apps.is_none());
             if !staff && admin {
                 return Err(named("admits administrators but no staff, and administrators are staff"));
             }
+            let custom = flag("custom")?;
+            if custom.is_some() && apps.is_none() {
+                return Err(named("has custom, which only a rule with a list of apps in staff has"));
+            }
+            let custom = custom.unwrap_or(false);
             let scim = flag("scim")?.unwrap_or(false);
             let networks = match rule.get("networks") {
                 None => vec![],
@@ -272,7 +322,7 @@ impl Zones {
                 }
                 Some(_) => return Err(named("has networks that are not a list")),
             };
-            rules.insert(name, Rule { staff, admin, scim, networks });
+            rules.insert(name, Rule { staff, apps, packages: BTreeSet::new(), admin, custom, scim, networks });
         }
         // Two zones holding one address would make the order of the JSON matter; it does not.
         for (a, ra) in &rules {
@@ -296,6 +346,38 @@ impl Zones {
         Ok(Zones { rules, pin, default, mode })
     }
 
+    /// Gives each rule that names apps their packages (`packages_of`: an app id → its manifest's
+    /// `packages`, `None` for an app this server does not know). An unknown app, or one with no
+    /// packages, refuses to start: a rule must never quietly mean less or more than it says.
+    pub fn resolve(&mut self, packages_of: impl Fn(&str) -> Option<Vec<String>>) -> Result<(), String> {
+        for (name, rule) in &mut self.rules {
+            let Some(apps) = &rule.apps else { continue };
+            let mut packages = BTreeSet::new();
+            for app in apps {
+                match packages_of(app) {
+                    None => return Err(format!("FERRUM_ZONES: zone {name:?} names the app {app:?}, which this server does not know")),
+                    Some(p) if p.is_empty() => {
+                        return Err(format!("FERRUM_ZONES: zone {name:?} names the app {app:?}, which has no packages a zone can limit staff to"));
+                    }
+                    Some(p) => packages.extend(p),
+                }
+            }
+            rule.packages = packages;
+        }
+        Ok(())
+    }
+
+    /// Of `names` (zones that queued work carries), those these settings do not define, each once.
+    pub fn lacking(&self, names: &[String]) -> Vec<String> {
+        let out: BTreeSet<&String> = names.iter().filter(|n| !self.rules.contains_key(*n)).collect();
+        out.into_iter().cloned().collect()
+    }
+
+    /// The app ids the rules name.
+    pub fn app_ids(&self) -> BTreeSet<String> {
+        self.rules.values().filter_map(|r| r.apps.as_ref()).flatten().cloned().collect()
+    }
+
     /// No zones: nothing behaves differently.
     pub fn is_off(&self) -> bool {
         self.rules.is_empty()
@@ -305,8 +387,13 @@ impl Zones {
         self.rules.get(name)
     }
 
-    /// The zones that admit staff (where a refused person is sent).
+    /// The zones that admit staff (where a refused person is sent): those that admit them wholly when
+    /// there are any, else those that admit them limited.
     pub fn admitting_staff(&self) -> Vec<String> {
+        let wholly: Vec<String> = self.rules.iter().filter(|(_, r)| r.staff && !r.limited()).map(|(n, _)| n.clone()).collect();
+        if !wholly.is_empty() {
+            return wholly;
+        }
         self.rules.iter().filter(|(_, r)| r.staff).map(|(n, _)| n.clone()).collect()
     }
 
@@ -373,6 +460,41 @@ pub fn count_refusal(entry: &Entry, tenant: uuid::Uuid, user: uuid::Uuid) {
     );
 }
 
+/// What level 2 kept from staff (`ferrum_zone_hidden_total`), by zone, mode and what: `admin` (an
+/// administrator admitted as a member), `entity` (in report mode only, each check that would have
+/// found an entity of an app the zone leaves out).
+static HIDDEN: Mutex<BTreeMap<(String, &'static str, &'static str), u64>> = Mutex::new(BTreeMap::new());
+
+pub fn count_hidden(zone: &str, mode: &'static str, what: &'static str) {
+    *HIDDEN.lock().unwrap_or_else(|e| e.into_inner()).entry((zone.to_string(), mode, what)).or_default() += 1;
+}
+
+/// What level 2 kept from staff so far: `(zone, mode, what, count)`.
+pub fn hidden() -> Vec<(String, &'static str, &'static str, u64)> {
+    HIDDEN.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|((z, m, w), n)| (z.clone(), *m, *w, *n)).collect()
+}
+
+/// The entities a staff member reaches in a zone whose rule names apps: those of the apps'
+/// packages, of every package they depend on (shared ones such as contacts come in this way) and,
+/// with `custom: true`, the workspace's own. A package the workspace has not installed has no
+/// entities; an entity of a package outside these is left out, whoever it was made by.
+pub fn entities_seen(rule: &Rule, schema: &ferrum_meta::Schema) -> BTreeSet<String> {
+    let packages = packages_seen(rule, schema);
+    schema.entities.iter().filter(|(_, e)| if e.custom { rule.custom } else { packages.contains(e.package.as_str()) }).map(|(n, _)| n.clone()).collect()
+}
+
+/// The rule's packages and every package they depend on, through the workspace's schema.
+pub fn packages_seen<'a>(rule: &'a Rule, schema: &'a ferrum_meta::Schema) -> BTreeSet<&'a str> {
+    let mut seen = BTreeSet::new();
+    let mut todo: Vec<&str> = rule.packages.iter().map(String::as_str).collect();
+    while let Some(p) = todo.pop() {
+        if seen.insert(p) {
+            todo.extend(schema.package_depends.get(p).into_iter().flatten().map(String::as_str));
+        }
+    }
+    seen
+}
+
 /// The refusals counted so far: `(zone, mode, credential, count)`.
 pub fn refusals() -> Vec<(String, &'static str, &'static str, u64)> {
     REFUSALS.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|((z, m, c), n)| (z.clone(), *m, *c, *n)).collect()
@@ -412,7 +534,10 @@ mod tests {
         assert!(Zones::parse("{}", "", "", "").unwrap().is_off());
         let z = Zones::parse(r#"{"public": {"staff": "none", "scim": true}, "office": {"networks": ["10.0.0.0/8"]}}"#, "public", "office", "report").unwrap();
         assert_eq!(z.mode, Mode::Report);
-        assert_eq!(z.rule("public"), Some(&Rule { staff: false, admin: false, scim: true, networks: vec![] }));
+        assert_eq!(
+            z.rule("public"),
+            Some(&Rule { staff: false, apps: None, packages: BTreeSet::new(), admin: false, custom: false, scim: true, networks: vec![] })
+        );
         assert_eq!(z.rule("office").map(|r| (r.staff, r.admin, r.scim)), Some((true, true, false)), "staff all, admin follows it, scim off");
         let refused = |zones: &str, pin: &str, default: &str, mode: &str, says: &str| {
             let e = Zones::parse(zones, pin, default, mode).expect_err(zones);
@@ -424,8 +549,12 @@ mod tests {
         refused(r#"{"P": {}}"#, "", "", "", "not a name");
         refused(r#"{"p": 3}"#, "", "", "", "not an object");
         refused(r#"{"p": {"staff": "some"}}"#, "", "", "", "neither");
-        refused(r#"{"p": {"staff": ["erp"]}}"#, "", "", "", "level 2 is not in this build");
-        refused(r#"{"p": {"staff": "all", "admin": false}}"#, "", "", "", "level 2 is not in this build");
+        refused(r#"{"p": {"staff": []}}"#, "", "", "", "empty list");
+        refused(r#"{"p": {"staff": ["CRM"]}}"#, "", "", "", "not an app's id");
+        refused(r#"{"p": {"staff": [3]}}"#, "", "", "", "not an app's id");
+        refused(r#"{"p": {"staff": "none", "custom": true}}"#, "", "", "", "only a rule with a list");
+        refused(r#"{"p": {"staff": "all", "custom": false}}"#, "", "", "", "only a rule with a list");
+        refused(r#"{"p": {"staff": ["crm"], "custom": "yes"}}"#, "", "", "", "true or false");
         refused(r#"{"p": {"staff": "none", "admin": true}}"#, "", "", "", "administrators are staff");
         refused(r#"{"p": {"scim": "yes"}}"#, "", "", "", "true or false");
         refused(r#"{"p": {"networks": ["10.0.0/8"]}}"#, "", "", "", "not a network");
@@ -437,6 +566,42 @@ mod tests {
         refused(r#"{"p": {}}"#, "", "q", "", "FERRUM_ZONE_DEFAULT is \"q\"");
         refused("", "p", "", "", "FERRUM_ZONE is \"p\"");
         refused(r#"{"p": {}}"#, "", "", "audit", "enforce or report");
+    }
+
+    #[test]
+    fn level_2_rules_name_apps_and_resolve_to_their_packages() {
+        let mut z = Zones::parse(
+            r#"{"sales": {"staff": ["crm", "helpdesk", "crm"]}, "back": {"staff": "all", "admin": false}, "full": {}, "own": {"staff": ["crm"], "admin": true, "custom": true}}"#,
+            "",
+            "",
+            "",
+        )
+        .unwrap();
+        let sales = z.rule("sales").unwrap();
+        assert_eq!(sales.apps, Some(vec!["crm".to_string(), "helpdesk".to_string()]), "each app once");
+        assert!(!sales.admin && !sales.custom && sales.limited(), "a list: no administrators, no custom entities, unless said");
+        assert!(z.rule("back").unwrap().limited() && z.rule("back").unwrap().apps.is_none(), "all, without administrators");
+        assert!(!z.rule("full").unwrap().limited());
+        let own = z.rule("own").unwrap();
+        assert!(own.admin && own.custom && own.limited());
+        assert!(sales.packages.is_empty(), "nothing until resolved: fail closed");
+        assert_eq!(z.app_ids(), BTreeSet::from(["crm".to_string(), "helpdesk".to_string()]));
+        let known = |app: &str| match app {
+            "crm" => Some(vec!["crm".to_string()]),
+            "helpdesk" => Some(vec!["helpdesk".to_string(), "helpdesk_extra".to_string()]),
+            "empty" => Some(vec![]),
+            _ => None,
+        };
+        z.resolve(known).unwrap();
+        assert_eq!(z.rule("sales").unwrap().packages, BTreeSet::from(["crm", "helpdesk", "helpdesk_extra"].map(String::from)));
+        let mut unknown = Zones::parse(r#"{"p": {"staff": ["nope"]}}"#, "", "", "").unwrap();
+        assert!(unknown.resolve(known).unwrap_err().contains("does not know"));
+        let mut empty = Zones::parse(r#"{"p": {"staff": ["empty"]}}"#, "", "", "").unwrap();
+        assert!(empty.resolve(known).unwrap_err().contains("no packages"));
+        let entry =
+            |placed: &str| Entry { zones: Arc::new(z.clone()), placed: Placed::In(placed.into()), address: String::new(), credential: Credential::Cookie };
+        assert!(entry("sales").admits_staff() && entry("sales").limit().is_some(), "admitted, and limited");
+        assert!(entry("full").limit().is_none());
     }
 
     #[test]

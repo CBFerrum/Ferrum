@@ -25,7 +25,8 @@ pub fn elevated(ctx: &Ctx) -> Ctx {
     let mut c = ctx.clone();
     c.is_system = true;
     c.is_admin = true;
-    c.perms = std::sync::Arc::new(ferrum_kernel::PermSet { admin: true, entities: Default::default() });
+    // Within the zone the caller is limited to (level 2): what a person sets going reaches no more than they do.
+    c.perms = std::sync::Arc::new(ferrum_kernel::PermSet { admin: true, limit: ctx.perms.limit.clone(), ..Default::default() });
     c
 }
 

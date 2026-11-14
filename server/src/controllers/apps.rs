@@ -243,7 +243,7 @@ async fn set_dev_ui(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Pa
     dev_ui_allowed(&st, &ctx)?;
     let origin = crate::shell::dev_origin(&req.url)
         .ok_or_else(|| ApiError(Error::field("url", "names a development server on this machine, such as http://localhost:5173")))?;
-    if !st.apps.shell_apps(ctx.tenant).await?.iter().any(|a| a.id == id && a.manifest.ui.is_some()) {
+    if !st.apps.shell_apps_for(&ctx).await?.iter().any(|a| a.id == id && a.manifest.ui.is_some()) {
         return Err(ApiError(Error::NotFound(format!("this workspace has no app {id} with an interface of its own"))));
     }
     st.shell.set_dev_ui(ctx.tenant, &id, Some(origin.clone()));
