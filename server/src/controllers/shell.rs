@@ -125,14 +125,19 @@ async fn auth_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)
     Ok(res)
 }
 
+/// Where a moved address leads: the new host as this request reaches the server, so a server on a port of its own
+/// (a development server, or an installation not on 443) redirects to that port and not to the default one.
+fn moved_origin(st: &AppState, to: &str, headers: &HeaderMap) -> String {
+    st.shell.origin_of(to, headers).unwrap_or_else(|| format!("{}://{to}", if st.shell.secure { "https" } else { "http" }))
+}
+
 /// Who is asking, for a page: the person of the browser session in the cookie, on a host that
 /// serves the shell. `Err` is the response to send instead (sign-in, a redirect, a refusal).
 async fn person(st: &AppState, headers: &HeaderMap, uri: &Uri) -> Result<(Ctx, Option<Uuid>, Place), Response> {
     let place = st.shell.place(headers).await.map_err(|e| ApiError(e).into_response())?;
     match &place {
         Place::Moved(Some(to)) => {
-            let scheme = if st.shell.secure { "https" } else { "http" };
-            return Err(Redirect::permanent(&format!("{scheme}://{to}{}", path_and_query(uri))).into_response());
+            return Err(Redirect::permanent(&format!("{}{}", moved_origin(st, to, headers), path_and_query(uri))).into_response());
         }
         Place::Moved(None) => {
             return Err(status_page(StatusCode::GONE, "This workspace has moved", "This address no longer leads to a workspace.", &[], None));
@@ -657,8 +662,7 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
     match st.shell.place(headers).await? {
         Place::Workspace(t) if t != tenant => return Ok(gone()),
         Place::Moved(Some(to)) => {
-            let scheme = if st.shell.secure { "https" } else { "http" };
-            return Ok(Redirect::permanent(&format!("{scheme}://{to}{}", path_and_query(uri))).into_response());
+            return Ok(Redirect::permanent(&format!("{}{}", moved_origin(st, &to, headers), path_and_query(uri))).into_response());
         }
         Place::Moved(None) | Place::Portal(_) | Place::Site(..) | Place::Accounts | Place::Hooks | Place::Nowhere => return Ok(gone()),
         Place::Workspace(_) | Place::Any => {}
@@ -1167,8 +1171,7 @@ async fn login(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, Stri
     let next = shell::safe_next(query(q, "next").unwrap_or("/"));
     let place = st.shell.place(headers).await?;
     if let Place::Moved(Some(to)) = &place {
-        let scheme = if st.shell.secure { "https" } else { "http" };
-        return Ok(Redirect::permanent(&format!("{scheme}://{to}{}", path_and_query(uri))).into_response());
+        return Ok(Redirect::permanent(&format!("{}{}", moved_origin(st, to, headers), path_and_query(uri))).into_response());
     }
     if matches!(place, Place::Hooks | Place::Nowhere | Place::Site(..) | Place::Moved(None)) {
         return Ok(nowhere());

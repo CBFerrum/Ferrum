@@ -283,6 +283,9 @@ async fn scenario() {
     assert_eq!(bootstrap(&html)["host"]["leaving"]["to"], "http://erp2.ops.internal", "the notice points at the other");
     let (status, location, ..) = call(&router, Method::GET, "erp.ops.internal", "/crm/deals?x=1", None, None, None).await;
     assert_eq!((status, location.as_str()), (StatusCode::PERMANENT_REDIRECT, "http://erp2.ops.internal/crm/deals?x=1"), "a visitor goes on");
+    // On a port of its own (a development server, an installation not on 443) the redirect keeps the port.
+    let (status, location, ..) = call(&router, Method::GET, "erp.ops.internal:8443", "/crm/deals?x=1", None, None, None).await;
+    assert_eq!((status, location.as_str()), (StatusCode::PERMANENT_REDIRECT, "http://erp2.ops.internal:8443/crm/deals?x=1"), "and keeps the port");
     // On purpose, by the task: the other way round.
     let vars = loco_rs::task::Vars::from_cli_args(vec![
         ("tenant".into(), "ops".into()),
