@@ -361,7 +361,7 @@ fn metadata_must_let_responses_be_checked() {
 #[test]
 fn the_request_and_our_metadata_say_where_answers_go() {
     let k = idp();
-    let url = request_url(&SP, &metadata(&k), REQUEST, "relay-1").unwrap();
+    let url = request_url(&SP, &metadata(&k), REQUEST, "relay-1", false).unwrap();
     assert!(url.starts_with("https://idp.example.test/sso?"));
     let (xml, relay) = TestIdp::request(&url);
     assert_eq!((relay.as_str(), TestIdp::request_id(&url).as_str()), ("relay-1", REQUEST));
@@ -383,7 +383,7 @@ fn xmlsec_works_here() {
 fn with_its_own_key_a_service_signs_its_requests() {
     let (k, key, other) = (idp(), new_sp_key("ferrum test").unwrap(), new_sp_key("someone else").unwrap());
     let sp = Sp { key: Some(&key), ..SP };
-    let url = url::Url::parse(&request_url(&sp, &metadata(&k), REQUEST, "relay-1").unwrap()).unwrap();
+    let url = url::Url::parse(&request_url(&sp, &metadata(&k), REQUEST, "relay-1", false).unwrap()).unwrap();
     let checks =
         |key: &SpKey| UrlVerifier::from_x509(&CertificateDer::from(key.certificate_der.clone())).unwrap().verify_signed_request_url(&url).unwrap_or(false);
     assert!(checks(&key), "{url}");

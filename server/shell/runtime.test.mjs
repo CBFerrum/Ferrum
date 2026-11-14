@@ -8,9 +8,10 @@ import { readFileSync } from "node:fs";
 const src = readFileSync(new URL("./runtime.js", import.meta.url), "utf8");
 const block = src.slice(src.indexOf("// ── Pure helpers"), src.indexOf("// ── end of the pure helpers"));
 assert.ok(block.length > 100, "the block is where the markers say");
-const { originStep, stillToSend, movedUrl, titleMarked, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou } = new Function(
-  `${block}; return { originStep, stillToSend, movedUrl, titleMarked, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou };`,
-)();
+const { originStep, stillToSend, movedUrl, titleMarked, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof } =
+  new Function(
+    `${block}; return { originStep, stillToSend, movedUrl, titleMarked, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof };`,
+  )();
 
 test("the origin guard keeps a workspace's storage while its host is leaving, and wipes it for the next owner", () => {
   const acme = "0195-acme";
@@ -175,3 +176,54 @@ test("the proof is posted through the page's own fetch, and each answer says wha
   assert.deepEqual(await proveItsYou(send, "x", ""), { ok: false, say: "busy" });
   assert.deepEqual(await proveItsYou(() => Promise.reject(new TypeError("offline")), "x", ""), { ok: false, say: "failed" });
 });
+
+test("the dialog is asked with the first refusal, which lists the person's ways", async () => {
+  const seen = [];
+  const gate = stepUpGate((refusal) => {
+    seen.push(refusal);
+    return true;
+  });
+  const ways = { error: "step_up", ways: [{ way: "passkey" }] };
+  assert.equal(await gate.settle(gate.mark(), ways), true);
+  assert.deepEqual(seen, [ways]);
+});
+
+test("the dialog offers the ways the server lists, in its order, and only what this browser can use", () => {
+  const all = [{ way: "passkey" }, { way: "password", code: true }, { way: "provider", name: " Okta " }];
+  assert.deepEqual(stepUpChoices(all, true), [{ way: "passkey" }, { way: "password", code: true }, { way: "provider", name: "Okta" }]);
+  assert.deepEqual(stepUpChoices(all, false), [{ way: "password", code: true }, { way: "provider", name: "Okta" }], "no WebAuthn: no passkey button");
+  assert.deepEqual(stepUpChoices([{ way: "provider", name: "Okta" }], true), [{ way: "provider", name: "Okta" }], "one way: just that");
+  assert.deepEqual(stepUpChoices([], true), [], "no way: the plain message");
+  assert.deepEqual(stepUpChoices([{ way: "passkey" }], false), [], "a passkey this browser cannot use is no way");
+  assert.deepEqual(stepUpChoices(undefined, true), [{ way: "password", code: false }], "an answer without ways: the password, as before");
+  assert.deepEqual(
+    stepUpChoices([{ way: "telepathy" }, null, { way: "provider" }, { way: "provider", name: "" }, { way: "password" }, { way: "password", code: true }], true),
+    [{ way: "password", code: false }],
+    "unknown, nameless and repeated ways are left out",
+  );
+});
+
+test("only the proof for the sign-in again this dialog started is taken from the window", () => {
+  const state = "su.AbCdEf0123456789";
+  const code = "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5";
+  assert.deepEqual(providerProof({ state, code }, state), { state, code });
+  assert.equal(providerProof({ state: "su.another", code }, state), null, "another dialog's sign-in");
+  assert.equal(providerProof({ state, code: "<script>" }, state), null);
+  assert.equal(providerProof({ state, code: "short" }, state), null);
+  assert.equal(providerProof({ state }, state), null);
+  assert.equal(providerProof(null, state), null);
+  assert.equal(providerProof("su.x", state), null);
+  assert.equal(providerProof({ state: null, code }, null), null, "no sign-in started");
+});
+
+test("a passkey's or the provider's proof is posted and read as the password's is", async () => {
+  const sent = [];
+  const send = async (url, init) => {
+    sent.push([url, JSON.parse(init.body)]);
+    return new Response(null, { status: url.endsWith("finish") ? 401 : 204 });
+  };
+  assert.deepEqual(await sendProof(send, "/api/auth/step-up/passkey", { request: "r1", credential: { id: "c" } }), { ok: true });
+  assert.deepEqual(sent.pop(), ["/api/auth/step-up/passkey", { request: "r1", credential: { id: "c" } }]);
+  assert.deepEqual(await sendProof(send, "/api/auth/step-up/provider/finish", { state: "s", code: "c" }), { ok: false, say: "wrong" });
+});
+

@@ -69,7 +69,13 @@ pub fn answer(uri: &Uri) -> Response {
         return res;
     }
     let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
-    Redirect::to(&format!("{}{q}", new_home(path))).into_response()
+    // A provider's answer to signing in again (a step-up) comes to the return address registered with it, like a
+    // sign-in's: its state says which it is.
+    let step_up = path == "/login"
+        && reqwest::Url::parse(&format!("http://step-up.invalid/{q}"))
+            .is_ok_and(|u| u.query_pairs().any(|(k, v)| k == "state" && v.starts_with(ferrum_kernel::sso::STEP_UP_STATE)));
+    let home = if step_up { "/api/auth/step-up/provider/back".to_string() } else { new_home(path) };
+    Redirect::to(&format!("{home}{q}")).into_response()
 }
 
 /// What load balancers and monitors asked the web app's image (`/healthz`).

@@ -315,6 +315,40 @@ impl Kernel {
         Ok(())
     }
 
+    /// The ways `user` of `tenant` can confirm it is them now, on `host`, in order of preference: `{"way": "passkey"}` (a
+    /// passkey for a relying party the host may use), `{"way": "password", "code": bool}` (a password they may sign in
+    /// with; `code`: the code from an authenticator app is asked too), `{"way": "provider", "name": …}` (an identity
+    /// linked at an enabled single sign-on provider). `keys`: the account whose password and passkeys count (theirs, or
+    /// the Ferrum account theirs joined). Empty: no way at all. Where the workspace requires single sign-on, only the
+    /// provider (or a password, for the administrators who keep one).
+    pub async fn step_up_ways(&self, tenant: Uuid, user: Uuid, keys: (Uuid, Uuid), host: &str) -> Result<Vec<Value>> {
+        let mut tx = self.db.system_tx().await?;
+        let row: Option<(bool, bool, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select not {only} and exists (select 1 from passkey p where p.tenant_id = u.tenant_id and p.user_id = u.id and p.rp_id = any($3)), \
+             not {only} and u.password_hash is not null, u.totp_enabled_at is not null \
+             from app_user u join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2 and u.is_active",
+            only = crate::gate::SSO_ONLY
+        )))
+        .bind(keys.0)
+        .bind(keys.1)
+        .bind(self.step_up_rps(host))
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let (passkey, password, code) = row.unwrap_or_default();
+        let mut ways = Vec::new();
+        if passkey {
+            ways.push(serde_json::json!({"way": "passkey"}));
+        }
+        if password {
+            ways.push(serde_json::json!({"way": "password", "code": code}));
+        }
+        if let Some(p) = self.linked_provider(tenant, user).await? {
+            ways.push(serde_json::json!({"way": "provider", "name": p["name"]}));
+        }
+        Ok(ways)
+    }
+
     /// The signed-in devices of `user` (oneself, or anyone for an administrator).
     pub async fn list_sessions(&self, ctx: &Ctx, user: Uuid) -> Result<Vec<DeviceSession>> {
         if user != ctx.user && !ctx.is_admin {

@@ -541,7 +541,9 @@ impl Hooks for App {
         let state = crate::state::app_state(ctx).map_err(|e| Error::Message(e.0.to_string()))?;
         let limiter = state.address_limiter.clone();
         let apps_base: Arc<str> = Arc::from(state.settings.apps_base.trim());
+        let st = Arc::new(state.clone());
         Ok(router
+            .layer(axum::middleware::from_fn(move |req, next| step_up_ways(st.clone(), req, next)))
             .layer(axum::middleware::from_fn(hold_place))
             .layer(axum::middleware::from_fn(move |req, next| per_address(limiter.clone(), req, next)))
             .layer(axum::middleware::from_fn(api_no_store))
@@ -764,6 +766,20 @@ async fn isolated_cors(req: axum::extract::Request, next: axum::middleware::Next
 /// API answers belong to one user and can change without a new version (an engine-set status, a
 /// recorded IRN): browsers must not reuse them. Handlers that do want caching set their own
 /// `Cache-Control`.
+/// A step-up refusal says which ways the caller has to confirm it is them (docs/operations.md, "Asking again before
+/// sensitive work"). Only the API's answers can be one, so only their headers are kept to ask with.
+async fn step_up_ways(st: Arc<AppState>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    if !req.uri().path().starts_with("/api/") {
+        return next.run(req).await;
+    }
+    let (method, headers) = (req.method().clone(), req.headers().clone());
+    let res = next.run(req).await;
+    if res.extensions().get::<crate::error::StepUpAsked>().is_none() {
+        return res;
+    }
+    crate::controllers::auth::with_ways(&st, &method, &headers, res).await
+}
+
 async fn api_no_store(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     let api = req.uri().path().starts_with("/api/");
     let mut res = next.run(req).await;

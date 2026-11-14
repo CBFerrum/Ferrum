@@ -680,11 +680,8 @@ async fn step_up(
     if req.password.len() > 256 {
         return Err(ApiError(Error::Unauthorized("wrong password".into())));
     }
-    // Shapes B and C: a joined account steps up with its Ferrum account's password (and app).
-    let (slug, email) = match st.kernel.identity_of(ctx.tenant, ctx.user).await? {
-        Some((_, email)) if accounts_for(&st, &headers).await?.is_some() => (DIRECTORY.to_string(), email),
-        _ => (st.shell.workspace(ctx.tenant).await?.slug.clone(), ctx.email.clone()),
-    };
+    let (slug, email, _) = prover(&st, &headers, &ctx).await?;
+    // A wrong password is a failed sign-in on the audit trail already (crates/kernel/src/auth.rs).
     match st.kernel.sign_in(&slug, &email, &req.password).await? {
         SignIn::Session(_) | SignIn::SetupRequired(_) => {}
         SignIn::SecondFactor(t) => {
@@ -696,8 +693,240 @@ async fn step_up(
             st.kernel.second_factor(t.tenant, t.user, t.token_version, code).await?;
         }
     }
+    stepped_up(&st, &headers, &ctx, device, "password").await
+}
+
+// ── the other ways to confirm it is you (docs/operations.md, "Asking again before sensitive work") ──
+
+/// What the answers say when a person has no way at all to confirm it is them.
+pub(crate) const NO_WAY: &str = "you have no way to confirm it is you here: ask an administrator to set up a password, a passkey or single sign-on for you";
+/// …and to a credential with no browser session behind it, which cannot step up.
+const NO_BROWSER: &str = "confirm it is you from a page of this site: this sign-in cannot";
+
+/// The account whose password and passkeys confirm it is `ctx`'s person: (its workspace's slug, its email, (workspace,
+/// person)). Shapes B and C: a joined account's are its Ferrum account's.
+async fn prover(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kernel::Ctx) -> Result<(String, String, (Uuid, Uuid)), ApiError> {
+    if let Some((id, email)) = st.kernel.identity_of(ctx.tenant, ctx.user).await?
+        && accounts_for(st, headers).await?.is_some()
+        && let Some(directory) = st.kernel.directory().await?
+    {
+        return Ok((DIRECTORY.to_string(), email, (directory, id)));
+    }
+    Ok((st.shell.workspace(ctx.tenant).await?.slug.clone(), ctx.email.clone(), (ctx.tenant, ctx.user)))
+}
+
+/// The ways `ctx`'s person can confirm it is them on this host ([`ferrum_kernel::Kernel::step_up_ways`]).
+async fn ways_of(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kernel::Ctx) -> Result<Vec<Value>, ApiError> {
+    let host = crate::shell::request_host(headers).ok_or_else(|| ApiError(Error::invalid("no host")))?.to_ascii_lowercase();
+    let (_, _, keys) = prover(st, headers, ctx).await?;
+    Ok(st.kernel.step_up_ways(ctx.tenant, ctx.user, keys, &host).await?)
+}
+
+/// A step-up refusal (`403` with error `step_up`, marked by [`crate::error::StepUpAsked`]) with the ways the caller has:
+/// `ways`, and when there is none the message says so plainly. Any other answer, or a caller who cannot be told, is
+/// left as it is.
+pub(crate) async fn with_ways(st: &AppState, method: &axum::http::Method, headers: &HeaderMap, res: Response) -> Response {
+    let Ok((ctx, device)) = crate::extract::caller_on(st, method, headers).await else { return res };
+    let ways = match device {
+        Some(_) => match ways_of(st, headers, &ctx).await {
+            Ok(w) => w,
+            Err(_) => return res,
+        },
+        None => Vec::new(),
+    };
+    let (mut parts, body) = res.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else { return (parts.status, "").into_response() };
+    let Ok(mut v) = serde_json::from_slice::<Value>(&bytes) else { return Response::from_parts(parts, axum::body::Body::from(bytes)) };
+    if ways.is_empty() {
+        v["message"] = json!(if device.is_some() { NO_WAY } else { NO_BROWSER });
+    }
+    v["ways"] = json!(ways);
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, axum::body::Body::from(v.to_string()))
+}
+
+/// The step-up machinery is staff sign-in machinery: not served where the zone admits no staff.
+async fn staff_here(st: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    if crate::zone::refuses_staff(st, headers).await { Err(ApiError(Error::NotFound("no such address".into()))) } else { Ok(()) }
+}
+
+/// A browser session's step-up machinery: staff only, the session required, limited as the password step-up is.
+async fn step_up_caller(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kernel::Ctx, device: Option<Uuid>) -> Result<Uuid, ApiError> {
+    staff_here(st, headers).await?;
+    let device = device.ok_or_else(|| ApiError(Error::invalid(NO_BROWSER)))?;
+    st.login_limiter.check(&format!("{}|step-up|{}", client_ip(headers), ctx.user)).await?;
+    Ok(device)
+}
+
+/// The person proved it is them (`way`: `password`, `passkey`, `provider`): their session `device` counts as stepped up
+/// on every replica, and the audit trail says so (sign-in category, with the address and zone).
+async fn stepped_up(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kernel::Ctx, device: Uuid, way: &str) -> ApiResult<Response> {
     st.kernel.step_up_session(ctx.tenant, device).await?;
+    st.kernel.record_sign_in(ctx.tenant, ctx.user, "stepped_up", way, &crate::zone::arrival(st, headers).await).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// A refused proof: on the audit trail as a failed step-up of `way`, capped as failed sign-ins are.
+async fn step_up_refused(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kernel::Ctx, way: &str, e: Error) -> ApiError {
+    if matches!(e, Error::Unauthorized(_) | Error::Forbidden(_))
+        && let Err(failed) = st.kernel.record_sign_in_failure(ctx.tenant, ctx.user, "step_up_failed", way, &crate::zone::arrival(st, headers).await).await
+    {
+        return ApiError(failed);
+    }
+    ApiError(e)
+}
+
+/// `GET /api/auth/step-up/ways`: `{ways}` as the step-up refusal gives them, for a page that asks before trying.
+async fn step_up_ways(BrowserSession(ctx, device): BrowserSession, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    staff_here(&st, &headers).await?;
+    let ways = if device.is_some() { ways_of(&st, &headers, &ctx).await? } else { Vec::new() };
+    let mut body = json!({"ways": ways});
+    if ways.is_empty() {
+        body["message"] = json!(if device.is_some() { NO_WAY } else { NO_BROWSER });
+    }
+    Ok(Json(body).into_response())
+}
+
+/// `POST /api/auth/step-up/passkey/options`: what the browser needs to confirm it is you with a passkey: a challenge
+/// for this session and person, allowing only their passkeys, the device to verify the person.
+async fn step_up_passkey_options(BrowserSession(ctx, device): BrowserSession, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let device = step_up_caller(&st, &headers, &ctx, device).await?;
+    let host = crate::shell::request_host(&headers).ok_or_else(|| ApiError(Error::invalid("no host")))?.to_ascii_lowercase();
+    let (_, _, keys) = prover(&st, &headers, &ctx).await?;
+    Ok(Json(st.kernel.passkey_step_up_options(keys, device, &host).await?).into_response())
+}
+
+#[derive(Deserialize)]
+struct PasskeyStepUp {
+    request: Uuid,
+    credential: Value,
+}
+
+/// `POST /api/auth/step-up/passkey {request, credential}`: the browser's answer; `204` once it proves it is the person
+/// of this session.
+async fn step_up_passkey(
+    BrowserSession(ctx, device): BrowserSession,
+    State(app): State<AppContext>,
+    headers: HeaderMap,
+    Json(req): Json<PasskeyStepUp>,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let device = step_up_caller(&st, &headers, &ctx, device).await?;
+    let (_, origins) = relying_party(&st, &headers)?;
+    let (_, _, keys) = prover(&st, &headers, &ctx).await?;
+    if let Err(e) = st.kernel.passkey_step_up(keys, device, req.request, &origins, &req.credential).await {
+        return Err(step_up_refused(&st, &headers, &ctx, "passkey", e).await);
+    }
+    stepped_up(&st, &headers, &ctx, device, "passkey").await
+}
+
+/// This server's address for `path` on the host of `headers`.
+fn here_url(st: &AppState, headers: &HeaderMap, path: &str) -> Result<String, ApiError> {
+    let host = crate::shell::request_host(headers).ok_or_else(|| ApiError(Error::invalid("no host")))?;
+    Ok(format!("{}://{host}{path}", if st.shell.secure { "https" } else { "http" }))
+}
+
+/// Where the proof of signing in again is handed to the person's dialog, on the host they work on.
+const STEP_UP_DONE: &str = "/api/auth/step-up/provider/done";
+
+/// `POST /api/auth/step-up/provider` → `{url, state}`: the address to open in a small window, where the identity
+/// provider the person is linked to has them sign in again. The provider comes back to the return address registered
+/// with it (`/app/login`, on the accounts host where sign-in happens there), then to this host's
+/// `/api/auth/step-up/provider/done`, which hands `state` and a one-time code to the dialog for
+/// `POST /api/auth/step-up/provider/finish`.
+async fn step_up_provider(BrowserSession(ctx, device): BrowserSession, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let device = step_up_caller(&st, &headers, &ctx, device).await?;
+    let redirect = match accounts_for(&st, &headers).await? {
+        Some(accounts) => format!("{accounts}/app/login"),
+        None => here_url(&st, &headers, "/app/login")?,
+    };
+    let url = st.kernel.sso_step_up_begin(ctx.tenant, ctx.user, device, &redirect, &here_url(&st, &headers, STEP_UP_DONE)?).await?;
+    let state = reqwest::Url::parse(&url)
+        .ok()
+        .and_then(|u| u.query_pairs().find(|(k, _)| k == "state" || k == "RelayState").map(|(_, v)| v.into_owned()))
+        .ok_or_else(|| ApiError(Error::Internal("the provider's address carries no state".into())))?;
+    Ok(Json(json!({"url": url, "state": state})).into_response())
+}
+
+#[derive(Deserialize)]
+struct BackQuery {
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    code: Option<String>,
+}
+
+/// `GET /api/auth/step-up/provider/back?state&code`: an OpenID Connect provider's answer to signing in again, by way of
+/// the return address registered with it (`/app/login` sends a step-up's state here). On to the page that hands the
+/// proof to the dialog, or a page that says plainly why not. Reachable wherever that return address is; it opens no
+/// session (the proof is taken only by the session that asked).
+async fn step_up_provider_back(State(app): State<AppContext>, headers: HeaderMap, Query(q): Query<BackQuery>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.login_limiter.check(&format!("{}|sso", client_ip(&headers))).await?;
+    let refused = |why: &str| {
+        let mut page = crate::shell::status_page(StatusCode::UNAUTHORIZED, "Signing in again did not work", why, &[], None);
+        page.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        page
+    };
+    if q.state.len() > 200 || q.code.as_ref().is_some_and(|c| c.len() > 4096) {
+        return Ok(refused("The identity provider's answer is not one this server sent for."));
+    }
+    Ok(match st.kernel.sso_step_up_back(&q.state, q.code.as_deref()).await {
+        Ok(next) => (StatusCode::SEE_OTHER, [(header::LOCATION, next.as_str()), (header::CACHE_CONTROL, "no-store")]).into_response(),
+        Err(e @ (Error::Db(_) | Error::Internal(_))) => {
+            tracing::error!("signing in again: {e}");
+            refused("Something went wrong on the server; close this window and try again.")
+        }
+        Err(e) => refused(&format!("{}. Close this window and try again.", e.to_string().trim_end_matches('.'))),
+    })
+}
+
+/// `GET /api/auth/step-up/provider/done?state&code`: hands the proof to the dialog that asked (on this origin, through
+/// a `BroadcastChannel`, so it works whether or not the provider's pages cut the window off from the one that opened
+/// it), then closes. Its one script is allowed by its digest.
+async fn step_up_provider_done(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    staff_here(&app_state(&app)?, &headers).await?;
+    const SCRIPT: &str = r#"const q=new URLSearchParams(location.search);history.replaceState(null,"",location.pathname);try{const c=new BroadcastChannel("ferrum-step-up");c.postMessage({state:q.get("state"),code:q.get("code")});c.close()}catch(e){}setTimeout(()=>window.close(),50)"#;
+    let html = format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Signed in again · Ferrum</title></head><body style="font:16px system-ui,sans-serif;margin:2rem"><p>You can close this window and go back to your work.</p><script>{SCRIPT}</script></body></html>"#
+    );
+    let digest = base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(SCRIPT.as_bytes()));
+    let mut page = crate::shell::page_response(StatusCode::OK, html, &format!("default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-{digest}'"));
+    page.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    page.headers_mut().insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    Ok(page)
+}
+
+#[derive(Deserialize)]
+struct ProviderStepUp {
+    state: String,
+    code: String,
+}
+
+/// `POST /api/auth/step-up/provider/finish {state, code}`: `204` once the proof the done page handed over is this
+/// session's and this person's, fresh and unused.
+async fn step_up_provider_finish(
+    BrowserSession(ctx, device): BrowserSession,
+    State(app): State<AppContext>,
+    headers: HeaderMap,
+    Json(req): Json<ProviderStepUp>,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let device = step_up_caller(&st, &headers, &ctx, device).await?;
+    let done = if req.state.len() > 200 || req.code.len() > 200 {
+        Err(Error::Unauthorized("signing in again did not finish; try again".into()))
+    } else {
+        st.kernel.sso_step_up_finish(ctx.tenant, ctx.user, device, &req.state, &req.code).await
+    };
+    if let Err(e) = done {
+        return Err(step_up_refused(&st, &headers, &ctx, "provider", e).await);
+    }
+    stepped_up(&st, &headers, &ctx, device, "provider").await
 }
 
 /// Shapes B and C: someone whose workspace account joined their Ferrum account has that account's
@@ -938,6 +1167,13 @@ pub fn routes() -> Routes {
         .add("/sessions", get(sessions))
         .add("/sessions/{id}", delete(revoke_session))
         .add("/step-up", post(step_up))
+        .add("/step-up/ways", get(step_up_ways))
+        .add("/step-up/passkey/options", post(step_up_passkey_options))
+        .add("/step-up/passkey", post(step_up_passkey))
+        .add("/step-up/provider", post(step_up_provider))
+        .add("/step-up/provider/back", get(step_up_provider_back))
+        .add("/step-up/provider/done", get(step_up_provider_done))
+        .add("/step-up/provider/finish", post(step_up_provider_finish))
         .add("/password", post(change_password))
         .add("/api_keys", get(list_keys).post(create_key))
         .add("/api_keys/{id}", delete(revoke_key).patch(update_key))

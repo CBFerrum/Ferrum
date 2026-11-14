@@ -113,9 +113,14 @@ impl Device {
 
     /// The browser's answer to `navigator.credentials.get`, signed for `rp`.
     fn get(&mut self, options: &Value, rp: &str, origin: &str, user: Uuid) -> Value {
+        self.get_with(options, rp, origin, user, 0x01 | 0x04)
+    }
+
+    /// [`Device::get`] with the authenticator's `flags` (the person present 0x01, verified 0x04).
+    fn get_with(&mut self, options: &Value, rp: &str, origin: &str, user: Uuid, flags: u8) -> Value {
         self.count += 1;
         let client = json!({"type": "webauthn.get", "challenge": options["publicKey"]["challenge"], "origin": origin}).to_string();
-        let auth = self.auth_data(rp, 0x01 | 0x04, false);
+        let auth = self.auth_data(rp, flags, false);
         let sig = self.pair.sign(&self.rng, &[&auth[..], &sha256(client.as_bytes())].concat()).unwrap();
         json!({
             "id": B64.encode(&self.id), "rawId": B64.encode(&self.id), "type": "public-key",
@@ -202,6 +207,75 @@ async fn passkeys_make_and_sign_in() {
     assert!(k.passkey_sign_in(request(&o), &origins, &laptop.get(&o, rp, origin, ana_id), None).await.is_err(), "removed");
 
     relying_parties().await;
+    step_up().await;
+}
+
+/// Confirming it is you with a passkey (a step-up): bound to the session and the person it was asked for, the device
+/// verifying the person, once. Nothing signs in; the server marks the session afterwards.
+async fn step_up() {
+    let k = boot(None, true).await;
+    let acme = k.create_tenant(tenant("acme")).await.expect("tenant");
+    let s = k.login("acme", "admin@acme.test", "Correct-Horse-9").await.unwrap();
+    let admin = k.load_ctx(acme, s.user, Some(s.token_version), "it".into()).await.unwrap();
+    let ana_id = k.create_user(&admin, "ana@acme.test", "Ana Rao", Some("Correct-Horse-9"), &[], false).await.unwrap();
+    let ana = k.load_ctx(acme, ana_id, None, "it".into()).await.unwrap();
+    let (host, origin) = ("acme.ferrum.test", "https://acme.ferrum.test");
+    let origins = vec![origin.to_string()];
+    let ana_s = k.login("acme", "ana@acme.test", "Correct-Horse-9").await.unwrap();
+    let ttl = std::time::Duration::from_secs(3600);
+    let (sid, other_sid) = (
+        k.open_session(&ana_s, ttl, "it", "10.1.2.3", None).await.unwrap(),
+        k.open_session(&ana_s, ttl, "it", "10.1.2.4", None).await.unwrap(),
+    );
+    let ana_keys = (acme, ana_id);
+
+    // Ways: a password only, until a passkey is made here.
+    assert_eq!(k.step_up_ways(acme, ana_id, ana_keys, host).await.unwrap(), vec![json!({"way": "password", "code": false})]);
+    assert!(k.passkey_step_up_options(ana_keys, sid, host).await.is_err(), "no passkey: nothing to ask the device for");
+    let mut laptop = Device::new();
+    let o = k.passkey_options(&ana, host, "Acme").await.unwrap();
+    k.add_passkey(&ana, request(&o), &origins, &laptop.create(&o, origin), "laptop").await.unwrap();
+    let mut bobs = Device::new();
+    let o = k.passkey_options(&admin, host, "Acme").await.unwrap();
+    k.add_passkey(&admin, request(&o), &origins, &bobs.create(&o, origin), "admin's").await.unwrap();
+    assert_eq!(
+        k.step_up_ways(acme, ana_id, ana_keys, &format!("{host}:443")).await.unwrap(),
+        vec![json!({"way": "passkey"}), json!({"way": "password", "code": false})],
+        "a passkey first"
+    );
+    assert_eq!(k.step_up_ways(acme, ana_id, ana_keys, "elsewhere.example").await.unwrap(), vec![json!({"way": "password", "code": false})], "not for another site");
+
+    // The request names only Ana's own passkey and wants the person verified.
+    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
+    assert_eq!(o["publicKey"]["userVerification"], json!("required"));
+    assert_eq!(o["publicKey"]["allowCredentials"].as_array().unwrap().len(), 1);
+    assert_eq!(o["publicKey"]["allowCredentials"][0]["id"], json!(B64.encode(&laptop.id)));
+    let answer = laptop.get(&o, host, origin, ana_id);
+    k.passkey_step_up(ana_keys, sid, request(&o), &origins, &answer).await.expect("Ana confirms it is her");
+    let refused = |r: ferrum_kernel::Result<()>, why: &str| assert!(matches!(r, Err(Error::Unauthorized(_))), "{why}: {r:?}");
+    refused(k.passkey_step_up(ana_keys, sid, request(&o), &origins, &answer).await, "a replayed answer");
+
+    // Another session's challenge, answered for this one.
+    let o = k.passkey_step_up_options(ana_keys, other_sid, host).await.unwrap();
+    refused(k.passkey_step_up(ana_keys, sid, request(&o), &origins, &laptop.get(&o, host, origin, ana_id)).await, "another session's challenge");
+    // Someone else's passkey answering Ana's challenge, and Ana's challenge taken up as someone else's.
+    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
+    refused(k.passkey_step_up(ana_keys, sid, request(&o), &origins, &bobs.get(&o, host, origin, admin.user)).await, "another person's passkey");
+    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
+    refused(k.passkey_step_up((acme, admin.user), sid, request(&o), &origins, &bobs.get(&o, host, origin, admin.user)).await, "for another person");
+    // The device did not verify the person: present only.
+    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
+    refused(k.passkey_step_up(ana_keys, sid, request(&o), &origins, &laptop.get_with(&o, host, origin, ana_id, 0x01)).await, "no user verification");
+    // Another site, and a copy of the key (its counter went back).
+    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
+    let evil = "https://evil.example";
+    refused(k.passkey_step_up(ana_keys, sid, request(&o), &[evil.into()], &laptop.get(&o, host, evil, ana_id)).await, "answered on another site");
+    laptop.count = 0;
+    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
+    refused(k.passkey_step_up(ana_keys, sid, request(&o), &origins, &laptop.get(&o, host, origin, ana_id)).await, "counter went back");
+    laptop.count = 20;
+    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
+    k.passkey_step_up(ana_keys, sid, request(&o), &origins, &laptop.get(&o, host, origin, ana_id)).await.expect("the device itself, again");
 }
 
 /// `FERRUM_PASSKEY_RP`: a passkey made on a host before it was set keeps working there; one made

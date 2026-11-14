@@ -182,6 +182,38 @@ fn sha256(b: &[u8]) -> [u8; 32] {
     Sha256::digest(b).into()
 }
 
+/// A challenge as kept: (challenge, workspace, person, relying party, session).
+type Challenge = (Vec<u8>, Option<Uuid>, Option<Uuid>, String, Option<Uuid>);
+
+/// A browser's answer to `navigator.credentials.get`, checked as far as it can be without the key: the credential's id,
+/// the authenticator data, what the signature is over, and the signature.
+struct Assertion {
+    id: Vec<u8>,
+    data: AuthData,
+    signed: Vec<u8>,
+    sig: Vec<u8>,
+}
+
+/// Reads an answer to `challenge` on `rp_id`, given on a page of `origins`: this ceremony, this challenge, this site,
+/// not framed, and the person present and verified by the device.
+fn assertion(credential: &Value, challenge: &[u8], rp_id: &str, origins: &[String]) -> Result<Assertion> {
+    origins_may_use(origins, rp_id)?;
+    let res = &credential["response"];
+    let client = b64(&res["clientDataJSON"], "the client data")?;
+    let auth = b64(&res["authenticatorData"], "the authenticator data")?;
+    let sig = b64(&res["signature"], "the signature")?;
+    let id = b64(&credential["rawId"], "the credential id")?;
+    check_client_data(&client, "webauthn.get", challenge, origins)?;
+    let data = parse_auth_data(&auth)?;
+    if data.rp_id_hash != sha256(rp_id.as_bytes()) {
+        return Err(refused("made for another site"));
+    }
+    if data.flags & UP == 0 || data.flags & UV == 0 {
+        return Err(refused("the device did not check who you are"));
+    }
+    Ok(Assertion { id, data, signed: [&auth[..], &sha256(&client)].concat(), sig })
+}
+
 impl Kernel {
     /// The relying party for a passkey ceremony on `host` (a name, no port): [`rp_for`] with this
     /// server's `FERRUM_PASSKEY_RP`.
@@ -208,13 +240,14 @@ impl Kernel {
         Ok(offer)
     }
 
-    async fn new_challenge(&self, purpose: &str, tenant: Option<Uuid>, user: Option<Uuid>, rp_id: &str) -> Result<(Uuid, [u8; 32])> {
+    /// A challenge for one ceremony; `session`: the browser session a step-up is for.
+    async fn new_challenge(&self, purpose: &str, tenant: Option<Uuid>, user: Option<Uuid>, rp_id: &str, session: Option<Uuid>) -> Result<(Uuid, [u8; 32])> {
         let (id, challenge) = (Uuid::now_v7(), rand::random::<[u8; 32]>());
         let mut tx = self.db.system_tx().await?;
         sqlx::query("delete from webauthn_challenge where expires_at < now()").execute(&mut *tx).await?;
         sqlx::query(
-            "insert into webauthn_challenge (id, challenge, purpose, tenant_id, user_id, rp_id, expires_at) \
-             values ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7))",
+            "insert into webauthn_challenge (id, challenge, purpose, tenant_id, user_id, rp_id, expires_at, session_id) \
+             values ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7), $8)",
         )
         .bind(id)
         .bind(&challenge[..])
@@ -223,17 +256,18 @@ impl Kernel {
         .bind(user)
         .bind(rp_id)
         .bind(CHALLENGE_SECS)
+        .bind(session)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
         Ok((id, challenge))
     }
 
-    /// Takes a challenge, which then cannot be used again: (challenge, workspace, person, relying party).
-    async fn take_challenge(&self, id: Uuid, purpose: &str) -> Result<(Vec<u8>, Option<Uuid>, Option<Uuid>, String)> {
+    /// Takes a challenge, which then cannot be used again: (challenge, workspace, person, relying party, session).
+    async fn take_challenge(&self, id: Uuid, purpose: &str) -> Result<Challenge> {
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(Vec<u8>, Option<Uuid>, Option<Uuid>, String)> = sqlx::query_as(
-            "delete from webauthn_challenge where id = $1 and purpose = $2 and expires_at > now() returning challenge, tenant_id, user_id, rp_id",
+        let row: Option<Challenge> = sqlx::query_as(
+            "delete from webauthn_challenge where id = $1 and purpose = $2 and expires_at > now() returning challenge, tenant_id, user_id, rp_id, session_id",
         )
         .bind(id)
         .bind(purpose)
@@ -254,7 +288,7 @@ impl Kernel {
             .fetch_all(&mut *tx)
             .await?;
         tx.commit().await?;
-        let (id, challenge) = self.new_challenge("register", Some(ctx.tenant), Some(ctx.user), rp_id).await?;
+        let (id, challenge) = self.new_challenge("register", Some(ctx.tenant), Some(ctx.user), rp_id, None).await?;
         let shown = if ctx.full_name.trim().is_empty() { ctx.email.clone() } else { ctx.full_name.clone() };
         let algorithms: Vec<Value> = [ES256, EDDSA, RS256].iter().map(|alg| json!({"type": "public-key", "alg": alg})).collect();
         Ok(json!({
@@ -276,7 +310,7 @@ impl Kernel {
     /// binary fields base64url), after checking it answers this request, for this site, and that
     /// the authenticator checked the person.
     pub async fn add_passkey(&self, ctx: &Ctx, request: Uuid, origins: &[String], credential: &Value, name: &str) -> Result<Value> {
-        let (challenge, tenant, user, rp_id) = self.take_challenge(request, "register").await?;
+        let (challenge, tenant, user, rp_id, _) = self.take_challenge(request, "register").await?;
         if tenant != Some(ctx.tenant) || user != Some(ctx.user) {
             return Err(refused("this request was someone else's"));
         }
@@ -347,7 +381,7 @@ impl Kernel {
 
     /// What the browser needs to sign in with a passkey on `rp_id`: any of the person's there.
     pub async fn passkey_sign_in_options(&self, rp_id: &str) -> Result<Value> {
-        let (id, challenge) = self.new_challenge("sign_in", None, None, rp_id).await?;
+        let (id, challenge) = self.new_challenge("sign_in", None, None, rp_id, None).await?;
         Ok(json!({
             "request": id,
             "publicKey": {"challenge": B64.encode(challenge), "rpId": rp_id, "userVerification": "required", "timeout": 120_000, "allowCredentials": []},
@@ -373,21 +407,9 @@ impl Kernel {
         from: impl Into<crate::gate::Arrival>,
     ) -> Result<Session> {
         let from = from.into();
-        let (challenge, _, _, rp_id) = self.take_challenge(request, "sign_in").await?;
-        origins_may_use(origins, &rp_id)?;
+        let (challenge, _, _, rp_id, _) = self.take_challenge(request, "sign_in").await?;
+        let Assertion { id, data, signed, sig } = assertion(credential, &challenge, &rp_id, origins)?;
         let res = &credential["response"];
-        let client = b64(&res["clientDataJSON"], "the client data")?;
-        let auth = b64(&res["authenticatorData"], "the authenticator data")?;
-        let sig = b64(&res["signature"], "the signature")?;
-        let id = b64(&credential["rawId"], "the credential id")?;
-        check_client_data(&client, "webauthn.get", &challenge, origins)?;
-        let data = parse_auth_data(&auth)?;
-        if data.rp_id_hash != sha256(rp_id.as_bytes()) {
-            return Err(refused("made for another site"));
-        }
-        if data.flags & UP == 0 || data.flags & UV == 0 {
-            return Err(refused("the device did not check who you are"));
-        }
         #[derive(sqlx::FromRow)]
         struct Row {
             tenant_id: Uuid,
@@ -437,7 +459,7 @@ impl Kernel {
         {
             return Err(refused("it belongs to someone else"));
         }
-        if !verify(i64::from(p.alg), &p.public_key, &[&auth[..], &sha256(&client)].concat(), &sig) {
+        if !verify(i64::from(p.alg), &p.public_key, &signed, &sig) {
             return Err(refused("the signature does not match"));
         }
         // A device that counts counts up; one that went back may be a copy of the key.
@@ -466,6 +488,87 @@ impl Kernel {
             .await?;
         tx.commit().await?;
         Ok(Session { tenant: p.tenant_id, user: p.user_id, token_version: p.token_version })
+    }
+
+    /// The relying parties a step-up with a passkey on `host` may use, in order: [`Kernel::passkey_rp`], then the host
+    /// itself (passkeys made there before `FERRUM_PASSKEY_RP` named a domain keep theirs).
+    pub(crate) fn step_up_rps(&self, host: &str) -> Vec<String> {
+        let host = host.split(':').next().unwrap_or_default().trim_end_matches('.').to_ascii_lowercase();
+        let rp = self.passkey_rp(&host);
+        if rp == host { vec![rp] } else { vec![rp, host] }
+    }
+
+    /// What the browser needs to confirm it is you with a passkey on `host` (`{request, publicKey}`): a challenge bound
+    /// to the browser session `sid` and to `keys`, the account whose passkeys count (the person's own; for a workspace
+    /// account joined to a Ferrum account, that account). Only their credentials are allowed, and the device must
+    /// verify the person.
+    pub async fn passkey_step_up_options(&self, keys: (Uuid, Uuid), sid: Uuid, host: &str) -> Result<Value> {
+        let mut found = None;
+        let mut tx = self.db.system_tx().await?;
+        for rp in self.step_up_rps(host) {
+            let mine: Vec<(Vec<u8>, Vec<String>)> =
+                sqlx::query_as("select credential_id, transports from passkey where tenant_id = $1 and user_id = $2 and rp_id = $3 order by created_at")
+                    .bind(keys.0)
+                    .bind(keys.1)
+                    .bind(&rp)
+                    .fetch_all(&mut *tx)
+                    .await?;
+            if !mine.is_empty() {
+                found = Some((rp, mine));
+                break;
+            }
+        }
+        tx.commit().await?;
+        let (rp, mine) = found.ok_or_else(|| Error::invalid("you have no passkey for this address"))?;
+        let (id, challenge) = self.new_challenge("step_up", Some(keys.0), Some(keys.1), &rp, Some(sid)).await?;
+        let allow: Vec<Value> = mine.iter().map(|(c, t)| json!({"type": "public-key", "id": B64.encode(c), "transports": t})).collect();
+        Ok(json!({
+            "request": id,
+            "publicKey": {"challenge": B64.encode(challenge), "rpId": rp, "userVerification": "required", "timeout": 120_000, "allowCredentials": allow},
+        }))
+    }
+
+    /// Confirms it is you with a passkey: the browser's answer to a challenge made for the session `sid` and the account
+    /// `keys`, signed by one of that account's own passkeys for the challenge's relying party, the person verified by
+    /// the device and its counter moved on. The challenge is used up whatever happens. Nothing else happens here: no
+    /// session is opened, and the caller marks `sid` as stepped up ([`Kernel::step_up_session`]).
+    pub async fn passkey_step_up(&self, keys: (Uuid, Uuid), sid: Uuid, request: Uuid, origins: &[String], credential: &Value) -> Result<()> {
+        let (challenge, tenant, user, rp_id, session) = self.take_challenge(request, "step_up").await?;
+        if tenant != Some(keys.0) || user != Some(keys.1) || session != Some(sid) {
+            return Err(refused("this request was someone else's"));
+        }
+        let Assertion { id, data, signed, sig } = assertion(credential, &challenge, &rp_id, origins)?;
+        let mut tx = self.db.system_tx().await?;
+        // Where the workspace requires single sign-on, a passkey proves no more than it signs in.
+        let row: Option<(Uuid, Vec<u8>, i32, i64, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select p.id, p.public_key, p.alg, p.sign_count, {} from passkey p join app_user u on u.tenant_id = p.tenant_id and u.id = p.user_id \
+             join tenant t on t.id = p.tenant_id where p.credential_id = $1 and p.tenant_id = $2 and p.user_id = $3 and p.rp_id = $4 for update of p",
+            crate::gate::SSO_ONLY
+        )))
+        .bind(&id)
+        .bind(keys.0)
+        .bind(keys.1)
+        .bind(&rp_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((pid, key, alg, count, sso_only)) = row else { return Err(refused("it is not one of yours")) };
+        if sso_only {
+            return Err(Error::Forbidden("this workspace signs in through single sign-on; confirm it is you there".into()));
+        }
+        if !verify(i64::from(alg), &key, &signed, &sig) {
+            return Err(refused("the signature does not match"));
+        }
+        if (data.sign_count != 0 || count != 0) && i64::from(data.sign_count) <= count {
+            return Err(refused("its counter went back, which a copied key would do"));
+        }
+        sqlx::query("update passkey set sign_count = $3, last_used_at = now() where tenant_id = $1 and id = $2")
+            .bind(keys.0)
+            .bind(pid)
+            .bind(i64::from(data.sign_count))
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// The caller's passkeys.
