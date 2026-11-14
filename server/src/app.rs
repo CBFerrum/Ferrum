@@ -601,6 +601,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::PlanMove);
         tasks.register(crate::tasks::CancelMove);
         tasks.register(crate::tasks::AdoptMove);
+        tasks.register(crate::tasks::CheckFiles);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

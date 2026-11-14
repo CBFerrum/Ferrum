@@ -148,6 +148,7 @@ fn restores_and_regions() {
         tokio::spawn(a_planned_move_carries_what_was_waiting()).await.unwrap();
         tokio::spawn(a_mark_out_of_time_or_unfenced_is_a_restore()).await.unwrap();
         tokio::spawn(the_fence_falls_between_transactions()).await.unwrap();
+        tokio::spawn(what_a_move_can_break()).await.unwrap();
     });
 }
 
@@ -618,4 +619,80 @@ async fn the_fence_falls_between_transactions() {
     assert!(matches!(late.await.unwrap(), Err(Error::Unavailable(_))), "begun while it waited: fenced");
     k.cancel_move("rehearsed").await.unwrap();
     try_pay(&k, admin.tenant).await.expect("lifted");
+}
+
+/// What a move without the source's keys or files breaks, said by count and id, never by value.
+async fn what_a_move_can_break() {
+    use ferrum_kernel::recovery::Files;
+    use ferrum_kernel::secret::SecretKey;
+    let live = url("FERRUM_TEST_DATABASE_URL", "ferrum_test");
+    let (old, new) = (SecretKey::new([1; 32]), SecretKey::new([2; 32]));
+    let boot = |db: Db, key: SecretKey, retired: Vec<SecretKey>| async move {
+        let settings = KernelSettings { secret_key: Some(key), retired_secret_keys: retired, ..Default::default() };
+        Kernel::boot(db, catalog(), HookRegistry::default(), settings, None).await.expect("boot")
+    };
+    let k = boot(database(&live, true).await, old.clone(), vec![]).await;
+    let files = Arc::new(MemFiles::default());
+    k.set_file_store(files.clone());
+    let admin = workspace(&k, "acme").await;
+    let hook = Uuid::now_v7();
+    let plain = "the-signing-secret-itself";
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, $2, 'h', 'https://example.test', $3, '{}')")
+        .bind(admin.tenant)
+        .bind(hook)
+        .bind(k.seal_webhook_secret(admin.tenant, hook, plain).unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let record = Uuid::now_v7();
+    sqlx::query("insert into record_secret (tenant_id, entity, record_id, field, sealed, key_id) values ($1, 'Gateway', $2, 'api_key', 'AAAA', $3)")
+        .bind(admin.tenant)
+        .bind(record)
+        .bind(&old.id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let kept = k.store_file(&admin, None, "kept.txt", "text/plain", b"here").await.unwrap();
+    let lost = k.store_file(&admin, None, "lost.txt", "text/plain", b"not copied").await.unwrap();
+
+    // All fine.
+    assert_eq!(k.unopened_secrets().await.unwrap(), (vec![], true));
+    let mut missing = Vec::new();
+    assert_eq!(k.check_files(None, Files::All, |f| missing.push(f)).await.unwrap(), 2);
+    assert!(missing.is_empty());
+
+    // Moved with another key, and without one file: each is said, by where and which, and the value never.
+    let k = boot(database(&live, false).await, new.clone(), vec![]).await;
+    k.set_file_store(files.clone());
+    let key: String = {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let key = sqlx::query_scalar("select storage_key from file_object where id = $1")
+            .bind(lost["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        key
+    };
+    files.0.lock().unwrap().remove(&key);
+    let (unopened, complete) = k.unopened_secrets().await.unwrap();
+    assert!(complete);
+    let said = format!("{unopened:?}");
+    assert!(!said.contains(plain), "{said}");
+    let by: std::collections::BTreeMap<_, _> = unopened.iter().map(|u| (u.what.as_str(), (u.count, u.examples.clone()))).collect();
+    assert_eq!(by.get("Gateway.api_key"), Some(&(1, vec![record.to_string()])), "{said}");
+    assert_eq!(by.get("webhook.secret"), Some(&(1, vec![hook.to_string()])), "{said}");
+    let mut missing = Vec::new();
+    assert_eq!(k.check_files(Some(admin.tenant), Files::All, |f| missing.push(f)).await.unwrap(), 2);
+    assert_eq!(missing.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), [lost["id"].as_str().unwrap()]);
+    let mut newest = Vec::new();
+    assert_eq!(k.check_files(None, Files::Newest(1), |f| newest.push(f)).await.unwrap(), 1, "only as many as asked");
+    assert_eq!(newest.len(), 1, "the newest is the lost one");
+    assert!(kept["id"].is_string());
+
+    // With the old key retired beside the new one, everything opens again.
+    let k = boot(database(&live, false).await, new, vec![old]).await;
+    assert_eq!(k.unopened_secrets().await.unwrap(), (vec![], true));
 }

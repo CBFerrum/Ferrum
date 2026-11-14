@@ -143,6 +143,7 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
         Finding::warning("mail", "no mailer is configured: invitations and password resets do not go out", "Set MAILER_* (docs/operations.md).")
     });
     out.extend(service_findings(st).await);
+    out.extend(move_findings(&st.kernel).await?);
     out.sort_by_key(|f| match f.level {
         Level::Blocker => 0,
         Level::Warning => 1,
@@ -255,6 +256,64 @@ pub async fn service_findings(st: &AppState) -> Vec<Finding> {
     let health = if pdf.is_empty() { None } else { Some(client.get(format!("{pdf}/health")).send().await.map(|r| r.status().as_u16()).map_err(|_| ())) };
     out.push(pdf_finding(pdf, health));
     out
+}
+
+/// How many of the newest files the doctor looks for in storage (`ferrum task check_files` looks for all).
+const NEWEST_FILES: u32 = 200;
+
+/// What moving the installation can break, and a move in progress: sealed values no configured key opens, files the
+/// database names that storage lacks (bounded: see `unopened_secrets` and `check_files`). Never a value.
+pub async fn move_findings(k: &ferrum_kernel::Kernel) -> Result<Vec<Finding>, ferrum_kernel::Error> {
+    let mut out = Vec::new();
+    if let Some(m) = k.planned_move().await? {
+        out.push(Finding::blocker(
+            "move",
+            match m.fenced_at {
+                Some(at) => format!("this database is fenced for a move since {at} ({}): it takes no changes", m.reason),
+                None => format!("a move is being planned ({}): nothing that reaches outside starts", m.reason),
+            },
+            "Run the installation from its copy; or `ferrum task cancel_move reason:\"...\"` here (docs/operations.md, Moving an installation).",
+        ));
+    }
+    let (unopened, complete) = k.unopened_secrets().await?;
+    let total: u64 = unopened.iter().map(|u| u.count).sum();
+    let partly = if complete { "" } else { " (of those checked: the check stops after 20000 values)" };
+    out.push(if total == 0 {
+        Finding::ok("secrets.unopened", format!("every sealed value opens with a configured key{partly}"))
+    } else {
+        let listed: Vec<String> = unopened.iter().map(|u| format!("{} {} (e.g. {})", u.what, u.count, u.examples.join(", "))).collect();
+        Finding::warning(
+            "secrets.unopened",
+            format!("{total} sealed values open with no configured key{partly}: {}", listed.join("; ")),
+            "Configure the key that sealed them: FERRUM_SECRET_KEY, or the old one in FERRUM_RETIRED_SECRET_KEYS (after a move: the source's keys).",
+        )
+    });
+    let mut missing = Vec::new();
+    let mut count = 0u64;
+    let checked = match k
+        .check_files(None, ferrum_kernel::recovery::Files::Newest(NEWEST_FILES), |f| {
+            count += 1;
+            if missing.len() < 5 {
+                missing.push(format!("{} ({})", f.id, f.name));
+            }
+        })
+        .await
+    {
+        Ok(n) => n,
+        // No store configured is said by the storage check.
+        Err(ferrum_kernel::Error::Unavailable(_)) => return Ok(out),
+        Err(e) => return Err(e),
+    };
+    out.push(if count == 0 {
+        Finding::ok("files.missing", format!("the {checked} newest files and app bundles are all in storage"))
+    } else {
+        Finding::blocker(
+            "files.missing",
+            format!("{count} of the {checked} newest files and app bundles are not in storage: {}", missing.join(", ")),
+            "Copy the files from where they were (after a move: every prefix, docs/operations.md, Moving an installation); `ferrum task check_files` checks them all.",
+        )
+    });
+    Ok(out)
 }
 
 /// The report as a person reads it.

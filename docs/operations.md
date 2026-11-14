@@ -2427,6 +2427,7 @@ ferrum task app_releases [app:<id>]  # every release recorded on the cluster, wi
 ferrum task plan_move reason:"..." [valid:<hours, 24>] [wait:<seconds, 130>]   # before moving the installation: fence this database (Moving an installation)
 ferrum task cancel_move reason:"..."   # the move does not happen: lift the fence
 ferrum task adopt_move reason:"..."    # on a physical copy of a fenced database: this is the copy, carry on
+ferrum task check_files [tenant:<slug>]   # every file the database names (and app bundles), looked for in storage; lists those missing
 ```
 
 **Notifications by email.** A notification someone chose to have by email goes out through the

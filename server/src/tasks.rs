@@ -730,6 +730,42 @@ impl Task for AdoptMove {
     }
 }
 
+/// `check_files [tenant:<slug>]`: every file the database names, looked for in storage (the doctor looks at the newest).
+pub struct CheckFiles;
+
+#[async_trait]
+impl Task for CheckFiles {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "check_files".into(), detail: "Looks for every file the database names (and app bundles) in storage, and lists those missing".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let tenant = match vars.cli_arg("tenant") {
+            Ok(slug) => {
+                let mut tx = k.db.system_tx().await.map_err(refused)?;
+                let id: Option<uuid::Uuid> =
+                    sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_optional(&mut *tx).await.map_err(refused)?;
+                tx.commit().await.map_err(refused)?;
+                Some(id.ok_or_else(|| Error::Message(format!("no workspace {slug}")))?)
+            }
+            Err(_) => None,
+        };
+        let mut missing = 0u64;
+        let checked = k
+            .check_files(tenant, ferrum_kernel::recovery::Files::All, |f| {
+                missing += 1;
+                match f.tenant {
+                    Some(t) => println!("missing: workspace {t}, file {} ({})", f.id, f.name),
+                    None => println!("missing: {} ({})", f.name, f.id),
+                }
+            })
+            .await
+            .map_err(refused)?;
+        println!("{checked} checked, {missing} missing");
+        if missing > 0 { Err(Error::Message(format!("{missing} files are not in storage"))) } else { Ok(()) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
