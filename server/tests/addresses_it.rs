@@ -75,6 +75,11 @@ fn bootstrap(html: &str) -> Value {
 
 /// A page sign-in on `host` (the browser's own page asks): the cookie's token, if one was set.
 async fn sign_in_page(router: &axum::Router, host: &str, cookie: Option<&str>) -> (StatusCode, Option<String>) {
+    sign_in_as(router, host, cookie, "acme").await
+}
+
+/// [`sign_in_page`] as the administrator of workspace `slug` (`admin@{slug}.test`).
+async fn sign_in_as(router: &axum::Router, host: &str, cookie: Option<&str>, slug: &str) -> (StatusCode, Option<String>) {
     let mut req = Request::builder()
         .method(Method::POST)
         .uri("/api/auth/login")
@@ -85,7 +90,7 @@ async fn sign_in_page(router: &axum::Router, host: &str, cookie: Option<&str>) -
     if let Some(c) = cookie {
         req = req.header(header::COOKIE, format!("{}={c}", ferrum_server::shell::cookie_name(false)));
     }
-    let req = req.body(Body::from(json!({"tenant": "acme", "email": "admin@acme.test", "password": PASSWORD}).to_string())).unwrap();
+    let req = req.body(Body::from(json!({"tenant": slug, "email": format!("admin@{slug}.test"), "password": PASSWORD}).to_string())).unwrap();
     let res = router.clone().oneshot(req).await.unwrap();
     let status = res.status();
     let cookie = res.headers().get_all(header::SET_COOKIE).iter().filter_map(|v| v.to_str().ok()).find_map(|c| {
@@ -245,4 +250,72 @@ async fn scenario() {
     ferrum_server::tasks::ReleaseHost.run(&base, &vars).await.expect("released");
     let (status, location, ..) = call(&router, Method::GET, "x.acme.test", "/crm/", x_cookie.as_deref(), None, None).await;
     assert_eq!((status, location.as_str()), (StatusCode::PERMANENT_REDIRECT, "http://acme.ferrum.test/crm/"));
+
+    // Hosts the operator vouches for, and no other (a private network): the first is the workspace's main host, so
+    // releasing it hands that place to the other, the leaving notice points there and a visitor is redirected.
+    let ops = k
+        .create_tenant(NewTenant {
+            slug: "ops".into(),
+            name: "Ops".into(),
+            admin_email: "admin@ops.test".into(),
+            admin_password: PASSWORD.into(),
+            admin_name: None,
+            packages: vec![],
+            settings: None,
+        })
+        .await
+        .unwrap();
+    for host in ["erp.ops.internal", "erp2.ops.internal"] {
+        let vars = loco_rs::task::Vars::from_cli_args(vec![
+            ("tenant".into(), "ops".into()),
+            ("host".into(), host.into()),
+            ("target".into(), "shell".into()),
+            ("zone".into(), "none".into()),
+        ]);
+        ferrum_server::tasks::AddHost.run(&base, &vars).await.expect("added");
+    }
+    assert_eq!(k.primary_host(ops, "shell").await.unwrap().as_deref(), Some("erp.ops.internal"), "the first is the main one");
+    let (_, ops_cookie) = sign_in_as(&router, "erp.ops.internal", None, "ops").await;
+    let ops_cookie = ops_cookie.expect("signed in on the operator's host");
+    let vars = loco_rs::task::Vars::from_cli_args(vec![("host".into(), "erp.ops.internal".into())]);
+    ferrum_server::tasks::ReleaseHost.run(&base, &vars).await.expect("released");
+    let (_, _, html, _) = call(&router, Method::GET, "erp.ops.internal", "/", Some(&ops_cookie), None, None).await;
+    assert_eq!(bootstrap(&html)["host"]["leaving"]["to"], "http://erp2.ops.internal", "the notice points at the other");
+    let (status, location, ..) = call(&router, Method::GET, "erp.ops.internal", "/crm/deals?x=1", None, None, None).await;
+    assert_eq!((status, location.as_str()), (StatusCode::PERMANENT_REDIRECT, "http://erp2.ops.internal/crm/deals?x=1"), "a visitor goes on");
+    // On purpose, by the task: the other way round.
+    let vars = loco_rs::task::Vars::from_cli_args(vec![
+        ("tenant".into(), "ops".into()),
+        ("host".into(), "erp3.ops.internal".into()),
+        ("target".into(), "shell".into()),
+        ("zone".into(), "none".into()),
+        ("primary".into(), "yes".into()),
+    ]);
+    ferrum_server::tasks::AddHost.run(&base, &vars).await.expect("added as the main host");
+    assert_eq!(k.primary_host(ops, "shell").await.unwrap().as_deref(), Some("erp3.ops.internal"));
+    let vars = loco_rs::task::Vars::from_cli_args(vec![("host".into(), "erp2.ops.internal".into())]);
+    ferrum_server::tasks::SetPrimaryHost.run(&base, &vars).await.expect("made the main host");
+    assert_eq!(k.primary_host(ops, "shell").await.unwrap().as_deref(), Some("erp2.ops.internal"));
+    let vars = loco_rs::task::Vars::from_cli_args(vec![("host".into(), "erp.ops.internal".into())]);
+    assert!(ferrum_server::tasks::SetPrimaryHost.run(&base, &vars).await.is_err(), "not a released host");
+
+    // A workspace with one host, released: nothing takes its place, and a visitor is told the workspace has moved (410).
+    let solo = k
+        .create_tenant(NewTenant {
+            slug: "solo".into(),
+            name: "Solo".into(),
+            admin_email: "admin@solo.test".into(),
+            admin_password: PASSWORD.into(),
+            admin_name: None,
+            packages: vec![],
+            settings: None,
+        })
+        .await
+        .unwrap();
+    k.add_operator_host("solo", "erp.solo.internal", "shell", None).await.unwrap();
+    assert_eq!(k.host_successor("erp.solo.internal").await.unwrap(), None, "the task says so before it releases it");
+    let vars = loco_rs::task::Vars::from_cli_args(vec![("host".into(), "erp.solo.internal".into())]);
+    ferrum_server::tasks::ReleaseHost.run(&base, &vars).await.expect("released");
+    assert_eq!(k.primary_host(solo, "shell").await.unwrap(), None);
+    assert_eq!(call(&router, Method::GET, "erp.solo.internal", "/crm/", None, None, None).await.0, StatusCode::GONE);
 }

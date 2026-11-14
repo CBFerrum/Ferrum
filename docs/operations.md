@@ -1320,8 +1320,12 @@ zone placed by network. Without `public:` the doctor calls nothing.
 ignores a `zone`).
 
 ```bash
-# A name only your own network resolves: served as verified, never checked over the internet.
+# A name only your own network resolves: served as verified, never checked over the internet. The first host of
+# its kind (shell, portal, site:{app}) becomes the workspace's main one for it; primary:yes makes it the main one anyway.
 ferrum task add_host tenant:acme host:erp.internal.example.com target:shell zone:office
+ferrum task add_host tenant:acme host:erp2.internal.example.com target:shell zone:office primary:yes
+# Any live host of a workspace as the main one of its kind (audited): links and a leaving host's notice point at it.
+ferrum task set_primary_host host:erp.internal.example.com
 # Any host of a workspace, into a zone or out of all of them (other replicas see it within 20 seconds).
 ferrum task set_host_zone host:shop.example.com zone:public
 ferrum task set_host_zone host:shop.example.com zone:none
@@ -2950,8 +2954,12 @@ site (`site:{app}`), at most 20 per workspace.
   Certificate, which an operator adds when the domain is verified.
 * **Removing** a working domain releases it, after a leaving period (below). A domain that never worked
   is simply dropped.
-* **Main address**: one working domain of each kind is the main one: links in mail and redirects use
-  it, and the workspace's other addresses of that kind lead to it.
+* **Main address**: one working address of each kind (`shell`, `portal`, each `site:{app}`) is the main
+  one: links in mail and redirects use it, and the workspace's other addresses of that kind lead to it.
+  The first working address of a kind becomes its main one when that kind has none: a subdomain when it
+  is added, a custom domain when it is first verified, an operator's host (`ferrum task add_host`, see
+  "Zones") when it is added. An installation from before this rule whose addresses have no main one
+  (only operator hosts) gets one at its next start, or the next change of one of its addresses.
 
 ### Changing or removing an address
 
@@ -2983,9 +2991,13 @@ removed address leaves in three steps:
   any address, a subdomain too, with
   `ferrum task release_host host:<name> [leaving_days:<n>]` (default the setting; `0`: it redirects at
   once). Both are in the workspace's audit trail.
-* **The main address** hands its place on first: to the workspace's oldest subdomain of the same kind,
-  else its oldest working custom domain, so links in mail and redirects always lead somewhere. With none
-  left, that kind has no main address, and the removed one answers `410` after its leaving period.
+* **The main address** hands its place on first, to another live address of the same kind, whatever its
+  kind: the oldest subdomain, else the oldest working custom domain or operator host, so the leaving
+  notice, links in mail and redirects always lead somewhere. With none left, that kind has no main
+  address: the leaving notice has nowhere to point, a visitor without a session is told the workspace has
+  moved (`410`), and so is everyone after the leaving period. `release_host` says so before it releases
+  ("nothing will take its place: visitors will see that the workspace has moved"), and otherwise says
+  where visitors go.
 * **`FERRUM_HOST_LEAVING_DAYS=0`**: no leaving period; a removed address redirects at once, as before the
   setting. At most 365.
 * **API clients** (tokens, keys) are not tied to an address: they work on the leaving address, and after

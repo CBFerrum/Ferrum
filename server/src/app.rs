@@ -347,6 +347,12 @@ impl Hooks for App {
                 Err(e) => tracing::error!("workspaces' subdomains: {e}"),
             }
         }
+        // A workspace whose hosts have no main one (only operator hosts, from before every target got one) gets it.
+        match kernel.ensure_primary_hosts().await {
+            Ok(0) => {}
+            Ok(made) => tracing::info!(made, "workspaces' hosts got their main one"),
+            Err(e) => tracing::error!("workspaces' main hosts: {e}"),
+        }
         // `ferrum start`: Loco sets up a context only to read the configuration, then the one that serves, and keeps the
         // first as long as the process runs. Once this one is ready, the earlier one's pools are closed, so that they hold
         // no connections (docs/operations.md, "Database role").
@@ -619,6 +625,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::DeleteTenant);
         tasks.register(crate::tasks::AddHost);
         tasks.register(crate::tasks::SetHostZone);
+        tasks.register(crate::tasks::SetPrimaryHost);
         tasks.register(crate::tasks::OperatorAdmin(true));
         tasks.register(crate::tasks::OperatorAdmin(false));
         tasks.register(crate::tasks::ClearStaffNetworks);

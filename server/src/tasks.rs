@@ -658,8 +658,9 @@ fn zone_arg(st: &crate::state::AppState, vars: &Vars) -> Result<Option<String>> 
     }
 }
 
-/// `add_host tenant:<slug> host:<name> target:<shell|portal|site:app> zone:<zone|none>`: a host the
-/// operator vouches for, served as verified and never checked (docs/operations.md, "Zones").
+/// `add_host tenant:<slug> host:<name> target:<shell|portal|site:app> zone:<zone|none> [primary:yes]`: a host the
+/// operator vouches for, served as verified and never checked (docs/operations.md, "Zones"). The first host of its
+/// target becomes the main one; `primary:yes` makes it the main one whatever the workspace had.
 pub struct AddHost;
 
 #[async_trait]
@@ -671,8 +672,41 @@ impl Task for AddHost {
         let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
         let zone = zone_arg(&st, vars)?;
         let host = vars.cli_arg("host")?;
-        st.kernel.add_operator_host(vars.cli_arg("tenant")?, host, vars.cli_arg("target")?, zone.as_deref()).await.map_err(refused)?;
-        println!("{host} added, in zone {}", zone.as_deref().unwrap_or("none"));
+        let primary = match vars.cli_arg("primary") {
+            Err(_) | Ok("no") => false,
+            Ok("yes") => true,
+            Ok(_) => return Err(Error::Message("primary: yes or no".into())),
+        };
+        let tenant = vars.cli_arg("tenant")?;
+        st.kernel.add_operator_host(tenant, host, vars.cli_arg("target")?, zone.as_deref()).await.map_err(refused)?;
+        if primary {
+            st.kernel.set_primary_host(host).await.map_err(refused)?;
+        }
+        let (id, _) = st.kernel.tenant_by_slug(tenant).await.map_err(refused)?;
+        let main = st.kernel.primary_host(id, vars.cli_arg("target")?).await.map_err(refused)?;
+        let main = if main.as_deref() == ferrum_kernel::shell::normalize_host(host).as_deref() {
+            ", the workspace's main host for it".to_string()
+        } else {
+            String::new()
+        };
+        println!("{host} added, in zone {}{main}", zone.as_deref().unwrap_or("none"));
+        Ok(())
+    }
+}
+
+/// `set_primary_host host:<name>`: makes a live host of a workspace (an operator's one too) the main one of its target:
+/// links and the notice of a host that is leaving point at it. Audited as the system's.
+pub struct SetPrimaryHost;
+
+#[async_trait]
+impl Task for SetPrimaryHost {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "set_primary_host".into(), detail: "Make a host the main one of its workspace for what it serves".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let host = vars.cli_arg("host")?;
+        kernel(ctx)?.set_primary_host(host).await.map_err(refused)?;
+        println!("{host} is the workspace's main host for what it serves (other replicas see it within 20 seconds)");
         Ok(())
     }
 }
@@ -1081,6 +1115,11 @@ impl Task for ReleaseHost {
             Ok(d) => Some(d.trim().parse::<i64>().map_err(|_| Error::Message("leaving_days: a number of days, 0 for none".into()))?),
             Err(_) => None,
         };
+        // Said before it is done: where its visitors go from now on.
+        match k.host_successor(host).await.map_err(refused)? {
+            Some(to) => println!("{host}: visitors without a session go on to {to}"),
+            None => println!("{host}: nothing will take its place: visitors will see that the workspace has moved"),
+        }
         match k.release_host(host, days).await.map_err(refused)?.1 {
             Some(until) => println!("{host} is leaving: it serves those signed in there until {until}, then redirects"),
             None => println!("{host} is released with no leaving period"),
