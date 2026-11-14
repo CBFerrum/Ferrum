@@ -371,11 +371,12 @@ impl Kernel {
         for ev in &events {
             // The claim covered the batch, and earlier events may have used it up: take this one
             // afresh. If it has passed to another worker meanwhile, it is theirs, and running it
-            // here too would do the work twice.
+            // here too would do the work twice. Once a move is planned, the rest of the batch waits for its copy.
             let mut tx = self.db.system_tx().await?;
             let lease: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
                 "update outbox set available_at = now() + make_interval(secs => $3) \
-                 where id = $1 and available_at = $2 and processed_at is null and not dead returning available_at",
+                 where id = $1 and available_at = $2 and processed_at is null and not dead \
+                   and not exists (select 1 from platform_move) returning available_at",
             )
             .bind(ev.id)
             .bind(ev.lease)

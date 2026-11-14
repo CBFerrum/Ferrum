@@ -166,7 +166,7 @@ impl Objects {
         if back.to_bytes().as_ref() == b"ok" { Ok(()) } else { Err(Error::Unavailable("storage: a probe came back different".into())) }
     }
 
-    async fn exists(&self, key: &str) -> Result<bool> {
+    pub(crate) async fn exists(&self, key: &str) -> Result<bool> {
         match self.op.stat(key).await {
             Ok(_) => Ok(true),
             Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(false),

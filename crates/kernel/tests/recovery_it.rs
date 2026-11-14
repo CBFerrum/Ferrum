@@ -145,6 +145,10 @@ fn restores_and_regions() {
         tokio::spawn(a_restored_database_does_not_act_on_its_past()).await.unwrap();
         tokio::spawn(one_workspace_goes_back_alone()).await.unwrap();
         tokio::spawn(only_one_region_writes()).await.unwrap();
+        tokio::spawn(a_planned_move_carries_what_was_waiting()).await.unwrap();
+        tokio::spawn(a_mark_out_of_time_or_unfenced_is_a_restore()).await.unwrap();
+        tokio::spawn(the_fence_falls_between_transactions()).await.unwrap();
+        tokio::spawn(what_a_move_can_break()).await.unwrap();
     });
 }
 
@@ -488,4 +492,219 @@ async fn only_one_region_writes() {
     stop.send(true).unwrap();
     a_loop.await.unwrap();
     b_loop.await.unwrap();
+}
+
+const DAY: Duration = Duration::from_secs(24 * 3600);
+
+async fn adopted(k: &Kernel) -> i64 {
+    let mut tx = k.db.system_tx().await.unwrap();
+    let n = sqlx::query_scalar("select count(*) from audit_event where action = 'platform.move_adopted'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    n
+}
+
+async fn try_pay(k: &Kernel, tenant: Uuid) -> Result<()> {
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    outbox::enqueue(&mut tx, tenant, "pay", None, None, json!({"amount": 100})).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// A planned move: the copy carries on with what was waiting, once; the source takes nothing more.
+async fn a_planned_move_carries_what_was_waiting() {
+    let (live, copy) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
+    let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
+    let k = kernel(database(&live, true).await, sent.clone(), app.clone()).await;
+    let admin = workspace(&k, "acme").await;
+    drain(&k).await;
+    pay(&k, admin.tenant).await;
+    assert!(k.plan_move(" ", DAY, Duration::ZERO).await.is_err(), "it takes a reason");
+    assert!(k.plan_move("to Kubernetes", Duration::from_secs(60), Duration::ZERO).await.is_err(), "at least an hour");
+    assert!(matches!(k.cancel_move("nothing").await, Err(Error::Conflict(_))), "nothing to cancel");
+    // Work a newer build wrote waits: an upgrade or a rollback is going on, and an older build ignores the fence.
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update outbox set build_date = now() + interval '10 years' where topic = 'pay'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let r = k.plan_move("to Kubernetes", DAY, Duration::ZERO).await;
+    assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("newer build")), "{r:?}");
+    assert!(k.planned_move().await.unwrap().is_none(), "and nothing was marked");
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update outbox set build_date = null where topic = 'pay'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let mark = k.plan_move("to Kubernetes", DAY, Duration::ZERO).await.expect("planned");
+    assert!(mark.fenced_at.is_some());
+    assert!(matches!(k.plan_move("again", DAY, Duration::ZERO).await, Err(Error::Conflict(_))), "planned once");
+
+    // The source takes no changes, and sends nothing.
+    assert!(matches!(try_pay(&k, admin.tenant).await, Err(Error::Unavailable(_))), "fenced");
+    assert!(k.holding().await.unwrap());
+    assert!(!k.restore_held().await.unwrap(), "held for the move, not as after a restore");
+    assert!(k.move_standing().await.unwrap().is_some_and(|(m, source)| source && m.fenced_at.is_some()), "the source of the move");
+    drain(&k).await;
+    assert_eq!(sent.count.load(Ordering::SeqCst), 0);
+    restore(&backup(&live), &copy).await;
+
+    // Two replicas of the copy start at once: the move is adopted once, nothing is set aside, and what was waiting
+    // goes out once, from the copy.
+    let (moved, told) = (Arc::new(Sent::default()), Arc::new(App::default()));
+    let (one, two) = tokio::join!(async { kernel(database(&copy, false).await, moved.clone(), told.clone()).await }, async {
+        kernel(database(&copy, false).await, moved.clone(), told.clone()).await
+    });
+    assert!(!one.holding().await.unwrap() && !two.holding().await.unwrap(), "no hold");
+    assert_eq!(told.told.load(Ordering::SeqCst), 0, "nothing set aside");
+    assert_eq!(adopted(&one).await, 1, "adopted once");
+    assert!(one.planned_move().await.unwrap().is_none(), "the mark is gone from the copy");
+    drain(&one).await;
+    drain(&two).await;
+    assert_eq!(moved.count.load(Ordering::SeqCst), 1, "what was waiting went out once");
+    try_pay(&two, admin.tenant).await.expect("the copy takes changes");
+    drain(&two).await;
+    assert_eq!(moved.count.load(Ordering::SeqCst), 2);
+    let again = kernel(database(&copy, false).await, moved.clone(), told.clone()).await;
+    assert!(!again.holding().await.unwrap() && adopted(&again).await == 1, "starting again changes nothing");
+
+    // The source stays fenced when it starts again (it starts, then serves read-only).
+    let db = database(&live, false).await;
+    db.starting(true);
+    let source = kernel(db, sent.clone(), app.clone()).await;
+    source.db.starting(false);
+    assert!(matches!(try_pay(&source, admin.tenant).await, Err(Error::Unavailable(_))), "still fenced");
+    assert!(source.holding().await.unwrap());
+    assert!(matches!(source.adopt_move("it is the copy").await, Err(Error::Conflict(_))), "the source is not a copy");
+    assert_eq!(app.told.load(Ordering::SeqCst), 0);
+
+    // Cancelled: the source takes changes again, and sends what it held.
+    source.cancel_move("staying on Compose").await.expect("cancelled");
+    assert!(!source.holding().await.unwrap());
+    try_pay(&source, admin.tenant).await.expect("takes changes");
+    drain(&source).await;
+    assert_eq!(sent.count.load(Ordering::SeqCst), 2);
+}
+
+/// A copy with a mark it may not follow is a restore, held as before: an old backup holding a mark whose time ran out,
+/// and a copy taken before the source stopped taking changes.
+async fn a_mark_out_of_time_or_unfenced_is_a_restore() {
+    let (live, copy) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
+    let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
+    let k = kernel(database(&live, true).await, sent.clone(), app.clone()).await;
+    let admin = workspace(&k, "acme").await;
+    drain(&k).await;
+    pay(&k, admin.tenant).await;
+    k.plan_move("to another cluster", DAY, Duration::ZERO).await.expect("planned");
+    for (change, why) in [
+        ("update platform_move set valid_until = now() - interval '1 hour'", "its time ran out"),
+        ("update platform_move set valid_until = now() + interval '1 day', fenced_at = null", "copied before the fence"),
+    ] {
+        sqlx::query(change).execute(&k.db.pool).await.unwrap();
+        restore(&backup(&live), &copy).await;
+        let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
+        let c = kernel(database(&copy, false).await, sent.clone(), app.clone()).await;
+        assert!(c.holding().await.unwrap(), "{why}: held");
+        assert_eq!(app.told.load(Ordering::SeqCst), 1, "{why}: set aside");
+        assert!(c.planned_move().await.unwrap().is_none(), "{why}: the mark is gone");
+        try_pay(&c, admin.tenant).await.expect("a held copy takes changes, and sends nothing");
+        drain(&c).await;
+        assert_eq!(sent.count.load(Ordering::SeqCst), 0, "{why}");
+    }
+}
+
+/// The fence falls between transactions: one in flight finishes, one that starts meanwhile waits and is fenced.
+async fn the_fence_falls_between_transactions() {
+    let live = url("FERRUM_TEST_DATABASE_URL", "ferrum_test");
+    let k = kernel(database(&live, true).await, Arc::default(), Arc::default()).await;
+    let admin = workspace(&k, "acme").await;
+    let mut open = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let planning = tokio::spawn({
+        let k = k.clone();
+        async move { k.plan_move("to Kubernetes", DAY, Duration::ZERO).await }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!planning.is_finished(), "it waits for the transaction in flight");
+    let late = tokio::spawn({
+        let k = k.clone();
+        async move { try_pay(&k, admin.tenant).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    outbox::enqueue(&mut open, admin.tenant, "pay", None, None, json!({"amount": 1})).await.expect("begun before the fence");
+    open.commit().await.expect("and finishes");
+    planning.await.unwrap().expect("planned");
+    assert!(matches!(late.await.unwrap(), Err(Error::Unavailable(_))), "begun while it waited: fenced");
+    k.cancel_move("rehearsed").await.unwrap();
+    try_pay(&k, admin.tenant).await.expect("lifted");
+}
+
+/// What a move without the source's keys or files breaks, said by count and id, never by value.
+async fn what_a_move_can_break() {
+    use ferrum_kernel::recovery::Files;
+    use ferrum_kernel::secret::SecretKey;
+    let live = url("FERRUM_TEST_DATABASE_URL", "ferrum_test");
+    let (old, new) = (SecretKey::new([1; 32]), SecretKey::new([2; 32]));
+    let boot = |db: Db, key: SecretKey, retired: Vec<SecretKey>| async move {
+        let settings = KernelSettings { secret_key: Some(key), retired_secret_keys: retired, ..Default::default() };
+        Kernel::boot(db, catalog(), HookRegistry::default(), settings, None).await.expect("boot")
+    };
+    let k = boot(database(&live, true).await, old.clone(), vec![]).await;
+    let files = Arc::new(MemFiles::default());
+    k.set_file_store(files.clone());
+    let admin = workspace(&k, "acme").await;
+    let hook = Uuid::now_v7();
+    let plain = "the-signing-secret-itself";
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, $2, 'h', 'https://example.test', $3, '{}')")
+        .bind(admin.tenant)
+        .bind(hook)
+        .bind(k.seal_webhook_secret(admin.tenant, hook, plain).unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let record = Uuid::now_v7();
+    sqlx::query("insert into record_secret (tenant_id, entity, record_id, field, sealed, key_id) values ($1, 'Gateway', $2, 'api_key', 'AAAA', $3)")
+        .bind(admin.tenant)
+        .bind(record)
+        .bind(&old.id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let kept = k.store_file(&admin, None, "kept.txt", "text/plain", b"here").await.unwrap();
+    let lost = k.store_file(&admin, None, "lost.txt", "text/plain", b"not copied").await.unwrap();
+
+    // All fine.
+    assert_eq!(k.unopened_secrets().await.unwrap(), (vec![], true));
+    let mut missing = Vec::new();
+    assert_eq!(k.check_files(None, Files::All, |f| missing.push(f)).await.unwrap(), 2);
+    assert!(missing.is_empty());
+
+    // Moved with another key, and without one file: each is said, by where and which, and the value never.
+    let k = boot(database(&live, false).await, new.clone(), vec![]).await;
+    k.set_file_store(files.clone());
+    let key: String = {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let key = sqlx::query_scalar("select storage_key from file_object where id = $1")
+            .bind(lost["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        key
+    };
+    files.0.lock().unwrap().remove(&key);
+    let (unopened, complete) = k.unopened_secrets().await.unwrap();
+    assert!(complete);
+    let said = format!("{unopened:?}");
+    assert!(!said.contains(plain), "{said}");
+    let by: std::collections::BTreeMap<_, _> = unopened.iter().map(|u| (u.what.as_str(), (u.count, u.examples.clone()))).collect();
+    assert_eq!(by.get("Gateway.api_key"), Some(&(1, vec![record.to_string()])), "{said}");
+    assert_eq!(by.get("webhook.secret"), Some(&(1, vec![hook.to_string()])), "{said}");
+    let mut missing = Vec::new();
+    assert_eq!(k.check_files(Some(admin.tenant), Files::All, |f| missing.push(f)).await.unwrap(), 2);
+    assert_eq!(missing.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), [lost["id"].as_str().unwrap()]);
+    let mut newest = Vec::new();
+    assert_eq!(k.check_files(None, Files::Newest(1), |f| newest.push(f)).await.unwrap(), 1, "only as many as asked");
+    assert_eq!(newest.len(), 1, "the newest is the lost one");
+    assert!(kept["id"].is_string());
+
+    // With the old key retired beside the new one, everything opens again.
+    let k = boot(database(&live, false).await, new, vec![old]).await;
+    assert_eq!(k.unopened_secrets().await.unwrap(), (vec![], true));
 }

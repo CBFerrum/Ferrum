@@ -737,6 +737,127 @@ impl Task for ClearStaffNetworks {
     }
 }
 
+/// `plan_move reason:"..." [valid:<hours, 24>] [wait:<seconds, 130>]`: before copying the whole installation elsewhere,
+/// stops what reaches outside, waits for the work in hand, and fences the database (crates/kernel/src/moves.rs).
+pub struct PlanMove;
+
+#[async_trait]
+impl Task for PlanMove {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "plan_move".into(),
+            detail: "Before moving the installation: stops outward work, waits for what is in hand, and fences the database so a copy carries on without the restore hold".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let reason = vars.cli_arg("reason").map_err(|_| Error::Message("say why: reason:\"...\"".into()))?;
+        let number = |name: &str, default: u64| -> Result<u64> {
+            vars.cli_arg(name).map_or(Ok(default), |v| v.trim().parse().map_err(|_| Error::Message(format!("{name} is a whole number"))))
+        };
+        let (valid, wait) = (number("valid", 24)?, number("wait", 130)?);
+        // A region that does not hold the right to write is not the one to move from.
+        if let Ok(witness) = std::env::var("FERRUM_AUTHORITY_WITNESS_URL")
+            && !witness.trim().is_empty()
+        {
+            let region = std::env::var("FERRUM_REGION").unwrap_or_default();
+            let authority =
+                ferrum_kernel::recovery::Authority::connect(&witness, "ferrum", &region, std::time::Duration::from_secs(30)).await.map_err(refused)?;
+            let holder = authority.holder().await.map_err(refused)?;
+            if holder.as_deref() != Some(region.as_str()) {
+                return Err(Error::Message(format!(
+                    "this region ({region}) does not hold the right to write ({}): plan the move where the witness says writes happen",
+                    holder.map_or("nobody does".to_string(), |h| format!("{h} does"))
+                )));
+            }
+        }
+        let m = k.plan_move(reason, std::time::Duration::from_secs(valid * 3600), std::time::Duration::from_secs(wait)).await.map_err(refused)?;
+        println!("move {} planned: this database takes no changes from now on, and nothing here reaches outside.", m.id);
+        println!("Copy it now (dump and restore, a physical copy, or a backup taken from now on), with its files and keys.");
+        println!(
+            "A copy that starts before {} carries on without the restore hold, once. Start ONE copy: every copy that starts in time goes on with what was waiting, and would send it again.",
+            m.valid_until
+        );
+        println!("Every replica must run this build: one from before this release does not honour the fence, and would keep writing to this database.");
+        println!("Changed your mind: ferrum task cancel_move reason:\"...\" here.");
+        Ok(())
+    }
+}
+
+/// `cancel_move reason:"..."`: the move does not happen; this database takes changes again.
+pub struct CancelMove;
+
+#[async_trait]
+impl Task for CancelMove {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "cancel_move".into(), detail: "Lifts a planned move's fence: this database takes changes and sends again".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let reason = vars.cli_arg("reason").map_err(|_| Error::Message("say why: reason:\"...\"".into()))?;
+        let m = k.cancel_move(reason).await.map_err(refused)?;
+        println!("move {} cancelled: this database takes changes again.", m.id);
+        println!("A copy made while it was fenced would still carry on as moved until {}: do not start one.", m.valid_until);
+        Ok(())
+    }
+}
+
+/// `adopt_move reason:"..."`: on a physical copy (another timeline of the same database), says it is the copy.
+pub struct AdoptMove;
+
+#[async_trait]
+impl Task for AdoptMove {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "adopt_move".into(),
+            detail: "On a physical copy or a recovered backup of a database fenced for a move: says this is the copy, which then carries on".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let reason = vars.cli_arg("reason").map_err(|_| Error::Message("say how this copy was made: reason:\"...\"".into()))?;
+        let m = k.adopt_move(reason).await.map_err(refused)?;
+        println!("move {} adopted: this copy takes changes and sends what was waiting.", m.id);
+        Ok(())
+    }
+}
+
+/// `check_files [tenant:<slug>]`: every file the database names, looked for in storage (the doctor looks at the newest).
+pub struct CheckFiles;
+
+#[async_trait]
+impl Task for CheckFiles {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "check_files".into(), detail: "Looks for every file the database names (and app bundles) in storage, and lists those missing".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let tenant = match vars.cli_arg("tenant") {
+            Ok(slug) => {
+                let mut tx = k.db.system_tx().await.map_err(refused)?;
+                let id: Option<uuid::Uuid> =
+                    sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_optional(&mut *tx).await.map_err(refused)?;
+                tx.commit().await.map_err(refused)?;
+                Some(id.ok_or_else(|| Error::Message(format!("no workspace {slug}")))?)
+            }
+            Err(_) => None,
+        };
+        let mut missing = 0u64;
+        let checked = k
+            .check_files(tenant, ferrum_kernel::recovery::Files::All, |f| {
+                missing += 1;
+                match f.tenant {
+                    Some(t) => println!("missing: workspace {t}, file {} ({})", f.id, f.name),
+                    None => println!("missing: {} ({})", f.name, f.id),
+                }
+            })
+            .await
+            .map_err(refused)?;
+        println!("{checked} checked, {missing} missing");
+        if missing > 0 { Err(Error::Message(format!("{missing} files are not in storage"))) } else { Ok(()) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
