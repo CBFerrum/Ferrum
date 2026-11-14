@@ -516,7 +516,30 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     assert!(freeze_floor(&a).await.is_empty(), "finished, the source lets go");
     assert_eq!(finished["files"], json!(1));
     assert!(!dir_a.join(&file_key).exists());
+    // Another replica of A, running while the move (a task, a process of its own) brings the workspace back, which looked
+    // at its address before: nothing there then.
+    let replica = Db::connect(DbConfig { url: a_url.clone(), max_connections: 4, ..Default::default() }).await.expect("connect");
+    let a2 = Kernel::boot(replica, catalog(), HookRegistry::default(), KernelSettings { secret_key: Some(key_a.clone()), ..Default::default() }, None)
+        .await
+        .expect("a second replica of A");
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let listening = a2.spawn_listeners(stopped);
+    assert_eq!(a2.route_host("acme.eu.example").await.unwrap(), HostRoute::Unknown);
     a.move_workspace("acme", &back, Run::Start, &quiet).await.expect("back at A");
+    // It answers for the address as soon as the workspace is back, not once its own answer is 20 seconds old.
+    let mut route = HostRoute::Unknown;
+    for _ in 0..40 {
+        route = a2.route_host("acme.eu.example").await.unwrap();
+        if route != HostRoute::Unknown {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(route, HostRoute::Serve { tenant: t, target: "shell".into() }, "the other replica kept its answer from before");
+    let _ = stop.send(true);
+    for l in listening {
+        let _ = l.await;
+    }
     assert_eq!((freeze_floor(&a).await, freeze_floor(&b).await), (vec![], vec![t.to_string()]));
     assert_eq!(chains(&a, t).await, None, "its history whole at A again");
     assert!(anchor_holds(&a, t, anchored).await);
@@ -542,9 +565,23 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     assert_eq!((shown.shape.home.as_deref(), shown.shape.apps, shown.shape.label.as_deref()), (Some("crm"), Some(vec!["crm".to_string()]), Some("Sales")));
     let old: Vec<(bool,)> = sql(&a, "select released_at is not null from tenant_host where host = 'sales--acme.us.example' and tenant_id = $1", t).await;
     assert_eq!(old, vec![(true,)]);
-    // (B's replicas keep their answer for a host 20 s: what they will say from then on is what B recorded.)
+    // (The move tells B's running replicas as it leaves: what they say from then on is what B recorded.)
     let to: Vec<(Option<String>,)> = sql(&b, "select moved_to from workspace_move where workspace = $1", t).await;
     assert_eq!(to, vec![(Some("acme.eu.example".into()),)]);
+
+    // There and back again with a base domain on both sides: each lets go of the names under the other's base, and takes
+    // its own back when the workspace returns (a name it let go of is its own to take back), rather than leaving it let go.
+    b.finish_move("acme", "checked at A").await.expect("finished at B");
+    let away = MoveSource { base_domain: Some("us.example".into()), ..from(None) };
+    b.move_workspace("acme", &away, Run::Start, &quiet).await.expect("away to B again");
+    assert_eq!(b.route_host("sales--acme.us.example").await.unwrap(), HostRoute::Serve { tenant: t, target: "shell".into() }, "B's name again");
+    let let_go: Vec<(bool,)> = sql(&b, "select released_at is not null from tenant_host where host = 'sales--acme.eu.example' and tenant_id = $1", t).await;
+    assert_eq!(let_go, vec![(true,)], "B lets go of the name under A's base");
+    a.finish_move("acme", "checked at B again").await.expect("finished at A");
+    a.move_workspace("acme", &back, Run::Start, &quiet).await.expect("back at A again");
+    assert_eq!(a.route_host("sales--acme.eu.example").await.unwrap(), HostRoute::Serve { tenant: t, target: "shell".into() }, "A's name again");
+    let shown = a.host_shown("sales--acme.eu.example").await.unwrap().expect("a shell address");
+    assert_eq!(shown.shape.label.as_deref(), Some("Sales"), "showing what it showed");
 
     for u in [&a_url, &b_url] {
         as_superuser(u, "revoke set on parameter session_replication_role from ferrum").await;

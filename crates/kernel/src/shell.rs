@@ -629,8 +629,12 @@ impl Kernel {
 
     async fn host_row(&self, host: &str) -> Result<(HostRoute, Option<String>, HostShown)> {
         let Some(host) = normalize_host(host) else { return Ok((HostRoute::Unknown, None, HostShown::default())) };
+        // Kept 20 s, and only while no workspace's settings changed meanwhile, here or on another replica (a workspace that
+        // moved here or away, an address added elsewhere: crate::registry's notifications).
+        let bumps = self.registry.bumps();
         if let Some(e) = self.hosts.get(&host)
             && e.3.elapsed() < CACHE_TTL
+            && e.4 == bumps
         {
             return Ok((e.0.clone(), e.1.clone(), e.2.clone()));
         }
@@ -696,7 +700,7 @@ impl Kernel {
         if self.hosts.len() > 100_000 {
             self.hosts.retain(|_, v| v.3.elapsed() < CACHE_TTL);
         }
-        self.hosts.insert(host, (route.clone(), zone.clone(), shown.clone(), Instant::now()));
+        self.hosts.insert(host, (route.clone(), zone.clone(), shown.clone(), Instant::now(), bumps));
         Ok((route, zone, shown))
     }
 

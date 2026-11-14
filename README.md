@@ -498,6 +498,25 @@ FERRUM_TEST_DATABASE_DIRECT_URL=postgres://ferrum:ferrum@localhost:5432/ferrum_t
   cargo test -p ferrum-kernel --test version_window_it --test outbox_it --test jobs_it
 ```
 
+**Against a real standby.** `scripts/replica_pair.sh up <dir>` makes a private PostgreSQL primary and its streaming
+standby in `<dir>` (it must not exist; PostgreSQL 17's programs from `PG_BIN`, on 127.0.0.1 ports 5441 and 5442 unless
+`REPLICA_PAIR_PORT` says otherwise; the machine's own PostgreSQL is not touched) and writes their addresses to
+`<dir>/env`. `crates/kernel/tests/replica_pair_it.rs` then reads through `FERRUM_DATABASE_READ_URL` with real lag
+(replay paused, the stream cut) and real failures (a recovery conflict, the standby stopped mid-read, the standby
+promoted), and says it skipped otherwise. It ends by promoting the standby, so make the pair again for each run:
+
+```bash
+scripts/replica_pair.sh up /tmp/ferrum-pair && . /tmp/ferrum-pair/env
+cargo test -p ferrum-kernel --test replica_pair_it -- --nocapture
+scripts/replica_pair.sh down /tmp/ferrum-pair
+```
+
+**Moves and rollbacks with the real binary.** `scripts/move_rehearsal.sh [--grant] ferrum_moverehearsal_a
+ferrum_moverehearsal_b` moves a whole installation, then one workspace between two running servers and back, then
+makes a sandbox (docs/operations.md, "Moving an installation", "Moving one workspace"). `scripts/window_rehearsal.sh
+<older commit> ferrum_windowrehearsal_a` builds an older commit of main and runs it with this build on one database
+("Rolling back and the two-version window"). Both make and drop only databases with their own prefix.
+
 `scripts/smoke.py` is a post-deploy check against a running server (readiness, login, reports,
 idempotency, optimistic locking, and 60 concurrent stock issues racing for 100 units).
 

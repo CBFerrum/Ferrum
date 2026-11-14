@@ -32,6 +32,9 @@ pub struct Registry {
     changes: DashMap<Uuid, u64>,
     /// How often everything was dropped, a notification having perhaps been missed.
     epoch: AtomicU64,
+    /// How often any workspace's settings were seen to change, or everything dropped: a replica's answers for hosts
+    /// ([`crate::Kernel::route_host`]) are kept only while this stands.
+    bumps: AtomicU64,
 }
 
 impl Registry {
@@ -44,7 +47,12 @@ impl Registry {
             ttl: Duration::from_secs(30),
             changes: DashMap::new(),
             epoch: AtomicU64::new(0),
+            bumps: AtomicU64::new(0),
         }
+    }
+
+    pub(crate) fn bumps(&self) -> u64 {
+        self.bumps.load(Ordering::SeqCst)
     }
 
     /// The cluster catalog: platform packages plus the packages of available apps.
@@ -183,11 +191,13 @@ impl Registry {
     pub fn invalidate(&self, tenant: Uuid) {
         self.cache.remove(&tenant);
         *self.changes.entry(tenant).or_insert(0) += 1;
+        self.bumps.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn invalidate_all(&self) {
         self.cache.clear();
         self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.bumps.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Where a workspace's settings stand as this replica knows: `(epoch, changes)`. Something read
