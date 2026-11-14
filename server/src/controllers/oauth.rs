@@ -253,10 +253,11 @@ async fn app_client(st: &crate::state::AppState, ctx: &ferrum_kernel::Ctx, heade
 fn consent_page(status: StatusCode, body: &str, lang: &str) -> Response {
     use crate::shell::{page_response, theme_hash};
     let html = format!(
-        r#"<!doctype html>{}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>Allow access to Ferrum?</h1>{body}</main></body></html>"#,
+        r#"<!doctype html>{}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{}.css"><link rel="stylesheet" href="{pages_css}"></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>Allow access to Ferrum?</h1>{body}</main></body></html>"#,
         crate::shell::html_open(lang),
         crate::shell::esc(&crate::shell_words::tr(lang, "Allow access")),
-        theme_hash()
+        theme_hash(),
+        pages_css = crate::shell::shell_file_url("pages.css"),
     );
     // No form-action: after the answer the browser goes on to the client's own address.
     let csp = "default-src 'none'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'";

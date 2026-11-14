@@ -627,7 +627,9 @@ Pages, for browsers, with the session cookie:
   work on every host.
 * `GET /_ui/{app}/{digest}/{path}` → a file of an interface release: public, `immutable`.
 * `GET /_shell/v1/{file}` → the shell's own files (`runtime.js`, `live-worker.js`, …), the newest of
-  v1; `GET /_shell/theme/{hash}.css` → the theme.
+  v1, kept by browsers for five minutes. Pages name `runtime.js`, `portal.js`, `login.js` and `pages.css`
+  with their digest (`?v={digest}`): that address is kept for a year (`immutable`), and a server with
+  other files names another. `GET /_shell/theme/{hash}.css` → the theme.
 
 **Keys the bar keeps.** The bar takes Ctrl/Cmd+K (its search) before a page's own handlers see it,
 except inside an element that claims it: `data-ferrum-keys="mod+k"` on the editable region or any
