@@ -269,6 +269,9 @@ impl Hooks for App {
         // A zone that limits staff to some apps names them by id: each resolved to its packages, or the server does not start.
         let zones = Arc::new(crate::zone::resolve(zones, &kernel).await.map_err(Error::Message)?);
         kernel.set_zones(zones.clone());
+        // From now on a rollback to a build that would not enforce them is refused (docs/operations.md, "Protections an
+        // older build would not enforce"). A guest of a newer build writes nothing.
+        kernel.require_zone_floors(&zones).await.map_err(|e| Error::Message(format!("zones: {e}")))?;
         ferrum_app_erp::maintenance(&kernel).await.map_err(|e| Error::Message(format!("ERP's upkeep: {e}")))?;
         if let Err(e) = kernel.registry.catalog().closure(&kernel.settings.signup.packages) {
             return Err(Error::Message(format!("FERRUM_SIGNUP_PACKAGES: {e}")));
@@ -621,6 +624,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::ClearStaffNetworks);
         tasks.register(crate::tasks::PlanMove);
         tasks.register(crate::tasks::CancelMove);
+        tasks.register(crate::tasks::AllowOlderBuilds);
         tasks.register(crate::tasks::AdoptMove);
         tasks.register(crate::tasks::CheckFiles);
         tasks.register(crate::tasks::MoveWorkspace);

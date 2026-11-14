@@ -496,6 +496,12 @@ async fn only_one_region_writes() {
 
 const DAY: Duration = Duration::from_secs(24 * 3600);
 
+/// The holders of the planned move's floor (crates/kernel/src/window.rs).
+async fn fence_floor(k: &Kernel) -> Vec<String> {
+    let (floors, _) = k.floors().await.unwrap();
+    floors.into_iter().filter(|f| f.feature == ferrum_kernel::moves::FLOOR.feature).map(|f| f.holder).collect()
+}
+
 async fn adopted(k: &Kernel) -> i64 {
     let mut tx = k.db.system_tx().await.unwrap();
     let n = sqlx::query_scalar("select count(*) from audit_event where action = 'platform.move_adopted'").fetch_one(&mut *tx).await.unwrap();
@@ -531,8 +537,11 @@ async fn a_planned_move_carries_what_was_waiting() {
     let mut tx = k.db.system_tx().await.unwrap();
     sqlx::query("update outbox set build_date = null where topic = 'pay'").execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+    assert!(fence_floor(&k).await.is_empty(), "a refused plan holds no floor");
     let mark = k.plan_move("to Kubernetes", DAY, Duration::ZERO).await.expect("planned");
     assert!(mark.fenced_at.is_some());
+    // A build that would ignore the fence may no longer start here.
+    assert_eq!(fence_floor(&k).await, vec![mark.id.to_string()]);
     assert!(matches!(k.plan_move("again", DAY, Duration::ZERO).await, Err(Error::Conflict(_))), "planned once");
 
     // The source takes no changes, and sends nothing.
@@ -554,6 +563,7 @@ async fn a_planned_move_carries_what_was_waiting() {
     assert_eq!(told.told.load(Ordering::SeqCst), 0, "nothing set aside");
     assert_eq!(adopted(&one).await, 1, "adopted once");
     assert!(one.planned_move().await.unwrap().is_none(), "the mark is gone from the copy");
+    assert!(fence_floor(&one).await.is_empty(), "and so is its floor");
     drain(&one).await;
     drain(&two).await;
     assert_eq!(moved.count.load(Ordering::SeqCst), 1, "what was waiting went out once");
@@ -574,7 +584,9 @@ async fn a_planned_move_carries_what_was_waiting() {
     assert_eq!(app.told.load(Ordering::SeqCst), 0);
 
     // Cancelled: the source takes changes again, and sends what it held.
+    assert_eq!(fence_floor(&source).await, vec![mark.id.to_string()], "the source keeps the floor while fenced");
     source.cancel_move("staying on Compose").await.expect("cancelled");
+    assert!(fence_floor(&source).await.is_empty(), "cancelled, the floor goes");
     assert!(!source.holding().await.unwrap());
     try_pay(&source, admin.tenant).await.expect("takes changes");
     drain(&source).await;
@@ -602,6 +614,7 @@ async fn a_mark_out_of_time_or_unfenced_is_a_restore() {
         assert!(c.holding().await.unwrap(), "{why}: held");
         assert_eq!(app.told.load(Ordering::SeqCst), 1, "{why}: set aside");
         assert!(c.planned_move().await.unwrap().is_none(), "{why}: the mark is gone");
+        assert!(fence_floor(&c).await.is_empty(), "{why}: and its floor");
         try_pay(&c, admin.tenant).await.expect("a held copy takes changes, and sends nothing");
         drain(&c).await;
         assert_eq!(sent.count.load(Ordering::SeqCst), 0, "{why}");

@@ -14,6 +14,33 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
+/// Zones, level 1 (pull request 229): an older build admits staff everywhere.
+pub const FLOOR: crate::window::Floor =
+    crate::window::Floor { feature: "zones", since: "2026-11-13T23:48:57Z", what: "zones that admit no staff refuse them", temporary: false };
+
+/// Zones, level 2 (pull request 233): an older build does not narrow staff to some apps or keep administrators out.
+pub const FLOOR_LIMITED: crate::window::Floor = crate::window::Floor {
+    feature: "zones_limited",
+    since: "2026-11-14T05:59:42Z",
+    what: "zones that limit staff to some apps or keep administrators out narrow them",
+    temporary: false,
+};
+
+impl crate::Kernel {
+    /// At start, with zone settings in place: older builds that would not enforce them may no longer start
+    /// ([`crate::window::require`]). Every replica of every pool does it; it changes nothing after the first.
+    pub async fn require_zone_floors(&self, zones: &Zones) -> crate::Result<()> {
+        if zones.is_off() {
+            return Ok(());
+        }
+        self.require_floor(&FLOOR, "").await?;
+        if zones.rules.values().any(Rule::limited) {
+            self.require_floor(&FLOOR_LIMITED, "").await?;
+        }
+        Ok(())
+    }
+}
+
 /// `FERRUM_ZONE_MODE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {

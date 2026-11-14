@@ -39,7 +39,40 @@ const UNDATED: &str = "2026-11-13T20:00:00Z";
 pub const LOCK: i64 = 0x0FE2_2078;
 
 const BUILD_KEY: &str = "schema_build_date";
+/// What every window-aware build reads: the later of the syncing build's own `COMPATIBLE_FROM` and the latest floor.
 const FROM_KEY: &str = "schema_compatible_from";
+/// The syncing build's own `COMPATIBLE_FROM`, kept so that [`FROM_KEY`] can be worked out again when a floor goes.
+const OWN_KEY: &str = "schema_compatible_from_own";
+
+/// Transaction advisory lock: every change to the floors and to [`FROM_KEY`], one at a time.
+const FLOOR_LOCK: i64 = 0x0FE2_207A;
+
+/// A protection that a build from before `since` does not enforce (docs/operations.md, "Protections an older build
+/// would not enforce"). While one is in use its floor keeps such builds from starting ([`require`]).
+#[derive(Debug)]
+pub struct Floor {
+    pub feature: &'static str,
+    /// The committer date of the first commit on main that enforces it (the merge of its pull request): never later
+    /// than any build that holds it.
+    pub since: &'static str,
+    /// What an older build would not do, in a person's words.
+    pub what: &'static str,
+    /// Held while something is under way, once per holder, and gone with the last ([`release`]).
+    pub temporary: bool,
+}
+
+/// Every floor this build knows.
+pub const FLOORS: &[&Floor] = &[
+    &crate::zones::FLOOR,
+    &crate::zones::FLOOR_LIMITED,
+    &crate::moves::FLOOR,
+    &crate::gate::STAFF_NETWORKS_FLOOR,
+    &crate::gate::KEY_NETWORKS_FLOOR,
+    &crate::gate::IDLE_FLOOR,
+    &crate::gate::BREAK_GLASS_FLOOR,
+    &crate::workspace_move::FLOOR,
+    &crate::sandbox::FLOOR,
+];
 
 fn parse(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s).map(|d| d.with_timezone(&Utc)).unwrap_or(DateTime::<Utc>::MIN_UTC)
@@ -96,20 +129,208 @@ pub(crate) async fn refuse_older(conn: &mut PgConnection) -> Result<Option<Recor
     }
 }
 
-/// Records this build as the one that synced the schema, never over a newer one. Under the sync lock.
+/// Records this build as the one that synced the schema, never over a newer one, and never with a `COMPATIBLE_FROM`
+/// earlier than the floors. Under the sync lock.
 pub(crate) async fn record(conn: &mut PgConnection) -> Result<()> {
-    let own = Recorded { build: build_date(), compatible_from: compatible_from() };
-    if refuse_older(conn).await? == Some(own) {
+    use sqlx::Connection;
+    let mut tx = conn.begin().await?;
+    lock_floors(&mut tx).await?;
+    refuse_older(&mut tx).await?;
+    let effective = latest_floor(&mut tx).await?.map_or(compatible_from(), |f| f.max(compatible_from()));
+    sqlx::query(
+        "insert into cluster_state (key, value) values ($1, $2), ($3, $4), ($5, $6) \
+         on conflict (key) do update set value = excluded.value, updated_at = now() where cluster_state.value is distinct from excluded.value",
+    )
+    .bind(BUILD_KEY)
+    .bind(shown(build_date()))
+    .bind(OWN_KEY)
+    .bind(shown(compatible_from()))
+    .bind(FROM_KEY)
+    .bind(shown(effective))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn lock_floors(conn: &mut PgConnection) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock($1)").bind(FLOOR_LOCK).execute(&mut *conn).await?;
+    Ok(())
+}
+
+async fn have_floors(conn: &mut PgConnection) -> Result<bool> {
+    Ok(sqlx::query_scalar("select to_regclass('window_floor') is not null").fetch_one(&mut *conn).await?)
+}
+
+async fn latest_floor(conn: &mut PgConnection) -> Result<Option<DateTime<Utc>>> {
+    if !have_floors(conn).await? {
+        return Ok(None);
+    }
+    Ok(sqlx::query_scalar("select max(since) from window_floor").fetch_one(&mut *conn).await?)
+}
+
+/// Works [`FROM_KEY`] out again from the syncing build's own value and the floors. Under [`lock_floors`].
+async fn settle(conn: &mut PgConnection) -> Result<()> {
+    let own: Option<String> = sqlx::query_scalar("select value from cluster_state where key = $1").bind(OWN_KEY).fetch_optional(&mut *conn).await?;
+    // Nothing recorded yet (no build has synced): nothing to raise.
+    let Some(own) = own.map(|v| parse(&v)) else { return Ok(()) };
+    let effective = latest_floor(conn).await?.map_or(own, |f| f.max(own));
+    sqlx::query(
+        "insert into cluster_state (key, value) values ($1, $2) \
+         on conflict (key) do update set value = excluded.value, updated_at = now() where cluster_state.value is distinct from excluded.value",
+    )
+    .bind(FROM_KEY)
+    .bind(shown(effective))
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Whether a newer build than this one has synced the schema: this one is its guest, and releases and lowers no floor.
+async fn guest_here(conn: &mut PgConnection) -> Result<bool> {
+    Ok(recorded(conn).await?.is_some_and(|r| r.build > build_date()))
+}
+
+/// Where a protection is switched on, before it takes effect: from now on no build from before `floor.since` starts on
+/// this database. `holder`: what holds a temporary floor (a move's id or a workspace's), `""` for a lasting one. Inside
+/// a transaction (it takes a transaction lock, so replicas and requests doing this at once leave one row and the right
+/// value). Done again, nothing changes. A guest of a newer build does it too, for the features it knows: raising a
+/// floor only refuses more, and it leaves the recorded build and that build's own `COMPATIBLE_FROM` alone. Releasing and
+/// lowering are never a guest's.
+pub async fn require(conn: &mut PgConnection, floor: &Floor, holder: &str) -> Result<()> {
+    lock_floors(conn).await?;
+    if !have_floors(conn).await? {
         return Ok(());
     }
-    sqlx::query("insert into cluster_state (key, value) values ($1, $2), ($3, $4) on conflict (key) do update set value = excluded.value, updated_at = now()")
-        .bind(BUILD_KEY)
-        .bind(shown(own.build))
-        .bind(FROM_KEY)
-        .bind(shown(own.compatible_from))
-        .execute(&mut *conn)
-        .await?;
+    // A build never puts a floor later than itself, which would keep its own kind out (a local build can carry an
+    // older date than its newest commit: build.rs).
+    let since = if dated() { parse(floor.since).min(build_date()) } else { parse(floor.since) };
+    let added = sqlx::query(
+        "insert into window_floor (feature, holder, since, what, temporary, switched_on_by) values ($1, $2, $3, $4, $5, $6) \
+         on conflict (feature, holder) do nothing",
+    )
+    .bind(floor.feature)
+    .bind(holder)
+    .bind(since)
+    .bind(floor.what)
+    .bind(floor.temporary)
+    .bind(build_date())
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    if added > 0 {
+        settle(conn).await?;
+    }
     Ok(())
+}
+
+/// A temporary floor's `holder` has ended (a move cancelled, adopted, finished or aborted). The floor goes with its last
+/// holder. Inside a transaction; a no-op for a guest, and when the holder is gone already.
+pub async fn release(conn: &mut PgConnection, floor: &Floor, holder: &str) -> Result<()> {
+    lock_floors(conn).await?;
+    if guest_here(conn).await? || !have_floors(conn).await? {
+        return Ok(());
+    }
+    let gone =
+        sqlx::query("delete from window_floor where feature = $1 and holder = $2").bind(floor.feature).bind(holder).execute(&mut *conn).await?.rows_affected();
+    if gone > 0 {
+        settle(conn).await?;
+    }
+    Ok(())
+}
+
+/// A floor in effect, as the database holds it (also those of newer builds than this one).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct InEffect {
+    pub feature: String,
+    pub holder: String,
+    pub since: DateTime<Utc>,
+    pub what: String,
+    pub temporary: bool,
+    pub switched_on_at: DateTime<Utc>,
+    pub switched_on_by: DateTime<Utc>,
+}
+
+/// The floors in effect, latest first.
+pub async fn floors(conn: &mut PgConnection) -> Result<Vec<InEffect>> {
+    if !have_floors(conn).await? {
+        return Ok(vec![]);
+    }
+    let rows: Vec<(String, String, DateTime<Utc>, String, bool, DateTime<Utc>, DateTime<Utc>)> =
+        sqlx::query_as("select feature, holder, since, what, temporary, switched_on_at, switched_on_by from window_floor order by since desc, feature, holder")
+            .fetch_all(&mut *conn)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(feature, holder, since, what, temporary, switched_on_at, switched_on_by)| InEffect {
+            feature,
+            holder,
+            since,
+            what,
+            temporary,
+            switched_on_at,
+            switched_on_by,
+        })
+        .collect())
+}
+
+/// What `allow_older_builds` did: the floors it removed, and the oldest build that may start now.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Lowered {
+    pub removed: Vec<InEffect>,
+    pub compatible_from: Option<DateTime<Utc>>,
+}
+
+/// One line per protection: what an older build would not do, the build it needs, when it was switched on and by which
+/// build (a temporary one's holders together).
+pub fn said(floors: &[InEffect]) -> Vec<String> {
+    let mut names: Vec<&str> = vec![];
+    for f in floors {
+        if !names.contains(&f.feature.as_str()) {
+            names.push(&f.feature);
+        }
+    }
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let of: Vec<&InEffect> = floors.iter().filter(|f| f.feature == name).collect();
+            let first = of.iter().min_by_key(|f| f.switched_on_at)?;
+            let since = of.iter().map(|f| f.since).max()?;
+            let holders: Vec<&str> = of.iter().map(|f| f.holder.as_str()).filter(|h| !h.is_empty()).collect();
+            let mut line = format!(
+                "{name} ({}): needs a build of {} or newer; switched on {} by a build of {}",
+                first.what,
+                shown(since),
+                shown(first.switched_on_at),
+                shown(first.switched_on_by)
+            );
+            if !holders.is_empty() {
+                line.push_str(&format!("; held by {}", holders.join(", ")));
+            }
+            Some(line)
+        })
+        .collect()
+}
+
+/// The refusal of a build that knows floors names the protections it is too old for.
+async fn explained(conn: &mut PgConnection, standing: Standing) -> Result<Standing> {
+    let Standing::Refused(why) = standing else { return Ok(standing) };
+    let newer: Vec<InEffect> = floors(conn).await?.into_iter().filter(|f| f.since > build_date()).collect();
+    if newer.is_empty() {
+        return Ok(Standing::Refused(why));
+    }
+    Ok(Standing::Refused(format!(
+        "{why}. These protections are switched on here, and builds from before the dates shown do not enforce them: {}. \
+         To roll back anyway, run `ferrum task allow_older_builds reason:<why>` with the newer build first",
+        said(&newer).join("; ")
+    )))
+}
+
+/// Where this build stands against the database, a refusal naming the floors it is too old for.
+pub(crate) async fn standing_here(conn: &mut PgConnection, db: &crate::Db) -> Result<Standing> {
+    let unknown = db.unknown_migrations().await?;
+    let rec = recorded(conn).await?;
+    explained(conn, standing(build_date(), dated(), &unknown, rec)).await
 }
 
 /// Where a build stands against the database.
@@ -195,8 +416,7 @@ impl Deciding {
     }
 
     pub(crate) async fn standing(&mut self, db: &crate::Db) -> Result<Standing> {
-        let unknown = db.unknown_migrations().await?;
-        Ok(standing(build_date(), dated(), &unknown, recorded(&mut self.0).await?))
+        standing_here(&mut self.0, db).await
     }
 
     pub(crate) async fn release(mut self) {
@@ -214,6 +434,121 @@ impl StartHold {
 }
 
 impl Kernel {
+    /// [`require`] in a transaction of its own, which a planned move's fence leaves writable (a fenced source still
+    /// starts with its settings).
+    pub async fn require_floor(&self, floor: &Floor, holder: &str) -> Result<()> {
+        let mut tx = self.db.system_tx_through_move().await?;
+        require(&mut tx, floor, holder).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// [`release`] in a transaction of its own.
+    pub async fn release_floor(&self, floor: &Floor, holder: &str) -> Result<()> {
+        let mut tx = self.db.system_tx_through_move().await?;
+        release(&mut tx, floor, holder).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// At every start of a build level with the database, under the start hold: the floors of what is in use, whoever
+    /// switched it on (a build from before floors, or one after `allow_older_builds`). Zones are the server's (its
+    /// settings, at start). Only adds: a floor of something no longer in use stays until `allow_older_builds`.
+    /// Cost: one statement. `tenant` (a row per workspace) is read for the three workspace settings, stopping at the
+    /// first match; `api_key` (a few rows per workspace, never the size of the event or audit tables) likewise, a scan
+    /// of milliseconds when no key is pinned; sandboxes go through `tenant_sandbox_of`; `platform_move` holds at most one
+    /// row and `workspace_move` one per move. No index is added: building one would lock `api_key` during the upgrade.
+    async fn floors_in_use(&self) -> Result<()> {
+        let mut tx = self.db.system_tx_through_move().await?;
+        if !have_floors(&mut tx).await? {
+            return Ok(());
+        }
+        type InUse = (bool, bool, bool, bool, Vec<String>, Vec<String>, Vec<String>);
+        let (networks, keys, idle, glass, sandboxes, marks, moves): InUse = sqlx::query_as(
+            "select \
+               exists (select 1 from tenant where jsonb_typeof(settings->'staff_networks'->'networks') = 'array' \
+                 and jsonb_array_length(settings->'staff_networks'->'networks') > 0), \
+               exists (select 1 from api_key where networks is not null and cardinality(networks) > 0 and revoked_at is null), \
+               exists (select 1 from tenant where jsonb_typeof(settings->'idle_minutes') = 'number' and (settings->>'idle_minutes')::numeric > 0), \
+               exists (select 1 from tenant where jsonb_typeof(settings->'break_glass') = 'array'), \
+               array(select id::text from tenant where sandbox_of is not null), \
+               array(select id::text from platform_move), \
+               array(select workspace::text from workspace_move where finished_at is null and state <> 'arrived')",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        for (on, floor) in [
+            (networks, &crate::gate::STAFF_NETWORKS_FLOOR),
+            (keys, &crate::gate::KEY_NETWORKS_FLOOR),
+            (idle, &crate::gate::IDLE_FLOOR),
+            (glass, &crate::gate::BREAK_GLASS_FLOOR),
+        ] {
+            if on {
+                require(&mut tx, floor, "").await?;
+            }
+        }
+        for (holders, floor) in [(sandboxes, &crate::sandbox::FLOOR), (marks, &crate::moves::FLOOR), (moves, &crate::workspace_move::FLOOR)] {
+            for h in holders {
+                require(&mut tx, floor, &h).await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The floors in effect and what the database records (the doctor).
+    pub async fn floors(&self) -> Result<(Vec<InEffect>, Option<Recorded>)> {
+        let mut conn = self.db.pool.acquire().await?;
+        Ok((floors(&mut conn).await?, recorded(&mut conn).await?))
+    }
+
+    /// `ferrum task allow_older_builds reason:<text> [feature:<name>] [force:yes]`: the deliberate way down. Removes the
+    /// floors (all, or those of one feature), so that builds which do not enforce those protections may start again, and
+    /// says which. A floor held by something under way (a move) stays unless `force`. On the audit trail as the system's.
+    pub async fn allow_older_builds(&self, reason: &str, feature: Option<&str>, force: bool) -> Result<Lowered> {
+        let reason = reason.trim();
+        if reason.is_empty() || reason.chars().count() > 500 {
+            return Err(Error::field("reason", "say why, in up to 500 characters"));
+        }
+        if self.booted.guest.is_some() {
+            return Err(Error::Conflict("a newer build has this database: run this with the newest build".into()));
+        }
+        let mut tx = self.db.system_tx_through_move().await?;
+        lock_floors(&mut tx).await?;
+        if guest_here(&mut tx).await? {
+            return Err(Error::Conflict("a newer build has synced this database since this one started: run this with the newest build".into()));
+        }
+        let removed: Vec<InEffect> = floors(&mut tx).await?.into_iter().filter(|f| feature.is_none_or(|n| f.feature == n)).collect();
+        if removed.is_empty() {
+            return Err(Error::Conflict(match feature {
+                Some(n) => format!("no floor of {n} is in effect here"),
+                None => "no floor is in effect here: older builds within the window may start already".into(),
+            }));
+        }
+        let held: Vec<InEffect> = removed.iter().filter(|f| f.temporary).cloned().collect();
+        if !held.is_empty() && !force {
+            return Err(Error::Conflict(format!(
+                "what holds these is still under way: {}. Finish, cancel or abort it first (an older build would not honour it), or add force:yes",
+                said(&held).join("; ")
+            )));
+        }
+        for f in &removed {
+            sqlx::query("delete from window_floor where feature = $1 and holder = $2").bind(&f.feature).bind(&f.holder).execute(&mut *tx).await?;
+        }
+        settle(&mut tx).await?;
+        let compatible_from = recorded(&mut tx).await?.map(|r| r.compatible_from);
+        let diff = serde_json::json!({
+            "reason": reason,
+            "force": force,
+            "removed": removed,
+            "compatible_from": compatible_from.map(shown),
+        });
+        self.record_move(&mut tx, "platform.allow_older_builds", diff).await?;
+        tx.commit().await?;
+        tracing::warn!(reason, removed = ?said(&removed), "floors removed: builds that do not enforce these protections may start on this database again");
+        Ok(Lowered { removed, compatible_from })
+    }
+
     /// Before the start-up writes that would put older things back if an older build did them (upgrade steps, compiled
     /// apps and their interfaces): `Some` while this build is not older than the database, held so that no newer build
     /// migrates in between; `None` for a guest, which skips them. Refused when a newer build that does not let this
@@ -221,11 +556,16 @@ impl Kernel {
     pub async fn hold_start(&self) -> Result<Option<StartHold>> {
         let mut conn = self.db.direct.acquire().await?.detach();
         wait(&mut conn, "pg_try_advisory_lock_shared").await?;
-        let unknown = self.db.unknown_migrations().await?;
-        let rec = recorded(&mut conn).await;
+        let standing = standing_here(&mut conn, &self.db).await;
         let hold = StartHold(conn);
-        match standing(build_date(), dated(), &unknown, rec?) {
-            Standing::Level => Ok(Some(hold)),
+        match standing? {
+            Standing::Level => match self.floors_in_use().await {
+                Ok(()) => Ok(Some(hold)),
+                Err(e) => {
+                    hold.release().await;
+                    Err(e)
+                }
+            },
             Standing::Guest(_) => {
                 hold.release().await;
                 Ok(None)
@@ -270,6 +610,41 @@ mod tests {
         assert!(compatible_from() > DateTime::<Utc>::MIN_UTC && parse(UNDATED) > DateTime::<Utc>::MIN_UTC);
         assert!(parse(UNDATED) <= build_date());
         assert!(compatible_from() <= Utc::now(), "COMPATIBLE_FROM is in the future: every build would refuse itself");
+    }
+
+    #[test]
+    fn every_floor_is_a_date_no_later_than_this_build_and_inside_the_window() {
+        let mut names = std::collections::BTreeSet::new();
+        for f in FLOORS {
+            assert!(names.insert(f.feature), "{} twice", f.feature);
+            let since = parse(f.since);
+            assert!(since > DateTime::<Utc>::MIN_UTC, "{}: not a date", f.feature);
+            // A floor later than the build that sets it would keep that build's own kind out.
+            assert!(!dated() || since <= build_date(), "{} is dated {}, after this build ({})", f.feature, f.since, shown(build_date()));
+            assert!(since >= compatible_from(), "{}: a floor before COMPATIBLE_FROM changes nothing", f.feature);
+        }
+    }
+
+    #[test]
+    fn a_floor_is_said_once_with_its_holders() {
+        let at = |s: &str| parse(s);
+        let f = |feature: &str, holder: &str, since: &str| InEffect {
+            feature: feature.into(),
+            holder: holder.into(),
+            since: at(since),
+            what: format!("{feature} holds"),
+            temporary: !holder.is_empty(),
+            switched_on_at: at("2026-11-14T10:00:00Z"),
+            switched_on_by: at("2026-11-14T09:00:00Z"),
+        };
+        let lines = said(&[
+            f("zones", "", "2026-11-13T23:48:57Z"),
+            f("workspace_freeze", "a", "2026-11-14T04:00:04Z"),
+            f("workspace_freeze", "b", "2026-11-14T04:00:04Z"),
+        ]);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].starts_with("zones (zones holds): needs a build of 2026-11-13T23:48:57Z or newer; switched on 2026-11-14T10:00:00Z"), "{lines:?}");
+        assert!(lines[1].ends_with("held by a, b"), "{lines:?}");
     }
 
     #[test]

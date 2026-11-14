@@ -205,7 +205,20 @@ async fn anchor_holds(k: &Kernel, tenant: Uuid, upto: i64) -> bool {
 
 fn quiet(_: &str) {}
 
-#[tokio::test]
+/// The holders of the freeze's floor on one side (crates/kernel/src/window.rs).
+async fn freeze_floor(k: &Kernel) -> Vec<String> {
+    let (floors, _) = k.floors().await.unwrap();
+    floors.into_iter().filter(|f| f.feature == ferrum_kernel::workspace_move::FLOOR.feature).map(|f| f.holder).collect()
+}
+
+#[test]
+fn a_workspace_moves() {
+    // Its future is deep: polled on the test harness's own thread (2 MiB, as `#[tokio::test]` does) an unoptimized
+    // build overflows that stack now and then. A runtime with the server's stack size (server/src/lib.rs) instead.
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
+    rt.block_on(async { tokio::spawn(a_workspace_moves_to_another_installation_and_back()).await.unwrap() });
+}
+
 async fn a_workspace_moves_to_another_installation_and_back() {
     let (a_url, b_url) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
     let (key_a, key_b) = (SecretKey::new([1; 32]), SecretKey::new([2; 32]));
@@ -352,9 +365,19 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     // Without the source's key nothing moves.
     let keyless = MoveSource { keys: vec![key_b.clone()], ..from(None) };
     refused(b.move_workspace("acme", &keyless, Run::Start, &quiet).await, "no key in FERRUM_MOVE_SOURCE_SECRET_KEYS opens");
+    assert!(freeze_floor(&a).await.is_empty() && freeze_floor(&b).await.is_empty(), "a refused move holds no floor");
 
     // Stopped once frozen: nothing at A takes changes or runs, reading works; a second move and a second run are refused.
     b.move_workspace("acme", &from(Some(Stop::Frozen)), Run::Start, &quiet).await.expect("frozen");
+    // The run has let go of its lock by the time it answers: the next run is never refused as "another run".
+    let mut conn = a.db.direct.acquire().await.unwrap();
+    let free: bool =
+        sqlx::query_scalar("select pg_try_advisory_lock($1, hashtext($2))").bind(0x0FE2_2079_i32).bind(t.to_string()).fetch_one(&mut *conn).await.unwrap();
+    assert!(free, "the run that ended still holds its lock");
+    sqlx::query("select pg_advisory_unlock($1, hashtext($2))").bind(0x0FE2_2079_i32).bind(t.to_string()).execute(&mut *conn).await.unwrap();
+    drop(conn);
+    // A build that would ignore the freeze may start on neither side now.
+    assert_eq!((freeze_floor(&a).await, freeze_floor(&b).await), (vec![t.to_string()], vec![t.to_string()]));
     let r = a.create_user(&acme, "late@acme.test", "Late", Some(PASSWORD), &[], false).await;
     assert!(matches!(&r, Err(Error::Unavailable(m)) if m.contains("this workspace is moving")), "{r:?}");
     a.read_record(&acme, "Contact", contact, false).await.expect("reading works while frozen");
@@ -382,6 +405,7 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     drop(lock);
     held.pool.close().await;
     b.move_workspace("acme", &from(None), Run::Abort, &quiet).await.expect("aborted");
+    assert!(freeze_floor(&a).await.is_empty() && freeze_floor(&b).await.is_empty(), "aborted, the floors go");
     let undone = a.create_user(&acme, "back@acme.test", "Back", Some(PASSWORD), &[], false).await.expect("A takes changes again");
 
     // Stopped once copied: the copy at B is frozen too; aborting deletes it.
@@ -405,6 +429,8 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     b.move_workspace("acme", &from(Some(Stop::Moved)), Run::Resume, &quiet).await.expect("past the point of no return");
     refused(b.move_workspace("acme", &from(None), Run::Abort, &quiet).await, "point of no return");
     b.move_workspace("acme", &from(None), Run::Resume, &quiet).await.expect("arrived");
+    // The target takes changes and lets go; the source stays frozen, and keeps its floor, until finish_move.
+    assert_eq!((freeze_floor(&a).await, freeze_floor(&b).await), (vec![t.to_string()], vec![]));
     b.move_workspace("acme", &from(None), Run::Resume, &quiet).await.expect("again: nothing to do");
 
     // B's own workspace: not a row touched.
@@ -478,9 +504,11 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     refused(a.move_workspace("acme", &back, Run::Start, &quiet).await, "finish_move");
     assert!(a.finish_move("acme", " ").await.is_err(), "it takes saying why");
     let finished = a.finish_move("acme", "checked at B").await.expect("finished");
+    assert!(freeze_floor(&a).await.is_empty(), "finished, the source lets go");
     assert_eq!(finished["files"], json!(1));
     assert!(!dir_a.join(&file_key).exists());
     a.move_workspace("acme", &back, Run::Start, &quiet).await.expect("back at A");
+    assert_eq!((freeze_floor(&a).await, freeze_floor(&b).await), (vec![], vec![t.to_string()]));
     assert_eq!(chains(&a, t).await, None, "its history whole at A again");
     assert!(anchor_holds(&a, t, anchored).await);
     let at_a = a.load_ctx(t, acme.user, None, "it".into()).await.unwrap();

@@ -74,6 +74,15 @@ const NOT_COPIED: &[&str] = &[
 const NEW_IDS: &[&str] = &["connection", "conn", "message_channel", "sso_provider"];
 
 /// Outbox topics that reach outside: mail, notification mail, pushes to devices.
+/// Sandboxes never send anything (pull request 234): an older build would send from them. Held by each sandbox's id from
+/// `copy_workspace`, in the transaction that writes its row, until `delete_sandbox`.
+pub const FLOOR: crate::window::Floor = crate::window::Floor {
+    feature: "sandbox",
+    since: "2026-11-14T06:47:14Z",
+    what: "sandboxes never send mail, messages or calls to anyone outside",
+    temporary: true,
+};
+
 fn outward_topic(topic: &str) -> bool {
     [crate::outbox::MAIL_TOPIC, crate::notify::MAIL_TOPIC, crate::webpush::PUSH_TOPIC].contains(&topic)
 }
@@ -552,6 +561,9 @@ impl Kernel {
             "second_factors_carried": carried, "secrets_blanked": emptied, "blanked_columns": blanked, "single_sign_on_required": false,
             "single_sign_on_was_required": required_sso, "not_copied": NOT_COPIED,
         });
+        // In the transaction that writes the sandbox's row, at its end (the floors' lock is held only briefly): no sandbox
+        // exists without its floor, and a build that would send from it may no longer start (crate::window).
+        crate::window::require(&mut tx, &FLOOR, &new.to_string()).await?;
         let ctx = Ctx::system(new, Arc::new(ferrum_meta::Schema::default()));
         audit::record_admin(&mut tx, &ctx, "Platform", Uuid::nil(), "platform.sandbox_created", None, record).await?;
         if c.halt == Some(Halt::BeforeCommit) {
@@ -635,6 +647,9 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
+        // The floor goes with the last sandbox, in the transaction that deletes it, taken first as every floor change is
+        // (crate::window). A crash before the commit leaves the sandbox and its floor.
+        crate::window::release(&mut tx, &FLOOR, &tenant.to_string()).await?;
         sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
         let mut rows = 0;
         for (table, column) in workspace_columns(&self.db, &mut tx).await? {

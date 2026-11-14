@@ -205,7 +205,21 @@ impl Kernel {
         if let Some(f) = self.audit_sink_finding().await {
             out.push(f);
         }
+        out.push(self.floors_finding().await?);
         Ok(out)
+    }
+
+    /// The two-version window's floors (crate::window): which protections keep older builds from starting, since when,
+    /// and the oldest build that may start.
+    async fn floors_finding(&self) -> Result<Finding> {
+        let (floors, rec) = self.floors().await?;
+        let oldest = rec.map_or_else(|| "none recorded yet".to_string(), |r| r.compatible_from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        Ok(if floors.is_empty() {
+            Finding::ok("window.floors", format!("no protection in use needs a newer build; the oldest build that may start is of {oldest}"))
+        } else {
+            let lines: Vec<String> = crate::window::said(&floors);
+            Finding::ok("window.floors", format!("the oldest build that may start is of {oldest}, because these protections are in use: {}", lines.join("; ")))
+        })
     }
 
     /// The audit sink (crate::audit_sink): a warning when events have waited more than 15 minutes.
