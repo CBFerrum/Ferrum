@@ -25,7 +25,9 @@ const PASSWORD: &str = "Correct-Horse-9";
 const OFFICE: &str = "erp.acme.test";
 const OUTSIDE: &str = "out.acme.test";
 const PUBLIC: &str = "www.acme.test";
-const ZONES: &str = r#"{"office": {}, "outside": {"step_up": true}, "public": {"staff": "none"}}"#;
+const NARROW: &str = "crm.acme.test";
+const ZONES: &str = r#"{"office": {}, "outside": {"step_up": true}, "public": {"staff": "none"}, "narrow": {"staff": ["crm"], "admin": true}}"#;
+const SINK_SECRET: &str = "a-sink-secret-of-some-length";
 /// What the marked record holds: none of it may appear in an access event.
 const SECRET_TITLE: &str = "Alice Quinn";
 const SECRET_NOTE: &str = "salary 98765";
@@ -177,7 +179,7 @@ async fn scenario() {
     let base = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config).build()).await.expect("boot");
     let st = base.shared_store.get::<AppState>().expect("state");
     let k = st.kernel.clone();
-    let zones = Arc::new(Zones::parse(ZONES, "", "", "").unwrap());
+    let zones = Arc::new(ferrum_server::zone::resolve(Zones::parse(ZONES, "", "", "").unwrap(), &k).await.expect("crm resolves"));
     k.set_zones(zones.clone());
     let s = server(&base, &st, zones.clone()).await;
 
@@ -188,12 +190,12 @@ async fn scenario() {
             admin_email: "admin@acme.test".into(),
             admin_password: PASSWORD.into(),
             admin_name: None,
-            packages: vec![],
+            packages: vec!["contacts".into()],
             settings: None,
         })
         .await
         .unwrap();
-    for (host, zone) in [(OFFICE, "office"), (OUTSIDE, "outside"), (PUBLIC, "public")] {
+    for (host, zone) in [(OFFICE, "office"), (OUTSIDE, "outside"), (PUBLIC, "public"), (NARROW, "narrow")] {
         k.add_operator_host("acme", host, "shell", Some(zone)).await.unwrap();
     }
     let root = k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
@@ -209,7 +211,7 @@ async fn scenario() {
     .unwrap();
     k.batch_customizations(&admin, ops, false).await.map_err(|(_, e)| e.to_string()).unwrap();
     let admin = k.load_ctx(acme, root.user, None, "it".into()).await.unwrap();
-    for e in ["XSecret", "XPlain"] {
+    for e in ["XSecret", "XPlain", "Contact"] {
         let rule = ferrum_meta::PermissionDef { entity: e.into(), read: true, write: true, create: true, delete: true, export: true, ..Default::default() };
         k.set_role_permission(&admin, "Desk", &rule).await.unwrap();
     }
@@ -351,7 +353,7 @@ async fn scenario() {
     let (status, answer) = call(&s, Method::PATCH, PUBLIC, &plain_path, a, Some(json!({"note": "x"}))).await;
     assert!(status == StatusCode::FORBIDDEN && answer.contains("\"zone\""), "a zone that admits no staff refuses first: {status} {answer}");
     // Report mode reports and lets it through.
-    let report = Arc::new(Zones::parse(ZONES, "", "", "report").unwrap());
+    let report = Arc::new(ferrum_server::zone::resolve(Zones::parse(ZONES, "", "", "report").unwrap(), &k).await.unwrap());
     let r = server(&base, &st, report).await;
     let counted = || ferrum_kernel::zones::hidden().iter().filter(|(z, m, w, _)| z == "outside" && *m == "report" && *w == "step_up").map(|h| h.3).sum::<u64>();
     let before = counted();
@@ -447,7 +449,136 @@ async fn scenario() {
     let (status, answer) = call(&s, Method::GET, OFFICE, "/api/v1/XSecret/_export", reader, None).await;
     assert!(!status.is_success() && !answer.contains("Alice"), "an export too, before any row: {status} {answer}");
     exec(&k, "drop trigger it_no_access on audit_event; drop function it_no_access()").await;
+
+    // ── Saving a rule for an entity the saver's zone leaves out is refused ──
+    let (status, body) =
+        call(&s, Method::PUT, NARROW, "/api/admin/settings", Cred::Bearer(&admin_token), Some(json!({"record_reads": {"XSecret": "all"}}))).await;
+    assert!(status == StatusCode::UNPROCESSABLE_ENTITY && body.contains("XSecret is not an entity"), "{status} {body}");
+    let (status, body) = call(
+        &s,
+        Method::PUT,
+        NARROW,
+        "/api/admin/settings",
+        Cred::Bearer(&admin_token),
+        Some(json!({"step_up": {"entities": {"XSecret": {"work": ["read"]}}}})),
+    )
+    .await;
+    assert!(status == StatusCode::UNPROCESSABLE_ENTITY && body.contains("XSecret is not an entity"), "{status} {body}");
+
+    // ── Access events reach a workspace's webhook on `audit.access` and the operator's sink ──
+    let rx = Receiver::start().await;
+    let (status, body) = call(
+        &s,
+        Method::POST,
+        OFFICE,
+        "/api/admin/webhooks",
+        Cred::Bearer(&admin_token),
+        Some(json!({"name": "siem", "url": format!("{}/hooks", rx.base), "topics": ["audit.access"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let sink = ferrum_kernel::audit_sink::Sink::parse(&format!("{}/sink", rx.base), SINK_SECRET).unwrap();
+    let sender = {
+        let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+        let db = ferrum_kernel::Db::connect(ferrum_kernel::DbConfig { url, max_connections: 4, ..Default::default() }).await.unwrap();
+        let catalog = ferrum_meta::Catalog::load_dir(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages")).unwrap();
+        let settings =
+            ferrum_kernel::KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), audit_sink: sink, ..Default::default() };
+        Kernel::boot(db, catalog, ferrum_kernel::HookRegistry::default(), settings, None).await.unwrap()
+    };
+    assert_eq!(sender.audit_sink_once().await.unwrap(), ferrum_kernel::audit_sink::Turn::Sent(0), "the cursor starts now");
+    let from = last_audit(&k).await;
+    assert!(call(&s, Method::GET, OFFICE, &secret_path, reader, None).await.0.is_success());
+    let id = last_audit(&k).await;
+    assert!(id > from && access_since(&k, from).await.len() == 1);
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
+    while k.deliver_webhooks_once().await.unwrap() > 0 {}
+    let hooked: Vec<Value> = rx.lines("/hooks").iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert!(hooked.iter().any(|e| e["id"] == json!(id.to_string()) && e["category"] == "access" && e["action"] == "open"), "the webhook: {hooked:?}");
+    while let ferrum_kernel::audit_sink::Turn::Sent(1..) = sender.audit_sink_once().await.unwrap() {}
+    let sunk: Vec<Value> = rx.lines("/sink").iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert!(sunk.iter().any(|e| e["id"] == json!(id.to_string()) && e["category"] == "access"), "the sink: {sunk:?}");
+    assert!(!rx.lines("/hooks").iter().chain(rx.lines("/sink").iter()).any(|l| l.contains("Alice") || l.contains("98765")), "no value sent");
+
+    // ── Reads no request makes: a workspace export job, a public link's page ──
+    let job = k.export_workspace(&admin).await.unwrap();
+    let from = last_audit(&k).await;
+    while k.run_jobs_once(10).await.unwrap() > 0 {}
+    let events = access_since(&k, from).await;
+    let exported: Vec<&(String, Option<Uuid>, Value)> = events.iter().filter(|e| e.2["entity"] == "XSecret").collect();
+    assert_eq!(exported.len(), 1, "one event for the marked entity: {events:?} (job {job})");
+    let (action, actor, details) = exported[0];
+    assert_eq!((action.as_str(), *actor), ("export", Some(root.user)), "for whoever asked");
+    assert_eq!((details["to"].as_str(), details["via"].as_str()), (Some("workspace export"), Some("workspace export job")));
+    let total = k.list(&admin, "XSecret", &ferrum_kernel::ListQuery { with_count: true, ..Default::default() }).await.unwrap().total;
+    assert_eq!(details["rows"].as_i64(), total, "{details}");
+    assert!(events.iter().all(|e| e.2["entity"] == "XSecret"), "nothing of unmarked entities: {events:?}");
+    let spec: ferrum_kernel::action_link::LinkSpec = serde_json::from_value(json!({"actions": ["view"], "show": ["title"]})).unwrap();
+    let issued = k.issue_link_now(&admin, "XSecret", secret_id.parse().unwrap(), &spec).await.unwrap();
+    let token = issued.url.rsplit('/').next().unwrap().to_string();
+    let from = last_audit(&k).await;
+    assert!(k.link_page("acme", &token).await.unwrap().is_some());
+    let events = access_since(&k, from).await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!((events[0].0.as_str(), events[0].1, events[0].2["via"].as_str()), ("open", None, Some("link")), "nobody's, through a link");
+
+    // ── Personal data: what someone read, and reads of records about someone ──
+    let (status, body) = settings(json!({"record_reads": {"XSecret": "all", "Contact": "open"}})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let sue = k
+        .insert(&admin, "Contact", obj(json!({"first_name": "Sue", "last_name": "Subject", "emails": [{"email": "sue@acme.test", "is_primary": true}]})))
+        .await
+        .unwrap();
+    let sue_id = sue["id"].as_str().unwrap().to_string();
+    assert!(call(&s, Method::GET, OFFICE, &format!("/api/v1/Contact/{sue_id}"), reader, None).await.0.is_success());
+    let mia = k.personal_data(&admin, "member@acme.test").await.unwrap();
+    let reads = mia["reads"].as_array().unwrap();
+    assert!(reads.iter().any(|r| r["details"]["record"] == json!(sue_id) && r["details"]["address"] == "10.1.2.3"), "{mia}");
+    let about_sue = k.personal_data(&admin, "sue@acme.test").await.unwrap();
+    let theirs = about_sue["reads_of_their_records"].as_array().unwrap();
+    assert_eq!(theirs.len(), 1, "{about_sue}");
+    assert_eq!((theirs[0]["action"].as_str(), theirs[0]["entity"].as_str()), (Some("open"), Some("Contact")));
+    assert!(theirs[0].get("actor").is_none() && !theirs[0].to_string().contains(&member.to_string()), "not who read it: {}", theirs[0]);
+    k.erase_personal_data(&admin, "member@acme.test", "asked to").await.unwrap();
+    let mut tx = k.db.system_tx().await.unwrap();
+    let (kept, addressed): (i64, i64) =
+        sqlx::query_as("select count(*), count(*) filter (where diff->>'address' = '10.1.2.3') from audit_event where entity = 'Access' and actor = $1")
+            .bind(member)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert!(kept > 0 && addressed == 0, "the events stay, without the address: {kept} {addressed}");
     let _ = acme;
+}
+
+/// A receiver of webhooks and the sink's batches: each body by path.
+struct Receiver {
+    base: String,
+    bodies: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+}
+
+impl Receiver {
+    async fn start() -> Receiver {
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = bodies.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: axum::body::Bytes| {
+            let kept = kept.clone();
+            async move {
+                kept.lock().unwrap().push((uri.path().to_string(), String::from_utf8_lossy(&body).into_owned()));
+                StatusCode::OK
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Receiver { base, bodies }
+    }
+
+    fn lines(&self, path: &str) -> Vec<String> {
+        let b = self.bodies.lock().unwrap();
+        b.iter().filter(|(p, _)| p == path).flat_map(|(_, x)| x.lines().map(str::to_string).collect::<Vec<_>>()).filter(|l| !l.is_empty()).collect()
+    }
 }
 
 fn urlencoding_filters(v: &Value) -> String {

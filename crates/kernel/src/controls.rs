@@ -181,8 +181,10 @@ impl Ctx {
             return None;
         }
         let request = !self.is_system && self.zone.as_ref().is_some_and(|e| e.credential != crate::zones::Credential::Queued);
-        if !request {
-            return None;
+        match self.reads.via {
+            Via::Never => return None,
+            Via::Request if !request => return None,
+            _ => {}
         }
         if c.unreadable { Some(true) } else { c.reads.get(entity).copied() }
     }
@@ -190,13 +192,41 @@ impl Ctx {
 
 /// What one request has recorded already (`Ctx::reads`): each record and each entity's list once.
 #[derive(Debug, Default)]
-pub struct Seen(Mutex<BTreeSet<(String, Option<Uuid>)>>);
+pub struct Seen {
+    seen: Mutex<BTreeSet<(String, Option<Uuid>)>>,
+    via: Via,
+}
+
+/// Whose reads a context's are.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Via {
+    /// A request's (a person's or a key's): recorded; anything else is not.
+    #[default]
+    Request,
+    /// Recorded although no request is behind it: a workspace export a job makes for whoever asked, a public link's
+    /// page (no person). The words go into the event as `via`.
+    Also(&'static str),
+    /// A check that returns nothing of the record (whether a live update may be pushed): never recorded.
+    Never,
+}
 
 impl Seen {
     /// True the first time.
     fn first(&self, entity: &str, record: Option<Uuid>) -> bool {
         // A poisoned lock: record again rather than not at all.
-        self.0.lock().map(|mut s| s.insert((entity.to_string(), record))).unwrap_or(true)
+        self.seen.lock().map(|mut s| s.insert((entity.to_string(), record))).unwrap_or(true)
+    }
+}
+
+impl Ctx {
+    /// This context for a check that shows nothing of what it reads: its reads are not recorded.
+    pub fn unrecorded(&self) -> Ctx {
+        Ctx { reads: std::sync::Arc::new(Seen { via: Via::Never, ..Default::default() }), ..self.clone() }
+    }
+
+    /// This context, its reads recorded although no request is behind it (`via` says how they were made).
+    pub fn recorded_via(&self, via: &'static str) -> Ctx {
+        Ctx { reads: std::sync::Arc::new(Seen { via: Via::Also(via), ..Default::default() }), ..self.clone() }
     }
 }
 
@@ -244,6 +274,9 @@ pub async fn record_read(tx: &mut Tx, ctx: &Ctx, entity: &str, read: Read<'_>) -
     details["address"] = json!(entry.map(|e| e.address.as_str()).filter(|a| !a.is_empty()));
     details["zone"] = json!(entry.and_then(|e| e.name()));
     details["credential"] = json!(entry.map(|e| e.credential.as_str()));
+    if let Via::Also(via) = ctx.reads.via {
+        details["via"] = json!(via);
+    }
     STATEMENTS.fetch_add(2, Ordering::Relaxed);
     crate::audit::record_access(tx, ctx, action, details).await
 }

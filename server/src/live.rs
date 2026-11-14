@@ -142,7 +142,8 @@ impl LiveHub {
             let visible = match row_scope(&ctx, ent, Action::Read) {
                 Ok(scope) if scope.is_unrestricted() => true,
                 // Own-record or scoped access: only what this user can actually open.
-                Ok(_) => k.get(&ctx, entity, record, false).await.is_ok(),
+                // A check: the push names the record, never its fields, so it is no read to record.
+                Ok(_) => k.get(&ctx.unrecorded(), entity, record, false).await.is_ok(),
                 Err(_) => false,
             };
             if visible {

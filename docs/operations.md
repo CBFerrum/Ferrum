@@ -1445,19 +1445,21 @@ records: opening one, and lists, searches and reports, which show the same field
 operation asks for its rights, after the rights: whoever may not do something is told that, not asked for a password.
 
 **The answer.** `403` with error `step_up`: "confirm it is you: enter your password again to do this". The interface asks
-for the password (`POST /api/auth/step-up`) and tries again. A step-up counts for `minutes` (10 by default, as the other
-step-up screens); a replica keeps its answer about a session for up to 20 seconds, so a step-up made through another
-replica may take that long to count here.
+for the password (`POST /api/auth/step-up`) and tries again. **How long it lasts:** a step-up counts for `minutes` after
+it is made (10 by default, the same as the other step-up screens), and so does signing in. Stepping up tells every
+replica to drop what it holds of the person's sessions at once, so the retry is let through wherever it lands.
 
-**Who is asked.** People, on their browser session. A credential with no browser session (a session token, an app's own
-token not bound to a page) cannot step up, so it is refused for marked work. API keys (app passwords and SCIM keys
+**Who is asked.** People, on their browser session. **A session token with no browser session behind it** (one from
+`POST /api/auth/login` used as a bearer token, or an app token not bound to a page) **cannot step up, so it is refused
+for marked work**: do that work from the browser. API keys (app passwords and SCIM keys
 included), OAuth clients such as MCP, and service accounts cannot step up either: they are held by their scopes and
 networks, and let through, unless the entity's rule says `"keys": false`, which refuses them. Work with no request
 behind it (schedules, automations, the system's own) is not asked. A job queued by a request carries whether that
 request had stepped up (`job.step_up`), so a bulk change queued without a step-up does not do later what the person
 could not do then, even if they step up meanwhile. What a button's effects change for the person needs what the person
-would need. An entity's description still offers its buttons; the step-up is asked when one is pressed. A co-editing
-socket asks for it on each change it takes, for documents an app ties to an entity.
+would need. An entity's description still offers its buttons; the step-up is asked when one is pressed.
+**Co-editing:** a co-editing socket asks for it on each change it takes only for documents whose app names an entity
+for them (`DocHost::entity`); no app does yet, so co-edited documents are not asked today.
 
 **Zones.** A zone whose rule says `"step_up": true` (in `FERRUM_ZONES`) asks staff there before any change of any
 entity, and before reading an entity the workspace marked in `step_up`: "finance from outside the office works, but
@@ -1485,9 +1487,18 @@ entity, the record (`open`) or the query (`{"filters": [{"field", "op"}], "searc
 never values), `rows`, `to` for an export (`download, csv`), the address, zone and kind of credential. Never a field's
 value. The `action` is `open`, `list`, `search`, `report` or `export`.
 
+**Also recorded.** A workspace export: one `export` event per marked entity (`all`) with its row count, for the
+administrator who asked, `via: "workspace export job"`, written before the job is done and its parts can be
+downloaded. A public link's page to a marked record (`open`, no actor, `via: "link"`). The assistant's tools and MCP's
+`get_record`, `search_records` and `resources/read` read through the same two points. Calendar and contacts apps
+(DAV) are served by an app (Comms): its contacts are read through the kernel's list and are recorded; its calendar
+events are read by its own SQL and are not, until that app records them (`ferrum_kernel::controls::record_read`).
+
 **Not recorded.** The system's own reads: automations, rules, totals, the titles of linked records, what a button's
-effects read. A person's request is recorded once: pressing a button on a marked record is the read of that record.
-Keys' reads are recorded as their owner's, with `credential: api_key`.
+effects read, documents sent to outside people. Whether a live update may be pushed to a socket (the push names the
+record, not its fields). A published list (the workspace publishes it to anyone on purpose). A person's request is
+recorded once: pressing a button on a marked record is the read of that record. Keys' reads are recorded as their
+owner's, with `credential: api_key`.
 
 **Fails closed.** The event is written in the same transaction as the read; if it cannot be written, the read fails.
 A report (which may read from a replica) and an export write theirs in a transaction of their own on the primary
