@@ -632,6 +632,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::CopyWorkspace);
         tasks.register(crate::tasks::DeleteSandbox);
         tasks.register(crate::tasks::ReleaseHost);
+        tasks.register(crate::tasks::SamlEncryptionKey);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

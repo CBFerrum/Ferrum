@@ -1,6 +1,7 @@
 //! SAML 2.0 single sign-on, the service provider's side of the Web Browser SSO profile: an identity
 //! provider's metadata read, a sign-in request sent by HTTP-Redirect, and the response it posts back
-//! checked. Signatures are checked by xmlsec1, through samael, which keeps only what a valid
+//! checked, its assertion opened first when it is encrypted (xmlenc.rs); and single logout both
+//! ways (logout.rs). Signatures are checked by xmlsec1, through samael, which keeps only what a valid
 //! signature covers, so a signed element wrapped in unsigned ones proves nothing. This adds what the
 //! profile requires and samael leaves to its caller: a signing certificate in the metadata (without
 //! one samael checks no signature at all), an audience naming this service, and a subject.
@@ -13,6 +14,14 @@ use serde::{Deserialize, Serialize};
 mod checked;
 #[cfg(feature = "xmlsec")]
 pub use checked::{Idp, new_sp_key, request_url, self_check, sp_metadata, verify};
+#[cfg(feature = "xmlsec")]
+mod logout;
+#[cfg(feature = "xmlsec")]
+pub use logout::{logout_request, logout_response, peek_issuer, read_logout};
+#[cfg(feature = "xmlsec")]
+mod xmlenc;
+#[cfg(feature = "xmlsec")]
+pub use xmlenc::{Supported, supported as encryption};
 
 #[cfg(all(feature = "xmlsec", any(test, feature = "testing")))]
 pub mod testing;
@@ -20,7 +29,7 @@ pub mod testing;
 #[cfg(not(feature = "xmlsec"))]
 mod off;
 #[cfg(not(feature = "xmlsec"))]
-pub use off::{Idp, new_sp_key, request_url, self_check, sp_metadata, verify};
+pub use off::{Idp, encryption, logout_request, logout_response, new_sp_key, peek_issuer, read_logout, request_url, self_check, sp_metadata, verify};
 
 /// Whether this build checks SAML at all.
 pub const AVAILABLE: bool = cfg!(feature = "xmlsec");
@@ -31,8 +40,14 @@ pub struct Sp<'a> {
     pub entity_id: &'a str,
     /// Where responses are posted (HTTP-POST binding).
     pub acs_url: &'a str,
-    /// Its own key: with one, requests are signed and assertions encrypted to it can be read.
+    /// Its own key: with one, requests and logout messages are signed.
     pub key: Option<&'a SpKey>,
+    /// The keys assertions may be encrypted to, the newest first: the metadata publishes each for
+    /// encryption, and an encrypted assertion is opened with whichever it was encrypted to.
+    pub decrypt: &'a [SpKey],
+    /// Where providers send logout requests and answers (HTTP-Redirect and HTTP-POST); none
+    /// publishes no single logout.
+    pub slo_url: Option<&'a str>,
 }
 
 /// A service's own SAML key: RSA, with a self-signed certificate its metadata publishes, which
@@ -58,6 +73,45 @@ pub struct Person {
     pub subject: String,
     pub email: Option<String>,
     pub name: Option<String>,
+    /// The NameID as sent, which a logout request names the person by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_id: Option<NameId>,
+    /// The provider's session the sign-in belongs to (the AuthnStatement's SessionIndex).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_index: Option<String>,
+}
+
+/// A NameID: its value and format (none for unspecified).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameId {
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+}
+
+/// A logout message as it reached this service: the query of an HTTP-Redirect (as received, not
+/// decoded), or the base64 of an HTTP-POST with its relay state.
+#[derive(Debug, Clone, Copy)]
+pub enum Incoming<'a> {
+    Redirect(&'a str),
+    Post { message: &'a str, relay_state: Option<&'a str> },
+}
+
+/// A logout message from the provider, checked: signed by it, for this service, recent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Logout {
+    /// Sign this person out: of the sessions named, or of all theirs when none is.
+    Request { id: String, name_id: NameId, session_indexes: Vec<String>, relay_state: Option<String> },
+    /// The answer to a request of ours.
+    Response { in_response_to: String, success: bool },
+}
+
+/// A message for the browser to carry to the provider: to `url` (HTTP-Redirect, signed in the
+/// query), or posted to it with `fields` (HTTP-POST, signed in the XML).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outgoing {
+    pub url: String,
+    pub fields: Option<Vec<(String, String)>>,
 }
 
 /// Reading who an assertion names (used only where SAML is built in).
@@ -123,7 +177,7 @@ pub(crate) mod people {
             let whole = [first(attributes, &GIVEN, some_text), first(attributes, &FAMILY, some_text)].into_iter().flatten().collect::<Vec<_>>().join(" ");
             (!whole.is_empty()).then_some(whole)
         });
-        Ok(Person { subject, email, name })
+        Ok(Person { subject, email, name, name_id: None, session_index: None })
     }
 }
 
@@ -144,7 +198,16 @@ mod tests {
             ("http://schemas.microsoft.com/identity/claims/displayname", "Pat Lee"),
         ]);
         let p = person(Some(("AAAAAAAAAAAAAAAAAAAAAMa1", Some("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"))), &entra).unwrap();
-        assert_eq!(p, Person { subject: "AAAAAAAAAAAAAAAAAAAAAMa1".into(), email: Some("pat.lee@contoso.test".into()), name: Some("Pat Lee".into()) });
+        assert_eq!(
+            p,
+            Person {
+                subject: "AAAAAAAAAAAAAAAAAAAAAMa1".into(),
+                email: Some("pat.lee@contoso.test".into()),
+                name: Some("Pat Lee".into()),
+                name_id: None,
+                session_index: None
+            }
+        );
 
         let keycloak = attrs(&[("urn:oid:1.2.840.113549.1.9.1", "kim@acme.test"), ("urn:oid:2.5.4.42", "Kim"), ("urn:oid:2.5.4.4", "Ito")]);
         let p = person(Some(("kim", Some(UNSPECIFIED))), &keycloak).unwrap();

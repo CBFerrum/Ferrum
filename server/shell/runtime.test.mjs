@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 const src = readFileSync(new URL("./runtime.js", import.meta.url), "utf8");
 const block = src.slice(src.indexOf("// ── Pure helpers"), src.indexOf("// ── end of the pure helpers"));
 assert.ok(block.length > 100, "the block is where the markers say");
-const { originStep, stillToSend, movedUrl, titleMarked } = new Function(`${block}; return { originStep, stillToSend, movedUrl, titleMarked };`)();
+const { originStep, stillToSend, movedUrl, titleMarked, afterSignOut } = new Function(`${block}; return { originStep, stillToSend, movedUrl, titleMarked, afterSignOut };`)();
 
 test("the origin guard keeps a workspace's storage while its host is leaving, and wipes it for the next owner", () => {
   const acme = "0195-acme";
@@ -69,5 +69,15 @@ test("each shell script parses as a module", async () => {
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("after signing out, the browser goes on only to a single-logout address the server gave", () => {
+  const next = "/api/auth/saml/0195a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b/logout?ticket=Abc_123-x";
+  assert.equal(afterSignOut(200, { next }, "/login"), next);
+  assert.equal(afterSignOut(204, null, "/login"), "/login", "no SAML sign-out: the sign-in page");
+  assert.equal(afterSignOut(undefined, null, "/login"), "/login", "the request failed");
+  for (const other of ["https://evil.example/x", "//evil.example/api/auth/saml/x/logout?ticket=a", "/api/auth/saml/x/logout?ticket=a", `${next}&then=https://evil.example`, "javascript:alert(1)"]) {
+    assert.equal(afterSignOut(200, { next: other }, "/login"), "/login", other);
   }
 });

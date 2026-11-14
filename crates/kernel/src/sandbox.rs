@@ -67,6 +67,7 @@ const NOT_COPIED: &[&str] = &[
     "conn_file_address",
     "saml_sp_key",
     "published_key",
+    "saml_enc_key",
 ];
 
 /// Tables whose rows the outside world calls by their id alone (a provider's callback, a channel's inbound messages,

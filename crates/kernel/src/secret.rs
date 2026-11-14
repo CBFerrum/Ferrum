@@ -415,6 +415,18 @@ impl Kernel {
                     .await?
                     .rows_affected();
             }
+            let saml: Vec<(Uuid, Uuid, String)> = sqlx::query_as("select tenant_id, id, private_key from saml_enc_key").fetch_all(&mut *tx).await?;
+            for (tenant, id, sealed) in saml {
+                let Some(new) = self.moved(&crate::sso::saml_enc_label(tenant, id), &sealed, &mut done.unopened)? else { continue };
+                done.moved += sqlx::query("update saml_enc_key set private_key = $3 where tenant_id = $1 and id = $2 and private_key = $4")
+                    .bind(tenant)
+                    .bind(id)
+                    .bind(new)
+                    .bind(&sealed)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected();
+            }
             // A pending approval's secret action parameters (BD-34), each sealed apart.
             let waiting: Vec<(Uuid, Uuid, serde_json::Value)> =
                 sqlx::query_as("select tenant_id, id, sealed from approval_request where status = 'pending' and sealed is not null and sealed <> '{}'::jsonb")
@@ -529,6 +541,7 @@ const STORES: &[Store] = &[
         |i, name| crate::approvals::sealed_label(i[0], i[1], name),
     ),
     ("server_key.sealed", "select array[]::uuid[], '', sealed from server_key", |_, _| crate::webpush::VAPID_LABEL.to_string()),
+    ("saml_enc_key.private_key", "select array[tenant_id, id], '', private_key from saml_enc_key", |i, _| crate::sso::saml_enc_label(i[0], i[1])),
 ];
 
 impl Kernel {

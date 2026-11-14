@@ -180,13 +180,29 @@ impl Kernel {
 
     /// [`Kernel::open_session`] in a zone (crate::zones), recorded on the session.
     pub async fn open_session_in(&self, s: &Session, ttl: Duration, user_agent: &str, ip: &str, actor: Option<Uuid>, zone: Option<&str>) -> Result<Uuid> {
+        self.open_session_with(s, ttl, user_agent, ip, actor, zone, None).await
+    }
+
+    /// [`Kernel::open_session_in`], keeping what a SAML sign-in's logout needs on the session
+    /// ([`Kernel::sso_finish_full`]).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_session_with(
+        &self,
+        s: &Session,
+        ttl: Duration,
+        user_agent: &str,
+        ip: &str,
+        actor: Option<Uuid>,
+        zone: Option<&str>,
+        saml: Option<&Value>,
+    ) -> Result<Uuid> {
         let id = Uuid::now_v7();
         let ua: String = user_agent.chars().filter(|c| !c.is_control()).take(300).collect();
         let ip: String = ip.chars().take(64).collect();
         let mut tx = self.db.tenant_tx(s.tenant).await?;
         sqlx::query(
-            "insert into user_session (tenant_id, id, user_id, actor, step_up_at, expires_at, user_agent, ip, zone) \
-             values ($1, $2, $3, $4, now(), now() + make_interval(secs => $5), $6, $7, $8)",
+            "insert into user_session (tenant_id, id, user_id, actor, step_up_at, expires_at, user_agent, ip, zone, saml) \
+             values ($1, $2, $3, $4, now(), now() + make_interval(secs => $5), $6, $7, $8, $9)",
         )
         .bind(s.tenant)
         .bind(id)
@@ -196,6 +212,7 @@ impl Kernel {
         .bind(ua)
         .bind(ip)
         .bind(zone)
+        .bind(saml)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;

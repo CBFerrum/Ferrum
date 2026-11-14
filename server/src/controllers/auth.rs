@@ -88,6 +88,11 @@ pub(crate) async fn accounts_for(st: &AppState, headers: &HeaderMap) -> Result<O
 /// cookie alone, a bearer token bound to that session for the pages that still send one.
 /// `method` names how they signed in, for the audit trail (`password`, `passkey`, `sso`, `code`, `accounts`).
 pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &HeaderMap, cookie_only: bool, method: &str) -> ApiResult<Response> {
+    session_response_with(st, s, headers, cookie_only, method, None).await
+}
+
+/// [`session_response`], keeping on the browser session what a SAML sign-in's logout needs.
+async fn session_response_with(st: &AppState, s: &Session, headers: &HeaderMap, cookie_only: bool, method: &str, saml: Option<&Value>) -> ApiResult<Response> {
     // Zones (crate::zone): every way of signing in ends here, so a staff account gets no session and
     // no token where its zone admits no staff; refused as a wrong password is, before anything below
     // could say more about the account.
@@ -116,7 +121,7 @@ pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &Heade
     st.shell.check_host(headers, s.tenant).await?;
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
     let ttl = st.shell.session_ttl;
-    let sid = st.kernel.open_session_in(s, ttl, ua, &client_ip(headers), None, entry.name()).await?;
+    let sid = st.kernel.open_session_with(s, ttl, ua, &client_ip(headers), None, entry.name(), saml).await?;
     let mut body = json!({"cookie": true, "session_expires_in": ttl.as_secs()});
     if !cookie_only {
         body["token"] = json!(device_token(st, s, st.jwt_expiration, "bsid", sid)?);
@@ -302,13 +307,14 @@ async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req)
     if req.state.len() > 200 || req.code.len() > 4096 || req.binding.len() > 200 {
         return Err(ApiError(Error::Unauthorized("sign in again".into())));
     }
-    let s = st.kernel.sso_finish(&req.state, &req.code, &req.binding).await?;
-    session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "sso").await
+    let (s, saml) = st.kernel.sso_finish_full(&req.state, &req.code, &req.binding).await?;
+    session_response_with(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "sso", saml.as_ref()).await
 }
 
-/// `GET /api/auth/saml/{workspace}`: the workspace's SAML metadata, for identity providers to load.
-async fn saml_metadata(State(app): State<AppContext>, Path(tenant): Path<Uuid>) -> ApiResult<Response> {
-    let xml = app_state(&app)?.kernel.saml_metadata(tenant).await?;
+/// `GET /api/auth/saml/{workspace}`: the workspace's SAML metadata, for identity providers to load:
+/// the addresses on the accounts host when asked there, else PUBLIC_URL's.
+async fn saml_metadata(State(app): State<AppContext>, headers: HeaderMap, Path(tenant): Path<Uuid>) -> ApiResult<Response> {
+    let xml = app_state(&app)?.kernel.saml_metadata_at(tenant, crate::shell::request_host(&headers)).await?;
     Ok(([(header::CONTENT_TYPE, "application/samlmetadata+xml"), (header::CACHE_CONTROL, "no-cache")], xml).into_response())
 }
 
@@ -341,6 +347,115 @@ async fn saml_acs(
             refused("Something went wrong on the server; try again.")
         }
         Err(e) => refused(&e.to_string()),
+    })
+}
+
+/// Where a single logout sends the browser next: to the provider (a redirect, or a page that posts
+/// the form), or back where the person signed out from.
+fn slo_step(step: ferrum_kernel::saml_logout::SloStep) -> Response {
+    use ferrum_kernel::saml_logout::{Outgoing, SloStep};
+    let to = match step {
+        SloStep::Send(Outgoing { url, fields: Some(fields) }) => return post_page(&url, &fields),
+        SloStep::Send(out) => out.url,
+        SloStep::Back(url) => url,
+    };
+    match HeaderValue::from_str(&to) {
+        Ok(location) => (StatusCode::SEE_OTHER, [(header::LOCATION, location), (header::CACHE_CONTROL, HeaderValue::from_static("no-store"))]).into_response(),
+        Err(_) => slo_refused(),
+    }
+}
+
+/// A page that posts `fields` to `url` (the HTTP-POST binding), by itself where scripts run and with
+/// a button where they do not; its one script allowed by its digest.
+fn post_page(url: &str, fields: &[(String, String)]) -> Response {
+    use crate::shell::esc;
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    const SCRIPT: &str = "document.forms[0].submit()";
+    let inputs: String = fields.iter().map(|(k, v)| format!(r#"<input type="hidden" name="{}" value="{}">"#, esc(k), esc(v))).collect();
+    let html = format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Signing out · Ferrum</title></head><body><form method="post" action="{}">{inputs}<noscript><button type="submit">Continue</button></noscript></form><script>{SCRIPT}</script></body></html>"#,
+        esc(url)
+    );
+    let origin = reqwest::Url::parse(url).map(|u| u.origin().ascii_serialization()).unwrap_or_else(|_| "'none'".into());
+    let digest = base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(SCRIPT.as_bytes()));
+    let mut page = crate::shell::page_response(StatusCode::OK, html, &format!("default-src 'none'; script-src 'sha256-{digest}'; form-action {origin}"));
+    page.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    page
+}
+
+/// A logout message refused, or a sign-out that cannot go on to the provider: said plainly, the same
+/// for every reason.
+fn slo_refused() -> Response {
+    let mut page = crate::shell::status_page(
+        StatusCode::BAD_REQUEST,
+        "Sign-out not confirmed",
+        "The sign-out could not go through the identity provider, so nothing was done there. If you were signing out of Ferrum, you are signed out here; to be sure you are signed out at the identity provider, sign out there.",
+        &[("Sign in", "/app/login")],
+        None,
+    );
+    page.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    page
+}
+
+#[derive(Deserialize)]
+struct TicketQuery {
+    #[serde(default)]
+    ticket: String,
+}
+
+/// `GET /api/auth/saml/{workspace}/logout?ticket=…`: the address `POST /logout` gave, once: to the
+/// provider with a signed logout request. Not served where the zone admits no staff.
+async fn saml_logout_out(State(app): State<AppContext>, headers: HeaderMap, Path(tenant): Path<Uuid>, Query(q): Query<TicketQuery>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    if crate::zone::refuses_staff(&st, &headers).await {
+        return Err(ApiError(Error::NotFound("no such address".into())));
+    }
+    st.login_limiter.check(&format!("{}|sso-logout", client_ip(&headers))).await?;
+    if q.ticket.is_empty() || q.ticket.len() > 200 {
+        return Ok(slo_refused());
+    }
+    Ok(match st.kernel.saml_logout_send(tenant, &q.ticket).await {
+        Ok(step) => slo_step(step),
+        Err(e) => {
+            if matches!(e, Error::Db(_) | Error::Internal(_)) {
+                tracing::error!("a SAML logout: {e}");
+            }
+            slo_refused()
+        }
+    })
+}
+
+/// `GET|POST /api/auth/saml/{workspace}/slo`: the workspace's logout service, where a SAML provider
+/// sends its logout requests and its answers to ours (HTTP-Redirect or HTTP-POST), by the browser,
+/// with no Ferrum cookie needed. Not served where the zone admits no staff.
+async fn saml_slo(
+    State(app): State<AppContext>,
+    headers: HeaderMap,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(tenant): Path<Uuid>,
+    Form(form): Form<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    use ferrum_kernel::saml_logout::Incoming;
+    let st = app_state(&app)?;
+    if crate::zone::refuses_staff(&st, &headers).await {
+        return Err(ApiError(Error::NotFound("no such address".into())));
+    }
+    st.login_limiter.check(&format!("{}|sso-logout", client_ip(&headers))).await?;
+    let incoming = match (method == axum::http::Method::POST, form.get("SAMLRequest").or(form.get("SAMLResponse"))) {
+        (true, Some(message)) => Incoming::Post { message, relay_state: form.get("RelayState").map(String::as_str) },
+        (false, _) => Incoming::Redirect(uri.query().unwrap_or_default()),
+        (true, None) => return Ok(slo_refused()),
+    };
+    Ok(match st.kernel.saml_slo(tenant, incoming).await {
+        Ok(step) => slo_step(step),
+        Err(e) => {
+            if matches!(e, Error::Db(_) | Error::Internal(_)) {
+                tracing::error!("a SAML logout message: {e}");
+            }
+            slo_refused()
+        }
     })
 }
 
@@ -452,12 +567,26 @@ async fn logout_all(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult
 
 /// Signs this browser out: its session ends (with every token bound to it) and the cookie goes.
 /// Without a browser session there is nothing to end; the cookie is cleared all the same.
+/// A session that began with a SAML provider whose single logout is on gets `200 {"next": address}`:
+/// the page sends the browser there, which signs the person out at the provider too and comes back
+/// to this host's sign-in page. Not where the zone admits no staff, where its addresses are not
+/// served.
 async fn logout(State(app): State<AppContext>, method: axum::http::Method, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    let mut next = None;
     if let Ok((ctx, Some(device))) = crate::extract::caller_on(&st, &method, &headers).await {
-        st.kernel.end_session(ctx.tenant, device).await?;
+        match crate::shell::request_host(&headers) {
+            Some(host) if !crate::zone::refuses_staff(&st, &headers).await => {
+                let back = format!("{}://{host}/app/login", if st.shell.secure { "https" } else { "http" });
+                next = st.kernel.sign_out_session(ctx.tenant, device, &back).await?;
+            }
+            _ => st.kernel.end_session(ctx.tenant, device).await?,
+        }
     }
-    let mut res = StatusCode::NO_CONTENT.into_response();
+    let mut res = match next {
+        Some(next) => (StatusCode::OK, [(header::CACHE_CONTROL, "no-store")], Json(json!({"next": next}))).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    };
     res.headers_mut().append(axum::http::header::SET_COOKIE, crate::shell::clear_cookie(st.shell.secure));
     // Pages kept by the browser's cache go; what apps keep for working offline stays (§12.3, §16).
     res.headers_mut().insert("clear-site-data", HeaderValue::from_static("\"cache\""));
@@ -795,6 +924,8 @@ pub fn routes() -> Routes {
         .add("/sso/{provider}/backchannel-logout", post(sso_backchannel_logout))
         .add("/saml/{tenant}", get(saml_metadata))
         .add("/saml/{tenant}/acs", post(saml_acs))
+        .add("/saml/{tenant}/logout", get(saml_logout_out))
+        .add("/saml/{tenant}/slo", get(saml_slo).post(saml_slo))
         .add("/me", get(me))
         .add("/2fa", get(two_factor_status))
         .add("/2fa/begin", post(two_factor_begin))

@@ -81,6 +81,7 @@ pub(crate) const LEFT_BEHIND: &[&str] = &[
     "sign_in_code",
     "message_code",
     "file_upload",
+    "saml_logout",
 ];
 
 /// Columns a read changes (when a key or a person was last seen): left out of the comparison that proves nothing changed
@@ -226,6 +227,7 @@ fn reseal_row(table: &str, tenant: Uuid, row: &mut Map<String, Value>, from: &[S
         "conn_token" => again(row, "sealed", crate::connections::oauth::token_label(tenant, uuid(row, "conn_id")?, uuid(row, "user_id")?))?,
         "sso_provider" => again(row, "client_secret", crate::sso::sealed_label(tenant, uuid(row, "id")?))?,
         "saml_sp_key" => again(row, "private_key", crate::sso::saml_key_label(tenant))?,
+        "saml_enc_key" => again(row, "private_key", crate::sso::saml_enc_label(tenant, uuid(row, "id")?))?,
         "approval_request" => {
             let id = uuid(row, "id")?;
             let mut n = 0;
@@ -288,6 +290,7 @@ pub(crate) const KNOWN_SEALED: &[(&str, &str)] = &[
     ("plugin", "config"),
     ("message_send", "pending"),
     ("outbox", "payload"),
+    ("saml_enc_key", "private_key"),
 ];
 
 /// What a sealed value looks like (secret.rs, `SecretKey::seal`): standard base64, padded, of a nonce, the text and a
@@ -840,6 +843,7 @@ impl Kernel {
             "plugin",
             "message_send",
             "outbox",
+            "saml_enc_key",
         ] {
             if !tables.contains_key(t) {
                 continue;

@@ -1089,6 +1089,25 @@ impl Task for ReleaseHost {
     }
 }
 
+/// `saml_encryption_key slug:acme`: replaces a workspace's SAML encryption key. The new key is published first; the old
+/// one stays published and accepted for 30 days while identity providers read the metadata again.
+pub struct SamlEncryptionKey;
+
+#[async_trait]
+impl Task for SamlEncryptionKey {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "saml_encryption_key".into(), detail: "Replaces a workspace's SAML encryption key; the old one is still accepted for 30 days".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let slug = vars.cli_arg("slug").map_err(refused)?;
+        let (tenant, _) = k.tenant_by_slug(slug).await.map_err(refused)?;
+        let id = k.rotate_saml_encryption_key(tenant).await.map_err(refused)?;
+        println!("{slug} has a new SAML encryption key ({id}), first in its metadata; the old one is accepted for 30 days");
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -191,6 +191,31 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   domains listed. Each workspace signs its requests (RSA-SHA256) with a key of its own, made when
   first wanted and sealed by the server key, whose certificate its metadata publishes. A server
   built with SAML checks at `doctor` that xmlsec1 signs and verifies.
+* SAML encrypted assertions (crates/saml/src/xmlenc.rs): opened by xmlsec1 with a workspace key kept
+  for encryption alone (made, sealed and published like the signing key; replaced by a task, the old
+  one accepted for 30 days). Encryption proves nothing about who wrote an assertion, since anyone can
+  encrypt to a published key, so what is opened is trusted only under the provider's signature: the
+  response's, covering the encrypted assertion, checked before anything is decrypted; or else the
+  assertion's own inside the encryption. A response that carries a signature must have a good one over
+  all of it: one covering less, or one that does not check, refuses it, with no fallback to the
+  assertion's. Then every check a plain assertion gets. What reaches xmlsec1 is rebuilt from what was
+  checked: AES-GCM for the data (AES-CBC only under a response signature already checked, so no
+  changed ciphertext is ever decrypted, which is what padding oracles need), RSA-OAEP for its key
+  (never PKCS#1 v1.5), cipher values inline only (nothing fetched), and the key named by us rather
+  than by a certificate or reference the sender chose. Once a key is tried, every failure reads the
+  same. Only what the linked xmlsec1 has is accepted, asked of it algorithm by algorithm; without
+  AES-GCM and RSA-OAEP, encryption stays off as before (no key published, encrypted assertions
+  refused). Run on xmlsec1 1.3.13; 1.2 (the release image's 1.2.37) checked by reading its source.
+* SAML single logout (crates/kernel/src/saml_logout.rs), by the browser, both ways. Signing out ends
+  the session at once, whatever the provider does; the logout request to the provider is signed, and
+  its answer must be signed, answer a request of ours still open, and counts once. A provider's logout
+  request must be signed by a certificate in its metadata (RSA with SHA-256 or better in a redirect's
+  query, checked over the query as received; xmlsec1 for posted ones, reading only what the signature
+  covers), name this workspace's logout service, be under ten minutes old, and is counted once by its
+  ID; it ends only sessions that sign-ins through that provider opened for that NameID, so a NameID
+  guessed or of another provider's ends nothing. No Ferrum cookie is involved, so it works in a frame
+  or another tab and cannot be forged by a page. The NameID and session index are kept on the session
+  row (personal data, going with it) and in a logout started here for ten minutes.
 * API keys: 256 random bits, stored as SHA-256; OAuth access tokens last an hour, refresh tokens
   rotate.
 
@@ -319,9 +344,15 @@ Known and accepted:
   private IRP's codes are checked only when the company enters that IRP's key.
 * Session tokens are readable by script on the app's origin; the Content Security Policy is what
   keeps foreign script out.
-* SAML: no single logout, and encrypted assertions are refused in so many words (TLS carries
-  them; samael opens only some of XML Encryption's algorithms, in its own code rather than
-  xmlsec1's); a provider whose policy needs either cannot be used. A workspace's key does not
-  rotate by itself: it is good for ten years.
+* SAML: no artifact binding and no back-channel (SOAP) logout, so a provider that logs out only that
+  way, or a person who closed the browser, leaves the other side's session to end by itself; logout
+  requests with an encrypted NameID are refused; and a sign-in API client given a bearer token (not a
+  browser session) is not ended by the provider's logout. The SP-started logout carries the NameID's
+  value and format, not its qualifiers, which a provider that checks them may refuse. Single logout
+  needs the page to follow the address `POST /api/auth/logout` gives (the bar and the portal do;
+  another client signs out here only). Neither workspace key
+  rotates by itself (the signing key is good for ten years; the encryption key is replaced by a task),
+  and encryption and logout have been checked against the repository's own test identity provider
+  and, in CI, Keycloak, not yet against AD FS, Entra ID, Okta or Shibboleth.
 * Workspace administrators author print templates (sandboxed as above), automations and roles:
   they are trusted with their workspace.
