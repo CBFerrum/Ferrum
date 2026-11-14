@@ -65,8 +65,8 @@ pub(crate) const NOT_ACCEPTED: &str = "the provider encrypted the assertion in a
      (AES-GCM, or AES-CBC only when the whole response is signed; the key by RSA-OAEP)";
 
 // xmlsec1's C interface, as far as opening encrypted data. Linked with xmlsec1 by samael's build;
-// built with its crypto library loaded at run time (Debian, Ubuntu), the app calls have generic
-// names (build.rs says which).
+// built with its crypto library loaded at run time (1.2's own default, not Debian's or Ubuntu's),
+// the app calls have generic names (build.rs says which).
 #[allow(non_camel_case_types)]
 type xmlSecPtr = *mut c_void;
 unsafe extern "C" {

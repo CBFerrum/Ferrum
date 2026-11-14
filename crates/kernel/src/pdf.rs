@@ -115,14 +115,25 @@ impl Kernel {
         let owned = page.fields();
         let fields: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
         let url = format!("{}/forms/chromium/convert/html", base.trim_end_matches('/'));
+        let body = form(
+            &boundary,
+            &[Some(("index.html", html)), header.map(|h| ("header.html", h)), footer.map(|f| ("footer.html", f))].into_iter().flatten().collect::<Vec<_>>(),
+            &fields,
+        );
+        convert(url, boundary, body).await
+    }
+}
+
+/// Posts a page to the renderer and reads back the PDF. Boxed as a trait object on purpose: the HTTP client's request and
+/// response types nest some fifty deep, and every future that awaits this one must be proved `Send` through them. Since
+/// the `generate` effect (BD-21) put this call inside automations run under the capability gate, reached from MCP and
+/// Studio, that proof passed the compiler's recursion limit (E0275); behind the box it stops here, for every caller.
+fn convert(url: String, boundary: String, body: Vec<u8>) -> futures::future::BoxFuture<'static, Result<Vec<u8>>> {
+    Box::pin(async move {
         let mut res = CLIENT
             .post(url)
             .header("content-type", format!("multipart/form-data; boundary={boundary}"))
-            .body(form(
-                &boundary,
-                &[Some(("index.html", html)), header.map(|h| ("header.html", h)), footer.map(|f| ("footer.html", f))].into_iter().flatten().collect::<Vec<_>>(),
-                &fields,
-            ))
+            .body(body)
             .send()
             .await
             .map_err(|e| Error::Unavailable(format!("PDF renderer unreachable: {e}")))?;
@@ -140,7 +151,7 @@ impl Kernel {
             return Err(Error::Unavailable("the PDF renderer returned something that is not a PDF".into()));
         }
         Ok(pdf)
-    }
+    })
 }
 
 #[cfg(test)]

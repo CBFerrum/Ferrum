@@ -19,3 +19,40 @@ advisories:
       This reading needs confirming by someone other than the author of this entry.
     review_by: 2027-02-01
     resolved_when: jsonwebtoken or loco-rs upgrade.
+  - id: RUSTSEC-2026-0459
+    crate: libsqlite3-sys
+    owner: Chinmoy Bhuyan
+    reason: SQLite before 3.54 can return uninitialised page-cache memory for a crafted database and WAL pair; fixed in 0.39, which sqlx 0.9 (the latest) does not accept.
+    applicability: >-
+      Not compiled. No feature of this workspace enables sqlx's sqlite; the crate is in Cargo.lock only
+      because sqlx's feature list names sqlx-sqlite (cargo tree -i libsqlite3-sys --all-features --target
+      all prints nothing). Ferrum opens no SQLite database.
+    review_by: 2027-02-01
+    resolved_when: sqlx accepts libsqlite3-sys 0.39 and the lock is updated, or anything here turns SQLite on (then upgrade first).
+  - id: RUSTSEC-2026-0441
+    crate: pin-utils
+    owner: Chinmoy Bhuyan
+    reason: Unmaintained (archived October 2026), no fixed release; arrives through async-imap 0.12.0, the latest, in ferrum-app-comms.
+    applicability: >-
+      A macro for pinning a value on the stack, used inside async-imap's mail client; no known bug. No code
+      in this repository calls it.
+    review_by: 2027-02-01
+    resolved_when: async-imap drops it, or Comms moves to another IMAP client.
+  - id: RUSTSEC-2026-0215
+    crate: smallstr
+    owner: Chinmoy Bhuyan
+    reason: Unmaintained, no fixed release; arrives through yrs, whose copy is third_party/yrs (upstream's latest, 0.28.1, still uses it).
+    applicability: >-
+      Short strings inside the shared-editing library's documents; no known bug.
+    review_by: 2027-02-01
+    resolved_when: yrs moves off it, or third_party/yrs replaces it (compact_str or smol_str, as the advisory suggests).
+  - id: RUSTSEC-2024-0449
+    crate: unsafe-libyaml
+    owner: Chinmoy Bhuyan
+    reason: Unmaintained since March 2024 (archived), no fixed release; arrives through serde_yaml_ng 0.10 (the latest) here and in ferrum-app-edge, and loco-rs's serde_yaml.
+    applicability: >-
+      Parses packages' and apps' YAML, including an app bundle's manifest from a store, which a publisher
+      writes: a bug in it would be reachable by an app's author. No known bug.
+      This reading needs confirming by someone other than the author of this entry.
+    review_by: 2027-02-01
+    resolved_when: Ferrum and its apps move to a maintained YAML parser (serde-saphyr, or serde_norway's maintained fork), and loco-rs off serde_yaml.

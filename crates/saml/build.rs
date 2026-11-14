@@ -1,6 +1,6 @@
 //! Which names xmlsec1's app calls go by (src/xmlenc.rs): built to load its crypto library at run
-//! time (Debian, Ubuntu), they are the generic `xmlSecCrypto…`; else OpenSSL's own. The same test
-//! samael's build makes.
+//! time (1.2's own default; Debian, Ubuntu and Homebrew build without it), they are the generic
+//! `xmlSecCrypto…`; else OpenSSL's own. The same test samael's build makes.
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(xmlsec_dynamic)");
