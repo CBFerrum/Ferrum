@@ -175,6 +175,79 @@ internet (`kind = 'operator'`, never checked, served as verified) with a task.
   the primary. Default: none.
 - Worker pool scaling on queue depth through KEDA's PostgreSQL scaler (chart values, no server change).
 
+## D7. Addresses (built 14 November 2026)
+
+A workspace shapes its own addresses without an origin per app: an app on an origin of its own loses what people rely on
+across apps (record cards from other apps, side panels, links between apps, one live connection, writes refused across
+hosts). So every address that opens the workspace (`shell`) is the whole workspace, and an address only chooses where a
+person lands and what the bar lists. Zones stay the operator's: nothing here admits anyone anywhere.
+
+**What an address shows** (`tenant_host.home`, `apps`, `label`; a `shell` address only, refused on `portal` and
+`site:`). `home`: `/` redirects (`302`) to that app's first launcher route the person may use, else Home. `apps`: the
+launcher and the bar's search list those apps and an entry to the main address; presentation, never a wall. `label`:
+beside the workspace's name in the bar. The bootstrap carries `host.home`, `host.apps`, `host.label`, `host.main` and
+`host.main_url`, each only as far as the person may open it there: an app a zone leaves out is never named, and
+`home` to one falls back to Home. The runtime filters in a pure helper (`addressEntries`). Not filtered: the Create
+menu and side panels (actions, not navigation), records search's "Go to" lists (entities, not apps).
+
+**Names under the base**: `{name}--{slug}.{base}`, one DNS label, kind `subdomain` with `base_name` set, live at once,
+covered by the wildcard, answered by `/_tls/ask`, handed sign-ins by the accounts host. New slugs may not hold `--`
+(`check_slug`); older slugs that do keep working, and the host table's primary key keeps any clash out (first
+wins). Reserved: `accounts`, `hooks`, `www`, `api`, `admin`, `login`, `mail`, `xn`, the slugs the cluster keeps, and the
+first label of the server's own hosts under the base. A name released by its workspace may be taken back by it at once,
+leaving period or not: only it can ever form it.
+
+**Apps' own origins under the same base** (`FERRUM_APPS_BASE` equal to `FERRUM_BASE_DOMAIN`, which the docs advise
+against but nothing forbids): the two forms are the same. One place decides (`Shell::app_host`, used by the middleware,
+the app origin's pages, the isolated page and OAuth through `Shell::app_origin_for`): a host that is a workspace's
+address is the workspace's, and the app keeps to its sandboxed frame. Adding a name that is the id of an app compiled in,
+available on the cluster or uploaded to the workspace is refused there. When the database cannot be asked, the host is
+kept to the app's paths (closed).
+
+**Short paths** (`tenant.settings.paths`, `[{alias, target}]`, at most 50): `/{alias}[/…]` redirects (`302`, query
+kept, rest appended) on every `shell` address, signed in. Asked only where no app's route is, so an app that comes later
+wins (the doctor's `paths.shadowed`, `works: false` in the list). Targets: `/`, the shell's pages, `/open/…`, or under a
+route of one of the workspace's apps; the joined location must pass `safe_next`. Settings, so they travel with a move and a
+sandbox. Read from the database on each such request (no cache): only requests no app answers pay for it.
+
+**Admin API**: `GET/POST /api/admin/domains`, `PATCH|DELETE /api/admin/domains/{host}`, the existing `…/primary` and
+`…/check`, `GET|PUT /api/admin/paths`. Operator addresses and zones are shown read-only; naming a zone is refused, and
+changing or removing an operator's address is `403`. Changes are refused while the workspace is read-only (closed or
+restricted) and are audited (`WorkspaceDomain` `add`/`shape`/`remove`, `WorkspacePaths` `set`).
+
+**Limits**: the plan quota `addresses` (live addresses of every kind; 20 when left out, today's fixed number). An
+advisory lock per workspace makes two adds at once take turns, so the last place is taken once; `PATCH` locks the row,
+so two changes each build on the other; `PUT` of short paths replaces the list (the later save stands whole).
+
+**Lifecycle.** A move: the target re-makes each live name under its own base, carrying what it shows, and releases the
+copies under the source's base (they cannot reach it); a portal or site whose main address was such a name gets the new
+one. A sandbox: no addresses travel (as before); short paths do. A rename (by hand: no task exists): names keep their
+form and keep leading to the workspace; the retired slug keeps anyone else from forming them. Closed or restricted:
+addresses keep answering and do not change. Deleted: rows go with the workspace; names can never be formed again.
+
+**Older builds** (the two-version window): the new columns and the `paths` setting are ignored, so an address lands on
+Home and lists every app, and short paths answer "Nothing is installed here". Nothing protective is lost, so no floor.
+A name under a base equal to the apps base is taken there for an app's origin and answers "Nothing is here" (closed).
+
+**Drawbacks kept** (each with what was done):
+
+| Drawback | What was done |
+|---|---|
+| Each address is its own origin: its own storage, offline queue, service worker and push subscription, and a person with two open has two live connections | Said in operations.md; the main address stays the one mail and notifications use |
+| A person signs in on each address | With an accounts host it is one redirect with no prompt; without one, a password per address, as for custom domains |
+| `home` to an app the person cannot open there | Falls back to Home, decided per request; the bootstrap names it only when it opens |
+| `apps` leaves out the app a link or notification opens | The page opens anyway (not a wall); the launcher's entry leads to the main address for the rest |
+| Bookmarks to a short path always redirect | On purpose: the address bar shows the real path and nothing can hide an app |
+| An app later claims a short path's segment | The app wins; `works: false` and the doctor's `paths.shadowed` say so |
+| Name squatting under a shared base | Impossible across workspaces (the form ends in the slug); within one, the `addresses` quota |
+| A label or name that looks like another company's | The host always ends in the workspace's own slug, and a `label` shows only in that workspace's bar |
+| One certificate per name with on-demand TLS (authorities' weekly limits per domain) | One label under the base, so the wildcard covers it; operations.md says to prefer the wildcard |
+| Search engines | `shell` pages need sign-in; a `site:{app}` reached at two addresses shows the same pages twice: give a site one address |
+| Removing a name by mistake | Its workspace takes it back at once |
+| An administrator in a zone that leaves apps out replaces an address's `apps` | They see and set only the zone's apps; the list they save replaces the address's |
+| Renaming a workspace leaves its names in the old slug's form | They keep working and no one else can form them; no rename task exists to re-make them |
+| A deleted workspace's custom domains are deleted with it (no quarantine) | Found, not changed here: names under the base are safe by their form, custom domains are not |
+
 ## Not doing
 
 A service or database per app; a database role per pool; an image per app group; one host per app; a
