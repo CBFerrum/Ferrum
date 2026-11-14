@@ -331,7 +331,7 @@ impl Kernel {
     pub(crate) async fn queue_retention(&self) -> Result<()> {
         let mut tx = self.db.system_tx().await?;
         let tenants: Vec<Uuid> = sqlx::query_scalar(
-            "select distinct r.tenant_id from retention_rule r join tenant t on t.id = r.tenant_id where r.is_active and t.status = 'active'",
+            "select distinct r.tenant_id from retention_rule r join tenant t on t.id = r.tenant_id where r.is_active and t.status = 'active' and not ferrum_workspace_held(t.id)",
         )
         .fetch_all(&mut *tx)
         .await?;

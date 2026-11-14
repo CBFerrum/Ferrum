@@ -561,7 +561,7 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         let due: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            "select a.tenant_id, a.id from (select distinct tenant_id from automation where event = 'scheduled' and is_active) t \
+            "select a.tenant_id, a.id from (select distinct tenant_id from automation where event = 'scheduled' and is_active and not ferrum_workspace_held(tenant_id)) t \
              cross join lateral (select tenant_id, id from automation a where a.tenant_id = t.tenant_id and a.event = 'scheduled' and a.is_active \
                and (a.scan_to is not null or a.scanned_until is null or a.scanned_until <= $1 - make_interval(secs => $2)) \
                order by a.scanned_until nulls first, a.id limit $3) a \
@@ -695,7 +695,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         // An absence's occurrence keys its period (BD-27): kept while the period may still be running.
         let n = sqlx::query(
-            "delete from automation_occurrence o where o.due_at < now() - make_interval(days => $1) \
+            "delete from automation_occurrence o where o.due_at < now() - make_interval(days => $1) and not ferrum_workspace_held(o.tenant_id) \
              and (o.due_at < now() - make_interval(days => $2) or not exists (select 1 from automation a \
                where a.tenant_id = o.tenant_id and a.id = o.automation_id and a.schedule->'every' ? 'absent'))",
         )

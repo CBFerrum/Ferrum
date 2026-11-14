@@ -102,6 +102,7 @@ META_PUBLISHED = ("-p", "ferrum-meta", "--lib", "published")
 CONTRACT = ("-p", "ferrum-ops-contract", "--lib")
 OPS = ("-p", "ferrum-ops", "--test", "ops_it")
 RECOVERY = ("-p", "ferrum-kernel", "--test", "recovery_it")
+WORKSPACE_MOVE = ("-p", "ferrum-kernel", "--test", "workspace_move_it")
 # Needs OpenBao at FERRUM_KMS_TEST_TRANSIT (crates/kernel/tests/kms_it.rs).
 KMS = ("-p", "ferrum-kernel", "--test", "kms_it")
 SAGA = ("-p", "ferrum-kernel", "--test", "saga_it")
@@ -332,7 +333,12 @@ MUTANTS = [
     ("extract-unerases", "crates/kernel/src/recovery.rs", "erased_again += self.erase_again(&mut tx, &system, erasure).await?.0;", "erased_again += usize::from(system.is_system && erasure.is_null());", RECOVERY),
     ("extract-files-unchecked", "crates/kernel/src/recovery.rs", "Ok(if store.exists(&key).await? { None } else { Some(t) })", "Ok(if store.exists(&key).await? || true { None } else { Some(t) })", RECOVERY),
     ("move-every-copy-held", "crates/kernel/src/moves.rs", "    } else if now >= mark.valid_until {", "    } else if true {", RECOVERY),
-    ("move-source-takes-changes", "crates/kernel/src/db.rs", "if self.fenced() || (moving && !self.starting.load(Ordering::SeqCst)) {", "if self.fenced() {", RECOVERY),
+    ("move-source-takes-changes", "crates/kernel/src/db.rs", "if self.fenced() || frozen || (moving && !self.starting.load(Ordering::SeqCst)) {", "if self.fenced() || frozen {", RECOVERY),
+    ("workspace-move-freeze-ignored", "crates/kernel/src/db.rs", "if self.fenced() || frozen || (moving", "if self.fenced() || (moving", WORKSPACE_MOVE),
+    ("workspace-move-skips-the-check", "crates/kernel/src/workspace_move.rs", "        if !changed.is_empty() {\n            src.rollback()", "        if false {\n            src.rollback()", WORKSPACE_MOVE),
+    ("workspace-move-carries-unknown-sealed", "crates/kernel/src/workspace_move.rs", "        if !unknown.is_empty() {\n", "        if false {\n", WORKSPACE_MOVE),
+    ("workspace-move-sign-in-looks-first", "crates/kernel/src/auth.rs", "        self.refuse_if_moving_slug(tenant_slug).await?;\n        let email = email.trim().to_lowercase();\n        let mut tx", "        let email = email.trim().to_lowercase();\n        let mut tx", WORKSPACE_MOVE),
+    ("workspace-move-claims-the-held", "crates/kernel/src/outbox.rs", "where tenant_id is not null and not ferrum_workspace_held(tenant_id) order by random()) w \\\n               cross join lateral (select o.id", "where tenant_id is not null order by random()) w \\\n               cross join lateral (select o.id", WORKSPACE_MOVE),
     ("move-unopened-unsaid", "crates/kernel/src/secret.rs", "if self.open_sealed(&label(ids, name), sealed).is_err() {", "if false {", RECOVERY),
     ("extract-what-went-out-unsaid", "crates/kernel/src/recovery.rs", "processed_at > coalesce($2, '-infinity'::timestamptz)", "processed_at <= coalesce($2, '-infinity'::timestamptz)", RECOVERY),
     ("extract-forgets-erasures", "crates/kernel/src/recovery.rs", '"contact_consent", "privacy_erasure"]', '"contact_consent"]', RECOVERY),
@@ -341,7 +347,7 @@ MUTANTS = [
     ("closure-deletes-before-its-date", "crates/kernel/src/recovery.rs", "        if retain_until >= chrono::Utc::now().date_naive() {\n", "        if false {\n", CLOSURE),
     ("closure-deletes-what-is-held-elsewhere", "crates/kernel/src/recovery.rs", "        if !outside.is_empty() {\n", "        if false {\n", CLOSURE),
     ("closure-rows-go-without-their-files", "crates/kernel/src/recovery.rs", "        if !failed.is_empty() {\n", "        if false {\n", CLOSURE),
-    ("closure-misses-other-references", "crates/kernel/src/recovery.rs", "        columns.extend(others);\n", "", CLOSURE),
+    ("closure-misses-other-references", "crates/kernel/src/recovery.rs", "    columns.extend(others);\n", "", CLOSURE),
     ("closure-closed-is-writable", "crates/kernel/src/auth.rs", "t.account_state in ('restricted', 'closed')", "t.account_state in ('restricted')", CLOSURE),
     ("ops-a-moved-device-starts-twice", "crates/ops/src/commands.rs", "and taken_by = $3 \\\n         and (state in ('Accepted', 'Executing') or (state = 'Queued' and sent_at is not null)) for update", "and taken_by = $3 \\\n         and (state in ('Accepted', 'Executing') or (state = 'Queued' and held_at is not null)) for update", OPS),
     ("ops-a-new-holder-starts-it-twice", "crates/ops/src/commands.rs", "and domain = $2 and (state in ('Accepted', 'Executing') or (state = 'Queued' and sent_at is not null)) for update", "and domain = $2 and (state in ('Accepted', 'Executing') or (state = 'Queued' and held_at is not null)) for update", OPS),

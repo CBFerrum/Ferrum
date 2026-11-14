@@ -881,7 +881,7 @@ async fn record(
 }
 
 /// What the outbox and the delivery log hold of a message with secret values: sealed under this label while it waits.
-fn sealed_message(tenant: Uuid) -> String {
+pub(crate) fn sealed_message(tenant: Uuid) -> String {
     format!("{tenant}/message")
 }
 

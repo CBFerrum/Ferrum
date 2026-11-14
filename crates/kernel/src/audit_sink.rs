@@ -208,6 +208,29 @@ impl Kernel {
         if resp.status().is_success() { Ok(()) } else { Err(Error::Unavailable(format!("the audit sink answered {}", resp.status().as_u16()))) }
     }
 
+    /// How many of one workspace's audit events the sink has not sent yet (0 without a sink, or before its first
+    /// turn): what `finish_move` waits for, since the events go with the rows it deletes.
+    pub(crate) async fn audit_sink_unsent(&self, tenant: uuid::Uuid) -> Result<i64> {
+        if self.settings.audit_sink.is_none() {
+            return Ok(0);
+        }
+        let mut tx = self.db.system_tx().await?;
+        let at: Option<String> = sqlx::query_scalar("select value from cluster_state where key = $1").bind(CURSOR).fetch_optional(&mut *tx).await?;
+        let Some(at) = at else { return Ok(0) };
+        let cur = cursor_parts(&at)?;
+        let n: i64 = sqlx::query_scalar(
+            "select count(*) from audit_event e where e.tenant_id = $4 and e.xid is not null and (e.xid, e.id) > ($1::text::xid8, $2) and e.id > $3",
+        )
+        .bind(&cur.xid)
+        .bind(cur.id)
+        .bind(cur.floor)
+        .bind(tenant)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(n)
+    }
+
     /// How far behind the sink is: seconds since the oldest event not yet sent was written (0: nothing waits),
     /// or `None` without a sink or before its first turn.
     pub async fn audit_sink_behind(&self) -> Result<Option<f64>> {

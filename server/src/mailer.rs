@@ -97,6 +97,9 @@ impl ferrum_kernel::files::FileStore for StorageFiles {
         // Asked without reading it.
         self.1.exists(key).await
     }
+    async fn size(&self, key: &str) -> Result<Option<u64>> {
+        self.1.size(key).await
+    }
     async fn delete(&self, key: &str) -> Result<()> {
         self.0.delete(std::path::Path::new(key)).await.map_err(|e| Error::Unavailable(format!("storage: {e}")))
     }

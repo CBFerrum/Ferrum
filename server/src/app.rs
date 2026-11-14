@@ -24,7 +24,7 @@ use tokio::sync::watch;
 
 pub struct App;
 
-fn build_storage(settings: &Settings) -> Result<Storage> {
+pub(crate) fn build_storage(settings: &Settings) -> Result<Storage> {
     if !settings.s3_bucket.is_empty() {
         // OpenDAL talks HTTP through a process-wide transport that must be installed first.
         opendal::install_default();
@@ -622,6 +622,8 @@ impl Hooks for App {
         tasks.register(crate::tasks::CancelMove);
         tasks.register(crate::tasks::AdoptMove);
         tasks.register(crate::tasks::CheckFiles);
+        tasks.register(crate::tasks::MoveWorkspace);
+        tasks.register(crate::tasks::FinishMove);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

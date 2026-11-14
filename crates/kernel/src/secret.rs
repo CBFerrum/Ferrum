@@ -96,14 +96,14 @@ impl SecretKey {
     }
 }
 
-fn aad(tenant: Uuid, entity: &str, record: Uuid, field: &str) -> String {
+pub(crate) fn aad(tenant: Uuid, entity: &str, record: Uuid, field: &str) -> String {
     format!("{tenant}/{entity}/{record}/{field}")
 }
 
 /// How a sealed webhook secret is told from one stored before they were sealed.
-const SEALED_WEBHOOK: &str = "sealed:";
+pub(crate) const SEALED_WEBHOOK: &str = "sealed:";
 
-fn webhook_label(tenant: Uuid, webhook: Uuid) -> String {
+pub(crate) fn webhook_label(tenant: Uuid, webhook: Uuid) -> String {
     format!("{tenant}/webhook/{webhook}")
 }
 

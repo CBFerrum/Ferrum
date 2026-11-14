@@ -216,7 +216,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let due: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "select g.tenant_id, g.user_id from support_grant g join app_user u on u.tenant_id = g.tenant_id and u.id = g.user_id \
-             where g.revoked_at is null and g.expires_at < now() and u.is_active",
+             where g.revoked_at is null and g.expires_at < now() and u.is_active and not ferrum_workspace_held(g.tenant_id)",
         )
         .fetch_all(&mut *tx)
         .await?;

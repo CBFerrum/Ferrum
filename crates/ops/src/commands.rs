@@ -805,7 +805,8 @@ pub async fn cancels(tx: &mut Tx, tenant: Uuid, domain: &str) -> Result<Vec<Uuid
 pub async fn expire_unsent(k: &Kernel) -> Result<u64> {
     let mut tx = k.db.system_tx().await?;
     let due: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "select tenant_id, id from op_command where state in ('Proposed', 'Authorized', 'Queued') and sent_at is null and expires_at <= now() limit 500 for update skip locked",
+        "select tenant_id, id from op_command where state in ('Proposed', 'Authorized', 'Queued') and sent_at is null and expires_at <= now() \
+         and not ferrum_workspace_held(tenant_id) limit 500 for update skip locked",
     )
     .fetch_all(&mut *tx)
     .await?;

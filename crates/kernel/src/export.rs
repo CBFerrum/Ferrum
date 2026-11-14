@@ -507,7 +507,7 @@ impl Kernel {
     pub(crate) async fn purge_exports(&self) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
         let old: Vec<(Uuid, String)> =
-            sqlx::query_as("delete from file_object where entity = $1 and created_at < now() - make_interval(days => $2) returning tenant_id, storage_key")
+            sqlx::query_as("delete from file_object where entity = $1 and created_at < now() - make_interval(days => $2) and not ferrum_workspace_held(tenant_id) returning tenant_id, storage_key")
                 .bind(EXPORT_ENTITY)
                 .bind(EXPORT_DAYS)
                 .fetch_all(&mut *tx)

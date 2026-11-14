@@ -103,8 +103,9 @@ impl Trace {
 
 /// `settings` (their parameters start at `$5`) with the current [`Trace`] and the transaction's lock and idle timeouts
 /// set beside them, in one round trip. Its row's `moving` says whether a planned move has fenced the database
-/// (`ferrum_moving()`, asked when `moves` is set; see crates/kernel/src/moves.rs).
-fn carrying(settings: &str, moves: bool) -> Query<'static, Postgres, PgArguments> {
+/// (`ferrum_moving()`, asked when `moves` is set; see crates/kernel/src/moves.rs), and `frozen` whether the workspace in
+/// `$5` is moving to another installation (`ferrum_workspace_frozen`, asked when `frozen` is set: workspace_move.rs).
+fn carrying(settings: &str, moves: bool, frozen: bool) -> Query<'static, Postgres, PgArguments> {
     let t = TRACE.try_with(Trace::clone).unwrap_or_default();
     // The depth is a number and the zone a name of lowercase letters, digits and dashes (crate::zones checks them; any
     // other is left out), written in place, so the settings' parameters still start at $5.
@@ -113,9 +114,10 @@ fn carrying(settings: &str, moves: bool) -> Query<'static, Postgres, PgArguments
         "select set_config('ferrum.correlation', $1, true), set_config('ferrum.causation', $2, true), \
          set_config('ferrum.traceparent', $3, true), set_config('ferrum.priority', $4, true), \
          set_config('ferrum.depth', '{}', true), set_config('ferrum.zone', '{zone}', true), set_config('lock_timeout', '{LOCK_TIMEOUT}', true), \
-         set_config('idle_in_transaction_session_timeout', '{IDLE_IN_TRANSACTION}', true), {settings}, {} as moving",
+         set_config('idle_in_transaction_session_timeout', '{IDLE_IN_TRANSACTION}', true), {settings}, {} as moving, {} as frozen",
         t.depth,
-        if moves { "ferrum_moving()" } else { "false" }
+        if moves { "ferrum_moving()" } else { "false" },
+        if frozen { "ferrum_workspace_frozen($5)" } else { "false" }
     )))
     .bind(t.correlation)
     .bind(t.causation.map(|c| c.to_string()).unwrap_or_default())
@@ -185,6 +187,8 @@ pub struct Db {
     /// This database has `ferrum_moving()` (the planned move's migration is applied), so transactions ask it
     /// ([`Db::ask_moves`]).
     moves: Arc<AtomicBool>,
+    /// This database has `ferrum_workspace_frozen()`, so tenant transactions ask it ([`Db::ask_moves`]).
+    frozen: Arc<AtomicBool>,
     /// The server is starting: a planned move's fence does not apply yet, so that a fenced database's server starts (and
     /// a task runs on it) and then serves read-only. Off unless the server says so.
     starting: Arc<AtomicBool>,
@@ -210,7 +214,9 @@ impl Db {
     async fn stay_fenced(&self, tx: &mut Tx, row: sqlx::postgres::PgRow) -> Result<()> {
         use sqlx::Row;
         let moving: bool = row.try_get("moving")?;
-        if self.fenced() || (moving && !self.starting.load(Ordering::SeqCst)) {
+        // A workspace moving to another installation takes no changes either, from anyone (workspace_move.rs).
+        let frozen: bool = row.try_get("frozen")?;
+        if self.fenced() || frozen || (moving && !self.starting.load(Ordering::SeqCst)) {
             sqlx::query("set transaction read only").execute(&mut **tx).await?;
         }
         Ok(())
@@ -281,7 +287,18 @@ impl Db {
                 config.read_max_lag,
             ))),
         };
-        Ok(Db { pooled: direct_url.is_some(), pool, side, direct, read, config, fenced: Arc::default(), moves: Arc::default(), starting: Arc::default() })
+        Ok(Db {
+            pooled: direct_url.is_some(),
+            pool,
+            side,
+            direct,
+            read,
+            config,
+            fenced: Arc::default(),
+            moves: Arc::default(),
+            frozen: Arc::default(),
+            starting: Arc::default(),
+        })
     }
 
     /// Whether `direct` is a pool of its own: the main pool then goes through a pooler.
@@ -307,13 +324,21 @@ impl Db {
     /// Transactions ask `ferrum_moving()` from here on when this database has it (Kernel::boot, once the schema is
     /// settled; a guest's newer database has it too).
     pub async fn ask_moves(&self) -> Result<()> {
-        let there: bool = sqlx::query_scalar("select to_regprocedure('ferrum_moving()') is not null").fetch_one(&self.pool).await?;
+        let (there, frozen): (bool, bool) =
+            sqlx::query_as("select to_regprocedure('ferrum_moving()') is not null, to_regprocedure('ferrum_workspace_frozen(text)') is not null")
+                .fetch_one(&self.pool)
+                .await?;
         self.moves.store(there, Ordering::SeqCst);
+        self.frozen.store(frozen, Ordering::SeqCst);
         Ok(())
     }
 
     fn moves(&self) -> bool {
         self.moves.load(Ordering::SeqCst)
+    }
+
+    fn frozen(&self) -> bool {
+        self.frozen.load(Ordering::SeqCst)
     }
 
     /// Versions of the kernel's SQL migrations this database has applied (none for a database no migration has touched).
@@ -362,7 +387,7 @@ impl Db {
     /// transaction of the same request is open.
     pub async fn side_tenant_tx(&self, tenant: Uuid) -> Result<Tx> {
         let mut tx = self.side.begin().await?;
-        let row = carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)", self.moves())
+        let row = carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)", self.moves(), self.frozen())
             .bind(tenant.to_string())
             .bind(self.config.statement_timeout_ms.to_string())
             .fetch_one(&mut *tx)
@@ -378,7 +403,7 @@ impl Db {
 
     pub async fn tenant_tx_with_timeout(&self, tenant: Uuid, timeout_ms: u64) -> Result<Tx> {
         let mut tx = self.pool.begin().await?;
-        let row = as_tenant(&mut tx, tenant, timeout_ms, self.moves()).await?;
+        let row = as_tenant(&mut tx, tenant, timeout_ms, self.moves(), self.frozen()).await?;
         self.stay_fenced(&mut tx, row).await?;
         Ok(tx)
     }
@@ -448,7 +473,7 @@ impl Db {
 
     async fn system_tx_asking(&self, moves: bool) -> Result<Tx> {
         let mut tx = self.pool.begin().await?;
-        let row = carrying("set_config('ferrum.system', 'on', true), set_config('statement_timeout', $5, true)", moves)
+        let row = carrying("set_config('ferrum.system', 'on', true), set_config('statement_timeout', $5, true)", moves, false)
             .bind(self.config.statement_timeout_ms.to_string())
             .fetch_one(&mut *tx)
             .await?;
@@ -463,6 +488,7 @@ impl Db {
         let row = carrying(
             "set_config('ferrum.system', 'on', true), set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)",
             self.moves(),
+            self.frozen(),
         )
         .bind(tenant.to_string())
         .bind(self.config.statement_timeout_ms.to_string())
@@ -489,8 +515,8 @@ impl Db {
 }
 
 /// Sets the workspace and the statement timeout on a transaction, as every tenant transaction does.
-async fn as_tenant(tx: &mut Tx, tenant: Uuid, timeout_ms: u64, moves: bool) -> Result<sqlx::postgres::PgRow> {
-    Ok(carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)", moves)
+async fn as_tenant(tx: &mut Tx, tenant: Uuid, timeout_ms: u64, moves: bool, frozen: bool) -> Result<sqlx::postgres::PgRow> {
+    Ok(carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)", moves, frozen)
         .bind(tenant.to_string())
         .bind(timeout_ms.to_string())
         .fetch_one(&mut **tx)
@@ -502,7 +528,7 @@ async fn as_tenant(tx: &mut Tx, tenant: Uuid, timeout_ms: u64, moves: bool) -> R
 async fn on_replica(r: &crate::replica::Reads, tenant: Uuid, timeout_ms: u64, at: &str) -> Result<Option<Tx>> {
     let mut tx = r.pool.begin().await?;
     // A replica takes no changes anyway.
-    as_tenant(&mut tx, tenant, timeout_ms, false).await?;
+    as_tenant(&mut tx, tenant, timeout_ms, false, false).await?;
     sqlx::query("set transaction read only").execute(&mut *tx).await?;
     let started = std::time::Instant::now();
     loop {

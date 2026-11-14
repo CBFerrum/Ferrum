@@ -211,7 +211,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let due: Vec<(Uuid, Uuid, String, Uuid)> = sqlx::query_as(
             "update conn_pull p set next_run = $1 + interval '5 minutes' from conn c \
-             where c.tenant_id = p.tenant_id and c.id = p.conn_id and c.enabled and p.next_run <= $1 \
+             where c.tenant_id = p.tenant_id and c.id = p.conn_id and c.enabled and p.next_run <= $1 and not ferrum_workspace_held(p.tenant_id) \
                and (p.tenant_id, p.conn_id, p.name, p.user_id) in \
                  (select tenant_id, conn_id, name, user_id from conn_pull where next_run <= $1 order by next_run limit $2) \
              returning p.tenant_id, p.conn_id, p.name, p.user_id",

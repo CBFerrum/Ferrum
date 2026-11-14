@@ -55,7 +55,7 @@ const KEPT: &[&str] =
 const BATCH: usize = 1000;
 
 /// Every table a workspace has rows in, with each column's name, type, and whether it is generated.
-async fn shape(db: &Db) -> Result<BTreeMap<String, Vec<(String, String, bool)>>> {
+pub(crate) async fn shape(db: &Db) -> Result<BTreeMap<String, Vec<(String, String, bool)>>> {
     let rows: Vec<(String, String, String, bool)> = sqlx::query_as(
         "select c.table_name::text, c.column_name::text, c.udt_name::text, c.is_generated = 'ALWAYS' \
          from information_schema.columns c join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name \
@@ -75,7 +75,7 @@ async fn shape(db: &Db) -> Result<BTreeMap<String, Vec<(String, String, bool)>>>
 
 /// Every reference a workspace's rows make, written out so that it can be checked by hand: the tables
 /// are filled with referential triggers off, because tables here refer to each other in circles.
-async fn dangling(tx: &mut crate::Tx, tenant: Uuid, tables: &BTreeMap<String, Vec<(String, String, bool)>>) -> Result<Vec<String>> {
+pub(crate) async fn dangling(tx: &mut crate::Tx, tenant: Uuid, tables: &BTreeMap<String, Vec<(String, String, bool)>>) -> Result<Vec<String>> {
     let references: Vec<(String, String, String, Vec<String>, Vec<String>)> = sqlx::query_as(
         "select c.conname::text, c.conrelid::regclass::text, c.confrelid::regclass::text, \
          (select array_agg(a.attname::text order by k.ord) from unnest(c.conkey) with ordinality k(n, ord) join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.n), \
@@ -103,8 +103,21 @@ async fn dangling(tx: &mut crate::Tx, tenant: Uuid, tables: &BTreeMap<String, Ve
     Ok(broken)
 }
 
+/// Every column that names a workspace: tenant_id everywhere, and any other that refers to one.
+pub(crate) async fn workspace_columns(db: &Db, tx: &mut crate::Tx) -> Result<Vec<(String, String)>> {
+    let mut columns: Vec<(String, String)> = shape(db).await?.into_keys().map(|t| (t, "tenant_id".to_string())).collect();
+    let others: Vec<(String, String)> = sqlx::query_as(
+        "select c.conrelid::regclass::text, a.attname::text from pg_constraint c join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1] \
+         where c.contype = 'f' and c.confrelid = 'tenant'::regclass and cardinality(c.conkey) = 1 and a.attname <> 'tenant_id'",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    columns.extend(others);
+    Ok(columns)
+}
+
 /// Whether this connection may turn referential triggers off, which only extraction ever does.
-async fn may_copy(db: &Db) -> Result<()> {
+pub(crate) async fn may_copy(db: &Db) -> Result<()> {
     let mut tx = db.system_tx().await?;
     let granted = sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await;
     tx.rollback().await?;
@@ -114,7 +127,7 @@ async fn may_copy(db: &Db) -> Result<()> {
 }
 
 /// Which database this is: a copy can have the same name in another cluster, or another name in this one.
-async fn which(db: &Db) -> Result<(i64, sqlx::postgres::types::Oid)> {
+pub(crate) async fn which(db: &Db) -> Result<(i64, sqlx::postgres::types::Oid)> {
     Ok(sqlx::query_as("select (select system_identifier from pg_control_system()), (select oid from pg_database where datname = current_database())")
         .fetch_one(&db.pool)
         .await?)
@@ -155,15 +168,7 @@ impl Kernel {
             sqlx::query_scalar("select count(*) from legal_hold where tenant_id = $1 and released_at is null").bind(tenant).fetch_one(&mut *tx).await?;
         let files: Vec<(Uuid, String)> =
             sqlx::query_as("select id, storage_key from file_object where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
-        // Every column that names a workspace: tenant_id everywhere, and any other that refers to one.
-        let mut columns: Vec<(String, String)> = shape(&self.db).await?.into_keys().map(|t| (t, "tenant_id".to_string())).collect();
-        let others: Vec<(String, String)> = sqlx::query_as(
-            "select c.conrelid::regclass::text, a.attname::text from pg_constraint c join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1] \
-             where c.contype = 'f' and c.confrelid = 'tenant'::regclass and cardinality(c.conkey) = 1 and a.attname <> 'tenant_id'",
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-        columns.extend(others);
+        let columns = workspace_columns(&self.db, &mut tx).await?;
         let mut rows = BTreeMap::new();
         for (table, column) in &columns {
             let n: i64 =

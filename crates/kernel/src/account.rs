@@ -66,7 +66,7 @@ impl Kernel {
     /// Records each workspace's usage for today (`maintenance`): the last reading of a day stands.
     pub(crate) async fn record_usage(&self) -> Result<()> {
         let mut tx = self.db.system_tx().await?;
-        let tenants: Vec<Uuid> = sqlx::query_scalar("select id from tenant").fetch_all(&mut *tx).await?;
+        let tenants: Vec<Uuid> = sqlx::query_scalar("select id from tenant where not ferrum_workspace_held(id)").fetch_all(&mut *tx).await?;
         let today = Utc::now().date_naive();
         for tenant in tenants {
             let meters: Vec<(String, i64)> = sqlx::query_as(METERS).bind(tenant).fetch_all(&mut *tx).await?;

@@ -196,7 +196,7 @@ pub(crate) async fn count_failure(tx: &mut Tx, tenant: Uuid, user: Uuid) -> Resu
     sqlx::query(
         "update app_user set failed_logins = failed_logins + 1, \
          locked_until = case when failed_logins + 1 >= $3 then now() + make_interval(mins => $4) else locked_until end \
-         where tenant_id = $1 and id = $2",
+         where tenant_id = $1 and id = $2 and not ferrum_workspace_frozen($1::text)",
     )
     .bind(tenant)
     .bind(user)
@@ -241,6 +241,7 @@ impl Kernel {
     pub async fn sign_in_at(&self, tenant_slug: &str, email: &str, password: &str, from: impl Into<crate::gate::Arrival>) -> Result<SignIn> {
         let from = from.into();
         let denied = || Error::Unauthorized("invalid tenant, email or password".into());
+        self.refuse_if_moving_slug(tenant_slug).await?;
         let email = email.trim().to_lowercase();
         let mut tx = self.db.system_tx().await?;
         #[derive(sqlx::FromRow)]
@@ -393,6 +394,7 @@ impl Kernel {
     /// five wrong tries; someone with an authenticator app still gives its code next.
     pub async fn sign_in_with_code(&self, tenant_slug: &str, email: &str, code: &str) -> Result<SignIn> {
         let denied = || Error::Unauthorized("that code is wrong or has expired; ask for a new one".into());
+        self.refuse_if_moving_slug(tenant_slug).await?;
         let email = email.trim().to_lowercase();
         let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
         if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
@@ -570,10 +572,13 @@ impl Kernel {
                 return Err(crate::gate::refusal());
             }
         }
-        sqlx::query("update api_key set last_used_at = now() where prefix = $1 and (last_used_at is null or last_used_at < now() - interval '1 minute')")
-            .bind(prefix)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "update api_key set last_used_at = now() where prefix = $1 and (last_used_at is null or last_used_at < now() - interval '1 minute') \
+             and not ferrum_workspace_frozen(tenant_id::text)",
+        )
+        .bind(prefix)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok((Session { tenant, user, token_version: tv }, scope))
     }
@@ -1087,7 +1092,9 @@ impl Kernel {
     pub(crate) async fn expire_roles(&self) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
         let ended: Vec<(Uuid, Uuid)> =
-            sqlx::query_as("delete from user_role where expires_at <= now() returning tenant_id, user_id").fetch_all(&mut *tx).await?;
+            sqlx::query_as("delete from user_role where expires_at <= now() and not ferrum_workspace_held(tenant_id) returning tenant_id, user_id")
+                .fetch_all(&mut *tx)
+                .await?;
         for (tenant, user) in &ended {
             notify_users(&mut tx, *tenant, Some(*user)).await?;
         }
