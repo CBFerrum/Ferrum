@@ -49,9 +49,10 @@ OLD_DIR=$WORK/$SHORT
 OLD_BIN=$OLD_DIR/ferrum
 OLD_DATE=$(git -C "$ROOT" log -1 --format=%ct "$COMMIT")
 if [ ! -x "$OLD_BIN" ]; then
-  free_kb=$(df -k "$(dirname "$WORK")" | awk 'NR == 2 { print $4 }')
+  mkdir -p "$WORK"
+  free_kb=$(df -k "$WORK" | awk 'NR == 2 { print $4 }')
   [ "$free_kb" -ge $((8 * 1024 * 1024)) ] || { echo "refused: building $SHORT needs about 3 GB, and less than 8 GB is free" >&2; exit 2; }
-  step "building the older build $SHORT (its commit's date: $(python3 -c 'import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.UTC).isoformat())' "$OLD_DATE")) in $OLD_DIR"
+  step "building the older build $SHORT (its commit's date: $(python3 -c 'import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).isoformat())' "$OLD_DATE")) in $OLD_DIR"
   rm -rf "$OLD_DIR/src" "$OLD_DIR/target"
   mkdir -p "$OLD_DIR/src"
   git -C "$ROOT" archive "$COMMIT" | tar -x -C "$OLD_DIR/src"
@@ -63,8 +64,8 @@ fi
 # Each build runs in its own tree's server directory: its own settings files, as its image carries them.
 [ -d "$OLD_DIR/src/server/config" ] || { echo "refused: $OLD_DIR/src/server/config is missing; delete $OLD_DIR to build it again" >&2; exit 2; }
 
-# Another server answering on the port would pass for one of these.
-if curl -fsS -o /dev/null "$URL/api/ready" 2>/dev/null; then echo "refused: something already answers on $URL (set WINDOW_PORT)" >&2; exit 2; fi
+# Another server on the port would pass for one of these.
+if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then echo "refused: something listens on 127.0.0.1:$PORT (set WINDOW_PORT)" >&2; exit 2; fi
 work=$(mktemp -d)
 SERVER_PID=''
 cleanup() {
@@ -78,6 +79,7 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
 
 export JWT_SECRET FERRUM_SECRET_KEY
 JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')

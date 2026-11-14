@@ -75,6 +75,8 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+# Interrupted, it still cleans up (and takes the grant back).
+trap 'exit 130' INT TERM HUP
 if [ "$GRANT" = yes ]; then
   echo "The workspace's move and copy need GRANT SET ON PARAMETER session_replication_role TO $ROLE, a grant of the whole PostgreSQL server: with --grant it is given for each move, finish and copy alone, and taken back after each and on exit."
 else
