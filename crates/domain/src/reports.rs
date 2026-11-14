@@ -187,6 +187,15 @@ async fn run_source(k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, Str
         }
         may_run(ctx, &entity, narrows(&entry))?;
         let mut out = s.run(k, ctx, name, raw).await?;
+        // Where the workspace records every read of its entity, recorded before the answer is given (on the primary,
+        // wherever the report read), with the parameters' names and never their values.
+        if ctx.reads_recorded(&entity) == Some(true) {
+            let params: Vec<ferrum_kernel::query::Filter> =
+                raw.keys().map(|p| ferrum_kernel::query::Filter { field: p.clone(), op: ferrum_kernel::query::Op::Eq, value: Value::Null }).collect();
+            let rows = out.get("rows").and_then(Value::as_array).map_or(0, |r| r.len() as i64);
+            let read = ferrum_kernel::controls::Read::Many { how: "report", filters: &params, search: false, rows, to: None };
+            ferrum_kernel::controls::record_read_alone(k, ctx, &entity, read).await?;
+        }
         if let Value::Object(m) = &mut out {
             m.entry("name").or_insert_with(|| json!(name));
             m.entry("label").or_insert_with(|| entry["label"].clone());

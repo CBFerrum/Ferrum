@@ -100,6 +100,8 @@ pub struct Job {
     pub undo_on_cancel: bool,
     /// The zone of the request that queued it, when that zone narrows staff (crate::zones, level 2).
     pub zone: Option<String>,
+    /// Whether the request that queued it had stepped up (crate::controls::Proof::mark).
+    pub step_up: Option<String>,
 }
 
 impl Job {
@@ -133,10 +135,13 @@ impl Job {
     /// The person who asked, with the rights they have now, in the zone they asked from.
     pub async fn creator(&self, k: &Kernel) -> Result<Ctx> {
         let user = self.created_by.ok_or_else(|| Error::Forbidden("this job has nobody behind it".into()))?;
-        k.load_ctx_in(self.tenant_id, user, self.zone.as_deref(), format!("job-{}", self.id)).await.map_err(|e| match e {
+        let ctx = k.load_ctx_in(self.tenant_id, user, self.zone.as_deref(), format!("job-{}", self.id)).await.map_err(|e| match e {
             Error::Unauthorized(m) => Error::Forbidden(format!("the person who asked can no longer do this: {m}")),
             other => other,
-        })
+        })?;
+        // As the request stood: a person who had not stepped up has not, however long the job waited (crate::controls).
+        let staff = !ctx.outside && !ctx.is_system;
+        Ok(crate::Ctx { proof: crate::controls::Proof::of_mark(self.step_up.as_deref(), staff), ..ctx })
     }
 
     /// The system, for this job: within the zone of the request that queued it (crate::zones, level 2).
@@ -264,7 +269,7 @@ impl Kernel {
              update job j set status = 'running', attempts = j.attempts + 1, lease_token = $1, lease_until = now() + make_interval(secs => $2), \
                started_at = coalesce(j.started_at, now()) \
              from picked p where j.tenant_id = p.tenant_id and j.id = p.id \
-             returning j.tenant_id, j.id, j.kind, j.payload, j.priority, j.attempts, j.max_attempts, j.created_by, j.correlation_id, j.depth, j.lease_token, j.progress as resumed, j.undo_on_cancel, j.zone",
+             returning j.tenant_id, j.id, j.kind, j.payload, j.priority, j.attempts, j.max_attempts, j.created_by, j.correlation_id, j.depth, j.lease_token, j.progress as resumed, j.undo_on_cancel, j.zone, j.step_up",
         )
         .bind(Uuid::now_v7())
         .bind(LEASE.as_secs_f64())
@@ -402,6 +407,7 @@ impl Kernel {
             priority: Some(job.priority),
             depth: job.depth,
             zone: Trace::in_zone(job.zone.clone()),
+            step_up: Trace::with_step_up(job.step_up.as_deref()),
             ..Default::default()
         };
         let Some(handler) = self.job_handler(&job.kind) else {

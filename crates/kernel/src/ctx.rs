@@ -497,6 +497,10 @@ pub struct Ctx {
     /// How the request behind this context came in (crate::zones): its zone, the caller's address
     /// and its credential. None for work with no request behind it, and for the system.
     pub zone: Option<Arc<crate::zones::Entry>>,
+    /// What can be said of the person's proof of who they are (crate::controls): step-up rules ask it.
+    pub proof: crate::controls::Proof,
+    /// The reads this request has recorded already (crate::controls), shared by its clones.
+    pub reads: Arc<crate::controls::Seen>,
 }
 
 /// What may leave for an AI provider. Being able to read something does not make it yours to send:
@@ -553,6 +557,8 @@ impl Ctx {
             settings: None,
             origin: None,
             zone: None,
+            proof: crate::controls::Proof::Inside,
+            reads: Default::default(),
         }
     }
 
@@ -561,6 +567,8 @@ impl Ctx {
     pub fn system_for(ctx: &Ctx) -> Ctx {
         let mut sys = Ctx::system(ctx.tenant, ctx.schema.clone());
         sys.zone = ctx.zone.clone();
+        // What it changes for the person needs what the person would need (crate::controls).
+        sys.proof = ctx.proof;
         sys.perms = Arc::new(PermSet { admin: true, limit: ctx.perms.limit.clone(), ..Default::default() });
         sys
     }
@@ -628,7 +636,8 @@ impl Ctx {
         }
         match self.perms.access(entity, action) {
             Access::None => Err(Error::Forbidden(format!("not permitted to {action:?} {entity}").to_lowercase())),
-            a => Ok(a),
+            // Rights first: a step-up is asked only of whoever may do it (crate::controls).
+            a => self.check_step_up(entity, crate::controls::work_of(action)).map(|()| a),
         }
     }
 }
@@ -862,6 +871,7 @@ pub fn action_scope(ctx: &Ctx, ent: &EffEntity, name: &str, perm: Action) -> Res
                     "this workspace is read-only now that its account is closed or restricted; you can still read and export everything".into(),
                 ));
             }
+            ctx.check_step_up(&ent.def.name, crate::controls::work_of(perm))?;
             scope_of(ctx, ent, Some(grants))
         }
         _ => row_scope(ctx, ent, perm),

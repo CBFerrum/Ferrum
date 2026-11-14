@@ -51,6 +51,8 @@ struct TokenSession {
     records: Option<BTreeMap<String, BTreeSet<String>>>,
     /// What kind of credential it is (zones count refusals by it).
     credential: Credential,
+    /// When the browser session behind it last proved who its person is (crates/kernel/src/controls.rs).
+    step_up_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl TokenSession {
@@ -76,7 +78,16 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
             })?),
         };
         st.user_limiter.check_local(&format!("{}|{}", s.tenant, s.user))?;
-        return Ok(TokenSession { session: s, setup_only: false, sid: None, bound: None, app: None, records, credential: Credential::ApiKey });
+        return Ok(TokenSession {
+            session: s,
+            setup_only: false,
+            sid: None,
+            bound: None,
+            app: None,
+            records,
+            credential: Credential::ApiKey,
+            step_up_at: None,
+        });
     }
     let data =
         JWT::new(&st.jwt_secret).validate(token).map_err(|_| ApiError(Error::Unauthorized("session expired or invalid; please sign in again".into())))?;
@@ -97,8 +108,9 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
     };
     let (sid, bound) = (claim("sid")?, claim("bsid")?);
     st.user_limiter.check_local(&format!("{tenant}|{user}"))?;
+    let mut step_up_at = None;
     if let Some(device) = sid.or(bound) {
-        st.kernel.check_session_as(tenant, user, device, active).await?;
+        step_up_at = st.kernel.check_session_as(tenant, user, device, active).await?.step_up_at;
     }
     let app = match claims.get("app") {
         None => None,
@@ -113,7 +125,16 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
     } else {
         Credential::Token
     };
-    Ok(TokenSession { session: ferrum_kernel::auth::Session { tenant, user, token_version: tv }, setup_only, sid, bound, app, records: None, credential })
+    Ok(TokenSession {
+        session: ferrum_kernel::auth::Session { tenant, user, token_version: tv },
+        setup_only,
+        sid,
+        bound,
+        app,
+        records: None,
+        credential,
+        step_up_at,
+    })
 }
 
 /// App tokens work only for their app's calls to the API ([`Auth`]), and records keys only for
@@ -162,7 +183,7 @@ pub async fn ctx_from_token(st: &crate::state::AppState, token: &str, request_id
     if st.kernel.directory().await? == Some(t.session.tenant) {
         return Err(ApiError(Error::Unauthorized("this sign-in works only on the accounts host".into())));
     }
-    let ctx = st.kernel.request_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), request_id, entry).await?;
+    let ctx = st.kernel.request_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), request_id, entry).await?.proved(t.step_up_at);
     only_through_the_api(st, &ctx, "SOCKET").await?;
     Ok(ctx)
 }
@@ -232,7 +253,7 @@ async fn caller_with_app(
         st.shell.check_directory(headers, t.session.tenant).await?;
     }
     let entry = crate::zone::entry(st, headers, t.credential).await;
-    let ctx = st.kernel.request_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry).await?;
+    let ctx = st.kernel.request_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry).await?.proved(t.step_up_at);
     Ok((ctx, t.device(), t.app, t.records))
 }
 
@@ -267,7 +288,7 @@ pub async fn socket_credential(st: &crate::state::AppState, headers: &HeaderMap,
                 return Err(ApiError(Error::Unauthorized("invalid session cookie".into())));
             }
             st.shell.check_host(headers, t.session.tenant).await?;
-            let ctx = st.kernel.request_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid, entry).await?;
+            let ctx = st.kernel.request_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid, entry).await?.proved(t.step_up_at);
             Ok(Some((token, ctx)))
         }
         _ => Ok(None),
@@ -363,7 +384,7 @@ impl FromRequestParts<AppContext> for SetupAuth {
             return Err(ApiError(Error::Unauthorized("this token works only as the browser's session cookie".into())));
         }
         let entry = crate::zone::entry(&st, &parts.headers, t.credential).await;
-        let ctx = st.kernel.request_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry).await?;
+        let ctx = st.kernel.request_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry).await?.proved(t.step_up_at);
         only_through_the_api(&st, &ctx, parts.method.as_str()).await?;
         Ok(SetupAuth(ctx, t.setup_only.then_some(t.session)))
     }

@@ -387,6 +387,9 @@ impl Kernel {
             // Minutes of no use after which a browser session ends (0: never, as before).
             "idle_minutes": settings.get("idle_minutes").and_then(Value::as_i64).unwrap_or(0),
             "staff_networks": crate::gate::StaffNetworks::parse(settings.get("staff_networks")).map_err(Error::Internal)?.to_value(),
+            // Entities whose work needs a recent step-up, and whose reads are recorded (crate::controls); null: off.
+            "step_up": settings.get("step_up").cloned().unwrap_or(Value::Null),
+            "record_reads": settings.get("record_reads").cloned().unwrap_or(Value::Null),
         }))
     }
 
@@ -488,6 +491,24 @@ impl Kernel {
                 }
                 // Checked against the workspace's administrators below (crate::gate::check_break_glass).
                 "break_glass" => {}
+                // Entities whose work needs a recent step-up, and whose reads are recorded (crate::controls). Each must be
+                // an entity of the workspace that the saver's zone shows: a zone that leaves one out cannot set its rules.
+                "step_up" | "record_reads" => {
+                    let step_up = k == "step_up";
+                    let kept = if v.is_null() {
+                        Value::Null
+                    } else {
+                        let checked = if step_up { crate::controls::check_step_up(v) } else { crate::controls::check_reads(v) };
+                        checked.map_err(|m| Error::field(k.clone(), m))?
+                    };
+                    for e in crate::controls::named(&kept, step_up) {
+                        if ctx.schema.entity(&e).is_none() || !ctx.sees(&e) {
+                            return Err(Error::field(k.clone(), format!("{e} is not an entity of this workspace")));
+                        }
+                    }
+                    let empty = crate::controls::named(&kept, step_up).is_empty();
+                    clean.insert(k.clone(), if empty { Value::Null } else { kept });
+                }
                 other => return Err(Error::field(other, "unknown setting")),
             }
         }
@@ -509,6 +530,8 @@ impl Kernel {
             ("staff_networks", &crate::gate::STAFF_NETWORKS_FLOOR),
             ("idle_minutes", &crate::gate::IDLE_FLOOR),
             ("break_glass", &crate::gate::BREAK_GLASS_FLOOR),
+            ("step_up", &crate::controls::STEP_UP_FLOOR),
+            ("record_reads", &crate::controls::READS_FLOOR),
         ] {
             if on(key) {
                 crate::window::require(&mut tx, floor, "").await?;

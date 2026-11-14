@@ -201,6 +201,12 @@ pub trait DocHost: Send + Sync {
     /// What `ctx` may do with document `doc`; [`DocAccess::None`] also for one that does not exist.
     async fn access(&self, kernel: &Kernel, ctx: &Ctx, doc: Uuid) -> Result<DocAccess>;
 
+    /// The entity its documents are records of, if any: a workspace's step-up rule on it, or a zone's, is asked of each
+    /// change a person sends (crates/kernel/src/controls.rs). None: documents of no entity, asked nothing more.
+    fn entity(&self) -> Option<&str> {
+        None
+    }
+
     /// The content a document starts from when it is first opened (a Yjs update), if any.
     async fn initial(&self, kernel: &Kernel, tenant: Uuid, doc: Uuid) -> Result<Option<Vec<u8>>> {
         let _ = (kernel, tenant, doc);

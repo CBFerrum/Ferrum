@@ -22,6 +22,7 @@ pub mod coedit;
 pub mod collab;
 pub mod connect;
 pub mod connections;
+pub mod controls;
 pub mod ctx;
 pub mod customize;
 pub mod db;

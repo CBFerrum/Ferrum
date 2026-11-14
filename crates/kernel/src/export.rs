@@ -303,6 +303,9 @@ async fn make(k: &Kernel, job: &Job, ctx: &Ctx) -> Result<Value> {
         }
         if count > 0 {
             entities.push(json!({"entity": name, "records": count}));
+            // Recorded for whoever asked, before the job is done and its parts can be downloaded (crate::controls).
+            let read = crate::controls::Read::Many { how: "export", filters: &[], search: false, rows: count as i64, to: Some("workspace export") };
+            crate::controls::record_read_alone(k, &ctx.recorded_via("workspace export job"), name, read).await?;
         }
         job.progress(k, json!({"step": "records", "done": i + 1, "total": total})).await?;
     }

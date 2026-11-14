@@ -26,6 +26,15 @@ pub const FLOOR_LIMITED: crate::window::Floor = crate::window::Floor {
     temporary: false,
 };
 
+/// A zone that asks staff to prove who they are again (`step_up: true`, crates/kernel/src/controls.rs): an older
+/// build lets them work there without it. Dated by the merge of its pull request.
+pub const FLOOR_STEP_UP: crate::window::Floor = crate::window::Floor {
+    feature: "zones_step_up",
+    since: "2026-11-14T08:54:21Z",
+    what: "zones that ask staff to prove who they are again before changes ask them",
+    temporary: false,
+};
+
 impl crate::Kernel {
     /// At start, with zone settings in place: older builds that would not enforce them may no longer start
     /// ([`crate::window::require`]). Every replica of every pool does it; it changes nothing after the first.
@@ -36,6 +45,9 @@ impl crate::Kernel {
         self.require_floor(&FLOOR, "").await?;
         if zones.rules.values().any(Rule::limited) {
             self.require_floor(&FLOOR_LIMITED, "").await?;
+        }
+        if zones.rules.values().any(|r| r.step_up) {
+            self.require_floor(&FLOOR_STEP_UP, "").await?;
         }
         Ok(())
     }
@@ -139,6 +151,9 @@ pub struct Rule {
     /// A key of scope `scim` is admitted in a zone that admits no staff.
     pub scim: bool,
     pub networks: Vec<Net>,
+    /// Staff here prove who they are again before changes, and before reading what the workspace marked
+    /// (crates/kernel/src/controls.rs).
+    pub step_up: bool,
 }
 
 impl Rule {
@@ -249,9 +264,15 @@ impl Entry {
         self.zones.mode == Mode::Enforce && self.limit().is_some_and(|(_, r)| !r.admin)
     }
 
-    /// The zone's name, when it narrows staff (level 2): what work queued here is marked with.
+    /// The zone's name, when it narrows staff (level 2) or asks them to step up: what work queued here is marked with.
     pub fn marked(&self) -> Option<String> {
-        self.limit().map(|(n, _)| n.to_string())
+        self.limit().map(|(n, _)| n.to_string()).or_else(|| self.name().filter(|n| self.zones.rules.get(*n).is_some_and(|r| r.step_up)).map(String::from))
+    }
+
+    /// Whether the zone's rule asks staff to step up here (`step_up: true`), and whether that is only reported.
+    pub fn step_up(&self) -> Option<bool> {
+        let name = self.name()?;
+        self.zones.rules.get(name).filter(|r| r.step_up).map(|_| self.zones.mode == Mode::Report)
     }
 
     /// The rule of the zone, when it narrows staff admitted here (level 2).
@@ -295,8 +316,8 @@ impl Zones {
                 return Err(named("is not a name: use lowercase letters, digits and dashes, up to 63"));
             }
             let serde_json::Value::Object(rule) = rule else { return Err(named("has a rule that is not an object")) };
-            if let Some(k) = rule.keys().find(|k| !["staff", "admin", "custom", "scim", "networks"].contains(&k.as_str())) {
-                return Err(named(&format!("has {k:?}, which a rule does not have (staff, admin, custom, scim, networks)")));
+            if let Some(k) = rule.keys().find(|k| !["staff", "admin", "custom", "scim", "networks", "step_up"].contains(&k.as_str())) {
+                return Err(named(&format!("has {k:?}, which a rule does not have (staff, admin, custom, scim, networks, step_up)")));
             }
             let (staff, apps) = match rule.get("staff") {
                 None => (true, None),
@@ -335,6 +356,10 @@ impl Zones {
             }
             let custom = custom.unwrap_or(false);
             let scim = flag("scim")?.unwrap_or(false);
+            let step_up = flag("step_up")?.unwrap_or(false);
+            if step_up && !staff {
+                return Err(named("has step_up, which only a rule that admits staff has"));
+            }
             let networks = match rule.get("networks") {
                 None => vec![],
                 Some(serde_json::Value::Array(list)) => {
@@ -349,7 +374,7 @@ impl Zones {
                 }
                 Some(_) => return Err(named("has networks that are not a list")),
             };
-            rules.insert(name, Rule { staff, apps, packages: BTreeSet::new(), admin, custom, scim, networks });
+            rules.insert(name, Rule { staff, apps, packages: BTreeSet::new(), admin, custom, scim, networks, step_up });
         }
         // Two zones holding one address would make the order of the JSON matter; it does not.
         for (a, ra) in &rules {
@@ -563,7 +588,7 @@ mod tests {
         assert_eq!(z.mode, Mode::Report);
         assert_eq!(
             z.rule("public"),
-            Some(&Rule { staff: false, apps: None, packages: BTreeSet::new(), admin: false, custom: false, scim: true, networks: vec![] })
+            Some(&Rule { staff: false, apps: None, packages: BTreeSet::new(), admin: false, custom: false, scim: true, networks: vec![], step_up: false })
         );
         assert_eq!(z.rule("office").map(|r| (r.staff, r.admin, r.scim)), Some((true, true, false)), "staff all, admin follows it, scim off");
         let refused = |zones: &str, pin: &str, default: &str, mode: &str, says: &str| {
@@ -584,6 +609,11 @@ mod tests {
         refused(r#"{"p": {"staff": ["crm"], "custom": "yes"}}"#, "", "", "", "true or false");
         refused(r#"{"p": {"staff": "none", "admin": true}}"#, "", "", "", "administrators are staff");
         refused(r#"{"p": {"scim": "yes"}}"#, "", "", "", "true or false");
+        refused(r#"{"p": {"step_up": "yes"}}"#, "", "", "", "true or false");
+        refused(r#"{"p": {"step_up": 1}}"#, "", "", "", "true or false");
+        refused(r#"{"p": {"staff": "none", "step_up": true}}"#, "", "", "", "only a rule that admits staff");
+        let asks = Zones::parse(r#"{"outside": {"step_up": true}, "office": {"step_up": false}}"#, "", "", "").unwrap();
+        assert!(asks.rule("outside").unwrap().step_up && !asks.rule("office").unwrap().step_up);
         refused(r#"{"p": {"networks": ["10.0.0/8"]}}"#, "", "", "", "not a network");
         refused(r#"{"p": {"networks": ["10.0.0.1/8"]}}"#, "", "", "", "not a network");
         refused(r#"{"p": {"networks": ["10.0.0.0/33"]}}"#, "", "", "", "not a network");

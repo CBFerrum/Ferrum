@@ -505,6 +505,9 @@ before a floor is refused at start, the older ones included.
 | `idle_timeout` | a workspace saves an idle timeout | 2026-11-14T03:09:38Z |
 | `break_glass` | a workspace saves a break-glass list | 2026-11-14T03:09:38Z |
 | `key_networks` | an API key is given networks | 2026-11-14T03:09:38Z |
+| `step_up` | a workspace saves step-up rules | 2026-11-14T08:54:21Z |
+| `record_reads` | a workspace saves entities whose reads are recorded | 2026-11-14T08:54:21Z |
+| `zones_step_up` | a server starts with a zone that says `step_up: true` | 2026-11-14T08:54:21Z |
 | `move_fence` | `plan_move` marks the database (until cancelled, adopted or not followed) | 2026-11-14T01:33:19Z |
 | `workspace_freeze` | `move_workspace` starts, on both sides (until it arrives, at the target; until `finish_move`, at the source; both at an abort) | 2026-11-14T04:00:04Z |
 | `sandbox` | `copy_workspace` makes a sandbox (until `delete_sandbox` deletes the last one) | 2026-11-14T06:47:14Z |
@@ -520,8 +523,8 @@ before a floor is refused at start, the older ones included.
   next start of a build that knows floors (below), which is what a rollback needs: run it, then roll back.
 * **Every start looks at what is in use.** A build level with the database puts floors in place at each start, under the
   start hold, for what is in use however it got there (saved by a build from before floors, or after
-  `allow_older_builds`): any workspace with staff networks, an idle timeout or a break-glass list, any key pinned to
-  networks, any sandbox, a move mark, and any workspace move not finished; zones from the server's settings. This is
+  `allow_older_builds`): any workspace with staff networks, an idle timeout, a break-glass list, step-up rules or
+  recorded reads, any key pinned to networks, any sandbox, a move mark, and any workspace move not finished; zones from the server's settings. This is
   one statement: `tenant` (a row per workspace) and `api_key` are read until the first match, sandboxes through their
   index, and the two move tables hold a row per move.
 * **Turning a protection off does not lower its floor.** A workspace that clears its networks, or zone settings taken
@@ -1201,6 +1204,7 @@ outside people and machines get.
 | `custom` | With a list of apps: whether the workspace's own entities (made in the builder) are seen | `false` |
 | `scim` | In a zone that admits no staff, an identity provider's key (scope `scim`) is admitted all the same | `false` |
 | `networks` | Addresses that place a caller in this zone, `10.0.0.0/8` or `2001:db8::/32`. Two zones may not share an address | none |
+| `step_up` | Staff here prove who they are again before changes, and before reading what the workspace marked ([Asking again before sensitive work](#asking-again-before-sensitive-work)). Not with `staff: none` | `false` |
 
 `FERRUM_ZONE` pins a replica: every request it serves is in that zone (the chart sets it from a pool's
 `zone`). `FERRUM_ZONE_DEFAULT` is the zone of a request nothing else places, on replicas without a pin.
@@ -1426,6 +1430,90 @@ workspace at once, so a narrowing, a widening and a clearing all hold within mom
 the notice (its database connection dropped), within 30 seconds. A sign-in reads the setting from the
 database each time.
 
+## Asking again before sensitive work
+
+A workspace's administrators can say that some work needs the person to prove who they are again, recently: their
+password (and authenticator code), as for the passkey and incident-access screens. Off unless set.
+
+| Workspace setting (`GET`/`PUT /api/admin/settings`) | Meaning | Default |
+|---|---|---|
+| `step_up` | `{"minutes": 10, "entities": {"Employee": {"work": ["write", "delete", "export", "read"], "keys": true}}}`, at most 200 entities; `minutes` 1 to 60 | `null`: off |
+
+**What each kind of work covers.** `write`: creating, changing, submitting, cancelling, importing, workflow steps and
+buttons that change a record of it. `delete`. `export`: exports and e-mailing a record out. `read`: every read of its
+records: opening one, and lists, searches and reports, which show the same fields. It is checked where every record
+operation asks for its rights, after the rights: whoever may not do something is told that, not asked for a password.
+
+**The answer.** `403` with error `step_up`: "confirm it is you: enter your password again to do this". The interface asks
+for the password (`POST /api/auth/step-up`) and tries again. **How long it lasts:** a step-up counts for `minutes` after
+it is made (10 by default, the same as the other step-up screens), and so does signing in. Stepping up tells every
+replica to drop what it holds of the person's sessions at once, so the retry is let through wherever it lands.
+
+**Who is asked.** People, on their browser session. **A session token with no browser session behind it** (one from
+`POST /api/auth/login` used as a bearer token, or an app token not bound to a page) **cannot step up, so it is refused
+for marked work**: do that work from the browser. API keys (app passwords and SCIM keys
+included), OAuth clients such as MCP, and service accounts cannot step up either: they are held by their scopes and
+networks, and let through, unless the entity's rule says `"keys": false`, which refuses them. Work with no request
+behind it (schedules, automations, the system's own) is not asked. A job queued by a request carries whether that
+request had stepped up (`job.step_up`), so a bulk change queued without a step-up does not do later what the person
+could not do then, even if they step up meanwhile. What a button's effects change for the person needs what the person
+would need. An entity's description still offers its buttons; the step-up is asked when one is pressed.
+**Co-editing:** a co-editing socket asks for it on each change it takes only for documents whose app names an entity
+for them (`DocHost::entity`); no app does yet, so co-edited documents are not asked today.
+
+**Zones.** A zone whose rule says `"step_up": true` (in `FERRUM_ZONES`) asks staff there before any change of any
+entity, and before reading an entity the workspace marked in `step_up`: "finance from outside the office works, but
+only after proving who you are again". A zone or network refusal comes first. In `FERRUM_ZONE_MODE=report` it is not
+asked: each time it would have been is logged and counted in `ferrum_zone_hidden_total{what="step_up"}`. Work queued
+there carries the zone.
+
+**Saving.** Unknown entities are refused, and so is an entity the saver's zone leaves out. Each save is an
+administration event on the audit trail. Switching it on keeps builds that would ignore it from starting.
+
+## Recording who read what
+
+A workspace's administrators can name entities whose reads are recorded on the audit trail. Off unless set.
+
+| Workspace setting (`GET`/`PUT /api/admin/settings`) | Meaning | Default |
+|---|---|---|
+| `record_reads` | `{"Employee": "open", "Payslip": "all"}`, at most 200 entities | `null`: off |
+
+**What is recorded.** `open`: each single record a request returns the fields of: the records API, a card, a print or a
+document made from it, an MCP `get_record`, an approver's view. `all`: those, and lists, searches (the search bar and
+a list's search), reports gated on the entity, and exports, one event per entity per request, however many pages an
+export takes. Events are in category `access` (`GET /api/admin/audit?category=access`), sent by the operator's sink and
+to workspace webhooks on `audit.access` or `audit.*`. Each names who (`actor`), when, the request, and in `details`: the
+entity, the record (`open`) or the query (`{"filters": [{"field", "op"}], "search": true|false}`: fields and operators,
+never values), `rows`, `to` for an export (`download, csv`), the address, zone and kind of credential. Never a field's
+value. The `action` is `open`, `list`, `search`, `report` or `export`.
+
+**Also recorded.** A workspace export: one `export` event per marked entity (`all`) with its row count, for the
+administrator who asked, `via: "workspace export job"`, written before the job is done and its parts can be
+downloaded. A public link's page to a marked record (`open`, no actor, `via: "link"`). The assistant's tools and MCP's
+`get_record`, `search_records` and `resources/read` read through the same two points. Calendar and contacts apps
+(DAV) are served by an app (Comms): its contacts are read through the kernel's list and are recorded; its calendar
+events are read by its own SQL and are not, until that app records them (`ferrum_kernel::controls::record_read`).
+
+**Not recorded.** The system's own reads: automations, rules, totals, the titles of linked records, what a button's
+effects read, documents sent to outside people. Whether a live update may be pushed to a socket (the push names the
+record, not its fields). A published list (the workspace publishes it to anyone on purpose). A person's request is
+recorded once: pressing a button on a marked record is the read of that record. Keys' reads are recorded as their
+owner's, with `credential: api_key`.
+
+**Fails closed.** The event is written in the same transaction as the read; if it cannot be written, the read fails.
+A report (which may read from a replica) and an export write theirs in a transaction of their own on the primary
+before any row leaves, counting an export's rows first; if that fails, nothing is sent. Reads of entities nobody marked
+look at the workspace's settings held in memory with its schema and send no statement more. A setting that cannot be
+read counts every entity as marked at `all`.
+
+**Volume.** A list screen at `all` writes one event per request: a page of 50 rows is one event, and a person paging
+through 20 pages writes 20. The search bar writes one per marked entity it searched. Each event is one row of
+`audit_event` (two statements).
+
+**Personal data.** These events name who read (`actor`) and which record (`details.record`). A person's export lists
+what they read (`reads`) and when records about them were read and how (`reads_of_their_records`, without who).
+Erasing an account blanks the address in the events of what they read; the events stay, as sign-ins' do.
+
 ## Sending the audit log elsewhere
 
 Every workspace's audit trail can also go to another system as it is written: a security monitoring tool, a
@@ -1458,8 +1546,8 @@ are. The first time a replica with it starts, sending begins with the events wri
   sent has waited, and `ferrum task doctor` warns once that is more than 15 minutes.
 
 **For a workspace's administrators: their workspace only.** A webhook (Administration → Webhooks, `POST
-/api/admin/webhooks`) whose topics name `audit.sign_in`, `audit.administration`, `audit.records`, or `audit.*` for
-all three, gets each of the workspace's audit events of those kinds (which audit topics a workspace's webhooks
+/api/admin/webhooks`) whose topics name `audit.sign_in`, `audit.administration`, `audit.records`, `audit.access`, or `audit.*` for
+all four, gets each of the workspace's audit events of those kinds (which audit topics a workspace's webhooks
 name is kept with its schema, reloaded on every replica when a webhook is added or removed, so saving a record
 asks nothing more of the database when there is none), one per delivery, signed and retried as every
 webhook is, through the outbound guard. A webhook of `*` and an app's webhooks never get them.
@@ -1474,8 +1562,8 @@ webhook is, through the outbound guard. A webhook of `*` and an app's webhooks n
 ```
 
 `id` is unique across the installation and never reused. `category` is `sign_in`, `administration` (the
-platform's own changes: people, roles, settings, keys, apps, connections and the like) or `records` (changes to a
-record of a packaged or a workspace's own entity), decided by where the event is written, not by its entity's name;
+platform's own changes: people, roles, settings, keys, apps, connections and the like), `records` (changes to a
+record of a packaged or a workspace's own entity) or `access` (reads of marked entities, "Recording who read what"), decided by where the event is written, not by its entity's name;
 events written before this release are told apart by name. `entity`
 and `record` say what it is about, `action` what happened, `actor` who did it (none for the system), `details` what
 changed, and `hash` is the event's place in the record's hash chain. **Personal data:** `actor` and `record` can

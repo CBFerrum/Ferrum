@@ -12,7 +12,7 @@ pub mod types;
 pub mod via;
 
 pub use catalog::Catalog;
-pub use effective::{ChildInfo, DocumentApproval, EffEntity, Exprs, Schema, SchemaWarning, Storage};
+pub use effective::{ChildInfo, Controls, DocumentApproval, EffEntity, Exprs, Schema, SchemaWarning, Storage};
 pub use expr::{Expr, Scope};
 pub use types::*;
 

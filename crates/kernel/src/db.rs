@@ -55,6 +55,9 @@ pub struct Trace {
     /// set once the request's context is built ([`Trace::mark_zone`]), and written on the jobs and
     /// events it queues (`ferrum.zone`), so work done later for it is done in that zone.
     pub zone: Arc<std::sync::OnceLock<String>>,
+    /// Whether the request behind this work had proved who its person is (crate::controls::Proof::mark): written on
+    /// the jobs it queues (`ferrum.step_up`), so a job does later only what the request could.
+    pub step_up: Arc<std::sync::Mutex<&'static str>>,
 }
 
 tokio::task_local! {
@@ -105,6 +108,24 @@ impl Trace {
         let _ = TRACE.try_with(|t| t.zone.set(zone.to_string()));
     }
 
+    /// Records whether the current request had stepped up (crate::controls::Proof::mark); the last one holds.
+    pub fn mark_step_up(mark: &'static str) {
+        let _ = TRACE.try_with(|t| {
+            if let Ok(mut m) = t.step_up.lock() {
+                *m = mark;
+            }
+        });
+    }
+
+    /// A step-up mark for a trace of work queued with one.
+    pub fn with_step_up(mark: Option<&str>) -> Arc<std::sync::Mutex<&'static str>> {
+        Arc::new(std::sync::Mutex::new(match mark {
+            Some("no") => "no",
+            Some("machine") => "machine",
+            _ => "",
+        }))
+    }
+
     /// The zone of the current work (none: inside).
     pub fn zone() -> Option<String> {
         TRACE.try_with(|t| t.zone.get().cloned()).ok().flatten()
@@ -130,10 +151,12 @@ fn carrying(settings: &str, moves: bool, frozen: bool) -> Query<'static, Postgre
     // The depth is a number and the zone a name of lowercase letters, digits and dashes (crate::zones checks them; any
     // other is left out), written in place, so the settings' parameters still start at $5.
     let zone = t.zone.get().filter(|z| z.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')).map_or("", String::as_str);
+    // One of three fixed words (Trace::mark_step_up); a poisoned lock writes `no`, so queued work is held to it.
+    let step_up = t.step_up.lock().map(|m| *m).unwrap_or("no");
     sqlx::query(AssertSqlSafe(format!(
         "select set_config('ferrum.correlation', $1, true), set_config('ferrum.causation', $2, true), \
          set_config('ferrum.traceparent', $3, true), set_config('ferrum.priority', $4, true), \
-         set_config('ferrum.depth', '{}', true), set_config('ferrum.zone', '{zone}', true), set_config('lock_timeout', '{LOCK_TIMEOUT}', true), \
+         set_config('ferrum.depth', '{}', true), set_config('ferrum.zone', '{zone}', true), set_config('ferrum.step_up', '{step_up}', true), set_config('lock_timeout', '{LOCK_TIMEOUT}', true), \
          set_config('idle_in_transaction_session_timeout', '{IDLE_IN_TRANSACTION}', true), {settings}, {} as moving, {} as frozen",
         t.depth,
         if moves { "ferrum_moving()" } else { "false" },
