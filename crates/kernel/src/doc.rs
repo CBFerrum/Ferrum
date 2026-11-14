@@ -54,8 +54,10 @@ fn check_version(old: &Doc, expected: Option<i64>) -> Result<()> {
 }
 
 impl Kernel {
+    /// The entity `name` as `ctx` reaches it: one its zone leaves out (crate::zones, level 2) is not
+    /// there, as one not installed is not, for the person and for whatever acts for them.
     pub fn entity(&self, ctx: &Ctx, name: &str) -> Result<Arc<EffEntity>> {
-        ctx.schema.entity(name).cloned().ok_or_else(|| Error::NotFound(format!("entity {name}")))
+        ctx.schema.entity(name).filter(|_| ctx.sees(name)).cloned().ok_or_else(|| Error::NotFound(format!("entity {name}")))
     }
 
     // ───────────────────────────── reads ─────────────────────────────
@@ -277,7 +279,8 @@ impl Kernel {
         let mut titles: HashMap<Uuid, String> = HashMap::new();
         for (target, ids) in wanted {
             let Some(tent) = schema.entity(&target) else { continue };
-            if tent.table.is_empty() || tent.def.kind == EntityKind::Ledger {
+            // An entity the caller's zone leaves out (crate::zones, level 2) names nothing: its link shows only its id.
+            if tent.table.is_empty() || tent.def.kind == EntityKind::Ledger || !ctx.sees(&target) {
                 continue;
             }
             // A restricted entity names itself only to those who may read that very record.
@@ -1522,7 +1525,7 @@ impl Kernel {
         let mut errors = Vec::new();
         check_required(ent, doc, &view, None, old_view.as_ref(), &user, &mut errors, &[]);
         self.validate_rows(ctx, tx, ent, doc, &view, on, &mut errors, &[]).await?;
-        self.check_links(ctx, tx, ent, doc, None, &mut errors, &[]).await?;
+        self.check_links(ctx, tx, ent, doc, old, None, &mut errors, &[]).await?;
         // A letter head's header and footer are layouts (BD-28): checked as a format's are.
         if ent.def.name == "LetterHead" && ent.package == "core" {
             errors.extend(crate::documents::letter_head_problems(&ctx.schema, doc));
@@ -1586,7 +1589,7 @@ impl Kernel {
                         Err(e) => errors.push(FieldError::new(&rule.name, format!("rule could not be evaluated: {e}")).at(&path)),
                     }
                 }
-                self.check_links(ctx, tx, &cent, rm, Some(doc), errors, &path).await?;
+                self.check_links(ctx, tx, &cent, rm, None, Some(doc), errors, &path).await?;
                 if !cent.children.is_empty() {
                     Box::pin(self.validate_rows(ctx, tx, &cent, rm, &rview, on, errors, &path)).await?;
                 }
@@ -1604,6 +1607,7 @@ impl Kernel {
         tx: &mut Tx,
         ent: &EffEntity,
         doc: &Doc,
+        old: Option<&Doc>,
         parent: Option<&Doc>,
         errors: &mut Vec<FieldError>,
         at: &[(&str, usize)],
@@ -1611,7 +1615,11 @@ impl Kernel {
         let push = |errors: &mut Vec<FieldError>, f: &str, m: String| errors.push(FieldError::new(f, m).at(at));
         for f in ent.value_fields().filter(|f| f.ftype == FieldType::Link) {
             let Some(id) = uuid_of(doc.get(&f.name)) else { continue };
-            let Some(target) = f.to.as_deref().and_then(|t| ctx.schema.entity(t)).cloned() else {
+            // A link set to a record of an entity the caller's zone leaves out (crate::zones, level 2): they cannot
+            // have read it, so it is refused as a link to nothing installed is. One already there and left as it was
+            // stays.
+            let kept = old.is_some_and(|o| o.get(&f.name) == doc.get(&f.name));
+            let Some(target) = f.to.as_deref().and_then(|t| ctx.schema.entity(t)).filter(|t| kept || ctx.sees(&t.def.name)).cloned() else {
                 push(errors, &f.name, "links to an entity that is not installed".into());
                 continue;
             };

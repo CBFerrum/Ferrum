@@ -81,9 +81,12 @@ struct Request {
     on_action: bool,
     /// Its secret parameters, each sealed with the server's key ([`seal_secrets`]).
     sealed: Option<Value>,
+    /// The zone it was asked for in, when that zone narrows staff (crate::zones, level 2): it completes there.
+    zone: Option<String>,
 }
 
-const COLUMNS: &str = "id, entity, record_id, action, from_state, requester, params, policy, steps, status, created_at, document, failure, on_action, sealed";
+const COLUMNS: &str =
+    "id, entity, record_id, action, from_state, requester, params, policy, steps, status, created_at, document, failure, on_action, sealed, zone";
 
 impl Request {
     fn parts(&self) -> Result<(ApprovalPolicy, Vec<Step>)> {
@@ -544,6 +547,8 @@ impl Kernel {
         if comment.is_some_and(|c| c.chars().count() > 2000) {
             return Err(Error::field("comment", "at most 2,000 characters"));
         }
+        // An approver need not read the entity otherwise (BD-19), but never one their zone leaves out (crate::zones,
+        // level 2): `self.entity` above answers that one as not there, and the system's read below keeps their zone.
         // The record first, then its request: every path takes them in this order.
         let doc = self.get_tx(&crate::actions::system(ctx), tx, entity, id, true).await?;
         let req = pending(tx, ctx.tenant, entity, id).await?.ok_or_else(|| Error::NotFound("an approval awaiting a decision on this record".into()))?;
@@ -610,7 +615,7 @@ impl Kernel {
             steps[i].state = "rejected".into();
             save_steps(tx, ctx.tenant, req.id, &steps, "rejected").await?;
             if let Some(to) = &policy.on_reject {
-                let system = self.on_behalf(ctx, req.requester).await;
+                let system = self.on_behalf(ctx, &req).await?;
                 self.write_state(&system, tx, &ent, id, &doc, to, "approval:rejected").await?;
             }
             tell(self, tx, ctx, (policy.message.as_deref(), "rejected"), &[requester], &format!("Not approved: {} {record_title}", req.action), entity, id)
@@ -629,7 +634,7 @@ impl Kernel {
                 if req.document || req.on_action {
                     self.complete_document(ctx, tx, entity, id, &req, &record_title).await?;
                 } else {
-                    let system = self.on_behalf(ctx, req.requester).await;
+                    let system = self.on_behalf(ctx, &req).await?;
                     Box::pin(self.take_tx(&system, tx, entity, id, &req.action, None, &req.params, Some(req.id))).await?;
                 }
             } else {
@@ -687,9 +692,10 @@ impl Kernel {
     /// that is refused (their rights gone, a check of the app's), nothing of it stays: the request fails, saying why,
     /// and the requester is told. What may be tried again (a conflict between transactions) is passed on instead.
     async fn complete_document(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, req: &Request, title: &str) -> Result<()> {
+        // In the zone the request was made in, not the decider's (crate::zones, level 2).
         let who = match req.requester {
-            Some(u) => self.load_ctx(ctx.tenant, u, None, ctx.request_id.clone()).await,
-            None => Ok(crate::actions::system(&Ctx::system(ctx.tenant, ctx.schema.clone()))),
+            Some(u) => self.load_ctx_in(ctx.tenant, u, req.zone.as_deref(), ctx.request_id.clone()).await,
+            None => self.system_in(ctx.tenant, req.zone.as_deref()).await.map(|s| crate::actions::system(&s)),
         };
         sqlx::query("savepoint approval_completes").execute(&mut **tx).await?;
         let done = match who {
@@ -736,18 +742,27 @@ impl Kernel {
         tell(self, tx, ctx, (message.as_deref(), "not_done"), &requester, &format!("Approved, but not done: {} {title}: {why}", req.action), entity, id).await
     }
 
-    /// The system on `requester`'s behalf: how a transition completes once approved, and a rejection moves its record.
-    async fn on_behalf(&self, ctx: &Ctx, requester: Option<Uuid>) -> Ctx {
+    /// The system on the requester's behalf: how a transition completes once approved, and a rejection moves its record;
+    /// within the zone the request was made in (crate::zones, level 2), which a replica that does not hold it refuses.
+    async fn on_behalf(&self, ctx: &Ctx, req: &Request) -> Result<Ctx> {
+        let requester = req.requester;
+        let zone = req.zone.as_deref();
         let person = match requester {
-            Some(u) => self.load_ctx(ctx.tenant, u, None, ctx.request_id.clone()).await.ok(),
+            Some(u) => match self.load_ctx_in(ctx.tenant, u, zone, ctx.request_id.clone()).await {
+                Err(e @ Error::Forbidden(_)) if zone.is_some() => return Err(e),
+                other => other.ok(),
+            },
             None => None,
         };
-        let mut system = crate::actions::system(person.as_ref().unwrap_or(ctx));
+        let mut system = match &person {
+            Some(p) => crate::actions::system(p),
+            None => self.within_zone(crate::actions::system(ctx), zone)?,
+        };
         if person.is_none() {
             system.user = requester.unwrap_or_default();
         }
         system.depth = ctx.depth;
-        system
+        Ok(system)
     }
 
     /// The requester (or an administrator) takes back a pending request on record `id`.
@@ -938,7 +953,8 @@ impl Kernel {
         for (mine, rows) in [(true, to_decide), (false, awaiting)] {
             let mut out = Vec::new();
             for r in rows {
-                let Some(ent) = ctx.schema.entity(&r.entity).cloned() else { continue };
+                // An entity the caller's zone leaves out (crate::zones, level 2) is not listed at all.
+                let Some(ent) = ctx.schema.entity(&r.entity).filter(|_| ctx.sees(&r.entity)).cloned() else { continue };
                 // Named as a notice names it: whoever decides learns what they decide on.
                 let doc = self.get_tx(&crate::actions::system(ctx), &mut tx, &r.entity, r.record_id, false).await.unwrap_or_default();
                 // The open step: the one awaiting the caller in their list, else the first still open.

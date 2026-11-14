@@ -170,6 +170,8 @@ impl Kernel {
     pub async fn may_download(&self, ctx: &Ctx, entity: Option<&str>, record: Option<Uuid>, by: Option<Uuid>) -> Result<()> {
         match (entity, record) {
             (Some(_), Some(_)) if ctx.outside => Err(Error::NotFound("file".into())),
+            // Tied to a record of an app the caller's zone leaves out (crate::zones, level 2): not there.
+            (Some(e), Some(_)) if !ctx.sees(e) => Err(Error::NotFound("file".into())),
             (Some(e), Some(r)) => self.read_record(ctx, e, r, false).await.map(drop),
             _ if owns_loose(ctx, by) => Ok(()),
             _ => Err(Error::NotFound("file".into())),

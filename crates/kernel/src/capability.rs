@@ -93,6 +93,14 @@ pub fn allowed(ctx: &Ctx, cap: &Capability) -> bool {
 /// because the account is an administrator (FLC-CAP-005). Every other permission still comes from the
 /// account's role.
 fn allowed_as(ctx: &Ctx, cap: &Capability, granted: bool) -> bool {
+    // Level 2 of zones: a capability of a package the caller's zone leaves out is not theirs, nor of whatever acts
+    // for them, however it was granted (`ferrum.…` is the platform's own, held by its permissions alone).
+    if let Some(limit) = &ctx.perms.limit {
+        let package = cap.id.split('.').next().unwrap_or_default();
+        if cap.entity.as_deref().is_some_and(|e| !limit.sees(e)) || (package != "ferrum" && !limit.sees_package(package)) {
+            return false;
+        }
+    }
     cap.permissions.iter().all(|p| match p.split_once(':') {
         Some(("role", role)) => ctx.is_admin || ctx.has_role(role),
         Some((entity, action)) => Action::parse(action).is_some_and(|a| ctx.perms.access(entity, a) != Access::None),

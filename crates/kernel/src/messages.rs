@@ -224,7 +224,8 @@ fn settings_named(def: &MessageDef) -> std::collections::BTreeSet<String> {
 /// and what is sealed never leaves.
 async fn record_view(k: &Kernel, tx: &mut Tx, ctx: &Ctx, entity: Option<&str>, record: Option<Uuid>) -> Result<Value> {
     let (Some(entity), Some(id)) = (entity, record) else { return Ok(Value::Null) };
-    let sys = Ctx::system(ctx.tenant, ctx.schema.clone());
+    // Within the zone of whatever sets the message going (crate::zones, level 2).
+    let sys = Ctx::system_for(ctx);
     let ent = k.entity(&sys, entity)?;
     let mut doc = k.get_tx(&sys, tx, entity, id, false).await?;
     without_secrets(&ctx.schema, &ent, &mut doc);
@@ -1189,7 +1190,8 @@ async fn of_field(k: &Kernel, tx: &mut Tx, ctx: &Ctx, ent: &ferrum_meta::EffEnti
     let Some(v) = doc.get(field).and_then(Value::as_str).filter(|v| !v.trim().is_empty()) else { return Ok(vec![]) };
     match (f.ftype, f.to.as_deref()) {
         (FieldType::Link, Some(target)) => {
-            let sys = Ctx::system(ctx.tenant, ctx.schema.clone());
+            // Within the zone of whatever sets the message going (crate::zones, level 2): a hidden record names nobody.
+            let sys = Ctx::system_for(ctx);
             let Ok(id) = v.parse::<Uuid>() else { return Ok(vec![]) };
             let linked = match k.get_tx(&sys, tx, target, id, false).await {
                 Ok(d) => d,

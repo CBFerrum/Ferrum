@@ -420,7 +420,7 @@ impl Kernel {
         if map.run_as == Some(RunAs::System) {
             given.is_system = true;
             given.is_admin = true;
-            given.perms = std::sync::Arc::new(crate::ctx::PermSet { admin: true, entities: BTreeMap::new() });
+            given.perms = std::sync::Arc::new(crate::ctx::PermSet { admin: true, limit: ctx.perms.limit.clone(), ..Default::default() });
         }
         let ctx = &given;
         for (i, item) in items.iter().enumerate() {

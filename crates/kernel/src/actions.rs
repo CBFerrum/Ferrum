@@ -215,7 +215,8 @@ pub(crate) fn system(ctx: &Ctx) -> Ctx {
         is_admin: true,
         egress: None,
         scopes: BTreeMap::new(),
-        perms: Arc::new(PermSet { admin: true, entities: BTreeMap::new() }),
+        // The zone's limit stays (level 2): an effect never reaches an app the person's zone leaves out.
+        perms: Arc::new(PermSet { admin: true, limit: ctx.perms.limit.clone(), ..Default::default() }),
         ..ctx.clone()
     }
 }
