@@ -788,6 +788,14 @@ mod tests {
             .unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
         let pool = || sqlx::postgres::PgPoolOptions::new().max_connections(8).connect(&url);
         let (one, two) = (pool().await.expect("connect"), pool().await.expect("connect"));
+        // Each replica's connections open before its round, so its apps start together rather than one connection's
+        // set-up apart (on a busy machine that took longer than an app's 150 ms, and a and b never met).
+        for p in [&one, &two] {
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                held.push(p.acquire().await.expect("connect"));
+            }
+        }
         let spans: Spans = Default::default();
         let jobs = || vec![fake("fake-a", &spans, "ok"), fake("fake-b", &spans, "ok"), fake("fake-err", &spans, "err"), fake("fake-panic", &spans, "panic")];
         let every = Duration::from_secs(60);
@@ -803,14 +811,18 @@ mod tests {
         let a: Vec<_> = seen.iter().filter(|s| s.0 == "fake-a").collect();
         let b: Vec<_> = seen.iter().filter(|s| s.0 == "fake-b").collect();
         assert!(a.iter().any(|x| b.iter().any(|y| overlap(x, y))), "different apps did not run at once");
-        // The failed and the panicked apps let their locks go.
-        let mut conn = one.acquire().await.unwrap();
+        // The failed and the panicked apps let their locks go: free to a session of neither replica (one of a replica's
+        // own would take a lock it still held again), which gives them back before anything else runs. Dropping it
+        // instead freed them only when the server noticed, and the round below could find them taken.
+        use sqlx::Connection;
+        let mut probe = sqlx::postgres::PgConnection::connect(&url).await.expect("connect");
         for name in ["fake-err", "fake-panic"] {
             let (k1, k2) = super::lock_key(name);
-            let free: bool = sqlx::query_scalar("select pg_try_advisory_lock($1, $2)").bind(k1).bind(k2).fetch_one(&mut *conn).await.unwrap();
+            let free: bool = sqlx::query_scalar("select pg_try_advisory_lock($1, $2)").bind(k1).bind(k2).fetch_one(&mut probe).await.unwrap();
             assert!(free, "{name} kept its lock");
+            sqlx::query("select pg_advisory_unlock($1, $2)").bind(k1).bind(k2).execute(&mut probe).await.unwrap();
         }
-        drop(conn.detach());
+        probe.close().await.unwrap();
         // One at a time on a replica set to one.
         spans.lock().unwrap().clear();
         round(&one, jobs(), 1, every).await;

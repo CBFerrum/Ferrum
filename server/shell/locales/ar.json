@@ -200,6 +200,7 @@
   "Signing up needs JavaScript.": "يتطلب التسجيل JavaScript.",
   "Single sign-on did not work": "لم ينجح تسجيل الدخول الموحّد",
   "Skip to content": "انتقل إلى المحتوى",
+  "Some records were left out: the search ran out of time. Search again to see them.": "تُركت بعض السجلات: انتهى وقت البحث. ابحث مرة أخرى لرؤيتها.",
   "Something went wrong": "حدث خطأ ما",
   "Something went wrong on the server; try again.": "حدث خطأ على الخادم؛ حاول مرة أخرى.",
   "Stop": "أوقف",

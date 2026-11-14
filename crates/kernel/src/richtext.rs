@@ -393,6 +393,9 @@ mod tests {
             (r#"<iframe src="https://evil.example"></iframe>"#, "iframe"),
             (r#"<svg><script>alert(1)</script></svg>"#, "alert"),
             (r#"<math><mi xlink:href="javascript:alert(1)">x</mi></math>"#, "javascript"),
+            // RUSTSEC-2026-0533's mutation: one foreign namespace inside the other's integration point, a raw-text gadget.
+            (r#"<math><mi><svg><style><img src=x onerror=alert(1)></style></svg></mi></math>"#, "onerror"),
+            (r#"<svg><foreignObject><math><mi><style><img src=x onerror=alert(1)></style></mi></math></foreignObject></svg>"#, "onerror"),
             (r#"<form action="https://evil.example"><input name=p></form>"#, "form"),
             (r#"<object data="x.swf"></object>"#, "object"),
             (r#"<base href="https://evil.example/">"#, "base"),

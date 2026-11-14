@@ -475,6 +475,13 @@ cd web && npm test
 > `FERRUM_TEST_DATABASE_URL`, `FERRUM_MCP_TEST_DATABASE_URL`); the object storage test runs
 > when `FERRUM_TEST_S3_ENDPOINT` points at an S3-compatible endpoint.
 
+**Before merging**, run `scripts/local_ci.sh` (or one job: `scripts/local_ci.sh rust`), which runs here what each job
+of `.github/workflows/ci.yml` runs and prints PASS or FAIL for each step; its `rust` job's clippy step,
+`cargo clippy --workspace --all-targets --locked --features ferrum-server/control -- -D warnings`, takes three to five
+minutes here with a warm build directory. `cargo clippy -p <crate>` is not a substitute: it compiles only the crates named,
+and on 12 November 2026 a kernel change that passed it broke the tests of `ferrum-mcp` and `ferrum-studio`, which kept
+the `rust` job red for three days.
+
 **Through a connection pooler.** To run suites the way a server behind PgBouncer runs, start PgBouncer
 (1.21 or later) in transaction mode with `max_prepared_statements` above 0 in front of a test database, point
 that suite's `FERRUM_*_TEST_DATABASE_URL` at PgBouncer and `FERRUM_TEST_DATABASE_DIRECT_URL` at the database

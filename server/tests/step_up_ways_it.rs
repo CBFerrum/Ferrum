@@ -392,6 +392,30 @@ async fn scenario() {
         let refused = change(cookie).await;
         assert!(asked(&refused), "{who}: {} {}", refused.status, refused.body);
         assert_eq!(refused.json()["ways"], json!(ways), "{who}: {}", refused.body);
+        // As a browser asks: it accepts compressed answers and the server compresses them, nearer the handler than
+        // the layer that adds the ways. The refusal still lists them, and is sent as it is written.
+        let as_browser = |method: Method, path: &str, body: Body| {
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, OFFICE)
+                .header("x-forwarded-for", "10.1.2.3")
+                .header(header::COOKIE, format!("{}={cookie}", ferrum_server::shell::cookie_name(false)))
+                .header("sec-fetch-site", "same-origin")
+                .header(header::ORIGIN, format!("http://{OFFICE}"))
+                .header(header::ACCEPT_ENCODING, "gzip, br")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(body)
+                .unwrap()
+        };
+        let me = s.router.clone().oneshot(as_browser(Method::GET, "/api/auth/me", Body::empty())).await.unwrap();
+        assert!(me.headers().contains_key(header::CONTENT_ENCODING), "{who}: answers are compressed for a browser here, as in production");
+        let res = s.router.clone().oneshot(as_browser(Method::PATCH, &path, Body::from(json!({"title": "changed"}).to_string()))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{who}");
+        assert!(!res.headers().contains_key(header::CONTENT_ENCODING), "{who}: the refusal is sent as it is written");
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let told: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| panic!("{who}: a browser can read the refusal"));
+        assert_eq!((told["error"].clone(), told["ways"].clone()), (json!("step_up"), json!(ways)), "{who}: a browser is told the ways too: {told}");
         let listed = call(&s, Method::GET, OFFICE, "/api/auth/step-up/ways", Cred::Cookie(cookie), None).await;
         assert_eq!((listed.status, listed.json()["ways"].clone()), (StatusCode::OK, json!(ways)), "{who}: {}", listed.body);
         if ways.is_empty() {

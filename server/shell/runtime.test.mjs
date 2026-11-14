@@ -8,9 +8,9 @@ import { readFileSync } from "node:fs";
 const src = readFileSync(new URL("./runtime.js", import.meta.url), "utf8");
 const block = src.slice(src.indexOf("// ── Pure helpers"), src.indexOf("// ── end of the pure helpers"));
 assert.ok(block.length > 100, "the block is where the markers say");
-const { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof } =
+const { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof, finderHint } =
   new Function(
-    `${block}; return { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof };`,
+    `${block}; return { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof, finderHint };`,
   )();
 
 test("the origin guard keeps a workspace's storage while its host is leaving, and wipes it for the next owner", () => {
@@ -254,4 +254,14 @@ test("a passkey's or the provider's proof is posted and read as the password's i
   assert.deepEqual(sent.pop(), ["/api/auth/step-up/passkey", { request: "r1", credential: { id: "c" } }]);
   assert.deepEqual(await sendProof(send, "/api/auth/step-up/provider/finish", { state: "s", code: "c" }), { ok: false, say: "wrong" });
   assert.deepEqual(sent.pop(), ["/api/auth/step-up/provider/finish", { state: "s", code: "c" }], "no authenticator code is sent unasked");
+});
+
+test("a search the server cut short says so, and never says nothing was found", () => {
+  assert.equal(finderHint("p", false, false, false), "type");
+  assert.equal(finderHint("printer", true, false, false), "searching");
+  assert.equal(finderHint("printer", false, false, false), "nothing");
+  assert.equal(finderHint("printer", false, false, true), "");
+  assert.equal(finderHint("printer", false, true, false), "partial");
+  assert.equal(finderHint("printer", false, true, true), "partial");
+  assert.equal(finderHint("printer", true, true, true), "", "while others still load, the results stand alone");
 });
