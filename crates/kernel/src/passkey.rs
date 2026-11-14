@@ -560,7 +560,9 @@ impl Kernel {
         }
     }
 
-    async fn passkey_proof(&self, who: &StepUp, request: Uuid, origins: &[String], credential: &Value) -> Result<()> {
+    /// What a passkey step-up checks, with no mark or trail: also the ceremony at the accounts host (crate::sso,
+    /// [`Kernel::accounts_step_up_answer`]), where `origins` is the accounts host's and `who.keys` the Ferrum account.
+    pub(crate) async fn passkey_proof(&self, who: &StepUp, request: Uuid, origins: &[String], credential: &Value) -> Result<()> {
         let (challenge, tenant, user, rp_id, session) = self.take_challenge(request, "step_up").await?;
         if tenant != Some(who.keys.0) || user != Some(who.keys.1) || session != Some(who.session) {
             return Err(refused("this request was someone else's"));

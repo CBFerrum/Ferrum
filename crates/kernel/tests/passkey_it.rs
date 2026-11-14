@@ -265,7 +265,7 @@ async fn step_up() {
     };
 
     // Ways: the password alone, until a passkey is made here.
-    assert_eq!(k.step_up_ways(&ana_up, host).await.unwrap(), vec![json!({"way": "password", "code": false})]);
+    assert_eq!(k.step_up_ways(&ana_up, host, None).await.unwrap(), vec![json!({"way": "password", "code": false})]);
     assert!(k.passkey_step_up_options(&ana_up, host).await.is_err(), "no passkey: nothing to ask the device for");
     let mut laptop = Device::new();
     let o = k.passkey_options(&ana, host, "Acme").await.unwrap();
@@ -274,11 +274,11 @@ async fn step_up() {
     let o = k.passkey_options(&admin, host, "Acme").await.unwrap();
     k.add_passkey(&admin, request(&o), &origins, &admins.create(&o, origin), "admin's").await.unwrap();
     assert_eq!(
-        k.step_up_ways(&ana_up, &format!("{host}:443")).await.unwrap(),
+        k.step_up_ways(&ana_up, &format!("{host}:443"), None).await.unwrap(),
         vec![json!({"way": "passkey"}), json!({"way": "password", "code": false})],
         "a passkey first"
     );
-    assert_eq!(k.step_up_ways(&ana_up, "elsewhere.example").await.unwrap(), vec![json!({"way": "password", "code": false})], "not one for another site");
+    assert_eq!(k.step_up_ways(&ana_up, "elsewhere.example", None).await.unwrap(), vec![json!({"way": "password", "code": false})], "not one for another site");
 
     // The request names only Ana's own passkey and requires the device to verify her.
     for id in [sid, other_sid, admin_sid] {
@@ -338,7 +338,7 @@ async fn step_up() {
     // Where the workspace requires single sign-on of her, a passkey proves nothing: no such way, and refused.
     let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
     set_sso(&k, acme, true).await;
-    assert!(k.step_up_ways(&ana_up, host).await.unwrap().is_empty(), "no provider linked either: no way at all");
+    assert!(k.step_up_ways(&ana_up, host, None).await.unwrap().is_empty(), "no provider linked either: no way at all");
     assert!(matches!(k.passkey_step_up_options(&ana_up, host).await, Err(Error::Forbidden(_))));
     laptop.count = 20;
     let answer = laptop.get(&o, host, origin, ana_id);

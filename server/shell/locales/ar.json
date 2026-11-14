@@ -364,5 +364,15 @@
   "Something went wrong on the server. Close this window and try again.": "حدث خطأ على الخادم. أغلق هذه النافذة وحاول مرة أخرى.",
   "{provider} did not ask you to sign in again, so this cannot confirm it is you; an administrator can have the provider ask again when told to. Close this window and try again.": "لم يطلب منك {provider} تسجيل الدخول مرة أخرى، لذا لا يمكن بهذا التأكد من أنه أنت؛ يستطيع أحد المسؤولين ضبط المزوّد ليطلب ذلك عندما يُطلب منه. أغلق هذه النافذة وحاول مرة أخرى.",
   "you signed in at {provider} as someone else: the account does not match, so nothing changed. Close this window and try again.": "سجّلت الدخول في {provider} بحساب شخص آخر: الحساب لا يطابق، فلم يتغير شيء. أغلق هذه النافذة وحاول مرة أخرى.",
-  "Every app, at the workspace's main address": "كل التطبيقات، على العنوان الرئيسي لمساحة العمل"
+  "Every app, at the workspace's main address": "كل التطبيقات، على العنوان الرئيسي لمساحة العمل",
+  "{workspace} asks you to confirm it is you with a passkey of your Ferrum account.": "تطلب منك {workspace} أن تؤكّد أنه أنت بمفتاح مرور لحسابك في Ferrum.",
+  "Confirming it is you needs JavaScript.": "يتطلب التأكيد أنه أنت JavaScript.",
+  "Confirming it is you did not work": "لم ينجح التأكيد أنه أنت",
+  "This request to confirm it is you has expired or was used already. Close this window and try again.": "انتهت صلاحية طلب التأكيد أنه أنت هذا أو استُخدم بالفعل. أغلق هذه النافذة وحاول مرة أخرى.",
+  "No passkey was used. If this device has no passkey of your Ferrum account, use one that has, or close this window.": "لم يُستخدم أي مفتاح مرور. إذا لم يكن على هذا الجهاز مفتاح مرور لحسابك في Ferrum، فاستخدم جهازًا عليه مفتاح، أو أغلق هذه النافذة.",
+  "That passkey was not accepted, or this request has expired. Close this window and try again.": "لم يُقبل مفتاح المرور هذا، أو انتهت صلاحية هذا الطلب. أغلق هذه النافذة وحاول مرة أخرى.",
+  "This browser cannot use a passkey. Use another browser, or close this window.": "لا يستطيع هذا المتصفح استخدام مفتاح مرور. استخدم متصفحًا آخر، أو أغلق هذه النافذة.",
+  "Confirm it is you in the window that opened.": "أكّد أنه أنت في النافذة التي فُتحت.",
+  "If you closed the window before confirming it is you, try again.": "إذا أغلقت النافذة قبل التأكيد أنه أنت، فحاول مرة أخرى.",
+  "Confirming it is you did not finish. Try again.": "لم يكتمل التأكيد أنه أنت. حاول مرة أخرى."
 }

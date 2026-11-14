@@ -3,8 +3,10 @@
 //! `postgres://ferrum:ferrum@localhost:5432/ferrum_test`; the database is reset): the ways a step-up refusal and
 //! `GET /api/auth/step-up/ways` list for people with only a passkey, only single sign-on, only a password, all three, and
 //! none; a marked change refused before each way and let through after it; what the audit trail says; and the routes not
-//! served where the zone admits no staff. A software authenticator and a stand-in OpenID Connect provider play the device
-//! and the provider; a browser and a real provider are not here.
+//! served where the zone admits no staff. Then the same database served as a cloud is (workspaces under a base domain,
+//! Ferrum accounts at the accounts host): a passkey kept at the accounts host confirms on a workspace's address through a
+//! window there, and every way of cheating it is refused. A software authenticator and a stand-in OpenID Connect provider
+//! play the device and the provider; a browser and a real provider are not here.
 
 mod common;
 
@@ -36,8 +38,14 @@ const PASSWORD: &str = "Correct-Horse-9";
 const OFFICE: &str = "erp.acme.test";
 const PUBLIC: &str = "www.acme.test";
 const ORIGIN: &str = "http://erp.acme.test";
-const ZONES: &str = r#"{"office": {}, "public": {"staff": "none"}}"#;
+/// Callers from 10.9.0.0/16 are in the public zone too, wherever they ask (a host with no zone of its own).
+const ZONES: &str = r#"{"office": {}, "public": {"staff": "none", "networks": ["10.9.0.0/16"]}}"#;
 const CLIENT_ID: &str = "ferrum-app";
+/// The cloud's shape: workspaces under a base domain, Ferrum accounts and their passkeys at the accounts host.
+const BASE: &str = "ferrum.test";
+const ACCOUNTS: &str = "accounts.ferrum.test";
+const ACME: &str = "acme.ferrum.test";
+const GLOBEX: &str = "globex.ferrum.test";
 
 #[test]
 fn step_up_ways() {
@@ -123,11 +131,18 @@ struct Device {
     pair: EcdsaKeyPair,
     id: Vec<u8>,
     count: u32,
+    /// The host it was made on (its relying party), and the page's origin there.
+    host: &'static str,
 }
 
 impl Device {
     /// A new passkey of `user`'s for this host, kept as registering would keep it.
     async fn kept_for(k: &Kernel, tenant: Uuid, user: Uuid) -> Device {
+        Device::kept_at(k, tenant, user, OFFICE).await
+    }
+
+    /// …made on `host` instead.
+    async fn kept_at(k: &Kernel, tenant: Uuid, user: Uuid, host: &'static str) -> Device {
         let rng = SystemRandom::new();
         let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
         let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng).unwrap();
@@ -141,21 +156,27 @@ impl Device {
         .bind(Uuid::now_v7())
         .bind(user)
         .bind(&id)
-        .bind(OFFICE)
+        .bind(host)
         .bind(pair.public_key().as_ref())
         .execute(&mut *tx)
         .await
         .unwrap();
         tx.commit().await.unwrap();
-        Device { rng, pair, id, count: 0 }
+        Device { rng, pair, id, count: 0, host }
     }
 
     /// The browser's answer to `navigator.credentials.get` with `options`, the person verified.
     fn get(&mut self, options: &Value, user: Uuid) -> Value {
+        self.answer(options, user, 0x01 | 0x04)
+    }
+
+    /// …with the authenticator's flags as they come (0x01: the person present, 0x04: verified by the device).
+    fn answer(&mut self, options: &Value, user: Uuid, flags: u8) -> Value {
         self.count += 1;
-        let client = json!({"type": "webauthn.get", "challenge": options["publicKey"]["challenge"], "origin": ORIGIN}).to_string();
-        let mut auth = Sha256::digest(OFFICE.as_bytes()).to_vec();
-        auth.push(0x01 | 0x04);
+        let origin = format!("http://{}", self.host);
+        let client = json!({"type": "webauthn.get", "challenge": options["publicKey"]["challenge"], "origin": origin}).to_string();
+        let mut auth = Sha256::digest(self.host.as_bytes()).to_vec();
+        auth.push(flags);
         auth.extend(self.count.to_be_bytes());
         let sig = self.pair.sign(&self.rng, &[&auth[..], &Sha256::digest(client.as_bytes())].concat()).unwrap();
         json!({
@@ -179,6 +200,8 @@ enum Cred<'a> {
     Cookie(&'a str),
     /// No session yet, from a page of this site (signing in).
     Page,
+    /// These cookies as the browser sends them (`name=value; …`) on a page it was sent to.
+    Jar(&'a str),
 }
 
 struct Answer {
@@ -207,7 +230,12 @@ impl Answer {
 }
 
 async fn call(s: &Server, method: Method, host: &str, path: &str, cred: Cred<'_>, body: Option<Value>) -> Answer {
-    let mut req = Request::builder().method(method).uri(path).header(header::HOST, host).header("x-forwarded-for", "10.1.2.3");
+    call_from(s, "10.1.2.3", method, host, path, cred, body).await
+}
+
+/// [`call`] from the address `ip`.
+async fn call_from(s: &Server, ip: &str, method: Method, host: &str, path: &str, cred: Cred<'_>, body: Option<Value>) -> Answer {
+    let mut req = Request::builder().method(method).uri(path).header(header::HOST, host).header("x-forwarded-for", ip);
     match cred {
         Cred::None => {}
         Cred::Bearer(t) => req = req.header(header::AUTHORIZATION, format!("Bearer {t}")),
@@ -218,6 +246,7 @@ async fn call(s: &Server, method: Method, host: &str, path: &str, cred: Cred<'_>
                 .header(header::ORIGIN, format!("http://{host}"))
         }
         Cred::Page => req = req.header("sec-fetch-site", "same-origin").header(header::ORIGIN, format!("http://{host}")),
+        Cred::Jar(cookies) => req = req.header(header::COOKIE, cookies),
     }
     let req = match body {
         Some(b) => req.header(header::CONTENT_TYPE, "application/json").body(Body::from(b.to_string())),
@@ -255,6 +284,31 @@ fn asked(a: &Answer) -> bool {
     a.status == StatusCode::FORBIDDEN && a.json()["error"] == "step_up"
 }
 
+/// The server's routes and layers over `st`, as the binary serves them.
+async fn serve(base: &AppContext, st: AppState) -> Server {
+    let ctx = AppContext::builder(Environment::Test, Default::default(), base.config.clone()).build();
+    ctx.shared_store.insert(st);
+    let router = App::routes(&ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
+    Server { router: App::after_routes(router, &ctx).await.expect("layers") }
+}
+
+/// A marked change asked the way a browser asks: it takes compressed answers, and production compresses them (nearer
+/// the handler than the layer that adds the ways to a step-up refusal).
+fn as_browser(host: &str, cookie: &str, method: Method, path: &str, body: Body) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::HOST, host)
+        .header("x-forwarded-for", "10.1.2.3")
+        .header(header::COOKIE, format!("{}={cookie}", ferrum_server::shell::cookie_name(false)))
+        .header("sec-fetch-site", "same-origin")
+        .header(header::ORIGIN, format!("http://{host}"))
+        .header(header::ACCEPT_ENCODING, "gzip, br")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .unwrap()
+}
+
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     {
@@ -272,13 +326,8 @@ async fn scenario() {
     let k = st.kernel.clone();
     let zones = Arc::new(ferrum_server::zone::resolve(Zones::parse(ZONES, "", "", "").unwrap(), &k).await.expect("zones"));
     k.set_zones(zones.clone());
-    let s = {
-        let st = AppState { zones, ..st.clone() };
-        let ctx = AppContext::builder(Environment::Test, Default::default(), base.config.clone()).build();
-        ctx.shared_store.insert(st);
-        let router = App::routes(&ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
-        Server { router: App::after_routes(router, &ctx).await.expect("layers") }
-    };
+    let st = AppState { zones, ..st.clone() };
+    let s = serve(&base, st.clone()).await;
 
     let acme = k
         .create_tenant(NewTenant {
@@ -394,23 +443,10 @@ async fn scenario() {
         assert_eq!(refused.json()["ways"], json!(ways), "{who}: {}", refused.body);
         // As a browser asks: it accepts compressed answers and the server compresses them, nearer the handler than
         // the layer that adds the ways. The refusal still lists them, and is sent as it is written.
-        let as_browser = |method: Method, path: &str, body: Body| {
-            Request::builder()
-                .method(method)
-                .uri(path)
-                .header(header::HOST, OFFICE)
-                .header("x-forwarded-for", "10.1.2.3")
-                .header(header::COOKIE, format!("{}={cookie}", ferrum_server::shell::cookie_name(false)))
-                .header("sec-fetch-site", "same-origin")
-                .header(header::ORIGIN, format!("http://{OFFICE}"))
-                .header(header::ACCEPT_ENCODING, "gzip, br")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(body)
-                .unwrap()
-        };
-        let me = s.router.clone().oneshot(as_browser(Method::GET, "/api/auth/me", Body::empty())).await.unwrap();
+        let me = s.router.clone().oneshot(as_browser(OFFICE, cookie, Method::GET, "/api/auth/me", Body::empty())).await.unwrap();
         assert!(me.headers().contains_key(header::CONTENT_ENCODING), "{who}: answers are compressed for a browser here, as in production");
-        let res = s.router.clone().oneshot(as_browser(Method::PATCH, &path, Body::from(json!({"title": "changed"}).to_string()))).await.unwrap();
+        let res =
+            s.router.clone().oneshot(as_browser(OFFICE, cookie, Method::PATCH, &path, Body::from(json!({"title": "changed"}).to_string()))).await.unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN, "{who}");
         assert!(!res.headers().contains_key(header::CONTENT_ENCODING), "{who}: the refusal is sent as it is written");
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
@@ -602,6 +638,8 @@ async fn scenario() {
         (Method::POST, "/api/auth/step-up/provider", Some(json!({"dialog": dialog}))),
         (Method::POST, "/api/auth/step-up/provider/finish", Some(json!({"state": "su.x", "code": "y"}))),
         (Method::GET, "/api/auth/step-up/provider/done?dialog=x&state=y&code=z", None),
+        (Method::POST, "/api/auth/step-up/accounts", Some(json!({"dialog": dialog}))),
+        (Method::POST, "/api/auth/step-up/accounts/finish", Some(json!({"state": "su.x", "code": "y", "dialog": dialog}))),
     ] {
         for cred in [Cred::Cookie(&pat_cookie), Cred::None] {
             let a = call(&s, method.clone(), PUBLIC, route, cred, body.clone()).await;
@@ -611,4 +649,308 @@ async fn scenario() {
     let a = call(&s, Method::GET, PUBLIC, "/api/auth/step-up/provider/back?state=su.not-one-of-ours&code=x", Cred::None, None).await;
     assert_eq!(a.status, StatusCode::UNAUTHORIZED, "reachable, and refused as no answer of ours: {}", a.body);
     let _ = (sol, nia);
+
+    accounts_passkey(&base, &st, acme, &admin, &path, &pat_cookie).await;
+}
+
+// ── A passkey kept at the accounts host (the way `accounts_passkey`) ──
+
+/// Signs in at the accounts host with the passkey `device` keeps for `account` → that host's session cookie.
+async fn at_accounts(s: &Server, device: &mut Device, account: Uuid) -> String {
+    let o = call(s, Method::POST, ACCOUNTS, "/api/auth/passkey/options", Cred::Page, None).await.json();
+    let body = json!({"request": o["request"], "credential": device.get(&o, account), "session": "cookie"});
+    let a = call(s, Method::POST, ACCOUNTS, "/api/auth/passkey", Cred::Page, Some(body)).await;
+    a.cookie().unwrap_or_else(|| panic!("signs in at the accounts host with a passkey: {} {}", a.status, a.body))
+}
+
+/// Into a workspace's address as a browser goes: its `/login` sends the browser to the accounts host, where `there` is
+/// signed in, which sends it back with a code that the address turns into a session of its own → that session's cookie.
+async fn handed_in(s: &Server, host: &str, there: &str) -> String {
+    let start = call(s, Method::GET, host, "/login", Cred::None, None).await;
+    let to = start.location();
+    let kept = start
+        .headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|c| c.starts_with("ferrum_auth-"))
+        .and_then(|c| c.split(';').next())
+        .unwrap_or_else(|| panic!("{host} keeps the sign-in's state: {} {to}", start.status))
+        .to_string();
+    let authorize = to.strip_prefix(&format!("http://{ACCOUNTS}")).unwrap_or_else(|| panic!("on to the accounts host: {to}"));
+    let there = format!("{}={there}", ferrum_server::shell::cookie_name(false));
+    let back = call(s, Method::GET, ACCOUNTS, authorize, Cred::Jar(&there), None).await;
+    let callback = back.location();
+    let callback = callback.strip_prefix(&format!("http://{host}")).unwrap_or_else(|| panic!("back to {host}: {} {callback} {}", back.status, back.body));
+    let done = call(s, Method::GET, host, callback, Cred::Jar(&kept), None).await;
+    done.cookie().unwrap_or_else(|| panic!("{host} opens a session: {} {}", done.status, done.body))
+}
+
+/// Starts the way on Acme's address for the session of `cookie` → the request's state, for the window at the accounts host.
+async fn begin(s: &Server, ip: &str, cookie: &str, dialog: &str) -> String {
+    let a = call_from(s, ip, Method::POST, ACME, "/api/auth/step-up/accounts", Cred::Cookie(cookie), Some(json!({"dialog": dialog}))).await;
+    assert_eq!(a.status, StatusCode::OK, "{}", a.body);
+    let url = a.json()["url"].as_str().unwrap().to_string();
+    assert!(!url.contains(dialog), "the dialog's value never leaves its address: {url}");
+    url.strip_prefix(&format!("http://{ACCOUNTS}/step-up?state=")).unwrap_or_else(|| panic!("a window at the accounts host: {url}")).to_string()
+}
+
+/// The window's challenge for the request `state` names, asked by its page (`cred`: whatever that browser has there).
+async fn challenge(s: &Server, ip: &str, state: &str, cred: Cred<'_>) -> Answer {
+    call_from(s, ip, Method::POST, ACCOUNTS, "/api/accounts/step-up/options", cred, Some(json!({"state": state}))).await
+}
+
+/// The device's answer, sent by the window's page.
+async fn ceremony(s: &Server, ip: &str, state: &str, options: &Value, credential: Value) -> Answer {
+    let body = json!({"state": state, "request": options["request"], "credential": credential});
+    call_from(s, ip, Method::POST, ACCOUNTS, "/api/accounts/step-up", Cred::Page, Some(body)).await
+}
+
+/// The proof the window brought back, posted by the dialog on `host` for the session of `cookie`.
+async fn finish(s: &Server, ip: &str, host: &str, cookie: &str, proof: &Value) -> Answer {
+    call_from(s, ip, Method::POST, host, "/api/auth/step-up/accounts/finish", Cred::Cookie(cookie), Some(proof.clone())).await
+}
+
+/// The cloud's shape on the same database: workspaces under a base domain, people signing in once at the accounts host
+/// as their Ferrum account, whose passkeys are made there and which a workspace's address may not use. Kim's only
+/// credential is such a passkey: she confirms it is her on Acme's address through a window at the accounts host, and
+/// every way of cheating that is refused.
+async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &ferrum_kernel::Ctx, path: &str, pat_cookie: &str) {
+    let k = st.kernel.clone();
+    let s = {
+        let mut settings = st.settings.clone();
+        settings.base_domain = BASE.into();
+        let storage = Arc::new(loco_rs::storage::Storage::single(loco_rs::storage::drivers::mem::new()));
+        let shell = Arc::new(ferrum_server::shell::Shell::new(k.clone(), storage, &settings, &format!("http://{BASE}")));
+        serve(base, AppState { shell, settings, ..st.clone() }).await
+    };
+    let dir = k.ensure_directory().await.unwrap();
+    k.add_subdomain(acme, ACME).await.unwrap();
+    let globex = k
+        .create_tenant(NewTenant {
+            slug: "globex".into(),
+            name: "Globex".into(),
+            admin_email: "admin@globex.test".into(),
+            admin_password: PASSWORD.into(),
+            admin_name: None,
+            packages: vec![],
+            settings: None,
+        })
+        .await
+        .unwrap();
+    k.add_subdomain(globex, GLOBEX).await.unwrap();
+    let root = k.login("globex", "admin@globex.test", PASSWORD).await.unwrap();
+    let globex_admin = k.load_ctx(globex, root.user, None, "it".into()).await.unwrap();
+    // Kim works at Acme and Globex through her Ferrum account, whose one credential is a passkey made at the accounts
+    // host. Lee is another Ferrum account, with a passkey of his own there.
+    let kim = k.create_user(admin, "kim@acme.test", "Kim", None, &["Desk".into()], false).await.unwrap();
+    k.create_user(&globex_admin, "kim@acme.test", "Kim", None, &[], false).await.unwrap();
+    let (kim_id, lee_id) = (Uuid::now_v7(), Uuid::now_v7());
+    exec(
+        &k,
+        &format!(
+            "insert into app_user (tenant_id, id, email, full_name, email_verified_at) values ('{dir}', '{kim_id}', 'kim@acme.test', 'Kim', now()), \
+             ('{dir}', '{lee_id}', 'lee@acme.test', 'Lee', now()); \
+             update app_user set identity_id = '{kim_id}' where email = 'kim@acme.test' and tenant_id in ('{acme}', '{globex}')"
+        ),
+    )
+    .await;
+    let mut kims = Device::kept_at(&k, dir, kim_id, ACCOUNTS).await;
+    let mut lees = Device::kept_at(&k, dir, lee_id, ACCOUNTS).await;
+    let there = at_accounts(&s, &mut kims, kim_id).await;
+    let lee_there = at_accounts(&s, &mut lees, lee_id).await;
+    let kim_acme = handed_in(&s, ACME, &there).await;
+    let kim_again = handed_in(&s, ACME, &there).await;
+    let kim_globex = handed_in(&s, GLOBEX, &there).await;
+    age(&k).await;
+
+    // ── Listed for her on Acme's address, her only way; where the address can use the passkey itself, the passkey ──
+    let accounts_way = json!([{"way": "accounts_passkey"}]);
+    let change = |cookie: &str| {
+        let (s, cookie) = (&s, cookie.to_string());
+        async move { call(s, Method::PATCH, ACME, path, Cred::Cookie(&cookie), Some(json!({"title": "Kim's"}))).await }
+    };
+    let refused = change(&kim_acme).await;
+    assert!(asked(&refused), "{} {}", refused.status, refused.body);
+    assert_eq!(refused.json()["ways"], accounts_way, "{}", refused.body);
+    let res = s.router.clone().oneshot(as_browser(ACME, &kim_acme, Method::PATCH, path, Body::from(json!({"title": "Kim's"}).to_string()))).await.unwrap();
+    assert!(res.status() == StatusCode::FORBIDDEN && !res.headers().contains_key(header::CONTENT_ENCODING), "a browser's refusal is sent as written");
+    let told: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).expect("a browser can read the refusal");
+    assert_eq!(told["ways"], accounts_way, "a browser is told it too: {told}");
+    let listed = call(&s, Method::GET, ACME, "/api/auth/step-up/ways", Cred::Cookie(&kim_acme), None).await;
+    assert_eq!(listed.json()["ways"], accounts_way, "{}", listed.body);
+    let at_home = call(&s, Method::GET, ACCOUNTS, "/api/auth/step-up/ways", Cred::Cookie(&there), None).await;
+    assert_eq!(at_home.json()["ways"], json!([{"way": "passkey"}]), "the accounts host uses it itself: {}", at_home.body);
+
+    // ── The window: which workspace asks, in the browser's language; framed by no page, kept by no cache ──
+    let dialog = "dlg-accounts-0123456789";
+    let state = begin(&s, "10.1.3.1", &kim_acme, dialog).await;
+    let page = call_from(&s, "10.1.3.1", Method::GET, ACCOUNTS, &format!("/step-up?state={state}"), Cred::None, None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(page.body.contains("Acme asks you to confirm it is you with a passkey of your Ferrum account."), "{}", page.body);
+    let said = |a: &Answer, name: &str| a.headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    assert!(said(&page, "content-security-policy").contains("frame-ancestors 'none'"), "{}", said(&page, "content-security-policy"));
+    assert_eq!([said(&page, "x-frame-options"), said(&page, "cache-control"), said(&page, "referrer-policy")], ["DENY", "no-store", "no-referrer"]);
+    let arabic: Value = serde_json::from_str(include_str!("../shell/locales/ar.json")).unwrap();
+    let in_arabic = arabic["{workspace} asks you to confirm it is you with a passkey of your Ferrum account."].as_str().unwrap().replace("{workspace}", "Acme");
+    let req = Request::builder()
+        .uri(format!("/step-up?state={state}"))
+        .header(header::HOST, ACCOUNTS)
+        .header("x-forwarded-for", "10.1.3.1")
+        .header(header::ACCEPT_LANGUAGE, "ar")
+        .body(Body::empty())
+        .unwrap();
+    let res = s.router.clone().oneshot(req).await.unwrap();
+    let body = String::from_utf8_lossy(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).into_owned();
+    assert!(body.contains(&in_arabic) && body.contains("dir=\"rtl\""), "{body}");
+
+    // ── The challenge is Kim's, whoever is signed in there; Lee's passkey is refused and the request used up ──
+    let o = challenge(&s, "10.1.3.1", &state, Cred::Cookie(&lee_there)).await;
+    assert_eq!(o.status, StatusCode::OK, "{}", o.body);
+    let o = o.json();
+    let pk = &o["publicKey"];
+    assert_eq!((pk["rpId"].clone(), pk["userVerification"].clone()), (json!(ACCOUNTS), json!("required")), "never the base domain");
+    assert_eq!(pk["allowCredentials"].as_array().map(|a| a.iter().map(|c| c["id"].clone()).collect::<Vec<_>>()), Some(vec![json!(B64.encode(&kims.id))]));
+    let a = ceremony(&s, "10.1.3.1", &state, &o, lees.get(&o, lee_id)).await;
+    assert_eq!(a.status, StatusCode::UNAUTHORIZED, "another person's passkey: {}", a.body);
+    let a = challenge(&s, "10.1.3.1", &state, Cred::Page).await;
+    assert_eq!(a.status, StatusCode::UNAUTHORIZED, "the request is used up: {}", a.body);
+    let gone = call_from(&s, "10.1.3.1", Method::GET, ACCOUNTS, &format!("/step-up?state={state}"), Cred::None, None).await;
+    assert!(gone.status == StatusCode::UNAUTHORIZED && gone.body.contains("has expired or was used already"), "{} {}", gone.status, gone.body);
+    let unknown = call_from(&s, "10.1.3.1", Method::GET, ACCOUNTS, "/step-up?state=su.never-made-0123456789", Cred::None, None).await;
+    assert_eq!((unknown.status, unknown.body.clone()), (gone.status, gone.body.clone()), "an unknown request says no more than a used one");
+    assert_eq!(said(&gone, "x-frame-options"), "DENY");
+
+    // ── The round trip: the ceremony there, the window back on Acme's address, the dialog's finish ──
+    let ip = "10.1.3.2";
+    let state = begin(&s, ip, &kim_acme, dialog).await;
+    let o = challenge(&s, ip, &state, Cred::Page).await.json();
+    let a = ceremony(&s, ip, &state, &o, kims.get(&o, kim_id)).await;
+    assert_eq!(a.status, StatusCode::OK, "{}", a.body);
+    let next = a.json()["redirect"].as_str().unwrap().to_string();
+    assert!(next.starts_with(&format!("http://{ACME}/api/auth/step-up/provider/done?dialog={dialog}&state=")), "back where the dialog is: {next}");
+    let handed: HashMap<String, String> = reqwest::Url::parse(&next).unwrap().query_pairs().into_owned().collect();
+    let done = call_from(&s, ip, Method::GET, ACME, next.trim_start_matches(&format!("http://{ACME}")), Cred::None, None).await;
+    assert!(done.status == StatusCode::OK && done.body.contains("BroadcastChannel(\"ferrum-step-up\")"), "{}", done.status);
+    let proof = json!({"state": handed["state"], "code": handed["code"], "dialog": dialog});
+    for (who, host, cookie) in [
+        ("another person's session", ACME, pat_cookie),
+        ("another session of Kim's", ACME, kim_again.as_str()),
+        ("another workspace", GLOBEX, kim_globex.as_str()),
+    ] {
+        let a = finish(&s, ip, host, cookie, &proof).await;
+        assert_eq!(a.status, StatusCode::UNAUTHORIZED, "{who}: {}", a.body);
+    }
+    let a = call_from(
+        &s,
+        ip,
+        Method::POST,
+        ACME,
+        "/api/auth/step-up/provider/finish",
+        Cred::Cookie(&kim_acme),
+        Some(json!({"state": handed["state"], "code": handed["code"]})),
+    )
+    .await;
+    assert_eq!(a.status, StatusCode::UNAUTHORIZED, "nor the provider's finish: {}", a.body);
+    assert!(asked(&change(&kim_acme).await), "nothing changed yet");
+    let a = finish(&s, ip, ACME, &kim_acme, &proof).await;
+    assert_eq!(a.status, StatusCode::NO_CONTENT, "{}", a.body);
+    let a = change(&kim_acme).await;
+    assert!(a.status.is_success(), "after the passkey at the accounts host: {} {}", a.status, a.body);
+    assert_eq!(finish(&s, ip, ACME, &kim_acme, &proof).await.status, StatusCode::UNAUTHORIZED, "once");
+    age(&k).await;
+
+    // ── A proof for another dialog is not taken, and is used up ──
+    let ip = "10.1.3.3";
+    let state = begin(&s, ip, &kim_acme, dialog).await;
+    let o = challenge(&s, ip, &state, Cred::Page).await.json();
+    let next = ceremony(&s, ip, &state, &o, kims.get(&o, kim_id)).await.json()["redirect"].as_str().unwrap().to_string();
+    let handed: HashMap<String, String> = reqwest::Url::parse(&next).unwrap().query_pairs().into_owned().collect();
+    let other = json!({"state": handed["state"], "code": handed["code"], "dialog": "dlg-another-dialog-0123"});
+    assert_eq!(finish(&s, ip, ACME, &kim_acme, &other).await.status, StatusCode::UNAUTHORIZED, "another dialog's");
+    let mine = json!({"state": handed["state"], "code": handed["code"], "dialog": dialog});
+    assert_eq!(finish(&s, ip, ACME, &kim_acme, &mine).await.status, StatusCode::UNAUTHORIZED, "used up by the try");
+    assert!(asked(&change(&kim_acme).await));
+
+    // ── An expired request: past three minutes the window can no longer be answered ──
+    let ip = "10.1.3.4";
+    let state = begin(&s, ip, &kim_acme, dialog).await;
+    let o = challenge(&s, ip, &state, Cred::Page).await.json();
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update sso_flow set created_at = created_at - interval '181 seconds' where state_hash = encode(sha256(convert_to($1, 'UTF8')), 'hex')")
+        .bind(&state)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let a = ceremony(&s, ip, &state, &o, kims.get(&o, kim_id)).await;
+    assert_eq!(a.status, StatusCode::UNAUTHORIZED, "expired: {}", a.body);
+    let page = call_from(&s, ip, Method::GET, ACCOUNTS, &format!("/step-up?state={state}"), Cred::None, None).await;
+    assert_eq!(page.status, StatusCode::UNAUTHORIZED);
+
+    // ── The device not verifying the person ──
+    let ip = "10.1.3.5";
+    let state = begin(&s, ip, &kim_acme, dialog).await;
+    let o = challenge(&s, ip, &state, Cred::Page).await.json();
+    let a = ceremony(&s, ip, &state, &o, kims.answer(&o, kim_id, 0x01)).await;
+    assert_eq!(a.status, StatusCode::UNAUTHORIZED, "present but not verified: {}", a.body);
+
+    // ── The ceremony skipped: straight to the provider's way back, to the done page, to the finish ──
+    let ip = "10.1.3.6";
+    let state = begin(&s, ip, &kim_acme, dialog).await;
+    let back = call_from(&s, ip, Method::GET, ACME, &format!("/api/auth/step-up/provider/back?state={state}&code=made-up-0123456789"), Cred::None, None).await;
+    assert_eq!(back.status, StatusCode::UNAUTHORIZED, "not a provider's: {}", back.body);
+    let made_up = json!({"state": state, "code": "made-up-proof-0123456789", "dialog": dialog});
+    assert_eq!(finish(&s, ip, ACME, &kim_acme, &made_up).await.status, StatusCode::UNAUTHORIZED, "no proof without the ceremony");
+    let o = challenge(&s, ip, &state, Cred::Page).await.json();
+    let never = json!({"request": Uuid::now_v7(), "publicKey": o["publicKey"]});
+    let a = ceremony(&s, ip, &state, &never, kims.get(&o, kim_id)).await;
+    assert_eq!(a.status, StatusCode::UNAUTHORIZED, "an answer to a challenge never made: {}", a.body);
+    assert!(asked(&change(&kim_acme).await));
+
+    // ── The proof goes back only to a live address of the workspace that asked, the one its dialog is on ──
+    let ip = "10.1.3.7";
+    k.add_operator_host("acme", "help.ferrum.test", "portal", None).await.unwrap();
+    let a = call_from(&s, ip, Method::POST, "help.ferrum.test", "/api/auth/step-up/accounts", Cred::Cookie(&kim_acme), Some(json!({"dialog": dialog}))).await;
+    assert_eq!(a.status, StatusCode::UNPROCESSABLE_ENTITY, "not from the portal's address: {}", a.body);
+    let state = begin(&s, ip, &kim_acme, dialog).await;
+    let o = challenge(&s, ip, &state, Cred::Page).await.json();
+    exec(&k, &format!("update sso_flow set step_up_back = replace(step_up_back, '{ACME}', '{GLOBEX}') where provider_id is null and code_hash is null")).await;
+    let a = ceremony(&s, ip, &state, &o, kims.get(&o, kim_id)).await;
+    assert_eq!(a.status, StatusCode::UNAUTHORIZED, "another workspace's address, live as it is: {}", a.body);
+    let mut tx = k.db.system_tx().await.unwrap();
+    let proofs: i64 =
+        sqlx::query_scalar("select count(*) from sso_flow where provider_id is null and code_hash is not null").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(proofs, 0, "no proof was made for any refused request");
+
+    // ── Where the zone admits no staff, none of it is served, at the accounts host nor on the workspace's address ──
+    let outside = "10.9.0.1";
+    for (method, host, route, body) in [
+        (Method::POST, ACCOUNTS, "/api/accounts/step-up/options", json!({"state": state})),
+        (Method::POST, ACCOUNTS, "/api/accounts/step-up", json!({"state": state, "request": Uuid::now_v7(), "credential": {}})),
+        (Method::POST, ACME, "/api/auth/step-up/accounts", json!({"dialog": dialog})),
+        (Method::POST, ACME, "/api/auth/step-up/accounts/finish", json!({"state": state, "code": "x", "dialog": dialog})),
+    ] {
+        let a = call_from(&s, outside, method.clone(), host, route, Cred::Cookie(&kim_acme), Some(body)).await;
+        assert_eq!(a.status, StatusCode::NOT_FOUND, "{method} {host}{route}: {}", a.body);
+    }
+    let page = call_from(&s, outside, Method::GET, ACCOUNTS, &format!("/step-up?state={state}"), Cred::None, None).await;
+    assert_eq!(page.status, StatusCode::FORBIDDEN, "the plain page of what a zone keeps from staff: {}", page.body);
+
+    // ── On the trail: the way, told from a passkey used on the address itself; the refused ceremonies on the Ferrum account ──
+    let mut tx = k.db.system_tx().await.unwrap();
+    let events: Vec<(Uuid, Uuid, String, Value)> = sqlx::query_as(
+        "select tenant_id, record_id, action, diff from audit_event where category = 'sign_in' and action in ('stepped_up', 'step_up_failed') \
+         and diff->>'method' = 'accounts_passkey' order by id",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let up = events.iter().find(|e| e.2 == "stepped_up").unwrap_or_else(|| panic!("{events:?}"));
+    assert_eq!((up.0, up.1, up.3["address"].clone()), (acme, kim, json!("10.1.3.2")), "Kim's session at Acme, from where it was finished");
+    assert!(events.iter().any(|e| (e.0, e.1, e.2.as_str()) == (dir, kim_id, "step_up_failed")), "the passkeys tried are her Ferrum account's: {events:?}");
+    let text = format!("{events:?}");
+    assert!(!text.contains(&handed["code"]) && !text.contains("su."), "no proof or request on the trail");
 }

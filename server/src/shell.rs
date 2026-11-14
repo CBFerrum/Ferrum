@@ -38,6 +38,7 @@ pub fn platform_file(name: &str) -> Option<(&'static str, &'static [u8])> {
         "live-worker.js" => (js, include_bytes!("../shell/live-worker.js")),
         "kill-sw.js" => (js, include_bytes!("../shell/kill-sw.js")),
         "login.js" => (js, include_bytes!("../shell/login.js")),
+        "step-up.js" => (js, include_bytes!("../shell/step-up.js")),
         "signup.js" => (js, include_bytes!("../shell/signup.js")),
         "portal.js" => (js, include_bytes!("../shell/portal.js")),
         "isolated.js" => (js, include_bytes!("../shell/isolated.js")),
@@ -57,7 +58,7 @@ pub fn platform_file(name: &str) -> Option<(&'static str, &'static [u8])> {
 /// The platform's files a page names with a digest of their content (`?v=`, [`shell_file_url`]): the browser keeps
 /// such an address for a year, and a server with other files names another. The plain address is still served
 /// (`max-age=300`), for pages from before.
-const DIGESTED: [&str; 4] = ["runtime.js", "portal.js", "login.js", "pages.css"];
+const DIGESTED: [&str; 5] = ["runtime.js", "portal.js", "login.js", "step-up.js", "pages.css"];
 
 /// The digest a page names one of [`DIGESTED`] with: its content's (the first 12 bytes of SHA-256, hex).
 pub fn file_digest(name: &str) -> Option<&'static str> {
@@ -415,6 +416,11 @@ impl Shell {
     /// development server): where members sign in once, when the server has an accounts host.
     pub fn accounts_origin(&self, headers: &HeaderMap) -> Option<String> {
         self.host_origin(self.accounts_host.as_deref()?, headers)
+    }
+
+    /// The accounts host's name (lowercase, no port), when the server has one: Ferrum accounts' passkeys are made there.
+    pub fn accounts_name(&self) -> Option<&str> {
+        self.accounts_host.as_deref()
     }
 
     /// One of the cluster's own hosts (accounts, hooks, links), which no workspace may claim.
@@ -1951,6 +1957,52 @@ pub fn login_html(boot: &Value, title: &str) -> Response {
         login_js = shell_file_url("login.js"),
     );
     page_response(StatusCode::OK, html, &csp(None, &Value::Null))
+}
+
+/// The policy of the accounts host's page where a person confirms it is them for a workspace (`step-up.js`): its own
+/// files only, and framed by no page at all.
+pub const STEP_UP_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
+     frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'none'";
+
+/// The accounts host's page where a person confirms it is them with a passkey of their Ferrum account, for the workspace
+/// named `workspace` whose address may not use it (`step-up.js` asks the device). No page may frame it; nothing caches
+/// it or reads where it was (its address holds the request). The window that shows it was opened by the workspace's page
+/// and cut off from it; it keeps the browser's ordinary opener policy, as a provider's sign-in page does, so that the
+/// dialog can still tell whether it is open and close it.
+pub fn step_up_html(workspace: &str) -> Response {
+    let (lang, boot) = with_page_locale(&json!({"v": 1}));
+    let tr = |s| esc(&crate::shell_words::tr(&lang, s));
+    let why = crate::shell_words::tr_with(
+        &lang,
+        "{workspace} asks you to confirm it is you with a passkey of your Ferrum account.",
+        &[("workspace", &esc(workspace))],
+        true,
+    );
+    let html = format!(
+        r#"<!doctype html>{html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="{pages_css}"><script type="application/json" id="ferrum-step-up">{b}</script><script type="module" src="{js}"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>{title}</h1><p>{why}</p><p class="ferrum-error" role="alert" id="ferrum-step-up-error"></p><p class="ferrum-actions"><button class="ferrum-button" type="button" id="ferrum-step-up-go">{go}</button><button class="ferrum-button ferrum-button-quiet" type="button" id="ferrum-step-up-close">{close}</button></p><noscript><p>{needs}</p></noscript></main></body></html>"#,
+        html = html_open(&lang),
+        title = tr("Confirm it is you"),
+        h = theme_hash(),
+        b = json_in_html(&boot),
+        pages_css = shell_file_url("pages.css"),
+        js = shell_file_url("step-up.js"),
+        go = tr("Use a passkey"),
+        close = tr("Close"),
+        needs = tr("Confirming it is you needs JavaScript."),
+    );
+    let mut res = page_response(StatusCode::OK, html, STEP_UP_CSP);
+    unframed(&mut res);
+    res.headers_mut().insert("cross-origin-opener-policy", HeaderValue::from_static("unsafe-none"));
+    res
+}
+
+/// What the accounts host's step-up pages carry besides their policy: no frame (for browsers that do not read
+/// `frame-ancestors`), no cache, no referrer.
+pub fn unframed(res: &mut Response) {
+    let h = res.headers_mut();
+    h.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
 }
 
 /// A signed-out page's language (the browser's) and its boot with the locale its script reads

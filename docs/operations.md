@@ -1504,8 +1504,8 @@ first sign-in, nor for the first sign-in of each person after the setting is tur
 account, with the address, browser (user agent), zone and method: a sign-in (`signed_in`, by `password`,
 `passkey`, `sso`, `code` or `accounts` for one handed over from the accounts host), a second step passed
 (`second_step`), a failed attempt for an account that exists (`failed`), a sign-in refused by zone or network
-(`refused`, with `by`), a break-glass sign-in (`break_glass`), a step-up (`stepped_up`, by `password`, `passkey` or
-`provider`) and a refused one (`step_up_failed`; [Asking again before sensitive
+(`refused`, with `by`), a break-glass sign-in (`break_glass`), a step-up (`stepped_up`, by `password`, `passkey`,
+`accounts_passkey` or `provider`) and a refused one (`step_up_failed`; [Asking again before sensitive
 work](#asking-again-before-sensitive-work)), and a session's end (`session_ended`, with
 `reason` `signed_out`, `idle`, `revoked`, `password_changed`, or `provider` when a SAML provider's logout
 request ended it). Failed and refused attempts are recorded one
@@ -1556,6 +1556,8 @@ the plain `403`), a request whose body is a stream, and service workers.
   challenge names this browser session and person and allows only their own passkeys; the device must verify the
   person (a fingerprint, a face, a PIN), as for signing in with one, and the same relying party, origin, counter and
   copy checks hold.
+* `{"way": "accounts_passkey"}`: failing that, a passkey of their Ferrum account that only the accounts host may ask for
+  (below). The dialog shows it only where the browser can use passkeys.
 * `{"way": "password", "code": true|false}`: their password, with the code from their authenticator app when `code`.
 * `{"way": "provider", "name": "Okta"}`: signing in again at the single sign-on provider they are linked to, when it is
   enabled (a SAML one only on a server built with SAML; none in a sandbox).
@@ -1564,9 +1566,25 @@ Which a person has: what they actually have now. Where the workspace requires si
 administrators `break_glass` names), a password or passkey proves nothing there, theirs or their Ferrum account's: only
 the provider. A workspace account joined to a Ferrum account, on a host that hands sign-in to the accounts host, confirms
 it with that account's password and passkeys; in the cloud (no `FERRUM_PASSKEY_RP`) those passkeys belong to the
-accounts host and a workspace's host cannot ask for them, so such a person is offered the password and the provider
-there. Someone with none of these (single sign-on unlinked, no password, no passkey) is told to ask an administrator,
-who can set a password, or unlink them so that their next single sign-on links them again.
+accounts host and a workspace's host cannot ask for them itself, so such a person is offered `accounts_passkey`. Someone
+with none of these (single sign-on unlinked, no password, no passkey) is told to ask an administrator, who can set a
+password, or unlink them so that their next single sign-on links them again. An interface older than a way leaves it
+out (it offers only the ways it knows), so it never shows a button that cannot work; the bar's runtime is the server's
+own and knows every way.
+
+**A passkey kept at the accounts host** (`accounts_passkey`). A browser offers a passkey only to the host it was made
+for, and setting `FERRUM_PASSKEY_RP` to the base domain would let every workspace's pages ask for every person's
+passkeys, so the workspace's address does not ask: the accounts host does, as a provider is asked to sign someone in
+again. "Use a passkey" opens a small window at `https://accounts.{base}/step-up`, which names the workspace that asks and
+asks the device for a passkey of the person's Ferrum account, there and then: the device must verify the person, and
+whoever is signed in at the accounts host proves nothing. The passkey must be one of the account the workspace's account
+is joined to, with the relying party, origin, counter and copy checks of any passkey. The window then goes back to the
+address the dialog is on, whose last page hands the proof to the dialog, as after a provider; the dialog finishes with
+it. The request is bound to the browser session, the person and the dialog, must be answered within three minutes, and
+is used up by a refusal; the proof is a one-use code, good for a minute, taken only by that session for that dialog on
+that address. The proof goes back only to a live address of the workspace that asked (one that opens its pages, not a
+portal's, a site's or one in its leaving period), checked when it is asked for and again before it is made. The window
+cannot be framed by any page. If the device offers no passkey, the window says so and can be tried again or closed.
 
 **Signing in again at the identity provider.** "Sign in again with Okta" opens a small window (the page behind keeps its
 unsaved work). The provider is asked to have the person sign in again rather than answer from a session it already has:
@@ -1614,16 +1632,21 @@ entity, and before reading an entity the workspace marked in `step_up`: "finance
 only after proving who you are again". A zone or network refusal comes first. In `FERRUM_ZONE_MODE=report` it is not
 asked: each time it would have been is logged and counted in `ferrum_zone_hidden_total{what="step_up"}`. Work queued
 there carries the zone. The ways to step up are staff sign-in machinery: where a zone admits no staff, their routes
-(`/api/auth/step-up/ways`, `…/passkey/options`, `…/passkey`, `…/provider`, `…/provider/done`, `…/provider/finish`)
-answer `404`. The provider's way back (`/app/login`, `…/provider/back`, the SAML assertion consumer service) is reachable
-wherever a sign-in's is. A workspace's staff networks hold each of them as any staff request. A passkey's and the
-provider's steps share the password step-up's limit (20 a minute per address and person, whichever way); the way back
-is limited as a sign-in's return is (per address).
+(`/api/auth/step-up/ways`, `…/passkey/options`, `…/passkey`, `…/provider`, `…/provider/done`, `…/provider/finish`,
+`…/accounts`, `…/accounts/finish`) answer `404`, and so does the accounts host's step-up (`/api/accounts/step-up` and
+`…/options`; its page `/step-up` is the plain page of what a zone keeps from staff), as all of the accounts host there.
+The provider's way back (`/app/login`, `…/provider/back`, the SAML assertion consumer service) is reachable wherever a
+sign-in's is. A workspace's staff networks hold each of them as any staff request. A passkey's, the provider's and the
+accounts host's steps share the password step-up's limit (20 a minute per address and person, whichever way: asking for
+the window, the passkey's answer there, the finish); the way back, and the accounts host's window and its challenge, are
+limited as a sign-in's return is (per address).
 
-**On the audit trail.** Each step-up is a sign-in event (`stepped_up`, with `method` `password`, `passkey` or
-`provider`, the address, browser, zone and session), written in the same transaction that marks the session. A refused
-one is `step_up_failed` (`method` `password`, `second_step`, `passkey` or `provider`), on the account whose credential
-was tried (for a workspace account joined to a Ferrum account, its password and passkeys are that account's), capped as
+**On the audit trail.** Each step-up is a sign-in event (`stepped_up`, with `method` `password`, `passkey`,
+`accounts_passkey` (a passkey at the accounts host, told apart from one used on the address itself) or `provider`, the
+address, browser, zone and session), written in the same transaction that marks the session. A refused one is
+`step_up_failed` (`method` `password`, `second_step`, `passkey`, `accounts_passkey` or `provider`), on the account whose
+credential was tried (for a workspace account joined to a Ferrum account, its password and passkeys are that account's;
+a proof refused when the dialog finishes is the session's person's), capped as
 failed sign-ins are: three an hour one by one, then the hour's summary. A wrong password or code still counts toward
 the account's lockout. Never a password, code, challenge, assertion or token.
 
@@ -3390,7 +3413,9 @@ setting; each defaults to what the server did before the setting existed.
   * *A shared base domain* (`FERRUM_BASE_DOMAIN`, each workspace a host under it): never set it to the
     base or a domain above it, or one workspace's pages could ask for passkeys of another's; the
     server refuses to start so. Leave it empty: passkeys live on the accounts host, where everyone
-    signs in. Set it only to a domain whose hosts are all yours (one company's staff and public hosts).
+    signs in, and where a workspace asks for them when someone must confirm it is them ([Asking again
+    before sensitive work](#asking-again-before-sensitive-work)). Set it only to a domain whose hosts are
+    all yours (one company's staff and public hosts).
 * **`FERRUM_LINK_HOST`**: the host every link that leaves the server for a person goes through:
   notification mail and daily digests, action links, opt-out links in promotional messages. Links
   are then `https://{link host}/go/{workspace}/s/…` for staff and `…/p/…` for people from outside;

@@ -351,8 +351,8 @@ async fn single_sign_on() {
     let host = "erp.example.test";
     let pat_up = StepUp { tenant, user: pat, session: Uuid::now_v7(), keys: (tenant, pat) };
     let admin_up = StepUp { tenant, user: admin.user, session: Uuid::now_v7(), keys: (tenant, admin.user) };
-    assert_eq!(k.step_up_ways(&pat_up, host).await.unwrap(), vec![json!({"way": "provider", "name": "Okta"})]);
-    assert_eq!(k.step_up_ways(&admin_up, host).await.unwrap(), vec![json!({"way": "password", "code": false})]);
+    assert_eq!(k.step_up_ways(&pat_up, host, None).await.unwrap(), vec![json!({"way": "provider", "name": "Okta"})]);
+    assert_eq!(k.step_up_ways(&admin_up, host, None).await.unwrap(), vec![json!({"way": "password", "code": false})]);
     let mut off = input(&issuer);
     off.enabled = false;
     assert!(matches!(k.save_sso_provider(&admin, Some(provider), off.clone()).await, Err(Error::Invalid(_))));
@@ -360,7 +360,7 @@ async fn single_sign_on() {
     k.update_tenant_settings(&admin, json!({"require_sso": false}).as_object().unwrap()).await.unwrap();
     k.save_sso_provider(&admin, Some(provider), off).await.unwrap();
     assert!(k.sso_sign_in_options("ssoco").await.unwrap().is_empty(), "disabled");
-    assert_eq!(k.step_up_ways(&pat_up, host).await.unwrap(), vec![json!({"way": "password", "code": false})], "a disabled provider is no way");
+    assert_eq!(k.step_up_ways(&pat_up, host, None).await.unwrap(), vec![json!({"way": "password", "code": false})], "a disabled provider is no way");
     assert!(k.sso_step_up_begin(&pat_up, REDIRECT, BACK).await.is_err(), "nor can it be started");
     assert!(matches!(k.sso_begin("ssoco", provider, REDIRECT, BINDING).await, Err(Error::NotFound(_))));
     assert!(
@@ -402,7 +402,7 @@ async fn step_up(k: &Kernel, idp: &Shared, tenant: Uuid, pat: Uuid, provider: Uu
     let theirs = StepUp { session: other, ..who };
     let from = Arrival { address: "10.1.2.3".into(), step_up: true, ..Default::default() };
     assert_eq!(
-        k.step_up_ways(&who, "erp.example.test").await.unwrap(),
+        k.step_up_ways(&who, "erp.example.test", None).await.unwrap(),
         vec![json!({"way": "password", "code": false}), json!({"way": "provider", "name": "Okta"})]
     );
     let counts = || async {
