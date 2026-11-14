@@ -1219,6 +1219,7 @@ on every request. With no networks it is off, as before.
 |---|---|---|
 | `staff_networks` | `{"networks": ["10.0.0.0/8", "2001:db8::/32"], "mode": "enforce"}`, at most 100 networks; `mode` `enforce` or `report` | none: off |
 | `idle_minutes` | A browser session unused this many minutes ends: 0 (never) or 5 to 10080 | 0 |
+| `new_device_notice` | Tell staff by e-mail when their account signs in from a device it had not been used on | `false` |
 | `break_glass` | The ids of the administrators who keep password and passkey sign-in when single sign-on is required, 1 to 20 | `null`: every administrator, as before |
 
 **What it holds.** People's credentials of staff accounts (members and administrators): the browser's
@@ -1261,6 +1262,15 @@ use. A session's last use is written at most once a minute where the timeout is 
 otherwise), and a replica keeps its answer about a session for 20 seconds, so a session ends within about two
 minutes either side of the timeout; that is why the shortest timeout is five minutes. API keys and OAuth
 tokens are not browser sessions and do not end this way.
+
+**A sign-in from a new device.** With `new_device_notice` on, a staff member whose account signs in from a device it
+has not signed in from before is sent the message template `core.new_device` (Administration → Messages, where the
+workspace can change its wording): the time, the address and the browser, and where to sign that device out. The
+server knows no place from an address without asking another service, so it names none. A device is the browser's
+user agent with its version numbers taken out, so a browser's update is the same device, and a new browser or
+computer is a new one; the devices are kept per person (`known_device`), and go when the account is erased. It is sent
+through the outbox, once per new device even when two sign-ins from it come at once, and never for an account's very
+first sign-in, nor for the first sign-in of each person after the setting is turned on (no devices are known yet).
 
 **Sign-ins on the audit trail.** Each workspace's audit trail records, as events of `SignIn` on the person's
 account, with the address, browser (user agent), zone and method: a sign-in (`signed_in`, by `password`,

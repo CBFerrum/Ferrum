@@ -316,13 +316,77 @@ pub(crate) async fn session_ended(tx: &mut crate::db::Tx, tenant: Uuid, sid: Uui
     Ok(())
 }
 
+/// A device, as far as a session tells one apart: the browser's user agent without its version numbers, so a
+/// browser's update is the same device; its digest is what is kept.
+pub fn device_of(user_agent: &str) -> String {
+    let bare: String = user_agent.to_ascii_lowercase().chars().filter(|c| !c.is_ascii_digit() && *c != '.' && *c != '_').collect();
+    let bare = bare.split_whitespace().collect::<Vec<_>>().join(" ");
+    use sha2::Digest;
+    hex::encode(&sha2::Sha256::digest(bare.as_bytes())[..16])
+}
+
 impl Kernel {
     /// Records a sign-in step that succeeded: `signed_in` (by `method`: `password`, `passkey`, `sso`,
-    /// `code`, `accounts`) or `second_step`.
+    /// `code`, `accounts`) or `second_step`. A sign-in from a new device tells the person, where the
+    /// workspace asks for it.
     pub async fn record_sign_in(&self, tenant: Uuid, user: Uuid, action: &str, method: &str, from: &Arrival) -> Result<()> {
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         event(&mut tx, tenant, user, action, detail(from, method, json!({}))).await?;
+        if action == "signed_in" {
+            self.note_device(&mut tx, tenant, user, from).await?;
+        }
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// The workspace's `new_device_notice`: a staff sign-in from a device the person has not signed in from
+    /// before sends them `core.new_device` (a template the workspace may edit), through the outbox, in this
+    /// transaction. Once per device: the device's row is the mark. Never on an account's first sign-in (no
+    /// devices known yet), and so never for everyone at once when it is turned on.
+    async fn note_device(&self, tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid, from: &Arrival) -> Result<()> {
+        let (on, kind): (bool, String) = sqlx::query_as(
+            "select coalesce(t.settings->'new_device_notice' = 'true'::jsonb, false), u.kind from app_user u join tenant t on t.id = u.tenant_id \
+             where u.tenant_id = $1 and u.id = $2",
+        )
+        .bind(tenant)
+        .bind(user)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !on || !crate::zones::is_staff(&kind) {
+            return Ok(());
+        }
+        let had: bool = sqlx::query_scalar("select exists (select 1 from known_device where tenant_id = $1 and user_id = $2)")
+            .bind(tenant)
+            .bind(user)
+            .fetch_one(&mut **tx)
+            .await?;
+        let new = sqlx::query("insert into known_device (tenant_id, user_id, device) values ($1, $2, $3) on conflict do nothing")
+            .bind(tenant)
+            .bind(user)
+            .bind(device_of(&from.user_agent))
+            .execute(&mut **tx)
+            .await?
+            .rows_affected()
+            == 1;
+        if !(new && had) {
+            return Ok(());
+        }
+        let devices =
+            self.settings.public_url.as_deref().map(|u| format!("{}/account/", u.trim_end_matches('/'))).unwrap_or_else(|| "your account page".into());
+        let mut values = serde_json::Map::new();
+        values.insert("time".into(), json!(chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string()));
+        values.insert("address".into(), json!(if from.address.is_empty() { "unknown" } else { from.address.as_str() }));
+        values.insert("browser".into(), json!(if from.user_agent.is_empty() { "unknown" } else { from.user_agent.as_str() }));
+        values.insert("devices".into(), json!(devices));
+        let ctx = crate::Ctx::system(tenant, self.registry.schema(tenant).await?);
+        let m = crate::messages::Message {
+            template: "core.new_device".into(),
+            to: vec![crate::messages::Recipient::user(user)],
+            channels: vec!["email".into()],
+            values,
+            ..Default::default()
+        };
+        crate::messages::send(self, tx, &ctx, &m).await?;
         Ok(())
     }
 
@@ -368,6 +432,15 @@ mod tests {
         assert!(!s.admits("203.0.113.9") && !s.admits("2001:db9::1"));
         assert!(!s.admits("local") && !s.admits(""), "no address is outside");
         assert!(StaffNetworks::default().admits("local"), "off admits everyone");
+    }
+
+    #[test]
+    fn a_browser_update_is_the_same_device() {
+        let a = device_of("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/130.0.6723.92 Safari/537.36");
+        let b = device_of("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.6778.69 Safari/537.36");
+        assert_eq!(a, b);
+        assert_ne!(a, device_of("Mozilla/5.0 (X11; Linux x86_64) Firefox/131.0"), "another browser is another device");
+        assert_eq!(device_of("").len(), 32);
     }
 
     #[test]

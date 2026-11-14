@@ -486,6 +486,7 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
         "scim_group_member",
         "sign_in_code",
         "sign_in_failure",
+        "known_device",
     ] {
         sqlx::query(sqlx::AssertSqlSafe(format!("delete from {table} where tenant_id = $1 and user_id = $2"))).bind(tenant).bind(id).execute(&mut **tx).await?;
     }

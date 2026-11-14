@@ -53,6 +53,15 @@ messages:
         inapp:
           title: "Enter the code we sent you"
           text: "Send me a code"
+  - key: core.new_device
+    label: A sign-in from a device the person has not used before
+    channels: [email]
+    values: [time, address, browser, devices]
+    languages:
+      en:
+        email:
+          subject: "A new sign-in to your account"
+          body: "<p>Your account was signed in to at {{ values.time }} from a device it had not been used on before.</p><p>Address: {{ values.address }}<br>Browser: {{ values.browser }}</p><p>If this was you, there is nothing to do. If it was not, sign that device out from your signed-in devices ({{ values.devices }}) and change your password.</p>"
 
 seed:
   - entity: Currency

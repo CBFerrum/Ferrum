@@ -748,6 +748,54 @@ async fn scenario() {
     let mut tx = k.db.system_tx().await.unwrap();
     sqlx::query("update tenant set settings = settings - 'require_sso' where id = $1").bind(acme).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+
+    // ── 7. A sign-in from a new device ──
+    let (status, _) = call(&r, Method::PUT, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), Some(json!({"new_device_notice": true}))).await;
+    assert_eq!(status, StatusCode::OK);
+    k.create_user(&admin, "dev@acme.test", "Dev", Some(PASSWORD), &[], false).await.unwrap();
+    let told = |email: &'static str| {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.system_tx().await.unwrap();
+            let n: i64 = sqlx::query_scalar("select count(*) from outbox where payload::text like '%A new sign-in to your account%' and payload::text like $1")
+                .bind(format!("%{email}%"))
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            n
+        }
+    };
+    const CHROME_130: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/130.0.6723.92 Safari/537.36";
+    const CHROME_131: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.6778.69 Safari/537.36";
+    const SAFARI: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) Version/18.1 Mobile/15E148 Safari/604.1";
+    assert_eq!(sign_in_with(&r, "10.7.0.1", "dev@acme.test", CHROME_130).await, StatusCode::OK);
+    assert_eq!(told("dev@acme.test").await, 0, "never for an account's first sign-in");
+    sign_in_with(&r, "10.7.0.1", "dev@acme.test", CHROME_130).await;
+    sign_in_with(&r, "10.7.0.2", "dev@acme.test", CHROME_131).await;
+    assert_eq!(told("dev@acme.test").await, 0, "the same device, a browser update later");
+    let (a, b) = tokio::join!(sign_in_with(&r, "10.7.0.3", "dev@acme.test", SAFARI), sign_in_with(&r, "10.7.0.4", "dev@acme.test", SAFARI));
+    assert_eq!((a, b), (StatusCode::OK, StatusCode::OK));
+    assert_eq!(told("dev@acme.test").await, 1, "a new device: told once, however many sign in from it at once");
+    sign_in_with(&r, "10.7.0.5", "dev@acme.test", SAFARI).await;
+    assert_eq!(told("dev@acme.test").await, 1, "and not again");
+    sign_in_with(&r, "10.7.0.6", "portal@acme.test", SAFARI).await;
+    sign_in_with(&r, "10.7.0.6", "portal@acme.test", CHROME_130).await;
+    assert_eq!(told("portal@acme.test").await, 0, "staff only");
+}
+
+/// A password sign-in from a browser of `user_agent`.
+async fn sign_in_with(r: &axum::Router, ip: &str, email: &str, user_agent: &str) -> StatusCode {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/auth/login")
+        .header(header::HOST, HOST)
+        .header("x-forwarded-for", ip)
+        .header(header::USER_AGENT, user_agent)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({"tenant": "acme", "email": email, "password": PASSWORD}).to_string()))
+        .unwrap();
+    r.clone().oneshot(req).await.unwrap().status()
 }
 
 const SINK_SECRET: &str = "a-sink-secret-of-some-length";

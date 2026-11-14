@@ -374,6 +374,8 @@ impl Kernel {
             "offline": settings.get("offline").cloned().unwrap_or_else(|| serde_json::json!({"allowed": true, "hours": 72})),
             "messages": settings.get("messages").cloned().unwrap_or_else(|| serde_json::json!({})),
             // The networks staff may work from (crate::gate); no networks: off.
+            // Staff are told of a sign-in from a device they had not used.
+            "new_device_notice": settings.get("new_device_notice").and_then(Value::as_bool).unwrap_or(false),
             // The administrators who keep password sign-in when single sign-on is required (null: all of them).
             "break_glass": settings.get("break_glass").cloned().unwrap_or(Value::Null),
             // Minutes of no use after which a browser session ends (0: never, as before).
@@ -472,6 +474,11 @@ impl Kernel {
                         .filter(|m| *m == 0 || (lo..=hi).contains(m))
                         .ok_or_else(|| Error::field(k.clone(), format!("must be 0 (never) or {lo} to {hi} minutes")))?;
                     clean.insert(k.clone(), serde_json::json!(m));
+                }
+                // Tell staff of a sign-in from a device they had not used (crate::gate).
+                "new_device_notice" => {
+                    let on = v.as_bool().ok_or_else(|| Error::field(k.clone(), "must be true or false"))?;
+                    clean.insert(k.clone(), serde_json::json!(on));
                 }
                 // Checked against the workspace's administrators below (crate::gate::check_break_glass).
                 "break_glass" => {}
