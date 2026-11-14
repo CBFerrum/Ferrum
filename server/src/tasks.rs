@@ -759,6 +759,7 @@ impl Task for PlanMove {
             "A copy that starts before {} carries on without the restore hold, once. Start ONE copy: every copy that starts in time goes on with what was waiting, and would send it again.",
             m.valid_until
         );
+        println!("Every replica must run this build: one from before this release does not honour the fence, and would keep writing to this database.");
         println!("Changed your mind: ferrum task cancel_move reason:\"...\" here.");
         Ok(())
     }

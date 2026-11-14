@@ -88,7 +88,8 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     let production = ctx.environment == Environment::Production;
     let mut out = settings_findings(production, &st.jwt_secret, &st.settings, &ctx.config.server.host);
     out.extend(st.kernel.doctor(st.settings.db_max_connections).await?);
-    out.push(if st.kernel.holding().await? {
+    // A planned move holds outward work too, and says so itself (`move_findings`).
+    out.push(if st.kernel.restore_held().await? {
         Finding::blocker(
             "restore",
             "this database was restored and nothing that reaches outside is running",
@@ -265,15 +266,30 @@ const NEWEST_FILES: u32 = 200;
 /// database names that storage lacks (bounded: see `unopened_secrets` and `check_files`). Never a value.
 pub async fn move_findings(k: &ferrum_kernel::Kernel) -> Result<Vec<Finding>, ferrum_kernel::Error> {
     let mut out = Vec::new();
-    if let Some(m) = k.planned_move().await? {
-        out.push(Finding::blocker(
-            "move",
-            match m.fenced_at {
-                Some(at) => format!("this database is fenced for a move since {at} ({}): it takes no changes", m.reason),
-                None => format!("a move is being planned ({}): nothing that reaches outside starts", m.reason),
-            },
-            "Run the installation from its copy; or `ferrum task cancel_move reason:\"...\"` here (docs/operations.md, Moving an installation).",
-        ));
+    if let Some((m, source)) = k.move_standing().await? {
+        out.push(match (source, m.fenced_at) {
+            (true, Some(at)) => Finding::blocker(
+                "move",
+                format!(
+                    "this database is the source of a planned move ({}): marked at {}, fenced since {at}, so it takes no changes and sends nothing. A copy started before {} carries on without the restore hold",
+                    m.reason, m.made_at, m.valid_until
+                ),
+                "Run the installation from its copy. To use this database again instead: `ferrum task cancel_move reason:\"...\"` here (docs/operations.md, Moving an installation).",
+            ),
+            (true, None) => Finding::blocker(
+                "move",
+                format!("a move is being planned here since {} ({}): nothing that reaches outside starts, and plan_move has not fenced the database yet", m.made_at, m.reason),
+                "Run `ferrum task plan_move` again to finish it, or `ferrum task cancel_move reason:\"...\"`.",
+            ),
+            (false, _) => Finding::blocker(
+                "move",
+                format!(
+                    "this is the database of a planned move ({}, marked at {}) on another timeline: a physical copy, or the source's own standby taken over. It stays fenced",
+                    m.reason, m.made_at
+                ),
+                "On the copy: `ferrum task adopt_move reason:\"...\"` (before the mark runs out at the time plan_move printed). On the source: nothing.",
+            ),
+        });
     }
     let (unopened, complete) = k.unopened_secrets().await?;
     let total: u64 = unopened.iter().map(|u| u.count).sum();

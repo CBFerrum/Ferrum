@@ -118,6 +118,14 @@ step "plan_move on the source"
 on "$SOURCE" "$work/files-a" task plan_move reason:"rehearsal" wait:0 | tee "$work/plan.out"
 grep -q "Start ONE copy" "$work/plan.out" || fail "plan_move does not warn about two copies"
 [ "$(contact "$A" "$TA" Fenced)" = 503 ] || fail "the fenced source took a change"
+LOG_LEVEL=error on "$SOURCE" "$work/files-a" task doctor format:json >"$work/source-doctor.json" || true
+python3 - "$work/source-doctor.json" <<'PY'
+import json, sys
+text = open(sys.argv[1]).read()
+found = {f["check"]: f for f in json.loads(text[text.index("\n[") + 1 if not text.startswith("[") else 0:])}
+assert found["restore"]["level"] == "ok", found["restore"]
+assert found["move"]["level"] == "blocker" and "source of a planned move" in found["move"]["detail"], found["move"]
+PY
 
 step "dump, restore into $COPY, copy the files"
 pg_dump -Fc -f "$work/move.dump" "$ADMIN/$SOURCE"

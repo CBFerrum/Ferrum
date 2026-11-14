@@ -167,6 +167,21 @@ impl Kernel {
         if valid < Duration::from_secs(3600) || valid > Duration::from_secs(30 * 24 * 3600) {
             return Err(Error::field("valid", "between 1 and 720 hours"));
         }
+        // An older build does not honour the fence (it never asks `ferrum_moving()`): a move is planned only when every
+        // replica runs one build. A guest of a newer build, or work waiting for a newer one, is an upgrade or a rollback
+        // still going on.
+        if let Some(rec) = &self.booted.guest {
+            return Err(Error::Conflict(format!(
+                "this build is older than the one that migrated the database ({}): finish or undo the upgrade first, so that every replica runs one build",
+                rec.build
+            )));
+        }
+        let (events, jobs) = self.waiting_for_newer().await?;
+        if events + jobs > 0 {
+            return Err(Error::Conflict(format!(
+                "{events} events and {jobs} jobs wait for a newer build than this one: an upgrade or a rollback is going on. Finish or undo it first, so that every replica runs one build"
+            )));
+        }
         let mut tx = self.db.system_tx_through_move().await?;
         let here = identity(&mut tx).await?;
         let id = match mark(&mut tx).await? {
@@ -261,6 +276,22 @@ impl Kernel {
         self.adopt(&mut tx, &m, here, reason).await?;
         tx.commit().await?;
         Ok(m)
+    }
+
+    /// The mark, if a move is planned here, and whether this is the database it was made on (`false`: a copy on another
+    /// timeline that waits for `adopt_move`).
+    pub async fn move_standing(&self) -> Result<Option<(Mark, bool)>> {
+        let mut tx = self.db.system_tx_through_move().await?;
+        let m = mark(&mut tx).await?;
+        let here = match m {
+            Some(_) => Some(identity(&mut tx).await?),
+            None => None,
+        };
+        tx.commit().await?;
+        Ok(m.zip(here).map(|(m, here)| {
+            let source = m.at == here;
+            (m, source)
+        }))
     }
 
     /// The mark, if a move is planned here.

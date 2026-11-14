@@ -558,6 +558,11 @@ impl Kernel {
         Ok(checked)
     }
 
+    /// Whether a restore is waiting for a person (a planned move apart).
+    pub async fn restore_held(&self) -> Result<bool> {
+        Ok(sqlx::query_scalar("select exists (select 1 from platform_incarnation where held_since is not null)").fetch_one(&self.db.pool).await?)
+    }
+
     /// Whether a restore is waiting for a person, or a move is planned (moves.rs). Everything that reaches outside asks
     /// this first.
     pub async fn holding(&self) -> Result<bool> {

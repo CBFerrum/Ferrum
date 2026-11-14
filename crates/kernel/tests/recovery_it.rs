@@ -521,6 +521,16 @@ async fn a_planned_move_carries_what_was_waiting() {
     assert!(k.plan_move(" ", DAY, Duration::ZERO).await.is_err(), "it takes a reason");
     assert!(k.plan_move("to Kubernetes", Duration::from_secs(60), Duration::ZERO).await.is_err(), "at least an hour");
     assert!(matches!(k.cancel_move("nothing").await, Err(Error::Conflict(_))), "nothing to cancel");
+    // Work a newer build wrote waits: an upgrade or a rollback is going on, and an older build ignores the fence.
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update outbox set build_date = now() + interval '10 years' where topic = 'pay'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let r = k.plan_move("to Kubernetes", DAY, Duration::ZERO).await;
+    assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("newer build")), "{r:?}");
+    assert!(k.planned_move().await.unwrap().is_none(), "and nothing was marked");
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update outbox set build_date = null where topic = 'pay'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
     let mark = k.plan_move("to Kubernetes", DAY, Duration::ZERO).await.expect("planned");
     assert!(mark.fenced_at.is_some());
     assert!(matches!(k.plan_move("again", DAY, Duration::ZERO).await, Err(Error::Conflict(_))), "planned once");
@@ -528,6 +538,8 @@ async fn a_planned_move_carries_what_was_waiting() {
     // The source takes no changes, and sends nothing.
     assert!(matches!(try_pay(&k, admin.tenant).await, Err(Error::Unavailable(_))), "fenced");
     assert!(k.holding().await.unwrap());
+    assert!(!k.restore_held().await.unwrap(), "held for the move, not as after a restore");
+    assert!(k.move_standing().await.unwrap().is_some_and(|(m, source)| source && m.fenced_at.is_some()), "the source of the move");
     drain(&k).await;
     assert_eq!(sent.count.load(Ordering::SeqCst), 0);
     restore(&backup(&live), &copy).await;

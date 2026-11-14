@@ -1329,6 +1329,13 @@ nothing inside one database can stop them:
 Writes that are not a transaction of the server (rate-limit counters, a region's epoch) are not fenced; they
 hold nothing a move carries.
 
+**One build only.** Plan a move only when every replica runs the same build. A build from before this
+release never asks for the fence, so one still running would keep writing to the source after it, and those
+changes would not reach the copy. `plan_move` refuses on a build that is a guest of a newer one, and while
+events or jobs wait for a newer build (`window.waiting` in the doctor): finish or undo the upgrade first. It
+cannot see an older replica that is merely running; check that every pod runs one image before you start.
+The two-version window is not closed for this: it matters only while a move is being made.
+
 **Skipping `plan_move`** loses nothing silently: the copy is held, what was waiting is set aside in the dead
 events, deliveries and failed jobs, and `ferrum task release_restore` and a replay by hand follow ("After
 restoring a backup"). People's changes made at the source after the copy was taken are lost to the copy.
@@ -1390,8 +1397,9 @@ mark's time runs out would still carry on as moved, and send what the source the
 binary alone: a workspace, a file and a webhook delivery still waiting; `plan_move`; `pg_dump` and
 `pg_restore` into a second database; the files directory copied; a server on the copy with the same keys.
 It checks that the copy is not held, takes changes and sends the waiting delivery once, that the source is
-still fenced, and the doctor's checks; then that a copy made without `plan_move` is held. The chart's
-`copy` and `recovery` modes and `adopt_move` on a promoted copy have not been run.
+still fenced and its doctor says it is the source of a planned move, and the copy's doctor checks; then
+that a copy made without `plan_move` is held. The chart's `copy` and `recovery` modes and `adopt_move` on
+a promoted copy have not been run.
 
 ## Capacity
 
