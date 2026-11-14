@@ -518,7 +518,10 @@ impl Kernel {
             return Err(Error::Conflict(format!("another move_workspace run is working on {slug} now: wait for it to end")));
         }
         let done = self.steps(source, tenant, slug, &peer, from, run, say).await;
-        drop(lock);
+        // Let go before answering. Dropping the connection only closes its socket, and the database ends the session
+        // (and the lock) a moment later: a run started right after this one answered would be refused as "another run".
+        let _ = sqlx::query("select pg_advisory_unlock($1, hashtext($2))").bind(LOCK).bind(tenant.to_string()).execute(&mut lock).await;
+        let _ = sqlx::Connection::close(lock).await;
         done
     }
 

@@ -211,7 +211,14 @@ async fn freeze_floor(k: &Kernel) -> Vec<String> {
     floors.into_iter().filter(|f| f.feature == ferrum_kernel::workspace_move::FLOOR.feature).map(|f| f.holder).collect()
 }
 
-#[tokio::test]
+#[test]
+fn a_workspace_moves() {
+    // Its future is deep: polled on the test harness's own thread (2 MiB, as `#[tokio::test]` does) an unoptimized
+    // build overflows that stack now and then. A runtime with the server's stack size (server/src/lib.rs) instead.
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
+    rt.block_on(async { tokio::spawn(a_workspace_moves_to_another_installation_and_back()).await.unwrap() });
+}
+
 async fn a_workspace_moves_to_another_installation_and_back() {
     let (a_url, b_url) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
     let (key_a, key_b) = (SecretKey::new([1; 32]), SecretKey::new([2; 32]));
@@ -362,6 +369,13 @@ async fn a_workspace_moves_to_another_installation_and_back() {
 
     // Stopped once frozen: nothing at A takes changes or runs, reading works; a second move and a second run are refused.
     b.move_workspace("acme", &from(Some(Stop::Frozen)), Run::Start, &quiet).await.expect("frozen");
+    // The run has let go of its lock by the time it answers: the next run is never refused as "another run".
+    let mut conn = a.db.direct.acquire().await.unwrap();
+    let free: bool =
+        sqlx::query_scalar("select pg_try_advisory_lock($1, hashtext($2))").bind(0x0FE2_2079_i32).bind(t.to_string()).fetch_one(&mut *conn).await.unwrap();
+    assert!(free, "the run that ended still holds its lock");
+    sqlx::query("select pg_advisory_unlock($1, hashtext($2))").bind(0x0FE2_2079_i32).bind(t.to_string()).execute(&mut *conn).await.unwrap();
+    drop(conn);
     // A build that would ignore the freeze may start on neither side now.
     assert_eq!((freeze_floor(&a).await, freeze_floor(&b).await), (vec![t.to_string()], vec![t.to_string()]));
     let r = a.create_user(&acme, "late@acme.test", "Late", Some(PASSWORD), &[], false).await;
