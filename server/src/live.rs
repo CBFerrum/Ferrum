@@ -57,7 +57,9 @@ impl LiveHub {
         Arc::new(LiveHub::default())
     }
 
-    fn register(&self, id: Uuid, ctx: Ctx) -> mpsc::Receiver<String> {
+    /// Holds a socket's connection `id` as `ctx` (the socket's own context, in the zone it was opened in): what is
+    /// pushed to it arrives on the receiver.
+    pub fn register(&self, id: Uuid, ctx: Ctx) -> mpsc::Receiver<String> {
         let (tx, rx) = mpsc::channel(BUFFER);
         self.conns.insert(id, Conn { ctx, entities: HashSet::new(), tx });
         rx
@@ -105,7 +107,8 @@ impl LiveHub {
         }
     }
 
-    async fn dispatch(&self, k: &Kernel, payload: &str) {
+    /// Delivers one announcement of the live channel (as `pg_notify` carries it) to the sockets held here.
+    pub async fn dispatch(&self, k: &Kernel, payload: &str) {
         let Ok(v) = serde_json::from_str::<Value>(payload) else { return };
         let Some(tenant) = v.get("tenant").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()) else { return };
         // Messages for one user: notifications and package pushes (chat...).
