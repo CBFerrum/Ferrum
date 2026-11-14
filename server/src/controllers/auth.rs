@@ -87,6 +87,10 @@ pub(crate) async fn accounts_for(st: &AppState, headers: &HeaderMap) -> Result<O
 /// a browser session in the cookie (docs/plan/apps-ui.md §12.3), and, unless it asked for the
 /// cookie alone, a bearer token bound to that session for the pages that still send one.
 pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &HeaderMap, cookie_only: bool) -> ApiResult<Response> {
+    // Zones (crate::zone): every way of signing in ends here, so a staff account gets no session and
+    // no token where its zone admits no staff; refused as a wrong password is, before anything below
+    // could say more about the account.
+    let entry = crate::zone::sign_in(st, headers, s.tenant, s.user).await.map_err(|()| crate::zone::sign_in_failed())?;
     // Shapes B and C: someone whose workspace account joined their Ferrum account signs in at the
     // accounts host, with that account's credentials; the workspace's own, unused since, open
     // nothing (for pages and API clients alike).
@@ -105,7 +109,7 @@ pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &Heade
     st.shell.check_host(headers, s.tenant).await?;
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
     let ttl = st.shell.session_ttl;
-    let sid = st.kernel.open_session(s, ttl, ua, &client_ip(headers), None).await?;
+    let sid = st.kernel.open_session_in(s, ttl, ua, &client_ip(headers), None, entry.name()).await?;
     let mut body = json!({"cookie": true, "session_expires_in": ttl.as_secs()});
     if !cookie_only {
         body["token"] = json!(device_token(st, s, st.jwt_expiration, "bsid", sid)?);
@@ -124,7 +128,9 @@ async fn login(State(app): State<AppContext>, headers: HeaderMap, Json(req): Jso
     if req.password.len() > 256 || req.email.len() > 254 || req.tenant.len() > 63 || req.tenant.trim().eq_ignore_ascii_case(DIRECTORY) {
         return Err(ApiError(Error::Unauthorized("invalid tenant, email or password".into())));
     }
-    match st.kernel.sign_in(&req.tenant, &req.email, &req.password).await? {
+    // Where staff are refused, a staff account is one that does not exist (crate::zone).
+    let refuse_staff = crate::zone::refuses_staff(&st, &headers).await;
+    match st.kernel.sign_in_at(&req.tenant, &req.email, &req.password, refuse_staff).await? {
         SignIn::Session(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await,
         SignIn::SecondFactor(s) => {
             Ok(Json(json!({"second_factor": true, "ticket": token(&st, &s, TICKET_SECS, Some("mfa"))?, "expires_in": TICKET_SECS})).into_response())
@@ -164,6 +170,10 @@ async fn login_second_factor(State(app): State<AppContext>, headers: HeaderMap, 
     let user: Uuid = data.claims.pid.parse().map_err(|_| again())?;
     let tenant: Uuid = claims.get("tenant").and_then(Value::as_str).and_then(|s| s.parse().ok()).ok_or_else(again)?;
     let tv = claims.get("tv").and_then(Value::as_i64).ok_or_else(again)? as i32;
+    // A ticket made where staff are admitted, brought here: refused before its code is checked.
+    if crate::zone::refuses_sign_in(&st, &headers, tenant, user).await {
+        return Err(again());
+    }
     let s = st.kernel.second_factor(tenant, user, tv, &req.code).await?;
     session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
 }
@@ -665,7 +675,8 @@ async fn passkey_sign_in(State(app): State<AppContext>, headers: HeaderMap, Json
         crate::shell::Place::Any => None,
         _ => return Err(ApiError(Error::Unauthorized("sign in on the workspace's address".into()))),
     };
-    let s = st.kernel.passkey_sign_in(req.request, &origins, &req.credential, tenant).await?;
+    let refuse_staff = crate::zone::refuses_staff(&st, &headers).await;
+    let s = st.kernel.passkey_sign_in_at(req.request, &origins, &req.credential, tenant, refuse_staff).await?;
     session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
 }
 

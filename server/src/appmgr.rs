@@ -955,11 +955,7 @@ impl AppManager {
     }
 
     async fn fresh(&self, ctx: &Ctx) -> Result<Ctx> {
-        if ctx.is_system {
-            Ok(Ctx::system(ctx.tenant, self.kernel.registry.schema(ctx.tenant).await?))
-        } else {
-            self.kernel.load_ctx(ctx.tenant, ctx.user, None, ctx.request_id.clone()).await
-        }
+        if ctx.is_system { Ok(Ctx::system(ctx.tenant, self.kernel.registry.schema(ctx.tenant).await?)) } else { self.kernel.reload(ctx, None).await }
     }
 
     async fn lock(&self, tenant: Uuid) -> Result<WorkspaceLock> {

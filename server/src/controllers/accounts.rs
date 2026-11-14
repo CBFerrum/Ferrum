@@ -379,7 +379,9 @@ async fn sign_up(State(app): State<AppContext>, headers: HeaderMap, Json(req): J
 /// The state of a request made to the accounts host's API: on any other host it is not there.
 async fn here(app: &AppContext, headers: &HeaderMap) -> Result<AppState, ApiError> {
     let st = app_state(app)?;
-    if !matches!(st.shell.place(headers).await?, Place::Accounts) {
+    // Only staff use the accounts host (Ferrum accounts join members alone): where staff are refused
+    // it is not here either, so no sign-in, code or mail starts from such a zone.
+    if !matches!(st.shell.place(headers).await?, Place::Accounts) || crate::zone::refuses_staff(&st, headers).await {
         return Err(ApiError(Error::NotFound("no such endpoint here".into())));
     }
     Ok(st)
@@ -813,9 +815,12 @@ async fn region_callback(st: &AppState, headers: &HeaderMap, q: &[(String, Strin
         Err(Error::Conflict(m) | Error::Forbidden(m)) => return Ok(failed(&m)),
         Err(e) => return Err(e.into()),
     };
+    let Ok(entry) = crate::zone::sign_in(st, headers, s.tenant, s.user).await else {
+        return Ok(failed("The account's region did not confirm the sign-in. Sign in again."));
+    };
     let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
     let ttl = st.shell.session_ttl;
-    let sid = st.kernel.open_session(&s, ttl, ua, &client_ip(headers), None).await?;
+    let sid = st.kernel.open_session_in(&s, ttl, ua, &client_ip(headers), None, entry.name()).await?;
     let mut res = Redirect::to(&shell::safe_next(&next)).into_response();
     let h = res.headers_mut();
     h.append(header::SET_COOKIE, shell::set_cookie(secure, &super::auth::device_token(st, &s, ttl.as_secs(), "sid", sid)?, ttl));

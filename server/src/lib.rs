@@ -28,6 +28,7 @@ pub mod state;
 pub mod tasks;
 pub mod telemetry;
 pub mod upgrade;
+pub mod zone;
 
 /// Document postings run deep chains of async hooks; generous stacks keep unoptimized builds
 /// (and unusually deep customizations) far from the default 2 MiB limit. Untouched stack pages

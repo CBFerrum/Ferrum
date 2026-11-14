@@ -692,11 +692,12 @@ async fn socket(
     upgrade: WebSocketUpgrade,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    let pre = crate::extract::socket_credential(&st, &headers).await?;
-    Ok(upgrade.max_message_size(MAX_MESSAGE).on_upgrade(move |ws| serve(st, package, doc, pre, ws)))
+    let entry = crate::extract::socket_entry(&st, &headers).await;
+    let pre = crate::extract::socket_credential(&st, &headers, &entry).await?;
+    Ok(upgrade.max_message_size(MAX_MESSAGE).on_upgrade(move |ws| serve(st, package, doc, pre, entry, ws)))
 }
 
-async fn serve(st: AppState, package: String, doc: String, pre: Option<(String, Ctx)>, ws: WebSocket) {
+async fn serve(st: AppState, package: String, doc: String, pre: Option<(String, Ctx)>, entry: Arc<ferrum_kernel::zones::Entry>, ws: WebSocket) {
     let (mut sink, mut stream) = ws.split();
     let (token, ctx) = match pre {
         Some(p) => p,
@@ -710,7 +711,7 @@ async fn serve(st: AppState, package: String, doc: String, pre: Option<(String, 
                 let _ = sink.send(close(4401, "send {\"auth\": token} first")).await;
                 return;
             };
-            match ctx_from_token(&st, &token, Uuid::now_v7().to_string()).await {
+            match ctx_from_token(&st, &token, Uuid::now_v7().to_string(), &entry).await {
                 Ok(ctx) => (token, ctx),
                 Err(ApiError(e)) => {
                     let _ = sink.send(close(if e.status() == 401 { 4401 } else { 1011 }, &e.to_string())).await;
@@ -763,7 +764,7 @@ async fn serve(st: AppState, package: String, doc: String, pre: Option<(String, 
     };
     let mut rx = room.tx.subscribe();
     if conn.hello(&mut sink).await.is_ok() {
-        conn.run(&st, &host, &token, &mut sink, &mut stream, &mut rx).await;
+        conn.run(&st, &host, (&token, &entry), &mut sink, &mut stream, &mut rx).await;
     }
     conn.leave().await;
     if room.conns.fetch_sub(1, Ordering::SeqCst) == 1 {
@@ -849,7 +850,8 @@ impl Conn<'_> {
         &mut self,
         st: &AppState,
         host: &Arc<dyn DocHost>,
-        token: &str,
+        // The socket's token, and how its upgrade came in (the zone it is checked in again).
+        token: (&str, &Arc<ferrum_kernel::zones::Entry>),
         sink: &mut Sink,
         stream: &mut SplitStream<WebSocket>,
         rx: &mut broadcast::Receiver<Out>,
@@ -905,7 +907,7 @@ impl Conn<'_> {
                 },
                 _ = keepalive.tick() => sink.send(Ws::Ping(Vec::new().into())).await.is_ok(),
                 _ = recheck.tick() => {
-                    let now = match ctx_from_token(st, token, Uuid::now_v7().to_string()).await {
+                    let now = match ctx_from_token(st, token.0, Uuid::now_v7().to_string(), token.1).await {
                         Ok(fresh) => host.access(self.k, &fresh, self.room.key.doc).await.map_err(ApiError),
                         Err(e) => Err(e),
                     };

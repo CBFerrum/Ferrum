@@ -317,6 +317,49 @@ pub async fn move_findings(k: &ferrum_kernel::Kernel) -> Result<Vec<Finding>, fe
 }
 
 /// The report as a person reads it.
+/// An address that is made up, sent as `X-Forwarded-For` to see whether the server believes it.
+const FORGED: &str = "198.51.100.77";
+
+/// `ferrum task doctor public:https://a.example.com,…`: each public address must be answered from a
+/// zone that admits no staff (`GET /_zone`), and must not believe an `X-Forwarded-For` the client
+/// wrote itself (`FERRUM_PROXY_HOPS` too high: a caller could choose its address, and with it a
+/// zone placed by network). Nothing is fetched without addresses.
+pub async fn zone_findings(addresses: &[String]) -> Vec<Finding> {
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).redirect(reqwest::redirect::Policy::none()).build().unwrap_or_default();
+    let mut out = Vec::new();
+    for base in addresses.iter().map(|a| a.trim().trim_end_matches('/')).filter(|a| !a.is_empty()) {
+        let url = format!("{base}/_zone");
+        let ask = |forged: bool| {
+            let mut req = client.get(&url);
+            if forged {
+                req = req.header("x-forwarded-for", FORGED);
+            }
+            async move { req.send().await.ok()?.error_for_status().ok()?.json::<serde_json::Value>().await.ok() }
+        };
+        out.push(match ask(false).await {
+            None => Finding::warning("zones.public", format!("{base} did not answer GET /_zone"), "Check the address, and that this build is behind it."),
+            Some(z) if z["staff"] == "none" => {
+                Finding::ok("zones.public", format!("{base} is answered from zone {}, which admits no staff", z["zone"].as_str().unwrap_or("?")))
+            }
+            Some(z) => Finding::warning(
+                "zones.public",
+                format!("{base} is answered from {}, which admits staff", z["zone"].as_str().map_or("no zone".to_string(), |n| format!("zone {n}"))),
+                "Route the public gateway to a pool whose FERRUM_ZONE admits no staff (docs/operations.md, Zones).",
+            ),
+        });
+        out.push(match ask(true).await {
+            Some(z) if z["address"] == FORGED => Finding::warning(
+                "zones.proxy_hops",
+                format!("{base} believes an X-Forwarded-For the client wrote itself"),
+                "Lower FERRUM_PROXY_HOPS to the number of proxies in front: otherwise a caller chooses its own address, and with it any zone placed by network.",
+            ),
+            Some(_) => Finding::ok("zones.proxy_hops", format!("{base} does not believe an X-Forwarded-For the client wrote")),
+            None => Finding::warning("zones.proxy_hops", format!("{base} did not answer GET /_zone"), "Check the address."),
+        });
+    }
+    out
+}
+
 pub fn render(findings: &[Finding]) -> String {
     let mut out = String::new();
     for f in findings {
@@ -344,6 +387,37 @@ pub fn render(findings: &[Finding]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn the_doctor_checks_public_addresses_through_zone() {
+        assert!(super::zone_findings(&[]).await.is_empty(), "no addresses: no calls");
+        let serve = |answer: serde_json::Value| async move {
+            let app = axum::Router::new().route(
+                "/_zone",
+                axum::routing::get(move |h: axum::http::HeaderMap| {
+                    let mut a = answer.clone();
+                    // A server behind too many proxies: it believes what the client wrote.
+                    if a["address"] == "echo" {
+                        a["address"] = serde_json::json!(h.get("x-forwarded-for").and_then(|v| v.to_str().ok()).unwrap_or("203.0.113.1"));
+                    }
+                    async move { axum::Json(a) }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            url
+        };
+        let good = serve(serde_json::json!({"zone": "public", "staff": "none", "admin": false, "address": "203.0.113.1"})).await;
+        let found = super::zone_findings(&[good]).await;
+        assert!(found.iter().all(|f| f.level == Level::Ok), "{found:?}");
+        let staff = serve(serde_json::json!({"zone": "office", "staff": "all", "admin": true, "address": "echo"})).await;
+        let found = super::zone_findings(&[format!("{staff}/")]).await;
+        assert_eq!(level(&found, "zones.public"), Some(Level::Warning), "a public address that admits staff");
+        assert_eq!(level(&found, "zones.proxy_hops"), Some(Level::Warning), "a forged X-Forwarded-For believed");
+        let gone = super::zone_findings(&["http://127.0.0.1:9".into()]).await;
+        assert_eq!(level(&gone, "zones.public"), Some(Level::Warning), "no answer");
+    }
+
     use super::*;
 
     fn settings() -> crate::state::Settings {

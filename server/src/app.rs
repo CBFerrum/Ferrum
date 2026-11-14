@@ -146,6 +146,10 @@ impl Hooks for App {
         // The hosts this server names for itself, checked before it connects to or writes anything, on every start
         // (a guest of a newer build's database too).
         crate::shell::check_names(&settings, &ctx.config.server.host).map_err(Error::Message)?;
+        // Zones (docs/operations.md, "Zones"): anything not plainly right refuses to start.
+        let zones =
+            Arc::new(ferrum_kernel::zones::Zones::parse(&settings.zones, &settings.zone, &settings.zone_default, &settings.zone_mode).map_err(Error::Message)?);
+        zones.check_background(settings.run_background).map_err(Error::Message)?;
         // `ferrum task migrate` is what brings the database up to date, whatever the setting says.
         let migrating = is_migrate_task(std::env::args());
         let migrate_now = settings.migrate_at_start || migrating;
@@ -375,6 +379,7 @@ impl Hooks for App {
             objects,
             shell,
             assistant: crate::assistant::Assistant::new(crate::assistant::Config::from_env()),
+            zones,
         };
         state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone(), state.objects.clone())));
         state.kernel.db.starting(false);
@@ -601,6 +606,10 @@ impl Hooks for App {
         tasks.register(crate::tasks::AcceptAuthority);
         tasks.register(crate::tasks::ExtractTenant);
         tasks.register(crate::tasks::DeleteTenant);
+        tasks.register(crate::tasks::AddHost);
+        tasks.register(crate::tasks::SetHostZone);
+        tasks.register(crate::tasks::OperatorAdmin(true));
+        tasks.register(crate::tasks::OperatorAdmin(false));
         tasks.register(crate::tasks::PlanMove);
         tasks.register(crate::tasks::CancelMove);
         tasks.register(crate::tasks::AdoptMove);

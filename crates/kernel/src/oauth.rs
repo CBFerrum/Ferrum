@@ -176,16 +176,24 @@ impl Kernel {
 
     /// Exchanges a code (once) for a grant, checking client, redirect URI, expiry and PKCE.
     pub async fn oauth_redeem_code(&self, client_id: &str, code: &str, redirect_uri: &str, verifier: &str) -> Result<Grant> {
+        self.oauth_redeem_code_at(client_id, code, redirect_uri, verifier, false).await
+    }
+
+    /// [`Kernel::oauth_redeem_code`] where staff are refused (crate::zones): a staff person's code is
+    /// then answered as an unknown one and left as it was, unused, to work where staff are admitted.
+    pub async fn oauth_redeem_code_at(&self, client_id: &str, code: &str, redirect_uri: &str, verifier: &str, refuse_staff: bool) -> Result<Grant> {
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(String, Uuid, Uuid, String, String, String, bool, bool)> = sqlx::query_as(
-            "select client_id, tenant_id, user_id, redirect_uri, code_challenge, scope, expires_at < now(), used_at is not null \
-             from oauth_code where code_hash = $1 for update",
+        let row: Option<(String, Uuid, Uuid, String, String, String, bool, bool, Option<String>)> = sqlx::query_as(
+            "select c.client_id, c.tenant_id, c.user_id, c.redirect_uri, c.code_challenge, c.scope, c.expires_at < now(), c.used_at is not null, u.kind \
+             from oauth_code c left join app_user u on u.tenant_id = c.tenant_id and u.id = c.user_id where c.code_hash = $1 for update of c",
         )
         .bind(hash(code))
         .fetch_optional(&mut *tx)
         .await?;
         let invalid = || Error::Invalid("invalid_grant".into());
-        let (cid, tenant, user, redirect, challenge, scope, expired, used) = row.ok_or_else(invalid)?;
+        // Dropping the transaction writes nothing: no use, no revocation.
+        let row = row.filter(|r| !(refuse_staff && crate::zones::is_staff(r.8.as_deref().unwrap_or_default())));
+        let (cid, tenant, user, redirect, challenge, scope, expired, used, _) = row.ok_or_else(invalid)?;
         if used {
             // A replayed code means it leaked: revoke what it produced.
             sqlx::query("update oauth_refresh set revoked_at = now() where client_id = $1 and tenant_id = $2 and user_id = $3 and revoked_at is null")
@@ -210,10 +218,16 @@ impl Kernel {
     /// does one issued before the person's sessions were ended (signing out everywhere, a new
     /// password: the token version moved on).
     pub async fn oauth_refresh(&self, client_id: &str, refresh_token: &str) -> Result<Grant> {
+        self.oauth_refresh_at(client_id, refresh_token, false).await
+    }
+
+    /// [`Kernel::oauth_refresh`] where staff are refused (crate::zones): a staff person's token is then
+    /// answered as an unknown one and left as it was: not rotated, and no family revoked.
+    pub async fn oauth_refresh_at(&self, client_id: &str, refresh_token: &str, refuse_staff: bool) -> Result<Grant> {
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(String, Uuid, Uuid, String, bool, bool, bool)> = sqlx::query_as(
+        let row: Option<(String, Uuid, Uuid, String, bool, bool, bool, Option<String>)> = sqlx::query_as(
             "select r.client_id, r.tenant_id, r.user_id, r.scope, r.expires_at < now(), r.revoked_at is not null, \
-                    u.token_version is distinct from r.token_version \
+                    u.token_version is distinct from r.token_version, u.kind \
                from oauth_refresh r left join app_user u on u.tenant_id = r.tenant_id and u.id = r.user_id \
               where r.token_hash = $1 for update of r",
         )
@@ -221,7 +235,8 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let invalid = || Error::Invalid("invalid_grant".into());
-        let (cid, tenant, user, scope, expired, revoked, ended) = row.ok_or_else(invalid)?;
+        let row = row.filter(|r| !(refuse_staff && crate::zones::is_staff(r.7.as_deref().unwrap_or_default())));
+        let (cid, tenant, user, scope, expired, revoked, ended, _) = row.ok_or_else(invalid)?;
         if cid != client_id {
             return Err(invalid());
         }
