@@ -367,6 +367,12 @@ impl Zones {
         Ok(())
     }
 
+    /// Of `names` (zones that queued work carries), those these settings do not define, each once.
+    pub fn lacking(&self, names: &[String]) -> Vec<String> {
+        let out: BTreeSet<&String> = names.iter().filter(|n| !self.rules.contains_key(*n)).collect();
+        out.into_iter().cloned().collect()
+    }
+
     /// The app ids the rules name.
     pub fn app_ids(&self) -> BTreeSet<String> {
         self.rules.values().filter_map(|r| r.apps.as_ref()).flatten().cloned().collect()
