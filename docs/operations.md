@@ -2002,6 +2002,26 @@ key prefix this installation has already.
   know (refused, above), does not; nor does anything an app counts across the whole database (refused).
 * The privacy and access journals stay in the source's storage; they serve a restore of the source.
 
+**Rehearsed.** The second part of `scripts/move_rehearsal.sh --grant` moves a workspace between two running servers of
+the real binary and back, each on its own database, files directory and secret key, started as regions `a` and `b` that
+trust each other, each with a base domain of its own (`a.localhost`, `b.localhost`): `move_workspace` on `b` with the
+`FERRUM_MOVE_SOURCE_*` settings of `a`, then `finish_move` on `a` and the move back. Everything is checked from outside,
+over HTTP, both ways. While the run is held still after it froze the workspace, the source answers a change with 503,
+`Retry-After` and "…this workspace is moving", and still reads. Afterwards the target serves the records, the file's
+bytes, the API key, the audit chain of a record (`chain_valid`), the workspace's address and its name under the base made
+anew under the target's base (`sales--moving.b.localhost`); the webhook delivery left waiting at the source goes out once,
+from the target, signed with the webhook's secret (sealed again under the target's key), and so does a new one; a
+member's Ferrum account comes along (a visiting account at `b`, their own again at `a`: their workspace's password opens
+nothing there and names that region's accounts host); and the source's addresses redirect (308) to the target's. The
+real servers showed two faults, fixed since. A running server keeps its answer about an address for 20 seconds, and the
+move is a task of its own, so right after the move back `a` still sent the workspace's address on to `b`, which sent it
+back: the move now tells the running replicas on both sides as it leaves and as it arrives (the notification a change
+of a workspace's settings sends), and they answer anew at once. And `sales--moving.a.localhost`, let go of by `b` when
+the workspace arrived there, stayed let go of when it came back, leading to the main address: a workspace now takes its
+names under the target's base back. Not run: storage in a bucket (`_S3_BUCKET`), keys wrapped by a key-management
+service, signing in with a visiting account (the browser's round trip through the home region), waiting work asked for
+in a zone, and a source busy with work in hand (the rehearsal moves with `wait:1`).
+
 ## A sandbox of a workspace
 
 A sandbox is a copy of a live workspace under a new name and id, for trying an upgrade, an app or a change of
@@ -2124,6 +2144,11 @@ size is skipped), or `delete_sandbox` removes it.
 **What it costs.** The rows twice in the database (the source's and the sandbox's), and every file read and written
 again: a large file store takes as long as copying it, and doubles for as long as the sandbox lives. Each file is held
 whole in memory while it is copied.
+
+**Rehearsed.** The last part of `scripts/move_rehearsal.sh --grant` makes a sandbox with `copy_workspace … from:here`
+on a running server, over HTTP from outside: its administrator signs in to it under its own name and finds the
+workspace's records; a record made there reaches no webhook receiver, while one made in the live workspace at the same
+time is delivered once.
 
 ## Capacity
 
@@ -3182,8 +3207,9 @@ audit trail as administration, with who made it and what changed.
 
 * Moved to another installation (Moving one workspace): its names travel with it, and the target gives each the same name
   under its own base domain, showing what it showed; the copies under the source's base cannot reach the target, so the
-  target lets go of them. At the source every address says the workspace has moved and leads to its main address at the
-  target. Short paths travel with its settings.
+  target lets go of them. Moved back, it takes again the names it had under that installation's base, which the other side
+  let go of. At the source every address says the workspace has moved and leads to its main address at the target. Short
+  paths travel with its settings.
 * A sandbox gets none of the live workspace's addresses (only `{as}.{base}`); short paths come with its settings.
 * Renamed (its slug changed by hand: there is no task for it): its names keep their form and keep leading to it, and no
   other workspace can ever form them; new names take the new slug.

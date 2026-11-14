@@ -1187,6 +1187,8 @@ impl Kernel {
         sqlx::query("update app_user set identity_id = null where tenant_id = $1 and identity_id is not null").bind(tenant).execute(&mut *src).await?;
         let ctx = Ctx::system(tenant, Arc::new(ferrum_meta::Schema::default()));
         audit::record(&mut src, &ctx, "Platform", Uuid::nil(), "platform.workspace_moved_away", None, json!({"move": move_id, "to": moved_to})).await?;
+        // The source's running replicas answer for its addresses as moved at once, not when their own answers age out.
+        crate::registry::Registry::bump_version(&mut src, tenant).await?;
         src.commit().await?;
         say(&format!(
             "{slug} has moved: the source keeps its frozen copy, and its addresses there say it moved{}",
@@ -1244,12 +1246,14 @@ impl Kernel {
             }
             // The names it gave itself under another base domain (docs/operations.md, "Addresses of a workspace"): the same
             // names under this one, showing what they showed, where they are free; the old ones cannot reach this
-            // installation (their base's addresses lead to the source), so they are let go of here.
+            // installation (their base's addresses lead to the source), so they are let go of here. Coming back, it finds
+            // the names it had here let go of by the other side: they are its own to take back.
             sqlx::query(
                 "insert into tenant_host (host, tenant_id, kind, target, is_primary, verify_token, verified_at, base_name, home, apps, label) \
                  select h.base_name || '--' || $2 || '.' || $3, h.tenant_id, 'subdomain', h.target, false, '', now(), h.base_name, h.home, h.apps, h.label \
                  from tenant_host h where h.tenant_id = $1 and h.base_name is not null and h.released_at is null and right(h.host, length($3) + 1) <> '.' || $3 \
-                 on conflict (host) do nothing",
+                 on conflict (host) do update set released_at = null, leaving_until = null, home = excluded.home, apps = excluded.apps, label = excluded.label \
+                 where tenant_host.tenant_id = excluded.tenant_id and tenant_host.released_at is not null",
             )
             .bind(tenant)
             .bind(slug)
@@ -1267,6 +1271,9 @@ impl Kernel {
         }
         let ctx = Ctx::system(tenant, Arc::new(ferrum_meta::Schema::default()));
         audit::record(&mut tx, &ctx, "Platform", Uuid::nil(), "platform.workspace_arrived", None, json!({"move": move_id, "from": peer})).await?;
+        // This installation's running replicas (the move is a task, a process of its own) serve its addresses at once: one
+        // that answered for one before (nothing there, or moved away when it comes back) would otherwise keep that answer.
+        crate::registry::Registry::bump_version(&mut tx, tenant).await?;
         tx.commit().await?;
         // A portal or site whose main address was such a name gets the one that took its place.
         self.primary_where_none(Some(tenant)).await?;
