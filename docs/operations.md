@@ -2892,8 +2892,9 @@ removed address leaves in three steps:
   person turns them on again (the bell's settings), which installs the worker there. A notification
   that the old subscription still shows after the move opens its page on the old address, which sends it
   on to the same page at the new one, where the person signs in.
-* A server running the build before this one treats a leaving address as released (it redirects); run one
-  build on every replica before removing addresses.
+* An older build (one running during a rollback, or a replica not yet upgraded) does not know the leaving
+  period and treats such an address as already released: it redirects at once. That is the safe direction
+  (nothing is served that should not be, only the draining stops early), so no floor is needed for it.
 
 ## Many workspaces: subdomains and Ferrum accounts
 
