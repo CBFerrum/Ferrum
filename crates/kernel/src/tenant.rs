@@ -30,17 +30,23 @@ pub struct NewTenant {
 impl NewTenant {
     /// What can be checked of a new workspace before anything is written.
     pub(crate) fn check(&self) -> Result<()> {
-        if !SLUG.is_match(&self.slug) {
-            return Err(Error::field("slug", "use 2-63 lowercase letters, digits or hyphens"));
-        }
-        if crate::identity::RESERVED_SLUGS.contains(&self.slug.as_str()) {
-            return Err(Error::field("slug", "is a name the cluster keeps for itself"));
-        }
+        check_slug(&self.slug)?;
         if self.name.trim().is_empty() || self.name.len() > 200 {
             return Err(Error::field("name", "is required (max 200 characters)"));
         }
         validate_password(&self.admin_password)
     }
+}
+
+/// A workspace's name as its addresses use it: 2-63 lowercase letters, digits or hyphens, and none the cluster keeps.
+pub(crate) fn check_slug(slug: &str) -> Result<()> {
+    if !SLUG.is_match(slug) {
+        return Err(Error::field("slug", "use 2-63 lowercase letters, digits or hyphens"));
+    }
+    if crate::identity::RESERVED_SLUGS.contains(&slug) {
+        return Err(Error::field("slug", "is a name the cluster keeps for itself"));
+    }
+    Ok(())
 }
 
 impl Kernel {

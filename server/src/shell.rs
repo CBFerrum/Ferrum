@@ -193,6 +193,8 @@ pub struct WorkspaceInfo {
     /// The workspace uses the shell and apps with interfaces of their own: every workspace since
     /// U4b (the `shell_v2` setting is for the release before).
     pub shell_v2: bool,
+    /// A sandbox's `{of, until}` (ferrum_kernel::sandbox), for the interface to say so; `None` for a live workspace.
+    pub sandbox: Option<Value>,
 }
 
 /// The shell's own interface (Home, store, administration, account, records), an interface
@@ -584,7 +586,8 @@ impl Shell {
             return Ok(e.1.clone());
         }
         let (slug, name, status, _) = self.kernel.workspace_brief(id).await?;
-        let w = Arc::new(WorkspaceInfo { id, slug, name, status, shell_v2 });
+        let sandbox = self.kernel.sandbox_mark(id).await?;
+        let w = Arc::new(WorkspaceInfo { id, slug, name, status, shell_v2, sandbox });
         self.workspaces.insert(id, (Instant::now(), w.clone()));
         Ok(w)
     }
@@ -1313,6 +1316,7 @@ pub fn bootstrap(ws: &WorkspaceInfo, host: &str, ctx: &Ctx, kind: &str, state: &
     json!({
         "v": 1,
         "workspace": {"id": ws.id, "slug": ws.slug, "name": ws.name, "host": host},
+        "sandbox": ws.sandbox,
         "person": {"id": ctx.user, "name": if ctx.full_name.is_empty() { &ctx.email } else { &ctx.full_name }, "email": ctx.email, "kind": kind, "admin": ctx.is_admin, "actor": state.actor},
         "app": app,
         "host": {"kind": page, "shell": SHELL_VERSION},
@@ -1369,6 +1373,7 @@ pub fn public_bootstrap(ws: &WorkspaceInfo, host: &str, timezone: &str, app: Val
     json!({
         "v": 1,
         "workspace": {"id": null, "slug": ws.slug, "name": ws.name, "host": host},
+        "sandbox": ws.sandbox,
         "person": null,
         "app": app,
         "host": {"kind": "public", "shell": SHELL_VERSION},
@@ -1767,8 +1772,12 @@ pub fn status_page(status: StatusCode, title: &str, message: &str, actions: &[(&
 /// The sign-in page (until the shell app brings its own).
 /// `codes`: an emailed code is offered first (the portal's way in), a password second.
 pub fn login_page(fixed_workspace: Option<&WorkspaceInfo>, next: &str, codes: bool) -> Response {
-    let boot = json!({"v": 1, "next": safe_next(next), "codes": codes, "workspace": fixed_workspace.map(|w| json!({"slug": w.slug, "name": w.name}))});
-    let title = fixed_workspace.map_or("Sign in".to_string(), |w| format!("Sign in to {}", w.name));
+    let boot = json!({"v": 1, "next": safe_next(next), "codes": codes, "workspace": fixed_workspace.map(|w| json!({"slug": w.slug, "name": w.name, "sandbox": w.sandbox}))});
+    // A sandbox says so, whatever its name has become.
+    let title = fixed_workspace.map_or("Sign in".to_string(), |w| match &w.sandbox {
+        Some(_) if !w.name.to_lowercase().contains("sandbox") => format!("Sign in to {} (sandbox)", w.name),
+        _ => format!("Sign in to {}", w.name),
+    });
     login_html(&boot, &title)
 }
 
@@ -2504,9 +2513,30 @@ mod tests {
         assert_eq!(match_public(&pages, "meet/guest/acme/k"), Some(("comms", "meet/guest", "acme/k")));
     }
 
+    #[tokio::test]
+    async fn a_sandbox_says_so_on_its_pages() {
+        let mark = json!({"of": "acme", "until": "2026-12-01"});
+        let ws = WorkspaceInfo {
+            id: Uuid::nil(),
+            slug: "acme-try".into(),
+            name: "Acme".into(),
+            status: "active".into(),
+            shell_v2: false,
+            sandbox: Some(mark.clone()),
+        };
+        assert_eq!(public_bootstrap(&ws, "acme-try.example.com", "UTC", json!({}), "p")["sandbox"], mark);
+        async fn page(ws: &WorkspaceInfo) -> String {
+            let res = login_page(Some(ws), "/", false);
+            String::from_utf8(axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap()
+        }
+        assert!(page(&ws).await.contains("Sign in to Acme (sandbox)"));
+        let live = WorkspaceInfo { sandbox: None, ..ws };
+        assert!(!page(&live).await.contains("(sandbox)"), "a live workspace's page does not");
+    }
+
     #[test]
     fn public_pages_know_no_person() {
-        let ws = WorkspaceInfo { id: Uuid::nil(), slug: "acme".into(), name: "Acme".into(), status: "active".into(), shell_v2: false };
+        let ws = WorkspaceInfo { id: Uuid::nil(), slug: "acme".into(), name: "Acme".into(), status: "active".into(), shell_v2: false, sandbox: None };
         let b = public_bootstrap(&ws, "erp.acme.com", "Asia/Kolkata", json!({"id": "drive"}), "drive/s");
         assert!(b["person"].is_null() && b["workspace"]["id"].is_null() && b["api"]["live"].is_null());
         assert_eq!((b["host"]["kind"].as_str(), b["public"].as_str(), b["workspace"]["slug"].as_str()), (Some("public"), Some("drive/s"), Some("acme")));

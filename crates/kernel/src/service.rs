@@ -128,7 +128,7 @@ impl Kernel {
             "key": key,
             "secret": secret,
         });
-        if let Err(e) = self.call_service(s.url, "install", &body, None).await {
+        if let Err(e) = self.call_service(ctx.tenant, s.url, "install", &body, None).await {
             self.remove_service(ctx, s.app, None).await?;
             return Err(Error::Unavailable(format!("the service at {} did not accept its installation: {e}", s.url)));
         }
@@ -181,7 +181,7 @@ impl Kernel {
         if let (Some(url), Some((id, stored))) = (url, hook) {
             let secret = self.webhook_secret(ctx.tenant, id, &stored)?;
             let body = json!({"event": "uninstalled", "app": app, "workspace": ctx.tenant});
-            if let Err(e) = self.call_service(url, "uninstall", &body, Some(&secret)).await {
+            if let Err(e) = self.call_service(ctx.tenant, url, "uninstall", &body, Some(&secret)).await {
                 tracing::warn!(tenant = %ctx.tenant, %app, "the service was not told it was removed: {e}");
             }
         }
@@ -189,9 +189,10 @@ impl Kernel {
     }
 
     /// A call to `{url}/{path}` over a vetted client, signed as webhooks are when there is a secret.
-    async fn call_service(&self, url: &str, path: &str, body: &Value, secret: Option<&str>) -> Result<()> {
+    async fn call_service(&self, tenant: Uuid, url: &str, path: &str, body: &Value, secret: Option<&str>) -> Result<()> {
         let target = format!("{}/{path}", url.trim_end_matches('/'));
-        let (client, parsed) = self.vetted_client(&target, self.settings.webhooks_allow_private, Duration::from_secs(10), "Ferrum-Services/1").await?;
+        let (client, parsed) =
+            self.vetted_client_for(tenant, &target, self.settings.webhooks_allow_private, Duration::from_secs(10), "Ferrum-Services/1").await?;
         let bytes = serde_json::to_vec(body).map_err(Error::internal)?;
         let mut req = client.post(parsed).header("content-type", "application/json").header("x-ferrum-event", format!("app.{path}"));
         if let Some(secret) = secret {

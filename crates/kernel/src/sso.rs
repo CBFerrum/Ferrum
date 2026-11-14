@@ -480,6 +480,7 @@ impl Kernel {
                     return Err(Error::field("issuer", "is too long"));
                 }
                 // The issuer as the provider spells it (a trailing slash matters to its tokens).
+                self.outward(ctx.tenant).await?;
                 (self.discover(issuer).await.map_err(|e| Error::field("issuer", e.to_string()))?.issuer, client_id.to_string(), None)
             }
             Protocol::Saml => {
@@ -492,6 +493,7 @@ impl Kernel {
                     return Err(Error::field("saml_metadata", "is larger than a megabyte"));
                 }
                 self.saml_sp(ctx.tenant).map_err(|e| Error::field("saml_metadata", e.to_string()))?;
+                self.outward(ctx.tenant).await?;
                 let idp = self.saml_idp(source).await.map_err(|e| Error::field("saml_metadata", e.to_string()))?;
                 (idp.entity_id, String::new(), Some(source.to_string()))
             }
@@ -645,6 +647,8 @@ impl Kernel {
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| Error::NotFound("single sign-on provider".into()))?;
+        // Every sign-in through a provider reaches it: never from a sandbox (sandbox.rs).
+        self.outward(p.tenant_id).await?;
         let client_secret = match p.client_secret {
             Some(sealed) => Some(self.open_sealed(&sealed_label(p.tenant_id, id), &sealed)?),
             None => None,

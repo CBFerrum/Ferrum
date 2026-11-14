@@ -306,6 +306,16 @@ pub async fn move_findings(k: &ferrum_kernel::Kernel) -> Result<Vec<Finding>, fe
             "Finish or undo the move (docs/operations.md, Moving one workspace).",
         ));
     }
+    // Sandboxes are second copies of people's data, for a while: those kept past their day (nothing deletes them).
+    let expired = k.expired_sandboxes().await?;
+    if !expired.is_empty() {
+        let listed: Vec<String> = expired.iter().map(|(slug, until)| format!("{slug} (until {until})")).collect();
+        out.push(Finding::warning(
+            "sandbox.expired",
+            format!("{} sandboxes are kept past their last day: {}", expired.len(), listed.join(", ")),
+            "Delete each with `ferrum task delete_sandbox tenant:<slug>`, or make it again (docs/operations.md, A sandbox of a workspace).",
+        ));
+    }
     let (unopened, complete) = k.unopened_secrets().await?;
     let total: u64 = unopened.iter().map(|u| u.count).sum();
     let partly = if complete { "" } else { " (of those checked: the check stops after 20000 values)" };

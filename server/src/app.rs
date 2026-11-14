@@ -448,7 +448,7 @@ impl Hooks for App {
                         _ = stop.changed() => return,
                         _ = tokio::time::sleep(Duration::from_secs(6 * 3600)) => {}
                     }
-                    if let Err(e) = ferrum_app_erp::maintenance(&k).await {
+                    if let Err(e) = ferrum_kernel::sandbox::upkeep(ferrum_app_erp::maintenance(&k)).await {
                         tracing::warn!("ERP's upkeep failed: {e}");
                     }
                 }
@@ -628,6 +628,8 @@ impl Hooks for App {
         tasks.register(crate::tasks::CheckFiles);
         tasks.register(crate::tasks::MoveWorkspace);
         tasks.register(crate::tasks::FinishMove);
+        tasks.register(crate::tasks::CopyWorkspace);
+        tasks.register(crate::tasks::DeleteSandbox);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

@@ -1799,6 +1799,122 @@ key prefix this installation has already.
   know (refused, above), does not; nor does anything an app counts across the whole database (refused).
 * The privacy and access journals stay in the source's storage; they serve a restore of the source.
 
+## A sandbox of a workspace
+
+A sandbox is a copy of a live workspace under a new name and id, for trying an upgrade, an app or a change of
+settings on real data without touching the live one. Nothing it does reaches outside: no mail, no message, no call
+to a provider. It is kept until a day you choose, at most 90 days ahead.
+
+```bash
+ferrum task copy_workspace tenant:acme as:acme-try until:2026-12-14 from:here   # beside the live workspace
+ferrum task copy_workspace tenant:acme as:acme-try until:2026-12-14             # from another installation (below)
+ferrum task copy_workspace tenant:acme as:acme-try until:2026-12-14 from:here resume:yes   # carry on copying its files
+ferrum task delete_sandbox tenant:acme-try
+```
+
+Run it on the installation that is to hold the sandbox. With `from:here` the source is one of this installation's
+workspaces. Without it, the source is another installation, given in the environment exactly as for
+`move_workspace` ("Moving one workspace": `FERRUM_MOVE_SOURCE_DATABASE_URL`, `FERRUM_MOVE_SOURCE_SECRET_KEYS`, and
+`FERRUM_MOVE_SOURCE_FILES` or `_FILES_DIR` or `_S3_BUCKET`); both run one build, with the source's apps at their
+versions here. Either way the role needs `GRANT SET ON PARAMETER session_replication_role TO ferrum` for as long as
+it takes, as for a move. `not_sealed:<table.column,...>` keeps text that looks like a sealed value (below).
+
+**The source is not stopped.** It is neither held nor frozen, and nothing of it changes: the copy reads it in one
+transaction at the isolation level `REPEATABLE READ`, so every table is read as it stood at one moment, while people
+go on working. On a large workspace that transaction stays open for the whole copy: the database cannot clean up rows
+changed meanwhile (anywhere in it) until it ends, and the copy here is one transaction holding every row it writes.
+Copy at a quiet hour, and look at the database's size afterwards.
+
+**What is copied.** Records and their lines, files, customizations, roles, people with their roles and password
+hashes, second factors and recovery codes, settings, numbering counters, consent and opt-outs, and erasures' records
+(so erased people stay erased). Every place the workspace's id appears is rewritten to the new one: every row's
+`tenant_id`, any other value that holds it, and file keys (`tenants/{id}/…`, `uploads/{id}/…`): each file is copied
+under the new id. Connections, message channels and single sign-on providers get new ids too, since the outside world
+calls them by id: a provider's callback for the live workspace can never land in the sandbox. A file kept under a key
+that does not name the workspace, a table with a key unique across workspaces, or a counter of the whole database
+refuses the copy, and nothing is made.
+
+**What is not.** The audit trail and its daily anchors (the sandbox starts its own: its first event,
+`platform.sandbox_created`, says what it is a copy of, as of when, until when, and what was blanked); legal holds;
+events, webhook deliveries and jobs waiting; process runs; the workspace's addresses (it gets `{as}.{FERRUM_BASE_DOMAIN}`
+when there is a base domain, and otherwise none, as a new workspace: people sign in by its name at `PUBLIC_URL`); old
+names; API keys, sessions, passkeys, OAuth and MCP sign-ins, device subscriptions, codes and sign-ups in progress;
+action links already sent; support access; and the privacy journal (a sandbox made after an erasure holds no erased
+data, and its own erasures are in its own records). Members' links to their Ferrum accounts stay behind.
+
+**Secrets.** Only what a person needs to sign in travels: second factors, opened with the source's keys and sealed
+again under the new id. Everything else sealed is blanked, so the sandbox cannot act as the live workspace anywhere:
+
+| Sealed value | In the sandbox |
+|---|---|
+| A person's second factor (`app_user.totp_secret`) | carried, sealed again under the new id |
+| Password hashes, recovery codes (not sealed) | carried |
+| Connections' credentials and their account (`connection.sealed`, `account_key`) | blank |
+| Connections' credentials and OAuth tokens (`conn.sealed`, `conn_token`) | blank; tokens not copied |
+| Message channels' credentials: mail, text and chat providers (`message_channel.sealed`) | blank |
+| Single sign-on client secrets (`sso_provider.client_secret`), the SAML key (`saml_sp_key`) | blank; the key is made anew |
+| Plugins' sealed settings: payment and gateway keys (`plugin.config`) | blank |
+| Webhooks' signing secrets | a new random secret nobody has seen |
+| An app's secret fields (`record_secret`) | not copied |
+| Parameters held for an approval, messages waiting (`approval_request.sealed`, `message_send.pending`) | blank |
+| Anything else with the form of a sealed value, in any column or JSON | blank (the command lists the columns; `not_sealed:` keeps a column that holds no sealed value) |
+
+A connection, channel or provider stays in the list, blank: entering credentials there makes it work inside the
+sandbox, and still nothing goes out.
+
+**Why nothing can leave.** The mark (`sandbox_of`, `sandbox_from`, `sandbox_until` on the workspace) is written with
+the sandbox's own row, in the transaction that copies every other row: there is never a copy without it. No setting
+and no task removes it (the database refuses a change to it). For a marked workspace, and for one the server cannot
+find or cannot ask about, every way out fails, saying "sandbox":
+
+* mail, notification mail and pushes to devices: set aside as they come up, as dead events with that reason
+  (administrators see them with the other dead events; a replay is refused again);
+* webhooks: each delivery is set aside dead as it is made, and refused if sent anyway;
+* calls through the kernel's outbound client (single sign-on, service apps, pushes, and any app's call made from an
+  event's handlers or a job), connections (calls, pulls, OAuth token exchange and refresh, texts and chats), connectors,
+  plugins' `http.fetch` (payment and gateway plugins), the assistant's model, and commands to equipment: refused.
+
+The rest of the sandbox works as a workspace does: records, rules, automations, jobs and apps' own event handlers run;
+only what would leave is stopped. Webhooks on audit topics are webhooks like the others: set aside. The operator's own
+audit sink ("Sending the audit log elsewhere") takes the sandbox's audit events as any workspace's: it is the
+installation's, not the workspace's.
+
+An app's call through the kernel's outbound client is refused whenever the work in hand acts for the sandbox: an
+event's handlers, a job, a person's request (and the tasks it starts), and an app's upkeep while it is at the
+sandbox's turn. That includes services of this installation an app reaches through that client (an office server, a
+meetings server, a metrics engine): in a sandbox those features do not work. An app that calls outside with an HTTP
+client of its own, not the kernel's, is not stopped by this.
+
+**One build that knows sandboxes.** Make a sandbox only when every replica runs a build that knows them (this one or
+newer), and keep it so for as long as any sandbox exists: an older build cannot see the mark, and would send mail,
+webhooks and calls for the sandbox as for a live workspace. `copy_workspace` refuses on a build that is a guest of a
+newer one, and while work waits for a newer build; it cannot see an older replica that is merely running, so check
+that every pod runs one image first. Do not roll back past this build while a sandbox exists: delete the sandboxes
+first.
+
+**Signing in.** With a password and, where the person had one, their second factor. Where single sign-on was required,
+it is not required in the sandbox (its secret is blank), and the command and the first audit event say so: people sign
+in with their passwords, and an administrator sets one for whoever has none. Staff networks travel and still apply.
+The interface is told it is a sandbox (`sandbox` in the bootstrap, docs/api.md), the workspace's name ends in
+"(sandbox)" (an administrator may change it), and its sign-in page says "sandbox".
+
+**Personal data.** A sandbox is a second copy of people's data, so it has an end: `until` is required, at most 90 days
+ahead. `ferrum task doctor` reports sandboxes past their day (`sandbox.expired`); nothing deletes them by itself. When a
+person's data is exported or erased in the source workspace, the answer lists the sandboxes of it this installation
+holds (`sandboxes`): an erasure does not reach them, so **after an erasure, delete or make again each sandbox it
+names**. A sandbox in another installation is not known to the source: keep track of those yourself.
+
+**Deleting and refreshing.** `delete_sandbox` deletes the sandbox's files, then its rows, then itself; it refuses a
+live workspace. To refresh one, delete it and copy again (the same name is free again).
+
+**A copy that stopped.** Before its transaction commits, nothing is made. After, the sandbox exists, is marked and
+sends nothing, and some files may not be there yet: `resume:yes` copies the rest (a file already there with the same
+size is skipped), or `delete_sandbox` removes it.
+
+**What it costs.** The rows twice in the database (the source's and the sandbox's), and every file read and written
+again: a large file store takes as long as copying it, and doubles for as long as the sandbox lives. Each file is held
+whole in memory while it is copied.
+
 ## Capacity
 
 Measured on 2026-10-30 with one release build in production mode (`LOCO_ENV=production`, 30 database
@@ -3082,6 +3198,8 @@ ferrum task adopt_move reason:"..."    # on a physical copy of a fenced database
 ferrum task check_files [tenant:<slug>]   # every file the database names (and app bundles), looked for in storage; lists those missing
 ferrum task move_workspace tenant:<slug> [resume:yes] [abort:yes] [wait:<seconds, 130>]   # where it goes: move one workspace here (Moving one workspace)
 ferrum task finish_move tenant:<slug> note:"..."   # where it was: delete the frozen copy a workspace that moved left behind
+ferrum task copy_workspace tenant:<slug> as:<new slug> until:<YYYY-MM-DD> [from:here] [resume:yes] [not_sealed:<table.column,...>]   # a sandbox here (A sandbox of a workspace)
+ferrum task delete_sandbox tenant:<slug>   # delete a sandbox; refuses a live workspace
 ```
 
 **Notifications by email.** A notification someone chose to have by email goes out through the

@@ -1131,6 +1131,8 @@ async fn standing(env: &Env, first: &Ctx, signed_in: i32, begun: Option<&Ctx>) -
     if policy.off {
         return Err(Error::Forbidden("the assistant was turned off for this workspace".into()));
     }
+    // What it would send goes to the model's provider, outside: never from a sandbox.
+    k.outward(first.tenant).await?;
     let now = k.reload(first, Some(signed_in)).await.map_err(|e| match e {
         Error::Unauthorized(m) | Error::Forbidden(m) => Error::Forbidden(format!("you can no longer use the assistant here: {m}")),
         other => other,

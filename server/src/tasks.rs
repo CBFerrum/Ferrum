@@ -983,6 +983,62 @@ impl Task for MoveWorkspace {
     }
 }
 
+/// `copy_workspace tenant:<slug> as:<new slug> until:<date> [from:here] [resume:yes] [not_sealed:<table.column,...>]`, run
+/// where the sandbox is to be: a copy of a live workspace under a new id and name that reaches nothing outside
+/// (docs/operations.md, "A sandbox of a workspace"). Without `from:here` the source is another installation, given as
+/// for `move_workspace` (FERRUM_MOVE_SOURCE_*).
+pub struct CopyWorkspace;
+
+#[async_trait]
+impl Task for CopyWorkspace {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "copy_workspace".into(),
+            detail: "Makes a sandbox of a workspace here: a copy under a new name, until a date, that reaches nothing outside. from:here copies one of this installation's".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let slug = vars.cli_arg("tenant").map_err(|_| Error::Message("which workspace to copy: tenant:<slug>".into()))?;
+        let new_slug = vars.cli_arg("as").map_err(|_| Error::Message("the sandbox's own name: as:<slug>".into()))?;
+        let until = vars
+            .cli_arg("until")
+            .ok()
+            .and_then(|d| chrono::NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok())
+            .ok_or_else(|| Error::Message("the sandbox's last day: until:<YYYY-MM-DD>, at most 90 days ahead".into()))?;
+        let here = vars.cli_arg("from").is_ok_and(|v| v == "here");
+        let from = if here { None } else { Some(move_source(&st, vars).await?) };
+        let copy = ferrum_kernel::sandbox::Copy {
+            from,
+            until,
+            base_domain: crate::shell::base_domain(&st.settings),
+            not_sealed: vars.cli_arg("not_sealed").map(|v| v.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect()).unwrap_or_default(),
+            resume: vars.cli_arg("resume").is_ok_and(|v| v == "yes"),
+            halt: None,
+        };
+        let say = |line: &str| println!("{line}");
+        st.kernel.copy_workspace(slug, new_slug, &copy, &say).await.map_err(refused)?;
+        Ok(())
+    }
+}
+
+/// `delete_sandbox tenant:<slug>`: deletes a sandbox, its rows and its files; refuses a live workspace.
+pub struct DeleteSandbox;
+
+#[async_trait]
+impl Task for DeleteSandbox {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "delete_sandbox".into(), detail: "Deletes a sandbox (its rows and files). Refuses a live workspace".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let slug = vars.cli_arg("tenant").map_err(|_| Error::Message("which sandbox: tenant:<slug>".into()))?;
+        let done = k.delete_sandbox(slug).await.map_err(refused)?;
+        println!("{slug}: deleted, {} rows and {} files", done["rows"], done["files"]);
+        Ok(())
+    }
+}
+
 /// `finish_move tenant:<slug> note:"..."`, run where the workspace was: deletes what it left behind when it moved.
 pub struct FinishMove;
 
