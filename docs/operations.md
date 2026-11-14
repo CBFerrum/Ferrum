@@ -3220,9 +3220,9 @@ rest of the path after the target) to a path of the workspace: `/sales` → `/cr
 * A target is `/` (Home), a page of the shell (`/data/…`, `/store/…`, `/admin/…`, `/account/…`), `/open/…`, or a path
   under the route of one of the workspace's apps (`/crm/`, `/crm/e/Lead?view=mine`). Never the portal, sign-in, the API,
   the server's files, another host, or a `#` part.
-* At most 50, saved as one list and checked together: a refusal names the alias at fault.
+* At most 50, saved as one list and checked together: a refusal names the alias at fault and its row.
 * An app that comes later and takes the segment wins: its page opens there, the short path stops working, the list marks
-  it (`works: false`) and `ferrum task doctor` warns (`paths.shadowed`).
+  it (`works: false`, naming the app) and `ferrum task doctor` warns (`paths.shadowed`).
 * Someone signed out signs in first and is then led on. It is a redirect on purpose: the address bar shows the real path,
   apps need nothing, and no short path can hide an app.
 

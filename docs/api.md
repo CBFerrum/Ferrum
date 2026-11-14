@@ -771,12 +771,18 @@ zone.
 
 * `GET /api/admin/domains` → `{domains: [{host, kind, target, primary, is_primary, status, waiting, record, zone, home,
   apps, label, forward, base_name, can: {edit, remove, make_primary}, verify_token, verified_at, proved_at, checked_at,
-  failures, released_at, leaving_until, created_at}], point_to, proof, sites: [{app, title}], base, name_form,
-  reserved_names, homes: [{id, name, route}], limits: {addresses, paths}, used: {addresses, paths}}`.
+  failures, released_at, leaving_until, redirecting, created_at}], point_to, proof, sites: [{app, title}], base,
+  name_form, reserved_names, homes: [{id, name, route}], limits: {addresses, paths}, used: {addresses, paths},
+  read_only, leaving_days}`.
   * `kind`: `subdomain` (the workspace's `{slug}.{base}`, or a name it gave itself under the base, which has
     `base_name`), `custom` (a domain of its own) or `operator` (the operator's, `ferrum task add_host`). `target`:
     `shell`, `portal` or `site:{app}`. `primary` (and, as before, `is_primary`): the main address of its target.
     `status`: `verified`, `pending`, `failing`, `leaving` or `released`. `zone`: the zone's name, or `null`; read only.
+    `redirecting`, for a removed address: `true` while it still sends visitors on (its leaving period, then 90 days),
+    `false` once it no longer answers; `null` for a live one.
+  * `read_only` (top level): `null`, or why every change is refused now, `closed` or `restricted`. `leaving_days`: how
+    long a removed address keeps serving those signed in there (`FERRUM_HOST_LEAVING_DAYS`; 0: none), so that the day
+    it stops can be named before removing it.
   * A domain of the workspace's own: `proof` (top level) is what one needs before it works, `points` or `record`
     (`FERRUM_DOMAIN_PROOF`). One that does not work yet has `waiting`: `domain` until a check finds it pointing here,
     then `record` while its record is missing (its `status` then stays `pending`, not `failing`); else `null`. Where
@@ -811,13 +817,14 @@ zone.
 * `PUT …/{host}/primary` makes a working one the main address of its kind (a forwarding one: `422`); `POST …/{host}/check` checks a custom
   domain now, that it points here and, where `proof` is `record`, its record → `{host, answers, points, waiting}`:
   `answers`, it works; `points`, it points here; `waiting` as in the list (`null` once it works).
-* `GET /api/admin/paths` → `{paths: [{alias, target, works}], limit: 50, taken}`: the workspace's short paths
-  (`works`: false once an app has taken the segment, whose page then opens there), and `taken`, the first segments the
+* `GET /api/admin/paths` → `{paths: [{alias, target, works, taken_by?}], limit: 50, taken}`: the workspace's short paths
+  (`works`: false once an app has taken the segment, whose page then opens there; `taken_by` then names that app when
+  it is compiled in or the caller's zone shows it, else `null`), and `taken`, the first segments the
   server keeps and the routes of the apps here and compiled in. `PUT /api/admin/paths` `{paths: [{alias, target}]}`
   replaces the whole list → `{paths}`. An alias: 2 to 30 lowercase letters, digits and hyphens, starting with a letter,
   not one of `taken`, given once. A target: `/`, `/data/…`, `/store/…`, `/admin/…`, `/account/…`, `/open/…` or a path
   under the route of one of the workspace's apps; never `/portal/…`, sign-in, the API, another host or a `#` part. At
-  most 50. A refusal (`422`) names the alias at fault.
+  most 50. A refusal (`422`) names the alias at fault, and its place in the list (`fields[0].row`: `["paths", index]`).
 * While the workspace is closed or restricted, every change is refused (`403`). Every change is on the audit trail
   (category `administration`: `WorkspaceDomain` `add`, `shape` with `before` and `after`, `remove`, `primary`;
   `WorkspacePaths` `set` with `before` and `after`).

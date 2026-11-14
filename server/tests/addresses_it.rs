@@ -451,6 +451,7 @@ async fn shapes(base: &AppContext, st: &AppState) {
     let homes: Vec<(&str, &str)> = listed["homes"].as_array().unwrap().iter().map(|h| (h["id"].as_str().unwrap(), h["route"].as_str().unwrap())).collect();
     assert!(homes.contains(&("crm", "crm")) && homes.contains(&("helpdesk", "helpdesk")), "{homes:?}");
     assert_eq!((listed["limits"].clone(), listed["used"].clone()), (json!({"addresses": 20, "paths": 50}), json!({"addresses": 2, "paths": 0})));
+    assert_eq!((listed["read_only"].clone(), listed["leaving_days"].clone()), (json!(null), json!(14)), "changes taken; 14 days of leaving");
     let main = row(&listed, MAIN);
     assert_eq!(
         (main["kind"].clone(), main["primary"].clone(), main["is_primary"].clone(), main["status"].clone()),
@@ -597,6 +598,15 @@ async fn shapes(base: &AppContext, st: &AppState) {
         let (status, body) = api(Method::PUT, MAIN, "/api/admin/paths", Some(json!({"paths": refused}))).await;
         assert!(status == StatusCode::UNPROCESSABLE_ENTITY && body.contains(says), "{says}: {status} {body}");
     }
+    let (status, body) = api(
+        Method::PUT,
+        MAIN,
+        "/api/admin/paths",
+        Some(json!({"paths": [{"alias": "fine", "target": "/crm/"}, {"alias": "fine-too", "target": "/"}, {"alias": "fine", "target": "/data/"}]})),
+    )
+    .await;
+    let refused: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((status, refused["fields"][0]["row"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!(["paths", 2])), "the row at fault: {body}");
     // A short path saved before an app came to claim its segment: the app's page opens there, and the doctor says so.
     sql(&k, &format!("update tenant set settings = settings || '{{\"paths\": [{{\"alias\": \"helpdesk\", \"target\": \"/crm/\"}}]}}' where id = '{beta}'"))
         .await;
@@ -605,7 +615,7 @@ async fn shapes(base: &AppContext, st: &AppState) {
     let shadowed = ferrum_server::controllers::domains::shadowed_paths(&st).await.unwrap();
     assert!(shadowed.contains(&("beta".into(), "helpdesk".into(), "helpdesk".into())), "{shadowed:?}");
     let listed: Value = serde_json::from_str(&api(Method::GET, MAIN, "/api/admin/paths", None).await.1).unwrap();
-    assert_eq!(listed["paths"][0]["works"], false);
+    assert_eq!((listed["paths"][0]["works"].clone(), listed["paths"][0]["taken_by"].clone()), (json!(false), json!("helpdesk")), "the app that took it");
     assert_eq!(api(Method::PUT, MAIN, "/api/admin/paths", Some(json!({"paths": []}))).await.0, StatusCode::OK);
 
     // ── Nothing widens a zone. An address the operator put in a zone keeps that zone whatever is edited; what it shows
@@ -656,6 +666,15 @@ async fn shapes(base: &AppContext, st: &AppState) {
         (row(&listed, SALES)["status"].clone(), row(&listed, SALES)["can"].clone()),
         (json!("leaving"), json!({"edit": false, "remove": false, "make_primary": false}))
     );
+    assert_eq!((row(&listed, SALES)["redirecting"].clone(), row(&listed, MAIN)["redirecting"].clone()), (json!(true), json!(null)));
+    sql(&k, &format!("update tenant_host set released_at = now() - interval '200 days', leaving_until = now() - interval '199 days' where host = '{SALES}'"))
+        .await;
+    let listed: Value = serde_json::from_str(&api(Method::GET, MAIN, "/api/admin/domains", None).await.1).unwrap();
+    assert_eq!((row(&listed, SALES)["status"].clone(), row(&listed, SALES)["redirecting"].clone()), (json!("released"), json!(false)), "no longer answers");
+    k.set_account_state(beta, "restricted", Some("a test of what the list says")).await.unwrap();
+    let listed: Value = serde_json::from_str(&api(Method::GET, MAIN, "/api/admin/domains", None).await.1).unwrap();
+    assert_eq!(listed["read_only"], "restricted", "changes are refused now, and why");
+    k.set_account_state(beta, "active", None).await.unwrap();
 
     // Every change is on the audit trail, as the administrator's.
     let mut tx = k.db.system_tx().await.unwrap();

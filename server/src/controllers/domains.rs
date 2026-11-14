@@ -15,7 +15,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use ferrum_kernel::shell::{DomainProof, HostPatch, HostShape, PATHS_MAX, ShortPath, TenantHost};
+use ferrum_kernel::shell::{DomainProof, HOST_REDIRECT_DAYS, HostPatch, HostShape, PATHS_MAX, ShortPath, TenantHost};
 use ferrum_kernel::{Ctx, Error};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
@@ -96,6 +96,8 @@ fn listed(h: &TenantHost, apps: &[ShellApp], proof: DomainProof) -> Value {
         (by_record && h.proved_at.is_none())
             .then(|| json!({"name": format!("_ferrum.{}", h.host), "type": "TXT", "value": format!("ferrum-domain={}", h.verify_token)}))
     );
+    // A released address still sends visitors on (its leaving period, then the redirect's days), or no longer answers.
+    v["redirecting"] = json!(h.released_at.map(|r| chrono::Utc::now() - h.leaving_until.unwrap_or(r) < chrono::Duration::days(HOST_REDIRECT_DAYS)));
     v["home"] = json!(h.home.as_ref().filter(|id| seen(id)));
     v["apps"] = json!(h.apps.as_ref().map(|l| l.iter().filter(|id| seen(id)).collect::<Vec<_>>()));
     v["can"] = json!({
@@ -117,6 +119,8 @@ async fn list(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Respo
     let slug = st.shell.workspace(ctx.tenant).await?.slug.clone();
     let homes: Vec<Value> = shell::home_choices(&apps).into_iter().map(|(id, name, route)| json!({"id": id, "name": name, "route": route})).collect();
     let proof = st.kernel.settings.domain_proof;
+    // Changes are refused while the workspace is read-only: why (its account is closed or restricted), or null.
+    let read_only = if ctx.read_only { Some(account_state(&st, ctx.tenant).await?) } else { None };
     Ok(Json(json!({
         "domains": hosts.iter().map(|h| listed(h, &apps, proof)).collect::<Vec<_>>(),
         "point_to": edge(&app),
@@ -129,8 +133,19 @@ async fn list(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Respo
         "homes": homes,
         "limits": {"addresses": limit, "paths": PATHS_MAX},
         "used": {"addresses": used, "paths": paths},
+        "read_only": read_only,
+        // How long a removed address keeps serving those signed in there (FERRUM_HOST_LEAVING_DAYS; 0: none).
+        "leaving_days": st.kernel.settings.host_leaving_days,
     }))
     .into_response())
+}
+
+/// A workspace's account state (`closed`, `restricted`, …).
+async fn account_state(st: &AppState, tenant: uuid::Uuid) -> ApiResult<String> {
+    let mut tx = st.kernel.db.system_tx().await?;
+    let state: String = sqlx::query_scalar("select account_state from tenant where id = $1").bind(tenant).fetch_one(&mut *tx).await.map_err(Error::from)?;
+    tx.commit().await.map_err(Error::from)?;
+    Ok(state)
 }
 
 /// The apps of this workspace with a public site: one of their packages here serves pages at a
@@ -363,17 +378,23 @@ async fn claimed(st: &AppState, tenant: uuid::Uuid, seg: &str) -> ApiResult<Opti
     Ok(shell::route_owner(st.apps.native_manifests().iter().chain(installed.iter().map(|a| a.manifest.as_ref())), seg).map(str::to_string))
 }
 
-/// `GET /api/admin/paths` → `{paths: [{alias, target, works}], limit, taken}`: the workspace's short paths (`works`: false
-/// once an app has come to claim the segment, which then is the app's), how many it may have, and the segments taken.
+/// `GET /api/admin/paths` → `{paths: [{alias, target, works, taken_by?}], limit, taken}`: the workspace's short paths
+/// (`works`: false once an app has come to claim the segment, which then is the app's; then `taken_by`: that app, named
+/// when it is compiled in or the caller's zone shows it, else null), how many it may have, and the segments taken.
 async fn paths(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
     admin(&ctx)?;
     let st = app_state(&app)?;
+    let apps = st.apps.shell_apps_for(&ctx).await?;
     let mut out = Vec::new();
     for p in st.kernel.short_paths(ctx.tenant).await? {
-        let works = claimed(&st, ctx.tenant, &p.alias).await?.is_none();
-        out.push(json!({"alias": p.alias, "target": p.target, "works": works}));
+        let by = claimed(&st, ctx.tenant, &p.alias).await?;
+        let mut row = json!({"alias": p.alias, "target": p.target, "works": by.is_none()});
+        if let Some(app) = &by {
+            let shown = st.apps.native_manifest(app).is_some() || apps.iter().any(|a| &a.id == app);
+            row["taken_by"] = json!(shown.then_some(app));
+        }
+        out.push(row);
     }
-    let apps = st.apps.shell_apps_for(&ctx).await?;
     Ok(Json(json!({"paths": out, "limit": PATHS_MAX, "taken": taken_segments(&st, &apps)})).into_response())
 }
 
@@ -383,27 +404,30 @@ struct NewPaths {
 }
 
 /// `PUT /api/admin/paths {paths: [{alias, target}]}`: the whole list at once, checked together; a refusal names the alias
-/// at fault.
+/// at fault, and its row (`row: ["paths", index]` on the field error).
 async fn put_paths(Auth(ctx): Auth, State(app): State<AppContext>, Json(body): Json<NewPaths>) -> ApiResult<Response> {
     admin(&ctx)?;
     let st = app_state(&app)?;
     let seen = st.apps.shell_apps_for(&ctx).await?;
-    for p in &body.paths {
+    for (i, p) in body.paths.iter().enumerate() {
         let a = &p.alias;
+        let refused = |message: String| Error::Validation(vec![ferrum_kernel::FieldError::new("paths", message).in_row("paths", i)]);
         if !ferrum_kernel::shell::alias_shaped(a) {
-            return Err(Error::field("paths", format!("/{a}: use 2 to 30 lowercase letters, digits or hyphens, starting with a letter")).into());
+            return Err(refused(format!("/{a}: use 2 to 30 lowercase letters, digits or hyphens, starting with a letter")).into());
+        }
+        if body.paths[..i].iter().any(|q| &q.alias == a) {
+            return Err(refused(format!("/{a} is given twice")).into());
         }
         if shell::segment_kept(a) {
-            return Err(Error::field("paths", format!("/{a} is one of the service's own addresses")).into());
+            return Err(refused(format!("/{a} is one of the service's own addresses")).into());
         }
         if claimed(&st, ctx.tenant, a).await?.is_some() {
-            return Err(Error::field("paths", format!("/{a} is an app's address")).into());
+            return Err(refused(format!("/{a} is an app's address")).into());
         }
         if !shell::target_allowed(&seen, &p.target) {
-            return Err(Error::field(
-                "paths",
-                format!("/{a} must lead to a page of this workspace: /, /data/…, /store/…, /admin/…, /account/…, /open/…, or an app's address such as /crm/"),
-            )
+            return Err(refused(format!(
+                "/{a} must lead to a page of this workspace: /, /data/…, /store/…, /admin/…, /account/…, /open/…, or an app's address such as /crm/"
+            ))
             .into());
         }
     }

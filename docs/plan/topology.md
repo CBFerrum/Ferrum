@@ -279,6 +279,14 @@ query), anything else → `404` naming it; only `/.well-known/ferrum-domain` pas
   make a forwarding address the main one (its succession knows no `forward`); a main address never forwards, so that
   one then serves as any address until another is made main.
 
+**What the Addresses screen asked for** (second slice), all additions: the list's `read_only` (`null`, `closed` or
+`restricted`: the account state when the caller's context is read-only, so the screen need not ask `/api/admin/usage`) and
+`leaving_days`; a removed address's `redirecting` (by the same rule `route_host` keeps: its leaving end, or its release,
+plus `HOST_REDIRECT_DAYS`); a short path's `taken_by`, only where `works` is false, named only when the app is compiled in
+or the caller's zone shows it (as `taken` is), else `null`; and `row: ["paths", i]` on each refusal of a short path's own,
+the server now checking "given twice" itself so that every refusal of a row names it (the kernel's own checks stay behind
+it; the list's limit names no row).
+
 **Drawbacks kept** (each with what was done):
 
 | Drawback | What was done |
