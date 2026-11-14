@@ -30,7 +30,7 @@ pub(crate) async fn load(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, do
     let workspace = Ctx::system_for(ctx);
     for name in names {
         let to = ent.field(name).filter(|f| f.ftype == FieldType::Link).and_then(|f| f.to.as_deref());
-        let tent = to.and_then(|t| ctx.schema.entity(t)).cloned();
+        let tent = to.and_then(|t| ctx.schema.entity(t)).filter(|t| workspace.sees(&t.def.name)).cloned();
         let id = doc.get(name).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
         let (Some(tent), Some(id)) = (tent, id) else {
             out.insert(name.clone(), Value::Null);

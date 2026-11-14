@@ -588,12 +588,11 @@ async fn effect_value(
             let to = ctx.schema.entity(entity).and_then(|e| linked_entity(e, steps[1])).map(str::to_string);
             let id = doc.get(steps[1]).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
             let (Some(to), Some(id)) = (to, id) else { return Ok(v) };
-            let linked = match k.get_tx(&Ctx::system_for(ctx), tx, &to, id, false).await {
-                Ok(d) => d,
-                // Within the zone it acts in (crate::zones, level 2), a hidden record is not there.
-                Err(Error::NotFound(_)) if ctx.perms.limit.is_some() => return Ok(v),
-                Err(e) => return Err(e),
-            };
+            // Within the zone it acts in (crate::zones, level 2), a hidden record is not there.
+            if !ctx.sees(&to) {
+                return Ok(v);
+            }
+            let linked = k.get_tx(&Ctx::system_for(ctx), tx, &to, id, false).await?;
             stored_empty(&Value::Object(linked), &steps[2..])
         }
         _ => false,

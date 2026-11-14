@@ -56,8 +56,21 @@ fn check_version(old: &Doc, expected: Option<i64>) -> Result<()> {
 impl Kernel {
     /// The entity `name` as `ctx` reaches it: one its zone leaves out (crate::zones, level 2) is not
     /// there, as one not installed is not, for the person and for whatever acts for them.
+    ///
+    /// Asked by the system on someone's behalf (an effect, an automation, an app's hook writing another app's record),
+    /// it says why instead: the person asked for something else, and "not installed" from inside it would mislead.
     pub fn entity(&self, ctx: &Ctx, name: &str) -> Result<Arc<EffEntity>> {
-        ctx.schema.entity(name).filter(|_| ctx.sees(name)).cloned().ok_or_else(|| Error::NotFound(format!("entity {name}")))
+        let ent = ctx.schema.entity(name).ok_or_else(|| Error::NotFound(format!("entity {name}")))?;
+        if ctx.sees(name) {
+            return Ok(ent.clone());
+        }
+        match (ctx.is_system, &ctx.perms.limit) {
+            (true, Some(limit)) => Err(Error::Forbidden(format!(
+                "this needs {} records ({} app), which the zone {} leaves out: do it where the whole workspace opens",
+                ent.def.label, ent.package, limit.zone
+            ))),
+            _ => Err(Error::NotFound(format!("entity {name}"))),
+        }
     }
 
     // ───────────────────────────── reads ─────────────────────────────
