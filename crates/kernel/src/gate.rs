@@ -20,6 +20,36 @@ use uuid::Uuid;
 /// The most networks one list holds.
 const MAX_NETWORKS: usize = 100;
 
+// Pull request 231: an older build ignores each of these settings.
+/// A workspace's staff networks.
+pub const STAFF_NETWORKS_FLOOR: crate::window::Floor = crate::window::Floor {
+    feature: "staff_networks",
+    since: "2026-11-14T03:09:38Z",
+    what: "staff work only from their workspace's networks",
+    temporary: false,
+};
+/// An API key's own networks.
+pub const KEY_NETWORKS_FLOOR: crate::window::Floor = crate::window::Floor {
+    feature: "key_networks",
+    since: "2026-11-14T03:09:38Z",
+    what: "an API key pinned to networks works only from them",
+    temporary: false,
+};
+/// A workspace's idle timeout.
+pub const IDLE_FLOOR: crate::window::Floor = crate::window::Floor {
+    feature: "idle_timeout",
+    since: "2026-11-14T03:09:38Z",
+    what: "browser sessions end after the workspace's idle timeout",
+    temporary: false,
+};
+/// A workspace's break-glass list under enforced single sign-on.
+pub const BREAK_GLASS_FLOOR: crate::window::Floor = crate::window::Floor {
+    feature: "break_glass",
+    since: "2026-11-14T03:09:38Z",
+    what: "under enforced single sign-on only the administrators named keep password sign-in",
+    temporary: false,
+};
+
 /// The workspace setting `staff_networks`: `{"networks": ["10.0.0.0/8", "2001:db8::/32"], "mode":
 /// "enforce" | "report"}`. No networks: off, as without it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

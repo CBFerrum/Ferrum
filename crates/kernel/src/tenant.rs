@@ -496,6 +496,18 @@ impl Kernel {
                 return Err(Error::field("require_sso", "set up and enable a single sign-on provider first"));
             }
         }
+        // Protections an older build does not enforce: such builds may no longer start (crate::window::require). Turning
+        // one off leaves its floor (docs/operations.md, "Protections an older build would not enforce").
+        let on = |k: &str| clean.get(k).is_some_and(|v| !v.is_null() && v != &serde_json::json!(0));
+        for (key, floor) in [
+            ("staff_networks", &crate::gate::STAFF_NETWORKS_FLOOR),
+            ("idle_minutes", &crate::gate::IDLE_FLOOR),
+            ("break_glass", &crate::gate::BREAK_GLASS_FLOOR),
+        ] {
+            if on(key) {
+                crate::window::require(&mut tx, floor, "").await?;
+            }
+        }
         sqlx::query("update tenant set settings = settings || $2 where id = $1").bind(ctx.tenant).bind(Value::Object(clean.clone())).execute(&mut *tx).await?;
         // People's cached contexts hold the networks: every replica drops them now.
         let people = clean.contains_key("staff_networks");

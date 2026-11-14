@@ -410,7 +410,7 @@ impl Kernel {
         } else {
             // Another step has brought the database here (`ferrum task migrate`): this only checks that it did.
             let mut conn = db.pool.acquire().await?;
-            let standing = window::standing(window::build_date(), window::dated(), &db.unknown_migrations().await?, window::recorded(&mut conn).await?);
+            let standing = window::standing_here(&mut conn, &db).await?;
             drop(conn);
             match standing {
                 window::Standing::Refused(why) => return Err(Error::Invalid(why)),
