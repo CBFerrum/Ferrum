@@ -132,6 +132,8 @@ pub struct CtxCore {
     pub outside: bool,
     /// The account's kind (`app_user.kind`): zones admit staff or not by it.
     pub kind: String,
+    /// The workspace's staff networks (crate::gate); `None` when they cannot be read, which refuses.
+    pub networks: Option<Arc<crate::gate::StaffNetworks>>,
 }
 
 /// A records key's scope (`records:Customer=read+write;SalesInvoice=read`): the entities it may
@@ -220,7 +222,8 @@ impl Kernel {
     /// [`Kernel::sign_in`] where staff are refused (a zone that admits none, crate::zones): a staff
     /// account is then treated as one that does not exist, before its password is read. The answer
     /// and the time it takes are those of an unknown address, and nothing counts toward its lockout.
-    pub async fn sign_in_at(&self, tenant_slug: &str, email: &str, password: &str, refuse_staff: bool) -> Result<SignIn> {
+    pub async fn sign_in_at(&self, tenant_slug: &str, email: &str, password: &str, from: impl Into<crate::gate::Arrival>) -> Result<SignIn> {
+        let from = from.into();
         let denied = || Error::Unauthorized("invalid tenant, email or password".into());
         let email = email.trim().to_lowercase();
         let mut tx = self.db.system_tx().await?;
@@ -250,7 +253,11 @@ impl Kernel {
         .bind(&email)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(u) = user.filter(|u| !(refuse_staff && crate::zones::is_staff(&u.kind))) else {
+        let refused = match &user {
+            Some(u) => self.refuses_here(&from, u.tenant_id, u.id, &u.kind).await,
+            None => false,
+        };
+        let Some(u) = user.filter(|_| !refused) else {
             tx.commit().await?;
             let _ = verify_password(password.to_string(), DUMMY_HASH.to_string()).await;
             return Err(denied());
@@ -587,6 +594,13 @@ impl Kernel {
         let perms = PermSet::load(&mut tx, tenant, &roles, is_admin).await?;
         tx.commit().await?;
         let fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
+        let networks = match crate::gate::StaffNetworks::parse(settings.get("staff_networks")) {
+            Ok(n) => Some(Arc::new(n)),
+            Err(e) => {
+                tracing::warn!(workspace = %tenant, "the workspace's staff networks cannot be read: {e}");
+                None
+            }
+        };
         Ok(CtxCore {
             read_only,
             email,
@@ -601,6 +615,7 @@ impl Kernel {
             until,
             outside,
             kind,
+            networks,
         })
     }
 
@@ -621,6 +636,7 @@ impl Kernel {
     pub async fn request_ctx(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>, request_id: String, entry: &Arc<crate::zones::Entry>) -> Result<Ctx> {
         let core = self.core(tenant, user, token_version).await?;
         self.admit(&core.kind, tenant, user, entry).await?;
+        admit_network(&core, tenant, user, entry)?;
         self.ctx_of(&core, tenant, user, request_id, Some(entry.clone())).await
     }
 
@@ -653,6 +669,8 @@ impl Kernel {
     }
 
     async fn core(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>) -> Result<Arc<CtxCore>> {
+        // ponytail: one cached core per person; the networks ride in it, dropped with it on every replica when a
+        // workspace's settings change (USERS_CHANNEL), else after `ctx_ttl`.
         let key = (tenant, user);
         let cached = self.users.get(&key).filter(|c| c.1.elapsed() < self.settings.ctx_ttl && c.0.until.is_none_or(|u| Utc::now() < u)).map(|c| c.0.clone());
         let core = match cached {
@@ -1214,6 +1232,21 @@ impl Kernel {
         sqlx::query("update role set portal = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(portal).execute(&mut **tx).await?;
         notify_users(tx, ctx.tenant, None).await
     }
+}
+
+/// The workspace's staff networks (crate::gate), after the zone: staff on a people's credential from
+/// outside them are refused (403, `network`), or admitted and counted in report mode. Support access,
+/// granted explicitly and seen request by request, is not held to them.
+fn admit_network(core: &CtxCore, tenant: Uuid, user: Uuid, entry: &crate::zones::Entry) -> Result<()> {
+    if !crate::zones::is_staff(&core.kind) || !crate::gate::applies_to(entry.credential) || core.email.ends_with(crate::support::SUPPORT_DOMAIN) {
+        return Ok(());
+    }
+    let Some(nets) = &core.networks else { return Err(crate::gate::refusal()) };
+    if nets.admits(&entry.address) {
+        return Ok(());
+    }
+    crate::gate::count_refusal(nets.mode, entry.credential, tenant, user, &entry.address);
+    if nets.mode == crate::zones::Mode::Enforce { Err(crate::gate::refusal()) } else { Ok(()) }
 }
 
 /// Whether records of `entity` hold personal data in this workspace (see

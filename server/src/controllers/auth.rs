@@ -128,9 +128,9 @@ async fn login(State(app): State<AppContext>, headers: HeaderMap, Json(req): Jso
     if req.password.len() > 256 || req.email.len() > 254 || req.tenant.len() > 63 || req.tenant.trim().eq_ignore_ascii_case(DIRECTORY) {
         return Err(ApiError(Error::Unauthorized("invalid tenant, email or password".into())));
     }
-    // Where staff are refused, a staff account is one that does not exist (crate::zone).
-    let refuse_staff = crate::zone::refuses_staff(&st, &headers).await;
-    match st.kernel.sign_in_at(&req.tenant, &req.email, &req.password, refuse_staff).await? {
+    // Where staff are refused (by zone, or the workspace's networks), a staff account is one that does not exist (crate::zone).
+    let from = crate::zone::arrival(&st, &headers).await;
+    match st.kernel.sign_in_at(&req.tenant, &req.email, &req.password, from).await? {
         SignIn::Session(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await,
         SignIn::SecondFactor(s) => {
             Ok(Json(json!({"second_factor": true, "ticket": token(&st, &s, TICKET_SECS, Some("mfa"))?, "expires_in": TICKET_SECS})).into_response())
@@ -675,8 +675,8 @@ async fn passkey_sign_in(State(app): State<AppContext>, headers: HeaderMap, Json
         crate::shell::Place::Any => None,
         _ => return Err(ApiError(Error::Unauthorized("sign in on the workspace's address".into()))),
     };
-    let refuse_staff = crate::zone::refuses_staff(&st, &headers).await;
-    let s = st.kernel.passkey_sign_in_at(req.request, &origins, &req.credential, tenant, refuse_staff).await?;
+    let from = crate::zone::arrival(&st, &headers).await;
+    let s = st.kernel.passkey_sign_in_at(req.request, &origins, &req.credential, tenant, from).await?;
     session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
 }
 

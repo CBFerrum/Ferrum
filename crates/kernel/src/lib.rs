@@ -34,6 +34,7 @@ pub mod error;
 pub mod evidence;
 pub mod export;
 pub mod files;
+pub mod gate;
 pub mod hooks;
 pub mod identity;
 pub mod jobs;

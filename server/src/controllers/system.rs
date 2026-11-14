@@ -192,6 +192,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     }
     apps.push_str(&failures_text(&st.kernel.failures()));
     apps.push_str(&crate::zone::metrics_text());
+    apps.push_str(&crate::zone::network_metrics_text());
     apps.push_str(&logic);
     apps.push_str(&reads);
     let body = format!(

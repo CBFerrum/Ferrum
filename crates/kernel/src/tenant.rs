@@ -373,6 +373,8 @@ impl Kernel {
             "assistant_egress": settings.get("assistant_egress").cloned().unwrap_or_else(|| serde_json::json!({})),
             "offline": settings.get("offline").cloned().unwrap_or_else(|| serde_json::json!({"allowed": true, "hours": 72})),
             "messages": settings.get("messages").cloned().unwrap_or_else(|| serde_json::json!({})),
+            // The networks staff may work from (crate::gate); no networks: off.
+            "staff_networks": crate::gate::StaffNetworks::parse(settings.get("staff_networks")).map_err(Error::Internal)?.to_value(),
         }))
     }
 
@@ -442,6 +444,22 @@ impl Kernel {
                     crate::messages::check_settings(v)?;
                     clean.insert(k.clone(), v.clone());
                 }
+                // The networks staff may work from (crate::gate). Saved in `enforce` only with the saver's own
+                // address inside: nobody shuts themselves out by saving.
+                "staff_networks" => {
+                    let nets = crate::gate::StaffNetworks::parse(Some(v)).map_err(|m| Error::field(k.clone(), m))?;
+                    let address = ctx.zone.as_ref().map(|e| e.address.as_str()).unwrap_or_default();
+                    if nets.mode == crate::zones::Mode::Enforce && !nets.admits(address) {
+                        return Err(Error::field(
+                            k.clone(),
+                            format!(
+                                "your own address ({}) is not inside these networks, so saving them would shut you out: add it, or save them in report mode first",
+                                if address.is_empty() { "unknown" } else { address }
+                            ),
+                        ));
+                    }
+                    clean.insert(k.clone(), if nets.is_off() { Value::Null } else { nets.to_value() });
+                }
                 other => return Err(Error::field(other, "unknown setting")),
             }
         }
@@ -454,10 +472,18 @@ impl Kernel {
             }
         }
         sqlx::query("update tenant set settings = settings || $2 where id = $1").bind(ctx.tenant).bind(Value::Object(clean.clone())).execute(&mut *tx).await?;
+        // People's cached contexts hold the networks: every replica drops them now.
+        let people = clean.contains_key("staff_networks");
+        if people {
+            crate::auth::notify_users(&mut tx, ctx.tenant, None).await?;
+        }
         crate::audit::record(&mut tx, ctx, "Tenant", ctx.tenant, "settings", None, Value::Object(clean)).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);
+        if people {
+            self.invalidate_tenant_users(ctx.tenant);
+        }
         self.tenant_settings(ctx).await
     }
 }

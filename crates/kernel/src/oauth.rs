@@ -181,7 +181,15 @@ impl Kernel {
 
     /// [`Kernel::oauth_redeem_code`] where staff are refused (crate::zones): a staff person's code is
     /// then answered as an unknown one and left as it was, unused, to work where staff are admitted.
-    pub async fn oauth_redeem_code_at(&self, client_id: &str, code: &str, redirect_uri: &str, verifier: &str, refuse_staff: bool) -> Result<Grant> {
+    pub async fn oauth_redeem_code_at(
+        &self,
+        client_id: &str,
+        code: &str,
+        redirect_uri: &str,
+        verifier: &str,
+        from: impl Into<crate::gate::Arrival>,
+    ) -> Result<Grant> {
+        let from = from.into();
         let mut tx = self.db.system_tx().await?;
         let row: Option<(String, Uuid, Uuid, String, String, String, bool, bool, Option<String>)> = sqlx::query_as(
             "select c.client_id, c.tenant_id, c.user_id, c.redirect_uri, c.code_challenge, c.scope, c.expires_at < now(), c.used_at is not null, u.kind \
@@ -192,7 +200,11 @@ impl Kernel {
         .await?;
         let invalid = || Error::Invalid("invalid_grant".into());
         // Dropping the transaction writes nothing: no use, no revocation.
-        let row = row.filter(|r| !(refuse_staff && crate::zones::is_staff(r.8.as_deref().unwrap_or_default())));
+        let refused = match &row {
+            Some(r) => self.refuses_here(&from, r.1, r.2, r.8.as_deref().unwrap_or_default()).await,
+            None => false,
+        };
+        let row = row.filter(|_| !refused);
         let (cid, tenant, user, redirect, challenge, scope, expired, used, _) = row.ok_or_else(invalid)?;
         if used {
             // A replayed code means it leaked: revoke what it produced.
@@ -223,7 +235,8 @@ impl Kernel {
 
     /// [`Kernel::oauth_refresh`] where staff are refused (crate::zones): a staff person's token is then
     /// answered as an unknown one and left as it was: not rotated, and no family revoked.
-    pub async fn oauth_refresh_at(&self, client_id: &str, refresh_token: &str, refuse_staff: bool) -> Result<Grant> {
+    pub async fn oauth_refresh_at(&self, client_id: &str, refresh_token: &str, from: impl Into<crate::gate::Arrival>) -> Result<Grant> {
+        let from = from.into();
         let mut tx = self.db.system_tx().await?;
         let row: Option<(String, Uuid, Uuid, String, bool, bool, bool, Option<String>)> = sqlx::query_as(
             "select r.client_id, r.tenant_id, r.user_id, r.scope, r.expires_at < now(), r.revoked_at is not null, \
@@ -235,7 +248,11 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let invalid = || Error::Invalid("invalid_grant".into());
-        let row = row.filter(|r| !(refuse_staff && crate::zones::is_staff(r.7.as_deref().unwrap_or_default())));
+        let refused = match &row {
+            Some(r) => self.refuses_here(&from, r.1, r.2, r.7.as_deref().unwrap_or_default()).await,
+            None => false,
+        };
+        let row = row.filter(|_| !refused);
         let (cid, tenant, user, scope, expired, revoked, ended, _) = row.ok_or_else(invalid)?;
         if cid != client_id {
             return Err(invalid());

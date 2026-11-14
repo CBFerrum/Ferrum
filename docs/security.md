@@ -46,6 +46,15 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   that the credential works elsewhere, and where.
 * Zones do not protect against a compromised replica: it reaches the whole database.
 
+**Staff networks** ([operations](operations.md#staff-networks))
+* A workspace may name the networks its staff work from. Staff on a people's credential (session, token,
+  OAuth token, app password, app token, socket, sign-in) from elsewhere are refused where the request's
+  context is built, after the zone, with `403` `network`, which names no network. API keys, SCIM keys and
+  support access are not held to them; keys have their own.
+* A staff sign-in from outside fails as a wrong password does, before any secret is read, without counting
+  toward lockout and without using up a code. A setting that cannot be read refuses.
+* Saving them in `enforce` needs the saver's own address inside; the operator can clear them.
+
 **Sites and devices** ([threat model](registry/threat-model.md), [authority](operations-authority.md))
 * Ferrum never replaces a safety system, and a safety function never depends on it.
 * Each device signs its requests with its own Ed25519 key. The server keeps public keys only. Enrollment

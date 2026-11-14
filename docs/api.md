@@ -703,7 +703,10 @@ has when it runs, not when they asked. A bulk job's `result` is `{total, succeed
 Workspace settings: `GET /api/admin/settings` → `{timezone, fiscal_year_start_month, require_two_factor}`;
 `PUT` with any of them (`timezone` is an IANA name such as `Asia/Kolkata`; `require_two_factor`
 applies from each person's next sign-in; `require_sso` refuses password sign-in to everyone but
-administrators and needs an enabled single sign-on provider).
+administrators and needs an enabled single sign-on provider). `staff_networks`
+(`{"networks": ["10.0.0.0/8", …], "mode": "enforce" | "report"}`, or `null` for none) is the networks staff
+may work from ([operations](operations.md#staff-networks)); a save in `enforce` is refused (422) unless the
+caller's own address is inside it. A credential refused by it gets `403` with error `network`.
 
 Domains ([operations](operations.md#custom-domains)): `GET /api/admin/domains` → `{domains: [{host,
 kind (subdomain or custom), target (shell, portal, site:{app}), is_primary, verify_token, status

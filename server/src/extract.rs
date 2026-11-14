@@ -147,6 +147,14 @@ pub async fn ctx_from_token(st: &crate::state::AppState, token: &str, request_id
     if t.setup_only {
         return Err(ApiError(Error::Forbidden("set up two-factor sign-in first; this workspace requires it".into())));
     }
+    // A key on a socket is a machine's, as anywhere: a workspace's staff networks do not hold it (its own do).
+    let keyed;
+    let entry = if t.credential == Credential::ApiKey {
+        keyed = Arc::new(Entry { credential: Credential::ApiKey, ..(**entry).clone() });
+        &keyed
+    } else {
+        entry
+    };
     // A Ferrum account (the directory's) has no live channel, documents or apps.
     if st.kernel.directory().await? == Some(t.session.tenant) {
         return Err(ApiError(Error::Unauthorized("this sign-in works only on the accounts host".into())));

@@ -1206,6 +1206,49 @@ its zone: zones keep staff credentials from working in the wrong place, not a co
 reading. A pool in a public zone still holds every app's code. Staff working from the private network are
 admitted with whatever their rights are. Background work runs with staff rights wherever it runs.
 
+## Staff networks
+
+A workspace's administrators can name the networks its staff may work from: an office's addresses, a
+company VPN's. Staff using a password, a session, a token or an app from anywhere else are refused. It is
+the workspace's own setting, in addition to zones (which are the operator's), and checked at the same place,
+on every request. With no networks it is off, as before.
+
+| Workspace setting (`GET`/`PUT /api/admin/settings`) | Meaning | Default |
+|---|---|---|
+| `staff_networks` | `{"networks": ["10.0.0.0/8", "2001:db8::/32"], "mode": "enforce"}`, at most 100 networks; `mode` `enforce` or `report` | none: off |
+
+**What it holds.** People's credentials of staff accounts (members and administrators): the browser's
+session, session tokens, OAuth and MCP tokens that act for a person, app passwords of calendar and contacts
+apps, app tokens, sockets, and signing in. It does not hold API keys and SCIM keys: those are machines',
+and a key has networks of its own. It does not hold support access, which an administrator grants for a
+while and which the workspace sees request by request. Portal people, guests and service accounts are never
+held to it. The caller's address is the one the server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS`;
+without a proxy in front there is no address, which is outside every list.
+
+**What a refusal looks like.** A signed-in credential gets `403` with error `network`, which says nothing of
+the networks allowed. Signing in from outside fails as a wrong password does, before the password, code,
+passkey or OAuth code is read: the same answer for a right and a wrong password and for an address nobody
+has, nothing counted toward the account's lockout, and nothing used up.
+
+**Report mode first.** Save the list with `"mode": "report"`: nothing is refused, and each staff credential
+that would have been is logged (person, workspace, address, kind of credential; never a secret) and counted
+in `ferrum_staff_network_refusals_total{mode,credential}` on `/metrics`. Then save it with `enforce`.
+
+**Nobody shuts themselves out.** A save in `enforce` is refused unless the address it is saved from is inside
+the new list, and so is a switch from `report` to `enforce`. If the administrators are shut out all the same
+(their office's address changed), the operator clears it, with a reason that goes into the workspace's audit
+trail:
+
+```bash
+ferrum task clear_staff_networks tenant:acme reason:"office moved; ticket 5120"
+```
+
+**How soon a change holds.** Each replica keeps a person's settings with their roles for up to 30 seconds.
+Saving the networks, or clearing them with the task, tells every replica to drop what it keeps for that
+workspace at once, so a narrowing, a widening and a clearing all hold within moments; if a replica missed
+the notice (its database connection dropped), within 30 seconds. A sign-in reads the setting from the
+database each time.
+
 ## Moving from one shape to another
 
 Every move below is a `helm upgrade` of the same release; nothing else changes and nothing is copied. The

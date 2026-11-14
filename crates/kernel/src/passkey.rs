@@ -364,7 +364,15 @@ impl Kernel {
 
     /// [`Kernel::passkey_sign_in`] where staff are refused (crate::zones): a staff account's passkey
     /// is then one not known here, before its signature is checked.
-    pub async fn passkey_sign_in_at(&self, request: Uuid, origins: &[String], credential: &Value, tenant: Option<Uuid>, refuse_staff: bool) -> Result<Session> {
+    pub async fn passkey_sign_in_at(
+        &self,
+        request: Uuid,
+        origins: &[String],
+        credential: &Value,
+        tenant: Option<Uuid>,
+        from: impl Into<crate::gate::Arrival>,
+    ) -> Result<Session> {
+        let from = from.into();
         let (challenge, _, _, rp_id) = self.take_challenge(request, "sign_in").await?;
         origins_may_use(origins, &rp_id)?;
         let res = &credential["response"];
@@ -405,7 +413,11 @@ impl Kernel {
         .bind(&id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(p) = row.filter(|p| !(refuse_staff && crate::zones::is_staff(&p.kind))) else { return Err(refused("it is not known here")) };
+        let refused_here = match &row {
+            Some(p) => self.refuses_here(&from, p.tenant_id, p.user_id, &p.kind).await,
+            None => false,
+        };
+        let Some(p) = row.filter(|_| !refused_here) else { return Err(refused("it is not known here")) };
         if p.rp_id != rp_id || tenant.is_some_and(|t| t != p.tenant_id) {
             return Err(refused("it belongs to another address"));
         }

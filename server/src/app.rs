@@ -604,6 +604,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::SetHostZone);
         tasks.register(crate::tasks::OperatorAdmin(true));
         tasks.register(crate::tasks::OperatorAdmin(false));
+        tasks.register(crate::tasks::ClearStaffNetworks);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }
