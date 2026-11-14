@@ -512,6 +512,12 @@ impl AppManager {
 /// The shell (docs/plan/apps-ui.md): the workspace's apps with their launcher entries, routes and
 /// interfaces.
 impl AppManager {
+    /// The workspace's enabled apps that `ctx`'s zone shows (crate::shell::app_seen): the launcher and
+    /// whatever lists apps for a person.
+    pub async fn shell_apps_for(&self, ctx: &Ctx) -> Result<Vec<crate::shell::ShellApp>> {
+        Ok(self.shell_apps(ctx.tenant).await?.into_iter().filter(|a| crate::shell::app_seen(ctx, a)).collect())
+    }
+
     /// A workspace's enabled apps, in install order.
     pub async fn shell_apps(&self, tenant: Uuid) -> Result<Vec<crate::shell::ShellApp>> {
         Ok(self

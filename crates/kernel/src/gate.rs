@@ -78,7 +78,8 @@ impl StaffNetworks {
 
 /// Whether the networks apply to a credential of this kind: people's, not keys of machines.
 pub fn applies_to(credential: Credential) -> bool {
-    !matches!(credential, Credential::ApiKey | Credential::Scim)
+    // Queued work has no caller's address: the request that queued it was checked when it came in.
+    !matches!(credential, Credential::ApiKey | Credential::Scim | Credential::Queued)
 }
 
 /// The one refusal of a credential from outside the networks (HTTP 403, code `network`). It says

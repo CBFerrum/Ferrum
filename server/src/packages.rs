@@ -83,6 +83,15 @@ macro_rules! apps {
         pub fn register(hooks: &mut HookRegistry) -> Result<(), String> {
             ferrum_app_erp::register(hooks);
             let mut sources: Vec<(String, std::sync::Arc<dyn ferrum_domain::reports::ReportSource>)> = Vec::new();
+            // Which packages give each report (zones, level 2): its app's own.
+            let mut owners: std::collections::HashMap<String, Vec<String>> = Default::default();
+            let mut own = |packages: &[String], given: &[std::sync::Arc<dyn ferrum_domain::reports::ReportSource>]| {
+                for name in given.iter().flat_map(|s| s.catalog()).filter_map(|e| e["name"].as_str().map(str::to_string)) {
+                    owners.insert(name, packages.to_vec());
+                }
+            };
+            let erp: Vec<String> = ferrum_app_erp::packages().map(|ps| ps.iter().map(|p| p.name().to_string()).collect()).unwrap_or_default();
+            own(&erp, &ferrum_app_erp::reports());
             sources.extend(ferrum_app_erp::reports().into_iter().map(|s| ("erp".to_string(), s)));
             $(
                 #[cfg(feature = $nfeature)]
@@ -94,6 +103,7 @@ macro_rules! apps {
                     } else {
                         hooks.scoped(&packages, |h| $nkrate::register(h));
                     }
+                    own(&packages, &$nkrate::reports());
                     sources.extend($nkrate::reports().into_iter().map(|s| ($nfeature.to_string(), s)));
                 }
             )*
@@ -108,9 +118,11 @@ macro_rules! apps {
             for app in crate::extensions::all() {
                 let packages: Vec<String> = (app.packages)().map(|ps| ps.iter().map(|p| p.name().to_string()).collect()).unwrap_or_default();
                 hooks.scoped(&packages, |h| (app.register)(h));
+                own(&packages, &(app.reports)());
                 sources.extend((app.reports)().into_iter().map(|s| (app.id.to_string(), s)));
             }
             let _ = hooks;
+            ferrum_domain::reports::set_owners(owners);
             // Set, not added to: the set-up runs twice in one process on `ferrum start`.
             ferrum_domain::reports::set_sources(sources)
         }
@@ -159,6 +171,29 @@ macro_rules! apps {
             )*
             for app in crate::extensions::all() {
                 out.extend(names(app.id, (app.reports)()));
+            }
+            out
+        }
+
+        /// Every compiled app's reports: (report, app, the entity it is gated on, the app's own packages).
+        #[cfg(test)]
+        fn report_gates() -> Vec<(String, &'static str, Option<String>, Vec<String>)> {
+            let gates = |app: &'static str, packages: Result<Vec<Package>, String>, sources: Vec<std::sync::Arc<dyn ferrum_domain::reports::ReportSource>>| {
+                let packages: Vec<String> = packages.unwrap_or_default().iter().map(|p| p.name().to_string()).collect();
+                sources
+                    .iter()
+                    .flat_map(|s| s.catalog())
+                    .map(|e| (e["name"].as_str().unwrap_or_default().to_string(), app, e["entity"].as_str().map(str::to_string), packages.clone()))
+                    .collect::<Vec<_>>()
+            };
+            #[allow(unused_mut)]
+            let mut out = gates("erp", ferrum_app_erp::packages().map_err(|e| e.to_string()), ferrum_app_erp::reports());
+            $(
+                #[cfg(feature = $nfeature)]
+                out.extend(gates($nfeature, $nkrate::packages().map_err(|e| e.to_string()), $nkrate::reports()));
+            )*
+            for app in crate::extensions::all() {
+                out.extend(gates(app.id, (app.packages)().map_err(|e| e.to_string()), (app.reports)()));
             }
             out
         }
@@ -609,6 +644,72 @@ mod tests {
         assert!(catalog.package("core").is_some());
         assert_eq!(catalog.unknown_form_fields(), Vec::<String>::new(), "forms place fields nothing defines");
         let _ = std::fs::remove_dir(&empty);
+    }
+
+    /// Reports are narrowed by zones as records are (crate::zones, level 2): `/api/reports/{name}` runs a report only
+    /// for whoever may read the entity it names, so that entity must be one of its own app's packages. A report gated
+    /// on another app's entity (a shared one such as Customer) would run its app's own SQL for staff whose zone leaves
+    /// that app out.
+    #[test]
+    fn every_report_is_gated_on_its_own_apps_entity() {
+        let empty = std::env::temp_dir().join(format!("ferrum-no-packages-gates-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        let catalog = super::base_catalog(&empty).unwrap_or_else(|e| panic!("catalog: {e}"));
+        let _ = std::fs::remove_dir(&empty);
+        let package_of = |entity: &str| catalog.packages().find(|p| p.entities.iter().any(|e| e.name == entity)).map(|p| p.name().to_string());
+        let offenders: Vec<String> = super::report_gates()
+            .into_iter()
+            .filter_map(|(name, app, entity, packages)| {
+                let Some(entity) = entity else { return Some(format!("{app}'s report {name} names no entity")) };
+                match package_of(&entity) {
+                    Some(p) if packages.contains(&p) => None,
+                    Some(p) => Some(format!("{app}'s report {name} is gated on {entity}, of package {p}, not one of {app}'s ({})", packages.join(", "))),
+                    None => Some(format!("{app}'s report {name} is gated on {entity}, which no package defines")),
+                }
+            })
+            .collect();
+        // Gated on an entity of a package their app depends on: each is also kept to its app's own packages where it
+        // runs (ferrum_domain::reports::set_owners), so a zone that leaves the app out lists and runs none of them.
+        // Moving their gate to an entity of their own app is the apps' to do; a new one here fails.
+        const GATED_ELSEWHERE: &[&str] = &[
+            "eu_ec_sales_list",
+            "eu_oss_return",
+            "fr_e_reporting",
+            "ca_gst_hst_return",
+            "ca_qst_return",
+            "us_sales_tax",
+            "us_economic_nexus",
+            "us_1099",
+            "sg_gst_f5",
+            "my_sst02",
+            "id_spt_masa_ppn",
+            "th_pp30",
+            "ph_2550q",
+            "vn_01_gtgt",
+            "sa_vat_return",
+            "ae_vat201",
+            "au_bas_gst",
+            "nz_gst101a",
+            "jp_consumption_tax",
+            "mx_iva",
+            "cn_vat_return",
+            "project_profitability",
+            "portfolio_overview",
+            "web_sales",
+            "top_products",
+            "purchase_analytics",
+            "variant_stock_matrix",
+            "stock_ageing",
+            "finance_overview",
+            "cash_flow_forecast",
+            "receivables_by_due_date",
+            "work_order_operations",
+            "edge_availability",
+            "edge_readings",
+            "retail_stock_by_store",
+        ];
+        let new: Vec<&String> = offenders.iter().filter(|o| !GATED_ELSEWHERE.iter().any(|n| o.contains(&format!("report {n} ")))).collect();
+        assert!(new.is_empty(), "{new:#?}");
     }
 
     /// Document hooks run only where their package is (docs/plan/apps-ui.md §13): a workspace

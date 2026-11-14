@@ -30,11 +30,13 @@ async fn index(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Resp
     // Each module with the rows of its app's own pages this person sees (`shell.menu`, BD-63).
     let st = crate::state::app_state(&app)?;
     let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
-    let mut pages = crate::shell::menu_pages(&st.apps.shell_apps(ctx.tenant).await?, &ctx, &kind);
+    let mut pages = crate::shell::menu_pages(&st.apps.shell_apps_for(&ctx).await?, &ctx, &kind);
     let modules: Vec<Value> = ctx
         .schema
         .modules
         .iter()
+        // Of a package the caller's zone leaves out (crate::zones, level 2): not shown.
+        .filter(|m| ctx.sees_package(&m.package))
         .map(|m| {
             let mut v = json!(m);
             if let Some(rows) = pages.remove(&m.name) {
@@ -45,7 +47,7 @@ async fn index(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Resp
         .collect();
     Ok(Json(json!({
         "version": ctx.schema.version,
-        "packages": ctx.schema.packages,
+        "packages": ctx.schema.packages.iter().filter(|p| ctx.sees_package(p)).collect::<Vec<_>>(),
         "modules": modules,
         "entities": entities,
         "warnings": if ctx.is_admin { json!(ctx.schema.warnings) } else { json!([]) },
@@ -54,7 +56,8 @@ async fn index(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Resp
 }
 
 async fn entity(Auth(ctx): Auth, Path(name): Path<String>) -> ApiResult<Response> {
-    let ent = ctx.schema.entity(&name).cloned().ok_or_else(|| ApiError(Error::NotFound(format!("entity {name}"))))?;
+    // One the caller's zone leaves out (crate::zones, level 2) is not there, child entities too.
+    let ent = ctx.schema.entity(&name).filter(|_| ctx.sees(&name)).cloned().ok_or_else(|| ApiError(Error::NotFound(format!("entity {name}"))))?;
     if ctx.perms.access(&name, Action::Read) == Access::None && ent.def.kind != ferrum_meta::EntityKind::Child {
         return Err(ApiError(Error::Forbidden(format!("not permitted to read {name}"))));
     }

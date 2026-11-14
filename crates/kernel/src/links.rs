@@ -2,7 +2,8 @@
 //! field names, with its lines, as an expression sees a record; null when the field is empty or the record is gone.
 //!
 //! Read as the workspace, whoever saves or presses: a check must not pass or fail by who runs it (as BD-10 reads
-//! aggregates). Secret fields are left out. Read in the caller's transaction without a lock: a rule over a linked
+//! aggregates), within the caller's zone: a record of an entity the zone leaves out (crate::zones, level 2) reads as
+//! absent, so nothing of it reaches a check or the message a refusal shows. Secret fields are left out. Read in the caller's transaction without a lock: a rule over a linked
 //! record sees it as it is when the save runs. One level: a link of the linked record stays an id.
 
 use crate::Kernel;
@@ -26,10 +27,10 @@ pub(crate) async fn load(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, do
     if names.is_empty() {
         return Ok(Value::Object(out));
     }
-    let workspace = Ctx::system(ctx.tenant, ctx.schema.clone());
+    let workspace = Ctx::system_for(ctx);
     for name in names {
         let to = ent.field(name).filter(|f| f.ftype == FieldType::Link).and_then(|f| f.to.as_deref());
-        let tent = to.and_then(|t| ctx.schema.entity(t)).cloned();
+        let tent = to.and_then(|t| ctx.schema.entity(t)).filter(|t| workspace.sees(&t.def.name)).cloned();
         let id = doc.get(name).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
         let (Some(tent), Some(id)) = (tent, id) else {
             out.insert(name.clone(), Value::Null);

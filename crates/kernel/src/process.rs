@@ -787,19 +787,24 @@ impl Kernel {
     /// release was reviewed to use. Never the rights of whoever activated it.
     async fn run_ctx(&self, tenant: Uuid, run: Uuid) -> Result<(Ctx, bool)> {
         let mut tx = self.db.tenant_tx(tenant).await?;
-        let who: Option<(Option<Uuid>, String)> = sqlx::query_as("select requester, solution from logic_run where tenant_id = $1 and id = $2")
-            .bind(tenant)
-            .bind(run)
-            .fetch_optional(&mut *tx)
-            .await?;
-        let Some((requester, solution)) = who else {
+        let who: Option<(Option<Uuid>, String, Option<String>)> =
+            sqlx::query_as("select requester, solution, zone from logic_run where tenant_id = $1 and id = $2")
+                .bind(tenant)
+                .bind(run)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((requester, solution, zone)) = who else {
             tx.commit().await?;
             return Err(Error::NotFound("run".into()));
         };
         if let Some(user) = requester {
             tx.commit().await?;
-            let ctx = self.load_ctx(tenant, user, None, format!("run-{run}")).await;
-            return ctx.map(|c| (c, false)).map_err(|_| Error::Forbidden("whoever the run acts for can no longer act here".into()));
+            // In the zone the person's act was in (crate::zones, level 2); one this replica does not hold refuses.
+            let ctx = self.load_ctx_in(tenant, user, zone.as_deref(), format!("run-{run}")).await;
+            return ctx.map(|c| (c, false)).map_err(|e| match e {
+                Error::Forbidden(m) if zone.is_some() => Error::Forbidden(m),
+                _ => Error::Forbidden("whoever the run acts for can no longer act here".into()),
+            });
         }
         let account: Option<(Uuid, bool)> = sqlx::query_as("select id, is_active from app_user where tenant_id = $1 and email = $2")
             .bind(tenant)

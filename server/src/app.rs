@@ -147,8 +147,7 @@ impl Hooks for App {
         // (a guest of a newer build's database too).
         crate::shell::check_names(&settings, &ctx.config.server.host).map_err(Error::Message)?;
         // Zones (docs/operations.md, "Zones"): anything not plainly right refuses to start.
-        let zones =
-            Arc::new(ferrum_kernel::zones::Zones::parse(&settings.zones, &settings.zone, &settings.zone_default, &settings.zone_mode).map_err(Error::Message)?);
+        let zones = ferrum_kernel::zones::Zones::parse(&settings.zones, &settings.zone, &settings.zone_default, &settings.zone_mode).map_err(Error::Message)?;
         zones.check_background(settings.run_background).map_err(Error::Message)?;
         // The audit sink (docs/operations.md, "Sending the audit log elsewhere"): checked before anything else too.
         let audit_sink = ferrum_kernel::audit_sink::Sink::parse(&settings.audit_sink_url, &settings.audit_sink_secret).map_err(Error::Message)?;
@@ -266,6 +265,9 @@ impl Hooks for App {
         )
         .await
         .map_err(|e| Error::Message(format!("kernel boot: {e}")))?;
+        // A zone that limits staff to some apps names them by id: each resolved to its packages, or the server does not start.
+        let zones = Arc::new(crate::zone::resolve(zones, &kernel).await.map_err(Error::Message)?);
+        kernel.set_zones(zones.clone());
         ferrum_app_erp::maintenance(&kernel).await.map_err(|e| Error::Message(format!("ERP's upkeep: {e}")))?;
         if let Err(e) = kernel.registry.catalog().closure(&kernel.settings.signup.packages) {
             return Err(Error::Message(format!("FERRUM_SIGNUP_PACKAGES: {e}")));

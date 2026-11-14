@@ -98,6 +98,8 @@ pub struct Job {
     /// What the last [`Job::progress`] said, from this attempt or an earlier one.
     pub resumed: Value,
     pub undo_on_cancel: bool,
+    /// The zone of the request that queued it, when that zone narrows staff (crate::zones, level 2).
+    pub zone: Option<String>,
 }
 
 impl Job {
@@ -128,13 +130,18 @@ impl Job {
         Ok(asked.unwrap_or(true))
     }
 
-    /// The person who asked, with the rights they have now.
+    /// The person who asked, with the rights they have now, in the zone they asked from.
     pub async fn creator(&self, k: &Kernel) -> Result<Ctx> {
         let user = self.created_by.ok_or_else(|| Error::Forbidden("this job has nobody behind it".into()))?;
-        k.load_ctx(self.tenant_id, user, None, format!("job-{}", self.id)).await.map_err(|e| match e {
+        k.load_ctx_in(self.tenant_id, user, self.zone.as_deref(), format!("job-{}", self.id)).await.map_err(|e| match e {
             Error::Unauthorized(m) => Error::Forbidden(format!("the person who asked can no longer do this: {m}")),
             other => other,
         })
+    }
+
+    /// The system, for this job: within the zone of the request that queued it (crate::zones, level 2).
+    pub async fn system(&self, k: &Kernel) -> Result<Ctx> {
+        k.system_in(self.tenant_id, self.zone.as_deref()).await
     }
 }
 
@@ -257,7 +264,7 @@ impl Kernel {
              update job j set status = 'running', attempts = j.attempts + 1, lease_token = $1, lease_until = now() + make_interval(secs => $2), \
                started_at = coalesce(j.started_at, now()) \
              from picked p where j.tenant_id = p.tenant_id and j.id = p.id \
-             returning j.tenant_id, j.id, j.kind, j.payload, j.priority, j.attempts, j.max_attempts, j.created_by, j.correlation_id, j.depth, j.lease_token, j.progress as resumed, j.undo_on_cancel",
+             returning j.tenant_id, j.id, j.kind, j.payload, j.priority, j.attempts, j.max_attempts, j.created_by, j.correlation_id, j.depth, j.lease_token, j.progress as resumed, j.undo_on_cancel, j.zone",
         )
         .bind(Uuid::now_v7())
         .bind(LEASE.as_secs_f64())
@@ -394,6 +401,7 @@ impl Kernel {
             correlation: job.correlation_id.clone().unwrap_or_else(|| format!("job-{}", job.id)),
             priority: Some(job.priority),
             depth: job.depth,
+            zone: Trace::in_zone(job.zone.clone()),
             ..Default::default()
         };
         let Some(handler) = self.job_handler(&job.kind) else {
