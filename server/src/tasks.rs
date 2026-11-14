@@ -839,6 +839,117 @@ impl Task for CheckFiles {
     }
 }
 
+/// What `move_workspace` is told about the source, from the environment (never the command line, never printed):
+/// `FERRUM_MOVE_SOURCE_DATABASE_URL`, `FERRUM_MOVE_SOURCE_SECRET_KEYS` (its `FERRUM_SECRET_KEY`, then its retired keys,
+/// comma-separated), its files (`FERRUM_MOVE_SOURCE_FILES=same`, or `FERRUM_MOVE_SOURCE_FILES_DIR`, or
+/// `FERRUM_MOVE_SOURCE_S3_BUCKET` with `FERRUM_MOVE_SOURCE_S3_REGION` and `FERRUM_MOVE_SOURCE_S3_ENDPOINT`), and
+/// `FERRUM_MOVE_SOURCE_REGION`.
+async fn move_source(st: &crate::state::AppState, vars: &Vars) -> Result<ferrum_kernel::workspace_move::MoveSource> {
+    let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let url = env("FERRUM_MOVE_SOURCE_DATABASE_URL").ok_or_else(|| Error::Message("set FERRUM_MOVE_SOURCE_DATABASE_URL to the source's database".into()))?;
+    let transit = crate::app::kms_transit(&st.settings)?;
+    let mut keys = Vec::new();
+    for k in env("FERRUM_MOVE_SOURCE_SECRET_KEYS").unwrap_or_default().split(',').map(str::trim).filter(|k| !k.is_empty()) {
+        keys.push(ferrum_kernel::kms::resolve(k, transit.as_ref()).await.map_err(|e| Error::Message(format!("FERRUM_MOVE_SOURCE_SECRET_KEYS: {e}")))?);
+    }
+    let files = match (env("FERRUM_MOVE_SOURCE_FILES").as_deref(), env("FERRUM_MOVE_SOURCE_FILES_DIR"), env("FERRUM_MOVE_SOURCE_S3_BUCKET")) {
+        (Some("same"), None, None) => None,
+        (None, dir, bucket) if dir.is_some() != bucket.is_some() => {
+            let mut s = st.settings.clone();
+            s.files_dir = dir.unwrap_or_default();
+            s.s3_bucket = bucket.unwrap_or_default();
+            s.s3_region = env("FERRUM_MOVE_SOURCE_S3_REGION").unwrap_or_default();
+            s.s3_endpoint = env("FERRUM_MOVE_SOURCE_S3_ENDPOINT").unwrap_or_default();
+            s.require_object_storage = false;
+            let storage = std::sync::Arc::new(crate::app::build_storage(&s)?);
+            let objects = std::sync::Arc::new(crate::objects::Objects::new(&s).map_err(Error::Message)?);
+            Some(std::sync::Arc::new(crate::mailer::StorageFiles(storage, objects)) as std::sync::Arc<dyn ferrum_kernel::files::FileStore>)
+        }
+        _ => {
+            return Err(Error::Message(
+                "say where the source keeps its files: FERRUM_MOVE_SOURCE_FILES=same when both installations use one storage, else \
+                 FERRUM_MOVE_SOURCE_FILES_DIR or FERRUM_MOVE_SOURCE_S3_BUCKET (one of them)"
+                    .into(),
+            ));
+        }
+    };
+    // People keep their Ferrum account only between regions that trust each other.
+    let regions = match env("FERRUM_MOVE_SOURCE_REGION") {
+        Some(r) if !st.shell.region.is_empty() && st.shell.regions.iter().any(|(name, _)| *name == r) => Some((r, st.shell.region.clone())),
+        Some(r) => {
+            return Err(Error::Message(format!("FERRUM_MOVE_SOURCE_REGION is {r}, which FERRUM_REGIONS here does not list (or FERRUM_REGION is not set)")));
+        }
+        None => None,
+    };
+    let wait = vars.cli_arg("wait").map_or(Ok(130), |v| v.trim().parse::<u64>().map_err(|_| Error::Message("wait is a whole number of seconds".into())))?;
+    Ok(ferrum_kernel::workspace_move::MoveSource {
+        url,
+        keys,
+        files,
+        regions,
+        base_domain: crate::shell::base_domain(&st.settings),
+        wait: std::time::Duration::from_secs(wait),
+        stop_after: None,
+    })
+}
+
+/// `move_workspace tenant:<slug> [resume:yes] [abort:yes] [wait:<seconds>]`, run where the workspace is going: moves one
+/// workspace here from another installation (docs/operations.md, "Moving one workspace").
+pub struct MoveWorkspace;
+
+#[async_trait]
+impl Task for MoveWorkspace {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "move_workspace".into(),
+            detail: "Run where the workspace goes: moves it here from the installation FERRUM_MOVE_SOURCE_DATABASE_URL names. resume carries on, abort undoes"
+                .into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let slug = vars.cli_arg("tenant").map_err(|_| Error::Message("which workspace: tenant:<slug>".into()))?;
+        // Every argument is `key:value` here: resume:yes, abort:yes.
+        let flag = |name: &str| vars.cli_arg(name).is_ok_and(|v| v == "yes");
+        let run = match (flag("resume"), flag("abort")) {
+            (false, false) => ferrum_kernel::workspace_move::Run::Start,
+            (true, false) => ferrum_kernel::workspace_move::Run::Resume,
+            (false, true) => ferrum_kernel::workspace_move::Run::Abort,
+            (true, true) => return Err(Error::Message("resume or abort, not both".into())),
+        };
+        let from = move_source(&st, vars).await?;
+        let say = |line: &str| println!("{line}");
+        st.kernel.move_workspace(slug, &from, run, &say).await.map_err(refused)?;
+        Ok(())
+    }
+}
+
+/// `finish_move tenant:<slug> note:"..."`, run where the workspace was: deletes what it left behind when it moved.
+pub struct FinishMove;
+
+#[async_trait]
+impl Task for FinishMove {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "finish_move".into(),
+            detail: "Run where a workspace moved from: deletes the frozen copy it left here (its rows, and its files unless the storage is shared)".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let slug = vars.cli_arg("tenant").map_err(|_| Error::Message("which workspace: tenant:<slug>".into()))?;
+        let note = vars.cli_arg("note").map_err(|_| Error::Message("say what you checked at its new place: note:\"...\"".into()))?;
+        let done = k.finish_move(slug, note).await.map_err(refused)?;
+        println!(
+            "{slug}: {} rows and {} files deleted here; it lives at {} now",
+            done["rows"],
+            done["files"],
+            done["moved_to"].as_str().unwrap_or("its new place")
+        );
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

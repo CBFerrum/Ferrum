@@ -1296,8 +1296,8 @@ ferrum task plan_move reason:"to Kubernetes"          # valid:<hours> (24), wait
 3. It fences the database, in one transaction that waits for every transaction in flight to end (10 s at
    most; past that it says so and changes nothing more: run it again, or cancel). From then every
    transaction of every replica is read-only. Reading works; anything that would change something answers
-   503 with "this database takes no changes just now: another region writes, or the installation is moving";
-   nothing that reaches outside runs. A replica started on it starts (its start-up steps write) and then
+   503 with "this database takes no changes just now: another region writes, the installation is moving, or this
+   workspace is moving"; nothing that reaches outside runs. A replica started on it starts (its start-up steps write) and then
    serves read-only. `ferrum task doctor` reports it as `move`.
 
 The mark is valid for `valid` hours from the fence. Copy the database after `plan_move` has finished, never
@@ -1400,6 +1400,107 @@ It checks that the copy is not held, takes changes and sends the waiting deliver
 still fenced and its doctor says it is the source of a planned move, and the copy's doctor checks; then
 that a copy made without `plan_move` is held. The chart's `copy` and `recovery` modes and `adopt_move` on
 a promoted copy have not been run.
+
+## Moving one workspace
+
+One workspace moves from one installation to another, with its history, files and waiting work, and nothing
+else moves: to a cell of its own (its own database, files and keys), to another region, or back to a shared
+installation. Both installations keep running. Use "Moving an installation" for everything at once, and
+"Taking one workspace back" to undo one workspace's mistake from a backup.
+
+**What it takes.** Both installations run one build (the same image), with the same apps available; the
+workspace's apps at their versions are available at the target. The target's database role may turn
+referential triggers off for as long as it takes, as for `extract_tenant`
+(`GRANT SET ON PARAMETER session_replication_role TO ferrum`, taken back afterwards). The workspace has no
+process run open (they live in the source's workflow service). A workspace whose erased people's opt-outs are
+kept (as digests under the source's key) needs that key in the target's `FERRUM_RETIRED_SECRET_KEYS` first,
+or the move refuses: without it those people could be sent marketing again.
+
+**Running it.** Run it where the workspace is going, with the source given in the environment (never on the
+command line; none of it is printed):
+
+| Variable | What it is |
+|---|---|
+| `FERRUM_MOVE_SOURCE_DATABASE_URL` | The source's database, as its `DATABASE_URL` (the role it gives must be able to read every row) |
+| `FERRUM_MOVE_SOURCE_SECRET_KEYS` | The source's `FERRUM_SECRET_KEY`, then each of its `FERRUM_RETIRED_SECRET_KEYS`, comma-separated (plain, or wrapped by this installation's `FERRUM_KMS_TRANSIT`) |
+| `FERRUM_MOVE_SOURCE_FILES` | `same` when both installations use one bucket or directory; otherwise one of the two below |
+| `FERRUM_MOVE_SOURCE_FILES_DIR` | The source's files directory, mounted here |
+| `FERRUM_MOVE_SOURCE_S3_BUCKET`, `_S3_REGION`, `_S3_ENDPOINT` | The source's bucket, read with this installation's `AWS_*` credentials |
+| `FERRUM_MOVE_SOURCE_REGION` | The source's `FERRUM_REGION`, when it is one of this installation's `FERRUM_REGIONS` |
+
+```bash
+ferrum task move_workspace tenant:acme                 # wait:<seconds> (130) for the work in hand at the source
+ferrum task move_workspace tenant:acme resume:yes      # carry on after it stopped, at whatever step
+ferrum task move_workspace tenant:acme abort:yes       # undo, until the point of no return
+ferrum task finish_move tenant:acme note:"checked at eu-2"   # at the source, later: delete what it left there
+```
+
+**The steps**, each recorded on both sides (`workspace_move`), so that running it again carries on:
+
+1. **Checks**, changing nothing: one build on both sides (the build that last brought each database up to date,
+   and no work waiting for a newer one), the same tables, no restore hold or planned move on either side, the
+   name and id free here, and every value the workspace sealed opened with the keys given.
+2. **Held** at the source: no new background work starts for it (events, webhooks, jobs, schedules, service
+   targets, pulls, approvals' reminders, plugin schedules, co-editing saves, expired uploads, the audit
+   anchor). People go on working. It waits `wait` seconds, so that what was in hand finishes.
+3. **Frozen** at the source, once no job of it is running (otherwise it says so: run it again with
+   `resume:yes`). From then every transaction of the workspace is read-only, for people and system work
+   alike: reading works; changing anything answers 503 with `Retry-After`, "this workspace is moving".
+4. **Copied** here, in one transaction, from one snapshot of the source, frozen here too (`arriving`). Every
+   reference is checked before it commits.
+5. **Files** copied from the source's storage (an object already here with the same size is skipped), then
+   every file the database names is checked here.
+6. **Moved**, the point of no return: in one transaction at the source, every table is read again and compared
+   with what was copied. Anything changed since (a writer the freeze does not stop, below) refuses it and
+   removes the copy here: run it again with `resume:yes` and it copies afresh.
+7. **Arrived**: the workspace takes changes here, and what waited goes out from here, once.
+
+At no moment do both copies take changes. A crash before step 6 leaves the source frozen and the copy here
+frozen: `resume:yes` carries on, `abort:yes` deletes the copy here (its files too, unless the storage is shared)
+and lets the source take changes again. A crash after it leaves the source moved: `resume:yes` finishes, and
+`abort:yes` is refused. Only one run works on a workspace at a time (a lock on the source's database).
+
+**What travels.** The workspace itself and every row of it, its history included (the audit trail and its
+daily anchors, legal holds and the versions kept under them, restrictions, consent, erasures' records: a move
+carries history, unlike going back to a backup), its addresses (custom domains keep working once DNS points
+here), API keys (integrations keep working), passwords, second factors and passkeys, and its waiting events
+and queued jobs. Values sealed with the source's key are sealed again with this installation's. Audit events
+keep their numbers, so each record's chain and each day's anchor still verify; events are numbered anew here,
+in the same order, and everything that names one follows.
+
+**What does not.** Sessions: everyone signs in again, and devices subscribe to notifications again on their next
+visit. Sign-ins of MCP clients and other OAuth clients: they connect again. Codes, sign-in flows and direct
+uploads in progress. Without regions, the link between members and their Ferrum accounts: they sign in with
+the workspace's password (an administrator sets one for whoever never had one). With regions that trust each
+other, each member keeps their Ferrum account, as a visiting account here (or their own, when it lives here).
+The privacy and access journals stay with the source's storage: they serve a restore of the source.
+Fingerprints a receipt kept of a secret parameter were made with the source's key. Opt-out links in mail
+sent before the move are signed with the source's key, and work here only while it is a retired key here.
+
+**What people notice.** While frozen (minutes for most workspaces), changes answer 503 and are to be retried;
+reading works. After it, they sign in again, at the same address once DNS points here.
+
+**Repointing.** After "arrived", point the workspace's own addresses (custom domains, its subdomain) at this
+installation. Until then the source's copy answers each of them with a page saying the workspace has moved,
+or redirects to its address here when it has another one here. With `FERRUM_BASE_DOMAIN` here, it gets
+`{slug}.{base}` as it arrives (its primary address, unless that is a custom domain), and the source's addresses
+redirect there. The accounts hosts of other regions find it here (`/_directory`), and the source's directory
+no longer lists it.
+
+**At the source, afterwards.** It keeps the workspace, frozen, with where it went, until `finish_move` deletes
+it (its rows, and its files unless the storage is shared); nothing deletes it by itself. Keep it until you
+are sure of the new place. To move a workspace back to an installation it left, run `finish_move` there first.
+
+**What the freeze does not stop.** Writes that are not a kernel transaction of the workspace: a sign-in attempt
+(its count of failures), an app's own upkeep (`ferrum_app_*::maintenance`), and the hourly maintenance's other
+steps. Step 6 finds what they changed and refuses, so nothing is lost, and the next run copies afresh; it reads
+the source within one transaction, and a write that lands in the instant between that reading and its commit
+is the one it cannot see.
+
+**Refused rather than guessed.** A different build on either side; another app or version; a value no key opens;
+erased opt-outs without the source's key here; a workspace named outside its own tables (a private app's
+release); a counter of the whole database other than events', or an event's number kept where this does not
+know of it; an open process run; a name, address or API key prefix this installation has already.
 
 ## Capacity
 
@@ -2544,7 +2645,8 @@ have run them. Before enabling dispatch, compare each site's console with **Need
 
 Restoring a shared database takes everyone back, which is rarely what one workspace's accident calls for.
 Instead, restore a backup to a database of its own, at the version this deployment runs, and take that one
-workspace from it:
+workspace from it. (To move a workspace to another installation as it is now, with its history, use
+`move_workspace` instead: "Moving one workspace".)
 
 ```bash
 ferrum task extract_tenant from:"postgres://ferrum:...@restore-host/ferrum_copy" tenant:acme note:"deleted a ledger by mistake"
@@ -2673,6 +2775,8 @@ ferrum task plan_move reason:"..." [valid:<hours, 24>] [wait:<seconds, 130>]   #
 ferrum task cancel_move reason:"..."   # the move does not happen: lift the fence
 ferrum task adopt_move reason:"..."    # on a physical copy of a fenced database: this is the copy, carry on
 ferrum task check_files [tenant:<slug>]   # every file the database names (and app bundles), looked for in storage; lists those missing
+ferrum task move_workspace tenant:<slug> [resume:yes] [abort:yes] [wait:<seconds, 130>]   # where it goes: move one workspace here (Moving one workspace)
+ferrum task finish_move tenant:<slug> note:"..."   # where it was: delete the frozen copy a workspace that moved left behind
 ```
 
 **Notifications by email.** A notification someone chose to have by email goes out through the
