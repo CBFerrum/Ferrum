@@ -393,6 +393,24 @@ mod tests {
         assert!(text.contains(&format!("ferrum_busiest_workspace_seconds{{workspace=\"{heavy}\"}} 30.000")), "{text}");
     }
 
+    #[test]
+    fn requests_answered_at_once_are_each_counted_once() {
+        let busy = Busy::default();
+        let w = ids(4);
+        std::thread::scope(|s| {
+            for t in 0..8 {
+                let (busy, w) = (&busy, &w);
+                s.spawn(move || {
+                    for i in 0..1000 {
+                        busy.add(w[(t + i) % 4], 3, 1_000);
+                    }
+                });
+            }
+        });
+        let counted: Vec<f64> = busy.busiest(10, 3).into_iter().map(|(_, s)| s).collect();
+        assert_eq!(counted, vec![2.0; 4], "8 × 1000 requests of a millisecond, none lost, none twice");
+    }
+
     /// Only a request that something answering it placed in a workspace is counted, to that workspace.
     #[tokio::test]
     async fn a_request_without_a_workspace_is_not_counted() {

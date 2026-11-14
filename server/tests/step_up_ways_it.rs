@@ -860,6 +860,25 @@ async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &
     assert_eq!(finish(&s, ip, ACME, &kim_acme, &proof).await.status, StatusCode::UNAUTHORIZED, "once");
     age(&k).await;
 
+    // ── At once, as on two replicas: a request makes one proof at most, and a proof is taken once (the database decides) ──
+    let ip = "10.1.3.9";
+    let state = begin(&s, ip, &kim_acme, dialog).await;
+    let (o1, o2) = (challenge(&s, ip, &state, Cred::Page).await.json(), challenge(&s, ip, &state, Cred::Page).await.json());
+    let (c1, c2) = (kims.get(&o1, kim_id), kims.get(&o2, kim_id));
+    let (a1, a2) = tokio::join!(ceremony(&s, ip, &state, &o1, c1), ceremony(&s, ip, &state, &o2, c2));
+    let made = [&a1, &a2].iter().filter(|a| a.status == StatusCode::OK).count();
+    assert!(made <= 1, "two answers to one request at once, one proof at most: {} {}", a1.body, a2.body);
+    let state = begin(&s, ip, &kim_acme, dialog).await;
+    let o = challenge(&s, ip, &state, Cred::Page).await.json();
+    let next = ceremony(&s, ip, &state, &o, kims.get(&o, kim_id)).await.json()["redirect"].as_str().unwrap().to_string();
+    let handed: HashMap<String, String> = reqwest::Url::parse(&next).unwrap().query_pairs().into_owned().collect();
+    let proof = json!({"state": handed["state"], "code": handed["code"], "dialog": dialog});
+    let (f1, f2) = tokio::join!(finish(&s, ip, ACME, &kim_acme, &proof), finish(&s, ip, ACME, &kim_acme, &proof));
+    let mut both = [f1.status, f2.status];
+    both.sort();
+    assert_eq!(both, [StatusCode::NO_CONTENT, StatusCode::UNAUTHORIZED], "one proof finished twice at once: taken once");
+    age(&k).await;
+
     // ── A proof for another dialog is not taken, and is used up ──
     let ip = "10.1.3.3";
     let state = begin(&s, ip, &kim_acme, dialog).await;
@@ -920,9 +939,13 @@ async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &
     assert_eq!(a.status, StatusCode::UNAUTHORIZED, "another workspace's address, live as it is: {}", a.body);
     let mut tx = k.db.system_tx().await.unwrap();
     let proofs: i64 =
-        sqlx::query_scalar("select count(*) from sso_flow where provider_id is null and code_hash is not null").fetch_one(&mut *tx).await.unwrap();
+        sqlx::query_scalar("select count(*) from sso_flow where state_hash = encode(sha256(convert_to($1, 'UTF8')), 'hex') and code_hash is not null")
+            .bind(&state)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(proofs, 0, "no proof was made for any refused request");
+    assert_eq!(proofs, 0, "no proof was made for it");
 
     // ── Where the zone admits no staff, none of it is served, at the accounts host nor on the workspace's address ──
     let outside = "10.9.0.1";
