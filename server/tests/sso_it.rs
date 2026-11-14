@@ -465,8 +465,10 @@ async fn step_up(k: &Kernel, idp: &Shared, tenant: Uuid, pat: Uuid, provider: Uu
     assert!(k.sso_step_up_finish(&who, HERE, &state, &proof, &from).await.is_err(), "a proof shown on another host is used up");
     let (state, code) = again(k, idp, &who, json!({"sub": "okta-pat-2", "auth_time": now()})).await;
     let (state, proof) = handed(&k.sso_step_up_back(&state, Some(&code), &from).await.unwrap());
+    // Well past the minute, not one second past it: the database rounds this moment to a whole second and the
+    // server truncates its own, so "61 seconds ago" could read as exactly 60 and be accepted.
     let mut tx = k.db.system_tx().await.unwrap();
-    sqlx::query("update sso_flow set answer = jsonb_set(answer, '{at}', to_jsonb(extract(epoch from now())::bigint - 61)) where step_up_session = $1 and code_hash is not null")
+    sqlx::query("update sso_flow set answer = jsonb_set(answer, '{at}', to_jsonb(extract(epoch from now())::bigint - 90)) where step_up_session = $1 and code_hash is not null")
         .bind(sid)
         .execute(&mut *tx)
         .await
