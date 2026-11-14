@@ -514,6 +514,9 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     assert!(a.finish_move("acme", " ").await.is_err(), "it takes saying why");
     let finished = a.finish_move("acme", "checked at B").await.expect("finished");
     assert!(freeze_floor(&a).await.is_empty(), "finished, the source lets go");
+    // Its domain may still point at A: no other workspace there may claim it for a year.
+    let kept: Vec<(String,)> = sql(&a, "select host from host_quarantine where host = 'erp.acme.example' and $1::uuid is not null", t).await;
+    assert_eq!(kept, vec![("erp.acme.example".to_string(),)]);
     assert_eq!(finished["files"], json!(1));
     assert!(!dir_a.join(&file_key).exists());
     a.move_workspace("acme", &back, Run::Start, &quiet).await.expect("back at A");

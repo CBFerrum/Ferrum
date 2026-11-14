@@ -2,7 +2,8 @@
 //! U6): administrators give it names under the cluster's base domain and domains of its own, for the workspace, its
 //! portal or an app's public site; choose what each `shell` address shows (where `/` lands, which apps the bar lists, its
 //! name in the bar); and keep short paths. The server verifies a domain of its own by fetching
-//! `/.well-known/ferrum-domain` from it (the kernel's `check_hosts`, every minute); a name under the base is live at once.
+//! `/.well-known/ferrum-domain` from it and, with `FERRUM_DOMAIN_PROOF=record`, by its owner's DNS record `_ferrum.{host}`
+//! (the kernel's `check_hosts`, every minute); a name under the base is live at once.
 //! The edge asks `/_tls/ask?domain=` before getting a certificate for a host on demand. What an address shows is never a
 //! wall: every app opens on every `shell` address, and only the operator puts an address in a zone.
 
@@ -14,7 +15,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use ferrum_kernel::shell::{HostPatch, HostShape, PATHS_MAX, ShortPath, TenantHost};
+use ferrum_kernel::shell::{DomainProof, HostPatch, HostShape, PATHS_MAX, ShortPath, TenantHost};
 use ferrum_kernel::{Ctx, Error};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
@@ -63,24 +64,38 @@ fn edge(app: &AppContext) -> Option<String> {
     (!host.is_empty() && host != "localhost" && host.parse::<std::net::IpAddr>().is_err()).then(|| host.to_string())
 }
 
+/// `pending` also for a domain that points here and waits for its record (its last check failed nothing): it is not
+/// failing, and `waiting` tells the two apart.
 fn status(h: &TenantHost) -> &'static str {
     match (h.released_at.is_some(), h.verified_at.is_some(), h.checked_at.is_some()) {
         (true, ..) if h.leaving_until.is_some_and(|u| u > chrono::Utc::now()) => "leaving",
         (true, ..) => "released",
         (false, true, _) => "verified",
-        (false, false, true) => "failing",
-        (false, false, false) => "pending",
+        (false, false, true) if h.failures > 0 => "failing",
+        (false, false, _) => "pending",
     }
 }
 
 /// An address as the list shows it to `apps`' viewer (what their zone shows): its row, with `primary`, `status` and what
-/// they may do with it (`can`); `home` and `apps` name only apps they see.
-fn listed(h: &TenantHost, apps: &[ShellApp]) -> Value {
+/// they may do with it (`can`); `home` and `apps` name only apps they see. A domain of its own that does not work yet says
+/// what it waits for (`waiting`: `domain` until a check finds it pointing here, then `record` where proof by record is
+/// asked), and, never proven where that is asked, the record that proves it (`record`).
+fn listed(h: &TenantHost, apps: &[ShellApp], proof: DomainProof) -> Value {
     let mut v = serde_json::to_value(h).unwrap_or_default();
     let seen = |id: &String| apps.iter().any(|a| &a.id == id);
     let live = h.released_at.is_none();
+    let by_record = proof == DomainProof::Record && live && h.kind == "custom";
     v["primary"] = json!(h.is_primary);
     v["status"] = json!(status(h));
+    v["waiting"] = json!((live && h.kind == "custom" && h.verified_at.is_none()).then(|| if by_record && h.checked_at.is_some() && h.failures == 0 {
+        "record"
+    } else {
+        "domain"
+    }));
+    v["record"] = json!(
+        (by_record && h.proved_at.is_none())
+            .then(|| json!({"name": format!("_ferrum.{}", h.host), "type": "TXT", "value": format!("ferrum-domain={}", h.verify_token)}))
+    );
     v["home"] = json!(h.home.as_ref().filter(|id| seen(id)));
     v["apps"] = json!(h.apps.as_ref().map(|l| l.iter().filter(|id| seen(id)).collect::<Vec<_>>()));
     v["can"] = json!({
@@ -101,9 +116,12 @@ async fn list(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Respo
     let paths = st.kernel.short_paths(ctx.tenant).await?.len();
     let slug = st.shell.workspace(ctx.tenant).await?.slug.clone();
     let homes: Vec<Value> = shell::home_choices(&apps).into_iter().map(|(id, name, route)| json!({"id": id, "name": name, "route": route})).collect();
+    let proof = st.kernel.settings.domain_proof;
     Ok(Json(json!({
-        "domains": hosts.iter().map(|h| listed(h, &apps)).collect::<Vec<_>>(),
+        "domains": hosts.iter().map(|h| listed(h, &apps, proof)).collect::<Vec<_>>(),
         "point_to": edge(&app),
+        // What a domain of the workspace's own needs before it works: to point here, or its DNS record as well.
+        "proof": if proof == DomainProof::Record { "record" } else { "points" },
         "sites": site_apps(&st, ctx.tenant).await?,
         "base": st.shell.base(),
         "name_form": st.shell.base().map(|b| format!("{{name}}--{slug}.{b}")),
@@ -243,7 +261,7 @@ async fn add(Auth(ctx): Auth, State(app): State<AppContext>, Json(d): Json<NewDo
         _ => return Err(Error::field("host", "give either host (a domain of your own) or name (an address under the base domain)").into()),
     };
     let apps = st.apps.shell_apps_for(&ctx).await?;
-    Ok((StatusCode::CREATED, Json(listed(&added, &apps))).into_response())
+    Ok((StatusCode::CREATED, Json(listed(&added, &apps, st.kernel.settings.domain_proof))).into_response())
 }
 
 /// A JSON value that is text or `null` (clears it).
@@ -285,7 +303,7 @@ async fn reshape(
     check_choices(&st, &ctx, patch.home.clone().flatten().as_deref(), patch.apps.clone().flatten().as_deref()).await?;
     let changed = st.kernel.shape_host(&ctx, &host, &patch).await?;
     let apps = st.apps.shell_apps_for(&ctx).await?;
-    Ok(Json(listed(&changed, &apps)).into_response())
+    Ok(Json(listed(&changed, &apps, st.kernel.settings.domain_proof)).into_response())
 }
 
 /// `DELETE /api/admin/domains/{host}`: removes a custom domain or a name under the base. One that was in use keeps serving
@@ -302,7 +320,8 @@ async fn primary(Auth(ctx): Auth, State(app): State<AppContext>, Path(host): Pat
 }
 
 /// `POST /api/admin/domains/{host}/check`: checks a custom domain now, rather than waiting for the
-/// next round, and says how it went.
+/// next round, both that it points here and, where it is asked, its record, and says how it went: `answers` (it works),
+/// `points` (it points here) and `waiting` (`domain`, `record`, or null once it works).
 async fn check(Auth(ctx): Auth, State(app): State<AppContext>, Path(host): Path<String>) -> ApiResult<Response> {
     admin(&ctx)?;
     let st = app_state(&app)?;
@@ -310,10 +329,9 @@ async fn check(Auth(ctx): Auth, State(app): State<AppContext>, Path(host): Path<
     let Some(mine) = st.kernel.list_hosts(&ctx).await?.into_iter().find(|h| h.host == host && h.kind == "custom" && h.released_at.is_none()) else {
         return Err(Error::NotFound("no such domain".into()).into());
     };
-    let scheme = if st.kernel.settings.webhooks_allow_private { "http" } else { "https" };
-    let ok = st.kernel.host_answers(&mine.host, &format!("{scheme}://{}/.well-known/ferrum-domain", mine.host)).await;
-    st.kernel.host_checked(&mine.host, ok).await?;
-    Ok(Json(json!({"host": mine.host, "answers": ok})).into_response())
+    let Some(found) = st.kernel.check_host(&mine.host).await? else { return Err(Error::NotFound("no such domain".into()).into()) };
+    let waiting = (!found.works).then_some(if found.points { "record" } else { "domain" });
+    Ok(Json(json!({"host": mine.host, "answers": found.works, "points": found.points, "waiting": waiting})).into_response())
 }
 
 // ───────────────────────── short paths ─────────────────────────

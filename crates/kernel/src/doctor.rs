@@ -184,6 +184,23 @@ impl Kernel {
             sqlx::query_as("select name, version, count(*) from installed_package group by name, version order by name, version").fetch_all(&mut *tx).await?;
         let catalog = self.registry.catalog();
         out.push(newer_packages(&rows, |p| catalog.package(p).map(|pkg| pkg.manifest.version.clone())));
+        // Proof by record (docs/operations.md, "Custom domains"): domains that work without one were verified before it was
+        // asked, and stay so. Information, not a fault.
+        if self.settings.domain_proof == crate::shell::DomainProof::Record {
+            let unproven: i64 = sqlx::query_scalar(
+                "select count(*) from tenant_host where kind = 'custom' and released_at is null and verified_at is not null and proved_at is null \
+                 and host not like '%.localhost'",
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            out.push(Finding::ok(
+                "domains.proof",
+                match unproven {
+                    0 => "every working domain of a workspace's own was proven by its DNS record".to_string(),
+                    n => format!("{n} working domains of workspaces' own were verified before their DNS record was asked for, and go on working without one"),
+                },
+            ));
+        }
         let tenants: Vec<uuid::Uuid> = sqlx::query_scalar("select id from tenant where status = 'active'").fetch_all(&mut *tx).await?;
         tx.commit().await?;
 

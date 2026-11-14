@@ -168,7 +168,8 @@ impl Kernel {
             sqlx::query_scalar("select count(*) from legal_hold where tenant_id = $1 and released_at is null").bind(tenant).fetch_one(&mut *tx).await?;
         let files: Vec<(Uuid, String)> =
             sqlx::query_as("select id, storage_key from file_object where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
-        let columns = workspace_columns(&self.db, &mut tx).await?;
+        // The slugs it retired stay retired (below).
+        let columns: Vec<_> = workspace_columns(&self.db, &mut tx).await?.into_iter().filter(|(t, _)| t != "tenant_slug_retired").collect();
         let mut rows = BTreeMap::new();
         for (table, column) in &columns {
             let n: i64 =
@@ -203,6 +204,13 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
+        // Its slug stays retired, as the slug guard keeps every slug given up: that trigger does not fire with triggers off,
+        // and the slugs it gave up before stay too (passed over above). Its addresses are kept from every other workspace.
+        sqlx::query("insert into tenant_slug_retired (slug, tenant_id) select slug, id from tenant where id = $1 on conflict (slug) do nothing")
+            .bind(tenant)
+            .execute(&mut *tx)
+            .await?;
+        crate::shell::quarantine_hosts(&mut tx, tenant).await?;
         for (table, column) in &columns {
             sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?;
         }
@@ -219,6 +227,7 @@ impl Kernel {
             .await?;
         tx.commit().await?;
         self.invalidate_tenant_users(tenant);
+        self.hosts.clear();
         tracing::warn!(%tenant, slug, "a workspace was deleted");
         said["deleted"] = json!(true);
         Ok(said)

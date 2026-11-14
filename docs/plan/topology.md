@@ -223,11 +223,39 @@ so two changes each build on the other; `PUT` of short paths replaces the list (
 copies under the source's base (they cannot reach it); a portal or site whose main address was such a name gets the new
 one. A sandbox: no addresses travel (as before); short paths do. A rename (by hand: no task exists): names keep their
 form and keep leading to the workspace; the retired slug keeps anyone else from forming them. Closed or restricted:
-addresses keep answering and do not change. Deleted: rows go with the workspace; names can never be formed again.
+addresses keep answering and do not change. Deleted: rows go with the workspace, its addresses are quarantined and its
+slug stays retired, so names can never be formed again (second slice, below).
 
 **Older builds** (the two-version window): the new columns and the `paths` setting are ignored, so an address lands on
 Home and lists every app, and short paths answer "Nothing is installed here". Nothing protective is lost, so no floor.
 A name under a base equal to the apps base is taken there for an app's origin and answers "Nothing is here" (closed).
+
+**Proof by record** (second slice, 15 November). Pointing here proves only that a domain points at the cluster, which
+itself serves the token. So, with `FERRUM_DOMAIN_PROOF=record` (the default with a base domain), a custom domain first
+becomes verified only when it points here and `_ferrum.{host}` TXT `ferrum-domain={verify_token}` is there
+(`proved_at`). The token is the row's own, 16 random bytes from a cryptographic generator, unchanged: a later row for the
+same host gets another, so an old record proves nothing. Decided:
+- Asked through `hickory-resolver` (the system's resolvers, or `FERRUM_DNS_RESOLVERS`), a resolver per question with no
+  cache, 2 s and two tries. Only TXT records whose name is `_ferrum.{host}` count, their strings joined; any CNAME in the
+  answer, two different `ferrum-domain=` values, no answer or a failure: not proven. Other TXT records there are ignored.
+- The record is asked only when the domain points here, and never again once proven. A row verified before (the
+  migration sets `proved_at = verified_at`) or proven once is verified again by pointing alone; a row verified by
+  pointing alone after the change (a cluster switched from `points`) keeps working, but once it stops it needs its
+  record.
+- A check that finds the domain pointing here counts no failure, so "waits for its record" is `failures = 0` with
+  `checked_at` set: no column for it. The list keeps its five `status` words (that state is `pending`) and adds
+  `waiting` and `record`: the current screen maps `status` through closed tables (`Addresses.tsx` `TONE`, `STATUS()`,
+  `detail`), where a sixth word would show an empty badge and the text of a released address.
+- A floor (`domain_proof`) when a server starts in `record` mode: an older build would verify by pointing alone.
+- A workspace that leaves the database (`delete_tenant`; `finish_move` at the source, whose DNS may still point there)
+  leaves `host_quarantine (host, until)`: every row but a custom domain that never worked, a year from now or from a
+  removed one's leaving end; no workspace column, so no deletion, move or sandbox reaches it. `claimable` reads it with
+  `tenant_host` in one statement. Not for `delete_sandbox` (its name is documented as free again, and it has only the
+  operator's subdomain) nor an aborted move's copy (the workspace lives on at the source).
+- Those deletions run with `session_replication_role = replica`, so the slug guard never fired there, and the loop
+  deleted `tenant_slug_retired` rows too: a deleted workspace's slug, and so its names and apps' origins, could be
+  taken. `delete_tenant` now retires it in the same transaction and keeps the earlier ones. Not `finish_move`: a move
+  copies and counts a workspace's retired slugs, so one kept at the source would stop it coming back.
 
 **Drawbacks kept** (each with what was done):
 
@@ -246,7 +274,12 @@ A name under a base equal to the apps base is taken there for an app's origin an
 | Removing a name by mistake | Its workspace takes it back at once |
 | An administrator in a zone that leaves apps out replaces an address's `apps` | They see and set only the zone's apps; the list they save replaces the address's |
 | Renaming a workspace leaves its names in the old slug's form | They keep working and no one else can form them; no rename task exists to re-make them |
-| A deleted workspace's custom domains are deleted with it (no quarantine) | Found, not changed here: names under the base are safe by their form, custom domains are not |
+| A deleted workspace's custom domains went with it, unquarantined (first slice) | Fixed in the second: `host_quarantine`, and its slug retired, which it was not |
+| Pointing here proves no consent where `FERRUM_DOMAIN_PROOF=points` | The default is `record` with a base domain; operations.md says a cluster of several companies must use it |
+| A domain proven once comes back by pointing alone: if its owner changes and the new owner points it here, it opens the old workspace again | The row never left that workspace; seven failed checks unverify it, and the new owner can ask the operator to release it |
+| An older build ignores `host_quarantine` and the record | `record` puts a floor in place; in `points` mode an older build could hand a deleted workspace's domain on early, as it could any domain pointing here |
+| A deleted sandbox's slug stays free (documented: refresh by the same name) | Not changed: a sandbox has only the operator's `{as}.{base}` |
+| A moved workspace's slug is free at the source after `finish_move`, so another workspace there could get `{slug}.{base}` (`ensure_subdomains` does not ask `claimable`) | Its custom domains are quarantined there; its names under that base were released when it arrived elsewhere |
 
 ## Not doing
 

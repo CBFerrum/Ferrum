@@ -227,6 +227,9 @@ impl Hooks for App {
         if signup.open && mailer.is_none() {
             return Err(Error::Message("FERRUM_SIGNUP=open needs mail (settings.mailer): sign-up proves addresses with emailed codes".into()));
         }
+        let domain_proof =
+            ferrum_kernel::shell::DomainProof::from_setting(&settings.domain_proof, crate::shell::base_domain(&settings).is_some()).map_err(Error::Message)?;
+        let dns_resolvers = ferrum_kernel::shell::dns_resolvers(&settings.dns_resolvers).map_err(Error::Message)?;
         let kernel = Kernel::boot(
             db,
             catalog,
@@ -260,6 +263,8 @@ impl Hooks for App {
                 migrate_at_start: migrate_now,
                 audit_sink,
                 host_leaving_days: settings.host_leaving_days.min(365).into(),
+                domain_proof,
+                dns_resolvers,
                 ..Default::default()
             },
             mailer,
@@ -272,6 +277,10 @@ impl Hooks for App {
         // From now on a rollback to a build that would not enforce them is refused (docs/operations.md, "Protections an
         // older build would not enforce"). A guest of a newer build writes nothing.
         kernel.require_zone_floors(&zones).await.map_err(|e| Error::Message(format!("zones: {e}")))?;
+        // Proof by record: a build that would verify a domain pointing here alone may no longer start (window.rs).
+        if domain_proof == ferrum_kernel::shell::DomainProof::Record {
+            kernel.require_floor(&ferrum_kernel::shell::PROOF_FLOOR, "").await.map_err(|e| Error::Message(format!("domain proof: {e}")))?;
+        }
         ferrum_app_erp::maintenance(&kernel).await.map_err(|e| Error::Message(format!("ERP's upkeep: {e}")))?;
         if let Err(e) = kernel.registry.catalog().closure(&kernel.settings.signup.packages) {
             return Err(Error::Message(format!("FERRUM_SIGNUP_PACKAGES: {e}")));

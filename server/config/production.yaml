@@ -119,6 +119,11 @@ settings:
   clamav_addr: "<%= get_env(name="FERRUM_CLAMAV_ADDR", default="") %>"
   clamav_max_mb: <%= get_env(name="FERRUM_CLAMAV_MAX_MB", default="25") %>
   host_leaving_days: <%= get_env(name="FERRUM_HOST_LEAVING_DAYS", default="14") %>
+  # How a domain of a workspace's own is proven: points, or record (its DNS record as well). Empty: record with a
+  # base domain, points without (docs/operations.md, "Custom domains").
+  domain_proof: "<%= get_env(name="FERRUM_DOMAIN_PROOF", default="") %>"
+  # The DNS servers asked for that record, comma-separated addresses. Empty: the system's.
+  dns_resolvers: "<%= get_env(name="FERRUM_DNS_RESOLVERS", default="") %>"
   apps:
     # App stores (comma-separated base URLs) and the keys whose signatures this server trusts
     # (comma-separated store:<base64> / publisher:<base64>). Uploads: off | private | cluster.

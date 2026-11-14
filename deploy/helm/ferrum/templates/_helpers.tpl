@@ -92,6 +92,12 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{- if ne (toString .Values.names.hostLeavingDays) "" }}
 - {name: FERRUM_HOST_LEAVING_DAYS, value: {{ .Values.names.hostLeavingDays | toString | quote }}}
 {{- end }}
+{{- with .Values.names.domainProof }}
+- {name: FERRUM_DOMAIN_PROOF, value: {{ . | quote }}}
+{{- end }}
+{{- with .Values.names.dnsResolvers }}
+- {name: FERRUM_DNS_RESOLVERS, value: {{ . | quote }}}
+{{- end }}
 {{- if .Values.pdf.enabled }}
 - {name: FERRUM_PDF_URL, value: "http://{{ include "ferrum.fullname" . }}-pdf:3000"}
 {{- end }}

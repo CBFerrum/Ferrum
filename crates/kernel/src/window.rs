@@ -75,6 +75,7 @@ pub const FLOORS: &[&Floor] = &[
     &crate::zones::FLOOR_STEP_UP,
     &crate::controls::STEP_UP_FLOOR,
     &crate::controls::READS_FLOOR,
+    &crate::shell::PROOF_FLOOR,
 ];
 
 fn parse(s: &str) -> DateTime<Utc> {

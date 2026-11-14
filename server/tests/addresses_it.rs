@@ -322,6 +322,31 @@ async fn scenario() {
     assert_eq!(k.primary_host(solo, "shell").await.unwrap(), None);
     assert_eq!(call(&router, Method::GET, "erp.solo.internal", "/crm/", None, None, None).await.0, StatusCode::GONE);
 
+    // Proof by pointing here alone, where the cluster asks no more (no base domain, FERRUM_DOMAIN_PROOF unset): as before,
+    // with what the list adds (docs/operations.md, "Custom domains").
+    assert_eq!(k.settings.domain_proof, ferrum_kernel::shell::DomainProof::Points);
+    let (status, _, body, _) = call(&router, Method::POST, NEW, "/api/admin/domains", None, Some(&token), Some(json!({"host": "points.acme.test"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let added: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        (added["status"].clone(), added["waiting"].clone(), added["record"].clone()),
+        (json!("pending"), json!("domain"), json!(null)),
+        "no record to add"
+    );
+    let (status, _, body, _) = call(&router, Method::POST, NEW, "/api/admin/domains/points.acme.test/check", None, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!({"host": "points.acme.test", "answers": false, "points": false, "waiting": "domain"}));
+    let found = k.host_reached("points.acme.test", true).await.unwrap();
+    assert_eq!(found, Some(ferrum_kernel::shell::HostCheck { works: true, points: true, record: None }), "verified by pointing here: no record asked for");
+    let (_, _, body, _) = call(&router, Method::GET, NEW, "/api/admin/domains", None, Some(&token), None).await;
+    let listed: Value = serde_json::from_str(&body).unwrap();
+    let row = listed["domains"].as_array().unwrap().iter().find(|d| d["host"] == "points.acme.test").cloned().unwrap();
+    assert_eq!(
+        (listed["proof"].clone(), row["status"].clone(), row["waiting"].clone(), row["record"].clone(), row["proved_at"].clone()),
+        (json!("points"), json!("verified"), json!(null), json!(null), json!(null))
+    );
+    assert_eq!(k.route_host("points.acme.test").await.unwrap(), HostRoute::Serve { tenant: acme, target: "shell".into() });
+
     Box::pin(shapes(&base, &st)).await;
 }
 

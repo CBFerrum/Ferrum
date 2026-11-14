@@ -1379,6 +1379,9 @@ impl Kernel {
         sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
         sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
         crate::window::release(&mut tx, &FLOOR, &tenant.to_string()).await?;
+        // Its addresses may still point here: kept from every other workspace. (Its slug is not retired here: the workspace
+        // may come back, bringing the slugs it retired, which a move copies and counts.)
+        crate::shell::quarantine_hosts(&mut tx, tenant).await?;
         let mut rows = 0;
         for (table, column) in workspace_columns(&self.db, &mut tx).await? {
             rows +=
@@ -1393,6 +1396,7 @@ impl Kernel {
         tx.commit().await?;
         self.registry.invalidate(tenant);
         self.invalidate_tenant_users(tenant);
+        self.hosts.clear();
         tracing::warn!(%tenant, slug, "what a workspace that moved away left here was deleted");
         Ok(json!({"workspace": slug, "rows": rows, "files": if shared { 0 } else { keys.len() }, "moved_to": moved_to}))
     }

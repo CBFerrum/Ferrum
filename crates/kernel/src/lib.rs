@@ -213,6 +213,10 @@ pub struct KernelSettings {
     /// How long a released host keeps serving the people already signed in there (`FERRUM_HOST_LEAVING_DAYS`),
     /// so that what their browsers keep for it can be sent, before it redirects ([`Kernel::release_host`]); 0: none.
     pub host_leaving_days: i64,
+    /// How a domain of a workspace's own is proven before it opens anything (`FERRUM_DOMAIN_PROOF`, [`shell::DomainProof`]).
+    pub domain_proof: shell::DomainProof,
+    /// The DNS servers asked for a domain's record (`FERRUM_DNS_RESOLVERS`); none: the system's.
+    pub dns_resolvers: Vec<std::net::SocketAddr>,
 }
 
 impl KernelSettings {
@@ -267,6 +271,8 @@ impl Default for KernelSettings {
             retention_daily_records: 5000,
             migrate_at_start: true,
             host_leaving_days: 14,
+            domain_proof: shell::DomainProof::Points,
+            dns_resolvers: Vec::new(),
         }
     }
 }

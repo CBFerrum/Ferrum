@@ -27,6 +27,56 @@ pub const HOST_MAX_FAILURES: i32 = 7;
 pub const HOST_REDIRECT_DAYS: i64 = 90;
 /// …and nobody may claim it for this long after its release.
 pub const HOST_QUARANTINE_DAYS: i64 = 365;
+/// How long one check waits for an answer about a domain's DNS record (twice at most).
+const RECORD_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How a domain of a workspace's own is proven before it opens anything (`FERRUM_DOMAIN_PROOF`, docs/operations.md, "Custom
+/// domains"). Pointing here proves only that: the cluster itself serves the token it checks for. Its record proves that
+/// the domain's owner gave it to this workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DomainProof {
+    /// `/.well-known/ferrum-domain` there answers its token (as before the setting).
+    #[default]
+    Points,
+    /// That, and its DNS holds `_ferrum.{host}` TXT `ferrum-domain={token}` when it first becomes verified.
+    Record,
+}
+
+impl DomainProof {
+    /// The setting as written: `points`, `record`, or empty for the default, `record` on a cluster of many workspaces
+    /// (one with a base domain) and `points` otherwise.
+    pub fn from_setting(raw: &str, base_domain: bool) -> std::result::Result<DomainProof, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" if base_domain => Ok(DomainProof::Record),
+            "" | "points" => Ok(DomainProof::Points),
+            "record" => Ok(DomainProof::Record),
+            other => Err(format!("FERRUM_DOMAIN_PROOF ({other}) must be points or record")),
+        }
+    }
+}
+
+/// Proof by record (`FERRUM_DOMAIN_PROOF=record`): an older build verifies a domain that only points here. Dated before
+/// the change's first commit, as every build that holds it is later; the merge's date may replace it.
+pub const PROOF_FLOOR: crate::window::Floor = crate::window::Floor {
+    feature: "domain_proof",
+    since: "2026-11-14T21:00:00Z",
+    what: "domains of a workspace's own open only once their DNS record proves them",
+    temporary: false,
+};
+
+/// `FERRUM_DNS_RESOLVERS`: addresses, comma-separated, each with a port or on 53 (`10.0.0.2`, `10.0.0.2:5353`,
+/// `[2001:db8::2]:53`). Empty: the system's resolvers.
+pub fn dns_resolvers(raw: &str) -> std::result::Result<Vec<std::net::SocketAddr>, String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(|a| {
+            a.parse::<std::net::SocketAddr>()
+                .or_else(|_| a.parse::<std::net::IpAddr>().map(|ip| std::net::SocketAddr::new(ip, 53)))
+                .map_err(|_| format!("FERRUM_DNS_RESOLVERS: {a} is not an address (such as 10.0.0.2 or 10.0.0.2:53)"))
+        })
+        .collect()
+}
 /// Which live host of a target becomes its main one when it has none (the first it gets, or the one left when the
 /// main one is released): a subdomain first, then the oldest of any kind (custom domains and the operator's hosts
 /// alike), then by name. SQL over the alias `c`.
@@ -100,6 +150,19 @@ pub struct TenantHost {
     pub label: Option<String>,
     /// The name an administrator gave it under the base domain (`{base_name}--{slug}.{base}`, [`name_under_base`]).
     pub base_name: Option<String>,
+    /// When its owner's DNS record proved a domain of its own ([`DomainProof::Record`]); none: never.
+    pub proved_at: Option<DateTime<Utc>>,
+}
+
+/// What one check of a domain of a workspace's own found ([`Kernel::check_host`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostCheck {
+    /// It works: verified now.
+    pub works: bool,
+    /// It points here: the token answered from this cluster.
+    pub points: bool,
+    /// Its record proved it; `None`: not asked (it does not point here, the cluster asks for no record, or it was proven).
+    pub record: Option<bool>,
 }
 
 /// What a `shell` address shows (docs/operations.md, "Addresses of a workspace"), as its administrators set it. It chooses
@@ -270,6 +333,80 @@ pub fn normalize_host(raw: &str) -> Option<String> {
     let label_ok =
         |l: &str| !l.is_empty() && l.len() <= 63 && !l.starts_with('-') && !l.ends_with('-') && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     (h.len() <= 253 && h.contains('.') && h.split('.').all(label_ok)).then_some(h)
+}
+
+/// Whether the DNS of `host` holds the record that proves `token` (docs/operations.md, "Custom domains"): at
+/// `_ferrum.{host}` itself a TXT record whose strings, joined, read `ferrum-domain={token}`, and no other `ferrum-domain=`
+/// value beside it. Asked of `resolvers` (the system's when there are none) with a short timeout, by a resolver made for
+/// this one question and dropped after it, so no answer is kept. A failure, no answer, two different values, or an alias
+/// (CNAME) there, which would hand the proof to whoever holds the name it leads to (a wildcard alias to the cluster, say):
+/// no.
+pub async fn domain_record(resolvers: &[std::net::SocketAddr], host: &str, token: &str) -> bool {
+    use hickory_resolver::TokioResolver;
+    use hickory_resolver::config::{NameServerConfig, ResolverConfig};
+    use hickory_resolver::proto::rr::{Name, RData, RecordType};
+    let Some(name) = normalize_host(host).and_then(|h| Name::from_ascii(format!("_ferrum.{h}.")).ok()) else { return false };
+    let mut builder = if resolvers.is_empty() {
+        match TokioResolver::builder_tokio() {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("the system's DNS resolvers cannot be read, so no domain is proven by its record: {e}");
+                return false;
+            }
+        }
+    } else {
+        let servers = resolvers
+            .iter()
+            .map(|a| {
+                let mut s = NameServerConfig::udp_and_tcp(a.ip());
+                s.connections.iter_mut().for_each(|c| c.port = a.port());
+                s
+            })
+            .collect();
+        TokioResolver::builder_with_config(ResolverConfig::from_name_servers(servers), Default::default())
+    };
+    let opts = builder.options_mut();
+    (opts.timeout, opts.attempts, opts.cache_size) = (RECORD_TIMEOUT, 2, 0);
+    let Ok(resolver) = builder.build() else { return false };
+    let answer = match resolver.lookup(name.clone(), RecordType::TXT).await {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::debug!(host, "no record proves the domain: {e}");
+            return false;
+        }
+    };
+    let mut values = std::collections::BTreeSet::new();
+    for r in answer.answers() {
+        match &r.data {
+            RData::CNAME(_) => return false,
+            RData::TXT(txt) if r.name == name => {
+                let value: Vec<u8> = txt.txt_data.iter().flat_map(|s| s.iter().copied()).collect();
+                if value.starts_with(b"ferrum-domain=") {
+                    values.insert(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    values.len() == 1 && values.contains(format!("ferrum-domain={token}").as_bytes())
+}
+
+/// A workspace's addresses when its rows leave this database for good (deleted; moved away and finished), in `tx` before
+/// they go: kept from every other workspace as released ones are ([`HOST_QUARANTINE_DAYS`] from now, or from the end of a
+/// released one's leaving period), with no leaving or redirect period, since nothing is left to serve. All but a domain
+/// of its own that never worked, which a removal drops too.
+pub(crate) async fn quarantine_hosts(tx: &mut crate::db::Tx, tenant: Uuid) -> Result<()> {
+    sqlx::query(
+        "insert into host_quarantine (host, until) \
+         select host, coalesce(greatest(released_at, leaving_until), now()) + make_interval(days => $2) from tenant_host \
+         where tenant_id = $1 and (kind <> 'custom' or verified_at is not null or released_at is not null) \
+         on conflict (host) do update set until = greatest(host_quarantine.until, excluded.until)",
+    )
+    .bind(tenant)
+    .bind(HOST_QUARANTINE_DAYS as i32)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 impl Kernel {
@@ -713,7 +850,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let rows = sqlx::query_as(
             "select host, kind, target, is_primary, verify_token, verified_at, checked_at, failures, released_at, created_at, leaving_until, \
-             zone, home, apps, label, base_name from tenant_host where tenant_id = $1 order by created_at",
+             zone, home, apps, label, base_name, proved_at from tenant_host where tenant_id = $1 order by created_at",
         )
         .bind(ctx.tenant)
         .fetch_all(&mut *tx)
@@ -770,20 +907,33 @@ impl Kernel {
     }
 
     /// Refuses a host that is in use, or released and still leaving, redirecting or quarantined (counted from the
-    /// end of its leaving period).
+    /// end of its leaving period), or kept from everyone since its workspace left this database ([`quarantine_hosts`]). One
+    /// statement reads both, so a deletion committing meanwhile is seen whole: its rows still there, or its quarantine.
     async fn claimable(&self, tx: &mut crate::db::Tx, host: &str) -> Result<()> {
-        let row: Option<Option<DateTime<Utc>>> =
-            sqlx::query_scalar("select greatest(released_at, leaving_until) from tenant_host where host = $1").bind(host).fetch_optional(&mut **tx).await?;
-        match row {
-            None => Ok(()),
-            Some(None) => Err(Error::Conflict("this domain is already in use".into())),
-            Some(Some(at)) if Utc::now() - at < chrono::Duration::days(HOST_QUARANTINE_DAYS) => {
-                Err(Error::Conflict("this domain belonged to another workspace recently and cannot be used yet".into()))
+        let recently = || Err(Error::Conflict("this domain belonged to another workspace recently and cannot be used yet".into()));
+        let (live, released, kept): (Option<bool>, Option<DateTime<Utc>>, Option<DateTime<Utc>>) = sqlx::query_as(
+            "select (select released_at is null from tenant_host where host = $1), \
+             (select greatest(released_at, leaving_until) from tenant_host where host = $1 and released_at is not null), \
+             (select until from host_quarantine where host = $1)",
+        )
+        .bind(host)
+        .fetch_one(&mut **tx)
+        .await?;
+        match kept {
+            Some(until) if until > Utc::now() => return recently(),
+            Some(_) => {
+                sqlx::query("delete from host_quarantine where host = $1").bind(host).execute(&mut **tx).await?;
             }
-            Some(Some(_)) => {
+            None => {}
+        }
+        match (live, released) {
+            (None, _) => Ok(()),
+            (Some(false), Some(at)) if Utc::now() - at < chrono::Duration::days(HOST_QUARANTINE_DAYS) => recently(),
+            (Some(false), Some(_)) => {
                 sqlx::query("delete from tenant_host where host = $1").bind(host).execute(&mut **tx).await?;
                 Ok(())
             }
+            _ => Err(Error::Conflict("this domain is already in use".into())),
         }
     }
 
@@ -1158,32 +1308,65 @@ impl Kernel {
     }
 
     /// Records the outcome of checking a custom domain (that it reaches this cluster and answers
-    /// with its token). Success verifies it; enough failures in a row unverify it.
+    /// with its token), whatever proof the cluster asks for. Success verifies it; enough failures in a row unverify it.
     pub async fn host_checked(&self, host: &str, ok: bool) -> Result<()> {
+        self.record_check(host, HostCheck { works: ok, points: ok, record: None }).await
+    }
+
+    /// Checks a domain of a workspace's own now ([`Kernel::check_hosts`], or its administrators): whether it points here,
+    /// then what [`Kernel::host_reached`] makes of it. `None`: no such live domain.
+    pub async fn check_host(&self, host: &str) -> Result<Option<HostCheck>> {
+        let scheme = if self.settings.webhooks_allow_private { "http" } else { "https" };
+        let points = self.host_answers(host, &format!("{scheme}://{host}/.well-known/ferrum-domain")).await;
+        self.host_reached(host, points).await
+    }
+
+    /// Records a check of a domain of a workspace's own, once whether it points here is known (`points`). Where proof by
+    /// record is asked ([`DomainProof::Record`]), a domain never proven opens nothing until its record is there as well
+    /// ([`domain_record`], asked only when it points here); one proven once, or verified before, goes on by pointing here
+    /// alone: it never left its workspace, so nobody can have taken it. `None`: no such live domain.
+    pub async fn host_reached(&self, host: &str, points: bool) -> Result<Option<HostCheck>> {
         let mut tx = self.db.system_tx().await?;
-        let mut verified = None;
-        if ok {
-            verified = sqlx::query_scalar(
-                "update tenant_host set verified_at = coalesce(verified_at, now()), checked_at = now(), failures = 0 where host = $1 and released_at is null \
-                 returning tenant_id",
-            )
-            .bind(host)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let row: Option<(String, bool, bool)> = sqlx::query_as(
+            "select verify_token, verified_at is not null, proved_at is not null from tenant_host where host = $1 and kind = 'custom' and released_at is null",
+        )
+        .bind(host)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let Some((token, verified, proved)) = row else { return Ok(None) };
+        let record = if points && !proved && self.settings.domain_proof == DomainProof::Record {
+            Some(domain_record(&self.settings.dns_resolvers, host, &token).await)
         } else {
-            sqlx::query(
-                "update tenant_host set checked_at = now(), failures = failures + 1, \
-                 verified_at = case when failures + 1 >= $2 then null else verified_at end where host = $1 and kind = 'custom' and released_at is null",
-            )
-            .bind(host)
-            .bind(HOST_MAX_FAILURES)
-            .execute(&mut *tx)
-            .await?;
-        }
+            None
+        };
+        let found = HostCheck { works: points && (verified || proved || record != Some(false)), points, record };
+        self.record_check(host, found).await?;
+        Ok(Some(found))
+    }
+
+    /// Writes what a check found: working, it is verified (and proven, when its record was); pointing here, it counts no
+    /// failure (so a domain that points here and waits for its record is told from one that does not); otherwise
+    /// [`HOST_MAX_FAILURES`] in a row unverify it.
+    async fn record_check(&self, host: &str, found: HostCheck) -> Result<()> {
+        let mut tx = self.db.system_tx().await?;
+        let tenant: Option<Uuid> = sqlx::query_scalar(
+            "update tenant_host set checked_at = now(), failures = case when $2 then 0 else failures + 1 end, \
+             verified_at = case when $3 then coalesce(verified_at, now()) when not $2 and failures + 1 >= $4 then null else verified_at end, \
+             proved_at = case when $3 and $5 then coalesce(proved_at, now()) else proved_at end \
+             where host = $1 and kind = 'custom' and released_at is null returning tenant_id",
+        )
+        .bind(host)
+        .bind(found.points)
+        .bind(found.works)
+        .bind(HOST_MAX_FAILURES)
+        .bind(found.record == Some(true))
+        .fetch_optional(&mut *tx)
+        .await?;
         tx.commit().await?;
         self.hosts.remove(host);
         // A verified domain is a host like any other: the first of its target becomes the main one.
-        if let Some(tenant) = verified {
+        if let Some(tenant) = tenant.filter(|_| found.works) {
             self.primary_where_none(Some(tenant)).await?;
         }
         Ok(())
@@ -1229,16 +1412,15 @@ impl Kernel {
 
     /// Checks the custom domains that are due ([`Kernel::hosts_to_check`]): one is verified when
     /// `https://{host}/.well-known/ferrum-domain` answers its token (plain http when the server
-    /// allows private addresses, in development), and loses that after [`HOST_MAX_FAILURES`]
-    /// failed checks in a row. Returns how many were checked.
+    /// allows private addresses, in development) and, where proof by record is asked, its record is there
+    /// ([`Kernel::host_reached`]); it loses that after [`HOST_MAX_FAILURES`] failed checks in a row. Returns how many
+    /// were checked.
     // ponytail: a few per round, one after another; checks in parallel if a cluster carries
     // thousands of custom domains.
     pub async fn check_hosts(&self) -> Result<usize> {
-        let scheme = if self.settings.webhooks_allow_private { "http" } else { "https" };
         let hosts = self.hosts_to_check(6).await?;
         for host in &hosts {
-            let ok = self.host_answers(host, &format!("{scheme}://{host}/.well-known/ferrum-domain")).await;
-            self.host_checked(host, ok).await?;
+            self.check_host(host).await?;
         }
         Ok(hosts.len())
     }
@@ -1714,6 +1896,101 @@ mod tests {
         for bad in ["crm", "//evil.example/x", "/\\evil.example", "https://evil.example", "/crm#x", "/a b", "/a\nb", &format!("/{}", "a".repeat(2000))] {
             assert!(!target_shaped(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn proof_and_resolvers_are_read_from_settings() {
+        use super::{DomainProof, dns_resolvers};
+        assert_eq!(DomainProof::from_setting("", true), Ok(DomainProof::Record), "a cluster of many workspaces");
+        assert_eq!(DomainProof::from_setting(" ", false), Ok(DomainProof::Points), "one company's: as before");
+        assert_eq!(DomainProof::from_setting("Points", true), Ok(DomainProof::Points));
+        assert_eq!(DomainProof::from_setting("record", false), Ok(DomainProof::Record));
+        assert!(DomainProof::from_setting("dns", true).is_err());
+        assert!(dns_resolvers("").unwrap().is_empty(), "the system's");
+        let read = dns_resolvers("10.0.0.2, 10.0.0.3:5353,[2001:db8::2]:53, 2001:db8::3").unwrap();
+        let shown: Vec<String> = read.iter().map(ToString::to_string).collect();
+        assert_eq!(shown, ["10.0.0.2:53", "10.0.0.3:5353", "[2001:db8::2]:53", "[2001:db8::3]:53"]);
+        assert!(dns_resolvers("dns.example.com").is_err(), "addresses, not names");
+    }
+
+    /// A DNS server for one test: each question for a name `zone` holds is answered with its records; a name in
+    /// `silent` gets no answer at all; any other name does not exist.
+    async fn dns(zone: Vec<(&'static str, Vec<hickory_resolver::proto::rr::Record>)>, silent: &'static [&'static str]) -> std::net::SocketAddr {
+        use hickory_resolver::proto::op::{Message, OpCode, ResponseCode};
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1500];
+            while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+                let Ok(asked) = Message::from_vec(&buf[..n]) else { continue };
+                let Some(q) = asked.queries.first().cloned() else { continue };
+                let name = q.name().to_ascii().to_ascii_lowercase();
+                if silent.contains(&name.as_str()) {
+                    continue;
+                }
+                let mut answer = Message::response(asked.metadata.id, OpCode::Query);
+                answer.metadata.recursion_desired = true;
+                answer.metadata.recursion_available = true;
+                answer.add_query(q);
+                match zone.iter().find(|(n, _)| *n == name) {
+                    Some((_, records)) => {
+                        answer.add_answers(records.clone());
+                    }
+                    None => answer.metadata.response_code = ResponseCode::NXDomain,
+                }
+                let _ = socket.send_to(&answer.to_vec().unwrap(), from).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn a_domain_is_proven_by_its_own_record_alone() {
+        use super::domain_record;
+        use hickory_resolver::proto::rr::rdata::{CNAME, TXT};
+        use hickory_resolver::proto::rr::{Name, RData, Record};
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+        let txt = |name: &str, strings: &[&str]| {
+            Record::from_rdata(Name::from_ascii(name).unwrap(), 60, RData::TXT(TXT::new(strings.iter().map(|s| s.to_string()).collect())))
+        };
+        let ours = format!("ferrum-domain={TOKEN}");
+        let zone = vec![
+            ("_ferrum.right.test.", vec![txt("_ferrum.right.test.", &[&ours]), txt("_ferrum.right.test.", &["v=spf1 -all"])]),
+            ("_ferrum.wrong.test.", vec![txt("_ferrum.wrong.test.", &["ferrum-domain=fedcba9876543210fedcba9876543210"])]),
+            // Another workspace's token for the same domain beside this one's: two claims, so neither is proven.
+            ("_ferrum.both.test.", vec![txt("_ferrum.both.test.", &[&ours]), txt("_ferrum.both.test.", &["ferrum-domain=another-workspaces-token"])]),
+            ("_ferrum.empty.test.", vec![]),
+            // An alias to a name that holds the right record, answered as a resolver answers it: the alias and the record.
+            (
+                "_ferrum.alias.test.",
+                vec![
+                    Record::from_rdata(
+                        Name::from_ascii("_ferrum.alias.test.").unwrap(),
+                        60,
+                        RData::CNAME(CNAME(Name::from_ascii("_ferrum.right.test.").unwrap())),
+                    ),
+                    txt("_ferrum.right.test.", &[&ours]),
+                ],
+            ),
+            ("_ferrum.split.test.", vec![txt("_ferrum.split.test.", &["ferrum-domain=", &TOKEN[..10], &TOKEN[10..]])]),
+            ("_ferrum.upper.test.", vec![txt("_FERRUM.UPPER.TEST.", &[&ours])]),
+        ];
+        let at = [dns(zone, &["_ferrum.slow.test."]).await];
+        let proven = async |host: &str| domain_record(&at, host, TOKEN).await;
+        assert!(proven("right.test").await, "the right record, beside one of another kind");
+        assert!(!proven("wrong.test").await, "a wrong token");
+        assert!(!proven("both.test").await, "another workspace's token beside it");
+        assert!(!proven("none.test").await, "no such name");
+        assert!(!proven("empty.test").await, "no record");
+        assert!(!proven("alias.test").await, "an alias there, though the name it leads to holds the right record");
+        assert!(proven("split.test").await, "the record in several strings");
+        assert!(proven("upper.test").await, "the answer's name in upper case");
+        assert!(proven("Right.TEST").await, "the domain written in upper case");
+        assert!(!proven("right.test.evil").await && !proven("").await, "another name, or none");
+        let started = std::time::Instant::now();
+        assert!(!proven("slow.test").await, "no answer in time");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+        assert!(!domain_record(&["127.0.0.1:9".parse().unwrap()], "right.test", TOKEN).await, "no server there");
     }
 
     #[test]

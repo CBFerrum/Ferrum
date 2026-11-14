@@ -92,6 +92,10 @@ spec:
             # - {name: FERRUM_LINK_HOST, value: "go.example.com"}
             # How long a removed address still serves those signed in there (default 14 days; 0: none):
             # - {name: FERRUM_HOST_LEAVING_DAYS, value: "14"}
+            # How a domain of a workspace's own is proven (empty: record with a base domain, else points), and the DNS
+            # servers asked for its record (empty: the system's):
+            # - {name: FERRUM_DOMAIN_PROOF, value: "record"}
+            # - {name: FERRUM_DNS_RESOLVERS, value: "10.96.0.10"}
             # Zones (docs/operations.md, "Zones"), each empty by default (everyone admitted everywhere):
             # - {name: FERRUM_ZONES, value: '{"public":{"staff":"none"},"office":{"staff":"all"}}'}
             # - {name: FERRUM_ZONE, value: "office"}
