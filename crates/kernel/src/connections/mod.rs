@@ -2458,24 +2458,33 @@ impl Kernel {
     /// calls processed that long ago, sign-ins never finished.
     pub(crate) async fn purge_connections(&self) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
-        let mut n = sqlx::query("update conn_call set debug = null where debug is not null and at < now() - make_interval(mins => $1::int)")
+        let mut n = sqlx::query("update conn_call set debug = null where debug is not null and at < now() - make_interval(mins => $1::int) and not ferrum_workspace_held(tenant_id)")
             .bind(DEBUG_MAX_MINUTES)
             .execute(&mut *tx)
             .await?
             .rows_affected();
-        n += sqlx::query("delete from conn_call where at < now() - make_interval(days => $1::int) and (key is null or outcome <> 'ok')")
+        n += sqlx::query("delete from conn_call where at < now() - make_interval(days => $1::int) and (key is null or outcome <> 'ok') and not ferrum_workspace_held(tenant_id)")
             .bind(LOG_DAYS)
             .execute(&mut *tx)
             .await?
             .rows_affected();
-        n += sqlx::query("delete from conn_inbound where state = 'done' and received_at < now() - make_interval(days => $1::int)")
-            .bind(LOG_DAYS)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        n += sqlx::query(
+            "delete from conn_inbound where state = 'done' and received_at < now() - make_interval(days => $1::int) and not ferrum_workspace_held(tenant_id)",
+        )
+        .bind(LOG_DAYS)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
         n += sqlx::query("delete from conn_signin where expires_at < now()").execute(&mut *tx).await?.rows_affected();
-        n += sqlx::query("delete from conn_rate where slot < extract(epoch from now())::bigint - 86400").execute(&mut *tx).await?.rows_affected();
-        n += sqlx::query("delete from conn_attempt where at < now() - make_interval(days => $1::int)").bind(LOG_DAYS).execute(&mut *tx).await?.rows_affected();
+        n += sqlx::query("delete from conn_rate where slot < extract(epoch from now())::bigint - 86400 and not ferrum_workspace_held(tenant_id)")
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        n += sqlx::query("delete from conn_attempt where at < now() - make_interval(days => $1::int) and not ferrum_workspace_held(tenant_id)")
+            .bind(LOG_DAYS)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
         tx.commit().await?;
         Ok(n)
     }

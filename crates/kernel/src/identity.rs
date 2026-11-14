@@ -345,6 +345,7 @@ impl Kernel {
     /// authenticator app and unused recovery codes, and the membership joins it.
     pub(crate) async fn identity_from(&self, tx: &mut Tx, m: &Session, verified: bool) -> Result<Session> {
         let again = || Error::Unauthorized("sign in again".into());
+        self.refuse_if_moving(m.tenant).await?;
         let dir = self.directory_id().await?;
         #[derive(sqlx::FromRow)]
         struct U {
@@ -587,6 +588,7 @@ impl Kernel {
 
     /// Where the identity stands in a workspace it is entering.
     pub async fn enter(&self, identity: &Ctx, tenant: Uuid) -> Result<Entry> {
+        self.refuse_if_moving(tenant).await?;
         let me = self.identity(identity).await?;
         let mut tx = self.db.system_tx().await?;
         let policy: Option<(String, bool, bool)> = sqlx::query_as(
@@ -640,6 +642,7 @@ impl Kernel {
     /// Joins the identity's membership in a workspace (one with the identity's address), proven
     /// by `proof`.
     pub async fn join(&self, identity: &Ctx, tenant: Uuid, proof: Proof<'_>) -> Result<()> {
+        self.refuse_if_moving(tenant).await?;
         let me = self.identity(identity).await?;
         let denied = || Error::Unauthorized("that did not prove it; check the password or the code".into());
         let mut tx = self.db.system_tx().await?;
@@ -717,6 +720,7 @@ impl Kernel {
     /// Joins the membership a workspace's single sign-on just proved (`m`) to the identity signed
     /// in at accounts, when both have the same address. Whether it joined.
     pub async fn join_proven(&self, identity: &Ctx, m: &Session) -> Result<bool> {
+        self.refuse_if_moving(m.tenant).await?;
         let me = self.identity(identity).await?;
         let mut tx = self.db.system_tx().await?;
         let joined = sqlx::query(

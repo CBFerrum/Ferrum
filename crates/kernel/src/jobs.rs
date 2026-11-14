@@ -516,7 +516,11 @@ impl Kernel {
     /// Forgets jobs that ended over `keep_days` ago.
     pub(crate) async fn purge_jobs(&self, keep_days: i32) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
-        let n = sqlx::query("delete from job where finished_at < now() - make_interval(days => $1)").bind(keep_days).execute(&mut *tx).await?.rows_affected();
+        let n = sqlx::query("delete from job where finished_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
+            .bind(keep_days)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
         tx.commit().await?;
         Ok(n)
     }

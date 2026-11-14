@@ -1075,7 +1075,7 @@ impl Kernel {
     /// Forgets webhook events past the time a provider would resend them.
     pub(crate) async fn purge_connection_events(&self) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
-        let n = sqlx::query("delete from connection_event where received_at < now() - make_interval(days => $1)")
+        let n = sqlx::query("delete from connection_event where received_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
             .bind(SEEN_EVENT_DAYS)
             .execute(&mut *tx)
             .await?

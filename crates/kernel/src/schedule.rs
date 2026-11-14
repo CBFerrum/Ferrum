@@ -695,7 +695,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         // An absence's occurrence keys its period (BD-27): kept while the period may still be running.
         let n = sqlx::query(
-            "delete from automation_occurrence o where o.due_at < now() - make_interval(days => $1) \
+            "delete from automation_occurrence o where o.due_at < now() - make_interval(days => $1) and not ferrum_workspace_held(o.tenant_id) \
              and (o.due_at < now() - make_interval(days => $2) or not exists (select 1 from automation a \
                where a.tenant_id = o.tenant_id and a.id = o.automation_id and a.schedule->'every' ? 'absent'))",
         )

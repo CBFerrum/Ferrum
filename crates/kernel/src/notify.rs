@@ -287,7 +287,7 @@ impl crate::Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         let due: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            "select tenant_id, user_id from notification where delivery = 'digest' and emailed_at is null and read_at is null \
+            "select tenant_id, user_id from notification where delivery = 'digest' and emailed_at is null and read_at is null and not ferrum_workspace_held(tenant_id) \
              group by tenant_id, user_id having min(created_at) <= now() - interval '1 day' limit $1",
         )
         .bind(DIGESTS_PER_RUN)

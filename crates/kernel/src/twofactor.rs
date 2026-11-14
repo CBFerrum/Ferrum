@@ -307,6 +307,7 @@ impl Kernel {
     /// sign-in. `token_version` is the one the first step saw (a password change since voids it).
     pub async fn second_factor(&self, tenant: Uuid, user: Uuid, token_version: i32, code: &str) -> Result<Session> {
         let again = || Error::Unauthorized("sign in again".into());
+        self.refuse_if_moving(tenant).await?;
         let mut tx = self.db.system_tx().await?;
         #[derive(sqlx::FromRow)]
         struct U {
