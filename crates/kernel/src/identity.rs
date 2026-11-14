@@ -251,15 +251,16 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         // A workspace that requires single sign-on takes no password from those it applies to.
-        let found: Vec<M> = sqlx::query_as(
+        let found: Vec<M> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select u.tenant_id, u.id, u.password_hash, u.token_version, u.totp_enabled_at is not null as two_factor, \
                coalesce(u.locked_until > now(), false) as locked \
              from app_user u join tenant t on t.id = u.tenant_id \
              where u.email = $1 and u.kind = 'member' and u.is_active and u.identity_id is null and u.password_hash is not null \
                and t.status = 'active' and t.slug <> $2 \
-               and not (coalesce(t.settings->'require_sso' = 'true'::jsonb, false) and not u.is_admin) \
+               and not {} \
              order by u.last_login_at desc nulls last, u.created_at limit $3",
-        )
+            crate::gate::SSO_ONLY
+        )))
         .bind(email)
         .bind(DIRECTORY)
         .bind(FOUND_MAX)

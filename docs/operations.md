@@ -1219,6 +1219,7 @@ on every request. With no networks it is off, as before.
 |---|---|---|
 | `staff_networks` | `{"networks": ["10.0.0.0/8", "2001:db8::/32"], "mode": "enforce"}`, at most 100 networks; `mode` `enforce` or `report` | none: off |
 | `idle_minutes` | A browser session unused this many minutes ends: 0 (never) or 5 to 10080 | 0 |
+| `break_glass` | The ids of the administrators who keep password and passkey sign-in when single sign-on is required, 1 to 20 | `null`: every administrator, as before |
 
 **What it holds.** People's credentials of staff accounts (members and administrators): the browser's
 session, session tokens, OAuth and MCP tokens that act for a person, app passwords of calendar and contacts
@@ -2465,6 +2466,14 @@ administrator unlinks the account (Users → Unlink SSO). With "Create an accoun
 without an account get one with the provider's default roles; otherwise an administrator adds them
 first. Workspace → Single sign-on → Require it turns password sign-in off for everyone but
 administrators, who keep it to get in when the provider is down.
+
+**Break-glass administrators.** By default every administrator keeps password sign-in when single sign-on is
+required, to get in when the provider is down. To narrow that, set the workspace setting `break_glass` to the
+administrators who keep it (`PUT /api/admin/settings {"break_glass": ["<user id>", …]}`); the others then sign in
+through the provider like everyone else. A list is refused unless it names at least one active administrator, so
+someone can always get in; `null` goes back to every administrator. Each sign-in that uses this while single sign-on
+is required is on the audit trail as `break_glass`. Taking administration away from everyone named leaves nobody: name
+someone else first.
 
 Removing someone at the provider stops their next sign-in, not the session they have (it lasts up
 to `JWT_EXPIRATION_SECONDS`, 8 hours by default): deactivate them in Ferrum to end it at once, which

@@ -174,6 +174,55 @@ impl Kernel {
     }
 }
 
+// ── break-glass under enforced single sign-on ──
+
+/// SQL over `tenant t` and `app_user u`: the person may not sign in with a password or passkey, because the
+/// workspace requires single sign-on and they are not one of the administrators who keep it. With no
+/// `break_glass` list, every administrator keeps it (as before); with one, only those it names.
+pub(crate) const SSO_ONLY: &str = "(coalesce(t.settings->'require_sso' = 'true'::jsonb, false) and not (u.is_admin and \
+     (jsonb_typeof(t.settings->'break_glass') is distinct from 'array' or t.settings->'break_glass' ? u.id::text)))";
+
+/// SQL as [`SSO_ONLY`]: a sign-in that gets past it while single sign-on is required is a break-glass one.
+pub(crate) const BREAK_GLASS: &str = "(coalesce(t.settings->'require_sso' = 'true'::jsonb, false) and u.is_admin)";
+
+/// A break-glass sign-in, on the audit trail as its own kind.
+pub(crate) async fn break_glass(tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid, from: &Arrival, method: &str) -> Result<()> {
+    event(tx, tenant, user, "break_glass", detail(from, method, json!({}))).await
+}
+
+/// The workspace setting `break_glass`: `null` (every administrator) or the ids of the administrators who keep
+/// password sign-in under enforced single sign-on. Refused unless it names at least one, and each is an active
+/// administrator: someone must be able to get in when the identity provider is down.
+pub(crate) async fn check_break_glass(tx: &mut crate::db::Tx, tenant: Uuid, v: &Value) -> Result<Value> {
+    if v.is_null() {
+        return Ok(Value::Null);
+    }
+    let field = |m: String| Error::field("break_glass", m);
+    let ids: Vec<Uuid> = v
+        .as_array()
+        .filter(|a| a.len() <= 20)
+        .and_then(|a| a.iter().map(|i| i.as_str().and_then(|s| s.parse().ok())).collect())
+        .ok_or_else(|| field("must be a list of up to 20 administrators' ids, or null for every administrator".into()))?;
+    if ids.is_empty() {
+        return Err(field(
+            "name at least one active administrator: with nobody, nobody could sign in when the identity provider is down (null keeps every administrator)"
+                .into(),
+        ));
+    }
+    let admins: Vec<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and id = any($2) and is_admin and is_active and kind = 'member'")
+        .bind(tenant)
+        .bind(&ids)
+        .fetch_all(&mut **tx)
+        .await?;
+    if let Some(not) = ids.iter().find(|i| !admins.contains(i)) {
+        return Err(field(format!("{not} is not an active administrator of this workspace")));
+    }
+    let mut ids = ids;
+    ids.sort();
+    ids.dedup();
+    Ok(json!(ids))
+}
+
 // ── sign-ins on the audit trail ──
 
 /// The entity of sign-in events; the record is the account.

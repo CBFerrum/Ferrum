@@ -722,6 +722,32 @@ async fn scenario() {
     assert!(hooked.iter().any(|e| e["details"]["address"] == "10.5.0.1"), "acme's sign-in: {hooked:?}");
     assert!(hooked.iter().all(|e| e["workspace"] == json!(acme) && e["category"] == "sign_in"), "only acme's, only sign-ins: {hooked:?}");
     assert!(rx.lines("/all").iter().all(|l| !l.contains("SignIn")), "a webhook of everything gets no audit events");
+
+    // ── 6. Break-glass under enforced single sign-on ──
+    let admin2 = k.create_user(&admin, "admin2@acme.test", "Second", Some(PASSWORD), &[], true).await.unwrap();
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update tenant set settings = settings || '{\"require_sso\": true}' where id = $1").bind(acme).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let put = |v: Value| call(&r, Method::PUT, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), Some(json!({"break_glass": v})));
+    assert_eq!(sign_in(&r, "10.6.0.1", "member@acme.test", PASSWORD, false).await.0, StatusCode::FORBIDDEN, "staff sign in through SSO");
+    assert_eq!(sign_in(&r, "10.6.0.2", "admin2@acme.test", PASSWORD, false).await.0, StatusCode::OK, "unset: every administrator keeps a password");
+    assert_eq!(sign_ins("10.6.0.2").await.iter().filter(|e| e.0 == "break_glass").count(), 1, "a break-glass sign-in, on its own");
+    let (status, answer) = put(json!([])).await;
+    assert!(status == StatusCode::UNPROCESSABLE_ENTITY && answer.contains("at least one"), "nobody: {answer}");
+    let (status, answer) = put(json!([member.to_string()])).await;
+    assert!(status == StatusCode::UNPROCESSABLE_ENTITY && answer.contains("not an active administrator"), "a member: {answer}");
+    let (status, answer) = put(json!([admin2.to_string()])).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(serde_json::from_str::<Value>(&answer).unwrap()["break_glass"], json!([admin2.to_string()]));
+    assert_eq!(sign_in(&r, "10.6.0.3", "admin@acme.test", PASSWORD, false).await.0, StatusCode::FORBIDDEN, "an administrator not named");
+    assert_eq!(sign_in(&r, "10.6.0.4", "admin2@acme.test", PASSWORD, false).await.0, StatusCode::OK, "the one named");
+    assert_eq!(sign_ins("10.6.0.4").await.iter().filter(|e| e.0 == "break_glass").count(), 1);
+    let (status, _) = put(Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "back to every administrator");
+    assert_eq!(sign_in(&r, "10.6.0.5", "admin@acme.test", PASSWORD, false).await.0, StatusCode::OK);
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update tenant set settings = settings - 'require_sso' where id = $1").bind(acme).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
 }
 
 const SINK_SECRET: &str = "a-sink-secret-of-some-length";

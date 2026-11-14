@@ -251,17 +251,19 @@ impl Kernel {
             tenant_active: bool,
             two_factor: bool,
             two_factor_required: bool,
-            sso_required: bool,
-            is_admin: bool,
+            sso_only: bool,
+            break_glass: bool,
             kind: String,
         }
-        let user: Option<U> = sqlx::query_as(
+        let user: Option<U> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select u.tenant_id, u.id, u.password_hash, u.is_active, u.token_version, \
              coalesce(u.locked_until > now(), false) as locked, t.status = 'active' as tenant_active, \
              u.totp_enabled_at is not null as two_factor, coalesce(t.settings->'require_two_factor' = 'true'::jsonb, false) as two_factor_required, \
-             coalesce(t.settings->'require_sso' = 'true'::jsonb, false) as sso_required, u.is_admin, u.kind \
+             {} as sso_only, {} as break_glass, u.kind \
              from app_user u join tenant t on t.id = u.tenant_id where t.slug = $1 and u.email = $2",
-        )
+            crate::gate::SSO_ONLY,
+            crate::gate::BREAK_GLASS
+        )))
         .bind(tenant_slug.trim().to_lowercase())
         .bind(&email)
         .fetch_optional(&mut *tx)
@@ -294,10 +296,14 @@ impl Kernel {
             tx.commit().await?;
             return Err(denied());
         }
-        if u.sso_required && !u.is_admin {
-            // Administrators keep their passwords, to get in when the provider is down.
+        if u.sso_only {
+            // The administrators named to (all of them unless some are) keep their passwords, to get in when the
+            // provider is down.
             tx.commit().await?;
             return Err(Error::Forbidden("this workspace signs in through single sign-on; use its button on the sign-in page".into()));
+        }
+        if u.break_glass {
+            crate::gate::break_glass(&mut tx, u.tenant_id, u.id, &from, "password").await?;
         }
         let session = Session { tenant: u.tenant_id, user: u.id, token_version: u.token_version };
         if u.two_factor {

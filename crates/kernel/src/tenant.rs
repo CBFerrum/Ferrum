@@ -374,6 +374,8 @@ impl Kernel {
             "offline": settings.get("offline").cloned().unwrap_or_else(|| serde_json::json!({"allowed": true, "hours": 72})),
             "messages": settings.get("messages").cloned().unwrap_or_else(|| serde_json::json!({})),
             // The networks staff may work from (crate::gate); no networks: off.
+            // The administrators who keep password sign-in when single sign-on is required (null: all of them).
+            "break_glass": settings.get("break_glass").cloned().unwrap_or(Value::Null),
             // Minutes of no use after which a browser session ends (0: never, as before).
             "idle_minutes": settings.get("idle_minutes").and_then(Value::as_i64).unwrap_or(0),
             "staff_networks": crate::gate::StaffNetworks::parse(settings.get("staff_networks")).map_err(Error::Internal)?.to_value(),
@@ -471,10 +473,15 @@ impl Kernel {
                         .ok_or_else(|| Error::field(k.clone(), format!("must be 0 (never) or {lo} to {hi} minutes")))?;
                     clean.insert(k.clone(), serde_json::json!(m));
                 }
+                // Checked against the workspace's administrators below (crate::gate::check_break_glass).
+                "break_glass" => {}
                 other => return Err(Error::field(other, "unknown setting")),
             }
         }
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
+        if let Some(v) = patch.get("break_glass") {
+            clean.insert("break_glass".into(), crate::gate::check_break_glass(&mut tx, ctx.tenant, v).await?);
+        }
         if clean.get("require_sso") == Some(&serde_json::json!(true)) {
             let any: bool =
                 sqlx::query_scalar("select exists (select 1 from sso_provider where tenant_id = $1 and enabled)").bind(ctx.tenant).fetch_one(&mut *tx).await?;

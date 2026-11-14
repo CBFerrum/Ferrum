@@ -706,7 +706,9 @@ applies from each person's next sign-in; `require_sso` refuses password sign-in 
 administrators and needs an enabled single sign-on provider). `staff_networks`
 (`{"networks": ["10.0.0.0/8", …], "mode": "enforce" | "report"}`, or `null` for none) is the networks staff
 may work from ([operations](operations.md#staff-networks)); a save in `enforce` is refused (422) unless the
-caller's own address is inside it. A credential refused by it gets `403` with error `network`. `idle_minutes` (0, or 5 to 10080) ends browser sessions unused that long; such a session's next request gets
+caller's own address is inside it. A credential refused by it gets `403` with error `network`. `break_glass` (`null`, or the ids of 1 to 20 active administrators) names the administrators who keep password
+sign-in when `require_sso` is on; a list naming nobody, or anyone who is not an active administrator, is refused
+(422). `idle_minutes` (0, or 5 to 10080) ends browser sessions unused that long; such a session's next request gets
 `401` "this device was signed out; please sign in again".
 
 Audit log: `GET /api/admin/audit?category=&before=&limit=` → `{events, next_before}`, newest first, at most

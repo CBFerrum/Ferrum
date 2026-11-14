@@ -401,15 +401,18 @@ impl Kernel {
             token_version: i32,
             tenant_active: bool,
             sso_only: bool,
+            break_glass: bool,
             kind: String,
         }
         let mut tx = self.db.system_tx().await?;
-        let row: Option<Row> = sqlx::query_as(
+        let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select p.tenant_id, p.id, p.user_id, p.rp_id, p.public_key, p.alg, p.sign_count, u.is_active, u.token_version, \
-             t.status = 'active' as tenant_active, (coalesce(t.settings->'require_sso' = 'true'::jsonb, false) and not u.is_admin) as sso_only, u.kind \
+             t.status = 'active' as tenant_active, {} as sso_only, {} as break_glass, u.kind \
              from passkey p join app_user u on u.tenant_id = p.tenant_id and u.id = p.user_id join tenant t on t.id = p.tenant_id \
              where p.credential_id = $1 for update of p",
-        )
+            crate::gate::SSO_ONLY,
+            crate::gate::BREAK_GLASS
+        )))
         .bind(&id)
         .fetch_optional(&mut *tx)
         .await?;
@@ -445,6 +448,9 @@ impl Kernel {
         }
         if p.sso_only {
             return Err(Error::Forbidden("this workspace signs in through single sign-on; use its button on the sign-in page".into()));
+        }
+        if p.break_glass {
+            crate::gate::break_glass(&mut tx, p.tenant_id, p.user_id, &from, "passkey").await?;
         }
         sqlx::query("update passkey set sign_count = $3, last_used_at = now() where tenant_id = $1 and id = $2")
             .bind(p.tenant_id)
