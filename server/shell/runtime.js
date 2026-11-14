@@ -45,7 +45,7 @@ function movedUrl(to, loc) {
 }
 
 /** A page's title with `mark` before it, once. */
-function marked(title, mark) {
+function titleMarked(title, mark) {
   return title.startsWith(mark) ? title : `${mark}${title}`;
 }
 
@@ -1269,7 +1269,7 @@ class FerrumBar extends HTMLElement {
     const mark = `${tr("Sandbox")} · `;
     const title = document.querySelector("title") ?? document.head.appendChild(document.createElement("title"));
     const keep = () => {
-      if (!document.title.startsWith(mark)) document.title = marked(document.title, mark);
+      if (!document.title.startsWith(mark)) document.title = titleMarked(document.title, mark);
     };
     keep();
     // An app (or the shell) that sets its own title gets the mark back at once.

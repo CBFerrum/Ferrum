@@ -84,7 +84,7 @@ settings:
   bootstrap_token: <%= get_env(name="FERRUM_BOOTSTRAP_TOKEN", default="dev-bootstrap-token") %>
   webhooks_allow_private: true
   sso_allow_private: true
-  run_background: true
+  run_background: <%= get_env(name="FERRUM_RUN_BACKGROUND", default="true") %>
   files_dir: <%= get_env(name="FERRUM_FILES_DIR", default="../storage") %>
   s3_bucket: "<%= get_env(name="FERRUM_S3_BUCKET", default="") %>"
   s3_region: "<%= get_env(name="FERRUM_S3_REGION", default="") %>"
