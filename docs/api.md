@@ -24,8 +24,10 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `GET /sso?tenant=` | → `{providers: [{id, label}]}`: the workspace's single sign-on buttons (none for an unknown workspace) |
 | `POST /sso/start` | `{tenant, provider, redirect_uri, binding}` → `{url}` to send the browser to. `redirect_uri` is the sign-in page (registered with the provider, which sends the browser nowhere else); `binding` is a random secret (16–200 characters) the browser keeps to finish |
 | `POST /sso/finish` | `{state, code, binding}` (what the provider sent the browser back with) → `{token, …}`. Each sign-in works once, within ten minutes, in the browser that started it. The provider's own two-factor rules apply instead of Ferrum's |
-| `GET /saml/{workspace id}` | The workspace's SAML 2.0 metadata (`application/samlmetadata+xml`), for identity providers to load: its entity ID (this address) and its assertion consumer service. 404 for a workspace that is not active |
-| `POST /saml/{workspace id}/acs` | Where a SAML provider posts its answer (`SAMLResponse`, `RelayState`; HTTP-POST binding). A good answer → `303` to the `redirect_uri` the sign-in started with, plus `state` and `code`, which finish it with `/sso/finish` as above; anything else → a page that says why. For SAML providers `redirect_uri` must be an address of this server's own (`PUBLIC_URL`, a host of the workspace, the accounts host) |
+| `GET /saml/{workspace id}` | The workspace's SAML 2.0 metadata (`application/samlmetadata+xml`), for identity providers to load: its entity ID (this address), its assertion consumer service, its logout service (`…/slo`, both bindings), the key its requests and logout messages are signed with, and the keys assertions may be encrypted to (`use="encryption"`, two while one is being replaced, the new one first). Asked on the accounts host, the addresses there; on any other host, `PUBLIC_URL`'s. While a provider saved before encryption and logout were published (not saved since) has its addresses under `PUBLIC_URL`, the metadata there says only what it said then. 404 for a workspace that is not active |
+| `POST /saml/{workspace id}/acs` | Where a SAML provider posts its answer (`SAMLResponse`, `RelayState`; HTTP-POST binding). A good answer → `303` to the `redirect_uri` the sign-in started with, plus `state` and `code`, which finish it with `/sso/finish` as above; anything else → a page that says why. For SAML providers `redirect_uri` must be an address of this server's own (`PUBLIC_URL`, a host of the workspace, the accounts host). The assertion may be encrypted to the workspace's key (AES-GCM, or AES-CBC when the whole response is signed; the key by RSA-OAEP) |
+| `GET /saml/{workspace id}/logout?ticket=` | The address `POST /logout` gives a SAML sign-in's session (once, for ten minutes): `303` to the provider with a signed logout request (HTTP-Redirect), or a page that posts it (HTTP-POST), or straight back when the provider offers no single logout; anything else → a page saying the sign-out did not go through the provider. Not served (`404`) where the zone admits no staff |
+| `GET`, `POST /saml/{workspace id}/slo` | The workspace's SAML logout service, for the provider, by the browser (no Ferrum cookie needed): its signed logout requests (`SAMLRequest`, HTTP-Redirect or HTTP-POST) end the sessions they name and are answered, signed, by the provider's binding; its signed answers to ours (`SAMLResponse`) send the browser back to where the person signed out from. Anything unsigned, signed by another key, for another address, older than ten minutes, already seen or from a provider the workspace does not have → a page saying it was refused, the same for each, and nothing ended. Not served (`404`) where the zone admits no staff |
 | `POST /login/second-factor` | `{ticket, code}` (six digits from the authenticator app, or a recovery code) → `{token, …}`. Each app code is accepted once; wrong codes count toward the same lockout as wrong passwords |
 | `POST /code` | `{tenant, email}` → `{sent: true}`: emails a portal person a six-digit code to sign in with ([plan](plan/apps-ui.md) §9.1). The same answer, after the same time (600 ms at least), whether or not the address belongs to anyone, and nothing is sent to members (they sign in with passwords). A code works once, for ten minutes, takes five wrong tries, and only the newest one works; a person is sent at most five an hour. 503 when the server sends no email |
 | `POST /code/sign-in` | `{tenant, email, code, session?}` → as `/login` (with two-factor sign-in on, the second step follows) |
@@ -37,7 +39,7 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `POST /2fa/recovery-codes` | `{code}` → `{recovery_codes}`: new ones replace the old |
 | `POST /2fa/disable` | `{password}` or `{code}` → `204` |
 | `POST /logout_all` | revokes every session of the caller (and clears the session cookie) |
-| `POST /logout` | signs this browser out: its session ends, with the tokens bound to it, and the cookie is cleared → `204`. Both send `Clear-Site-Data: "cache"` (pages kept by the browser go; what apps keep for working offline stays) |
+| `POST /logout` | signs this browser out: its session ends, with the tokens bound to it, and the cookie is cleared → `204`. A session that began with a SAML provider whose single logout is on → `200 {"next"}` instead, the session ended all the same: the page sends the browser to `next`, which signs the person out at the provider and comes back to this host's `/app/login`. Both send `Clear-Site-Data: "cache"` (pages kept by the browser go; what apps keep for working offline stays) |
 | `POST /token` | (session cookie) → `{token, token_type, expires_in, tenant, email}`: a bearer token for a page that still sends one, bound to the browser's session |
 | `GET /sessions?user=` | → `{sessions: [{id, user_id, actor, created_at, last_seen_at, expires_at, user_agent, ip, current}]}`: the signed-in browsers of the caller (administrators: of `user`) |
 | `DELETE /sessions/{id}` | signs one browser out (one's own; administrators: anyone's) |
@@ -745,12 +747,16 @@ of its kind; `POST …/{host}/check` checks it now → `{host, answers}`. Public
 `GET /_tls/ask?domain=` answers 200 when the edge may get a certificate for that host.
 
 Single sign-on: `/api/admin/sso` (GET → `{providers: [{id, label, protocol, issuer, client_id, has_secret,
-saml_metadata, domains, auto_create, default_roles, enabled, linked_users}], saml}`, `saml` being
-`{entity_id, acs_url, metadata_url}` for SAML providers' administrators, or `null` when the server
-cannot do SAML; POST `{label, issuer, client_id, client_secret?, domains[], auto_create,
-default_roles[], enabled}` → `{id}`, the issuer's discovery document fetched to check it; or
-`{label, protocol: "saml", saml_metadata, domains[], …}` with the provider's metadata as XML or the
-https address it is published at, checked now and read again at each sign-in, `domains` required),
+saml_metadata, domains, auto_create, default_roles, enabled, single_logout_out, single_logout_in, linked_users,
+service_provider?}], saml}`, `saml` being `{entity_id, acs_url, slo_url, metadata_url}` for a SAML provider added
+now (on the accounts host when the server has one, else under `PUBLIC_URL`), or `null` when the server cannot do
+SAML, and a SAML provider's `service_provider` the same for the addresses it keeps; POST `{label, issuer,
+client_id, client_secret?, domains[], auto_create, default_roles[], enabled}` → `{id}`, the issuer's discovery
+document fetched to check it; or `{label, protocol: "saml", saml_metadata, domains[], single_logout_out?,
+single_logout_in?, …}` with the provider's metadata as XML or the https address it is published at, checked now
+and read again at each sign-in, `domains` required; `single_logout_out` (signing out here signs out there) and
+`single_logout_in` (the provider may end sessions here) are on unless `false`, and work when the provider's
+metadata offers single logout; a provider saved before they existed has both off until saved again),
 `/api/admin/sso/{id}` (PUT the same — `client_secret` left out keeps the stored one, `""` clears it;
 a provider keeps its protocol; DELETE unlinks the people linked through it).
 

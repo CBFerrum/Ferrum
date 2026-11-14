@@ -1412,7 +1412,8 @@ account, with the address, browser (user agent), zone and method: a sign-in (`si
 `passkey`, `sso`, `code` or `accounts` for one handed over from the accounts host), a second step passed
 (`second_step`), a failed attempt for an account that exists (`failed`), a sign-in refused by zone or network
 (`refused`, with `by`), a break-glass sign-in (`break_glass`), and a session's end (`session_ended`, with
-`reason` `signed_out`, `idle`, `revoked` or `password_changed`). Failed and refused attempts are recorded one
+`reason` `signed_out`, `idle`, `revoked`, `password_changed`, or `provider` when a SAML provider's logout
+request ended it). Failed and refused attempts are recorded one
 by one up to three an hour per account; the rest of that hour become one `failed_summary` with their `count`,
 written at the next attempt or the next maintenance run after the hour. Attempts for an address no account
 has are never recorded by address; they are counted in `ferrum_sign_in_unknown_total`. Administrators read
@@ -2982,6 +2983,11 @@ setting; each defaults to what the server did before the setting existed.
   * *Changing it later* signs everyone out of the accounts host, breaks every single sign-on provider's
     registered redirect address, and makes passkeys made there unusable (their relying party is that
     host): pick it once.
+  * *SAML providers added while it is set* have their entity ID and addresses on it,
+    `https://{accounts host}/api/auth/saml/{workspace id}` (with `/acs` and `/slo`): a name that stays
+    whatever host a workspace has or comes to have. Providers added before keep the `PUBLIC_URL` ones
+    they were given, as each provider keeps its addresses once saved: an entity ID never changes under
+    a working provider. Changing the accounts host later breaks the SAML providers added under it.
   * It must be a host of its own, not `PUBLIC_URL`'s; the server refuses to start otherwise.
 * **`FERRUM_HOOKS_HOST`**: where other services call back. It is a place of its own with no pages
   and no sign-in, so a session never lives there. Set, it is the start of every callback address the
@@ -3092,9 +3098,40 @@ address stand in for it. Then add the provider with its metadata, pasted or its 
 (read again at each sign-in, so a new signing certificate is picked up), and the email domains it
 vouches for, which SAML needs listed. Requests are signed with the workspace's own key (made when
 first wanted, sealed by `FERRUM_SECRET_KEY`, its certificate in the metadata; providers that
-import the metadata, Keycloak among them, then check every request). It needs `PUBLIC_URL`. Not
-supported: single logout, encrypted assertions (turn the provider's encryption off; HTTPS protects
-them), and sign-ins the provider starts unasked.
+import the metadata, Keycloak among them, then check every request). It needs `PUBLIC_URL`.
+
+*Addresses.* Each provider keeps the addresses it was saved with. On a server with an accounts host
+(`FERRUM_ACCOUNTS_HOST`), a provider added now has them there: entity ID and metadata
+`https://{accounts host}/api/auth/saml/{workspace id}`, answers to `…/acs` (HTTP-POST), logout messages to
+`…/slo` (HTTP-Redirect or HTTP-POST). Without one, they are under `PUBLIC_URL`. Administration → Single
+sign-on shows a new provider's addresses, and each provider's own. The provider needs: the entity ID, the
+assertion consumer service, and for single logout the logout service; or just the metadata address, which
+gives all three and the keys. Where zones keep staff off a public gateway, the browser must reach these
+addresses through the staff one: the logout service and the logout address below are not served where
+the zone admits no staff, as the accounts host is not.
+
+*Encrypted assertions.* The metadata publishes a key to encrypt assertions to (`use="encryption"`, apart
+from the signing key, made when first wanted and sealed the same way). The provider may encrypt with
+AES-GCM; with AES-CBC only when it signs the whole response; its key with RSA-OAEP. Have it sign the
+response, or the assertion inside the encryption (or both); a response whose signature covers less is
+refused. `ferrum task saml_encryption_key slug:acme` replaces the key: the new one is published first,
+the old one is still published and accepted for 30 days, so a provider that reads the metadata again in
+that time goes on working; one given the certificate by hand needs the new one within the 30 days.
+
+*Single logout.* With the provider's metadata offering a logout service, both directions are on for a
+provider saved from now on; its administrator can turn each off (`single_logout_out`, signing out here
+signs out there; `single_logout_in`, the provider may end sessions here). Signing out here ends the
+session at once, then sends the browser to the provider with a signed logout request, and back to the
+sign-in page; the sign-in page must follow the address `POST /api/auth/logout` gives
+([api](api.md)). A signed logout request from the provider ends the sessions its sign-ins opened for
+that person (those it names, or all of theirs through that provider), recorded as ended by the provider,
+and is answered, signed. A provider saved before this (and not saved since) has no single logout, and
+while one is left the metadata under `PUBLIC_URL` publishes neither the encryption key nor the logout
+service, as before: a provider that reads it again (AD FS, Shibboleth) would otherwise start encrypting
+or sending logout requests unasked. Save each SAML provider once to turn them on.
+
+Not supported: sign-ins the provider starts unasked, the artifact binding, logout by the back channel
+(SOAP), NameIDs encrypted in logout requests, and ECDSA signatures on HTTP-Redirect logout messages.
 
 The release image is built with SAML (`--features saml`). Building it yourself needs libxml2,
 libxmlsec1 with its OpenSSL backend, pkg-config and libclang (Debian and Ubuntu:

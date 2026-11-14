@@ -1,6 +1,6 @@
 [package]
 name = "ferrum-saml"
-description = "SAML 2.0 single sign-on, the service provider's side: identity provider metadata, sign-in requests, and responses whose signatures xmlsec1 checks (through samael)"
+description = "SAML 2.0 single sign-on, the service provider's side: identity provider metadata, sign-in requests, responses whose signatures xmlsec1 checks (through samael) and whose encrypted assertions it opens, and single logout"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 # Off, nothing native is linked and every call says the server was built without SAML. On, building
 # needs libxml2, libxmlsec1 with its OpenSSL backend, pkg-config and libclang (docs/operations.md).
-xmlsec = ["dep:samael", "dep:base64", "dep:chrono", "dep:flate2", "dep:url", "dep:openssl"]
+xmlsec = ["dep:samael", "dep:base64", "dep:chrono", "dep:flate2", "dep:url", "dep:openssl", "dep:libxml"]
 # An identity provider for tests (testing.rs), where xmlsec is on too.
 testing = []
 
@@ -21,6 +21,9 @@ flate2 = { version = "1", optional = true }
 url = { version = "2", optional = true }
 # The keys samael takes (its own dependency, the same version).
 openssl = { version = "0.10", optional = true }
+# The XML tree xmlsec1 works on (samael's own dependency, the same version): encrypted assertions
+# are opened in it.
+libxml = { version = "=0.3.3", optional = true }
 
 [lints]
 workspace = true

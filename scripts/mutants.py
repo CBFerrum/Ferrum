@@ -510,6 +510,13 @@ MUTANTS = [
     ("saml-unsigned-requests", "crates/saml/src/checked.rs", "Some(key) => request.signed_redirect(relay_state, &private_key(key)?),", "Some(_) => request.redirect(relay_state),", SAML_UNIT),
     ("saml-encrypted-read-anyway", "crates/saml/src/checked.rs", 'if xml.contains("EncryptedAssertion") {', "if false {", SAML_UNIT),
     ("saml-any-domain", "crates/kernel/src/sso.rs", "                if domains.is_empty() {\n                    return Err(Error::field(\"domains\"", "                if false {\n                    return Err(Error::field(\"domains\"", SAML),
+    # SAML encrypted assertions and single logout.
+    ("saml-cbc-unsigned", "crates/saml/src/xmlenc.rs", "let allowed: Vec<&str> = if cbc {", "let allowed: Vec<&str> = if true {", SAML_UNIT),
+    ("saml-encrypted-outer-unchecked", "crates/saml/src/checked.rs", "    if !signed {\n", "    if true {\n", SAML_UNIT),
+    ("saml-logout-unsigned-query", "crates/saml/src/logout.rs", "            if !good {", "            if false {", SAML_UNIT),
+    ("saml-logout-replayed", "crates/kernel/src/saml_logout.rs", "                if !fresh {", "                if false {", SAML),
+    ("saml-logout-any-provider", "crates/kernel/src/saml_logout.rs", "saml->>'provider' = any($2) and", "", SAML),
+    ("saml-logout-out-unasked", "crates/kernel/src/saml_logout.rs", "and p.enabled and p.slo_out\"", "and p.enabled\"", SAML),
     # The secret key from a key-management service.
     ("kms-ciphertext-taken-for-a-key", "crates/kernel/src/kms.rs", "    if !is_wrapped(value) {\n        return SecretKey::from_base64(value);", "    if true {\n        return SecretKey::from_base64(value);", KMS),
     ("kms-any-service-will-do", "crates/kernel/src/kms.rs", 'let v = self.call(&client, &format!("{}/decrypt/{}", self.mount, self.key)', 'let v = self.call(&client, &format!("{}/decrypt/{}", self.mount, "ferrum")', KMS),
