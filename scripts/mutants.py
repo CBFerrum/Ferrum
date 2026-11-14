@@ -336,6 +336,8 @@ MUTANTS = [
     ("move-source-takes-changes", "crates/kernel/src/db.rs", "if self.fenced() || frozen || (moving && !self.starting.load(Ordering::SeqCst)) {", "if self.fenced() || frozen {", RECOVERY),
     ("workspace-move-freeze-ignored", "crates/kernel/src/db.rs", "if self.fenced() || frozen || (moving", "if self.fenced() || (moving", WORKSPACE_MOVE),
     ("workspace-move-skips-the-check", "crates/kernel/src/workspace_move.rs", "        if !changed.is_empty() {\n            src.rollback()", "        if false {\n            src.rollback()", WORKSPACE_MOVE),
+    ("workspace-move-carries-unknown-sealed", "crates/kernel/src/workspace_move.rs", "        if !unknown.is_empty() {\n", "        if false {\n", WORKSPACE_MOVE),
+    ("workspace-move-sign-in-looks-first", "crates/kernel/src/auth.rs", "        self.refuse_if_moving_slug(tenant_slug).await?;\n        let email = email.trim().to_lowercase();\n        let mut tx", "        let email = email.trim().to_lowercase();\n        let mut tx", WORKSPACE_MOVE),
     ("workspace-move-claims-the-held", "crates/kernel/src/outbox.rs", "where tenant_id is not null and not ferrum_workspace_held(tenant_id) order by random()) w \\\n               cross join lateral (select o.id", "where tenant_id is not null order by random()) w \\\n               cross join lateral (select o.id", WORKSPACE_MOVE),
     ("move-unopened-unsaid", "crates/kernel/src/secret.rs", "if self.open_sealed(&label(ids, name), sealed).is_err() {", "if false {", RECOVERY),
     ("extract-what-went-out-unsaid", "crates/kernel/src/recovery.rs", "processed_at > coalesce($2, '-infinity'::timestamptz)", "processed_at <= coalesce($2, '-infinity'::timestamptz)", RECOVERY),

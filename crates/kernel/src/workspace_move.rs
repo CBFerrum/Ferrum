@@ -43,6 +43,9 @@ pub struct MoveSource {
     pub base_domain: Option<String>,
     /// How long work already in hand at the source has to finish before the workspace freezes.
     pub wait: Duration,
+    /// Columns (`table.column`) the operator says hold no sealed value, though something there looks like one
+    /// ([`Kernel::unknown_sealed`]).
+    pub not_sealed: Vec<String>,
     /// Tests: stop after this step, as a crash would.
     pub stop_after: Option<Stop>,
 }
@@ -248,6 +251,27 @@ fn reseal_row(table: &str, tenant: Uuid, row: &mut Map<String, Value>, from: &[S
     })
 }
 
+/// Where values are sealed in a form this module seals again ([`reseal_row`]), or text of the same form that is not
+/// sealed: the scan for sealed values leaves these alone.
+const KNOWN_SEALED: &[(&str, &str)] = &[
+    ("record_secret", "sealed"),
+    ("app_user", "totp_secret"),
+    ("connection", "sealed"),
+    ("message_channel", "sealed"),
+    ("conn", "sealed"),
+    ("conn_token", "sealed"),
+    ("sso_provider", "client_secret"),
+    ("saml_sp_key", "private_key"),
+    ("approval_request", "sealed"),
+    ("plugin", "config"),
+    ("message_send", "pending"),
+    ("outbox", "payload"),
+];
+
+/// What a sealed value looks like (secret.rs, `SecretKey::seal`): standard base64, padded, of a nonce, the text and a
+/// tag, so 40 characters at least; not only lower-case hex, which digests are.
+const SEALED_FORM: &str = "^([A-Za-z0-9+/]{4}){9,}([A-Za-z0-9+/]{4}|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)$";
+
 /// What one table holds of a workspace: its rows and a digest of them, read so that two reads of the same rows agree
 /// whatever their order (columns a read changes left out, [`SEEN`]).
 async fn digest(tx: &mut Tx, table: &str, tenant: Uuid) -> Result<(i64, String)> {
@@ -265,7 +289,64 @@ fn travelling(tables: &Shape) -> impl Iterator<Item = (&String, &Vec<(String, St
     tables.iter().filter(|(t, _)| !LEFT_BEHIND.contains(&t.as_str()))
 }
 
+/// What signing in to a frozen workspace answers (503, to try again), whoever asks and whatever they give.
+pub(crate) const MOVING: &str = "this workspace is moving to another server just now: try again in a few minutes";
+
 impl Kernel {
+    /// Sign-in refuses a frozen workspace before an account is looked up or anything is written (a failure counted, a
+    /// session, an audit record), so the answer is the same for everyone and the frozen copy stays as it was copied.
+    pub(crate) async fn refuse_if_moving(&self, tenant: Uuid) -> Result<()> {
+        let frozen: bool = sqlx::query_scalar("select ferrum_workspace_frozen($1)").bind(tenant.to_string()).fetch_one(&self.db.pool).await?;
+        if frozen { Err(Error::Unavailable(MOVING.into())) } else { Ok(()) }
+    }
+
+    /// [`Kernel::refuse_if_moving`], for a sign-in that names its workspace by slug (none by that slug: no refusal here).
+    pub(crate) async fn refuse_if_moving_slug(&self, slug: &str) -> Result<()> {
+        let mut tx = self.db.system_tx().await?;
+        let frozen: Option<bool> = sqlx::query_scalar("select ferrum_workspace_frozen(id::text) from tenant where slug = $1")
+            .bind(slug.trim().to_lowercase())
+            .fetch_optional(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        if frozen == Some(true) { Err(Error::Unavailable(MOVING.into())) } else { Ok(()) }
+    }
+
+    /// Moves on this side left `leaving` or `arriving` for longer than `quiet` since their last step, with no run working
+    /// on them here (a run holds the lock on the source's database, so the target cannot see one: it says so). For the
+    /// doctor: slug, side, state, since when, and whether a run is working on it (`None`: cannot tell from here).
+    pub async fn stalled_moves(&self, quiet: Duration) -> Result<Vec<(String, String, String, chrono::DateTime<chrono::Utc>, Option<bool>)>> {
+        let mut tx = self.db.system_tx().await?;
+        let rows: Vec<(String, String, String, chrono::DateTime<chrono::Utc>, Option<bool>)> = sqlx::query_as(
+            "select t.slug, m.side, m.state, m.updated_at, case when m.side = 'source' then exists (select 1 from pg_locks l \
+               where l.locktype = 'advisory' and l.classid::bigint = $2 and l.objid::bigint = hashtext(m.workspace::text)::bigint & 4294967295 \
+               and l.objsubid = 2 and l.granted) end \
+             from workspace_move m join tenant t on t.id = m.workspace \
+             where m.state in ('leaving', 'arriving') and m.updated_at < now() - make_interval(secs => $1) order by m.updated_at",
+        )
+        .bind(quiet.as_secs_f64())
+        .bind(i64::from(LOCK))
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows.into_iter().filter(|r| r.4 != Some(true)).collect())
+    }
+
+    /// What this side records of a workspace's move, changing nothing (`move_workspace ... status:yes`).
+    pub async fn move_status(&self, slug: &str) -> Result<Value> {
+        let mut tx = self.db.system_tx().await?;
+        let row: Option<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('workspace', $1::text, 'move', m.move_id, 'side', m.side, 'state', m.state, 'frozen_at', m.frozen_at, \
+               'started_at', m.started_at, 'updated_at', m.updated_at, 'peer', m.peer, 'moved_to', m.moved_to, 'shared_files', m.shared_files, \
+               'finished_at', m.finished_at, 'rows_copied', (select sum((v->>'rows')::bigint) from jsonb_each(m.copied) e(k, v))) \
+             from workspace_move m where m.workspace = (select id from tenant where slug = $1)",
+        )
+        .bind(slug)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.unwrap_or_else(|| json!({"workspace": slug, "state": null})))
+    }
+
     /// Whether a workspace moved from here to another installation (its hosts here then answer as moved).
     pub async fn moved_away(&self, tenant: Uuid) -> Result<bool> {
         Ok(sqlx::query_scalar("select exists (select 1 from workspace_move where workspace = $1 and state = 'moved')")
@@ -517,6 +598,15 @@ impl Kernel {
             return Err(Error::Conflict(format!("this installation has a workspace {t} with that name or id already")));
         }
         let opened = self.prove_keys(source, tenant, from, &here).await?;
+        let unknown: Vec<String> = self.unknown_sealed(source, tenant, &here).await?.into_iter().filter(|c| !from.not_sealed.contains(c)).collect();
+        if !unknown.is_empty() {
+            return Err(Error::Conflict(format!(
+                "{slug} holds what looks like sealed values where a move does not know how they were sealed, so it could not seal them again here: {}. \
+                 If a column holds no sealed value (some other text of the same form), say so with not_sealed:{}",
+                unknown.join(", "),
+                unknown.join(",")
+            )));
+        }
         say(&format!("checked: one build on both sides, the same tables, and {opened} sealed values open with the keys given"));
         Ok(())
     }
@@ -600,6 +690,36 @@ impl Kernel {
             )));
         }
         Ok(opened)
+    }
+
+    /// Columns of the workspace's tables, outside [`KNOWN_SEALED`], where some value has the form of a sealed one: a
+    /// value sealed by code this module does not know (an app's own table) would arrive here sealed with a key this
+    /// installation does not hold. Every text and JSON column (every string inside JSON) of every row the workspace has,
+    /// one pass per table, which says only whether each column holds one.
+    async fn unknown_sealed(&self, source: &Db, tenant: Uuid, tables: &Shape) -> Result<Vec<String>> {
+        // The same, for every string inside a JSON value (a jsonpath pattern is written in it, not passed).
+        let path = format!("$.** ? (@.type() == \"string\" && @ like_regex \"{SEALED_FORM}\" && !(@ like_regex \"^[0-9a-f]+$\"))");
+        let mut tx = system(source).await?;
+        let mut found = Vec::new();
+        for (t, columns) in travelling(tables) {
+            let looked: Vec<(&str, String)> = columns
+                .iter()
+                .filter(|(c, _, _)| !KNOWN_SEALED.contains(&(t.as_str(), c.as_str())))
+                .filter_map(|(c, kind, _)| match kind.as_str() {
+                    "text" | "varchar" | "citext" => Some((c.as_str(), format!("bool_or(\"{c}\"::text ~ $2 and \"{c}\"::text !~ '^[0-9a-f]+$')"))),
+                    "jsonb" | "json" => Some((c.as_str(), format!("bool_or(jsonb_path_exists(\"{c}\"::jsonb, $3::jsonpath))"))),
+                    _ => None,
+                })
+                .collect();
+            if looked.is_empty() {
+                continue;
+            }
+            let sql = format!("select array[{}] from \"{t}\" where tenant_id = $1", looked.iter().map(|(_, e)| e.as_str()).collect::<Vec<_>>().join(", "));
+            let hits: Vec<Option<bool>> = sqlx::query_scalar(AssertSqlSafe(sql)).bind(tenant).bind(SEALED_FORM).bind(&path).fetch_one(&mut *tx).await?;
+            found.extend(looked.iter().zip(hits).filter(|(_, hit)| *hit == Some(true)).map(|((c, _), _)| format!("{t}.{c}")));
+        }
+        tx.commit().await?;
+        Ok(found)
     }
 
     /// Freezes the workspace at the source, once nothing of it is running: under ACCESS EXCLUSIVE on `workspace_move`,

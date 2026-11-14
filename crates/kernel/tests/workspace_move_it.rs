@@ -299,6 +299,7 @@ async fn a_workspace_moves_to_another_installation_and_back() {
         regions: Some(("eu".into(), "us".into())),
         base_domain: None,
         wait: Duration::ZERO,
+        not_sealed: vec![],
         stop_after: stop,
     };
     let refused = |r: Result<Value>, says: &str| match r {
@@ -317,6 +318,20 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     refused(b.move_workspace("acme", &from(None), Run::Start, &quiet).await, "one build on both sides");
     set_build(&build).await;
     refused(b.move_workspace("acme", &from(None), Run::Resume, &quiet).await, "nothing to resume");
+    // A value sealed where the move does not know how (an app's own column, say) is found by its form, and refused.
+    let mut tx = a.db.system_tx().await.unwrap();
+    sqlx::query("update e_contact set notes = $3 where tenant_id = $1 and id = $2")
+        .bind(t)
+        .bind(contact)
+        .bind(key_a.seal(&format!("{t}/notes/{contact}"), "kept by an app").unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    refused(b.move_workspace("acme", &from(None), Run::Start, &quiet).await, "e_contact.notes");
+    let mut tx = a.db.system_tx().await.unwrap();
+    sqlx::query("update e_contact set notes = 'a plain note' where tenant_id = $1").bind(t).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
     // Without the source's key nothing moves.
     let keyless = MoveSource { keys: vec![key_b.clone()], ..from(None) };
     refused(b.move_workspace("acme", &keyless, Run::Start, &quiet).await, "no key in FERRUM_MOVE_SOURCE_SECRET_KEYS opens");
@@ -326,9 +341,21 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let r = a.create_user(&acme, "late@acme.test", "Late", Some(PASSWORD), &[], false).await;
     assert!(matches!(&r, Err(Error::Unavailable(m)) if m.contains("this workspace is moving")), "{r:?}");
     a.read_record(&acme, "Contact", contact, false).await.expect("reading works while frozen");
+    for password in ["wrong", PASSWORD] {
+        let r = a.sign_in("acme", "admin@acme.test", password).await;
+        assert!(matches!(&r, Err(Error::Unavailable(m)) if m.contains("moving")), "{r:?}");
+    }
+    assert!(matches!(a.sign_in("acme", "nobody@acme.test", "wrong").await, Err(Error::Unavailable(_))), "the same answer for an address it does not have");
+    let failed: Vec<(i32,)> = sql(&a, "select failed_logins from app_user where tenant_id = $1 and email = 'admin@acme.test'", t).await;
+    assert_eq!(failed, vec![(0,)], "no failure was counted");
     drain(&a).await;
     assert_eq!(a.run_jobs_once(5).await.unwrap(), 0, "nothing runs for it");
     assert_eq!(seen.count("pay", t), 0, "nothing goes out for it");
+    // Stopped with no run working on it: the doctor says so on the source; the status says where it stands.
+    let stalled = a.stalled_moves(Duration::ZERO).await.unwrap();
+    assert_eq!(stalled.iter().map(|m| (m.0.as_str(), m.1.as_str(), m.2.as_str(), m.4)).collect::<Vec<_>>(), vec![("acme", "source", "leaving", Some(false))]);
+    assert_eq!(a.move_status("acme").await.unwrap()["state"], json!("leaving"));
+    assert_eq!(b.move_status("acme").await.unwrap()["state"], Value::Null);
     refused(b.move_workspace("acme", &from(None), Run::Start, &quiet).await, "under way");
     let held = Db::connect(DbConfig { url: a_url.clone(), max_connections: 1, ..Default::default() }).await.unwrap();
     let mut lock = held.pool.acquire().await.unwrap();
@@ -343,6 +370,9 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     b.move_workspace("acme", &from(Some(Stop::Copied)), Run::Start, &quiet).await.expect("copied");
     let at_b = b.load_ctx(t, acme.user, None, "it".into()).await.unwrap();
     assert!(matches!(b.create_user(&at_b, "early@acme.test", "Early", Some(PASSWORD), &[], false).await, Err(Error::Unavailable(_))));
+    assert_eq!(b.stalled_moves(Duration::ZERO).await.unwrap().iter().map(|m| (m.2.as_str(), m.4)).collect::<Vec<_>>(), vec![("arriving", None)]);
+    // Signing in to a frozen workspace is refused before anything is looked up or written, with the moving answer.
+    assert!(matches!(b.sign_in("acme", "admin@acme.test", "wrong").await, Err(Error::Unavailable(m)) if m.contains("moving")));
     b.move_workspace("acme", &from(None), Run::Abort, &quiet).await.expect("aborted");
     assert!(sql::<(i64,)>(&b, "select count(*) from app_user where tenant_id = $1", t).await[0].0 == 0, "the copy is gone");
     assert!(!dir_b.join(&file_key).exists(), "and its files");
@@ -417,6 +447,7 @@ async fn a_workspace_moves_to_another_installation_and_back() {
         regions: Some(("us".into(), "eu".into())),
         base_domain: Some("eu.example".into()),
         wait: Duration::ZERO,
+        not_sealed: vec![],
         stop_after: None,
     };
     refused(a.move_workspace("acme", &back, Run::Start, &quiet).await, "finish_move");
