@@ -282,6 +282,10 @@ pub struct Event {
     /// The claim this worker holds: `available_at` as it set it, which changes if the claim passes on.
     #[sqlx(default)]
     pub lease: chrono::DateTime<chrono::Utc>,
+    /// The zone of the request whose change this is, when that zone narrows staff (crate::zones, level 2):
+    /// what acts on it for that request acts within the zone.
+    #[sqlx(default)]
+    pub zone: Option<String>,
 }
 
 /// Whether this consumer should act on this event, asked in the transaction that does it. A repeat, even
@@ -345,7 +349,7 @@ impl Kernel {
                  and o.available_at <= now() and (o.build_date is null or o.build_date <= $4) \
                  order by o.priority, o.id limit $2 for update skip locked) claimed \
                limit $3) \
-             returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, depth, available_at as lease",
+             returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, depth, available_at as lease, zone",
         )
         .bind(LEASE_SECS)
         .bind(TENANT_SHARE)
@@ -404,6 +408,7 @@ impl Kernel {
                 traceparent: ev.traceparent.clone(),
                 priority: None,
                 depth: ev.depth.saturating_add(1),
+                zone: Trace::in_zone(ev.zone.clone()),
             };
             let outcome = trace.scope(tokio::time::timeout(EVENT_TIMEOUT, self.handle_event(ev))).await;
             let outcome = outcome.unwrap_or_else(|_| Err(Error::Unavailable(format!("handlers took longer than {} s", EVENT_TIMEOUT.as_secs()))));

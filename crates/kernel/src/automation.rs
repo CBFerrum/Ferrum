@@ -588,7 +588,12 @@ async fn effect_value(
             let to = ctx.schema.entity(entity).and_then(|e| linked_entity(e, steps[1])).map(str::to_string);
             let id = doc.get(steps[1]).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
             let (Some(to), Some(id)) = (to, id) else { return Ok(v) };
-            let linked = k.get_tx(&Ctx::system(ctx.tenant, ctx.schema.clone()), tx, &to, id, false).await?;
+            let linked = match k.get_tx(&Ctx::system_for(ctx), tx, &to, id, false).await {
+                Ok(d) => d,
+                // Within the zone it acts in (crate::zones, level 2), a hidden record is not there.
+                Err(Error::NotFound(_)) if ctx.perms.limit.is_some() => return Ok(v),
+                Err(e) => return Err(e),
+            };
             stored_empty(&Value::Object(linked), &steps[2..])
         }
         _ => false,
@@ -850,14 +855,17 @@ async fn runner(
     schema: &std::sync::Arc<ferrum_meta::Schema>,
     made_by: Option<Uuid>,
     request_id: String,
+    zone: Option<&str>,
 ) -> std::result::Result<Ctx, String> {
+    // A change made in a zone that limits staff to some apps sets going nothing that reaches past them (crate::zones).
+    let within = |ctx: Ctx| k.within_zone(ctx, zone).map_err(|e| e.to_string());
     let Some(user) = made_by else {
         let mut ctx = Ctx::system(tenant, schema.clone());
         ctx.request_id = request_id;
-        return Ok(ctx);
+        return within(ctx);
     };
     match k.load_ctx(tenant, user, None, request_id).await {
-        Ok(ctx) if ctx.is_admin => Ok(ctx),
+        Ok(ctx) if ctx.is_admin => within(ctx),
         Ok(ctx) => Err(format!("{}, who saved it, is no longer an administrator: an administrator saves it again", ctx.email)),
         Err(_) => Err("whoever saved it can no longer sign in here: an administrator saves it again".into()),
     }
@@ -940,7 +948,7 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     let mut first_error = None;
     for a in autos {
         // Whom it would run as, worked out before its transaction holds anything.
-        let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id)).await;
+        let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id), ev.zone.as_deref()).await;
         let res = run_one(k, ev, entity, &a, &who, depth, ev.record_id, (&doc, &cel_doc, cel_old.as_ref()), true).await;
         if let Err(e) = res {
             tracing::warn!(automation = %a.id, event = ev.id, "automation failed: {e}");
@@ -980,7 +988,7 @@ async fn run_scheduled(k: &Kernel, ev: &Event, entity: &str, depth: u8) -> Resul
     let a = Automation { id, condition, actions, created_by, is_active };
     let schema = k.registry.schema(ev.tenant_id).await?;
     let Some(ent) = schema.entity(entity).cloned() else { return Ok(()) };
-    let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id)).await;
+    let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id), ev.zone.as_deref()).await;
     let (mut raw, mut cel_doc) = (Value::Null, Value::Null);
     if let Ok(ctx) = &who {
         let doc = match k.get(ctx, entity, record, false).await {

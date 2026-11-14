@@ -2577,7 +2577,8 @@ impl JobHandler for Queued {
 
     async fn run(&self, k: &Kernel, job: &Job) -> Result<Value> {
         let c: Call = serde_json::from_value(job.payload["call"].clone()).map_err(|e| Error::invalid(e.to_string()))?;
-        let mut ctx = Ctx::system(job.tenant_id, k.registry.schema(job.tenant_id).await?);
+        // Within the zone of the request that queued it (crate::zones, level 2).
+        let mut ctx = job.system(k).await?;
         if let Some(u) = job.payload["user"].as_str().and_then(|u| u.parse().ok()) {
             ctx.user = u;
         }
