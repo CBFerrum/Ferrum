@@ -97,7 +97,8 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 * Signing in again: OpenID Connect `prompt=login` and `max_age=0`, SAML `ForceAuthn`; the answer must be the linked
   identity, pass every check a sign-in's answer passes, and state a sign-in (`auth_time`, `AuthnInstant`) made at
   most three minutes before it is checked and not before the step-up asked (two minutes allowed for the provider's
-  clock). Its flow is marked as a step-up's, bound to the session and person, and its browser binding is given to
+  clock). A SAML provider that states the time of its answer as `AuthnInstant` (Keycloak does) is trusted to have
+  honoured `ForceAuthn`: the time cannot tell. Its flow is marked as a step-up's, bound to the session and person, and its browser binding is given to
   nobody: a sign-in's flow never confirms anyone and a step-up's never signs anyone in, links or makes an account.
   The proof reaches the page the person works on as a one-use code (32 random bytes, kept as a SHA-256), for that
   session and that host's origin, good for a minute; the page hands it to its dialog over a same-origin channel,

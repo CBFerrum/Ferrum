@@ -1493,7 +1493,9 @@ for the provider's clock. A provider that ignores the request and answers from a
 refused with "Okta did not ask you to sign in again", and nothing changes. **What a provider must support:** OpenID
 Connect, `prompt=login` and `max_age`, with `auth_time` in the ID token (the standard requires it when `max_age` is
 asked); SAML, `ForceAuthn`. Check yours before marking work: a provider that does not leaves its people without this way
-(they get the refusal in the window, every time). Signed in as someone else: "the account does not match", and nothing
+(they get the refusal in the window, every time). A SAML provider whose `AuthnInstant` is the time of its answer
+rather than of the sign-in is not caught that way: Keycloak does that (26.8.1, even when it answers from its session),
+so with SAML the step-up rests on the provider honouring `ForceAuthn`, which Keycloak does (`saml_keycloak_it.rs`). Signed in as someone else: "the account does not match", and nothing
 changes. It uses the return address providers already have registered (`/app/login`, on the accounts host where
 sign-in happens there; SAML: the assertion consumer service as before), so nothing is registered anew. Its last page,
 on the host the person works on, hands the
