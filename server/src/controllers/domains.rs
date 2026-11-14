@@ -101,7 +101,7 @@ fn listed(h: &TenantHost, apps: &[ShellApp], proof: DomainProof) -> Value {
     v["can"] = json!({
         "edit": live && h.kind != "operator" && h.target == "shell",
         "remove": live && (h.kind == "custom" || h.base_name.is_some()),
-        "make_primary": live && !h.is_primary && (h.kind != "custom" || h.verified_at.is_some()),
+        "make_primary": live && !h.is_primary && !h.forward && (h.kind != "custom" || h.verified_at.is_some()),
     });
     v
 }
@@ -195,6 +195,9 @@ struct NewDomain {
     apps: Option<Vec<String>>,
     #[serde(default)]
     label: Option<String>,
+    /// It only sends people on to the main address (ferrum_kernel::shell::HostShape::forward).
+    #[serde(default)]
+    forward: bool,
     #[serde(default)]
     zone: Option<Value>,
 }
@@ -204,14 +207,14 @@ fn shell_target() -> String {
 }
 
 /// `POST /api/admin/domains`: `{host}` (a domain of the workspace's own, verified before it works) or `{name}` (a name
-/// under the base domain, live at once), with `target`, and for `shell` `home`, `apps` and `label`.
+/// under the base domain, live at once), with `target`, and for `shell` `home`, `apps` and `label`, or `forward`.
 async fn add(Auth(ctx): Auth, State(app): State<AppContext>, Json(d): Json<NewDomain>) -> ApiResult<Response> {
     admin(&ctx)?;
     let st = app_state(&app)?;
     if d.zone.is_some() {
         return Err(Error::field("zone", ZONES_ARE_THE_OPERATORS).into());
     }
-    let shape = HostShape { home: d.home, apps: d.apps, label: d.label };
+    let shape = HostShape { home: d.home, apps: d.apps, label: d.label, forward: d.forward };
     check_choices(&st, &ctx, shape.home.as_deref(), shape.apps.as_deref()).await?;
     // A site is an app's: one this workspace has, that renders pages.
     if let Some(app_id) = d.target.strip_prefix("site:")
@@ -274,7 +277,8 @@ fn text_or_null(key: &str, v: &Value) -> Result<Option<String>, Error> {
 }
 
 /// `PATCH /api/admin/domains/{host}`: changes what a `shell` address shows, any of `home`, `apps` and `label` (`null`
-/// clears one; one left out stays). Never its zone, and never an operator's address.
+/// clears one; one left out stays), and whether it forwards (`forward`, true or false). Never its zone, and never an
+/// operator's address.
 async fn reshape(
     Auth(ctx): Auth,
     State(app): State<AppContext>,
@@ -289,6 +293,7 @@ async fn reshape(
             "zone" => return Err(Error::field("zone", ZONES_ARE_THE_OPERATORS).into()),
             "home" => patch.home = Some(text_or_null(k, v)?),
             "label" => patch.label = Some(text_or_null(k, v)?),
+            "forward" => patch.forward = Some(v.as_bool().ok_or_else(|| Error::field("forward", "must be true or false"))?),
             "apps" => {
                 patch.apps = Some(match v {
                     Value::Null => None,
@@ -297,7 +302,7 @@ async fn reshape(
                     ),
                 })
             }
-            other => return Err(Error::field(other, "is not something an address shows here (home, apps, label)").into()),
+            other => return Err(Error::field(other, "is not something an address shows here (home, apps, label, forward)").into()),
         }
     }
     check_choices(&st, &ctx, patch.home.clone().flatten().as_deref(), patch.apps.clone().flatten().as_deref()).await?;

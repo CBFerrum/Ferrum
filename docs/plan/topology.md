@@ -257,6 +257,28 @@ same host gets another, so an old record proves nothing. Decided:
   taken. `delete_tenant` now retires it in the same transaction and keeps the earlier ones. Not `finish_move`: a move
   copies and counts a workspace's retired slugs, so one kept at the source would stop it coming back.
 
+**Forwarding addresses** (second slice). `tenant_host.forward`, part of `HostShape`, set by `POST` and `PATCH` on a
+`shell` address that is not the main one nor the operator's. It reuses what a moved address does: `route_host` answers
+`HostRoute::Forward { to, home }`, which every page path takes as `Place::Moved(to)`, and one middleware
+(`server/src/app.rs`, `forwarding`, inside the per-address limit) answers its requests before any credential is read:
+a page `GET`/`HEAD` → `302` to the main address (`/` → `home`'s first launcher route, else Home; else the same path and
+query), anything else → `404` naming it; only `/.well-known/ferrum-domain` passes. Decided:
+- Closed or restricted: it goes on forwarding (addresses keep answering); it cannot change meanwhile.
+- In a zone: `home` is dropped, so the redirect names only the main address, as a leaving address's does.
+- The main address changes: it follows (looked up with the route, cached 20 s). It is never the main one: `PUT
+  …/primary` and `set_primary_host` refuse it, succession (`release_in`, `primary_where_none`, `host_successor`) skips it,
+  and a name added with `forward` is never made main. With no main address left: `404` for everything. Setting it needs
+  a main address.
+- Portal and `site:`: refused (`check_shape`). `apps` and `label`: refused together with `forward` (no bar shows them);
+  `home` stays meaningful.
+- An address that served and comes to forward first gets its leaving period (`leaving_until` on the live row, the leaving
+  machinery: those signed in there are served and told; others `308`), so offline work kept for it is not lost. Turned
+  off: `leaving_until` cleared, it serves at once.
+- Never named as a serving or staff address (`serving_hosts`, `staff_address`); a move re-makes it forwarding.
+- An older build ignores `forward` and serves the workspace there: nothing protective is lost, so no floor. It could
+  make a forwarding address the main one (its succession knows no `forward`); a main address never forwards, so that
+  one then serves as any address until another is made main.
+
 **Drawbacks kept** (each with what was done):
 
 | Drawback | What was done |
@@ -280,6 +302,8 @@ same host gets another, so an old record proves nothing. Decided:
 | An older build ignores `host_quarantine` and the record | `record` puts a floor in place; in `points` mode an older build could hand a deleted workspace's domain on early, as it could any domain pointing here |
 | A deleted sandbox's slug stays free (documented: refresh by the same name) | Not changed: a sandbox has only the operator's `{as}.{base}` |
 | A moved workspace's slug is free at the source after `finish_move`, so another workspace there could get `{slug}.{base}` (`ensure_subdomains` does not ask `claimable`) | Its custom domains are quarantined there; its names under that base were released when it arrived elsewhere |
+| During a forwarding address's leaving period visitors get `308`, which browsers keep: turning forwarding off soon after leaves them going to the main address | The leaving machinery as it is; after the period every answer is `302` (`no-store`) |
+| A forwarding address in a zone that admits no staff names the main address to anyone | As a leaving address does; the main address's own zone still decides who is admitted there |
 
 ## Not doing
 

@@ -551,9 +551,11 @@ impl Hooks for App {
         let limiter = state.address_limiter.clone();
         let st = Arc::new(state.clone());
         let origins = st.clone();
+        let forwards = st.clone();
         Ok(router
             .layer(axum::middleware::from_fn(move |req, next| step_up_ways(st.clone(), req, next)))
             .layer(axum::middleware::from_fn(hold_place))
+            .layer(axum::middleware::from_fn(move |req, next| forwarding(forwards.clone(), req, next)))
             .layer(axum::middleware::from_fn(move |req, next| per_address(limiter.clone(), req, next)))
             .layer(axum::middleware::from_fn(api_no_store))
             .layer(axum::middleware::from_fn(speculation_csp))
@@ -695,6 +697,51 @@ async fn per_address(limiter: Arc<RateLimiter>, req: axum::extract::Request, nex
         return crate::error::ApiError(e).into_response();
     }
     next.run(req).await
+}
+
+/// A forwarding address (docs/operations.md, "Addresses of a workspace") serves no workspace, so it answers here, before
+/// any credential is read: no cookie is set, no bootstrap runs and no sign-in page is shown. A page (`GET`, `HEAD`) goes on
+/// (`302`) to the workspace's main address, `/` to the address's `home` there (its app's first launcher route; Home without
+/// one), any other path with its query as it came. Anything else, the API among it, is `404` naming the main address. Its
+/// proof (`/.well-known/ferrum-domain`) answers as on any address. The rest of the server takes it for a moved address.
+async fn forwarding(st: Arc<AppState>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::http::{HeaderValue, Method, StatusCode, header};
+    use axum::response::IntoResponse;
+    let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
+    let Ok(ferrum_kernel::shell::HostRoute::Forward { tenant, to, home }) = st.kernel.route_host(host).await else { return next.run(req).await };
+    let path = req.uri().path();
+    if path == "/.well-known/ferrum-domain" {
+        return next.run(req).await;
+    }
+    let main = to.as_deref().and_then(|h| st.shell.origin_of(h, req.headers()));
+    let server = ["/api", "/oauth", "/ws", "/mcp", "/files", "/.well-known", "/metrics"].iter().any(|p| path == *p || path.starts_with(&format!("{p}/")));
+    let page = matches!(*req.method(), Method::GET | Method::HEAD) && !server && !path.starts_with("/_");
+    let Some(main) = main.filter(|_| page) else {
+        let said = match &to {
+            Some(h) => format!(
+                "this address only sends people on to the workspace's main address, {}: use that one",
+                st.shell.origin_of(h, req.headers()).unwrap_or_else(|| h.clone())
+            ),
+            None => "this address leads nowhere now".into(),
+        };
+        return crate::error::ApiError(ferrum_kernel::Error::NotFound(said)).into_response();
+    };
+    let landing = match (path, home) {
+        ("/", Some(app)) => match st.apps.shell_apps(tenant).await {
+            Ok(apps) => {
+                crate::shell::home_choices(&apps).into_iter().find(|(id, ..)| *id == app).map_or_else(|| "/".to_string(), |(.., route)| format!("/{route}/"))
+            }
+            Err(_) => "/".to_string(),
+        },
+        _ => path.to_string(),
+    };
+    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let mut res = StatusCode::FOUND.into_response();
+    if let Ok(location) = HeaderValue::from_str(&format!("{main}{landing}{query}")) {
+        res.headers_mut().insert(header::LOCATION, location);
+    }
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
 }
 
 /// Keeps the turn a request takes among its workspace's (`Auth`) until its response is made, and says how

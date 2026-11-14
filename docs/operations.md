@@ -3171,6 +3171,27 @@ each address's zone and cannot change it, and cannot change or remove an operato
 out, what an address shows never names them: its `home` falls back to Home, its `apps` lose them, and the
 administration screen offers only the zone's apps.
 
+**Forwarding addresses.** Every address is a place of its own for the browser (*Signing in on several addresses*,
+below): its own sign-in, storage, offline work, service worker and notifications. For a name that is only a front door
+(`crm.acme.com`), `forward` saves all of that: the address serves nothing and sends each page on (`302`) to the
+workspace's main address, `/` to the address's `home` there (that app's first launcher route; Home without one), any
+other path with its query as it came. It answers before anything is read of who is asking: it sets no cookie, never shows
+a sign-in page and serves no API (`404`, naming the main address). Only its proof (`/.well-known/ferrum-domain`) answers
+as on any address: it still needs its certificate and, for a domain of the workspace's own, its proof.
+
+* Set on a `shell` address that is not the main one nor the operator's (`forward` when it is added, or changed later);
+  refused for the portal and a site, and together with `apps` or `label`, which would mean nothing without a bar. `home`
+  is where `/` goes. It needs a main address to send people to.
+* An address that already served, set to forward, first has its leaving period (`FERRUM_HOST_LEAVING_DAYS`), as a removed
+  one has: those signed in there go on until it ends, told so under the bar, and everyone else is sent on (`308`). Turned
+  off, it is an address like any other again at once.
+* It always leads to the current main address, which it can never become: making it the main one is refused, and when the
+  main address is removed the one that takes its place is never a forwarding one. With no main address left it answers
+  `404` to everything.
+* In a zone it names only the main address: `/` goes to the main address's Home, never to `home`.
+* While the workspace is closed or restricted it goes on forwarding, as every address goes on answering.
+* An older build ignores `forward` and serves the workspace there, as it did: nothing protective is lost.
+
 **Names under the base domain.** With `FERRUM_BASE_DOMAIN`, administrators add names as `{name}--{slug}.{base}`, one
 part of the address: `sales--acme.ferrum.cloud`. Such a name works at once (the cluster owns the base domain, so there is
 nothing to prove), the base's wildcard certificate covers it (`/_tls/ask` says yes for it too), and the accounts host hands

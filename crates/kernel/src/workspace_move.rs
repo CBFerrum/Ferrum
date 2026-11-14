@@ -1246,8 +1246,9 @@ impl Kernel {
             // names under this one, showing what they showed, where they are free; the old ones cannot reach this
             // installation (their base's addresses lead to the source), so they are let go of here.
             sqlx::query(
-                "insert into tenant_host (host, tenant_id, kind, target, is_primary, verify_token, verified_at, base_name, home, apps, label) \
-                 select h.base_name || '--' || $2 || '.' || $3, h.tenant_id, 'subdomain', h.target, false, '', now(), h.base_name, h.home, h.apps, h.label \
+                "insert into tenant_host (host, tenant_id, kind, target, is_primary, verify_token, verified_at, base_name, home, apps, label, forward) \
+                 select h.base_name || '--' || $2 || '.' || $3, h.tenant_id, 'subdomain', h.target, false, '', now(), h.base_name, h.home, h.apps, h.label, \
+                 h.forward \
                  from tenant_host h where h.tenant_id = $1 and h.base_name is not null and h.released_at is null and right(h.host, length($3) + 1) <> '.' || $3 \
                  on conflict (host) do nothing",
             )
