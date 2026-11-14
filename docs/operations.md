@@ -487,6 +487,18 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   they are then level, which is safe.
   `deploy/smoke.sh` starts the previous image again on the database the new one migrated, when the previous image has
   the label.
+* **Rehearsed with two real binaries.** `scripts/window_rehearsal.sh <older commit> ferrum_windowrehearsal_<name>`
+  builds an older commit of main as the image build does (its tree read with `git archive`, `BUILD_DATE` its commit's
+  date, the core packages only, offline, in a directory of its own under `WINDOW_WORK`, about 2.7 GB while it builds,
+  refused with less than 8 GB free) and runs it with this build on one throwaway database: the older build makes a
+  workspace; this build migrates and, with its background work off, leaves an event and a job waiting; the older build
+  starts again with `FERRUM_MIGRATE_AT_START=false`, then `true`, and must run as a guest, read and write records, leave
+  the schema exactly as it was (columns, indexes, constraints, functions, migrations and the window's record, compared
+  before and after) and leave that event and job alone, which this build then takes; recorded reads switched on, the
+  older build is refused; `allow_older_builds` lets it start, and this build's next start puts the floor back. Run on
+  15 November 2026 with the merges of pull requests 226 (no floors yet, 18 migrations behind: refused with "Start a
+  build from 2026-11-14T08:54:21Z or newer") and 237 (floors, 4 migrations behind: refused naming `record_reads`, and
+  started with staff networks on, which it enforces). Both passed; nothing needed fixing.
 
 #### Protections an older build would not enforce
 
