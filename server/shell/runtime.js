@@ -193,6 +193,15 @@ function providerProof(message, origin, dialog) {
   return token(data.state) && token(data.code) ? { state: data.state, code: data.code } : null;
 }
 
+/** Which line goes under the search results: `""` for none, else `type`, `searching`, `partial` (the server left
+ * records out because it ran out of time: "nothing found" would be untrue) or `nothing`. */
+function finderHint(q, busy, partial, found) {
+  if (q.length < 2) return found ? "" : "type";
+  if (busy) return found ? "" : "searching";
+  if (partial) return "partial";
+  return found ? "" : "nothing";
+}
+
 // ── end of the pure helpers ──
 
 // This origin's workspace (§7.2): a host of one workspace's that ever answers for another than
@@ -749,7 +758,7 @@ function ownEntry() {
 // you type; then apps from the launcher, things to create, the records the person may read
 // (/api/search), and what the apps' providers find (`shell.search`, asked here in parallel), each
 // group drawn as it arrives.
-const finder = { q: "", ctl: null, timer: 0, groups: [], active: 0, input: null, list: null };
+const finder = { q: "", ctl: null, timer: 0, groups: [], active: 0, partial: false, input: null, list: null };
 
 /** A same-site page to open, or null (a provider's answer is not trusted further). */
 const sitePath = (url) => (typeof url === "string" && url.startsWith("/") && !url.startsWith("//") ? url : null);
@@ -851,6 +860,7 @@ function runFinder() {
   finder.ctl = ctl;
   const q = finder.q.trim();
   finder.active = 0;
+  finder.partial = false;
   finder.groups = localGroups(q);
   if (q.length >= 2) {
     const sources = [
@@ -873,6 +883,7 @@ function runFinder() {
         .then((r) => (r.ok ? r.json() : null))
         .then((body) => {
           group.items = items(body?.results);
+          if (body?.partial && finder.ctl === ctl) finder.partial = true;
           // The lists the person may open, by name: "Go to", before the records.
           const pages = s.key === "records" ? items(body?.pages).map((p) => ({ ...p, icon: p.icon && ICONS[p.icon] ? p.icon : "list" })) : [];
           if (pages.length && finder.ctl === ctl) finder.groups.splice(finder.groups.indexOf(group), 0, { key: "pages", title: tr("Go to"), items: pages, loading: false });
@@ -937,10 +948,13 @@ function drawFinder() {
       );
     }
   }
-  if (!rows.length) {
-    const busy = finder.groups.some((g) => g.loading);
-    rows.push(el("p", { class: "rhint", text: q.length < 2 ? tr("Type to search apps, records, conversations and files, or to create something new.") : busy ? tr("Searching…") : tr("Nothing found for “{q}”.", { q }) }));
-  }
+  const hint = {
+    type: () => tr("Type to search apps, records, conversations and files, or to create something new."),
+    searching: () => tr("Searching…"),
+    partial: () => tr("Some records were left out: the search ran out of time. Search again to see them."),
+    nothing: () => tr("Nothing found for “{q}”.", { q }),
+  }[finderHint(q, finder.groups.some((g) => g.loading), finder.partial, rows.length > 0)];
+  if (hint) rows.push(el("p", { class: "rhint", text: hint() }));
   finder.list.replaceChildren(...rows);
   finder.input?.setAttribute("aria-activedescendant", n ? `ferrum-result-${finder.active}` : "");
   finder.list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
