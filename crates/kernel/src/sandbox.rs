@@ -257,14 +257,18 @@ impl Kernel {
         Ok(())
     }
 
-    /// A sandbox's mark, for the shell's bootstrap: `{of, until}`; `None` for a live workspace.
+    /// A sandbox's mark, for the shell's bootstrap: `{of, until, name}` (the source's slug, last day, and name when it is held here); `None` for a live workspace.
     pub async fn sandbox_mark(&self, tenant: Uuid) -> Result<Option<Value>> {
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(Option<String>, Option<NaiveDate>)> =
-            sqlx::query_as("select sandbox_from, sandbox_until from tenant where id = $1").bind(tenant).fetch_optional(&mut *tx).await?;
+        // The source's name too when it is held here (a copy from another installation has only its slug).
+        let row: Option<(Option<String>, Option<NaiveDate>, Option<String>)> =
+            sqlx::query_as("select t.sandbox_from, t.sandbox_until, s.name from tenant t left join tenant s on s.id = t.sandbox_of where t.id = $1")
+                .bind(tenant)
+                .fetch_optional(&mut *tx)
+                .await?;
         tx.commit().await?;
         Ok(match row {
-            Some((Some(of), Some(until))) => Some(json!({"of": of, "until": until})),
+            Some((Some(of), Some(until), name)) => Some(json!({"of": of, "until": until, "name": name})),
             _ => None,
         })
     }

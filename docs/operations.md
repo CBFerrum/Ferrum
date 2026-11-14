@@ -1853,6 +1853,12 @@ in with their passwords, and an administrator sets one for whoever has none. Sta
 The interface is told it is a sandbox (`sandbox` in the bootstrap, docs/api.md), the workspace's name ends in
 "(sandbox)" (an administrator may change it), and its sign-in page says "sandbox".
 
+**How it looks.** Every page with the bar has a strip under it, in the theme's warning colours, that cannot be
+hidden: "Sandbox: a copy of {the source's name, or its name there when the source is on another installation}.
+Nothing sent from here leaves the system. It is deleted after {its last day}." The bar grows by the strip before the
+app below draws, so nothing moves, and the page's title starts with "Sandbox ·" (an app that sets its own title gets
+it back). Public pages, which have no bar, carry the title only.
+
 **Personal data.** A sandbox is a second copy of people's data, so it has an end: `until` is required, at most 90 days
 ahead. `ferrum task doctor` reports sandboxes past their day (`sandbox.expired`); nothing deletes them by itself. When a
 person's data is exported or erased in the source workspace, the answer lists the sandboxes of it this installation

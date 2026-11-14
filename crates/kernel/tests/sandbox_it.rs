@@ -454,7 +454,7 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     );
     let (session, _) = a.verify_api_key_from(&api_key, "127.0.0.1").await.unwrap();
     assert_eq!(session.tenant, t, "the integration's key is the live workspace's alone");
-    assert_eq!(a.sandbox_mark(sb).await.unwrap(), Some(json!({"of": "acme", "until": until})));
+    assert_eq!(a.sandbox_mark(sb).await.unwrap(), Some(json!({"of": "acme", "until": until, "name": "Acme"})), "the source is held here: its name too");
     assert_eq!(a.sandbox_mark(t).await.unwrap(), None);
 
     // Nothing reaches outside: mail, pushes, webhooks, calls through the kernel's client from its jobs and for it.

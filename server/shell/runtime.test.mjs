@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 const src = readFileSync(new URL("./runtime.js", import.meta.url), "utf8");
 const block = src.slice(src.indexOf("// ── Pure helpers"), src.indexOf("// ── end of the pure helpers"));
 assert.ok(block.length > 100, "the block is where the markers say");
-const { originStep, stillToSend, movedUrl } = new Function(`${block}; return { originStep, stillToSend, movedUrl };`)();
+const { originStep, stillToSend, movedUrl, marked } = new Function(`${block}; return { originStep, stillToSend, movedUrl, marked };`)();
 
 test("the origin guard keeps a workspace's storage while its host is leaving, and wipes it for the next owner", () => {
   const acme = "0195-acme";
@@ -40,4 +40,9 @@ test("the same page at the new address keeps to the new origin", () => {
   assert.equal(movedUrl("http://acme.localhost:5150/", { pathname: "/", search: "", hash: "" }), "http://acme.localhost:5150/");
   // A path that looks like another host stays a path on the new one.
   assert.equal(new URL(movedUrl("https://new.example", { pathname: "//evil.example/x", search: "", hash: "" })).host, "new.example");
+});
+
+test("a sandbox's mark goes before the title once", () => {
+  assert.equal(marked("Deals · CRM", "Sandbox · "), "Sandbox · Deals · CRM");
+  assert.equal(marked("Sandbox · Deals · CRM", "Sandbox · "), "Sandbox · Deals · CRM");
 });

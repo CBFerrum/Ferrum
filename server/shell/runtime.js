@@ -44,6 +44,11 @@ function movedUrl(to, loc) {
   return `${new URL(to).origin}${loc.pathname}${loc.search}${loc.hash}`;
 }
 
+/** A page's title with `mark` before it, once. */
+function marked(title, mark) {
+  return title.startsWith(mark) ? title : `${mark}${title}`;
+}
+
 // ── end of the pure helpers ──
 
 // This origin's workspace (§7.2): a host of one workspace's that ever answers for another than
@@ -442,6 +447,12 @@ button.ghost { background: transparent; box-shadow: inset 0 0 0 1px var(--ferrum
 .leaving button, .leaving a.btn { color: inherit; height: 28px; font-size: 13px; }
 .leaving a.btn { box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 35%, transparent); }
 .leaving button:hover, .leaving a.btn:hover { background: color-mix(in srgb, currentColor 12%, transparent); color: inherit; }
+/* A sandbox's strip: in the bar's own height (the page below is laid out under it from the start), never hidden. */
+:host([sandbox]) .bar { height: calc(100% - 24px); }
+.strip { display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 12px; font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden;
+  background: var(--ferrum-warning-soft, #fff4d6); color: var(--ferrum-warning, #8f5700); border-bottom: 1px solid var(--ferrum-border, #dee3ea); }
+.strip strong { flex: none; font-weight: 600; }
+.strip span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 `;
 
 // Icons from Lucide (lucide.dev, ISC license, Copyright (c) Lucide Icons and Contributors): the
@@ -1175,6 +1186,7 @@ class FerrumBar extends HTMLElement {
     this.side = el("aside", { class: "side", "aria-label": tr("Side panel"), hidden: true });
     this.noticeEl = el("div", { class: "notice", role: "status", hidden: true });
     root.append(style, bar, this.launcher, this.menu, this.createMenu, this.tray, this.searchPanel, this.inboxPanel, this.side, this.noticeEl);
+    if (boot?.sandbox) bar.after(this.sandboxStrip());
     this.below = el("div", { class: "below" });
     root.append(this.below);
     if (person.actor) this.below.append(el("div", { class: "banner", role: "note", text: tr("You are acting as {name}. Everything you do is recorded with both names.", { name: person.name }) }));
@@ -1232,6 +1244,28 @@ class FerrumBar extends HTMLElement {
     // The launcher's data, early but not in the way; at once when a side panel was open in this tab.
     if (rememberedPanel()) loadShell().then(() => (rememberedPanel() && !openPanel ? openSidepanel(rememberedPanel()) : null));
     else (window.requestIdleCallback ?? ((f) => setTimeout(f, 1500)))(() => loadShell());
+  }
+
+  /** A sandbox says so on every page (docs/operations.md, "A sandbox of a workspace"): a strip in the bar's height,
+   *  which grows by it before the page below is drawn, and the page's title. Not dismissible. */
+  sandboxStrip() {
+    const sb = boot.sandbox;
+    this.setAttribute("sandbox", "");
+    const sheet = document.createElement("style");
+    sheet.textContent = "@media screen { :root { --ferrum-bar-height: 72px; } ferrum-bar[compact] { --ferrum-bar-height: 64px; } }";
+    document.head.append(sheet);
+    const lang = boot?.locale?.language ?? undefined;
+    const until = /^\d{4}-\d{2}-\d{2}$/.test(sb.until ?? "") ? new Date(`${sb.until}T00:00:00`).toLocaleDateString(lang, { day: "numeric", month: "long", year: "numeric" }) : String(sb.until ?? "");
+    const text = tr("a copy of {name}. Nothing sent from here leaves the system. It is deleted after {until}.", { name: sb.name || sb.of || "", until });
+    const mark = `${tr("Sandbox")} · `;
+    const title = document.querySelector("title") ?? document.head.appendChild(document.createElement("title"));
+    const keep = () => {
+      if (!document.title.startsWith(mark)) document.title = marked(document.title, mark);
+    };
+    keep();
+    // An app (or the shell) that sets its own title gets the mark back at once.
+    new MutationObserver(keep).observe(title, { childList: true, characterData: true, subtree: true });
+    return el("div", { class: "strip", role: "note", title: text }, el("strong", { text: `${tr("Sandbox")}:` }), el("span", { text }));
   }
 
   /** An address in its leaving period (docs/operations.md, "Changing or removing an address"): on every page, until
