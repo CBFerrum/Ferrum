@@ -62,11 +62,15 @@ pub async fn sign_in(st: &AppState, headers: &HeaderMap, tenant: uuid::Uuid, use
     }
     if !entry.admits_staff() {
         ferrum_kernel::zones::count_refusal(&entry, tenant, user);
-        if entry.refuses_staff() {
-            return Err(());
-        }
     }
-    if st.kernel.network_refuses(tenant, user, &entry.address).await { Err(()) } else { Ok(entry) }
+    if entry.refuses_staff() || st.kernel.network_refuses(tenant, user, &entry.address).await {
+        // On the audit trail, as a refusal (capped as failures are); the answer says nothing more.
+        if let Err(e) = st.kernel.record_sign_in_failure(tenant, user, "refused", "", &arrival(st, headers).await).await {
+            tracing::warn!("a refused sign-in could not be recorded: {e}");
+        }
+        return Err(());
+    }
+    Ok(entry)
 }
 
 /// The answer to a refused sign-in: the one a wrong password gets, which says nothing about the
@@ -119,6 +123,15 @@ pub fn network_metrics_text() -> String {
         out.push_str(&format!("ferrum_staff_network_refusals_total{{mode=\"{mode}\",credential=\"{credential}\"}} {n}\n"));
     }
     out
+}
+
+/// `ferrum_sign_in_unknown_total` for `/metrics`: failed sign-ins for an address no account has (never
+/// recorded by address).
+pub fn unknown_sign_in_metrics_text() -> String {
+    format!(
+        "# HELP ferrum_sign_in_unknown_total Failed sign-ins for an address no account has.\n# TYPE ferrum_sign_in_unknown_total counter\nferrum_sign_in_unknown_total {}\n",
+        ferrum_kernel::gate::unknown_failures()
+    )
 }
 
 #[cfg(test)]

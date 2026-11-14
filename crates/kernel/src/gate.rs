@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
 /// The most networks one list holds.
@@ -169,6 +170,118 @@ impl Kernel {
         tx.commit().await?;
         self.registry.invalidate(tenant);
         self.invalidate_tenant_users(tenant);
+        Ok(())
+    }
+}
+
+// ── sign-ins on the audit trail ──
+
+/// The entity of sign-in events; the record is the account.
+pub const SIGN_IN: &str = "SignIn";
+/// Failed attempts of one account recorded one by one in an hour; the rest go in one summary.
+pub const FAILURES_PER_HOUR: i32 = 3;
+
+/// Failed sign-ins for an address no account has: counted, never recorded by address.
+static UNKNOWN_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn count_unknown_failure() {
+    UNKNOWN_FAILURES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// How many sign-ins failed since start for an address no account has (`ferrum_sign_in_unknown_total`).
+pub fn unknown_failures() -> u64 {
+    UNKNOWN_FAILURES.load(Ordering::Relaxed)
+}
+
+/// What a sign-in event holds: where it came from and how. The address and the browser are the
+/// person's data: an erasure blanks them, an export lists them.
+fn detail(from: &Arrival, method: &str, extra: Value) -> Value {
+    let mut d = json!({"address": from.address, "user_agent": from.user_agent, "zone": from.zone, "method": method});
+    if let (Some(d), Value::Object(extra)) = (d.as_object_mut(), extra) {
+        d.extend(extra);
+    }
+    d
+}
+
+/// One sign-in event of `user`. Their events chain on their account; one at a time, so that two at
+/// once do not both follow the same one.
+pub(crate) async fn event(tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid, action: &str, detail: Value) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('ferrum.sign_in ' || $1::text || $2::text, 0))")
+        .bind(tenant)
+        .bind(user)
+        .execute(&mut **tx)
+        .await?;
+    crate::audit::record_as(tx, tenant, Some(user), "", SIGN_IN, user, action, None, detail).await
+}
+
+/// A failed attempt (`failed`) or a refusal by zone or network (`refused`) for a known account: the
+/// first [`FAILURES_PER_HOUR`] of an hour are recorded, the rest counted and recorded as one summary
+/// (`failed_summary`, with `count`) once the hour is over, so a flood cannot fill the trail.
+pub(crate) async fn failure(tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid, action: &str, from: &Arrival, method: &str) -> Result<()> {
+    flush_failures(tx, Some((tenant, user))).await?;
+    let n: i32 = sqlx::query_scalar(
+        "insert into sign_in_failure (tenant_id, user_id, hour) values ($1, $2, date_trunc('hour', now())) \
+         on conflict (tenant_id, user_id, hour) do update set n = sign_in_failure.n + 1 returning n",
+    )
+    .bind(tenant)
+    .bind(user)
+    .fetch_one(&mut **tx)
+    .await?;
+    if n <= FAILURES_PER_HOUR {
+        let by = if action == "refused" { json!({"by": if from.refuse_zone { "zone" } else { "network" }}) } else { json!({}) };
+        event(tx, tenant, user, action, detail(from, method, by)).await?;
+    }
+    Ok(())
+}
+
+/// Hours that are over: a summary of each that held more than were recorded, of one account or all.
+pub(crate) async fn flush_failures(tx: &mut crate::db::Tx, who: Option<(Uuid, Uuid)>) -> Result<u64> {
+    let done: Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>, i32)> = sqlx::query_as(
+        "delete from sign_in_failure where hour < date_trunc('hour', now()) and ($1::uuid is null or (tenant_id = $1 and user_id = $2)) \
+         returning tenant_id, user_id, hour, n",
+    )
+    .bind(who.map(|w| w.0))
+    .bind(who.map(|w| w.1))
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut n = 0;
+    for (tenant, user, hour, count) in done.into_iter().filter(|d| d.3 > FAILURES_PER_HOUR) {
+        event(tx, tenant, user, "failed_summary", json!({"hour": hour, "count": count - FAILURES_PER_HOUR})).await?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// A session ending (`reason`: `signed_out`, `idle`, `revoked`), with where it was opened from.
+pub(crate) async fn session_ended(tx: &mut crate::db::Tx, tenant: Uuid, sid: Uuid, reason: &str) -> Result<()> {
+    let row: Option<(Uuid, String, String, Option<String>)> =
+        sqlx::query_as("select user_id, ip, user_agent, zone from user_session where tenant_id = $1 and id = $2")
+            .bind(tenant)
+            .bind(sid)
+            .fetch_optional(&mut **tx)
+            .await?;
+    if let Some((user, address, user_agent, zone)) = row {
+        let from = Arrival { refuse_zone: false, address, user_agent, zone };
+        event(tx, tenant, user, "session_ended", detail(&from, "", json!({"reason": reason, "session": sid}))).await?;
+    }
+    Ok(())
+}
+
+impl Kernel {
+    /// Records a sign-in step that succeeded: `signed_in` (by `method`: `password`, `passkey`, `sso`,
+    /// `code`, `accounts`) or `second_step`.
+    pub async fn record_sign_in(&self, tenant: Uuid, user: Uuid, action: &str, method: &str, from: &Arrival) -> Result<()> {
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        event(&mut tx, tenant, user, action, detail(from, method, json!({}))).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Records a failed or refused sign-in step of a known account, capped ([`failure`]).
+    pub async fn record_sign_in_failure(&self, tenant: Uuid, user: Uuid, action: &str, method: &str, from: &Arrival) -> Result<()> {
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        failure(&mut tx, tenant, user, action, from, method).await?;
+        tx.commit().await?;
         Ok(())
     }
 }

@@ -64,21 +64,37 @@ pub fn diff(old: Option<&Doc>, new: Option<&Doc>) -> Value {
 
 #[allow(clippy::too_many_arguments)]
 pub async fn record(tx: &mut Tx, ctx: &Ctx, entity: &str, record_id: Uuid, action: &str, version: Option<i32>, diff: Value) -> Result<()> {
+    let actor = (!ctx.user.is_nil()).then_some(ctx.user);
+    record_as(tx, ctx.tenant, actor, &ctx.request_id, entity, record_id, action, version, diff).await
+}
+
+/// [`record`] with no context: who acted (`actor`) and the request it came in, as given.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_as(
+    tx: &mut Tx,
+    tenant: Uuid,
+    actor: Option<Uuid>,
+    request_id: &str,
+    entity: &str,
+    record_id: Uuid,
+    action: &str,
+    version: Option<i32>,
+    diff: Value,
+) -> Result<()> {
     let prev: Option<Vec<u8>> =
         sqlx::query_scalar("select hash from audit_event where tenant_id = $1 and entity = $2 and record_id = $3 order by id desc limit 1")
-            .bind(ctx.tenant)
+            .bind(tenant)
             .bind(entity)
             .bind(record_id)
             .fetch_optional(&mut **tx)
             .await?;
     let at = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
-    let actor = (!ctx.user.is_nil()).then_some(ctx.user);
-    let hash = event_hash(prev.as_deref(), &body(ctx.tenant, &at, actor, entity, record_id, action, version, &diff));
+    let hash = event_hash(prev.as_deref(), &body(tenant, &at, actor, entity, record_id, action, version, &diff));
     sqlx::query(
         "insert into audit_event (tenant_id, at, actor, entity, record_id, action, version, diff, request_id, prev_hash, hash) \
          values ($1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
-    .bind(ctx.tenant)
+    .bind(tenant)
     .bind(&at)
     .bind(actor)
     .bind(entity)
@@ -86,12 +102,107 @@ pub async fn record(tx: &mut Tx, ctx: &Ctx, entity: &str, record_id: Uuid, actio
     .bind(action)
     .bind(version)
     .bind(&diff)
-    .bind(&ctx.request_id)
+    .bind(request_id)
     .bind(prev)
     .bind(hash)
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// The entities whose events are the administration of the workspace (who may do what, how it is set up),
+/// as opposed to its records' changes. Sign-ins are `SignIn`.
+pub const ADMINISTRATION: &[&str] = &[
+    "User",
+    "UserSession",
+    "Tenant",
+    "Workspace",
+    "WorkspaceDomain",
+    "Passkey",
+    "SsoProvider",
+    "ScimGroup",
+    "Role",
+    "SupportGrant",
+    "ApiKey",
+    "Webhook",
+    "WebhookDelivery",
+    "OutboxEvent",
+    "Plugin",
+    "App",
+    "ServiceApp",
+    "Pack",
+    "Platform",
+    "Site",
+    "Connection",
+    "Device",
+    "LegalHold",
+    "PersonalData",
+    "RetentionRule",
+    "MessageChannel",
+    "MessageTemplate",
+    "DocumentTemplate",
+    "LogicRun",
+    "LogicDraft",
+    "LogicTask",
+    "LogicRelease",
+    "Backfill",
+];
+
+/// An event's category: `sign_in`, `administration` or `records`.
+pub fn category(entity: &str) -> &'static str {
+    if entity == crate::gate::SIGN_IN {
+        "sign_in"
+    } else if ADMINISTRATION.contains(&entity) {
+        "administration"
+    } else {
+        "records"
+    }
+}
+
+/// The columns [`event_json`] reads, of `audit_event e`.
+pub const EVENT_COLUMNS: &str = "e.tenant_id, e.id, e.at, e.actor, e.entity, e.record_id, e.action, e.diff, e.request_id, e.hash";
+
+/// One audit event as it leaves the server (docs/operations.md, "Sending the audit log elsewhere"): the
+/// administrators' audit API, the deployment's sink and a workspace's webhooks all send this.
+pub type EventRow = (Uuid, i64, chrono::DateTime<Utc>, Option<Uuid>, String, Uuid, String, Option<Value>, Option<String>, Vec<u8>);
+
+pub fn event_json(r: &EventRow) -> Value {
+    let (tenant, id, at, actor, entity, record, action, diff, request_id, hash) = r;
+    json!({
+        "id": id.to_string(), "workspace": tenant, "at": at, "category": category(entity), "entity": entity, "record": record, "action": action,
+        "actor": actor, "request_id": request_id.as_deref().filter(|r| !r.is_empty()), "details": diff, "hash": hex::encode(hash),
+    })
+}
+
+impl crate::Kernel {
+    /// The workspace's audit log, newest first, for its administrators: `category` (`sign_in`,
+    /// `administration`, `records`) narrows it; `before` is the `id` the last page ended at.
+    pub async fn audit_events(&self, ctx: &Ctx, category: Option<&str>, before: Option<i64>, limit: i64) -> Result<Value> {
+        if !ctx.is_admin {
+            return Err(Error::Forbidden("administrator access required".into()));
+        }
+        let admin: Vec<String> = ADMINISTRATION.iter().map(|e| e.to_string()).collect();
+        let filter = match category {
+            None => "true",
+            Some("sign_in") => "e.entity = 'SignIn'",
+            Some("administration") => "e.entity = any($4)",
+            Some("records") => "e.entity <> 'SignIn' and not e.entity = any($4)",
+            Some(_) => return Err(Error::field("category", "sign_in, administration or records")),
+        };
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<EventRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {EVENT_COLUMNS} from audit_event e where e.tenant_id = $1 and ($2::bigint is null or e.id < $2) and {filter} order by e.id desc limit $3"
+        )))
+        .bind(ctx.tenant)
+        .bind(before)
+        .bind(limit.clamp(1, 500))
+        .bind(&admin)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let next = rows.last().map(|r| r.1);
+        Ok(json!({"events": rows.iter().map(event_json).collect::<Vec<_>>(), "next_before": next}))
+    }
 }
 
 #[derive(sqlx::FromRow)]

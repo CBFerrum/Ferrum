@@ -417,7 +417,14 @@ impl Kernel {
             Some(p) => self.refuses_here(&from, p.tenant_id, p.user_id, &p.kind).await,
             None => false,
         };
-        let Some(p) = row.filter(|_| !refused_here) else { return Err(refused("it is not known here")) };
+        if refused_here {
+            if let Some(p) = &row {
+                crate::gate::failure(&mut tx, p.tenant_id, p.user_id, "refused", &from, "passkey").await?;
+            }
+            tx.commit().await?;
+            return Err(refused("it is not known here"));
+        }
+        let Some(p) = row else { return Err(refused("it is not known here")) };
         if p.rp_id != rp_id || tenant.is_some_and(|t| t != p.tenant_id) {
             return Err(refused("it belongs to another address"));
         }

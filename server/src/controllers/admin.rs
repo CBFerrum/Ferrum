@@ -929,6 +929,19 @@ async fn services(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<R
     Ok(Json(json!({"services": crate::doctor::service_findings(&st).await})).into_response())
 }
 
+#[derive(Deserialize)]
+struct AuditQuery {
+    category: Option<String>,
+    before: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// `GET /api/admin/audit?category=sign_in|administration|records&before=&limit=`: the workspace's audit
+/// log, newest first (docs/operations.md, "Sending the audit log elsewhere", for the format).
+async fn audit_log(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<AuditQuery>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.audit_events(&ctx, q.category.as_deref(), q.before, q.limit.unwrap_or(100)).await?).into_response())
+}
+
 pub fn routes() -> Routes {
     use axum::routing::{delete, get, post, put};
     Routes::new()
@@ -936,6 +949,7 @@ pub fn routes() -> Routes {
         .add("/admin/services", get(services))
         .add("/admin/evidence", get(evidence))
         .add("/admin/settings", get(get_settings).put(put_settings))
+        .add("/admin/audit", get(audit_log))
         .add("/admin/users", get(list_users).post(create_user))
         .add("/admin/users/{id}/roles", put(set_roles))
         .add("/admin/users/{id}/scopes", put(set_scopes))

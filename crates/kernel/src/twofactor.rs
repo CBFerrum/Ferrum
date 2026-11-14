@@ -306,6 +306,11 @@ impl Kernel {
     /// code. A wrong one counts against the lockout like a wrong password; a right one completes the
     /// sign-in. `token_version` is the one the first step saw (a password change since voids it).
     pub async fn second_factor(&self, tenant: Uuid, user: Uuid, token_version: i32, code: &str) -> Result<Session> {
+        self.second_factor_from(tenant, user, token_version, code, &crate::gate::Arrival::default()).await
+    }
+
+    /// [`Kernel::second_factor`] from `from`: a wrong code is on the audit trail with where it came from.
+    pub async fn second_factor_from(&self, tenant: Uuid, user: Uuid, token_version: i32, code: &str, from: &crate::gate::Arrival) -> Result<Session> {
         let again = || Error::Unauthorized("sign in again".into());
         let mut tx = self.db.system_tx().await?;
         #[derive(sqlx::FromRow)]
@@ -358,6 +363,7 @@ impl Kernel {
         };
         if !ok {
             crate::auth::count_failure(&mut tx, tenant, user).await?;
+            crate::gate::failure(&mut tx, tenant, user, "failed", from, "second_step").await?;
             tx.commit().await?;
             return Err(Error::Unauthorized("that code is not right; use the one your app shows now, or a recovery code".into()));
         }

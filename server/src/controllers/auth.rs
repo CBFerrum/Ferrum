@@ -86,7 +86,8 @@ pub(crate) async fn accounts_for(st: &AppState, headers: &HeaderMap) -> Result<O
 /// A finished sign-in. API clients get a bearer token, as always. A page of this site also gets
 /// a browser session in the cookie (docs/plan/apps-ui.md §12.3), and, unless it asked for the
 /// cookie alone, a bearer token bound to that session for the pages that still send one.
-pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &HeaderMap, cookie_only: bool) -> ApiResult<Response> {
+/// `method` names how they signed in, for the audit trail (`password`, `passkey`, `sso`, `code`, `accounts`).
+pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &HeaderMap, cookie_only: bool, method: &str) -> ApiResult<Response> {
     // Zones (crate::zone): every way of signing in ends here, so a staff account gets no session and
     // no token where its zone admits no staff; refused as a wrong password is, before anything below
     // could say more about the account.
@@ -100,6 +101,7 @@ pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &Heade
     {
         return Err(ApiError(Error::Forbidden(format!("this account signs in with its Ferrum account, at {accounts}"))));
     }
+    st.kernel.record_sign_in(s.tenant, s.user, "signed_in", method, &crate::zone::arrival(st, headers).await).await?;
     if !from_page(headers) {
         if cookie_only {
             return Err(ApiError(Error::Forbidden("sign in from a page of this site".into())));
@@ -131,7 +133,7 @@ async fn login(State(app): State<AppContext>, headers: HeaderMap, Json(req): Jso
     // Where staff are refused (by zone, or the workspace's networks), a staff account is one that does not exist (crate::zone).
     let from = crate::zone::arrival(&st, &headers).await;
     match st.kernel.sign_in_at(&req.tenant, &req.email, &req.password, from).await? {
-        SignIn::Session(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await,
+        SignIn::Session(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "password").await,
         SignIn::SecondFactor(s) => {
             Ok(Json(json!({"second_factor": true, "ticket": token(&st, &s, TICKET_SECS, Some("mfa"))?, "expires_in": TICKET_SECS})).into_response())
         }
@@ -174,8 +176,10 @@ async fn login_second_factor(State(app): State<AppContext>, headers: HeaderMap, 
     if crate::zone::refuses_sign_in(&st, &headers, tenant, user).await {
         return Err(again());
     }
-    let s = st.kernel.second_factor(tenant, user, tv, &req.code).await?;
-    session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
+    let from = crate::zone::arrival(&st, &headers).await;
+    let s = st.kernel.second_factor_from(tenant, user, tv, &req.code, &from).await?;
+    st.kernel.record_sign_in(tenant, user, "second_step", "authenticator", &from).await?;
+    session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "password").await
 }
 
 #[derive(Deserialize)]
@@ -242,7 +246,7 @@ async fn sign_in_with_code(State(app): State<AppContext>, headers: HeaderMap, Js
         SignIn::SecondFactor(s) => {
             Ok(Json(json!({"second_factor": true, "ticket": token(&st, &s, TICKET_SECS, Some("mfa"))?, "expires_in": TICKET_SECS})).into_response())
         }
-        SignIn::Session(s) | SignIn::SetupRequired(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await,
+        SignIn::Session(s) | SignIn::SetupRequired(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "code").await,
     }
 }
 
@@ -294,7 +298,7 @@ async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req)
         return Err(ApiError(Error::Unauthorized("sign in again".into())));
     }
     let s = st.kernel.sso_finish(&req.state, &req.code, &req.binding).await?;
-    session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
+    session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "sso").await
 }
 
 /// `GET /api/auth/saml/{workspace}`: the workspace's SAML metadata, for identity providers to load.
@@ -677,7 +681,7 @@ async fn passkey_sign_in(State(app): State<AppContext>, headers: HeaderMap, Json
     };
     let from = crate::zone::arrival(&st, &headers).await;
     let s = st.kernel.passkey_sign_in_at(req.request, &origins, &req.credential, tenant, from).await?;
-    session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
+    session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "passkey").await
 }
 
 #[derive(Deserialize)]

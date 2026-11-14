@@ -1259,6 +1259,19 @@ otherwise), and a replica keeps its answer about a session for 20 seconds, so a 
 minutes either side of the timeout; that is why the shortest timeout is five minutes. API keys and OAuth
 tokens are not browser sessions and do not end this way.
 
+**Sign-ins on the audit trail.** Each workspace's audit trail records, as events of `SignIn` on the person's
+account, with the address, browser (user agent), zone and method: a sign-in (`signed_in`, by `password`,
+`passkey`, `sso`, `code` or `accounts` for one handed over from the accounts host), a second step passed
+(`second_step`), a failed attempt for an account that exists (`failed`), a sign-in refused by zone or network
+(`refused`, with `by`), a break-glass sign-in (`break_glass`), and a session's end (`session_ended`, with
+`reason` `signed_out`, `idle`, `revoked` or `password_changed`). Failed and refused attempts are recorded one
+by one up to three an hour per account; the rest of that hour become one `failed_summary` with their `count`,
+written at the next attempt or the next maintenance run after the hour. Attempts for an address no account
+has are never recorded by address; they are counted in `ferrum_sign_in_unknown_total`. Administrators read
+them with `GET /api/admin/audit?category=sign_in`. The address and browser are the person's data: the
+person's export lists their sign-ins, and erasing them blanks both in every event (the events stay). Audit
+events are never deleted, so that is how long they are kept.
+
 **How soon a change holds.** Each replica keeps a person's settings with their roles for up to 30 seconds.
 Saving the networks, or clearing them with the task, tells every replica to drop what it keeps for that
 workspace at once, so a narrowing, a widening and a clearing all hold within moments; if a replica missed

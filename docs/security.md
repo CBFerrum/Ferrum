@@ -54,6 +54,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 * A staff sign-in from outside fails as a wrong password does, before any secret is read, without counting
   toward lockout and without using up a code. A setting that cannot be read refuses.
 * Saving them in `enforce` needs the saver's own address inside; the operator can clear them.
+* Sign-ins, second steps, failed and refused attempts of known accounts (capped at three an hour, then a
+  summary), break-glass sign-ins and sessions' ends are audit events, with address, browser, zone and method.
+  Attempts for unknown addresses are only counted. No secret is ever in them.
 * A workspace may end browser sessions idle longer than `idle_minutes` (to within about two minutes); the
   session is revoked, not only refused. A socket's own rechecks are not use.
 

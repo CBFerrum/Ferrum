@@ -709,6 +709,10 @@ may work from ([operations](operations.md#staff-networks)); a save in `enforce` 
 caller's own address is inside it. A credential refused by it gets `403` with error `network`. `idle_minutes` (0, or 5 to 10080) ends browser sessions unused that long; such a session's next request gets
 `401` "this device was signed out; please sign in again".
 
+Audit log: `GET /api/admin/audit?category=&before=&limit=` → `{events, next_before}`, newest first, at most
+500 (`limit`, 100 by default); `category` is `sign_in`, `administration` or `records`; pass `next_before` as
+`before` for the next page. Each event is in the format of [the audit sink](operations.md#sending-the-audit-log-elsewhere).
+
 Domains ([operations](operations.md#custom-domains)): `GET /api/admin/domains` → `{domains: [{host,
 kind (subdomain or custom), target (shell, portal, site:{app}), is_primary, verify_token, status
 (verified, pending, failing, released), verified_at, checked_at, failures, released_at,

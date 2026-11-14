@@ -454,4 +454,122 @@ async fn scenario() {
     assert_eq!(call(&r, Method::GET, "/api/auth/me", INSIDE, Cred::Bearer(&holds[0].key), None).await.0, StatusCode::OK, "API keys are not sessions");
     let (status, _) = call(&r, Method::PUT, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), Some(json!({"idle_minutes": 0}))).await;
     assert_eq!(status, StatusCode::OK);
+
+    // ── 4. Sign-ins on the audit trail ──
+    let sign_ins = |address: &'static str| {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.tenant_tx(acme).await.unwrap();
+            let rows: Vec<(String, Value)> =
+                sqlx::query_as("select action, diff from audit_event where tenant_id = $1 and entity = 'SignIn' and diff->>'address' = $2 order by id")
+                    .bind(acme)
+                    .bind(address)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .unwrap();
+            tx.commit().await.unwrap();
+            rows
+        }
+    };
+    let (_, _, cookie) = sign_in(&r, "10.4.0.1", "member@acme.test", PASSWORD, true).await;
+    let got = sign_ins("10.4.0.1").await;
+    assert_eq!(got.len(), 1, "one event: {got:?}");
+    assert_eq!(got[0].0, "signed_in");
+    assert_eq!((got[0].1["method"].clone(), got[0].1["zone"].clone()), (json!("password"), Value::Null));
+    assert!(got[0].1["user_agent"].as_str().unwrap().contains("Firefox"), "{got:?}");
+    // Signing out ends the session, on the trail with where it was opened.
+    call(&r, Method::POST, "/api/auth/logout", "10.4.0.1", Cred::Cookie(&cookie.unwrap()), None).await;
+    let got = sign_ins("10.4.0.1").await;
+    assert_eq!(got.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), ["signed_in", "session_ended"], "{got:?}");
+    assert_eq!(got[1].1["reason"], "signed_out");
+    // The idle session of item 3 ended on the trail too.
+    let mut tx = k.db.tenant_tx(acme).await.unwrap();
+    let idle: i64 = sqlx::query_scalar(
+        "select count(*) from audit_event where entity = 'SignIn' and action = 'session_ended' and diff->>'reason' = 'idle' and diff->>'session' = $1",
+    )
+    .bind(sid.to_string())
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(idle, 1, "the idle session's end, once");
+    // A wrong password for a known account; nothing by address for an unknown one, only counted.
+    // (The member has had more than an hour's few already: someone fresh.)
+    k.create_user(&admin, "wrong@acme.test", "Wrong", Some(PASSWORD), &[], false).await.unwrap();
+    sign_in(&r, "10.4.0.2", "wrong@acme.test", "Wrong-Horse-99", false).await;
+    let got = sign_ins("10.4.0.2").await;
+    assert_eq!((got.len(), got[0].0.as_str(), got[0].1["method"].clone()), (1, "failed", json!("password")), "{got:?}");
+    let unknown = ferrum_kernel::gate::unknown_failures();
+    sign_in(&r, "10.4.0.3", "nobody@acme.test", "Wrong-Horse-99", false).await;
+    assert!(sign_ins("10.4.0.3").await.is_empty(), "nothing recorded by address for nobody");
+    assert_eq!(ferrum_kernel::gate::unknown_failures(), unknown + 1, "counted");
+    assert!(call(&r, Method::GET, "/metrics", INSIDE, Cred::None, None).await.1.contains("ferrum_sign_in_unknown_total"));
+    // A refusal by network, before the password.
+    let (status, _) = call(&r, Method::PUT, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), Some(networks.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+    sign_in(&r, "198.51.100.4", "wrong@acme.test", PASSWORD, false).await;
+    let got = sign_ins("198.51.100.4").await;
+    assert_eq!((got.len(), got[0].0.as_str(), got[0].1["by"].clone()), (1, "refused", json!("network")), "{got:?}");
+    k.clear_staff_networks("acme", "test").await.unwrap();
+    // A flood: a few an hour one by one, then one summary with a count once the hour is over.
+    let flood = k.create_user(&admin, "flood@acme.test", "Flood", Some(PASSWORD), &[], false).await.unwrap();
+    let from = ferrum_kernel::gate::Arrival { address: "10.4.0.5".into(), ..Default::default() };
+    for _ in 0..20 {
+        k.record_sign_in_failure(acme, flood, "failed", "password", &from).await.unwrap();
+    }
+    assert_eq!(sign_ins("10.4.0.5").await.len(), ferrum_kernel::gate::FAILURES_PER_HOUR as usize, "capped");
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update sign_in_failure set hour = hour - interval '1 hour' where user_id = $1").bind(flood).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    k.purge_sessions().await.unwrap();
+    k.purge_sessions().await.unwrap();
+    let mut tx = k.db.tenant_tx(acme).await.unwrap();
+    let summary: Vec<Value> = sqlx::query_scalar("select diff from audit_event where entity = 'SignIn' and action = 'failed_summary' and record_id = $1")
+        .bind(flood)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(summary.len(), 1, "one summary");
+    assert_eq!(summary[0]["count"], json!(20 - ferrum_kernel::gate::FAILURES_PER_HOUR));
+    // An administrator ending a session, and a password change.
+    let (_, _, cookie) = sign_in(&r, "10.4.0.6", "member@acme.test", PASSWORD, true).await;
+    let msid = loco_rs::auth::jwt::JWT::new(&secret).validate(cookie.as_deref().unwrap()).unwrap().claims.claims["sid"].as_str().unwrap().to_string();
+    assert_eq!(call(&r, Method::DELETE, &format!("/api/auth/sessions/{msid}"), INSIDE, Cred::Bearer(&admin_token), None).await.0, StatusCode::NO_CONTENT);
+    assert_eq!(sign_ins("10.4.0.6").await.last().unwrap().1["reason"], "revoked");
+    k.set_password(&admin, flood, None, "Another-Horse-77").await.unwrap();
+    let mut tx = k.db.tenant_tx(acme).await.unwrap();
+    let changed: i64 =
+        sqlx::query_scalar("select count(*) from audit_event where entity = 'SignIn' and record_id = $1 and diff->>'reason' = 'password_changed'")
+            .bind(flood)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(changed, 1);
+    // Administrators read them, filtered; nobody else.
+    let (status, answer) = call(&r, Method::GET, "/api/admin/audit?category=sign_in&limit=500", INSIDE, Cred::Bearer(&admin_token), None).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let events: Value = serde_json::from_str(&answer).unwrap();
+    let events = events["events"].as_array().unwrap();
+    assert!(events.iter().all(|e| e["category"] == "sign_in" && e["entity"] == "SignIn"), "only sign-ins");
+    assert!(events.iter().any(|e| e["action"] == "failed_summary"), "{answer}");
+    let one = events.iter().find(|e| e["details"]["address"] == "10.4.0.1").unwrap();
+    for field in ["id", "workspace", "at", "record", "actor", "hash"] {
+        assert!(!one[field].is_null(), "{field} in {one}");
+    }
+    assert_eq!(call(&r, Method::GET, "/api/admin/audit?category=nothing", INSIDE, Cred::Bearer(&admin_token), None).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(call(&r, Method::GET, "/api/admin/audit", INSIDE, Cred::Bearer(&holds[0].token), None).await.0, StatusCode::FORBIDDEN, "members do not");
+    // Personal data: listed in the person's export, blanked by their erasure (the events stay).
+    let gone = k.create_user(&admin, "gone@acme.test", "Gone", Some(PASSWORD), &[], false).await.unwrap();
+    sign_in(&r, "10.4.0.9", "gone@acme.test", PASSWORD, false).await;
+    let export = k.personal_data(&admin, "gone@acme.test").await.unwrap();
+    assert!(export["sign_ins"].as_array().unwrap().iter().any(|e| e["details"]["address"] == "10.4.0.9"), "{export}");
+    k.erase_personal_data(&admin, "gone@acme.test", "asked to").await.unwrap();
+    assert!(sign_ins("10.4.0.9").await.is_empty(), "the address is erased");
+    let mut tx = k.db.tenant_tx(acme).await.unwrap();
+    let kept: i64 =
+        sqlx::query_scalar("select count(*) from audit_event where entity = 'SignIn' and record_id = $1").bind(gone).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(kept >= 1, "the events stay");
 }

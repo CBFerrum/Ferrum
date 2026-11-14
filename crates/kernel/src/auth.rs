@@ -270,6 +270,11 @@ impl Kernel {
             Some(u) => self.refuses_here(&from, u.tenant_id, u.id, &u.kind).await,
             None => false,
         };
+        match &user {
+            None => crate::gate::count_unknown_failure(),
+            Some(u) if refused => crate::gate::failure(&mut tx, u.tenant_id, u.id, "refused", &from, "password").await?,
+            Some(_) => {}
+        }
         let Some(u) = user.filter(|_| !refused) else {
             tx.commit().await?;
             let _ = verify_password(password.to_string(), DUMMY_HASH.to_string()).await;
@@ -285,6 +290,7 @@ impl Kernel {
         };
         if !ok || !u.is_active || !u.tenant_active {
             count_failure(&mut tx, u.tenant_id, u.id).await?;
+            crate::gate::failure(&mut tx, u.tenant_id, u.id, "failed", &from, "password").await?;
             tx.commit().await?;
             return Err(denied());
         }
@@ -1143,6 +1149,9 @@ impl Kernel {
         .bind(new_hash)
         .execute(&mut *tx)
         .await?;
+        let address = ctx.zone.as_ref().map(|e| e.address.clone()).unwrap_or_default();
+        crate::gate::event(&mut tx, ctx.tenant, user, "session_ended", serde_json::json!({"reason": "password_changed", "address": address, "by": ctx.user}))
+            .await?;
         notify_users(&mut tx, ctx.tenant, Some(user)).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
