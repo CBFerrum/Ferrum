@@ -313,4 +313,20 @@ for p in pools:
     for k in ("FERRUM_AUDIT_SINK_URL", "FERRUM_AUDIT_SINK_SECRET"):
         assert env[k]["valueFrom"]["secretKeyRef"]["key"] == k, (p["metadata"]["name"], k)
 PY
+echo "zones that limit staff to some apps (level 2) reach every server pool as written, lists included"
+tpl -f "$chart/presets/zones.yaml" \
+  --set-json 'zones={"public":{"staff":"none"},"office":{"staff":"all"},"sales":{"staff":["crm","helpdesk"],"admin":false,"custom":true}}' \
+  --set-json 'pools[0].zone="sales"' > "$tmp/zones-limited.yaml"
+python3 - "$tmp/zones-limited.yaml" <<'PY'
+import json, sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+pools = [d for d in docs if d["kind"] == "Deployment" and any(c["name"] == "ferrum" for c in d["spec"]["template"]["spec"]["containers"])]
+for p in pools:
+    env = {e["name"]: e.get("value") for c in p["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])}
+    zones = json.loads(env["FERRUM_ZONES"])
+    assert zones["sales"] == {"staff": ["crm", "helpdesk"], "admin": False, "custom": True}, zones
+general = next(p for p in pools if p["metadata"]["name"] == "ferrum")
+env = {e["name"]: e.get("value") for e in general["spec"]["template"]["spec"]["containers"][0].get("env", [])}
+assert env["FERRUM_ZONE"] == "sales", env.get("FERRUM_ZONE")
+PY
 echo "ok"

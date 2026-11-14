@@ -123,6 +123,10 @@ context, carried into "as the system" contexts and into jobs and events; configu
 refusing hidden packages; approvals requiring read; notifications, mentions and live pushes filtered by
 readable entity; role names filtered with rights; the signed-in app endpoint of a hidden package refused
 (public endpoints untouched); a test that tries every route and every kind of credential.
+Built (14 November 2026) with two changes. A rule may say `custom: true` (only with a list): the workspace's own
+entities are seen there; without it they are hidden. "Approvals requiring read" became approvals requiring the
+entity be seen in the decider's zone: BD-19 lets a named approver without a role on the entity decide (and read
+the one record awaiting them), and that stays.
 
 **Workspace staff networks (phase 3).** A workspace setting: the networks staff may work from, with its own
 `report`/`enforce`. Checked at the same place, in addition to the zone. Saving it is refused unless the

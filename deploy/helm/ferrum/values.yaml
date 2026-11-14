@@ -126,6 +126,7 @@ keda:
 zones: {}
 # public: {staff: none}
 # office: {staff: all}
+# sales: {staff: [crm, helpdesk]}     # level 2: staff limited to these apps (and what they depend on), no administrators
 zoneDefault: ""   # FERRUM_ZONE_DEFAULT: the zone of a request no host or network places
 zoneMode: ""      # FERRUM_ZONE_MODE: enforce (the server's default) or report
 
