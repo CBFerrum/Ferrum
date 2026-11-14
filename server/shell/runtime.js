@@ -49,6 +49,14 @@ function marked(title, mark) {
   return title.startsWith(mark) ? title : `${mark}${title}`;
 }
 
+// Where the browser goes after signing out: the address the server gave (POST /api/auth/logout answers
+// 200 {next} for a SAML sign-in whose provider signs out too), only when it is one of this server's
+// single-logout addresses on this origin; else the sign-in page (204, or anything else).
+function afterSignOut(status, body, fallback) {
+  const next = status === 200 && typeof body?.next === "string" ? body.next : "";
+  return /^\/api\/auth\/saml\/[0-9a-f-]{36}\/logout\?ticket=[A-Za-z0-9_-]+$/.test(next) ? next : fallback;
+}
+
 // ── end of the pure helpers ──
 
 // This origin's workspace (§7.2): a host of one workspace's that ever answers for another than
@@ -164,13 +172,14 @@ async function signOut() {
   if (pending.length && !confirm(pending.length === 1 ? tr("An upload has not finished. Sign out and stop it?") : tr("{n} uploads have not finished. Sign out and stop them?", { n: pending.length }))) return;
   await forgetUploads();
   await pushOff().catch(() => {});
-  await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
+  const r = await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => null);
+  const body = r?.status === 200 ? await r.json().catch(() => null) : null;
   try {
     sessionStorage.removeItem("ferrum.session");
     sessionStorage.removeItem("ferrum.shell");
   } catch {}
   sessionChannel?.postMessage({ type: "signed-out" });
-  location.assign("/login");
+  location.assign(afterSignOut(r?.status, body, "/login"));
 }
 
 // ───────────────────────── the launcher's data ─────────────────────────

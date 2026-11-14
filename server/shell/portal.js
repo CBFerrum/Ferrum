@@ -69,8 +69,11 @@ function el(tag, attrs = {}, text = "") {
   return e;
 }
 
+// The address the server gave after signing out (a SAML sign-in's single logout), only one of its own;
+// the same check as runtime.js's afterSignOut.
 async function signOut() {
-  await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
+  const r = await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => null);
+  const next = r?.status === 200 ? (await r.json().catch(() => null))?.next : null;
   try {
     sessionStorage.removeItem("ferrum.session");
     sessionStorage.removeItem("ferrum.shell");
@@ -78,7 +81,8 @@ async function signOut() {
   try {
     new BroadcastChannel("ferrum-session").postMessage({ type: "signed-out" });
   } catch {}
-  location.assign("/login?next=%2Fportal%2F");
+  const saml = typeof next === "string" && /^\/api\/auth\/saml\/[0-9a-f-]{36}\/logout\?ticket=[A-Za-z0-9_-]+$/.test(next);
+  location.assign(saml ? next : "/login?next=%2Fportal%2F");
 }
 
 class PortalBar extends HTMLElement {
