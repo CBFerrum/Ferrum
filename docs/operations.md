@@ -1910,7 +1910,8 @@ The interface is told it is a sandbox (`sandbox` in the bootstrap, docs/api.md),
 hidden: "Sandbox: a copy of {the source's name, or its name there when the source is on another installation}.
 Nothing sent from here leaves the system. It is deleted after {its last day}." The bar grows by the strip before the
 app below draws, so nothing moves, and the page's title starts with "Sandbox ·" (an app that sets its own title gets
-it back). Public pages, which have no bar, carry the title only.
+it back). Portal pages show the same strip under their own header, where a tester acts as a customer. Public pages,
+which have no bar, carry neither.
 
 **Personal data.** A sandbox is a second copy of people's data, so it has an end: `until` is required, at most 90 days
 ahead. `ferrum task doctor` reports sandboxes past their day (`sandbox.expired`); nothing deletes them by itself. When a

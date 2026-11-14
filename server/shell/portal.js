@@ -45,6 +45,12 @@ button:hover { color: var(--ferrum-text, #202329); }
 .pages { display: none; }
 .pages::after { content: ""; margin-inline-start: 8px; border: 4px solid transparent; border-top-color: currentColor; transform: translateY(2px); }
 @media (prefers-reduced-motion: reduce) { a, button { transition: none; } }
+/* A sandbox's strip, as on the bar (runtime.js): in the header's own height, never hidden. */
+:host([sandbox]) .bar { height: calc(100% - 24px); }
+.strip { display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 12px; font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden;
+  background: var(--ferrum-warning-soft, #fff4d6); color: var(--ferrum-warning, #8f5700); border-bottom: 1px solid var(--ferrum-border, #dee3ea); }
+.strip strong { flex: none; font-weight: 600; }
+.strip span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* On a phone the pages do not fit beside each other: they open below a button naming the one shown. */
 @media (max-width: 640px) {
   .who { display: none; } .home { max-width: 9em; }
@@ -115,6 +121,29 @@ class PortalBar extends HTMLElement {
     out.addEventListener("click", signOut);
     bar.append(pages, nav, el("span", { class: "spacer" }), el("span", { class: "who", title: boot?.person?.email ?? "" }, boot?.person?.name ?? ""), out);
     root.append(style, bar);
+    if (boot?.sandbox) bar.after(this.sandboxStrip(boot.sandbox));
+  }
+
+  /** A sandbox's portal is where a tester acts as a customer: it says so as the bar does (runtime.js), with a
+   *  strip the header grows by before the page below draws, and the page's title. */
+  sandboxStrip(sb) {
+    this.setAttribute("sandbox", "");
+    const sheet = document.createElement("style");
+    sheet.textContent = "@media screen { :root { --ferrum-bar-height: 72px; } }";
+    document.head.append(sheet);
+    const lang = boot?.locale?.language ?? undefined;
+    const until = /^\d{4}-\d{2}-\d{2}$/.test(sb.until ?? "") ? new Date(`${sb.until}T00:00:00`).toLocaleDateString(lang, { day: "numeric", month: "long", year: "numeric" }) : String(sb.until ?? "");
+    const text = tr("a copy of {name}. Nothing sent from here leaves the system. It is deleted after {until}.", { name: sb.name || sb.of || "", until });
+    const mark = `${tr("Sandbox")} · `;
+    const title = document.querySelector("title") ?? document.head.appendChild(document.createElement("title"));
+    const keep = () => {
+      if (!document.title.startsWith(mark)) document.title = `${mark}${document.title}`;
+    };
+    keep();
+    new MutationObserver(keep).observe(title, { childList: true, characterData: true, subtree: true });
+    const strip = el("div", { class: "strip", role: "note", title: text });
+    strip.append(el("strong", {}, `${tr("Sandbox")}:`), el("span", {}, text));
+    return strip;
   }
 }
 
