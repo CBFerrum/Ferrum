@@ -183,6 +183,8 @@ impl Hooks for App {
         })
         .await
         .map_err(|e| Error::Message(format!("database: {e}")))?;
+        // A database fenced for a planned move: the server starts (its start-up steps write), then serves read-only.
+        db.starting(true);
         let catalog = crate::packages::base_catalog(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
         let missing = crate::packages::missing_logic(&catalog);
         if !missing.is_empty() {
@@ -288,6 +290,7 @@ impl Hooks for App {
         probe_storage(&storage).await;
         let objects = Arc::new(crate::objects::Objects::new(&settings).map_err(|e| Error::Message(format!("object storage: {e}")))?);
         let storage = Arc::new(storage);
+        crate::request_metrics::Requests::install(crate::request_metrics::Requests::new(&crate::appmgr::compiled_natives()));
         let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())
             .map_err(Error::Message)?;
         let shell = Arc::new(crate::shell::Shell::new(kernel.clone(), storage.clone(), &settings, &ctx.config.server.host));
@@ -379,6 +382,7 @@ impl Hooks for App {
             zones,
         };
         state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone(), state.objects.clone())));
+        state.kernel.db.starting(false);
         let ctx = ctx.into_builder().storage(storage).build();
         ctx.shared_store.insert(state);
         Ok(ctx)
@@ -530,7 +534,9 @@ impl Hooks for App {
             .layer(axum::middleware::from_fn(traced))
             // A signed-out page goes by the browser's language (sign-in, a status page).
             .layer(axum::middleware::from_fn(crate::shell_words::browser))
-            .layer(axum::middleware::from_fn(move |req, next| app_origins(apps_base.clone(), req, next))))
+            .layer(axum::middleware::from_fn(move |req, next| app_origins(apps_base.clone(), req, next)))
+            // Outermost: a request's whole time, by app and kind (/metrics).
+            .layer(axum::middleware::from_fn(crate::request_metrics::count)))
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
@@ -604,6 +610,10 @@ impl Hooks for App {
         tasks.register(crate::tasks::SetHostZone);
         tasks.register(crate::tasks::OperatorAdmin(true));
         tasks.register(crate::tasks::OperatorAdmin(false));
+        tasks.register(crate::tasks::PlanMove);
+        tasks.register(crate::tasks::CancelMove);
+        tasks.register(crate::tasks::AdoptMove);
+        tasks.register(crate::tasks::CheckFiles);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

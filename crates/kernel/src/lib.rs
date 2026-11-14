@@ -44,6 +44,7 @@ mod links;
 pub mod logic;
 pub mod merge;
 pub mod messages;
+pub mod moves;
 pub mod notify;
 pub mod numbering;
 pub mod oauth;
@@ -435,6 +436,7 @@ impl Kernel {
                 "a newer build has migrated the database: this server runs on it as a guest, and leaves the schema, the start-up steps and the newer build's work alone"
             );
         }
+        db.ask_moves().await?;
         let registry = Arc::new(Registry::new(&catalog, Arc::new(full), db.clone()));
         let kernel = Arc::new(Kernel {
             db,

@@ -580,10 +580,12 @@ A failover to a synchronous replica is also a new timeline, and loses nothing. S
 point-in-time restore is not noticed, so run the steps below by hand after one.
 
 A database the Helm chart starts from another one (`database.bootstrap.mode`, "Moving from one shape to
-another") is held the same way: `import` makes a database this server never knew, and `recovery` and `copy`
-start on a new timeline. A `copy` keeps the database's identity, so with `FERRUM_HOLD_ON_TIMELINE=false` it
-is not held, and neither is a `recovery`, whose base backup has the same identity as the cluster it came
-from. Release the hold with `ferrum task release_restore` once you know nothing will be sent twice.
+another") is held the same way unless the move was planned: `import` makes a database this server never
+knew, and `recovery` and `copy` start on a new timeline. A `copy` keeps the database's identity, so with
+`FERRUM_HOLD_ON_TIMELINE=false` it is not held, and neither is a `recovery`, whose base backup has the same
+identity as the cluster it came from. Release the hold with `ferrum task release_restore` once you know
+nothing will be sent twice. A copy of a database fenced with `ferrum task plan_move` is not held at all
+("Moving an installation").
 
 A database restored from a backup brings back whatever was erased since it was taken, and lets back in
 whoever left since, so do this before people, integrations or the assistant reach it:
@@ -875,8 +877,16 @@ differences from a provider waiting for a person, the tenant count, and
 `ferrum_operation_failures_total{package, entity, operation, kind}`: submits, cancels, actions and
 workflow steps on records that did not go through since the process started, `refused` by their own
 rules (an invoice with no account to post to, a stale version) or a `fault` (logged with its cause).
-Who may not do something, and records that are not there, are not counted. Take request rates and
-latencies from the gateway controller's metrics. Suggested alerts:
+Who may not do something, and records that are not there, are not counted.
+`ferrum_http_request_duration_seconds{app, class}` is a histogram of the requests this replica answered
+(its `_count` is how many, its `_sum` how long they took in all; buckets from 5 ms to 10 s). `class` is one
+of `page`, `records`, `app` (an app's own endpoints), `files`, `live` (sockets: the time to open one),
+`admin`, `sign-in`, `public` and `other`. `app` is the app the path names (`/api/app/{package}`,
+`/api/ext/{app}`, a page's route), else the app in the `x-ferrum-ui` header its screens send when that is an
+app compiled into this build, else `other`; apps installed from a store count as `other`. A header names
+nothing new: the series are at most (apps compiled in + 1) × 9 × 14, and only those with requests are
+written. There is no label for a workspace. The gateway controller's own metrics still say what reached the
+gateway. Suggested alerts:
 
 | Alert | Condition |
 |---|---|
@@ -890,6 +900,15 @@ latencies from the gateway controller's metrics. Suggested alerts:
 | A workspace at its share | `ferrum_tenant_refused_total` rising: find the workspace in the log, and either it is misbehaving or it needs a larger share |
 | Outside systems | `ferrum_connections_stale` above 0, or `ferrum_connections_failing` above 0 for 30 min |
 | Database | CNPG: replication lag, failover events, storage above 80 %, connections above 85 % |
+
+**When to give an app its own pool.** Look at `ferrum_http_request_duration_seconds` by `app`, summed over
+the replicas: an app's share of the request seconds (`sum by (app) (rate(..._sum[5m]))` against the total),
+its slow requests (`histogram_quantile(0.95, sum by (app, le) (rate(..._bucket[5m])))`) and whether the
+other apps' latency rises when it is busy. One app taking a large share (a third or more) while the rest
+slow down, or one class of it (`records` reports, `app` endpoints) needing other settings than the rest
+(longer timeouts, more connections), is the case for a pool of its own with a route for that app ("Deployment
+shapes"). `ferrum_db_pool_idle` at 0 and `ferrum_tenant_refused_total` rising say whether the database or one
+workspace is the limit instead, which a pool does not fix.
 
 Traces go to an OpenTelemetry collector when the deployment names one: set
 `OTEL_EXPORTER_OTLP_ENDPOINT` (for example `http://otel-collector:4318`; the server adds `/v1/traces`)
@@ -1240,16 +1259,16 @@ installation it comes from.
 | Mode | What it does | Use it when you come from | Needs | After it |
 |---|---|---|---|---|
 | `empty` (default) | A new database | nothing: a new installation | | |
-| `import` | `pg_dump` of one database from a running PostgreSQL, restored here (`source`) | a Docker Compose installation, or any PostgreSQL up to the cluster's version (17), when an hour of downtime is acceptable: stop the server first, so nothing is written after the dump starts | the source reachable from the cluster; a superuser in `source.user` (row-level security hides every workspace's rows from any other role) and its password in a Secret | the server holds outbound work as after a restore: release it ("After restoring a backup") |
-| `copy` | `pg_basebackup`: a physical copy of a running PostgreSQL (`source`) | another cluster or server on the same PostgreSQL major version, when the database is too large to dump | the same major version, architecture and tablespaces; a role with `REPLICATION` and `LOGIN` that `pg_hba.conf` admits from the cluster; two free `max_wal_senders`. Stop writes to the source before: the copy does not follow it | keeps the database's identity but starts on a new timeline: held unless `FERRUM_HOLD_ON_TIMELINE=false` |
-| `recovery` | the newest state, or `recovery.targetTime`, from backups in object storage (`recovery.objectStore`, `recovery.serverName`) | a lost cluster, or another cluster that backs up the way this chart does | the `ObjectStore` (this chart's own by default) and, when it is this chart's own, a new `database.backup.serverName` so the new cluster does not write over the backups it reads | held as after any restore |
+| `import` | `pg_dump` of one database from a running PostgreSQL, restored here (`source`) | a Docker Compose installation, or any PostgreSQL up to the cluster's version (17), when an hour of downtime is acceptable: stop the server first, so nothing is written after the dump starts | the source reachable from the cluster; a superuser in `source.user` (row-level security hides every workspace's rows from any other role) and its password in a Secret | after `plan_move` at the source: nothing to do, the copy carries on. Without it: held as after a restore ("After restoring a backup") |
+| `copy` | `pg_basebackup`: a physical copy of a running PostgreSQL (`source`) | another cluster or server on the same PostgreSQL major version, when the database is too large to dump | the same major version, architecture and tablespaces; a role with `REPLICATION` and `LOGIN` that `pg_hba.conf` admits from the cluster; two free `max_wal_senders`. Stop writes to the source before: the copy does not follow it | after `plan_move`: fenced until `ferrum task adopt_move` on the copy (the same database on a new timeline could also be the source's own standby). Without it: held unless `FERRUM_HOLD_ON_TIMELINE=false` |
+| `recovery` | the newest state, or `recovery.targetTime`, from backups in object storage (`recovery.objectStore`, `recovery.serverName`) | a lost cluster, or another cluster that backs up the way this chart does | the `ObjectStore` (this chart's own by default) and, when it is this chart's own, a new `database.backup.serverName` so the new cluster does not write over the backups it reads | after `plan_move`, from a backup taken once the source was fenced: as `copy`. Otherwise held as after any restore |
 
 For a Compose installation, `import` with the Compose database as the source (it must be reachable from the
 cluster; `pg_hba.conf` and `listen_addresses` may need opening) is the shortest way; copy the attachments
 volume into the bucket in `storage` before starting the server. Going from one cluster to another, `copy`
 keeps everything (roles, settings, the database's identity) and `recovery` needs no connection to the old
-cluster at all. A planned move that adopts the new identity without the hold is a separate server change;
-until it lands, every mode but `empty` ends with `ferrum task release_restore`.
+cluster at all. Plan the move at the source first ("Moving an installation"); without that, every mode but
+`empty` ends with `ferrum task release_restore`.
 
 **Not proven.** None of this has been installed on a cluster. The chart renders every move and refuses what
 each mode lacks (`deploy/helm/test_pools.sh`); `deploy/kind/pools.sh` rehearses default values → `zones` →
@@ -1257,6 +1276,130 @@ default values under traffic on kind and is written but has never run (CI runs i
 the workflow until it has passed once). The two-step moves, the pooler, KEDA and the three ways of starting
 from an existing database have not been run at all; the pooler also waits for the server to read
 `FERRUM_DATABASE_DIRECT_URL`.
+
+## Moving an installation
+
+A whole installation (its database, its files and its keys) moves from one place to another: Compose to
+Kubernetes, back, or from one cluster to another. A copy of the database is not the database the server knew,
+so it would be treated as a restore and held. `ferrum task plan_move` says the copy is a move.
+
+**What `plan_move` does.** Run it on the source, where the server runs, with its own `DATABASE_URL`:
+
+```bash
+ferrum task plan_move reason:"to Kubernetes"          # valid:<hours> (24), wait:<seconds> (130)
+```
+
+1. It leaves a mark in the database. From then, on every replica, nothing new that reaches outside starts:
+   mail, webhooks, jobs, scheduled automations, commands to equipment. People go on working.
+2. It waits `wait` seconds (130 by default: the longest an event's handlers may run is 120 s, a webhook
+   10 s), so that what was already in hand finishes and records how it went.
+3. It fences the database, in one transaction that waits for every transaction in flight to end (10 s at
+   most; past that it says so and changes nothing more: run it again, or cancel). From then every
+   transaction of every replica is read-only. Reading works; anything that would change something answers
+   503 with "this database takes no changes just now: another region writes, or the installation is moving";
+   nothing that reaches outside runs. A replica started on it starts (its start-up steps write) and then
+   serves read-only. `ferrum task doctor` reports it as `move`.
+
+The mark is valid for `valid` hours from the fence. Copy the database after `plan_move` has finished, never
+during it.
+
+**What the copy does.** A server that starts on a copy compares the mark with the database it finds:
+
+| The copy is | What happens |
+|---|---|
+| another database (a dump restored; another cluster) and the mark is valid | it takes the new database as its own without the hold, sets nothing aside, removes the mark, takes changes and sends what was waiting. The log says `THIS INSTALLATION MOVED HERE`, and the audit trail of the oldest workspace holds `platform.move_adopted` |
+| the same database on a new timeline (a physical copy promoted; a backup recovered) | it stays fenced, sets nothing aside, and says so: the source's own standby taken over looks the same. On the copy, `ferrum task adopt_move reason:"..."` |
+| copied before the fence fell, or started after the mark's time ran out (an old backup that holds a mark) | held, as after any restore. The mark is removed |
+| the source itself | stays fenced, whatever happens, until `ferrum task cancel_move reason:"..."` there |
+
+Replicas of the copy starting together adopt the move once: they decide one after another, under a lock on
+one row.
+
+**Exactly once.** What was waiting when the fence fell (events, webhook deliveries, jobs not yet started)
+goes out once, from the copy: the source claimed nothing after the mark, its fence makes every later claim
+fail, and the copy claims it as any replica does, under its row's lock and lease. Two things break this, and
+nothing inside one database can stop them:
+
+* **Two copies.** Every copy of a marked database that starts in time carries on, and each sends what was
+  waiting. Start one. `plan_move` says so.
+* **A shorter wait.** With `wait:0` while background work runs, something in hand at the fence can have
+  happened without being recorded, and the copy does it again. A job still running at the fence runs again
+  on the copy after its lease, as after a crash.
+
+Writes that are not a transaction of the server (rate-limit counters, a region's epoch) are not fenced; they
+hold nothing a move carries.
+
+**One build only.** Plan a move only when every replica runs the same build. A build from before this
+release never asks for the fence, so one still running would keep writing to the source after it, and those
+changes would not reach the copy. `plan_move` refuses on a build that is a guest of a newer one, and while
+events or jobs wait for a newer build (`window.waiting` in the doctor): finish or undo the upgrade first. It
+cannot see an older replica that is merely running; check that every pod runs one image before you start.
+The two-version window is not closed for this: it matters only while a move is being made.
+
+**Skipping `plan_move`** loses nothing silently: the copy is held, what was waiting is set aside in the dead
+events, deliveries and failed jobs, and `ferrum task release_restore` and a replay by hand follow ("After
+restoring a backup"). People's changes made at the source after the copy was taken are lost to the copy.
+
+**What moves with it.** The database; the files, byte for byte under the same keys (`tenants/`, `uploads/`,
+`ui/`, `apps/`, `privacy-journal/`, `access-journal/`, the same in a directory and in a bucket, so a plain
+copy of the whole tree or bucket does it); and the keys: `JWT_SECRET` (sessions), `FERRUM_SECRET_KEY` and
+every key in `FERRUM_RETIRED_SECRET_KEYS` (sealed values open only with the key that sealed them), with
+`FERRUM_KMS_TRANSIT` and its sign-in when the keys are wrapped. On the copy, `ferrum task doctor` reports
+sealed values no key opens (`secrets.unopened`, by where they are kept and a few record ids, never a value;
+secret fields are counted whole by the key that sealed them, other sealed values up to 20,000 a run) and the
+newest 200 files and every app bundle the database names that storage lacks (`files.missing`).
+`ferrum task check_files [tenant:<slug>]` looks for every file, 500 at a time, and lists those missing.
+
+### Compose to Kubernetes
+
+1. Prepare the cluster: the bucket, and the Secret with the Compose installation's `JWT_SECRET`,
+   `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS`. Set `database.bootstrap.mode: import` with the
+   Compose database as the source ("Moving from one shape to another"). Do not install yet: `import` dumps the
+   source when the cluster is created.
+2. On the Compose host (commands run in `deploy/`):
+   `docker compose exec ferrum ferrum task plan_move reason:"to Kubernetes"`, and wait for it to finish.
+3. Copy the files into the bucket, the directory's root to the bucket's root, for example
+   `docker compose run --rm --no-deps -T --entrypoint tar ferrum -C /var/lib/ferrum/files -cf - . | tar -C files -xf -`
+   then `aws s3 sync files/ s3://<bucket>/` (or `rclone copy`). Compare the object count with the number
+   of files.
+4. `helm install` with those values. CloudNativePG imports the fenced database; the server starts, adopts
+   the move and logs `THIS INSTALLATION MOVED HERE`.
+5. `kubectl -n ferrum exec deploy/ferrum -- ferrum task doctor`: no `move`, `secrets.unopened` and
+   `files.missing` fine; then `ferrum task check_files`.
+6. Point the names at the cluster (the accounts, callbacks and link hosts first: "Names that should never
+   change"). Stop the Compose stack; it stays fenced if it is started again.
+
+**Cancel instead** when the copy will not start, or the doctor finds what you cannot fix before the mark
+runs out: `docker compose exec ferrum ferrum task cancel_move reason:"..."` on the source, and delete the
+copy's database before anything starts on it again. A copy of the fenced database started before the
+mark's time runs out would still carry on as moved, and send what the source then sends too.
+
+### Kubernetes to Compose
+
+1. `kubectl -n ferrum exec deploy/ferrum -- ferrum task plan_move reason:"to Compose"`.
+2. Dump the database as its superuser (`kubectl -n ferrum cnpg psql` gives the address; `pg_dump -Fc`), and
+   restore it into the Compose database as in "Backups and restore" (an empty database, then
+   `pg_restore`).
+3. Copy the bucket into the files volume (`aws s3 sync s3://<bucket>/ files/`, then `tar` into the volume).
+4. Start Compose with the cluster's `JWT_SECRET`, `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS`; run
+   the doctor and `check_files`; point the names; scale the cluster's Deployments to 0.
+
+### Cluster to cluster
+
+1. `plan_move` in the source cluster.
+2. The new cluster's chart with `import` (it adopts by itself), or `copy` or `recovery` (a backup taken
+   after the fence; `recovery.targetTime` after the time `plan_move` printed). Both of those start on a new
+   timeline: once the server is up, `kubectl -n ferrum exec deploy/ferrum -- ferrum task adopt_move reason:"copy of cluster A"`.
+3. The same bucket can serve both, or `aws s3 sync` one into the other. The same keys.
+4. Doctor, `check_files`, names, then scale the old cluster to 0.
+
+**Rehearsed.** `scripts/move_rehearsal.sh` (CI's `move` job) does the move with PostgreSQL and the server
+binary alone: a workspace, a file and a webhook delivery still waiting; `plan_move`; `pg_dump` and
+`pg_restore` into a second database; the files directory copied; a server on the copy with the same keys.
+It checks that the copy is not held, takes changes and sends the waiting delivery once, that the source is
+still fenced and its doctor says it is the source of a planned move, and the copy's doctor checks; then
+that a copy made without `plan_move` is held. The chart's `copy` and `recovery` modes and `adopt_move` on
+a promoted copy have not been run.
 
 ## Capacity
 
@@ -2526,6 +2669,10 @@ ferrum task app_make_available file:<app.fapp> [allow_unsigned:true]   # make a 
 ferrum task app_upgrade [app:<id>]   # make the newest compatible store releases of the cluster's store apps (or of one app) available
 ferrum task app_revoke app:<id> [version:<v>] reason:"..."   # take a release out of service and disable it everywhere (data kept)
 ferrum task app_releases [app:<id>]  # every release recorded on the cluster, with status and source
+ferrum task plan_move reason:"..." [valid:<hours, 24>] [wait:<seconds, 130>]   # before moving the installation: fence this database (Moving an installation)
+ferrum task cancel_move reason:"..."   # the move does not happen: lift the fence
+ferrum task adopt_move reason:"..."    # on a physical copy of a fenced database: this is the copy, carry on
+ferrum task check_files [tenant:<slug>]   # every file the database names (and app bundles), looked for in storage; lists those missing
 ```
 
 **Notifications by email.** A notification someone chose to have by email goes out through the

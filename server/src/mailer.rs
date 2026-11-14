@@ -93,6 +93,10 @@ impl ferrum_kernel::files::FileStore for StorageFiles {
     async fn get_range(&self, key: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         self.1.range(key, range).await
     }
+    async fn exists(&self, key: &str) -> Result<bool> {
+        // Asked without reading it.
+        self.1.exists(key).await
+    }
     async fn delete(&self, key: &str) -> Result<()> {
         self.0.delete(std::path::Path::new(key)).await.map_err(|e| Error::Unavailable(format!("storage: {e}")))
     }

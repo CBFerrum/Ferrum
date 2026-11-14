@@ -186,7 +186,7 @@ impl From<sqlx::Error> for Error {
                     "P0001" => Error::Invalid(msg.trim_start_matches("ferrum: ").to_string()),
                     "22P02" | "22003" | "22007" | "22008" | "22023" => Error::Invalid(msg),
                     "53300" | "57P01" | "57P03" => Error::Unavailable(msg),
-                    "25006" => Error::Unavailable("this region is not the one that writes just now".into()),
+                    "25006" => Error::Unavailable("this database takes no changes just now: another region writes, or the installation is moving".into()),
                     _ => Error::Db(msg),
                 }
             }

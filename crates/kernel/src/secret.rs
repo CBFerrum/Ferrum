@@ -487,3 +487,95 @@ mod tests {
         assert_eq!(SecretKey::from_base64(&B64.encode([1u8; 32])).unwrap().id.len(), 8);
     }
 }
+
+/// Sealed values of one kind that no configured key opens ([`Kernel::unopened_secrets`]): never the values.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Unopened {
+    /// `Entity.field` for secret fields, else where it is kept (`webhook.secret`).
+    pub what: String,
+    pub count: u64,
+    /// A few of the records, by id.
+    pub examples: Vec<String>,
+}
+
+/// How many values outside secret fields one check tries to open, at most (`Unopened`; `complete` says when it stopped).
+pub const UNOPENED_BUDGET: i64 = 20_000;
+
+/// Where values are sealed besides secret fields: the query gives each row's ids, a name (an approval's parameter) and
+/// the sealed value; the label is what it was sealed with (as `reseal_secrets` has them).
+type Store = (&'static str, &'static str, fn(&[Uuid], &str) -> String);
+
+const STORES: &[Store] = &[
+    ("webhook.secret", "select array[tenant_id, id], '', substr(secret, 8) from webhook where secret like 'sealed:%'", |i, _| webhook_label(i[0], i[1])),
+    ("app_user.totp_secret", "select array[tenant_id, id], '', totp_secret from app_user where totp_secret is not null", |i, _| {
+        crate::twofactor::sealed_label(i[0], i[1])
+    }),
+    ("connection.sealed", "select array[tenant_id, id], '', sealed from connection where sealed is not null", |i, _| crate::connect::sealed_label(i[0], i[1])),
+    ("message_channel.sealed", "select array[tenant_id, id], '', sealed from message_channel where sealed is not null", |i, _| {
+        crate::messages::sealed_label(i[0], i[1])
+    }),
+    ("conn.sealed", "select array[tenant_id, id], '', sealed from conn where sealed is not null", |i, _| crate::connections::sealed_label(i[0], i[1])),
+    ("conn_token.sealed", "select array[tenant_id, conn_id, user_id], '', sealed from conn_token", |i, _| {
+        crate::connections::oauth::token_label(i[0], i[1], i[2])
+    }),
+    ("sso_provider.client_secret", "select array[tenant_id, id], '', client_secret from sso_provider where client_secret is not null", |i, _| {
+        crate::sso::sealed_label(i[0], i[1])
+    }),
+    ("saml_sp_key.private_key", "select array[tenant_id], '', private_key from saml_sp_key", |i, _| crate::sso::saml_key_label(i[0])),
+    (
+        "approval_request.sealed",
+        "select array[tenant_id, id], p.key, p.value #>> '{}' from approval_request, jsonb_each(sealed) p \
+         where status = 'pending' and sealed is not null and jsonb_typeof(p.value) = 'string'",
+        |i, name| crate::approvals::sealed_label(i[0], i[1], name),
+    ),
+    ("server_key.sealed", "select array[]::uuid[], '', sealed from server_key", |_, _| crate::webpush::VAPID_LABEL.to_string()),
+];
+
+impl Kernel {
+    /// Sealed values none of the configured keys (`FERRUM_SECRET_KEY`, `FERRUM_RETIRED_SECRET_KEYS`) opens, by where they
+    /// are kept, with a few record ids each and never a value: what a move without the source's keys breaks. Secret fields
+    /// are counted by the key that sealed them, in SQL, whole; the rest are opened, at most [`UNOPENED_BUDGET`] of them
+    /// (`false`: it stopped there). Reads only.
+    pub async fn unopened_secrets(&self) -> Result<(Vec<Unopened>, bool)> {
+        let ids: Vec<String> = self.secret_keys().map(|k| k.id.clone()).collect();
+        let mut tx = self.db.system_tx().await?;
+        sqlx::query("set transaction read only").execute(&mut *tx).await?;
+        let fields: Vec<(String, String, i64, Vec<String>)> = sqlx::query_as(
+            "select s.entity, s.field, count(*), (select array_agg(e.record_id::text) from (select record_id from record_secret x \
+               where x.entity = s.entity and x.field = s.field and not (x.key_id = any($1)) order by record_id limit 3) e) \
+             from record_secret s where not (s.key_id = any($1)) group by s.entity, s.field order by 1, 2",
+        )
+        .bind(&ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut out: Vec<Unopened> =
+            fields.into_iter().map(|(entity, field, count, examples)| Unopened { what: format!("{entity}.{field}"), count: count as u64, examples }).collect();
+        let mut budget = UNOPENED_BUDGET;
+        let mut complete = true;
+        for (n, (what, sql, label)) in STORES.iter().enumerate() {
+            if budget == 0 {
+                // Stopped before the rest (whether they hold anything is not known).
+                complete = n == STORES.len();
+                break;
+            }
+            let rows: Vec<(Vec<Uuid>, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!("{sql} limit {}", budget + 1))).fetch_all(&mut *tx).await?;
+            let take = (rows.len() as i64).min(budget);
+            complete &= rows.len() as i64 == take;
+            budget -= take;
+            let mut found = Unopened { what: what.to_string(), count: 0, examples: Vec::new() };
+            for (ids, name, sealed) in rows.iter().take(take as usize) {
+                if self.open_sealed(&label(ids, name), sealed).is_err() {
+                    found.count += 1;
+                    if found.examples.len() < 3 {
+                        found.examples.push(ids.last().map(Uuid::to_string).unwrap_or_default());
+                    }
+                }
+            }
+            if found.count > 0 {
+                out.push(found);
+            }
+        }
+        tx.commit().await?;
+        Ok((out, complete))
+    }
+}

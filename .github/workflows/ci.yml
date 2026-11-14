@@ -151,6 +151,44 @@ jobs:
         run: for i in $(seq 1 90); do curl -fs http://localhost:8180/realms/master > /dev/null && exit 0; sleep 2; done; docker logs keycloak; exit 1
       - run: cargo test -p ferrum-kernel --features saml --locked --test saml_it --test saml_keycloak_it --test scan_it
 
+  # Moving a whole installation, rehearsed with PostgreSQL and the server binary alone (scripts/move_rehearsal.sh): a
+  # planned move carries waiting work across without the restore hold, and an unplanned copy is held. It cannot fail the
+  # workflow until it has passed here once; then remove continue-on-error and add it to promote's needs.
+  move:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: move
+      - name: PostgreSQL 17's tools
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-17
+          echo /usr/lib/postgresql/17/bin >> "$GITHUB_PATH"
+      - name: The application role
+        run: psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c "create role ferrum login password 'ferrum'"
+      # The core packages only: no app is compiled in, which keeps the build small.
+      - run: cargo build -p ferrum-server --no-default-features --bin ferrum --locked
+      - run: scripts/move_rehearsal.sh ferrum_moverehearsal_a ferrum_moverehearsal_b
+        env:
+          MOVE_ADMIN_URL: postgres://postgres:postgres@localhost:5432
+
   audit:
     runs-on: ubuntu-latest
     steps:

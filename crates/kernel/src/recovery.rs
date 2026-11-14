@@ -227,9 +227,14 @@ impl Kernel {
         )
         .fetch_one(&self.db.pool)
         .await?;
-        let mut tx = self.db.system_tx().await?;
+        // Writable through a planned move's fence: a copy adopts the move here (moves.rs).
+        let mut tx = self.db.system_tx_through_move().await?;
         let known: Option<(i64, i32, sqlx::postgres::types::Oid)> =
             sqlx::query_as("select system_identifier, timeline, database_oid from platform_incarnation for update").fetch_optional(&mut *tx).await?;
+        if let crate::moves::Start::Done = self.notice_move(&mut tx, (system, timeline, oid.0)).await? {
+            tx.commit().await?;
+            return Ok(());
+        }
         let Some((was_system, was_timeline, was_oid)) = known else {
             sqlx::query("insert into platform_incarnation (system_identifier, timeline, database_oid) values ($1, $2, $3) on conflict do nothing")
                 .bind(system)
@@ -485,13 +490,13 @@ impl Kernel {
         let Ok(store) = self.file_store() else {
             return Ok(json!({"checked": 0, "unchecked": back.len(), "missing": []}));
         };
-        let mut missing = Vec::new();
-        for (id, key, name) in &back {
-            if !store.exists(key).await? {
-                missing.push(json!({"id": id, "name": name}));
-            }
-        }
-        let files = json!({"checked": back.len(), "unchecked": 0, "missing": missing});
+        let checked = back.len();
+        let missing: Vec<Value> = absent(store, back.into_iter().map(|(id, key, name)| ((id, name), key)).collect())
+            .await?
+            .into_iter()
+            .map(|(id, name)| json!({"id": id, "name": name}))
+            .collect();
+        let files = json!({"checked": checked, "unchecked": 0, "missing": missing});
         if !missing.is_empty() {
             let mut tx = self.db.system_tenant_tx(tenant).await?;
             audit::record(&mut tx, ctx, "Tenant", tenant, "platform.tenant_restored_files_missing", None, files.clone()).await?;
@@ -500,9 +505,70 @@ impl Kernel {
         Ok(files)
     }
 
-    /// Whether a restore is waiting for a person. Everything that reaches outside asks this first.
-    pub async fn holding(&self) -> Result<bool> {
+    /// Files the database names that storage lacks: workspaces' files (one workspace's, with `tenant`) and, for the whole
+    /// installation, app bundles. `Files::Newest(n)`: the newest n files and every bundle, for the doctor; `Files::All`:
+    /// everything, a page of 500 at a time. Each one missing goes to `missing` as it is found, so nothing is collected;
+    /// returns how many were checked.
+    pub async fn check_files(&self, tenant: Option<Uuid>, which: Files, mut missing: impl FnMut(MissingFile)) -> Result<u64> {
+        let store = self.file_store()?;
+        let mut checked = 0u64;
+        let mut after: Option<(Uuid, Uuid)> = None;
+        loop {
+            let mut tx = self.db.system_tx().await?;
+            let page: Vec<(Uuid, Uuid, String, String)> = match which {
+                Files::Newest(n) => sqlx::query_as(
+                    "select tenant_id, id, storage_key, file_name from file_object where ($1::uuid is null or tenant_id = $1) order by created_at desc limit $2",
+                )
+                .bind(tenant)
+                .bind(n as i64)
+                .fetch_all(&mut *tx)
+                .await?,
+                Files::All => sqlx::query_as(
+                    "select tenant_id, id, storage_key, file_name from file_object where ($1::uuid is null or tenant_id = $1) \
+                     and ($2::uuid is null or (tenant_id, id) > ($2, $3)) order by tenant_id, id limit 500",
+                )
+                .bind(tenant)
+                .bind(after.map(|a| a.0))
+                .bind(after.map(|a| a.1))
+                .fetch_all(&mut *tx)
+                .await?,
+            };
+            tx.commit().await?;
+            let last = page.last().map(|(t, id, ..)| (*t, *id));
+            let len = page.len();
+            checked += len as u64;
+            for ((tenant, id), name) in absent(store, page.into_iter().map(|(t, id, key, name)| (((t, id), name), key)).collect()).await? {
+                missing(MissingFile { tenant: Some(tenant), id: id.to_string(), name });
+            }
+            if matches!(which, Files::Newest(_)) || len < 500 {
+                break;
+            }
+            after = last;
+        }
+        if tenant.is_none() {
+            let mut tx = self.db.system_tx().await?;
+            let bundles: Vec<(Uuid, String, String, String)> =
+                sqlx::query_as("select id, app_id, version, bundle_key from app_release where bundle_key is not null").fetch_all(&mut *tx).await?;
+            tx.commit().await?;
+            checked += bundles.len() as u64;
+            for (id, name) in absent(store, bundles.into_iter().map(|(id, app, version, key)| ((id, format!("app {app} {version}")), key)).collect()).await? {
+                missing(MissingFile { tenant: None, id: id.to_string(), name });
+            }
+        }
+        Ok(checked)
+    }
+
+    /// Whether a restore is waiting for a person (a planned move apart).
+    pub async fn restore_held(&self) -> Result<bool> {
         Ok(sqlx::query_scalar("select exists (select 1 from platform_incarnation where held_since is not null)").fetch_one(&self.db.pool).await?)
+    }
+
+    /// Whether a restore is waiting for a person, or a move is planned (moves.rs). Everything that reaches outside asks
+    /// this first.
+    pub async fn holding(&self) -> Result<bool> {
+        Ok(sqlx::query_scalar("select exists (select 1 from platform_incarnation where held_since is not null) or exists (select 1 from platform_move)")
+            .fetch_one(&self.db.pool)
+            .await?)
     }
 
     /// A person has looked at what came back. What was set aside stays where it is, to replay or not.
@@ -533,6 +599,30 @@ impl Kernel {
     }
 }
 
+/// Which files [`Kernel::check_files`] looks at.
+#[derive(Debug, Clone, Copy)]
+pub enum Files {
+    Newest(u32),
+    All,
+}
+
+/// A file the database names that storage lacks: never its contents.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MissingFile {
+    /// None for an app bundle.
+    pub tenant: Option<Uuid>,
+    pub id: String,
+    pub name: String,
+}
+
+/// Which of `files` (each with its storage key) the store lacks, asking 16 at a time.
+async fn absent<T>(store: &Arc<dyn crate::files::FileStore>, files: Vec<(T, String)>) -> Result<Vec<T>> {
+    use futures::StreamExt;
+    let found: Vec<Result<Option<T>>> =
+        futures::stream::iter(files).map(|(t, key)| async move { Ok(if store.exists(&key).await? { None } else { Some(t) }) }).buffered(16).collect().await;
+    found.into_iter().filter_map(Result::transpose).collect()
+}
+
 /// Who holds the right to write, as a witness has it.
 pub struct Authority {
     witness: PgPool,
@@ -546,6 +636,18 @@ impl Authority {
         let options = PgConnectOptions::from_str(url).map_err(|e| Error::Invalid(format!("the witness address: {e}")))?;
         let witness = PgPoolOptions::new().max_connections(2).acquire_timeout(ttl / 4).connect_lazy_with(options);
         Ok(Authority { witness, cluster: cluster.to_string(), region: region.to_string(), ttl })
+    }
+
+    /// Who holds it now, asking only (a region whose time ran out holds nothing).
+    pub async fn holder(&self) -> Result<Option<String>> {
+        let there: bool = sqlx::query_scalar("select to_regclass('ferrum_authority') is not null").fetch_one(&self.witness).await?;
+        if !there {
+            return Ok(None);
+        }
+        Ok(sqlx::query_scalar("select holder from ferrum_authority where cluster = $1 and expires_at > now()")
+            .bind(&self.cluster)
+            .fetch_optional(&self.witness)
+            .await?)
     }
 
     /// Takes it if nobody has it or the holder's time ran out, or keeps it. The epoch rises only when

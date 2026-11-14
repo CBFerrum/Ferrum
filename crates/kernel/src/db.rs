@@ -83,16 +83,18 @@ impl Trace {
 }
 
 /// `settings` (their parameters start at `$5`) with the current [`Trace`] and the transaction's lock and idle timeouts
-/// set beside them, in one round trip.
-fn carrying(settings: &str) -> Query<'static, Postgres, PgArguments> {
+/// set beside them, in one round trip. Its row's `moving` says whether a planned move has fenced the database
+/// (`ferrum_moving()`, asked when `moves` is set; see crates/kernel/src/moves.rs).
+fn carrying(settings: &str, moves: bool) -> Query<'static, Postgres, PgArguments> {
     let t = TRACE.try_with(Trace::clone).unwrap_or_default();
     // The depth is a number, written in place, so the settings' parameters still start at $5.
     sqlx::query(AssertSqlSafe(format!(
         "select set_config('ferrum.correlation', $1, true), set_config('ferrum.causation', $2, true), \
          set_config('ferrum.traceparent', $3, true), set_config('ferrum.priority', $4, true), \
          set_config('ferrum.depth', '{}', true), set_config('lock_timeout', '{LOCK_TIMEOUT}', true), \
-         set_config('idle_in_transaction_session_timeout', '{IDLE_IN_TRANSACTION}', true), {settings}",
-        t.depth
+         set_config('idle_in_transaction_session_timeout', '{IDLE_IN_TRANSACTION}', true), {settings}, {} as moving",
+        t.depth,
+        if moves { "ferrum_moving()" } else { "false" }
     )))
     .bind(t.correlation)
     .bind(t.causation.map(|c| c.to_string()).unwrap_or_default())
@@ -159,6 +161,12 @@ pub struct Db {
     /// This region does not hold the right to write (`recovery`): every transaction is read-only, so
     /// nothing has to remember to check.
     fenced: Arc<AtomicBool>,
+    /// This database has `ferrum_moving()` (the planned move's migration is applied), so transactions ask it
+    /// ([`Db::ask_moves`]).
+    moves: Arc<AtomicBool>,
+    /// The server is starting: a planned move's fence does not apply yet, so that a fenced database's server starts (and
+    /// a task runs on it) and then serves read-only. Off unless the server says so.
+    starting: Arc<AtomicBool>,
     pooled: bool,
 }
 
@@ -173,8 +181,15 @@ impl Db {
         self.fenced.load(Ordering::SeqCst)
     }
 
-    async fn stay_fenced(&self, tx: &mut Tx) -> Result<()> {
-        if self.fenced() {
+    /// Set while a server starts: a planned move's fence is not applied meanwhile (moves.rs).
+    pub fn starting(&self, starting: bool) {
+        self.starting.store(starting, Ordering::SeqCst);
+    }
+
+    async fn stay_fenced(&self, tx: &mut Tx, row: sqlx::postgres::PgRow) -> Result<()> {
+        use sqlx::Row;
+        let moving: bool = row.try_get("moving")?;
+        if self.fenced() || (moving && !self.starting.load(Ordering::SeqCst)) {
             sqlx::query("set transaction read only").execute(&mut **tx).await?;
         }
         Ok(())
@@ -245,7 +260,7 @@ impl Db {
                 config.read_max_lag,
             ))),
         };
-        Ok(Db { pooled: direct_url.is_some(), pool, side, direct, read, config, fenced: Arc::default() })
+        Ok(Db { pooled: direct_url.is_some(), pool, side, direct, read, config, fenced: Arc::default(), moves: Arc::default(), starting: Arc::default() })
     }
 
     /// Whether `direct` is a pool of its own: the main pool then goes through a pooler.
@@ -266,6 +281,18 @@ impl Db {
     /// it migrates, so on the direct address).
     pub async fn migrate(&self) -> Result<()> {
         sqlx::migrate!("./migrations").run(&self.direct).await.map_err(|e| Error::Internal(format!("kernel migration failed: {e}")))
+    }
+
+    /// Transactions ask `ferrum_moving()` from here on when this database has it (Kernel::boot, once the schema is
+    /// settled; a guest's newer database has it too).
+    pub async fn ask_moves(&self) -> Result<()> {
+        let there: bool = sqlx::query_scalar("select to_regprocedure('ferrum_moving()') is not null").fetch_one(&self.pool).await?;
+        self.moves.store(there, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn moves(&self) -> bool {
+        self.moves.load(Ordering::SeqCst)
     }
 
     /// Versions of the kernel's SQL migrations this database has applied (none for a database no migration has touched).
@@ -314,12 +341,12 @@ impl Db {
     /// transaction of the same request is open.
     pub async fn side_tenant_tx(&self, tenant: Uuid) -> Result<Tx> {
         let mut tx = self.side.begin().await?;
-        carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)")
+        let row = carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)", self.moves())
             .bind(tenant.to_string())
             .bind(self.config.statement_timeout_ms.to_string())
-            .execute(&mut *tx)
+            .fetch_one(&mut *tx)
             .await?;
-        self.stay_fenced(&mut tx).await?;
+        self.stay_fenced(&mut tx, row).await?;
         Ok(tx)
     }
 
@@ -330,8 +357,8 @@ impl Db {
 
     pub async fn tenant_tx_with_timeout(&self, tenant: Uuid, timeout_ms: u64) -> Result<Tx> {
         let mut tx = self.pool.begin().await?;
-        as_tenant(&mut tx, tenant, timeout_ms).await?;
-        self.stay_fenced(&mut tx).await?;
+        let row = as_tenant(&mut tx, tenant, timeout_ms, self.moves()).await?;
+        self.stay_fenced(&mut tx, row).await?;
         Ok(tx)
     }
 
@@ -390,12 +417,21 @@ impl Db {
 
     /// A transaction that bypasses tenant isolation. Only for cluster jobs (outbox, provisioning, login lookup).
     pub async fn system_tx(&self) -> Result<Tx> {
+        self.system_tx_asking(self.moves()).await
+    }
+
+    /// A system transaction that a planned move's fence leaves writable: only for the move's own steps (moves.rs).
+    pub(crate) async fn system_tx_through_move(&self) -> Result<Tx> {
+        self.system_tx_asking(false).await
+    }
+
+    async fn system_tx_asking(&self, moves: bool) -> Result<Tx> {
         let mut tx = self.pool.begin().await?;
-        carrying("set_config('ferrum.system', 'on', true), set_config('statement_timeout', $5, true)")
+        let row = carrying("set_config('ferrum.system', 'on', true), set_config('statement_timeout', $5, true)", moves)
             .bind(self.config.statement_timeout_ms.to_string())
-            .execute(&mut *tx)
+            .fetch_one(&mut *tx)
             .await?;
-        self.stay_fenced(&mut tx).await?;
+        self.stay_fenced(&mut tx, row).await?;
         Ok(tx)
     }
 
@@ -403,12 +439,15 @@ impl Db {
     /// `ferrum_tenant()` (defaults, policies in package SQL) sees the right tenant.
     pub async fn system_tenant_tx(&self, tenant: Uuid) -> Result<Tx> {
         let mut tx = self.pool.begin().await?;
-        carrying("set_config('ferrum.system', 'on', true), set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)")
-            .bind(tenant.to_string())
-            .bind(self.config.statement_timeout_ms.to_string())
-            .execute(&mut *tx)
-            .await?;
-        self.stay_fenced(&mut tx).await?;
+        let row = carrying(
+            "set_config('ferrum.system', 'on', true), set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)",
+            self.moves(),
+        )
+        .bind(tenant.to_string())
+        .bind(self.config.statement_timeout_ms.to_string())
+        .fetch_one(&mut *tx)
+        .await?;
+        self.stay_fenced(&mut tx, row).await?;
         Ok(tx)
     }
 
@@ -429,20 +468,20 @@ impl Db {
 }
 
 /// Sets the workspace and the statement timeout on a transaction, as every tenant transaction does.
-async fn as_tenant(tx: &mut Tx, tenant: Uuid, timeout_ms: u64) -> Result<()> {
-    carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)")
+async fn as_tenant(tx: &mut Tx, tenant: Uuid, timeout_ms: u64, moves: bool) -> Result<sqlx::postgres::PgRow> {
+    Ok(carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)", moves)
         .bind(tenant.to_string())
         .bind(timeout_ms.to_string())
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
+        .fetch_one(&mut **tx)
+        .await?)
 }
 
 /// A read-only tenant transaction on the read address, once it has replayed up to `at` (within
 /// [`crate::replica::CATCH_UP`]; `None` past it).
 async fn on_replica(r: &crate::replica::Reads, tenant: Uuid, timeout_ms: u64, at: &str) -> Result<Option<Tx>> {
     let mut tx = r.pool.begin().await?;
-    as_tenant(&mut tx, tenant, timeout_ms).await?;
+    // A replica takes no changes anyway.
+    as_tenant(&mut tx, tenant, timeout_ms, false).await?;
     sqlx::query("set transaction read only").execute(&mut *tx).await?;
     let started = std::time::Instant::now();
     loop {
