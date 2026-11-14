@@ -277,8 +277,10 @@ impl Hooks for App {
         // From now on a rollback to a build that would not enforce them is refused (docs/operations.md, "Protections an
         // older build would not enforce"). A guest of a newer build writes nothing.
         kernel.require_zone_floors(&zones).await.map_err(|e| Error::Message(format!("zones: {e}")))?;
-        // Proof by record: a build that would verify a domain pointing here alone may no longer start (window.rs).
-        if domain_proof == ferrum_kernel::shell::DomainProof::Record {
+        // Proof by record, where the operator asked for it: a build that would verify a domain pointing here alone may no
+        // longer start (window.rs). Taken by default (a cluster of many workspaces), it puts no floor in place, so that the
+        // upgrade itself rolls back as any does (docs/operations.md, "Custom domains").
+        if proof_floor(&settings.domain_proof) {
             kernel.require_floor(&ferrum_kernel::shell::PROOF_FLOOR, "").await.map_err(|e| Error::Message(format!("domain proof: {e}")))?;
         }
         ferrum_app_erp::maintenance(&kernel).await.map_err(|e| Error::Message(format!("ERP's upkeep: {e}")))?;
@@ -667,6 +669,11 @@ impl Hooks for App {
     }
 }
 
+/// Whether `FERRUM_DOMAIN_PROOF` asks for proof by record in so many words, which puts its floor in place.
+fn proof_floor(setting: &str) -> bool {
+    setting.trim().eq_ignore_ascii_case("record")
+}
+
 /// Each client address's budget. Only requests that came through the proxy (`X-Forwarded-For`)
 /// count: probes, port-forwards and the cluster's own calls have no address to tell apart.
 /// Runs a request under its trace: the events it writes name its request id, and the caller's W3C
@@ -977,6 +984,12 @@ async fn secret_key(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_proof_by_record_asked_for_puts_its_floor_in_place() {
+        assert!(super::proof_floor("record") && super::proof_floor(" Record "));
+        assert!(!super::proof_floor("") && !super::proof_floor("points"), "the default, even where it is record, rolls back as before");
+    }
+
     #[test]
     fn the_migrate_task_is_found_on_the_command_line() {
         let args = |a: &[&str]| super::is_migrate_task(a.iter().map(|s| s.to_string()));

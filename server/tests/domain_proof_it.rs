@@ -160,7 +160,7 @@ async fn scenario() {
     let k = st.kernel.clone();
     assert_eq!(k.settings.domain_proof, DomainProof::Record, "the default on a cluster of many workspaces");
     let (floors, _) = k.floors().await.unwrap();
-    assert!(floors.iter().any(|f| f.feature == "domain_proof"), "a build that would verify by pointing alone may not start: {floors:?}");
+    assert!(!floors.iter().any(|f| f.feature == "domain_proof"), "taken by default, it leaves the upgrade free to roll back: {floors:?}");
 
     let (victim, victim_token) = workspace(&k, &router, "victim").await;
     let (taker, taker_token) = workspace(&k, &router, "taker").await;

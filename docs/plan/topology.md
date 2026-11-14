@@ -247,7 +247,9 @@ same host gets another, so an old record proves nothing. Decided:
   `checked_at` set: no column for it. The list keeps its five `status` words (that state is `pending`) and adds
   `waiting` and `record`: the current screen maps `status` through closed tables (`Addresses.tsx` `TONE`, `STATUS()`,
   `detail`), where a sixth word would show an empty badge and the text of a released address.
-- A floor (`domain_proof`) when a server starts in `record` mode: an older build would verify by pointing alone.
+- A floor (`domain_proof`) only when the operator sets `FERRUM_DOMAIN_PROOF=record`: an older build would verify by
+  pointing alone. The default (`record` with a base domain) puts none, so the upgrade itself rolls back without
+  `allow_older_builds`; operations.md says what an older build does meanwhile.
 - A workspace that leaves the database (`delete_tenant`; `finish_move` at the source, whose DNS may still point there)
   leaves `host_quarantine (host, until)`: every row but a custom domain that never worked, a year from now or from a
   removed one's leaving end; no workspace column, so no deletion, move or sandbox reaches it. `claimable` reads it with
@@ -314,7 +316,7 @@ it; the list's limit names no row).
 | A deleted workspace's custom domains went with it, unquarantined (first slice) | Fixed in the second: `host_quarantine`, and its slug retired, which it was not |
 | Pointing here proves no consent where `FERRUM_DOMAIN_PROOF=points` | The default is `record` with a base domain; operations.md says a cluster of several companies must use it |
 | A domain proven once comes back by pointing alone: if its owner changes and the new owner points it here, it opens the old workspace again | The row never left that workspace; seven failed checks unverify it, and the new owner can ask the operator to release it |
-| An older build ignores `host_quarantine` and the record | `record` puts a floor in place; in `points` mode an older build could hand a deleted workspace's domain on early, as it could any domain pointing here |
+| An older build ignores `host_quarantine` and the record | `FERRUM_DOMAIN_PROOF=record`, set explicitly, puts a floor in place; by default none (the upgrade rolls back freely), and operations.md says an older build, while it runs, checks the old way and knows no quarantine |
 | A deleted sandbox's slug stays free (documented: refresh by the same name) | Not changed: a sandbox has only the operator's `{as}.{base}` |
 | During a forwarding address's leaving period visitors get `308`, which browsers keep: turning forwarding off soon after leaves them going to the main address | The leaving machinery as it is; after the period every answer is `302` (`no-store`) |
 | A forwarding address in a zone that admits no staff names the main address to anyone | As a leaving address does; the main address's own zone still decides who is admitted there |

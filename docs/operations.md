@@ -65,7 +65,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_HOOKS_HOST` | no | The host other services call back (`hooks.example.com`): webhooks and `/api/public/…` calls, a mail or calendar connector's sign-in return (`/api/connections/callback`), the addresses services pull files from. Default `hooks.{base}` for pages and public calls with `FERRUM_BASE_DOMAIN`, else `PUBLIC_URL`; connectors and pulled files use `PUBLIC_URL` unless this is set. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_PASSKEY_RP` | no | The passkeys' relying party, a domain (`example.com`): passkeys made on it or a host under it work on every host under it. Default none: each host is its own, as before. Never the base domain. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_HOST_LEAVING_DAYS` | no | How long a removed address keeps serving the people already signed in there, so that what their browsers kept for it is sent, before it redirects (default 14 days; 0: it redirects at once, as before; at most 365). See [Changing or removing an address](#changing-or-removing-an-address) |
-| `FERRUM_DOMAIN_PROOF` | no | What a domain of a workspace's own must show before it works: `points` (it points at this cluster, as before) or `record` (its DNS record `_ferrum.{domain}` as well). Default `record` with `FERRUM_BASE_DOMAIN`, else `points`. A cluster that serves workspaces of different companies must use `record`. See [Custom domains](#custom-domains) |
+| `FERRUM_DOMAIN_PROOF` | no | What a domain of a workspace's own must show before it works: `points` (it points at this cluster, as before) or `record` (its DNS record `_ferrum.{domain}` as well). Default `record` with `FERRUM_BASE_DOMAIN`, else `points`; set to `record` in so many words, it also keeps builds from before it from starting (a floor). A cluster that serves workspaces of different companies must use `record`. See [Custom domains](#custom-domains) |
 | `FERRUM_DNS_RESOLVERS` | no | The DNS servers asked for that record, as addresses separated by commas (`10.96.0.10`, `10.0.0.2:5353`). Default: the system's (`/etc/resolv.conf`). The server does not start with one that is not an address |
 | `FERRUM_LINK_HOST` | no | The host every mailed, notified or printed link goes through (`go.example.com`): links become `https://{it}/go/{workspace}/{s\|p}/…`, which lead on to wherever the workspace is when someone follows them. Default none: links name the workspace's host, as before. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_ZONES` | no | Zones, JSON: zone name → rule, `{"public": {"staff": "none"}, "office": {"staff": "all", "networks": ["10.0.0.0/8"]}}`. Default none: everyone is admitted everywhere, as before. See [Zones](#zones) |
@@ -576,7 +576,7 @@ before a floor is refused at start, the older ones included.
 | `move_fence` | `plan_move` marks the database (until cancelled, adopted or not followed) | 2026-11-14T01:33:19Z |
 | `workspace_freeze` | `move_workspace` starts, on both sides (until it arrives, at the target; until `finish_move`, at the source; both at an abort) | 2026-11-14T04:00:04Z |
 | `sandbox` | `copy_workspace` makes a sandbox (until `delete_sandbox` deletes the last one) | 2026-11-14T06:47:14Z |
-| `domain_proof` | a server starts with `FERRUM_DOMAIN_PROOF=record` (the default with a base domain) | 2026-11-14T21:00:00Z |
+| `domain_proof` | a server starts with `FERRUM_DOMAIN_PROOF=record` set (not when it is `record` by default) | 2026-11-14T21:00:00Z |
 
 * **What a refused rollback says.** The usual refusal (*Start a build from … or newer*), and, from a build that knows
   floors, which protections are switched on and since which build. A build from before floors existed prints only the
@@ -590,8 +590,8 @@ before a floor is refused at start, the older ones included.
 * **Every start looks at what is in use.** A build level with the database puts floors in place at each start, under the
   start hold, for what is in use however it got there (saved by a build from before floors, or after
   `allow_older_builds`): any workspace with staff networks, an idle timeout, a break-glass list, step-up rules or
-  recorded reads, any key pinned to networks, any sandbox, a move mark, and any workspace move not finished; zones and
-  proof by record from the server's settings. This is one statement: `tenant` (a row per workspace) and `api_key` are
+  recorded reads, any key pinned to networks, any sandbox, a move mark, and any workspace move not finished; zones, and
+  proof by record when set, from the server's settings. This is one statement: `tenant` (a row per workspace) and `api_key` are
   read until the first match, sandboxes through their index, and the two move tables hold a row per move.
 * **Turning a protection off does not lower its floor.** A workspace that clears its networks, or zone settings taken
   out, leave the floor where it is: the operator may turn them on again, and a stale floor costs only that a rollback
@@ -3119,8 +3119,12 @@ site (`site:{app}`), within its limit of addresses (Addresses of a workspace, wh
   working before `record` was asked for), a domain goes on working by pointing here alone, even after it stopped for a
   while: it never left its workspace, so nobody can have taken it. The record may then go. Domains that work without a
   record are listed by `ferrum task doctor` (`domains.proof`), as information. `points` keeps the check as it was: use it
-  only where every workspace is one company's. Switching to `record` puts a floor in place (*Protections an older build
-  would not enforce*): a build from before it would verify by pointing alone.
+  only where every workspace is one company's. Set in so many words (`FERRUM_DOMAIN_PROOF=record`), it puts a floor in
+  place (*Protections an older build would not enforce*), since a build from before it would verify by pointing alone.
+  Taken by default, it puts none, so the upgrade rolls back as any does; but a build from before this one, while it runs
+  (a rollback, or a replica not yet upgraded), checks domains the old way, by pointing here alone, and does not know the
+  quarantine of a deleted or moved workspace's addresses. Set it explicitly on a cluster of several companies once the
+  upgrade has settled.
 * **Certificates**: the edge in front of Ferrum gets one per domain. With Caddy's on-demand TLS:
 
   ```caddyfile
