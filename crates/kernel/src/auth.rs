@@ -1125,8 +1125,10 @@ impl Kernel {
         Ok(ended.len() as u64)
     }
 
+    /// Drops a person's cached context and their cached browser sessions (a step-up, a sign-out).
     pub fn invalidate_user(&self, tenant: Uuid, user: Uuid) {
         self.users.remove(&(tenant, user));
+        self.sessions.retain(|k, v| k.0 != tenant || v.0.is_some_and(|(owner, _)| owner != user));
     }
 
     pub fn invalidate_tenant_users(&self, tenant: Uuid) {

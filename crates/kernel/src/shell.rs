@@ -278,11 +278,17 @@ impl Kernel {
     /// second factor) for a sensitive action.
     pub async fn step_up_session(&self, tenant: Uuid, sid: Uuid) -> Result<()> {
         let mut tx = self.db.tenant_tx(tenant).await?;
-        sqlx::query("update user_session set step_up_at = now() where tenant_id = $1 and id = $2 and revoked_at is null")
-            .bind(tenant)
-            .bind(sid)
-            .execute(&mut *tx)
-            .await?;
+        let user: Option<Uuid> =
+            sqlx::query_scalar("update user_session set step_up_at = now() where tenant_id = $1 and id = $2 and revoked_at is null returning user_id")
+                .bind(tenant)
+                .bind(sid)
+                .fetch_optional(&mut *tx)
+                .await?;
+        // Every other replica drops what it holds of the person's sessions at once, so the interface's retry is let
+        // through wherever it lands (crate::auth::USERS_CHANNEL).
+        if let Some(user) = user {
+            crate::auth::notify_users(&mut tx, tenant, Some(user)).await?;
+        }
         tx.commit().await?;
         self.sessions.remove(&(tenant, sid));
         Ok(())
