@@ -54,6 +54,29 @@ pub fn platform_file(name: &str) -> Option<(&'static str, &'static [u8])> {
     })
 }
 
+/// The platform's files a page names with a digest of their content (`?v=`, [`shell_file_url`]): the browser keeps
+/// such an address for a year, and a server with other files names another. The plain address is still served
+/// (`max-age=300`), for pages from before.
+const DIGESTED: [&str; 4] = ["runtime.js", "portal.js", "login.js", "pages.css"];
+
+/// The digest a page names one of [`DIGESTED`] with: its content's (the first 12 bytes of SHA-256, hex).
+pub fn file_digest(name: &str) -> Option<&'static str> {
+    static DIGESTS: OnceLock<Vec<(&'static str, String)>> = OnceLock::new();
+    DIGESTS
+        .get_or_init(|| DIGESTED.iter().filter_map(|n| platform_file(n).map(|(_, b)| (*n, hex::encode(&Sha256::digest(b)[..12])))).collect())
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, d)| d.as_str())
+}
+
+/// The address a page names a platform file by: `/_shell/v1/{name}`, with `?v={digest}` for one of [`DIGESTED`].
+pub fn shell_file_url(name: &str) -> String {
+    match file_digest(name) {
+        Some(d) => format!("/_shell/v1/{name}?v={d}"),
+        None => format!("/_shell/v1/{name}"),
+    }
+}
+
 /// The theme every page loads before the app's own styles: design tokens, the bar's place,
 /// smooth moves between apps.
 pub fn theme_css() -> &'static str {
@@ -1192,10 +1215,11 @@ pub fn json_in_html(v: &Value) -> String {
 /// What goes first in `<head>` on every page: the bootstrap, the theme and the bar runtime.
 pub fn shell_head(bootstrap: &Value) -> String {
     format!(
-        r#"<script type="application/json" id="ferrum-bootstrap">{}</script><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml">{}<link rel="stylesheet" href="/_shell/theme/{}.css"><script type="module" src="/_shell/v1/runtime.js"></script>"#,
+        r#"<script type="application/json" id="ferrum-bootstrap">{}</script><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml">{}<link rel="stylesheet" href="/_shell/theme/{}.css"><script type="module" src="{}"></script>"#,
         json_in_html(bootstrap),
         install_links(bootstrap),
-        theme_hash()
+        theme_hash(),
+        shell_file_url("runtime.js")
     )
 }
 
@@ -1531,12 +1555,13 @@ pub fn isolated_dev_page(bootstrap: &Value, title: &str, dev_origin: &str, path:
 
 fn isolated_frame(bootstrap: &Value, title: &str, src: &str, sandbox: &str, frame_src: &str, target: &str) -> Response {
     let html = format!(
-        r#"<!doctype html>{html}<head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t}</title><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="module" src="/_shell/v1/isolated.js"></script></head><body class="ferrum-isolated">{SHELL_BODY}<iframe id="ferrum-app" title="{t}" src="{src}" sandbox="{sandbox}" data-origin="{target}" referrerpolicy="no-referrer" allow="clipboard-write; fullscreen"></iframe></body></html>"#,
+        r#"<!doctype html>{html}<head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t}</title><link rel="stylesheet" href="{pages_css}"><script type="module" src="/_shell/v1/isolated.js"></script></head><body class="ferrum-isolated">{SHELL_BODY}<iframe id="ferrum-app" title="{t}" src="{src}" sandbox="{sandbox}" data-origin="{target}" referrerpolicy="no-referrer" allow="clipboard-write; fullscreen"></iframe></body></html>"#,
         html = html_open(&crate::shell_words::page_language(Some(bootstrap))),
         head = shell_head(bootstrap),
         t = esc(title),
         src = esc(src),
         target = esc(target),
+        pages_css = shell_file_url("pages.css"),
     );
     // The frame holds the app's release (or its origin) and nothing else: it cannot be sent elsewhere.
     let policy = csp(None, &Value::Null).replace("frame-src 'self';", &format!("frame-src {frame_src};"));
@@ -1600,7 +1625,7 @@ pub fn isolated_csp(origins: &[String], app: &str, digest: &str) -> String {
 const PORTAL_BODY: &str = "<ferrum-portal-bar></ferrum-portal-bar>";
 
 fn portal_head(bootstrap: &Value) -> String {
-    format!(r#"{}<script type="module" src="/_shell/v1/portal.js"></script>"#, shell_head(bootstrap))
+    format!(r#"{}<script type="module" src="{}"></script>"#, shell_head(bootstrap), shell_file_url("portal.js"))
 }
 
 /// A page of the workspace's portal (docs/plan/apps-ui.md §9.1): an app's `shell.portal` entry,
@@ -1757,11 +1782,12 @@ pub fn portal_home(bootstrap: &Value, pages: &[PortalPage]) -> Response {
         format!(r#"<ul class="ferrum-portal-cards">{list}</ul>"#)
     };
     let html = format!(
-        r#"<!doctype html>{html}<head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{w}</title><link rel="stylesheet" href="/_shell/v1/pages.css"></head><body>{PORTAL_BODY}<main class="ferrum-portal" id="main"><h1>{hello}</h1>{body}</main></body></html>"#,
+        r#"<!doctype html>{html}<head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{w}</title><link rel="stylesheet" href="{pages_css}"></head><body>{PORTAL_BODY}<main class="ferrum-portal" id="main"><h1>{hello}</h1>{body}</main></body></html>"#,
         html = html_open(&lang),
         head = portal_head(bootstrap),
         w = esc(workspace),
         hello = if person.is_empty() { esc(&tr(&lang, "Hello")) } else { tr_with(&lang, "Hello, {name}", &[("name", &esc(person))], true) },
+        pages_css = shell_file_url("pages.css"),
     );
     page_response(StatusCode::OK, html, &csp(None, &Value::Null))
 }
@@ -1781,11 +1807,12 @@ pub fn status_page(status: StatusCode, title: &str, message: &str, actions: &[(&
         ),
     };
     let html = format!(
-        r#"<!doctype html>{html}<head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{} · Ferrum</title><link rel="stylesheet" href="/_shell/v1/pages.css"></head><body>{bar}<main class="ferrum-status" id="main"><h1>{}</h1><p>{}</p><p class="ferrum-actions">{actions}</p></main></body></html>"#,
+        r#"<!doctype html>{html}<head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{} · Ferrum</title><link rel="stylesheet" href="{pages_css}"></head><body>{bar}<main class="ferrum-status" id="main"><h1>{}</h1><p>{}</p><p class="ferrum-actions">{actions}</p></main></body></html>"#,
         esc(&title),
         esc(&title),
         esc(&message),
         html = html_open(&lang),
+        pages_css = shell_file_url("pages.css"),
     );
     page_response(status, html, &csp(None, &Value::Null))
 }
@@ -1809,13 +1836,15 @@ pub fn login_html(boot: &Value, title: &str) -> Response {
     let tr = |s| crate::shell_words::tr(&lang, s);
     let title = &tr(title);
     let html = format!(
-        r#"<!doctype html>{html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="application/json" id="ferrum-login">{b}</script><script type="module" src="/_shell/v1/login.js"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>{t}</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">{sign_in}</button></form><noscript><p>{needs}</p></noscript></main></body></html>"#,
+        r#"<!doctype html>{html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="{pages_css}"><script type="application/json" id="ferrum-login">{b}</script><script type="module" src="{login_js}"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>{t}</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">{sign_in}</button></form><noscript><p>{needs}</p></noscript></main></body></html>"#,
         html = html_open(&lang),
         t = esc(title),
         h = theme_hash(),
         b = json_in_html(&boot),
         sign_in = esc(&tr("Sign in")),
         needs = esc(&tr("Signing in needs JavaScript.")),
+        pages_css = shell_file_url("pages.css"),
+        login_js = shell_file_url("login.js"),
     );
     page_response(StatusCode::OK, html, &csp(None, &Value::Null))
 }
@@ -1840,7 +1869,7 @@ pub fn signup_html(boot: &Value) -> Response {
     let (lang, boot) = with_page_locale(boot);
     let tr = |s| esc(&crate::shell_words::tr(&lang, s));
     let html = format!(
-        r#"<!doctype html>{html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{make} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="application/json" id="ferrum-signup">{b}</script><script type="module" src="/_shell/v1/signup.js"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>{heading}</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">{send}</button></form><noscript><p>{needs}</p></noscript></main></body></html>"#,
+        r#"<!doctype html>{html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{make} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="{pages_css}"><script type="application/json" id="ferrum-signup">{b}</script><script type="module" src="/_shell/v1/signup.js"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>{heading}</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">{send}</button></form><noscript><p>{needs}</p></noscript></main></body></html>"#,
         html = html_open(&lang),
         h = theme_hash(),
         b = json_in_html(&boot),
@@ -1848,6 +1877,7 @@ pub fn signup_html(boot: &Value) -> Response {
         heading = tr("Make your Ferrum workspace"),
         send = tr("Email me a code"),
         needs = tr("Signing up needs JavaScript."),
+        pages_css = shell_file_url("pages.css"),
     );
     page_response(StatusCode::OK, html, &csp(None, &Value::Null))
 }

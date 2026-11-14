@@ -627,7 +627,9 @@ Pages, for browsers, with the session cookie:
   work on every host.
 * `GET /_ui/{app}/{digest}/{path}` → a file of an interface release: public, `immutable`.
 * `GET /_shell/v1/{file}` → the shell's own files (`runtime.js`, `live-worker.js`, …), the newest of
-  v1; `GET /_shell/theme/{hash}.css` → the theme.
+  v1, kept by browsers for five minutes. Pages name `runtime.js`, `portal.js`, `login.js` and `pages.css`
+  with their digest (`?v={digest}`): that address is kept for a year (`immutable`), and a server with
+  other files names another. `GET /_shell/theme/{hash}.css` → the theme.
 
 **Keys the bar keeps.** The bar takes Ctrl/Cmd+K (its search) before a page's own handlers see it,
 except inside an element that claims it: `data-ferrum-keys="mod+k"` on the editable region or any
@@ -727,7 +729,9 @@ sign-in when `require_sso` is on; a list naming nobody, or anyone who is not an 
 (422). `idle_minutes` (0, or 5 to 10080) ends browser sessions unused that long; such a session's next request gets
 `401` "this device was signed out; please sign in again". `step_up` (`null`, or `{"minutes": 1 to 60, "entities":
 {"Entity": {"work": ["write", "delete", "export", "read"], "keys": true | false}}}`) names the work that needs a recent
-step-up; a request without one gets `403` with error `step_up`, and succeeds after `POST /api/auth/step-up`. `record_reads`
+step-up; a staff member's request without one gets `403` with error `step_up`, and succeeds after `POST /api/auth/step-up`
+(the bar's runtime asks for it on every page and sends the request again). People from outside (portal, guest) are never
+asked: let through, or `403` (not `step_up`) where the rule says `"keys": false`. `record_reads`
 (`null`, or `{"Entity": "open" | "all"}`) names entities whose reads are audit events of category `access`. Both refuse
 (422) an entity the workspace does not have, or that the caller's zone leaves out
 ([operations](operations.md#asking-again-before-sensitive-work)).

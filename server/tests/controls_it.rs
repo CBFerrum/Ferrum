@@ -305,11 +305,29 @@ async fn scenario() {
     let kb = Cred::Bearer(&key);
     assert!(call(&s, Method::GET, OFFICE, &secret_path, kb, None).await.0.is_success(), "a key is not asked by default");
     assert!(call(&s, Method::PATCH, OFFICE, &secret_path, kb, Some(json!({"note": SECRET_NOTE}))).await.0.is_success());
+    // Outside people (a portal person, who signs in with an emailed code and has no password to give) are never asked:
+    // held by their portal roles, as keys are, and refused outright where the rule says keys: false.
+    let rule = ferrum_meta::PermissionDef { entity: "XSecret".into(), read: true, if_owner: true, ..Default::default() };
+    k.set_role_permission(&admin, "Outside", &rule).await.unwrap();
+    let pia = k.create_user(&admin, "pia@outside.test", "Pia Portal", Some(PASSWORD), &[], false).await.unwrap();
+    k.set_user_kind(&admin, pia, "portal").await.unwrap();
+    exec(
+        &k,
+        &format!(
+            "update role set portal = true where name = 'Outside'; insert into user_role (tenant_id, user_id, role) values ('{acme}', '{pia}', 'Outside')"
+        ),
+    )
+    .await;
+    let outside = aged_cookie(&s, &k, "pia@outside.test").await;
+    let (status, answer) = call(&s, Method::GET, OFFICE, "/api/v1/XSecret", Cred::Cookie(&outside), None).await;
+    assert!(status.is_success(), "an outside person is not asked for what they cannot give: {status} {answer}");
     let (status, body) = settings(json!({"step_up": {"entities": {"XSecret": {"work": ["write", "read"], "keys": false}}}})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, answer) = call(&s, Method::GET, OFFICE, &secret_path, kb, None).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "keys: false refuses a key: {answer}");
     assert!(answer.contains("a key cannot"), "{answer}");
+    let (status, answer) = call(&s, Method::GET, OFFICE, "/api/v1/XSecret", Cred::Cookie(&outside), None).await;
+    assert!(status == StatusCode::FORBIDDEN && !step_up_asked(status, &answer), "keys: false refuses an outside person, never asks: {answer}");
     assert!(call(&s, Method::GET, OFFICE, &plain_path, kb, None).await.0.is_success(), "an unmarked entity is not");
 
     // ── A queued bulk change keeps the request's "not stepped up" ──

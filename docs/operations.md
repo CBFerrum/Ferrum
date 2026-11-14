@@ -1320,8 +1320,12 @@ zone placed by network. Without `public:` the doctor calls nothing.
 ignores a `zone`).
 
 ```bash
-# A name only your own network resolves: served as verified, never checked over the internet.
+# A name only your own network resolves: served as verified, never checked over the internet. The first host of
+# its kind (shell, portal, site:{app}) becomes the workspace's main one for it; primary:yes makes it the main one anyway.
 ferrum task add_host tenant:acme host:erp.internal.example.com target:shell zone:office
+ferrum task add_host tenant:acme host:erp2.internal.example.com target:shell zone:office primary:yes
+# Any live host of a workspace as the main one of its kind (audited): links and a leaving host's notice point at it.
+ferrum task set_primary_host host:erp.internal.example.com
 # Any host of a workspace, into a zone or out of all of them (other replicas see it within 20 seconds).
 ferrum task set_host_zone host:shop.example.com zone:public
 ferrum task set_host_zone host:shop.example.com zone:none
@@ -1446,11 +1450,24 @@ records: opening one, and lists, searches and reports, which show the same field
 operation asks for its rights, after the rights: whoever may not do something is told that, not asked for a password.
 
 **The answer.** `403` with error `step_up`: "confirm it is you: enter your password again to do this". The interface asks
-for the password (`POST /api/auth/step-up`) and tries again. **How long it lasts:** a step-up counts for `minutes` after
+for the password (`POST /api/auth/step-up`) and tries again. **Every page asks, an app's older screens too:** the bar's
+runtime (`/_shell/v1/runtime.js`, loaded by every page from the server) answers that refusal for any request the page
+sends to its own address: one "Confirm it is you" dialog however many requests were refused (password, then the code
+from an authenticator app when the server asks for it), then each refused request is sent once more and the page gets
+that answer. Sending it again is safe for a change too: the refusal comes before anything is done. Cancel or Escape
+hands the page the refusal as it was. A page whose own interface answers it too (the newest Frontend packages) sees
+only the answer after the proof; if the person cancels, that page asks once more in its own dialog. Not answered there:
+requests to other addresses (an app on an origin of its own uses tokens), uploads sent with `XMLHttpRequest` (they get
+the plain `403`), a request whose body is a stream, and service workers.
+**Marking `read` asks on every page that lists the entity**, the home page included, as soon as the person lands there
+(once per `minutes`): mark it for entities that need it, not as a default. **How long it lasts:** a step-up counts for `minutes` after
 it is made (10 by default, the same as the other step-up screens), and so does signing in. Stepping up tells every
 replica to drop what it holds of the person's sessions at once, so the retry is let through wherever it lands.
 
-**Who is asked.** People, on their browser session. **A session token with no browser session behind it** (one from
+**Who is asked.** Staff, on their browser session. **People from outside** (portal people and guests, who sign in with
+an emailed code and have no password to give) **are never asked**: they are held by their roles, which for a portal
+person reach only their own records, and let through, unless the entity's rule says `"keys": false`, which refuses
+them as it refuses keys. **A session token with no browser session behind it** (one from
 `POST /api/auth/login` used as a bearer token, or an app token not bound to a page) **cannot step up, so it is refused
 for marked work**: do that work from the browser. API keys (app passwords and SCIM keys
 included), OAuth clients such as MCP, and service accounts cannot step up either: they are held by their scopes and
@@ -2937,8 +2954,12 @@ site (`site:{app}`), at most 20 per workspace.
   Certificate, which an operator adds when the domain is verified.
 * **Removing** a working domain releases it, after a leaving period (below). A domain that never worked
   is simply dropped.
-* **Main address**: one working domain of each kind is the main one: links in mail and redirects use
-  it, and the workspace's other addresses of that kind lead to it.
+* **Main address**: one working address of each kind (`shell`, `portal`, each `site:{app}`) is the main
+  one: links in mail and redirects use it, and the workspace's other addresses of that kind lead to it.
+  The first working address of a kind becomes its main one when that kind has none: a subdomain when it
+  is added, a custom domain when it is first verified, an operator's host (`ferrum task add_host`, see
+  "Zones") when it is added. An installation from before this rule whose addresses have no main one
+  (only operator hosts) gets one at its next start, or the next change of one of its addresses.
 
 ### Changing or removing an address
 
@@ -2970,9 +2991,13 @@ removed address leaves in three steps:
   any address, a subdomain too, with
   `ferrum task release_host host:<name> [leaving_days:<n>]` (default the setting; `0`: it redirects at
   once). Both are in the workspace's audit trail.
-* **The main address** hands its place on first: to the workspace's oldest subdomain of the same kind,
-  else its oldest working custom domain, so links in mail and redirects always lead somewhere. With none
-  left, that kind has no main address, and the removed one answers `410` after its leaving period.
+* **The main address** hands its place on first, to another live address of the same kind, whatever its
+  kind: the oldest subdomain, else the oldest working custom domain or operator host, so the leaving
+  notice, links in mail and redirects always lead somewhere. With none left, that kind has no main
+  address: the leaving notice has nowhere to point, a visitor without a session is told the workspace has
+  moved (`410`), and so is everyone after the leaving period. `release_host` says so before it releases
+  ("nothing will take its place: visitors will see that the workspace has moved"), and otherwise says
+  where visitors go.
 * **`FERRUM_HOST_LEAVING_DAYS=0`**: no leaving period; a removed address redirects at once, as before the
   setting. At most 365.
 * **API clients** (tokens, keys) are not tied to an address: they work on the leaving address, and after

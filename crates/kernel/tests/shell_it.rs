@@ -65,8 +65,14 @@ async fn sql(k: &Kernel, q: &str) {
     sqlx::raw_sql(sqlx::AssertSqlSafe(q.clone())).execute(&k.db.pool).await.expect(&q);
 }
 
-#[tokio::test]
-async fn sessions_hosts_kinds_and_releases() {
+#[test]
+fn sessions_hosts_kinds_and_releases() {
+    // A thread with room for the whole scenario's future (a test thread's stack is not).
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
+    rt.block_on(async { tokio::spawn(scenario()).await.unwrap() });
+}
+
+async fn scenario() {
     let k = kernel().await;
     let acme = k.create_tenant(tenant("acme")).await.expect("tenant");
     let globex = k.create_tenant(tenant("globex")).await.expect("tenant");
@@ -235,6 +241,65 @@ async fn sessions_hosts_kinds_and_releases() {
         for g in ["g1.ferrum.test", "g2.ferrum.test"] {
             assert!(matches!(k.route_host(g).await.unwrap(), HostRoute::Leaving { to: Some(ref to), .. } if to == "g3.ferrum.test"), "{g}");
         }
+    })
+    .await;
+
+    // Hosts the operator vouches for (ferrum task add_host): the first of a target becomes its main host, so a
+    // release hands that place on and the leaving notice points somewhere.
+    Box::pin(async {
+        let ops = Box::pin(k.create_tenant(tenant("ops"))).await.expect("tenant");
+        k.add_operator_host("ops", "erp.ops.internal", "shell", None).await.unwrap();
+        k.add_operator_host("ops", "erp2.ops.internal", "shell", None).await.unwrap();
+        k.add_operator_host("ops", "portal.ops.internal", "portal", None).await.unwrap();
+        assert_eq!(k.primary_host(ops, "shell").await.unwrap().as_deref(), Some("erp.ops.internal"), "the first is the main one");
+        assert_eq!(k.primary_host(ops, "portal").await.unwrap().as_deref(), Some("portal.ops.internal"), "per target");
+        assert_eq!(k.host_successor("erp.ops.internal").await.unwrap().as_deref(), Some("erp2.ops.internal"));
+        assert!(matches!(k.host_successor("nobody.ops.internal").await, Err(Error::NotFound(_))));
+        k.release_host("erp.ops.internal", None).await.unwrap();
+        assert_eq!(k.primary_host(ops, "shell").await.unwrap().as_deref(), Some("erp2.ops.internal"), "handed on to an operator host");
+        assert!(
+            matches!(k.route_host("erp.ops.internal").await.unwrap(), HostRoute::Leaving { to: Some(ref to), .. } if to == "erp2.ops.internal"),
+            "the notice points at the other"
+        );
+        // Chosen on purpose, by the operator: audited.
+        k.add_operator_host("ops", "erp3.ops.internal", "shell", None).await.unwrap();
+        assert_eq!(k.primary_host(ops, "shell").await.unwrap().as_deref(), Some("erp2.ops.internal"), "a later host is not the main one");
+        k.set_primary_host("ERP3.ops.internal").await.unwrap();
+        assert_eq!(k.primary_host(ops, "shell").await.unwrap().as_deref(), Some("erp3.ops.internal"));
+        assert!(matches!(k.set_primary_host("erp.ops.internal").await, Err(Error::NotFound(_))), "a released host cannot be");
+        assert!(matches!(k.set_primary_host("nobody.ops.internal").await, Err(Error::NotFound(_))));
+        let audited: i64 = {
+            let mut tx = k.db.system_tx().await.unwrap();
+            let n = sqlx::query_scalar("select count(*) from audit_event where tenant_id = $1 and entity = 'WorkspaceDomain' and action in ('add', 'primary')")
+                .bind(ops)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            n
+        };
+        assert_eq!(audited, 5, "four hosts added and one made the main one");
+        // The last host of a target: nothing takes its place.
+        assert_eq!(k.host_successor("portal.ops.internal").await.unwrap(), None);
+        k.release_host("portal.ops.internal", None).await.unwrap();
+        assert!(matches!(k.route_host("portal.ops.internal").await.unwrap(), HostRoute::Leaving { to: None, .. }));
+
+        // An installation from before: hosts and no main one. The next start, or the next change of a host, picks one.
+        let older = Box::pin(k.create_tenant(tenant("older"))).await.expect("tenant");
+        k.add_operator_host("older", "a.older.internal", "shell", None).await.unwrap();
+        k.add_operator_host("older", "b.older.internal", "shell", None).await.unwrap();
+        sql(&k, &format!("update tenant_host set is_primary = false where tenant_id = '{older}'")).await;
+        assert_eq!(k.primary_host(older, "shell").await.unwrap(), None);
+        assert_eq!(k.host_successor("b.older.internal").await.unwrap().as_deref(), Some("a.older.internal"), "what a release would leave");
+        assert!(k.ensure_primary_hosts().await.unwrap() >= 1);
+        assert_eq!(k.primary_host(older, "shell").await.unwrap().as_deref(), Some("a.older.internal"), "the oldest");
+        assert_eq!(k.ensure_primary_hosts().await.unwrap(), 0, "once");
+        sql(&k, &format!("update tenant_host set is_primary = false where tenant_id = '{older}'")).await;
+        k.release_host("a.older.internal", None).await.unwrap();
+        assert!(
+            matches!(k.route_host("a.older.internal").await.unwrap(), HostRoute::Leaving { to: Some(ref to), .. } if to == "b.older.internal"),
+            "a release with no main host hands it to the one left"
+        );
     })
     .await;
 

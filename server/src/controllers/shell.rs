@@ -125,14 +125,19 @@ async fn auth_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)
     Ok(res)
 }
 
+/// Where a moved address leads: the new host as this request reaches the server, so a server on a port of its own
+/// (a development server, or an installation not on 443) redirects to that port and not to the default one.
+fn moved_origin(st: &AppState, to: &str, headers: &HeaderMap) -> String {
+    st.shell.origin_of(to, headers).unwrap_or_else(|| format!("{}://{to}", if st.shell.secure { "https" } else { "http" }))
+}
+
 /// Who is asking, for a page: the person of the browser session in the cookie, on a host that
 /// serves the shell. `Err` is the response to send instead (sign-in, a redirect, a refusal).
 async fn person(st: &AppState, headers: &HeaderMap, uri: &Uri) -> Result<(Ctx, Option<Uuid>, Place), Response> {
     let place = st.shell.place(headers).await.map_err(|e| ApiError(e).into_response())?;
     match &place {
         Place::Moved(Some(to)) => {
-            let scheme = if st.shell.secure { "https" } else { "http" };
-            return Err(Redirect::permanent(&format!("{scheme}://{to}{}", path_and_query(uri))).into_response());
+            return Err(Redirect::permanent(&format!("{}{}", moved_origin(st, to, headers), path_and_query(uri))).into_response());
         }
         Place::Moved(None) => {
             return Err(status_page(StatusCode::GONE, "This workspace has moved", "This address no longer leads to a workspace.", &[], None));
@@ -424,7 +429,7 @@ async fn page(
         "_ui" => return ui_file(&st, rest.unwrap_or_default(), &headers).await,
         "_isolated" => return isolated_file(&st, &origins, rest.unwrap_or_default(), &headers).await,
         "_shell" if rest == Some("app-icon.svg") => return Ok(app_icon(&q)),
-        "_shell" => return platform_file(rest.unwrap_or_default()),
+        "_shell" => return platform_file(rest.unwrap_or_default(), query(&q, "v")),
         "sw.js" if rest.is_none() => return Ok(core_worker()),
         "manifest.webmanifest" if rest.is_none() => return manifest(&st, &headers, &q).await,
         "login" if rest.is_none() => return login(&st, &headers, &uri, &q).await,
@@ -657,8 +662,7 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
     match st.shell.place(headers).await? {
         Place::Workspace(t) if t != tenant => return Ok(gone()),
         Place::Moved(Some(to)) => {
-            let scheme = if st.shell.secure { "https" } else { "http" };
-            return Ok(Redirect::permanent(&format!("{scheme}://{to}{}", path_and_query(uri))).into_response());
+            return Ok(Redirect::permanent(&format!("{}{}", moved_origin(st, &to, headers), path_and_query(uri))).into_response());
         }
         Place::Moved(None) | Place::Portal(_) | Place::Site(..) | Place::Accounts | Place::Hooks | Place::Nowhere => return Ok(gone()),
         Place::Workspace(_) | Place::Any => {}
@@ -999,12 +1003,14 @@ async fn isolated_file(st: &AppState, origins: &[String], rest: &str, headers: &
     Ok(res)
 }
 
-/// `/_shell/v1/{file}` (the newest of shell API v1) and `/_shell/theme/{hash}.css`.
-fn platform_file(rest: &str) -> ApiResult<Response> {
+/// `/_shell/v1/{file}` (the newest of shell API v1) and `/_shell/theme/{hash}.css`. A file named with its current
+/// digest (`?v=`, shell::shell_file_url) is kept for a year; the plain address, or an older digest, for five minutes.
+fn platform_file(rest: &str, digest: Option<&str>) -> ApiResult<Response> {
     if let Some(name) = rest.strip_prefix("v1/")
         && let Some((ctype, bytes)) = shell::platform_file(name)
     {
-        return Ok(shell::file_response(Bytes::from_static(bytes), ctype, false));
+        let current = digest.is_some() && digest == shell::file_digest(name);
+        return Ok(shell::file_response(Bytes::from_static(bytes), ctype, current));
     }
     if let Some(hash) = rest.strip_prefix("theme/").and_then(|f| f.strip_suffix(".css")) {
         let current = hash == shell::theme_hash();
@@ -1165,8 +1171,7 @@ async fn login(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, Stri
     let next = shell::safe_next(query(q, "next").unwrap_or("/"));
     let place = st.shell.place(headers).await?;
     if let Place::Moved(Some(to)) = &place {
-        let scheme = if st.shell.secure { "https" } else { "http" };
-        return Ok(Redirect::permanent(&format!("{scheme}://{to}{}", path_and_query(uri))).into_response());
+        return Ok(Redirect::permanent(&format!("{}{}", moved_origin(st, to, headers), path_and_query(uri))).into_response());
     }
     if matches!(place, Place::Hooks | Place::Nowhere | Place::Site(..) | Place::Moved(None)) {
         return Ok(nowhere());
@@ -1538,5 +1543,21 @@ mod tests {
         assert_eq!(framed_by(shell_csp, &shop), "default-src 'self'; frame-ancestors 'self' https://shop.example; base-uri 'none'");
         let site = framed_by(SITE_CSP.into(), &shop);
         assert!(site.contains("frame-ancestors https://shop.example;") && !site.contains("'none'; base"), "{site}");
+    }
+
+    #[test]
+    fn the_bars_files_by_their_digest_are_kept_long_and_the_plain_address_still_answers() {
+        let cache = |r: Response| r.headers()[header::CACHE_CONTROL].to_str().unwrap().to_string();
+        for name in ["runtime.js", "portal.js", "login.js", "pages.css"] {
+            let digest = shell::file_digest(name).expect("digested");
+            assert_eq!(shell::shell_file_url(name), format!("/_shell/v1/{name}?v={digest}"));
+            assert_eq!(cache(platform_file(&format!("v1/{name}"), Some(digest)).unwrap()), "public, max-age=31536000, immutable", "{name}");
+            // Pages from before name the plain address; a page from another build an older digest.
+            assert_eq!(cache(platform_file(&format!("v1/{name}"), None).unwrap()), "public, max-age=300, stale-while-revalidate=86400", "{name}");
+            assert_eq!(cache(platform_file(&format!("v1/{name}"), Some("0123")).unwrap()), "public, max-age=300, stale-while-revalidate=86400");
+        }
+        assert_eq!(shell::shell_file_url("icon.svg"), "/_shell/v1/icon.svg", "only those four");
+        let head = shell::shell_head(&serde_json::json!({"host": {"kind": "page"}}));
+        assert!(head.contains(&format!(r#"src="/_shell/v1/runtime.js?v={}""#, shell::file_digest("runtime.js").unwrap())), "{head}");
     }
 }

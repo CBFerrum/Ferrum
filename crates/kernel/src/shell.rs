@@ -27,6 +27,10 @@ pub const HOST_MAX_FAILURES: i32 = 7;
 pub const HOST_REDIRECT_DAYS: i64 = 90;
 /// …and nobody may claim it for this long after its release.
 pub const HOST_QUARANTINE_DAYS: i64 = 365;
+/// Which live host of a target becomes its main one when it has none (the first it gets, or the one left when the
+/// main one is released): a subdomain first, then the oldest of any kind (custom domains and the operator's hosts
+/// alike), then by name. SQL over the alias `c`.
+const SUCCESSION: &str = "c.kind <> 'subdomain', c.created_at, c.host";
 /// Interface files stay this long after no workspace uses their release.
 pub const UI_RETENTION_DAYS: i64 = 30;
 /// A sensitive action needs the person to have proved themselves again this recently.
@@ -571,9 +575,86 @@ impl Kernel {
                 sqlx::Error::Database(db) if db.code().as_deref() == Some("23514") => Error::field("host", "is not a host name"),
                 _ => Error::from(e),
             })?;
+        let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
+        crate::audit::record_admin(
+            &mut tx,
+            &system,
+            "WorkspaceDomain",
+            tenant,
+            "add",
+            None,
+            serde_json::json!({"host": host, "target": target, "kind": "operator", "by": "operator"}),
+        )
+        .await?;
         tx.commit().await?;
         self.hosts.remove(&host);
+        self.primary_where_none(Some(tenant)).await?;
         Ok(())
+    }
+
+    /// `ferrum task set_primary_host`: makes any live host of a workspace (an operator's one too) the main one of its
+    /// target, audited as the system's.
+    pub async fn set_primary_host(&self, host: &str) -> Result<()> {
+        let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a host name"))?;
+        let mut tx = self.db.system_tx().await?;
+        let tenant: Uuid =
+            sqlx::query_scalar("select tenant_id from tenant_host where host = $1 and released_at is null and (kind = 'subdomain' or verified_at is not null)")
+                .bind(&host)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| Error::NotFound(format!("host {host} (live and verified)")))?;
+        primary_in(&mut tx, tenant, &host).await?;
+        let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
+        crate::audit::record_admin(&mut tx, &system, "WorkspaceDomain", tenant, "primary", None, serde_json::json!({"host": host, "by": "operator"})).await?;
+        tx.commit().await?;
+        self.hosts.clear();
+        Ok(())
+    }
+
+    /// Gives each target of a workspace (`None`: of every workspace) that has live hosts but no main one its main host,
+    /// by [`SUCCESSION`]: the first host a target gets, of any kind, becomes its main one, and an installation from
+    /// before this rule (only operator hosts, none of them main) gets one at its next start or host change. Returns how
+    /// many were made main. Two at once: the unique index `tenant_host_primary` lets one through; the other finds it
+    /// done (or fails on the index, which is taken as done).
+    pub async fn primary_where_none(&self, tenant: Option<Uuid>) -> Result<u64> {
+        let q = format!(
+            "update tenant_host set is_primary = true where host in ( \
+               select distinct on (c.tenant_id, c.target) c.host from tenant_host c \
+               where c.released_at is null and (c.kind = 'subdomain' or c.verified_at is not null) and ($1::uuid is null or c.tenant_id = $1) \
+                 and not exists (select 1 from tenant_host p where p.tenant_id = c.tenant_id and p.target = c.target and p.is_primary and p.released_at is null) \
+               order by c.tenant_id, c.target, {SUCCESSION})"
+        );
+        let mut tx = self.db.system_tx().await?;
+        let n = match sqlx::query(sqlx::AssertSqlSafe(q)).bind(tenant).execute(&mut *tx).await {
+            Ok(r) => r.rows_affected(),
+            Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("23505") => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
+        tx.commit().await?;
+        if n > 0 {
+            self.hosts.clear();
+        }
+        Ok(n)
+    }
+
+    /// [`Kernel::primary_where_none`] for every workspace: at each start.
+    pub async fn ensure_primary_hosts(&self) -> Result<u64> {
+        self.primary_where_none(None).await
+    }
+
+    /// Where a host's visitors would be sent once it is released: the main host of its target that would be left
+    /// (another one already main, or the one that would take its place), or none. Not found: no such live host.
+    pub async fn host_successor(&self, host: &str) -> Result<Option<String>> {
+        let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a host name"))?;
+        let mut tx = self.db.system_tx().await?;
+        let q = format!(
+            "select (select c.host from tenant_host c where c.tenant_id = h.tenant_id and c.target = h.target and c.host <> h.host \
+               and c.released_at is null and (c.kind = 'subdomain' or c.verified_at is not null) order by c.is_primary desc, {SUCCESSION} limit 1) \
+             from tenant_host h where h.host = $1 and h.released_at is null"
+        );
+        let next: Option<Option<String>> = sqlx::query_scalar(sqlx::AssertSqlSafe(q)).bind(&host).fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
+        next.ok_or_else(|| Error::NotFound(format!("host {host}")))
     }
 
     /// `ferrum task set_host_zone`: the zone a host's requests are in (crate::zones), or none. Only
@@ -581,16 +662,18 @@ impl Kernel {
     pub async fn set_host_zone(&self, host: &str, zone: Option<&str>) -> Result<()> {
         let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a host name"))?;
         let mut tx = self.db.system_tx().await?;
-        let n = sqlx::query("update tenant_host set zone = $2 where host = $1 and released_at is null")
+        let tenant: Option<Uuid> = sqlx::query_scalar("update tenant_host set zone = $2 where host = $1 and released_at is null returning tenant_id")
             .bind(&host)
             .bind(zone)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+            .fetch_optional(&mut *tx)
+            .await?;
         tx.commit().await?;
         // ponytail: this replica forgets it now; the others within the host cache's 20 seconds.
         self.hosts.remove(&host);
-        if n == 0 { Err(Error::NotFound(format!("host {host}"))) } else { Ok(()) }
+        let tenant = tenant.ok_or_else(|| Error::NotFound(format!("host {host}")))?;
+        // A change of a host: a workspace from before the main-host rule gets its main one.
+        self.primary_where_none(Some(tenant)).await?;
+        Ok(())
     }
 
     /// Adds a custom domain to the caller's workspace, unverified until [`Kernel::host_checked`]
@@ -646,13 +729,8 @@ impl Kernel {
         .bind(ctx.tenant)
         .fetch_optional(&mut *tx)
         .await?;
-        let target = target.ok_or_else(|| Error::invalid("only a verified domain of this workspace can be its primary one"))?;
-        sqlx::query("update tenant_host set is_primary = (host = $3) where tenant_id = $1 and target = $2 and released_at is null")
-            .bind(ctx.tenant)
-            .bind(&target)
-            .bind(&host)
-            .execute(&mut *tx)
-            .await?;
+        target.ok_or_else(|| Error::invalid("only a verified domain of this workspace can be its primary one"))?;
+        primary_in(&mut tx, ctx.tenant, &host).await?;
         crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "primary", None, serde_json::json!({"host": host})).await?;
         tx.commit().await?;
         self.hosts.clear();
@@ -713,12 +791,14 @@ impl Kernel {
     /// with its token). Success verifies it; enough failures in a row unverify it.
     pub async fn host_checked(&self, host: &str, ok: bool) -> Result<()> {
         let mut tx = self.db.system_tx().await?;
+        let mut verified = None;
         if ok {
-            sqlx::query(
-                "update tenant_host set verified_at = coalesce(verified_at, now()), checked_at = now(), failures = 0 where host = $1 and released_at is null",
+            verified = sqlx::query_scalar(
+                "update tenant_host set verified_at = coalesce(verified_at, now()), checked_at = now(), failures = 0 where host = $1 and released_at is null \
+                 returning tenant_id",
             )
             .bind(host)
-            .execute(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await?;
         } else {
             sqlx::query(
@@ -732,6 +812,10 @@ impl Kernel {
         }
         tx.commit().await?;
         self.hosts.remove(host);
+        // A verified domain is a host like any other: the first of its target becomes the main one.
+        if let Some(tenant) = verified {
+            self.primary_where_none(Some(tenant)).await?;
+        }
         Ok(())
     }
 
@@ -848,10 +932,9 @@ impl Kernel {
     }
 
     /// Releases one host of `tenant` in `tx`: a custom domain never verified is dropped (nothing can depend on
-    /// it); any other is released with a leaving period of `days` (none at 0). A primary host hands its place to
-    /// another host of the workspace for the same target first (a subdomain before a custom domain, then the
-    /// oldest), so links and redirects keep leading somewhere; with none left, the target has no primary, as
-    /// before. `custom_only`: an administrator's removal, which reaches only the workspace's custom domains.
+    /// it); any other is released with a leaving period of `days` (none at 0). A primary host (or any, when its target has
+    /// no primary) hands that place to another live host of the workspace for the same target first, by [`SUCCESSION`],
+    /// so links and redirects keep leading somewhere; with none left, the target has no primary, as before. `custom_only`: an administrator's removal, which reaches only the workspace's custom domains.
     async fn release_in(&self, tx: &mut crate::db::Tx, tenant: Uuid, host: &str, custom_only: bool, days: i64) -> Result<Option<DateTime<Utc>>> {
         // The workspace's live hosts are locked in one order, so two releases at once wait for each other
         // instead of each handing the primary to the other's host.
@@ -868,15 +951,14 @@ impl Kernel {
             sqlx::query("delete from tenant_host where host = $1").bind(host).execute(&mut **tx).await?;
             return Ok(None);
         }
-        if *primary {
-            let next = live
-                .iter()
-                .filter(|h| h.0 != host && h.2 == *target && (h.1 == "subdomain" || h.4))
-                .min_by_key(|h| (h.1 != "subdomain", h.5))
-                .map(|h| h.0.clone());
+        // The main place goes on by SUCCESSION (operator hosts included); also when the target had no main host at
+        // all (an installation from before every target got one).
+        let others: Vec<_> = live.iter().filter(|h| h.0 != host && h.2 == *target).collect();
+        if *primary || !others.iter().any(|h| h.3) {
+            let next = others.iter().filter(|h| h.1 == "subdomain" || h.4).min_by(|a, b| (a.1 != "subdomain", a.5, &a.0).cmp(&(b.1 != "subdomain", b.5, &b.0)));
             sqlx::query("update tenant_host set is_primary = false where host = $1").bind(host).execute(&mut **tx).await?;
             if let Some(next) = next {
-                sqlx::query("update tenant_host set is_primary = true where host = $1").bind(&next).execute(&mut **tx).await?;
+                sqlx::query("update tenant_host set is_primary = true where host = $1").bind(&next.0).execute(&mut **tx).await?;
             }
         }
         let until: Option<DateTime<Utc>> = sqlx::query_scalar(
@@ -1128,6 +1210,21 @@ impl Kernel {
         tx.commit().await?;
         Ok(gone)
     }
+}
+
+/// Makes `host` the main one of its target in `tenant`: the others first lose it (the unique index `tenant_host_primary`
+/// allows one at a time).
+async fn primary_in(tx: &mut crate::db::Tx, tenant: Uuid, host: &str) -> Result<()> {
+    sqlx::query(
+        "update tenant_host set is_primary = false where tenant_id = $1 and is_primary and host <> $2 \
+         and target = (select target from tenant_host where host = $2 and tenant_id = $1)",
+    )
+    .bind(tenant)
+    .bind(host)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query("update tenant_host set is_primary = true where tenant_id = $1 and host = $2").bind(tenant).bind(host).execute(&mut **tx).await?;
+    Ok(())
 }
 
 #[cfg(test)]
