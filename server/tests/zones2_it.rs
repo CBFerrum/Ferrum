@@ -450,6 +450,42 @@ async fn scenario() {
         "crm's page as without zones"
     );
 
+    // ── A notification pushed live: not to a socket opened in the zone when it is about a hidden record ──
+    let hub = ferrum_server::live::LiveHub::new();
+    let mut office_headers = headers.clone();
+    office_headers.insert(header::HOST, STAFF_HOST.parse().unwrap());
+    let office_entry = ferrum_server::extract::socket_entry(&sales.st, &office_headers).await;
+    let (_, office_socket) = ferrum_server::extract::socket_credential(&sales.st, &office_headers, &office_entry).await.unwrap().unwrap();
+    let mut in_sales = hub.register(Uuid::now_v7(), socket.clone());
+    let mut in_office = hub.register(Uuid::now_v7(), office_socket);
+    for (entity, record) in [("Ticket", ticket), ("Lead", lead)] {
+        let push = json!({"tenant": acme, "user": staff, "notification": {"id": Uuid::now_v7(), "title": entity, "entity": entity, "record_id": record, "kind": "general"}});
+        hub.dispatch(&k, &push.to_string()).await;
+    }
+    let drain = |rx: &mut tokio::sync::mpsc::Receiver<String>| std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>().join("\n");
+    let (here, there) = (drain(&mut in_sales), drain(&mut in_office));
+    assert!(here.contains("Lead") && !here.contains("Ticket"), "pushed in the zone: {here}");
+    assert!(there.contains("Lead") && there.contains("Ticket"), "pushed where staff are admitted wholly: {there}");
+
+    // ── A plugin's signed-in endpoint is refused unless an app the zone names installed it; its public one is not ──
+    let mut manifest: Value = serde_json::from_str(include_str!("../../crates/plugins/tests/fixtures/device_gateway.json")).unwrap();
+    manifest["hooks"] = json!([]);
+    manifest["subscriptions"] = json!([]);
+    manifest["permissions"].as_array_mut().unwrap().retain(|p| p["entity"] != "Customer");
+    let manifest: ferrum_plugins::NewPlugin = serde_json::from_value(manifest).unwrap();
+    st.plugins.install(&k, &admin, manifest, include_bytes!("../../crates/plugins/tests/fixtures/device_gateway.wasm")).await.unwrap();
+    let (status, body) = call(&sales, Method::GET, SALES_HOST, "/api/ext/device-gateway/status", Cred::Bearer(&staff_token), None).await;
+    assert!(refused_by_zone(status, &body), "a plugin no named app installed: {status} {body}");
+    assert!(!refused_by_zone(call(&open, Method::GET, SALES_HOST, "/api/ext/device-gateway/status", Cred::Bearer(&staff_token), None).await.0, ""));
+    let req = Request::builder().uri("/api/public/acme/device-gateway/status").header(header::HOST, SALES_HOST).header("x-forwarded-for", "10.1.2.3");
+    let res = sales.router.clone().oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "its public callback works in the zone");
+    assert_eq!(
+        norm(call(&sales, Method::GET, SALES_HOST, "/api/ext/device-gateway/status", Cred::Bearer(&service_key), None).await),
+        norm(call(&open, Method::GET, SALES_HOST, "/api/ext/device-gateway/status", Cred::Bearer(&service_key), None).await),
+        "a service account's call as without zones"
+    );
+
     // ── Outside people and machines are untouched ──
     for (who, cred) in [("portal", Cred::Bearer(&portal_token)), ("service", Cred::Bearer(&service_key))] {
         for path in ["/api/auth/me".to_string(), format!("/api/v1/Ticket/{ticket}"), format!("/api/v1/Lead/{lead}"), "/api/notifications".into()] {
@@ -509,7 +545,13 @@ async fn scenario() {
     assert!(e.to_string().contains("not installed") || format!("{e:?}").contains("not installed"), "a link set to a hidden record: {e:?}");
     let n1 = id_of(&k.insert(&admin, "XNote", obj(json!({"title": "n1", "ticket": ticket.to_string(), "approver": root.to_string()}))).await.unwrap());
     k.update(&own, "XNote", n1, obj(json!({"title": "n1 again"})), None).await.expect("a link already there, left as it was, stays");
-    assert!(k.run_action(&own, "XNote", n1, "x_touch", json!({})).await.is_err(), "a button whose effect writes a hidden app's record");
+    // Refused, saying why: the person pressed a button on a record they see, so "not installed" would mislead (this is
+    // what an app's hook writing another app's records in the zone meets too, the CRM-to-ERP connector's among them).
+    let e = k.run_action(&own, "XNote", n1, "x_touch", json!({})).await.unwrap_err();
+    assert!(
+        e.to_string().contains("which the zone own leaves out") && e.to_string().contains("helpdesk"),
+        "a button whose effect writes a hidden app's record: {e}"
+    );
     assert_eq!(k.get(&admin, "Ticket", ticket, false).await.unwrap()["priority"], "Medium");
     let office = in_zone(&k, &zones, acme, staff, "office").await;
     k.run_action(&office, "XNote", n1, "x_touch", json!({})).await.expect("in the office");
@@ -555,6 +597,14 @@ async fn scenario() {
     let e = k.decide_approval(&admin_in_sales, "XNote", n1, true, None).await.unwrap_err();
     assert!(matches!(e, ferrum_kernel::Error::NotFound(_)), "an approver who cannot read the record there: {e:?}");
     k.decide_approval(&admin, "XNote", n1, true, None).await.expect("decided where it is read");
+    // What completing it wrote is marked with the requester's zone, not the decider's (who decided from inside).
+    let last: Option<String> = {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let z = sqlx::query_scalar("select zone from outbox where record_id = $1 order by id desc limit 1").bind(n1).fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        z
+    };
+    assert_eq!(last.as_deref(), Some("own"), "the completion's events carry the zone the request was made in");
     assert_eq!(k.get(&admin, "XNote", n1, false).await.unwrap()["workflow_state"], "Done", "completed as the requester, in their zone");
 
     // ── 4. Role names are narrowed with rights ──

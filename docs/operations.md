@@ -1220,8 +1220,17 @@ cluster later can be named after a restart.
 
 What it does not do: it does not split the database; a replica in any zone holds every app's code. Engine lookups
 that no person sees (an app's hooks reading prices or accounts to compute a total) are not limited. Fields another
-app adds to a seen entity, and the ids in link fields to unseen ones, are shown as they are. Mail and phone push of a
-notification go to the person wherever they are.
+app adds to a seen entity, and the ids in link fields to unseen ones, are shown as they are. Notifications sent by mail or by phone
+push are not limited by zone: they leave the system for the person's own mailbox or device, wherever that is. If
+that matters for some kinds, an administrator turns those channels off for them (Administration → Messages, the
+kind's channels), so they arrive in the app only, where the zone holds.
+
+**Which packages are an app's.** Those in its `app.yaml` `packages`, and no others. A connector is an app of its
+own: CRM's connector with ERP is the app `crm-erp` (package `crm_erp`, which depends on `crm` and ERP's `selling`).
+In a zone with `{"staff": ["crm"]}` ERP's records are not there, so where the workspace has the connector, a save
+in CRM whose connector hook writes an ERP record is refused, saying it needs that app's records, which the zone
+leaves out (never "not installed"). Name the connector to let it work: `{"staff": ["crm", "crm-erp"]}` brings in
+what `crm_erp` depends on, ERP's selling and what that depends on, and so their records too.
 
 A two-pool example: sales staff work from anywhere, finance only from the office. One pool in zone `sales`
 (`{"staff": ["crm", "helpdesk"]}`) behind the public gateway, one in zone `office` (`{"staff": "all"}`) behind the
@@ -1611,7 +1620,9 @@ referential triggers off for as long as it takes, as for `extract_tenant`
 (`GRANT SET ON PARAMETER session_replication_role TO ferrum`, taken back afterwards). The workspace has no
 process run open (they live in the source's workflow service). A workspace whose erased people's opt-outs are
 kept (as digests under the source's key) needs that key in the target's `FERRUM_RETIRED_SECRET_KEYS` first,
-or the move refuses: without it those people could be sent marketing again.
+or the move refuses: without it those people could be sent marketing again. Waiting work asked for in a zone
+that limits staff (jobs, events, approvals) is done in that zone by name: the move refuses while the target's
+`FERRUM_ZONES` does not define each such zone, until you define it there or let that work finish first.
 
 **Running it.** Run it where the workspace is going, with the source given in the environment (never on the
 command line; none of it is printed):

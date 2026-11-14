@@ -138,11 +138,18 @@ REQUEST_LOG_UNIT = ("-p", "ferrum-server", "--lib", "request_log::tests")
 RULE_HIDE = ("-p", "ferrum-kernel", "--test", "rule_hide_it")
 PACKAGED_RULES = ("-p", "ferrum-kernel", "--test", "packaged_rules_it")
 APP_CALLS = ("-p", "ferrum-kernel", "--test", "app_calls_it")
+ZONES2 = ("-p", "ferrum-server", "--test", "zones2_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # Zones, level 2 (docs/operations.md, "Zones"): staff limited to some apps reach nothing else, nor does what acts for them.
+    ("zones2-entity-filter-gone", "crates/kernel/src/doc.rs", "        if ctx.sees(name) {\n            return Ok(ent.clone());", "        if true {\n            return Ok(ent.clone());", ZONES2),
+    ("zones2-worker-forgets-the-zone", "crates/kernel/src/jobs.rs", "k.load_ctx_in(self.tenant_id, user, self.zone.as_deref(), format!(", "k.load_ctx_in(self.tenant_id, user, None, format!(", ZONES2),
+    ("zones2-roles-kept", "crates/kernel/src/auth.rs", "by.is_empty() || by.iter().any(|p| seen.contains(p))", "true", ZONES2),
+    ("zones2-app-endpoint-open", "server/src/controllers/sites.rs", "    if !ctx.sees_package(&package) {", "    if false {", ZONES2),
+    ("zones2-effect-reaches-hidden", "crates/kernel/src/actions.rs", "perms: Arc::new(PermSet { admin: true, limit: ctx.perms.limit.clone(), ..Default::default() }),", "perms: Arc::new(PermSet { admin: true, ..Default::default() }),", ZONES2),
     # BD-29: a connection reaches only public addresses on its own hosts, within its limits, once per key, for whom it says.
     ('conn-private-address-called', 'crates/kernel/src/connections/mod.rs', 'if !open && addrs.iter().any(|a| blocked(a.ip())) {', 'if false && addrs.iter().any(|a| blocked(a.ip())) {', CONNECTIONS),
     ('conn-blocked-ranges-shrunk', 'crates/kernel/src/connections/mod.rs', 'if crate::outbox::is_private(ip) {\n        return true;\n    }', 'if crate::outbox::is_private(ip) {\n        return false;\n    }', CONNECTIONS_UNIT),
