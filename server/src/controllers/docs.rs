@@ -474,6 +474,8 @@ async fn export(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Pa
         Some("xlsx") => true,
         Some(other) => return Err(ApiError(Error::invalid(format!("unknown export format '{other}' (csv or xlsx)")))),
     };
+    // Recorded before the first row leaves, where the workspace records reads of it (docs/operations.md).
+    st.kernel.record_export(&ctx, &entity, &q, if xlsx { "download, xlsx" } else { "download, csv" }).await?;
     let fetch = {
         let (k, ctx, entity, q) = (st.kernel.clone(), ctx.clone(), entity.clone(), q.clone());
         move |cursor: Option<String>| {

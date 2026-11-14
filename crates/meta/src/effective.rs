@@ -287,6 +287,24 @@ pub struct Schema {
     /// The workspace's audit webhooks' topics (`audit.sign_in`, `audit.administration`, `audit.records`, `audit.*`):
     /// filled by the kernel when it loads the schema, so writing an audit event asks no more than this.
     pub audit_topics: Vec<String>,
+    /// The workspace's access controls (its `step_up` and `record_reads` settings): filled by the kernel when it loads
+    /// the schema, so a read or a change asks no more than this (crates/kernel/src/controls.rs).
+    pub controls: Controls,
+}
+
+/// A workspace's access controls as its settings say (crates/kernel/src/controls.rs reads and checks them).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Controls {
+    /// Entity → the kinds of work (`write`, `delete`, `export`, `read`) that need a recent step-up, and whether API keys
+    /// and other clients that cannot step up are let through (`keys`, true unless the workspace says false).
+    pub step_up: BTreeMap<String, (BTreeSet<String>, bool)>,
+    /// How recent a step-up must be, in seconds.
+    pub step_up_secs: i64,
+    /// Entity → whether lists, searches, reports and exports of it are recorded too (`all`), not only single records
+    /// opened (`open`).
+    pub reads: BTreeMap<String, bool>,
+    /// The settings could not be read: every entity counts as marked, for every kind of work, at `all`.
+    pub unreadable: bool,
 }
 
 impl Schema {
@@ -362,6 +380,7 @@ impl Default for Schema {
             documents: vec![],
             package_depends: BTreeMap::new(),
             audit_topics: vec![],
+            controls: Controls::default(),
         }
     }
 }
@@ -1261,6 +1280,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         documents,
         package_depends,
         audit_topics: vec![],
+        controls: Controls::default(),
     };
     // What expressions read as `settings` is there (BD-17); otherwise it is said, and a customization saying it refused.
     let wrong: Vec<SchemaWarning> = schema

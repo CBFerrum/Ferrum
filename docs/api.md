@@ -715,12 +715,17 @@ caller's own address is inside it. A credential refused by it gets `403` with er
 `break_glass` (`null`, or the ids of 1 to 20 active administrators) names the administrators who keep password
 sign-in when `require_sso` is on; a list naming nobody, or anyone who is not an active administrator, is refused
 (422). `idle_minutes` (0, or 5 to 10080) ends browser sessions unused that long; such a session's next request gets
-`401` "this device was signed out; please sign in again".
+`401` "this device was signed out; please sign in again". `step_up` (`null`, or `{"minutes": 1 to 60, "entities":
+{"Entity": {"work": ["write", "delete", "export", "read"], "keys": true | false}}}`) names the work that needs a recent
+step-up; a request without one gets `403` with error `step_up`, and succeeds after `POST /api/auth/step-up`. `record_reads`
+(`null`, or `{"Entity": "open" | "all"}`) names entities whose reads are audit events of category `access`. Both refuse
+(422) an entity the workspace does not have, or that the caller's zone leaves out
+([operations](operations.md#asking-again-before-sensitive-work)).
 
 Audit log: `GET /api/admin/audit?category=&before=&limit=` → `{events, next_before}`, newest first, at most
-500 (`limit`, 100 by default); `category` is `sign_in`, `administration` or `records`; pass `next_before` as
+500 (`limit`, 100 by default); `category` is `sign_in`, `administration`, `records` or `access`; pass `next_before` as
 `before` for the next page. Each event is in the format of [the audit sink](operations.md#sending-the-audit-log-elsewhere). A webhook whose
-topics name `audit.sign_in`, `audit.administration`, `audit.records` or `audit.*` receives each such event of the
+topics name `audit.sign_in`, `audit.administration`, `audit.records`, `audit.access` or `audit.*` receives each such event of the
 workspace as its body; `*` does not include them.
 
 Domains ([operations](operations.md#custom-domains)): `GET /api/admin/domains` → `{domains: [{host,

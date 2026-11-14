@@ -470,6 +470,18 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
     }
     // Where they signed in from, and with what browser: the events stay, without them.
     redact(tx, ctx, crate::gate::SIGN_IN, id, &["address".to_string(), "user_agent".to_string()], reason).await?;
+    // What they read (crate::controls): the events stay, without the address they read from.
+    let note = json!([{"fields": ["address"], "by": ctx.user, "at": chrono::Utc::now().to_rfc3339(), "reason": reason}]);
+    sqlx::query(
+        "update audit_event set redacted = coalesce(redacted, '[]'::jsonb) || $4::jsonb, diff = diff || '{\"address\": \"[erased]\"}'::jsonb \
+         where tenant_id = $1 and entity = $2 and actor = $3 and jsonb_typeof(diff->'address') = 'string'",
+    )
+    .bind(tenant)
+    .bind(crate::audit::ACCESS_ENTITY)
+    .bind(id)
+    .bind(&note)
+    .execute(&mut **tx)
+    .await?;
     // After the update: the trigger has just filed the old address.
     for table in [
         "user_role",
@@ -633,6 +645,24 @@ impl Kernel {
             }
             None => vec![],
         };
+        // What they read of marked entities (crate::controls), and the reads of their own records: when, how and which.
+        let theirs_ids: Vec<String> = records.iter().filter_map(|r| r["id"].as_str().map(String::from)).collect();
+        let reads: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('at', at, 'action', action, 'details', diff, 'mine', actor = $3) from audit_event \
+             where tenant_id = $1 and entity = $2 and (actor = $3 or diff->>'record' = any($4)) order by id",
+        )
+        .bind(ctx.tenant)
+        .bind(crate::audit::ACCESS_ENTITY)
+        .bind(account_id)
+        .bind(&theirs_ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        // Of the reads of their records, who read them is the workspace's, not theirs.
+        let (read, read_of_theirs): (Vec<Value>, Vec<Value>) = reads.into_iter().partition(|r| r["mine"] == json!(true));
+        let read_of_theirs: Vec<Value> = read_of_theirs
+            .into_iter()
+            .map(|r| json!({"at": r["at"], "action": r["action"], "entity": r["details"]["entity"], "record": r["details"]["record"]}))
+            .collect();
         let mut apps = Vec::new();
         for app in self.hooks.personal_held() {
             for held in app.report(&mut tx, ctx.tenant, account_id, &emails).await? {
@@ -652,7 +682,7 @@ impl Kernel {
         let sandboxes = self.sandboxes_of(ctx.tenant).await?;
         Ok(json!({
             "email": email, "addresses": emails, "phone": phone, "records": records, "possibly": possibly, "account": account, "held": held,
-            "sign_ins": sign_ins, "apps": apps, "not_searched": ctx.schema.undeclared_personal_data, "sandboxes": sandboxes,
+            "sign_ins": sign_ins, "reads": read, "reads_of_their_records": read_of_theirs, "apps": apps, "not_searched": ctx.schema.undeclared_personal_data, "sandboxes": sandboxes,
         }))
     }
 

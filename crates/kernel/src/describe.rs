@@ -149,9 +149,10 @@ pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
         "form": ent.def.form,
         "search_fields": ent.def.search_fields,
         "rules": ent.def.rules,
-        "actions": actions(ctx, ent),
+        // Whether one may press it at all: a step-up it needs is asked when it is pressed (crate::controls).
+        "actions": actions(&ctx.unasked(), ent),
         "targets": ent.def.targets,
-        "workflow": workflow(ctx, ent),
+        "workflow": workflow(&ctx.unasked(), ent),
         "approvals": approvals(ctx, ent),
         "fields": ent.def.fields.iter().map(|f| field_json(ctx, ent, f)).collect::<Vec<_>>(),
         "children": children,

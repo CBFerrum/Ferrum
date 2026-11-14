@@ -329,4 +329,17 @@ general = next(p for p in pools if p["metadata"]["name"] == "ferrum")
 env = {e["name"]: e.get("value") for e in general["spec"]["template"]["spec"]["containers"][0].get("env", [])}
 assert env["FERRUM_ZONE"] == "sales", env.get("FERRUM_ZONE")
 PY
+echo "a zone that asks staff to step up reaches every server pool as written (docs/operations.md, Asking again)"
+tpl -f "$chart/presets/zones.yaml" \
+  --set-json 'zones={"public":{"staff":"none"},"office":{"staff":"all"},"away":{"step_up":true,"networks":["203.0.113.0/24"]}}' > "$tmp/zones-step-up.yaml"
+python3 - "$tmp/zones-step-up.yaml" <<'PY'
+import json, sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+pools = [d for d in docs if d["kind"] == "Deployment" and any(c["name"] == "ferrum" for c in d["spec"]["template"]["spec"]["containers"])]
+assert pools
+for p in pools:
+    env = {e["name"]: e.get("value") for c in p["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])}
+    zones = json.loads(env["FERRUM_ZONES"])
+    assert zones["away"] == {"step_up": True, "networks": ["203.0.113.0/24"]}, zones
+PY
 echo "ok"

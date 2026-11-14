@@ -76,6 +76,18 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 * A workspace may end browser sessions idle longer than `idle_minutes` (to within about two minutes); the
   session is revoked, not only refused. A socket's own rechecks are not use.
 
+**Asking again, and who read it** ([operations](operations.md#asking-again-before-sensitive-work))
+* `step_up` names entities whose changes, deletions, exports or reads need the person to have proved who they
+  are in the last few minutes. It is checked where every record operation asks for its rights, after them;
+  never per route. The proof is the browser session's, kept in the database; nothing the client sends claims
+  it. A credential with no browser session has not stepped up. Keys and other clients that cannot step up are
+  let through unless the rule says `keys: false`. A zone with `step_up: true` asks staff before any change and
+  before reading a marked entity; zone and network refusals come first. A job keeps whether the request that
+  queued it had stepped up. What cannot be read counts as marked.
+* `record_reads` names entities whose reads are audit events of category `access`: who, when, which record or
+  which query (fields and operators, never values), how many rows, the address and zone. A marked read whose
+  event cannot be written fails. An unmarked read sends no statement more.
+
 **Sites and devices** ([threat model](registry/threat-model.md), [authority](operations-authority.md))
 * Ferrum never replaces a safety system, and a safety function never depends on it.
 * Each device signs its requests with its own Ed25519 key. The server keeps public keys only. Enrollment

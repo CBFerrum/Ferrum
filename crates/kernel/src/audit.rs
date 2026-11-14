@@ -78,6 +78,14 @@ pub async fn record_admin(tx: &mut Tx, ctx: &Ctx, entity: &str, record_id: Uuid,
     insert(tx, ctx.tenant, actor, &ctx.request_id, ADMIN, entity, record_id, action, version, diff, Some(&ctx.schema.audit_topics)).await
 }
 
+/// A person's or a key's read of a marked entity (crate::controls): category `access`, entity [`ACCESS_ENTITY`], an id of
+/// its own (each event starts its own chain, so that reads at once never wait on each other; the day's anchor chains
+/// them all), `action` what kind of read, `details` what was read and from where, never a field's value.
+pub async fn record_access(tx: &mut Tx, ctx: &Ctx, action: &str, details: Value) -> Result<()> {
+    let actor = (!ctx.user.is_nil()).then_some(ctx.user);
+    insert(tx, ctx.tenant, actor, &ctx.request_id, ACCESS, ACCESS_ENTITY, Uuid::now_v7(), action, None, details, Some(&ctx.schema.audit_topics)).await
+}
+
 /// [`record`] with no context, in `category`: who acted (`actor`) and the request it came in, as given. With no
 /// schema at hand, it asks the database whether the workspace has an audit webhook (sign-ins, not the hot path).
 #[allow(clippy::too_many_arguments)]
@@ -99,6 +107,9 @@ pub async fn record_as(
 pub const SIGN_IN: &str = "sign_in";
 pub const ADMIN: &str = "administration";
 pub const RECORDS: &str = "records";
+pub const ACCESS: &str = "access";
+/// The entity access events are filed under.
+pub const ACCESS_ENTITY: &str = "Access";
 
 #[allow(clippy::too_many_arguments)]
 async fn insert(
@@ -219,6 +230,8 @@ pub const ADMINISTRATION: &[&str] = &[
 pub fn category(entity: &str) -> &'static str {
     if entity == crate::gate::SIGN_IN {
         "sign_in"
+    } else if entity == ACCESS_ENTITY {
+        ACCESS
     } else if ADMINISTRATION.contains(&entity) {
         "administration"
     } else {
@@ -243,7 +256,7 @@ pub fn event_json(r: &EventRow) -> Value {
 
 impl crate::Kernel {
     /// The workspace's audit log, newest first, for its administrators: `category` (`sign_in`,
-    /// `administration`, `records`) narrows it; `before` is the `id` the last page ended at.
+    /// `administration`, `records`, `access`) narrows it; `before` is the `id` the last page ended at.
     pub async fn audit_events(&self, ctx: &Ctx, category: Option<&str>, before: Option<i64>, limit: i64) -> Result<Value> {
         if !ctx.is_admin {
             return Err(Error::Forbidden("administrator access required".into()));
@@ -255,7 +268,9 @@ impl crate::Kernel {
             Some("sign_in") => "coalesce(e.category, case when e.entity = 'SignIn' then 'sign_in' end) = 'sign_in'",
             Some("administration") => "coalesce(e.category, case when e.entity = any($4) then 'administration' end) = 'administration'",
             Some("records") => "coalesce(e.category, case when e.entity <> 'SignIn' and not e.entity = any($4) then 'records' end) = 'records'",
-            Some(_) => return Err(Error::field("category", "sign_in, administration or records")),
+            // Only ever written with its category.
+            Some("access") => "e.category = 'access'",
+            Some(_) => return Err(Error::field("category", "sign_in, administration, records or access")),
         };
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<EventRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(

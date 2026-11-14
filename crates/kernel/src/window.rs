@@ -72,6 +72,9 @@ pub const FLOORS: &[&Floor] = &[
     &crate::gate::BREAK_GLASS_FLOOR,
     &crate::workspace_move::FLOOR,
     &crate::sandbox::FLOOR,
+    &crate::zones::FLOOR_STEP_UP,
+    &crate::controls::STEP_UP_FLOOR,
+    &crate::controls::READS_FLOOR,
 ];
 
 fn parse(s: &str) -> DateTime<Utc> {
@@ -463,8 +466,8 @@ impl Kernel {
         if !have_floors(&mut tx).await? {
             return Ok(());
         }
-        type InUse = (bool, bool, bool, bool, Vec<String>, Vec<String>, Vec<String>);
-        let (networks, keys, idle, glass, sandboxes, marks, moves): InUse = sqlx::query_as(
+        type InUse = (bool, bool, bool, bool, Vec<String>, Vec<String>, Vec<String>, bool, bool);
+        let (networks, keys, idle, glass, sandboxes, marks, moves, step_up, reads): InUse = sqlx::query_as(
             "select \
                exists (select 1 from tenant where jsonb_typeof(settings->'staff_networks'->'networks') = 'array' \
                  and jsonb_array_length(settings->'staff_networks'->'networks') > 0), \
@@ -473,7 +476,9 @@ impl Kernel {
                exists (select 1 from tenant where jsonb_typeof(settings->'break_glass') = 'array'), \
                array(select id::text from tenant where sandbox_of is not null), \
                array(select id::text from platform_move), \
-               array(select workspace::text from workspace_move where finished_at is null and state <> 'arrived')",
+               array(select workspace::text from workspace_move where finished_at is null and state <> 'arrived'), \
+               exists (select 1 from tenant where jsonb_typeof(settings->'step_up') = 'object'), \
+               exists (select 1 from tenant where jsonb_typeof(settings->'record_reads') = 'object')",
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -482,6 +487,8 @@ impl Kernel {
             (keys, &crate::gate::KEY_NETWORKS_FLOOR),
             (idle, &crate::gate::IDLE_FLOOR),
             (glass, &crate::gate::BREAK_GLASS_FLOOR),
+            (step_up, &crate::controls::STEP_UP_FLOOR),
+            (reads, &crate::controls::READS_FLOOR),
         ] {
             if on {
                 require(&mut tx, floor, "").await?;

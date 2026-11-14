@@ -96,6 +96,8 @@ impl Kernel {
         if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
+        // A read of a marked entity is recorded here, in the same transaction, or not made (crate::controls).
+        crate::controls::record_read(tx, ctx, &ent.def.name, crate::controls::Read::One(id)).await?;
         self.mask_record(ctx, tx, &ent, doc).await
     }
 
@@ -246,6 +248,14 @@ impl Kernel {
         if q.with_titles {
             self.add_titles(ctx, &mut tx, &ent, &mut docs).await?;
         }
+        let read = crate::controls::Read::Many {
+            how: if q.search.is_some() { "search" } else { "list" },
+            filters: &q.filters,
+            search: q.search.is_some(),
+            rows: docs.len() as i64,
+            to: None,
+        };
+        crate::controls::record_read(&mut tx, ctx, entity, read).await?;
         tx.commit().await?;
         if let Some(fields) = &q.fields {
             for d in docs.iter_mut() {
@@ -253,6 +263,25 @@ impl Kernel {
             }
         }
         Ok(Page { rows: docs, next_cursor, total })
+    }
+
+    /// Records an export of `entity`'s records that `q` matches, going `to` (`csv`, `xlsx`), before any row leaves, when
+    /// the workspace records every read of it (crate::controls): with how many rows, counted once. Not marked: nothing.
+    /// The export's pages then record nothing more in this request.
+    pub async fn record_export(&self, ctx: &Ctx, entity: &str, q: &ListQuery, to: &str) -> Result<()> {
+        if ctx.reads_recorded(entity) != Some(true) {
+            return Ok(());
+        }
+        let ent = self.entity(ctx, entity)?;
+        let scope = row_scope(ctx, &ent, Action::Read)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let mut cq = QueryBuilder::new("select count(*)");
+        query::push_from_where_for(&mut cq, ctx, &ent, &scope, &q.filters, q.search.as_deref())?;
+        let rows = cq.build_query_scalar::<i64>().fetch_one(&mut *tx).await?;
+        let read = crate::controls::Read::Many { how: "export", filters: &q.filters, search: q.search.is_some(), rows, to: Some(to) };
+        crate::controls::record_read(&mut tx, ctx, entity, read).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Permission-checked lookup inside a transaction (for hooks and domain engines).
