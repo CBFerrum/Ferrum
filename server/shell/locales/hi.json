@@ -357,5 +357,10 @@
   "Use a passkey": "पासकी का उपयोग करें",
   "Sign in again with {provider}": "{provider} से फिर से साइन इन करें",
   "This browser cannot use a passkey, your only way to confirm it is you here. Use another browser, or ask an administrator.": "यह ब्राउज़र पासकी का उपयोग नहीं कर सकता, जो यहाँ पुष्टि करने का आपका एकमात्र तरीका है कि यह आप हैं। कोई दूसरा ब्राउज़र इस्तेमाल करें, या किसी व्यवस्थापक से पूछें।",
-  "You have no way to confirm it is you here. Ask an administrator to set one up for you.": "यहाँ आपके पास यह पुष्टि करने का कोई तरीका नहीं है कि यह आप हैं। किसी व्यवस्थापक से अपने लिए एक तरीका सेट करने को कहें।"
+  "You have no way to confirm it is you here. Ask an administrator to set one up for you.": "यहाँ आपके पास यह पुष्टि करने का कोई तरीका नहीं है कि यह आप हैं। किसी व्यवस्थापक से अपने लिए एक तरीका सेट करने को कहें।",
+  "Signing in again did not work": "फिर से साइन इन नहीं हो सका",
+  "The identity provider's answer is not one this server asked for. Close this window and try again.": "पहचान प्रदाता का जवाब वह नहीं है जो इस सर्वर ने माँगा था। यह विंडो बंद करें और फिर से कोशिश करें।",
+  "Something went wrong on the server. Close this window and try again.": "सर्वर पर कुछ गड़बड़ हो गई। यह विंडो बंद करें और फिर से कोशिश करें।",
+  "{provider} did not ask you to sign in again, so this cannot confirm it is you; an administrator can have the provider ask again when told to. Close this window and try again.": "{provider} ने आपसे फिर से साइन इन करने को नहीं कहा, इसलिए इससे पुष्टि नहीं हो सकती कि यह आप हैं; कोई व्यवस्थापक प्रदाता को ऐसा कहे जाने पर फिर से पूछने के लिए सेट कर सकता है। यह विंडो बंद करें और फिर से कोशिश करें।",
+  "you signed in at {provider} as someone else: the account does not match, so nothing changed. Close this window and try again.": "आपने {provider} पर किसी और के रूप में साइन इन किया: खाता मेल नहीं खाता, इसलिए कुछ नहीं बदला। यह विंडो बंद करें और फिर से कोशिश करें।"
 }

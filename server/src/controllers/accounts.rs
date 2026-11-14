@@ -118,8 +118,12 @@ pub(crate) async fn page(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &
         ("login", None) => login(st, headers, q).await,
         ("signup", None) => signup_page(st).await,
         ("authorize", None) => authorize(st, headers, uri, q).await,
-        // Where single sign-on providers send people back (the address they have registered).
-        ("app", Some("login")) => Ok(Redirect::to(&format!("/login{}", uri.query().map(|q| format!("?{q}")).unwrap_or_default())).into_response()),
+        // Where single sign-on providers send people back (the address they have registered): a step-up's answer goes on
+        // to be checked as one (controllers/auth.rs, `step_up_return`), a sign-in's to this host's sign-in page.
+        ("app", Some("login")) => Ok(match super::auth::step_up_return(uri.query()) {
+            Some(back) => Redirect::to(&back).into_response(),
+            None => Redirect::to(&format!("/login{}", uri.query().map(|q| format!("?{q}")).unwrap_or_default())).into_response(),
+        }),
         ("account", _) => Ok(Redirect::permanent("/").into_response()),
         ("regions", Some("authorize")) => region_authorize(st, headers, uri, q).await,
         ("regions", Some("start")) => region_start(st, headers, q).await,

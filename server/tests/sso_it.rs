@@ -13,7 +13,9 @@ use axum::{Form, Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ferrum_kernel::auth::{Session, SignIn};
+use ferrum_kernel::gate::Arrival;
 use ferrum_kernel::secret::SecretKey;
+use ferrum_kernel::shell::StepUp;
 use ferrum_kernel::sso::SsoProviderInput;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
@@ -347,8 +349,10 @@ async fn single_sign_on() {
     assert!(matches!(k.sign_in("ssoco", "admin@ssoco.test", "Correct-Horse-9").await.unwrap(), SignIn::Session(_)));
     // Pat may confirm it is them only through the provider now; the administrators keep their passwords.
     let host = "erp.example.test";
-    assert_eq!(k.step_up_ways(tenant, pat, (tenant, pat), host).await.unwrap(), vec![json!({"way": "provider", "name": "Okta"})]);
-    assert_eq!(k.step_up_ways(tenant, admin.user, (tenant, admin.user), host).await.unwrap(), vec![json!({"way": "password", "code": false})]);
+    let pat_up = StepUp { tenant, user: pat, session: Uuid::now_v7(), keys: (tenant, pat) };
+    let admin_up = StepUp { tenant, user: admin.user, session: Uuid::now_v7(), keys: (tenant, admin.user) };
+    assert_eq!(k.step_up_ways(&pat_up, host).await.unwrap(), vec![json!({"way": "provider", "name": "Okta"})]);
+    assert_eq!(k.step_up_ways(&admin_up, host).await.unwrap(), vec![json!({"way": "password", "code": false})]);
     let mut off = input(&issuer);
     off.enabled = false;
     assert!(matches!(k.save_sso_provider(&admin, Some(provider), off.clone()).await, Err(Error::Invalid(_))));
@@ -356,6 +360,8 @@ async fn single_sign_on() {
     k.update_tenant_settings(&admin, json!({"require_sso": false}).as_object().unwrap()).await.unwrap();
     k.save_sso_provider(&admin, Some(provider), off).await.unwrap();
     assert!(k.sso_sign_in_options("ssoco").await.unwrap().is_empty(), "disabled");
+    assert_eq!(k.step_up_ways(&pat_up, host).await.unwrap(), vec![json!({"way": "password", "code": false})], "a disabled provider is no way");
+    assert!(k.sso_step_up_begin(&pat_up, REDIRECT, BACK).await.is_err(), "nor can it be started");
     assert!(matches!(k.sso_begin("ssoco", provider, REDIRECT, BINDING).await, Err(Error::NotFound(_))));
     assert!(
         matches!(k.update_tenant_settings(&admin, json!({"require_sso": true}).as_object().unwrap()).await, Err(Error::Validation(_))),
@@ -367,75 +373,153 @@ async fn single_sign_on() {
     assert!(matches!(k.save_sso_provider(&admin, Some(provider), input(&issuer)).await, Err(Error::NotFound(_))), "no such provider to change");
 }
 
-/// The page the proof is handed to, on the host the person works on.
-const BACK: &str = "https://erp.example.test/api/auth/step-up/provider/done";
+/// The page the proof is handed to, on the host the person works on (with the dialog's own value), and that host.
+const BACK: &str = "https://erp.example.test/api/auth/step-up/provider/done?dialog=dlg-0123456789abcdef";
+const HERE: &str = "https://erp.example.test/";
 
-/// Starts a step-up for `sid` and has the provider answer with `claims` → the state and the provider's code.
-async fn again(k: &Kernel, idp: &Shared, tenant: Uuid, pat: Uuid, sid: Uuid, claims: Value) -> (String, String) {
-    let url = k.sso_step_up_begin(tenant, pat, sid, REDIRECT, BACK).await.unwrap();
+/// Starts a step-up for `who` and has the provider answer with `claims` → the state and the provider's code.
+async fn again(k: &Kernel, idp: &Shared, who: &StepUp, claims: Value) -> (String, String) {
+    let url = k.sso_step_up_begin(who, REDIRECT, BACK).await.unwrap();
     authorize(idp, &url, claims, false, "k1")
 }
 
+/// What the page at `BACK` is handed: the state and the one-time code.
+fn handed(next: &str) -> (String, String) {
+    assert!(next.starts_with(&format!("{BACK}&")), "{next}");
+    let q: HashMap<String, String> = reqwest::Url::parse(next).unwrap().query_pairs().into_owned().collect();
+    assert_eq!(q["dialog"], "dlg-0123456789abcdef", "the dialog's value, as it gave it");
+    (q["state"].clone(), q["code"].clone())
+}
+
 /// Signing in again at the provider confirms it is Pat for one session, once, and only when the provider asked them to
-/// sign in just now and it is the identity Pat is linked to. Nothing here signs anyone in.
+/// sign in just now and it is the identity Pat is linked to. Nothing here signs anyone in, links or makes anyone.
 async fn step_up(k: &Kernel, idp: &Shared, tenant: Uuid, pat: Uuid, provider: Uuid) {
     k.add_operator_host("ssoco", "erp.example.test", "shell", None).await.unwrap();
-    let s = k.sign_in("ssoco", "pat@ssoco.test", "Correct-Horse-9").await.unwrap();
-    let SignIn::Session(s) = s else { panic!("a session") };
+    let SignIn::Session(s) = k.sign_in("ssoco", "pat@ssoco.test", "Correct-Horse-9").await.unwrap() else { panic!("a session") };
     let ttl = std::time::Duration::from_secs(3600);
     let (sid, other) = (k.open_session(&s, ttl, "it", "10.1.2.3", None).await.unwrap(), k.open_session(&s, ttl, "it", "10.1.2.4", None).await.unwrap());
+    let who = StepUp { tenant, user: pat, session: sid, keys: (tenant, pat) };
+    let theirs = StepUp { session: other, ..who };
+    let from = Arrival { address: "10.1.2.3".into(), step_up: true, ..Default::default() };
     assert_eq!(
-        k.step_up_ways(tenant, pat, (tenant, pat), "erp.example.test").await.unwrap(),
+        k.step_up_ways(&who, "erp.example.test").await.unwrap(),
         vec![json!({"way": "password", "code": false}), json!({"way": "provider", "name": "Okta"})]
     );
+    let counts = || async {
+        let people: Vec<i64> = read(k, tenant, "select count(*) from app_user where tenant_id = $1".into()).await;
+        let sessions: Vec<i64> = read(k, tenant, "select count(*) from user_session where tenant_id = $1".into()).await;
+        (people[0], sessions[0])
+    };
+    let before = counts().await;
+    let marked = |id: Uuid| async move {
+        let up: Vec<bool> = read(
+            k,
+            tenant,
+            format!("select coalesce(step_up_at > now() - interval '10 minutes', false) from user_session where tenant_id = $1 and id = '{id}'"),
+        )
+        .await;
+        up[0]
+    };
+    for id in [sid, other] {
+        let _: Vec<i64> = read(k, tenant, format!("with u as (update user_session set step_up_at = now() - interval '1 hour' where tenant_id = $1 and id = '{id}' returning 1) select count(*) from u")).await;
+    }
 
-    // The provider is asked to have Pat sign in again; the state says it is a step-up.
-    let url = k.sso_step_up_begin(tenant, pat, sid, REDIRECT, BACK).await.unwrap();
+    // The provider is asked to have Pat sign in again (not to answer from a session it has); the state says it is a step-up.
+    let url = k.sso_step_up_begin(&who, REDIRECT, BACK).await.unwrap();
     let q: HashMap<String, String> = reqwest::Url::parse(&url).unwrap().query_pairs().into_owned().collect();
     assert_eq!((q["prompt"].as_str(), q["max_age"].as_str(), q["redirect_uri"].as_str()), ("login", "0", REDIRECT));
     assert!(q["state"].starts_with(ferrum_kernel::sso::STEP_UP_STATE));
-    assert!(k.sso_step_up_begin(tenant, pat, sid, REDIRECT, "https://evil.example/done").await.is_err(), "the proof goes only to this workspace's pages");
+    assert!(!url.contains("dlg-0123456789abcdef"), "the dialog's value never goes to the provider");
+    assert!(k.sso_step_up_begin(&who, REDIRECT, "https://evil.example/done").await.is_err(), "the proof goes only to this workspace's pages");
+
+    // A step-up's answer never finishes a sign-in, and a sign-in's never confirms anyone, in either direction.
     let (state, code) = authorize(idp, &url, json!({"sub": "okta-pat-2", "auth_time": now() - 5}), false, "k1");
-    assert!(k.sso_finish(&state, &code, BINDING).await.is_err(), "a step-up never finishes a sign-in");
-    let (state, code) = again(k, idp, tenant, pat, sid, json!({"sub": "okta-pat-2", "auth_time": now() - 5})).await;
-    let next = k.sso_step_up_back(&state, Some(&code)).await.expect("a fresh sign-in as Pat");
-    assert!(next.starts_with(&format!("{BACK}?")), "{next}");
-    let back: HashMap<String, String> = reqwest::Url::parse(&next).unwrap().query_pairs().into_owned().collect();
-    assert_eq!(back["state"], state);
-    assert!(k.sso_step_up_back(&state, Some(&code)).await.is_err(), "the provider's answer counts once");
-    assert!(k.sso_step_up_finish(tenant, pat, other, &state, &back["code"]).await.is_err(), "another session of Pat's");
-    assert!(k.sso_step_up_finish(tenant, pat, sid, &state, "not-the-code").await.is_err(), "the wrong code");
-    k.sso_step_up_finish(tenant, pat, sid, &state, &back["code"]).await.expect("Pat confirmed it is them");
-    assert!(k.sso_step_up_finish(tenant, pat, sid, &state, &back["code"]).await.is_err(), "once");
+    assert!(k.sso_finish(&state, &code, BINDING).await.is_err(), "a step-up's answer is no sign-in");
+    let next = k.sso_step_up_back(&state, Some(&code), &from).await.expect("and it is still a step-up's to take");
+    let (state, proof) = handed(&next);
+    let sign_in_url = k.sso_begin("ssoco", provider, REDIRECT, BINDING).await.unwrap();
+    let (sign_in_state, sign_in_code) = authorize(idp, &sign_in_url, json!({"sub": "okta-pat-2", "auth_time": now()}), false, "k1");
+    assert!(k.sso_step_up_back(&sign_in_state, Some(&sign_in_code), &from).await.is_err(), "a sign-in's answer, however fresh, is no step-up");
+    assert!(k.sso_step_up_finish(&who, HERE, &sign_in_state, &sign_in_code, &from).await.is_err());
+    assert_eq!(k.sso_finish(&sign_in_state, &sign_in_code, BINDING).await.unwrap().user, pat, "and it is still a sign-in's to take");
+
+    // The proof: only for the session that asked, on its host, with the code handed over, once.
+    assert!(k.sso_step_up_back(&state, Some(&code), &from).await.is_err(), "the provider's answer counts once");
+    assert!(k.sso_step_up_finish(&theirs, HERE, &state, &proof, &from).await.is_err(), "another session of Pat's");
+    assert!(k.sso_step_up_finish(&who, HERE, &state, "not-the-code-at-all-0123456789", &from).await.is_err(), "the wrong code");
+    assert!(!marked(sid).await && !marked(other).await, "nothing marked yet");
+    k.sso_step_up_finish(&who, HERE, &state, &proof, &from).await.expect("Pat confirmed it is them");
+    assert!(marked(sid).await && !marked(other).await, "that session, and only it");
+    assert!(k.sso_step_up_finish(&who, HERE, &state, &proof, &from).await.is_err(), "once");
+    let _: Vec<i64> = read(k, tenant, format!("with u as (update user_session set step_up_at = now() - interval '1 hour' where tenant_id = $1 and id = '{sid}' returning 1) select count(*) from u")).await;
 
     // A state another session started, finished for this one.
-    let (state, code) = again(k, idp, tenant, pat, other, json!({"sub": "okta-pat-2", "auth_time": now()})).await;
-    let back: HashMap<String, String> =
-        reqwest::Url::parse(&k.sso_step_up_back(&state, Some(&code)).await.unwrap()).unwrap().query_pairs().into_owned().collect();
-    assert!(k.sso_step_up_finish(tenant, pat, sid, &state, &back["code"]).await.is_err(), "bound to the session that asked");
+    let (state, code) = again(k, idp, &theirs, json!({"sub": "okta-pat-2", "auth_time": now()})).await;
+    let (state, proof) = handed(&k.sso_step_up_back(&state, Some(&code), &from).await.unwrap());
+    assert!(k.sso_step_up_finish(&who, HERE, &state, &proof, &from).await.is_err(), "bound to the session that asked");
+    assert!(!marked(other).await, "and not marked for that one either, by this");
+    // A proof taken on another host than the one it was handed to, or after its minute: used up, and refused.
+    let (state, code) = again(k, idp, &who, json!({"sub": "okta-pat-2", "auth_time": now()})).await;
+    let (state, proof) = handed(&k.sso_step_up_back(&state, Some(&code), &from).await.unwrap());
+    assert!(k.sso_step_up_finish(&who, "https://acme.ferrum.cloud/", &state, &proof, &from).await.is_err(), "another host");
+    assert!(k.sso_step_up_finish(&who, HERE, &state, &proof, &from).await.is_err(), "a proof shown on another host is used up");
+    let (state, code) = again(k, idp, &who, json!({"sub": "okta-pat-2", "auth_time": now()})).await;
+    let (state, proof) = handed(&k.sso_step_up_back(&state, Some(&code), &from).await.unwrap());
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update sso_flow set answer = jsonb_set(answer, '{at}', to_jsonb(extract(epoch from now())::bigint - 61)) where step_up_session = $1 and code_hash is not null")
+        .bind(sid)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(k.sso_step_up_finish(&who, HERE, &state, &proof, &from).await.is_err(), "a proof is good for a minute");
+    assert!(!marked(sid).await, "none of these marked it");
 
-    // Refused, each saying only what Pat needs to know; nothing changes.
+    // Refused, each saying only what Pat needs to know; each used its request up, and nothing changed.
     let says = |r: ferrum_kernel::Result<String>, what: &str| match r {
         Err(Error::Unauthorized(m)) => assert!(m.contains(what), "{m}"),
         other => panic!("{what}: {other:?}"),
     };
-    let stale = again(k, idp, tenant, pat, sid, json!({"sub": "okta-pat-2", "auth_time": now() - 3600})).await;
-    says(k.sso_step_up_back(&stale.0, Some(&stale.1)).await, "did not ask you to sign in again");
-    let missing = again(k, idp, tenant, pat, sid, json!({"sub": "okta-pat-2"})).await;
-    says(k.sso_step_up_back(&missing.0, Some(&missing.1)).await, "did not ask you to sign in again");
-    let ahead = again(k, idp, tenant, pat, sid, json!({"sub": "okta-pat-2", "auth_time": now() + 3600})).await;
-    says(k.sso_step_up_back(&ahead.0, Some(&ahead.1)).await, "did not ask you to sign in again");
-    let someone = again(k, idp, tenant, pat, sid, json!({"sub": "okta-someone-else", "auth_time": now()})).await;
-    says(k.sso_step_up_back(&someone.0, Some(&someone.1)).await, "the account does not match");
-    let url = k.sso_step_up_begin(tenant, pat, sid, REDIRECT, BACK).await.unwrap();
+    let asked_again = "did not ask you to sign in again";
+    for (why, claims) in [
+        ("an old sign-in at the provider", json!({"sub": "okta-pat-2", "auth_time": now() - 3600})),
+        ("a sign-in from before the step-up asked", json!({"sub": "okta-pat-2", "auth_time": now() - 150})),
+        ("no auth_time", json!({"sub": "okta-pat-2"})),
+        ("an auth_time from the future", json!({"sub": "okta-pat-2", "auth_time": now() + 3600})),
+        ("an auth_time that is not a number", json!({"sub": "okta-pat-2", "auth_time": "just now"})),
+    ] {
+        let (state, code) = again(k, idp, &who, claims).await;
+        says(k.sso_step_up_back(&state, Some(&code), &from).await, asked_again);
+        says(k.sso_step_up_back(&state, Some(&code), &from).await, "expired or was already used");
+        let _ = why;
+    }
+    let (state, code) = again(k, idp, &who, json!({"sub": "okta-someone-else", "auth_time": now()})).await;
+    says(k.sso_step_up_back(&state, Some(&code), &from).await, "the account does not match");
+    let url = k.sso_step_up_begin(&who, REDIRECT, BACK).await.unwrap();
     let state: String = reqwest::Url::parse(&url).unwrap().query_pairs().find(|(k, _)| k == "state").unwrap().1.into_owned();
-    says(k.sso_step_up_back(&state, None).await, "did not sign you in again");
-    // Each refused answer used its request up; none signed in, linked or created anyone.
-    says(k.sso_step_up_back(&someone.0, Some(&someone.1)).await, "expired or was already used");
+    says(k.sso_step_up_back(&state, None, &from).await, "did not sign you in again");
+    // Every other check of an ID token holds as for a sign-in: another sign-in's nonce, a forged signature.
+    let (state, code) = again(k, idp, &who, json!({"sub": "okta-pat-2", "auth_time": now(), "nonce": "not-this-one"})).await;
+    assert!(k.sso_step_up_back(&state, Some(&code), &from).await.is_err(), "another sign-in's nonce");
+    let url = k.sso_step_up_begin(&who, REDIRECT, BACK).await.unwrap();
+    let (state, code) = authorize(idp, &url, json!({"sub": "okta-pat-2", "auth_time": now()}), true, "k1");
+    assert!(k.sso_step_up_back(&state, Some(&code), &from).await.is_err(), "a forged signature");
     let linked: Vec<Option<String>> = read(k, tenant, format!("select sso_subject from app_user where tenant_id = $1 and id = '{pat}'")).await;
-    assert_eq!(linked, vec![Some(format!("{provider}|okta-pat-2"))]);
-    let people: Vec<i64> = read(k, tenant, "select count(*) from app_user where tenant_id = $1 and email like 'okta%'".into()).await;
-    assert_eq!(people, vec![0]);
-    // Someone not linked to the provider has no such way.
-    assert!(k.sso_step_up_begin(tenant, Uuid::now_v7(), sid, REDIRECT, BACK).await.is_err());
+    assert_eq!(linked, vec![Some(format!("{provider}|okta-pat-2"))], "linked as before");
+    assert_eq!(counts().await, before, "nobody made, and no session opened");
+    // Someone not linked to a provider has no such way.
+    assert!(k.sso_step_up_begin(&StepUp { user: Uuid::now_v7(), ..who }, REDIRECT, BACK).await.is_err());
+
+    // On Pat's trail: the step-up with its way and address; the refused ones capped as failed sign-ins are.
+    let events: Vec<Value> = read(
+        k,
+        tenant,
+        format!("select jsonb_build_object('action', action, 'diff', diff) from audit_event where tenant_id = $1 and category = 'sign_in' and record_id = '{pat}' and action in ('stepped_up', 'step_up_failed') order by id"),
+    )
+    .await;
+    let ups: Vec<&Value> = events.iter().filter(|e| e["action"] == "stepped_up").collect();
+    assert_eq!(ups.len(), 1, "{events:?}");
+    assert_eq!((ups[0]["diff"]["method"].clone(), ups[0]["diff"]["address"].clone()), (json!("provider"), json!("10.1.2.3")));
+    assert_eq!(events.iter().filter(|e| e["action"] == "step_up_failed").count(), 3, "three an hour, then a summary: {events:?}");
+    assert!(!events.iter().any(|e| e.to_string().contains("okta-")), "no token or subject on the trail");
 }

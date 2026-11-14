@@ -7,7 +7,9 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use ciborium::value::Value as Cbor;
+use ferrum_kernel::gate::Arrival;
 use ferrum_kernel::secret::SecretKey;
+use ferrum_kernel::shell::StepUp;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
@@ -210,8 +212,8 @@ async fn passkeys_make_and_sign_in() {
     step_up().await;
 }
 
-/// Confirming it is you with a passkey (a step-up): bound to the session and the person it was asked for, the device
-/// verifying the person, once. Nothing signs in; the server marks the session afterwards.
+/// Confirming it is you with a passkey (a step-up): only the person's own passkeys, the device verifying them, for the
+/// session and person the challenge was made for, once. It marks that session and nothing else, and signs nobody in.
 async fn step_up() {
     let k = boot(None, true).await;
     let acme = k.create_tenant(tenant("acme")).await.expect("tenant");
@@ -223,59 +225,160 @@ async fn step_up() {
     let origins = vec![origin.to_string()];
     let ana_s = k.login("acme", "ana@acme.test", "Correct-Horse-9").await.unwrap();
     let ttl = std::time::Duration::from_secs(3600);
-    let (sid, other_sid) = (
-        k.open_session(&ana_s, ttl, "it", "10.1.2.3", None).await.unwrap(),
-        k.open_session(&ana_s, ttl, "it", "10.1.2.4", None).await.unwrap(),
-    );
-    let ana_keys = (acme, ana_id);
+    let sid = k.open_session(&ana_s, ttl, "it", "10.1.2.3", None).await.unwrap();
+    let other_sid = k.open_session(&ana_s, ttl, "it", "10.1.2.4", None).await.unwrap();
+    let admin_sid = k.open_session(&s, ttl, "it", "10.1.2.5", None).await.unwrap();
+    let ana_up = StepUp { tenant: acme, user: ana_id, session: sid, keys: (acme, ana_id) };
+    let admin_up = StepUp { tenant: acme, user: admin.user, session: admin_sid, keys: (acme, admin.user) };
+    let from = Arrival { address: "10.1.2.3".into(), zone: Some("office".into()), step_up: true, ..Default::default() };
+    let sessions = || async {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let n: i64 = sqlx::query_scalar("select count(*) from user_session").fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        n
+    };
+    let age = |id: Uuid| {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.system_tx().await.unwrap();
+            sqlx::query("update user_session set step_up_at = now() - interval '1 hour' where id = $1").bind(id).execute(&mut *tx).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    // From the database: this replica keeps its answer about a session for 20 seconds.
+    let up = |id: Uuid, user: Uuid| {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.system_tx().await.unwrap();
+            let fresh: bool = sqlx::query_scalar(
+                "select coalesce(step_up_at > now() - interval '10 minutes', false) from user_session where tenant_id = $1 and id = $2 and user_id = $3",
+            )
+            .bind(acme)
+            .bind(id)
+            .bind(user)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            fresh
+        }
+    };
 
-    // Ways: a password only, until a passkey is made here.
-    assert_eq!(k.step_up_ways(acme, ana_id, ana_keys, host).await.unwrap(), vec![json!({"way": "password", "code": false})]);
-    assert!(k.passkey_step_up_options(ana_keys, sid, host).await.is_err(), "no passkey: nothing to ask the device for");
+    // Ways: the password alone, until a passkey is made here.
+    assert_eq!(k.step_up_ways(&ana_up, host).await.unwrap(), vec![json!({"way": "password", "code": false})]);
+    assert!(k.passkey_step_up_options(&ana_up, host).await.is_err(), "no passkey: nothing to ask the device for");
     let mut laptop = Device::new();
     let o = k.passkey_options(&ana, host, "Acme").await.unwrap();
     k.add_passkey(&ana, request(&o), &origins, &laptop.create(&o, origin), "laptop").await.unwrap();
-    let mut bobs = Device::new();
+    let mut admins = Device::new();
     let o = k.passkey_options(&admin, host, "Acme").await.unwrap();
-    k.add_passkey(&admin, request(&o), &origins, &bobs.create(&o, origin), "admin's").await.unwrap();
+    k.add_passkey(&admin, request(&o), &origins, &admins.create(&o, origin), "admin's").await.unwrap();
     assert_eq!(
-        k.step_up_ways(acme, ana_id, ana_keys, &format!("{host}:443")).await.unwrap(),
+        k.step_up_ways(&ana_up, &format!("{host}:443")).await.unwrap(),
         vec![json!({"way": "passkey"}), json!({"way": "password", "code": false})],
         "a passkey first"
     );
-    assert_eq!(k.step_up_ways(acme, ana_id, ana_keys, "elsewhere.example").await.unwrap(), vec![json!({"way": "password", "code": false})], "not for another site");
+    assert_eq!(k.step_up_ways(&ana_up, "elsewhere.example").await.unwrap(), vec![json!({"way": "password", "code": false})], "not one for another site");
 
-    // The request names only Ana's own passkey and wants the person verified.
-    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
-    assert_eq!(o["publicKey"]["userVerification"], json!("required"));
+    // The request names only Ana's own passkey and requires the device to verify her.
+    for id in [sid, other_sid, admin_sid] {
+        age(id).await;
+    }
+    let before = sessions().await;
+    let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
+    assert_eq!((o["publicKey"]["userVerification"].clone(), o["publicKey"]["rpId"].clone()), (json!("required"), json!(host)));
     assert_eq!(o["publicKey"]["allowCredentials"].as_array().unwrap().len(), 1);
     assert_eq!(o["publicKey"]["allowCredentials"][0]["id"], json!(B64.encode(&laptop.id)));
     let answer = laptop.get(&o, host, origin, ana_id);
-    k.passkey_step_up(ana_keys, sid, request(&o), &origins, &answer).await.expect("Ana confirms it is her");
+    k.passkey_step_up(&ana_up, request(&o), &origins, &answer, &from).await.expect("Ana confirms it is her");
+    assert!(k.check_session(acme, ana_id, sid).await.unwrap().stepped_up(), "her session counts as stepped up");
+    assert!(up(sid, ana_id).await);
+    assert!(!up(other_sid, ana_id).await && !up(admin_sid, admin.user).await, "no other session does");
+    assert_eq!(sessions().await, before, "nobody was signed in");
     let refused = |r: ferrum_kernel::Result<()>, why: &str| assert!(matches!(r, Err(Error::Unauthorized(_))), "{why}: {r:?}");
-    refused(k.passkey_step_up(ana_keys, sid, request(&o), &origins, &answer).await, "a replayed answer");
+    refused(k.passkey_step_up(&ana_up, request(&o), &origins, &answer, &from).await, "a replayed answer");
+    age(sid).await;
 
-    // Another session's challenge, answered for this one.
-    let o = k.passkey_step_up_options(ana_keys, other_sid, host).await.unwrap();
-    refused(k.passkey_step_up(ana_keys, sid, request(&o), &origins, &laptop.get(&o, host, origin, ana_id)).await, "another session's challenge");
-    // Someone else's passkey answering Ana's challenge, and Ana's challenge taken up as someone else's.
-    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
-    refused(k.passkey_step_up(ana_keys, sid, request(&o), &origins, &bobs.get(&o, host, origin, admin.user)).await, "another person's passkey");
-    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
-    refused(k.passkey_step_up((acme, admin.user), sid, request(&o), &origins, &bobs.get(&o, host, origin, admin.user)).await, "for another person");
+    // Another session's challenge answered for this one; a challenge of signing in, and one of making a passkey.
+    let o = k.passkey_step_up_options(&StepUp { session: other_sid, ..ana_up }, host).await.unwrap();
+    refused(k.passkey_step_up(&ana_up, request(&o), &origins, &laptop.get(&o, host, origin, ana_id), &from).await, "another session's challenge");
+    let o = k.passkey_sign_in_options(host).await.unwrap();
+    refused(k.passkey_step_up(&ana_up, request(&o), &origins, &laptop.get(&o, host, origin, ana_id), &from).await, "a sign-in's challenge");
+    let o = k.passkey_options(&ana, host, "Acme").await.unwrap();
+    refused(k.passkey_step_up(&ana_up, request(&o), &origins, &laptop.get(&o, host, origin, ana_id), &from).await, "a registration's challenge");
+    // …and a step-up's challenge does not sign anyone in.
+    let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
+    assert!(k.passkey_sign_in(request(&o), &origins, &laptop.get(&o, host, origin, ana_id), None).await.is_err(), "a step-up's challenge signs no one in");
+    // Another person's passkey answering Ana's challenge; Ana's challenge taken up as another person's.
+    let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
+    refused(k.passkey_step_up(&ana_up, request(&o), &origins, &admins.get(&o, host, origin, admin.user), &from).await, "another person's passkey");
+    let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
+    refused(k.passkey_step_up(&admin_up, request(&o), &origins, &laptop.get(&o, host, origin, ana_id), &from).await, "for another person");
+    // Ana's own passkey proving it is her, for a session that is not hers: nothing is marked.
+    let theirs = StepUp { session: admin_sid, ..ana_up };
+    let o = k.passkey_step_up_options(&theirs, host).await.unwrap();
+    refused(k.passkey_step_up(&theirs, request(&o), &origins, &laptop.get(&o, host, origin, ana_id), &from).await, "another person's session");
+    assert!(!up(admin_sid, admin.user).await, "a proof of Ana's never marks another person's session");
     // The device did not verify the person: present only.
-    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
-    refused(k.passkey_step_up(ana_keys, sid, request(&o), &origins, &laptop.get_with(&o, host, origin, ana_id, 0x01)).await, "no user verification");
+    let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
+    refused(k.passkey_step_up(&ana_up, request(&o), &origins, &laptop.get_with(&o, host, origin, ana_id, 0x01), &from).await, "no user verification");
     // Another site, and a copy of the key (its counter went back).
-    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
+    let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
     let evil = "https://evil.example";
-    refused(k.passkey_step_up(ana_keys, sid, request(&o), &[evil.into()], &laptop.get(&o, host, evil, ana_id)).await, "answered on another site");
+    refused(k.passkey_step_up(&ana_up, request(&o), &[evil.into()], &laptop.get(&o, host, evil, ana_id), &from).await, "answered on another site");
+    let mut copy = Device::new();
+    copy.id = laptop.id.clone();
+    let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
+    refused(k.passkey_step_up(&ana_up, request(&o), &origins, &copy.get(&o, host, origin, ana_id), &from).await, "another key under her credential's id");
     laptop.count = 0;
-    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
-    refused(k.passkey_step_up(ana_keys, sid, request(&o), &origins, &laptop.get(&o, host, origin, ana_id)).await, "counter went back");
+    let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
+    refused(k.passkey_step_up(&ana_up, request(&o), &origins, &laptop.get(&o, host, origin, ana_id), &from).await, "counter went back");
+    assert!(!up(sid, ana_id).await, "no refusal marked anything");
+
+    // Where the workspace requires single sign-on of her, a passkey proves nothing: no such way, and refused.
+    let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
+    set_sso(&k, acme, true).await;
+    assert!(k.step_up_ways(&ana_up, host).await.unwrap().is_empty(), "no provider linked either: no way at all");
+    assert!(matches!(k.passkey_step_up_options(&ana_up, host).await, Err(Error::Forbidden(_))));
     laptop.count = 20;
-    let o = k.passkey_step_up_options(ana_keys, sid, host).await.unwrap();
-    k.passkey_step_up(ana_keys, sid, request(&o), &origins, &laptop.get(&o, host, origin, ana_id)).await.expect("the device itself, again");
+    let answer = laptop.get(&o, host, origin, ana_id);
+    assert!(matches!(k.passkey_step_up(&ana_up, request(&o), &origins, &answer, &from).await, Err(Error::Forbidden(_))), "a challenge from before");
+    set_sso(&k, acme, false).await;
+    let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
+    k.passkey_step_up(&ana_up, request(&o), &origins, &laptop.get(&o, host, origin, ana_id), &from).await.expect("the device itself, again");
+    assert!(up(sid, ana_id).await);
+
+    // On her trail: each step-up, with its way, address and zone; failed ones capped as failed sign-ins are.
+    let mut tx = k.db.system_tx().await.unwrap();
+    let events: Vec<(String, Value)> = sqlx::query_as(
+        "select action, diff from audit_event where category = 'sign_in' and record_id = $1 and action in ('stepped_up', 'step_up_failed') order by id",
+    )
+    .bind(ana_id)
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    let counted: i32 = sqlx::query_scalar("select n from sign_in_failure where user_id = $1").bind(ana_id).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let ups: Vec<&Value> = events.iter().filter(|e| e.0 == "stepped_up").map(|e| &e.1).collect();
+    assert_eq!(ups.len(), 2, "{events:?}");
+    assert_eq!((ups[0]["method"].clone(), ups[0]["address"].clone(), ups[0]["zone"].clone()), (json!("passkey"), json!("10.1.2.3"), json!("office")));
+    assert_eq!(ups[0]["session"], json!(sid));
+    let failed: Vec<&Value> = events.iter().filter(|e| e.0 == "step_up_failed").map(|e| &e.1).collect();
+    assert_eq!(failed.len(), 3, "three an hour, one by one: {events:?}");
+    assert_eq!(failed[0]["method"], json!("passkey"));
+    assert!(counted > 3, "the rest counted for the hour's summary: {counted}");
+    assert!(!events.iter().any(|e| e.1.to_string().contains("challenge")), "no challenge or assertion on the trail");
+}
+
+async fn set_sso(k: &Kernel, tenant: Uuid, on: bool) {
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update tenant set settings = settings || jsonb_build_object('require_sso', $2::boolean) where id = $1")
+        .bind(tenant)
+        .bind(on)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
 }
 
 /// `FERRUM_PASSKEY_RP`: a passkey made on a host before it was set keeps working there; one made

@@ -66,6 +66,18 @@ impl SessionState {
     }
 }
 
+/// A browser session whose person is confirming it is them (docs/operations.md, "Asking again before sensitive work"):
+/// every proof is bound to the session and its person, and marks only that session ([`Kernel::stepped_up`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepUp {
+    pub tenant: Uuid,
+    pub user: Uuid,
+    pub session: Uuid,
+    /// The account whose password and passkeys count: `(tenant, user)` itself, or, for a workspace account joined to a
+    /// Ferrum account on a host that hands sign-in to the accounts host, that account (the directory's).
+    pub keys: (Uuid, Uuid),
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct TenantHost {
     pub host: String,
@@ -315,38 +327,66 @@ impl Kernel {
         Ok(())
     }
 
-    /// The ways `user` of `tenant` can confirm it is them now, on `host`, in order of preference: `{"way": "passkey"}` (a
-    /// passkey for a relying party the host may use), `{"way": "password", "code": bool}` (a password they may sign in
-    /// with; `code`: the code from an authenticator app is asked too), `{"way": "provider", "name": …}` (an identity
-    /// linked at an enabled single sign-on provider). `keys`: the account whose password and passkeys count (theirs, or
-    /// the Ferrum account theirs joined). Empty: no way at all. Where the workspace requires single sign-on, only the
-    /// provider (or a password, for the administrators who keep one).
-    pub async fn step_up_ways(&self, tenant: Uuid, user: Uuid, keys: (Uuid, Uuid), host: &str) -> Result<Vec<Value>> {
+    /// The ways the person of `who` can confirm it is them now, on `host`, in order of preference: `{"way": "passkey"}` (a
+    /// passkey of theirs for a relying party the host may use), `{"way": "password", "code": bool}` (a password; `code`:
+    /// the code from an authenticator app is asked too), `{"way": "provider", "name": …}` (an identity linked to them at
+    /// an enabled single sign-on provider). Where the workspace requires single sign-on of them, neither a password nor a
+    /// passkey proves anything: only the provider. Empty: no way at all.
+    pub async fn step_up_ways(&self, who: &StepUp, host: &str) -> Result<Vec<Value>> {
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(bool, bool, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select not {only} and exists (select 1 from passkey p where p.tenant_id = u.tenant_id and p.user_id = u.id and p.rp_id = any($3)), \
-             not {only} and u.password_hash is not null, u.totp_enabled_at is not null \
-             from app_user u join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2 and u.is_active",
-            only = crate::gate::SSO_ONLY
+        let row: Option<(bool, bool, bool, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {}, exists (select 1 from passkey p where p.tenant_id = k.tenant_id and p.user_id = k.id and p.rp_id = any($5)), \
+               coalesce(k.password_hash is not null, false), coalesce(k.totp_enabled_at is not null, false) \
+             from app_user u join tenant t on t.id = u.tenant_id left join app_user k on k.tenant_id = $3 and k.id = $4 and k.is_active \
+             where u.tenant_id = $1 and u.id = $2 and u.is_active and t.status = 'active'",
+            crate::gate::SSO_ONLY
         )))
-        .bind(keys.0)
-        .bind(keys.1)
+        .bind(who.tenant)
+        .bind(who.user)
+        .bind(who.keys.0)
+        .bind(who.keys.1)
         .bind(self.step_up_rps(host))
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
-        let (passkey, password, code) = row.unwrap_or_default();
+        let Some((sso_only, passkey, password, code)) = row else { return Ok(Vec::new()) };
         let mut ways = Vec::new();
-        if passkey {
+        if passkey && !sso_only {
             ways.push(serde_json::json!({"way": "passkey"}));
         }
-        if password {
+        if password && !sso_only {
             ways.push(serde_json::json!({"way": "password", "code": code}));
         }
-        if let Some(p) = self.linked_provider(tenant, user).await? {
-            ways.push(serde_json::json!({"way": "provider", "name": p["name"]}));
+        if let Some((_, name)) = self.linked_provider(who.tenant, who.user).await? {
+            ways.push(serde_json::json!({"way": "provider", "name": name}));
         }
         Ok(ways)
+    }
+
+    /// The person of `who` proved it is them (`way`: `password`, `passkey`, `provider`): their browser session counts as
+    /// stepped up, and the audit trail says so (sign-in, `stepped_up`, with where it came from), in one transaction, so
+    /// that neither is without the other. Only the session of that person, live; nothing else about it changes (whose it
+    /// is, when it ends). Every other replica drops what it holds of the person's sessions at once.
+    pub async fn stepped_up(&self, who: &StepUp, way: &str, from: &crate::gate::Arrival) -> Result<()> {
+        let mut tx = self.db.system_tenant_tx(who.tenant).await?;
+        let marked = sqlx::query(
+            "update user_session set step_up_at = now() where tenant_id = $1 and id = $2 and user_id = $3 and revoked_at is null and expires_at > now()",
+        )
+        .bind(who.tenant)
+        .bind(who.session)
+        .bind(who.user)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if marked != 1 {
+            return Err(Error::Unauthorized("this device was signed out; please sign in again".into()));
+        }
+        let detail = crate::gate::detail(from, way, serde_json::json!({"session": who.session}));
+        crate::gate::event(&mut tx, who.tenant, who.user, "stepped_up", detail).await?;
+        crate::auth::notify_users(&mut tx, who.tenant, Some(who.user)).await?;
+        tx.commit().await?;
+        self.sessions.remove(&(who.tenant, who.session));
+        Ok(())
     }
 
     /// The signed-in devices of `user` (oneself, or anyone for an administrator).

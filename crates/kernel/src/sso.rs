@@ -27,11 +27,17 @@
 //! publishes it; a task replaces it), and sign people out both ways (saml_logout.rs). Each provider
 //! keeps the addresses it was saved with: a provider saved on a server with an accounts host has them
 //! there, every other under PUBLIC_URL.
+//!
+//! Signing in again confirms it is the person of a browser session (a step-up, at the end of this
+//! file): the provider is asked to have them sign in again, and the answer counts only when it is the
+//! identity they are linked to, signed in just now. Its flow is bound to the session and the person,
+//! never finishes a sign-in, and a sign-in's flow never confirms anyone.
 
 use crate::auth::Session;
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::oauth::{hash, random_secret};
+use crate::shell::StepUp;
 use crate::{Kernel, audit};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -66,17 +72,23 @@ const LOGOUT_EVENT: &str = "http://schemas.openid.net/event/backchannel-logout";
 const LOGOUT_TOKEN_SECS: i64 = 600;
 /// How far ahead of our clock a provider's may be.
 const CLOCK_SKEW_SECS: i64 = 120;
-/// How long ago a person may have signed in at the provider for that to confirm it is them (a step-up): the two
-/// minutes a provider's clock may be off from ours, and a minute for the browser's way back. A provider that answers
-/// from a session it already had states a sign-in from long before, which this refuses.
+/// How long before its answer is checked a person may have signed in at the provider for that to confirm it is them (a
+/// step-up): the two minutes a provider's clock may be behind ours (as for every token, [`CLOCK_SKEW_SECS`]) and a
+/// minute for the browser's way back and the token's fetch. A provider that answers from a session it already had states
+/// a sign-in from before the step-up asked, which is refused too (allowing for the same clock).
 pub const STEP_UP_FRESH_SECS: i64 = 180;
+/// The proof of signing in again is taken by the page the person works on within a minute, as a sign-in carried from
+/// the accounts host is (crate::identity, `HOST_CODE_SECONDS`).
+const STEP_UP_PROOF_SECS: i64 = 60;
 /// What a step-up's state starts with, so the return address providers have registered (`/app/login`) can tell it from
-/// a sign-in's.
+/// a sign-in's. Which kind a flow is, is kept with it: each finish refuses the other kind whatever its state says.
 pub const STEP_UP_STATE: &str = "su.";
 
-/// Whether a sign-in at the provider at `at` (seconds since 1970) is recent enough at `now` to confirm it is the person.
-pub fn fresh_sign_in(at: Option<i64>, now: i64) -> bool {
-    at.is_some_and(|t| t >= now - STEP_UP_FRESH_SECS && t <= now + CLOCK_SKEW_SECS)
+/// Whether a sign-in at the provider at `at` (seconds since 1970) shows the person signed in again for a step-up asked at
+/// `asked`, checked at `now`: within [`STEP_UP_FRESH_SECS`] of now and not before it was asked, either way allowing for
+/// the provider's clock. None (the provider did not say) is not.
+pub fn fresh_sign_in(at: Option<i64>, asked: i64, now: i64) -> bool {
+    at.is_some_and(|t| t <= now + CLOCK_SKEW_SECS && t >= now - STEP_UP_FRESH_SECS && t >= asked - CLOCK_SKEW_SECS)
 }
 
 #[derive(Debug, Deserialize)]
@@ -973,10 +985,16 @@ impl Kernel {
     /// to finish with ([`Kernel::sso_finish`]). The sign-in is used up when the answer is refused, and
     /// an answer counts once.
     pub async fn saml_acs(&self, tenant: Uuid, relay_state: &str, response: &str) -> Result<String> {
+        self.saml_acs_from(tenant, relay_state, response, &crate::gate::Arrival::default()).await
+    }
+
+    /// [`Kernel::saml_acs`] for a browser at `from`: the answer to a step-up's signing in again
+    /// ([`Kernel::sso_step_up_begin`]) is checked as one, and a refused one is a failed step-up on the person's trail.
+    pub async fn saml_acs_from(&self, tenant: Uuid, relay_state: &str, response: &str, from: &crate::gate::Arrival) -> Result<String> {
         let again = |why: &str| Error::Unauthorized(format!("{why}; sign in again"));
         let mut tx = self.db.system_tx().await?;
-        let flow: Option<(Uuid, String, String, Option<Uuid>)> = sqlx::query_as(
-            "select provider_id, nonce, redirect_uri, step_up_user from sso_flow \
+        let flow: Option<(Uuid, String, String, Option<Uuid>, i64)> = sqlx::query_as(
+            "select provider_id, nonce, redirect_uri, step_up_user, extract(epoch from created_at)::bigint from sso_flow \
              where state_hash = $1 and tenant_id = $2 and code_hash is null and created_at > now() - make_interval(mins => $3)",
         )
         .bind(hash(relay_state))
@@ -984,7 +1002,7 @@ impl Kernel {
         .bind(FLOW_MINUTES)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((provider, request, redirect_uri, step_up)) = flow else {
+        let Some((provider, request, redirect_uri, step_up, asked)) = flow else {
             tx.commit().await?;
             return Err(again("this sign-in has expired or was already used"));
         };
@@ -994,18 +1012,18 @@ impl Kernel {
             Protocol::Saml => self.saml_check(tenant, &p, response, request).await,
             Protocol::Oidc => Err(again("this provider does not speak SAML")),
         };
-        // Signing in again to confirm it is the person: the same identity, signed in just now. What is kept is only
-        // that it was; nothing here signs anyone in.
-        let checked = match (checked, step_up) {
-            (Ok(person), Some(user)) => {
-                self.same_and_fresh(tenant, user, &p, &person.subject, person.authn_instant).await.map(|()| serde_json::json!({"step_up": "ok"}))
-            }
-            (Ok(person), None) => serde_json::to_value(&person).map_err(|e| Error::Unavailable(e.to_string())),
-            (Err(e), _) => Err(e),
-        };
+        // Signing in again to confirm it is the person: the same identity, signed in just now. Only that it was is kept;
+        // nothing here signs anyone in, links or makes an account.
+        if let Some(user) = step_up {
+            let checked = match checked {
+                Ok(person) => self.same_and_fresh(tenant, user, &p, &person.subject, person.authn_instant, asked).await,
+                Err(e) => Err(e),
+            };
+            return self.step_up_answered(relay_state, tenant, user, &redirect_uri, checked, from).await;
+        }
         let mut tx = self.db.system_tx().await?;
-        let answer = match checked {
-            Ok(answer) => answer,
+        let person = match checked {
+            Ok(person) => person,
             Err(e) => {
                 sqlx::query("delete from sso_flow where state_hash = $1").bind(hash(relay_state)).execute(&mut *tx).await?;
                 tx.commit().await?;
@@ -1016,7 +1034,7 @@ impl Kernel {
         let done = sqlx::query("update sso_flow set code_hash = $2, answer = $3 where state_hash = $1 and code_hash is null")
             .bind(hash(relay_state))
             .bind(hash(&code))
-            .bind(answer)
+            .bind(serde_json::to_value(&person).map_err(|e| Error::Unavailable(e.to_string()))?)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -1315,56 +1333,54 @@ impl Kernel {
 
 // ── signing in again to confirm it is you (a step-up; docs/operations.md, "Asking again before sensitive work") ──
 
+/// When an ID token says the person signed in at the provider (`auth_time`, seconds since 1970), read loosely: a value
+/// that is not a number is none.
+fn auth_time(c: &IdClaims) -> Option<i64> {
+    c.auth_time.as_ref().and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+}
+
 impl Kernel {
-    /// The identity a person is linked to at a provider: the enabled provider of an active workspace (`{id, name}`),
-    /// or none. A SAML provider counts only where this server checks SAML.
-    pub async fn linked_provider(&self, tenant: Uuid, user: Uuid) -> Result<Option<Value>> {
+    /// The provider a person is linked to (its id and name): enabled, of an active workspace that is not a sandbox (a
+    /// sandbox reaches no provider), and, for SAML, only where this server checks SAML. None: no such way.
+    pub async fn linked_provider(&self, tenant: Uuid, user: Uuid) -> Result<Option<(Uuid, String)>> {
         let mut tx = self.db.system_tx().await?;
         let row: Option<(Uuid, String, String)> = sqlx::query_as(
-            "select p.id, p.label, p.protocol from app_user u join sso_provider p on p.tenant_id = u.tenant_id and u.sso_subject like p.id::text || '|%' \
-             join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2 and p.enabled and t.status = 'active'",
+            "select p.id, p.label, p.protocol from app_user u join tenant t on t.id = u.tenant_id \
+             join sso_provider p on p.tenant_id = u.tenant_id and p.id::text = split_part(u.sso_subject, '|', 1) \
+             where u.tenant_id = $1 and u.id = $2 and u.is_active and p.enabled and t.status = 'active' and t.sandbox_of is null",
         )
         .bind(tenant)
         .bind(user)
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(row.filter(|r| r.2 != "saml" || ferrum_saml::AVAILABLE).map(|(id, label, _)| json!({"id": id, "name": label})))
+        Ok(row.filter(|r| r.2 != "saml" || ferrum_saml::AVAILABLE).map(|(id, label, _)| (id, label)))
     }
 
-    /// Starts signing in again at the provider `user` is linked to, to confirm it is them for the browser session `sid`
-    /// → the address to open (in a small window). The provider is asked to have the person sign in again, not to
-    /// answer from a session it already has: OpenID Connect `prompt=login` and `max_age=0`, SAML `ForceAuthn`. It comes
-    /// back to `redirect_uri` (OpenID Connect: the return address registered with it, `/app/login`) or to `back` (SAML:
-    /// through the assertion consumer service), and the proof is handed to `back`, a page on the host the person works
-    /// on, to finish with ([`Kernel::sso_step_up_finish`]). The state starts with [`STEP_UP_STATE`]; the flow is bound to
-    /// `sid` and `user`, and its browser binding is a secret nobody is given, so it can never finish a sign-in.
-    pub async fn sso_step_up_begin(&self, tenant: Uuid, user: Uuid, sid: Uuid, redirect_uri: &str, back: &str) -> Result<String> {
-        let none = || Error::invalid("you have no single sign-on identity here");
-        let mut tx = self.db.system_tenant_tx(tenant).await?;
-        let subject: Option<String> = sqlx::query_scalar("select sso_subject from app_user where tenant_id = $1 and id = $2 and is_active")
-            .bind(tenant)
-            .bind(user)
-            .fetch_optional(&mut *tx)
-            .await?
-            .flatten();
-        tx.commit().await?;
-        let provider: Uuid = subject.as_deref().and_then(|s| s.split_once('|')).and_then(|(id, _)| id.parse().ok()).ok_or_else(none)?;
-        let mut tx = self.db.system_tx().await?;
-        let (_, p) = self.sign_in_provider(&mut tx, Some(tenant), None, provider).await.map_err(|e| if matches!(e, Error::NotFound(_)) { none() } else { e })?;
-        tx.commit().await?;
+    /// Starts signing in again at the provider the person of `who` is linked to, to confirm it is them for that browser
+    /// session → the address to open (in a small window). The provider is asked to have the person sign in again rather
+    /// than answer from a session it already has: OpenID Connect `prompt=login` and `max_age=0`, SAML `ForceAuthn`. It
+    /// comes back to `redirect_uri` (OpenID Connect: the return address registered with it, `/app/login`) or to the
+    /// assertion consumer service (SAML), and the proof goes on to `back`, a page on the host the session is on
+    /// ([`Kernel::sso_step_up_finish`]). The flow is bound to the session and the person; its state starts with
+    /// [`STEP_UP_STATE`], and its browser binding is a secret nobody is given, so it never finishes a sign-in.
+    pub async fn sso_step_up_begin(&self, who: &StepUp, redirect_uri: &str, back: &str) -> Result<String> {
+        let (provider, _) = self.linked_provider(who.tenant, who.user).await?.ok_or_else(|| Error::invalid("you have no single sign-on identity here"))?;
         let back_url = reqwest::Url::parse(back).map_err(|_| Error::invalid("the page to come back to is not an address"))?;
-        if !self.own_return(tenant, &back_url).await? {
+        if back.len() > 500 || !self.own_return(who.tenant, &back_url).await? {
             return Err(Error::invalid("the page to come back to is not one of this workspace's"));
         }
+        let mut tx = self.db.system_tx().await?;
+        let (_, p) = self.sign_in_provider(&mut tx, Some(who.tenant), None, provider).await?;
+        tx.commit().await?;
         let (state, binding) = (random_secret(STEP_UP_STATE), random_secret(""));
-        let bound = Some((sid, user, back));
+        let bound = Some((who.session, who.user, back));
         if p.protocol == Protocol::Saml {
             let idp = self.saml_idp(p.saml_metadata.as_deref().unwrap_or_default()).await?;
-            let n = self.saml_names(tenant, &p)?;
+            let n = self.saml_names(who.tenant, &p)?;
             let request = format!("_{}", hex::encode(rand::random::<[u8; 16]>()));
-            self.store_flow(&state, tenant, provider, &request, "", back, &binding, bound).await?;
-            let key = self.saml_key(tenant).await?;
+            self.store_flow(&state, who.tenant, provider, &request, "", back, &binding, bound).await?;
+            let key = self.saml_key(who.tenant).await?;
             let sp = ferrum_saml::Sp { entity_id: &n.entity_id, acs_url: &n.acs_url, key: Some(&key), decrypt: &[], slo_url: None };
             return ferrum_saml::request_url(&sp, &idp, &request, &state, true).map_err(Error::Unavailable);
         }
@@ -1374,7 +1390,7 @@ impl Kernel {
             return Err(Error::Unavailable("the provider's sign-in address must use https".into()));
         }
         let (nonce, verifier) = (random_secret(""), random_secret(""));
-        self.store_flow(&state, tenant, provider, &nonce, &verifier, redirect_uri, &binding, bound).await?;
+        self.store_flow(&state, who.tenant, provider, &nonce, &verifier, redirect_uri, &binding, bound).await?;
         url.query_pairs_mut()
             .append_pair("response_type", "code")
             .append_pair("client_id", &p.client_id)
@@ -1389,15 +1405,16 @@ impl Kernel {
         Ok(url.to_string())
     }
 
-    /// An OpenID Connect provider sent the browser back from signing in again (`code`; none when it did not sign them
-    /// in) → where to send it: the page that hands the proof to the person's dialog, with the state and a one-time code.
-    /// Accepted only for the identity the person is linked to, signed in within [`STEP_UP_FRESH_SECS`]. The flow is used
-    /// up when anything is refused.
-    pub async fn sso_step_up_back(&self, state: &str, code: Option<&str>) -> Result<String> {
-        type Flow = (Uuid, Uuid, String, String, String, Option<Uuid>, Option<String>);
+    /// An OpenID Connect provider sent the browser back from signing in again (`code`; none when it did not sign them in)
+    /// to a step-up's state → where to send it: the page that hands the proof to the person's dialog, with the state and
+    /// a one-time code. Accepted only for the identity the person is linked to, signed in again just now
+    /// ([`fresh_sign_in`]), after every check a sign-in's ID token gets; a sign-in's state is not found here. The flow is
+    /// used up when anything is refused, and a refusal is a failed step-up on the person's trail.
+    pub async fn sso_step_up_back(&self, state: &str, code: Option<&str>, from: &crate::gate::Arrival) -> Result<String> {
+        type Flow = (Uuid, Uuid, String, String, String, Uuid, String, i64);
         let mut tx = self.db.system_tx().await?;
         let flow: Option<Flow> = sqlx::query_as(
-            "select tenant_id, provider_id, nonce, verifier, redirect_uri, step_up_user, step_up_back from sso_flow \
+            "select tenant_id, provider_id, nonce, verifier, redirect_uri, step_up_user, step_up_back, extract(epoch from created_at)::bigint from sso_flow \
              where state_hash = $1 and step_up_session is not null and code_hash is null and created_at > now() - make_interval(mins => $2)",
         )
         .bind(hash(state))
@@ -1405,7 +1422,7 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
-        let Some((tenant, provider, nonce, verifier, redirect_uri, Some(user), Some(back))) = flow else {
+        let Some((tenant, provider, nonce, verifier, redirect_uri, user, back, asked)) = flow else {
             return Err(Error::Unauthorized("this request to sign in again has expired or was already used; try again".into()));
         };
         let checked = async {
@@ -1418,38 +1435,49 @@ impl Kernel {
             }
             let d = self.discover(&p.issuer).await?;
             let claims = self.id_token_for(&d, &p, code, &redirect_uri, &verifier, &nonce).await?;
-            let at = claims.auth_time.as_ref().and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)));
-            self.same_and_fresh(tenant, user, &p, &claims.sub, at).await
+            self.same_and_fresh(tenant, user, &p, &claims.sub, auth_time(&claims), asked).await
         }
         .await;
-        let mut tx = self.db.system_tx().await?;
+        self.step_up_answered(state, tenant, user, &back, checked, from).await
+    }
+
+    /// The provider's answer to a step-up's signing in again, `checked`: refused, the flow goes and the person's trail has
+    /// a failed step-up; accepted, the flow keeps a one-time code (as a hash) and when it was made, and the browser goes on
+    /// to `back` with the state and that code. Once: a flow already answered is not answered again.
+    async fn step_up_answered(&self, state: &str, tenant: Uuid, user: Uuid, back: &str, checked: Result<()>, from: &crate::gate::Arrival) -> Result<String> {
         if let Err(e) = checked {
-            sqlx::query("delete from sso_flow where state_hash = $1").bind(hash(state)).execute(&mut *tx).await?;
+            let mut tx = self.db.system_tx().await?;
+            sqlx::query("delete from sso_flow where state_hash = $1 and code_hash is null").bind(hash(state)).execute(&mut *tx).await?;
             tx.commit().await?;
+            if matches!(e, Error::Unauthorized(_) | Error::Forbidden(_)) {
+                self.record_sign_in_failure(tenant, user, "step_up_failed", "provider", from).await?;
+            }
             return Err(e);
         }
         let proof = random_secret("");
+        let mut tx = self.db.system_tx().await?;
         let done = sqlx::query("update sso_flow set code_hash = $2, answer = $3 where state_hash = $1 and code_hash is null")
             .bind(hash(state))
             .bind(hash(&proof))
-            .bind(json!({"step_up": "ok"}))
+            .bind(json!({"step_up": true, "at": chrono::Utc::now().timestamp()}))
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
         if done.rows_affected() == 0 {
             return Err(Error::Unauthorized("this request to sign in again was already used; try again".into()));
         }
-        let mut next = reqwest::Url::parse(&back).map_err(|_| Error::Unauthorized("this request to sign in again cannot come back".into()))?;
+        let mut next = reqwest::Url::parse(back).map_err(|_| Error::Unauthorized("this request to sign in again cannot come back; try again".into()))?;
         next.query_pairs_mut().append_pair("state", state).append_pair("code", &proof);
         Ok(next.to_string())
     }
 
-    /// What signing in again must show: the identity `user` is linked to at `p` (`sub`), and a sign-in there at `at`
-    /// (seconds since 1970) within [`STEP_UP_FRESH_SECS`]. Each refusal says only what the person needs to know.
-    async fn same_and_fresh(&self, tenant: Uuid, user: Uuid, p: &Provider, sub: &str, at: Option<i64>) -> Result<()> {
-        if !fresh_sign_in(at, chrono::Utc::now().timestamp()) {
+    /// What signing in again must show: a sign-in at `p` at `at` fresh for a step-up asked at `asked`
+    /// ([`fresh_sign_in`]), as the identity `user` is linked to there (`sub`). Each refusal says only what the person
+    /// needs to know to put it right.
+    async fn same_and_fresh(&self, tenant: Uuid, user: Uuid, p: &Provider, sub: &str, at: Option<i64>, asked: i64) -> Result<()> {
+        if !fresh_sign_in(at, asked, chrono::Utc::now().timestamp()) {
             return Err(Error::Unauthorized(format!(
-                "{} did not ask you to sign in again, so this cannot confirm it is you; an administrator can set it to honour a request to sign in again",
+                "{} did not ask you to sign in again, so this cannot confirm it is you; an administrator can have the provider ask again when told to",
                 p.label
             )));
         }
@@ -1467,25 +1495,45 @@ impl Kernel {
         Ok(())
     }
 
-    /// Takes the proof that `user` signed in again at their provider for the browser session `sid` (the `state` and the
-    /// one-time `code` the page was handed): once, within the flow's ten minutes, only for that session and person.
-    /// The caller then marks the session ([`Kernel::step_up_session`]).
-    pub async fn sso_step_up_finish(&self, tenant: Uuid, user: Uuid, sid: Uuid, state: &str, code: &str) -> Result<()> {
-        let mut tx = self.db.system_tx().await?;
-        let taken: Option<Uuid> = sqlx::query_scalar(
-            "delete from sso_flow where state_hash = $1 and tenant_id = $2 and step_up_session = $3 and step_up_user = $4 and code_hash = $5 \
-             and answer->>'step_up' = 'ok' and created_at > now() - make_interval(mins => $6) returning provider_id",
-        )
-        .bind(hash(state))
-        .bind(tenant)
-        .bind(sid)
-        .bind(user)
-        .bind(hash(code))
-        .bind(FLOW_MINUTES)
-        .fetch_optional(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        taken.map(|_| ()).ok_or_else(|| Error::Unauthorized("signing in again did not finish; try again".into()))
+    /// Takes the proof that the person of `who` signed in again at their provider (the `state` and one-time `code` the page
+    /// was handed): once, within a minute of being made, only for that session and person, and only on the origin it was
+    /// handed to (`here`, this request's). Then the session counts as stepped up ([`Kernel::stepped_up`]). Anything else is
+    /// a failed step-up on the person's trail, and changes nothing.
+    pub async fn sso_step_up_finish(&self, who: &StepUp, here: &str, state: &str, code: &str, from: &crate::gate::Arrival) -> Result<()> {
+        let unfinished = || Error::Unauthorized("signing in again did not finish; try again".into());
+        let proved = async {
+            let mut tx = self.db.system_tx().await?;
+            let taken: Option<(Option<String>, Option<Value>)> = sqlx::query_as(
+                "delete from sso_flow where state_hash = $1 and tenant_id = $2 and step_up_session = $3 and step_up_user = $4 and code_hash = $5 \
+                 and created_at > now() - make_interval(mins => $6) returning step_up_back, answer",
+            )
+            .bind(hash(state))
+            .bind(who.tenant)
+            .bind(who.session)
+            .bind(who.user)
+            .bind(hash(code))
+            .bind(FLOW_MINUTES)
+            .fetch_optional(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            let (back, answer) = taken.ok_or_else(unfinished)?;
+            let made = answer.filter(|a| a["step_up"] == json!(true)).and_then(|a| a["at"].as_i64()).ok_or_else(unfinished)?;
+            let origin = |u: &str| reqwest::Url::parse(u).ok().map(|u| u.origin().ascii_serialization());
+            let same_origin = origin(here).is_some() && origin(here) == back.as_deref().and_then(origin);
+            if !same_origin || made < chrono::Utc::now().timestamp() - STEP_UP_PROOF_SECS {
+                return Err(unfinished());
+            }
+            Ok(())
+        }
+        .await;
+        match proved {
+            Ok(()) => self.stepped_up(who, "provider", from).await,
+            Err(e @ Error::Unauthorized(_)) => {
+                self.record_sign_in_failure(who.tenant, who.user, "step_up_failed", "provider", from).await?;
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -1530,6 +1578,24 @@ mod tests {
         let mut m = v.as_object().unwrap().clone();
         m.insert("sub".into(), json!("abc"));
         serde_json::from_value(Value::Object(m)).unwrap()
+    }
+
+    #[test]
+    fn a_step_up_takes_only_a_sign_in_made_after_it_asked() {
+        let now = 1_800_000_000;
+        let asked = now - 30;
+        assert!(fresh_sign_in(Some(now - 5), asked, now));
+        assert!(fresh_sign_in(Some(now - STEP_UP_FRESH_SECS), now - 600, now), "the oldest taken, for a step-up asked long ago");
+        assert!(!fresh_sign_in(Some(now - STEP_UP_FRESH_SECS - 1), now - 600, now), "older than that");
+        assert!(fresh_sign_in(Some(asked - CLOCK_SKEW_SECS), asked, now), "a provider's clock behind ours");
+        assert!(!fresh_sign_in(Some(asked - CLOCK_SKEW_SECS - 1), asked, now), "a sign-in from before it asked: answered from a session it had");
+        assert!(fresh_sign_in(Some(now + CLOCK_SKEW_SECS), asked, now), "a provider's clock ahead");
+        assert!(!fresh_sign_in(Some(now + CLOCK_SKEW_SECS + 1), asked, now), "from the future");
+        assert!(!fresh_sign_in(None, asked, now), "the provider did not say");
+        assert_eq!(auth_time(&claims(json!({"auth_time": 1_800_000_000}))), Some(1_800_000_000));
+        assert_eq!(auth_time(&claims(json!({"auth_time": 1_800_000_000.5}))), Some(1_800_000_000));
+        assert_eq!(auth_time(&claims(json!({"auth_time": "1800000000"}))), None, "not a number");
+        assert_eq!(auth_time(&claims(json!({}))), None);
     }
 
     #[test]

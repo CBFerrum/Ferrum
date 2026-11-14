@@ -137,6 +137,24 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
     })
 }
 
+/// Who a request's credential names, from its token alone (signature and expiry; no database, nothing counted): the
+/// workspace, the person and the browser session behind it, if any. Only for saying more about an answer the request
+/// was already admitted for (a step-up refusal's ways); never to admit anything. Keys and tickets name nobody here.
+pub(crate) fn token_person(st: &crate::state::AppState, headers: &HeaderMap) -> Option<(Uuid, Uuid, Option<Uuid>)> {
+    let token = bearer(headers).or_else(|| crate::shell::session_cookie(headers, st.shell.secure))?;
+    if token.starts_with("fk_") {
+        return None;
+    }
+    let data = JWT::new(&st.jwt_secret).validate(&token).ok()?;
+    let claims = &data.claims.claims;
+    if claims.contains_key("mfa") {
+        return None;
+    }
+    let tenant = claims.get("tenant")?.as_str()?.parse().ok()?;
+    let device = ["sid", "bsid"].iter().find_map(|k| claims.get(*k)?.as_str()?.parse().ok());
+    Some((tenant, data.claims.pid.parse().ok()?, device))
+}
+
 /// App tokens work only for their app's calls to the API ([`Auth`]), and records keys only for
 /// records; everything else refuses them.
 fn no_app_token(t: &TokenSession) -> Result<(), ApiError> {

@@ -64,7 +64,8 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   toward lockout and without using up a code. A setting that cannot be read refuses.
 * Saving them in `enforce` needs the saver's own address inside; the operator can clear them.
 * Sign-ins, second steps, failed and refused attempts of known accounts (capped at three an hour, then a
-  summary), break-glass sign-ins and sessions' ends are audit events, with address, browser, zone and method.
+  summary), break-glass sign-ins, step-ups and refused step-ups, and sessions' ends are audit events, with address,
+  browser, zone and method.
   Attempts for unknown addresses are only counted. No secret is ever in them.
 * With `new_device_notice`, staff are told once per new device (user agent without versions) that their
   account signed in from it.
@@ -84,6 +85,27 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   let through unless the rule says `keys: false`. A zone with `step_up: true` asks staff before any change and
   before reading a marked entity; zone and network refusals come first. A job keeps whether the request that
   queued it had stepped up. What cannot be read counts as marked.
+* A step-up is proved with a passkey, the password (and authenticator code), or by signing in again at the single
+  sign-on provider the person is linked to; the refusal lists which of these the person has (`ways`), and says
+  plainly when there is none. Each proof is bound to the browser session and the person it is for, used once, and
+  marks only that live session's step-up time, in the same transaction as its audit event (`stepped_up`); nothing
+  here opens, extends or hands over a session. Where the workspace requires single sign-on of a person, a password
+  or passkey proves nothing for them there.
+* Passkey: a challenge of its own kind (a sign-in's or a registration's is not taken) naming the session and person,
+  allowing only their credentials, user verification required, five minutes, taken once; then the sign-in's checks
+  (relying party, origin, not framed, signature, counter).
+* Signing in again: OpenID Connect `prompt=login` and `max_age=0`, SAML `ForceAuthn`; the answer must be the linked
+  identity, pass every check a sign-in's answer passes, and state a sign-in (`auth_time`, `AuthnInstant`) made at
+  most three minutes before it is checked and not before the step-up asked (two minutes allowed for the provider's
+  clock). Its flow is marked as a step-up's, bound to the session and person, and its browser binding is given to
+  nobody: a sign-in's flow never confirms anyone and a step-up's never signs anyone in, links or makes an account.
+  The proof reaches the page the person works on as a one-use code (32 random bytes, kept as a SHA-256), for that
+  session and that host's origin, good for a minute; the page hands it to its dialog over a same-origin channel,
+  tagged with a value the dialog made and the provider never sees, and the dialog takes nothing else.
+* A refused step-up is `step_up_failed` on the trail, capped as failed sign-ins are; wrong passwords and codes still
+  count toward the lockout. A passkey's and the provider's steps share the password step-up's limit; the routes are
+  staff sign-in machinery (not served where a zone admits no staff, the provider's way back aside), and log no
+  challenge, assertion, code or token.
 * `record_reads` names entities whose reads are audit events of category `access`: who, when, which record or
   which query (fields and operators, never values), how many rows, the address and zone. A marked read whose
   event cannot be written fails. An unmarked read sends no statement more.

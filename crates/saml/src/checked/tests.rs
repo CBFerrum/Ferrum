@@ -369,9 +369,26 @@ fn the_request_and_our_metadata_say_where_answers_go() {
         assert!(xml.contains(&part), "{part} in {xml}");
     }
 
+    assert!(!xml.contains("ForceAuthn"), "a sign-in lets the provider answer from a session it has: {xml}");
+
     let ours = SPMetadataExtractor::try_from_xml(&sp_metadata(&SP).unwrap()).unwrap();
     assert_eq!(ours.issuer().unwrap(), SP.entity_id);
     assert_eq!(ours.acs().unwrap().url, SP.acs_url);
+}
+
+#[test]
+fn a_step_up_asks_the_provider_to_have_the_person_sign_in_again_and_reads_when_they_did() {
+    let k = idp();
+    let key = new_sp_key("ferrum test").unwrap();
+    let url = request_url(&Sp { key: Some(&key), ..SP }, &metadata(&k), REQUEST, "su.relay-1", true).unwrap();
+    let (xml, relay) = TestIdp::request(&url);
+    assert!(xml.contains("ForceAuthn=\"true\""), "{xml}");
+    assert_eq!(relay, "su.relay-1");
+    // When the person signed in at the provider: the earliest of the assertion's statements, in seconds.
+    let at = chrono::Utc::now() - chrono::Duration::minutes(7);
+    let r = response(&k, |r| r.assertion.as_mut().unwrap().authn_statements.as_mut().unwrap()[0].authn_instant = Some(at));
+    let p = verify(&SP, &metadata(&k), &posted(&k.signed(&r)), REQUEST).unwrap();
+    assert_eq!(p.authn_instant, Some(at.timestamp()));
 }
 
 #[test]

@@ -763,23 +763,24 @@ async fn isolated_cors(req: axum::extract::Request, next: axum::middleware::Next
     res
 }
 
-/// API answers belong to one user and can change without a new version (an engine-set status, a
-/// recorded IRN): browsers must not reuse them. Handlers that do want caching set their own
-/// `Cache-Control`.
 /// A step-up refusal says which ways the caller has to confirm it is them (docs/operations.md, "Asking again before
-/// sensitive work"). Only the API's answers can be one, so only their headers are kept to ask with.
+/// sensitive work"). Only the API's answers to a credential can be one, so only those requests' headers are kept.
 async fn step_up_ways(st: Arc<AppState>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
-    if !req.uri().path().starts_with("/api/") {
+    let credential = req.headers().contains_key(axum::http::header::AUTHORIZATION) || req.headers().contains_key(axum::http::header::COOKIE);
+    if !credential || !req.uri().path().starts_with("/api/") {
         return next.run(req).await;
     }
-    let (method, headers) = (req.method().clone(), req.headers().clone());
+    let headers = req.headers().clone();
     let res = next.run(req).await;
     if res.extensions().get::<crate::error::StepUpAsked>().is_none() {
         return res;
     }
-    crate::controllers::auth::with_ways(&st, &method, &headers, res).await
+    crate::controllers::auth::with_ways(&st, &headers, res).await
 }
 
+/// API answers belong to one user and can change without a new version (an engine-set status, a
+/// recorded IRN): browsers must not reuse them. Handlers that do want caching set their own
+/// `Cache-Control`.
 async fn api_no_store(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     let api = req.uri().path().starts_with("/api/");
     let mut res = next.run(req).await;

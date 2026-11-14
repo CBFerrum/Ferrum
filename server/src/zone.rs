@@ -41,6 +41,7 @@ pub async fn arrival(st: &AppState, headers: &HeaderMap) -> ferrum_kernel::gate:
         address: entry.address.clone(),
         user_agent: headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default().chars().take(300).collect(),
         zone: entry.name().map(str::to_string),
+        step_up: false,
     }
 }
 
