@@ -98,6 +98,28 @@ pub(crate) const EVENT_REFS: &[(&str, &str)] = &[
     ("logic_run", "trigger_event"),
 ];
 
+/// The freeze of a moving workspace (pull request 232): an older build never asks `ferrum_workspace_frozen` and would
+/// take changes on either copy. Held on both sides by the workspace's id while it moves; the target lets go when it
+/// arrives, the source at `finish_move` (its copy stays frozen until then), both at an abort.
+pub const FLOOR: crate::window::Floor = crate::window::Floor {
+    feature: "workspace_freeze",
+    since: "2026-11-14T04:00:04Z",
+    what: "a workspace frozen for a move to another installation takes no changes",
+    temporary: true,
+};
+
+/// [`FLOOR`] on one side: held (`true`) or let go.
+async fn freeze_floor(db: &Db, tenant: Uuid, hold: bool) -> Result<()> {
+    let mut tx = system(db).await?;
+    if hold {
+        crate::window::require(&mut tx, &FLOOR, &tenant.to_string()).await?;
+    } else {
+        crate::window::release(&mut tx, &FLOOR, &tenant.to_string()).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Session advisory lock on the source: one run at a time works on one workspace's move.
 const LOCK: i32 = 0x0FE2_2079;
 
@@ -496,7 +518,10 @@ impl Kernel {
             return Err(Error::Conflict(format!("another move_workspace run is working on {slug} now: wait for it to end")));
         }
         let done = self.steps(source, tenant, slug, &peer, from, run, say).await;
-        drop(lock);
+        // Let go before answering. Dropping the connection only closes its socket, and the database ends the session
+        // (and the lock) a moment later: a run started right after this one answered would be refused as "another run".
+        let _ = sqlx::query("select pg_advisory_unlock($1, hashtext($2))").bind(LOCK).bind(tenant.to_string()).execute(&mut lock).await;
+        let _ = sqlx::Connection::close(lock).await;
         done
     }
 
@@ -539,6 +564,7 @@ impl Kernel {
             _ => {}
         }
         if here_done && there.as_ref().is_none_or(|m| m.state == "moved") {
+            freeze_floor(&self.db, tenant, false).await?;
             say(&format!("{slug} has moved here already: nothing to do"));
             return Ok(json!({"workspace": slug, "state": "arrived", "done": true}));
         }
@@ -547,10 +573,15 @@ impl Kernel {
         {
             return Err(Error::Conflict(format!("{slug} here comes from another move than the one under way at the source: abort one of them")));
         }
+        if there.is_none() {
+            self.may_move(source, tenant, slug, from, say).await?;
+        }
+        // Before anything is frozen, on both sides: no build that would ignore the freeze starts on either from here.
+        freeze_floor(source, tenant, true).await?;
+        freeze_floor(&self.db, tenant, true).await?;
         let move_id = match &there {
             Some(m) => m.move_id,
             None => {
-                self.may_move(source, tenant, slug, from, say).await?;
                 let id = Uuid::now_v7();
                 let mut tx = system(source).await?;
                 let started: Option<Uuid> = sqlx::query_scalar(
@@ -600,7 +631,9 @@ impl Kernel {
                 return Ok(json!({"workspace": slug, "state": "moved", "stopped": "moved"}));
             }
         }
-        self.arrive(tenant, move_id, slug, peer, from.base_domain.as_deref(), say).await
+        let arrived = self.arrive(tenant, move_id, slug, peer, from.base_domain.as_deref(), say).await?;
+        freeze_floor(&self.db, tenant, false).await?;
+        Ok(arrived)
     }
 
     /// What has to hold before anything is copied: one build on both sides, the same tables, nothing held, every value
@@ -1274,6 +1307,8 @@ impl Kernel {
         } else if here.is_none() {
             return Err(Error::Conflict(format!("no move of {slug} is under way")));
         }
+        freeze_floor(source, tenant, false).await?;
+        freeze_floor(&self.db, tenant, false).await?;
         Ok(json!({"workspace": slug, "aborted": true}))
     }
 
@@ -1315,6 +1350,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
         sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
+        crate::window::release(&mut tx, &FLOOR, &tenant.to_string()).await?;
         let mut rows = 0;
         for (table, column) in workspace_columns(&self.db, &mut tx).await? {
             rows +=

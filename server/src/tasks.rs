@@ -802,6 +802,37 @@ impl Task for CancelMove {
     }
 }
 
+/// `allow_older_builds reason:"..." [feature:<name>] [force:yes]`: removes the floors that keep builds which would not
+/// enforce a protection from starting (docs/operations.md, "Protections an older build would not enforce").
+pub struct AllowOlderBuilds;
+
+#[async_trait]
+impl Task for AllowOlderBuilds {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "allow_older_builds".into(),
+            detail: "Lets builds that do not enforce protections in use here start again (all, or one feature's), saying which, with a reason".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let reason = vars.cli_arg("reason").map_err(|_| Error::Message("say why: reason:\"...\" (it goes in the audit trail)".into()))?;
+        let feature = vars.cli_arg("feature").ok().map(|f| f.trim()).filter(|f| !f.is_empty());
+        let force = vars.cli_arg("force").is_ok_and(|v| v == "yes");
+        let done = k.allow_older_builds(reason, feature, force).await.map_err(refused)?;
+        println!("Builds from before these dates may start on this database again, and they will NOT enforce:");
+        for line in ferrum_kernel::window::said(&done.removed) {
+            println!("  {line}");
+        }
+        match done.compatible_from {
+            Some(from) => println!("The oldest build that may start now is of {}.", from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            None => println!("No build has recorded itself here yet."),
+        }
+        println!("This lasts until the next start of a build that knows floors: it puts them back for whatever is still in use. Roll back now.");
+        Ok(())
+    }
+}
+
 /// `adopt_move reason:"..."`: on a physical copy (another timeline of the same database), says it is the copy.
 pub struct AdoptMove;
 

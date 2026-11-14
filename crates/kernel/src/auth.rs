@@ -511,6 +511,9 @@ impl Kernel {
         };
         let id = Uuid::now_v7();
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        if networks.is_some() {
+            crate::window::require(&mut tx, &crate::gate::KEY_NETWORKS_FLOOR, "").await?;
+        }
         sqlx::query(
             "insert into api_key (tenant_id, id, user_id, name, prefix, secret_hash, expires_at, scope, networks) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
@@ -588,6 +591,9 @@ impl Kernel {
     pub async fn set_api_key_networks(&self, ctx: &Ctx, id: Uuid, networks: &[String]) -> Result<()> {
         let networks = key_networks(networks)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        if networks.is_some() {
+            crate::window::require(&mut tx, &crate::gate::KEY_NETWORKS_FLOOR, "").await?;
+        }
         let n = sqlx::query("update api_key set networks = $5 where tenant_id = $1 and id = $2 and revoked_at is null and (user_id = $3 or $4)")
             .bind(ctx.tenant)
             .bind(id)

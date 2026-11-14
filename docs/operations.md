@@ -487,6 +487,54 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   `deploy/smoke.sh` starts the previous image again on the database the new one migrated, when the previous image has
   the label.
 
+#### Protections an older build would not enforce
+
+Some protections are newer than builds that are still inside the window. Such a build would start, run as a guest and
+quietly not enforce them: a pool whose zone admits no staff would admit them again. So a protection that is switched on
+puts a **floor** in place (table `window_floor`): the date of the first build that enforces it. The recorded
+`schema_compatible_from` is then the later of the syncing build's own `COMPATIBLE_FROM` (kept as
+`schema_compatible_from_own`) and the latest floor. Every build in the window already reads that value, so a build from
+before a floor is refused at start, the older ones included.
+
+| Floor (`feature`) | Put in place when | Builds from |
+|---|---|---|
+| `zones` | a server starts with zone settings (`FERRUM_ZONES`) | 2026-11-13T23:48:57Z |
+| `zones_limited` | a server starts with a zone that limits staff to some apps, keeps administrators out, or uses `custom` | 2026-11-14T05:59:42Z |
+| `staff_networks` | a workspace saves staff networks | 2026-11-14T03:09:38Z |
+| `idle_timeout` | a workspace saves an idle timeout | 2026-11-14T03:09:38Z |
+| `break_glass` | a workspace saves a break-glass list | 2026-11-14T03:09:38Z |
+| `key_networks` | an API key is given networks | 2026-11-14T03:09:38Z |
+| `move_fence` | `plan_move` marks the database (until cancelled, adopted or not followed) | 2026-11-14T01:33:19Z |
+| `workspace_freeze` | `move_workspace` starts, on both sides (until it arrives, at the target; until `finish_move`, at the source; both at an abort) | 2026-11-14T04:00:04Z |
+| `sandbox` | `copy_workspace` makes a sandbox (until `delete_sandbox` deletes the last one) | 2026-11-14T06:47:14Z |
+
+* **What a refused rollback says.** The usual refusal (*Start a build from … or newer*), and, from a build that knows
+  floors, which protections are switched on and since which build. A build from before floors existed prints only the
+  usual refusal.
+* **The deliberate way down.** `ferrum task allow_older_builds reason:"..." [feature:<name>] [force:yes]`, run with the
+  newer build, removes the floors (all, or one feature's), works the recorded value out again, prints exactly which
+  protections builds from before those dates will then not enforce and the oldest build that may start, and records
+  `platform.allow_older_builds` on the audit trail as the system's. While a move holds its floor it refuses, unless
+  `force:yes`: finish, cancel or abort the move first, since an older build would not honour it. It lasts until the
+  next start of a build that knows floors (below), which is what a rollback needs: run it, then roll back.
+* **Every start looks at what is in use.** A build level with the database puts floors in place at each start, under the
+  start hold, for what is in use however it got there (saved by a build from before floors, or after
+  `allow_older_builds`): any workspace with staff networks, an idle timeout or a break-glass list, any key pinned to
+  networks, any sandbox, a move mark, and any workspace move not finished; zones from the server's settings. This is
+  one statement: `tenant` (a row per workspace) and `api_key` are read until the first match, sandboxes through their
+  index, and the two move tables hold a row per move.
+* **Turning a protection off does not lower its floor.** A workspace that clears its networks, or zone settings taken
+  out, leave the floor where it is: the operator may turn them on again, and a stale floor costs only that a rollback
+  needs `allow_older_builds`. A floor comes back by itself: zones' when a server starts with them, a workspace's when it
+  saves the setting, a move's when one starts, and all of them at the next start. A guest of a newer build may raise a
+  floor of a protection it knows (that only refuses more) but never removes one or changes the recorded build, and the
+  schema sync never records a value below the floors, whichever build syncs.
+* **What it does not cover.** Only starts are refused. A replica of an older build that is already running when a
+  protection is switched on keeps running and does not enforce it: finish a rollout before switching protections on,
+  and switch them on with every replica on a build that enforces them.
+* **Seeing it.** `ferrum task doctor` lists the floors in effect, when each was switched on and by which build, and the
+  oldest build that may start (`window.floors`).
+
 ## Backups and restore
 
 * CloudNativePG archives WAL continuously through the Barman Cloud plugin and takes a base backup
@@ -1136,6 +1184,8 @@ every app, so routing alone does not keep anyone out: the server refuses. The us
 public gateway reaches a pool in a zone that admits no staff, and serves the portal, the shop, public pages
 and callbacks there. Staff work through a private gateway, inside your network, in a zone that admits them.
 A staff password or key stolen and tried from the internet then opens nothing.
+A server that starts with zone settings keeps builds from before zones from starting on its database (see
+"Protections an older build would not enforce").
 
 **Staff** are accounts of kind `member` and `support` (support access), administrators included. **Outside
 people** are `portal` and `guest` accounts; **machines** are `service` accounts. Zones never change what
@@ -1296,7 +1346,8 @@ admitted with whatever their rights are. Background work runs with staff rights 
 A workspace's administrators can name the networks its staff may work from: an office's addresses, a
 company VPN's. Staff using a password, a session, a token or an app from anywhere else are refused. It is
 the workspace's own setting, in addition to zones (which are the operator's), and checked at the same place,
-on every request. With no networks it is off, as before.
+on every request. With no networks it is off, as before. Saving networks, an idle timeout or a break-glass list,
+or pinning a key to networks, keeps builds that would ignore them from starting (see "Protections an older build would not enforce").
 
 | Workspace setting (`GET`/`PUT /api/admin/settings`) | Meaning | Default |
 |---|---|---|
@@ -1487,7 +1538,8 @@ from an existing database have not been run at all; the pooler also waits for th
 
 A whole installation (its database, its files and its keys) moves from one place to another: Compose to
 Kubernetes, back, or from one cluster to another. A copy of the database is not the database the server knew,
-so it would be treated as a restore and held. `ferrum task plan_move` says the copy is a move.
+so it would be treated as a restore and held. `ferrum task plan_move` says the copy is a move. While a move is
+planned, builds that would ignore its fence may not start on the database (see "Protections an older build would not enforce").
 
 **What `plan_move` does.** Run it on the source, where the server runs, with its own `DATABASE_URL`:
 
@@ -1612,7 +1664,8 @@ a promoted copy have not been run.
 One workspace moves from one installation to another, with its history, files and waiting work, and nothing
 else moves: to a cell of its own (its own database, files and keys), to another region, or back to a shared
 installation. Both installations keep running. Use "Moving an installation" for everything at once, and
-"Taking one workspace back" to undo one workspace's mistake from a backup.
+"Taking one workspace back" to undo one workspace's mistake from a backup. While a workspace moves, builds that
+would ignore its freeze may not start on either installation (see "Protections an older build would not enforce").
 
 **What it takes.** Both installations run one build (the same image), with the same apps available; the
 workspace's apps at their versions are available at the target. The target's database role may turn
