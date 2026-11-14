@@ -2973,7 +2973,7 @@ it) and signed with the server's VAPID key.
 
 ## Custom domains
 
-Administrators give a workspace its own addresses under Administration → Domains
+Administrators give a workspace its own addresses under Administration → Addresses
 ([plan](plan/apps-ui.md) §7): for the workspace (`shell`), its portal (`portal`) or an app's public
 site (`site:{app}`), within its limit of addresses (Addresses of a workspace, which also says what each
 `shell` address shows and how names under the base domain work).
@@ -3043,7 +3043,7 @@ removed address leaves in three steps:
    owner opens there (the bar keeps which workspace an address's storage is for); during the leaving
    period the address still answers as the same workspace, so nothing is wiped.
 
-* **Removing**: Administration → Domains, or `DELETE /api/admin/domains/{host}` ([api.md](api.md)), which
+* **Removing**: Administration → Addresses, or `DELETE /api/admin/domains/{host}` ([api.md](api.md)), which
   answers until when the address is leaving. Administrators remove custom domains; the operator releases
   any address, a subdomain too, with
   `ferrum task release_host host:<name> [leaving_days:<n>]` (default the setting; `0`: it redirects at
