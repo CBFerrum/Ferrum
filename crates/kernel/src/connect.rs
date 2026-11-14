@@ -350,6 +350,8 @@ impl Kernel {
     /// A call to a provider, unless it is being left alone, and what came of it remembered. Every
     /// job of a connection goes through here, so they all wait together.
     async fn calling<T>(&self, tenant: Uuid, connection: Uuid, call: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+        // A connector reaches its provider: never from a sandbox (sandbox.rs).
+        self.outward(tenant).await?;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         let waiting: Option<(f64, Option<String>)> = sqlx::query_as(
             "select extract(epoch from waiting_until - now())::float8, waiting_reason from connection \
@@ -521,6 +523,7 @@ impl Kernel {
         let row = self.row(ctx.tenant, id).await?;
         let connection = self.opened(ctx.tenant, &row)?;
         let connector = self.connector(ctx.tenant, &row.provider).await?;
+        self.outward(ctx.tenant).await?;
         let outcome = connector.check(self, &connection).await;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query("update connection set enabled = $3, last_error = $4, last_checked_at = now() where tenant_id = $1 and id = $2")

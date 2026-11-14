@@ -220,7 +220,11 @@ impl Host<'_, '_> {
                 }
             }
             "kv.get" | "kv.set" | "kv.delete" | "kv.list" => self.kv(op, &a).await,
-            "http.fetch" => self.host.fetch(self.plugin, &a).await,
+            "http.fetch" => {
+                // Nothing reaches outside for a sandbox (ferrum_kernel::sandbox).
+                self.kernel().outward(self.ctx().tenant).await?;
+                self.host.fetch(self.plugin, &a).await
+            }
             "crypto.verify_hmac_sha256" => {
                 let secret = self.plugin.credential(s(&a, "credential")?)?;
                 Ok(json!({"valid": signed_with(secret, s(&a, "message")?, s(&a, "signature")?)}))

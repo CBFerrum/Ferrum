@@ -490,7 +490,7 @@ impl Kernel {
                 headers,
                 body: Some((body.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded".to_string())),
             };
-            let got = self.fetch(req, &reach).await;
+            let got = self.fetch(conn.tenant, req, &reach).await;
             if bound
                 && let Ok(a) = &got
                 && remember_nonce(conn.id, a)
@@ -566,7 +566,7 @@ impl Kernel {
                 headers: vec![("accept".into(), "application/json".into())],
                 body: Some((asked.to_string().into_bytes(), "application/json".to_string())),
             };
-            let a = self.fetch(req, &Reach { hosts: vec![host_of(&url)], any: false, timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES }).await?;
+            let a = self.fetch(conn.tenant, req, &Reach { hosts: vec![host_of(&url)], any: false, timeout: TOKEN_TIMEOUT, max_bytes: TOKEN_BYTES }).await?;
             let id = a.body.get("client_id").and_then(Value::as_str).filter(|i| (200..300).contains(&a.status) && !i.is_empty() && i.len() <= 500);
             let Some(id) = id else {
                 return Err(Error::invalid(format!("the provider did not register a client ({})", a.status)));

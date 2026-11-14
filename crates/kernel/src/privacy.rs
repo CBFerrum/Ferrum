@@ -648,9 +648,11 @@ impl Kernel {
             apps.push(json!({"app": "connections", "held": held}));
         }
         tx.rollback().await?;
+        // Sandboxes of this workspace hold a copy of what it held of them when each was made (sandbox.rs).
+        let sandboxes = self.sandboxes_of(ctx.tenant).await?;
         Ok(json!({
             "email": email, "addresses": emails, "phone": phone, "records": records, "possibly": possibly, "account": account, "held": held,
-            "sign_ins": sign_ins, "apps": apps, "not_searched": ctx.schema.undeclared_personal_data,
+            "sign_ins": sign_ins, "apps": apps, "not_searched": ctx.schema.undeclared_personal_data, "sandboxes": sandboxes,
         }))
     }
 
@@ -766,10 +768,13 @@ impl Kernel {
             Some(id) if !conns.sign_ins.is_empty() => self.revoke_erased(ctx, id, conns.sign_ins).await,
             _ => vec![],
         };
+        // What this did not reach: the sandboxes of this workspace still hold their copy, to delete or make again.
+        let sandboxes = self.sandboxes_of(ctx.tenant).await?;
         Ok(json!({
             "sign_ins_revoked": revoked,
             "email": email, "addresses": emails, "phone": phone, "erased": erased, "retained": retained, "held": held, "account_erased": account.is_some(),
             "audit_events_redacted": events, "files_deleted": files, "exports_deleted": exports, "apps": apps, "not_searched": ctx.schema.undeclared_personal_data,
+            "sandboxes": sandboxes,
         }))
     }
 

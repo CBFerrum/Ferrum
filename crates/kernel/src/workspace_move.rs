@@ -68,7 +68,7 @@ pub enum Run {
 
 /// Tables that do not travel: sessions and what hangs on them (people sign in again; devices subscribe again), and
 /// what only lives for minutes (codes, sign-in flows, direct uploads in progress).
-const LEFT_BEHIND: &[&str] = &[
+pub(crate) const LEFT_BEHIND: &[&str] = &[
     "user_session",
     "push_subscription",
     "oauth_code",
@@ -88,7 +88,7 @@ const LEFT_BEHIND: &[&str] = &[
 const SEEN: &[(&str, &str)] = &[("api_key", "last_used_at"), ("app_user", "last_login_at")];
 
 /// Every column that holds an event's id (`outbox.id`, a counter of the whole database, so renumbered at the target).
-const EVENT_REFS: &[(&str, &str)] = &[
+pub(crate) const EVENT_REFS: &[(&str, &str)] = &[
     ("outbox", "causation_id"),
     ("webhook_delivery", "outbox_id"),
     ("automation_run", "outbox_id"),
@@ -101,7 +101,7 @@ const EVENT_REFS: &[(&str, &str)] = &[
 /// Session advisory lock on the source: one run at a time works on one workspace's move.
 const LOCK: i32 = 0x0FE2_2079;
 
-type Shape = BTreeMap<String, Vec<(String, String, bool)>>;
+pub(crate) type Shape = BTreeMap<String, Vec<(String, String, bool)>>;
 
 /// A move as one side records it.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -124,14 +124,14 @@ async fn mark(tx: &mut Tx, tenant: Uuid) -> Result<Option<Mark>> {
 
 /// A system transaction on a database this server did not boot on (the source): it asks no fence, so it must never be
 /// given to anything but this module's own steps.
-async fn system(db: &Db) -> Result<Tx> {
+pub(crate) async fn system(db: &Db) -> Result<Tx> {
     let mut tx = db.pool.begin().await?;
     sqlx::query("select set_config('ferrum.system', 'on', true), set_config('statement_timeout', '0', true)").execute(&mut *tx).await?;
     Ok(tx)
 }
 
 /// The source's database as an operator names it: host, port and name, never a password.
-fn named(url: &str) -> String {
+pub(crate) fn named(url: &str) -> String {
     match url.parse::<sqlx::postgres::PgConnectOptions>() {
         Ok(o) => format!("{}:{}/{}", o.get_host(), o.get_port(), o.get_database().unwrap_or_default()),
         Err(_) => "another database".into(),
@@ -253,7 +253,7 @@ fn reseal_row(table: &str, tenant: Uuid, row: &mut Map<String, Value>, from: &[S
 
 /// Where values are sealed in a form this module seals again ([`reseal_row`]), or text of the same form that is not
 /// sealed: the scan for sealed values leaves these alone.
-const KNOWN_SEALED: &[(&str, &str)] = &[
+pub(crate) const KNOWN_SEALED: &[(&str, &str)] = &[
     ("record_secret", "sealed"),
     ("app_user", "totp_secret"),
     ("connection", "sealed"),
@@ -270,7 +270,7 @@ const KNOWN_SEALED: &[(&str, &str)] = &[
 
 /// What a sealed value looks like (secret.rs, `SecretKey::seal`): standard base64, padded, of a nonce, the text and a
 /// tag, so 40 characters at least; not only lower-case hex, which digests are.
-const SEALED_FORM: &str = "^([A-Za-z0-9+/]{4}){9,}([A-Za-z0-9+/]{4}|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)$";
+pub(crate) const SEALED_FORM: &str = "^([A-Za-z0-9+/]{4}){9,}([A-Za-z0-9+/]{4}|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)$";
 
 /// What one table holds of a workspace: its rows and a digest of them, read so that two reads of the same rows agree
 /// whatever their order (columns a read changes left out, [`SEEN`]).
@@ -287,6 +287,105 @@ async fn digest(tx: &mut Tx, table: &str, tenant: Uuid) -> Result<(i64, String)>
 /// The tables a move copies, of those that hold a workspace's rows.
 fn travelling(tables: &Shape) -> impl Iterator<Item = (&String, &Vec<(String, String, bool)>)> {
     tables.iter().filter(|(t, _)| !LEFT_BEHIND.contains(&t.as_str()))
+}
+
+/// Every column of `row` that holds an event's id ([`EVENT_REFS`]), numbered as `events` says. An event not there (purged
+/// before the copy, or not copied at all) gets its id negated, which no event here will ever have, so what refers to it
+/// keeps its history and never matches a new event.
+pub(crate) fn renumber_events(table: &str, row: &mut Map<String, Value>, events: &HashMap<i64, i64>) {
+    for (_, c) in EVENT_REFS.iter().filter(|(t, _)| *t == table) {
+        if let Some(v) = row.get_mut(*c)
+            && let Some(id) = v.as_i64()
+        {
+            *v = json!(events.get(&id).copied().unwrap_or(-id.abs()));
+        }
+    }
+}
+
+/// What [`copy_rows`] does to each row before it is written: given the table and the row.
+pub(crate) type EachRow<'a> = dyn FnMut(&str, &mut Map<String, Value>) -> Result<()> + Send + 'a;
+
+/// The copier a move and a sandbox share: every row the workspace `ids.0` has in `tables` (but those in `left`), read in
+/// `src` (one snapshot), changed by `each` (which gives it the workspace `ids.1`), and written in `tx` a thousand at a
+/// time, with referential triggers off. Each table is counted at both ends, and with `digests` a digest of what was read
+/// is kept for a later comparison. Then each counter of the copied tables goes on from past the highest value that
+/// arrived, and every reference the copy makes is checked. What it read, table by table.
+pub(crate) async fn copy_rows(
+    src: &mut Tx,
+    tx: &mut Tx,
+    ids: (Uuid, Uuid),
+    tables: &Shape,
+    left: &[&str],
+    digests: bool,
+    each: &mut EachRow<'_>,
+) -> Result<Map<String, Value>> {
+    let (from, to) = ids;
+    let mut copied = Map::new();
+    for (t, columns) in tables.iter().filter(|(t, _)| !left.contains(&t.as_str())) {
+        let names: Vec<String> = columns.iter().filter(|(_, _, generated)| !generated).map(|(c, _, _)| format!("\"{c}\"")).collect();
+        let names = names.join(", ");
+        let insert = format!("insert into \"{t}\" ({names}) overriding system value select {names} from jsonb_populate_recordset(null::\"{t}\", $1)");
+        let mut rows =
+            sqlx::query_scalar::<_, Value>(AssertSqlSafe(format!("select to_jsonb(x) from \"{t}\" x where tenant_id = $1"))).bind(from).fetch(&mut **src);
+        let mut waiting = Vec::new();
+        loop {
+            let row = rows.try_next().await?;
+            let end = row.is_none();
+            if let Some(Value::Object(mut row)) = row {
+                each(t, &mut row)?;
+                waiting.push(Value::Object(row));
+            }
+            if !waiting.is_empty() && (end || waiting.len() >= 1000) {
+                sqlx::query(AssertSqlSafe(insert.clone())).bind(Value::Array(std::mem::take(&mut waiting))).execute(&mut **tx).await.map_err(|e| {
+                    match Error::from(e) {
+                        Error::Conflict(m) => Error::Conflict(format!("{t}: {m} (this installation has it already), so nothing was copied")),
+                        e => e,
+                    }
+                })?;
+            }
+            if end {
+                break;
+            }
+        }
+        drop(rows);
+        let (count, print) = if digests {
+            digest(src, t, from).await?
+        } else {
+            let n: i64 =
+                sqlx::query_scalar(AssertSqlSafe(format!("select count(*) from \"{t}\" where tenant_id = $1"))).bind(from).fetch_one(&mut **src).await?;
+            (n, String::new())
+        };
+        let arrived: i64 =
+            sqlx::query_scalar(AssertSqlSafe(format!("select count(*) from \"{t}\" where tenant_id = $1"))).bind(to).fetch_one(&mut **tx).await?;
+        if arrived != count {
+            return Err(Error::Internal(format!("{t}: {arrived} rows arrived of {count}")));
+        }
+        if count > 0 {
+            copied.insert(t.clone(), if digests { json!({"rows": count, "digest": print}) } else { json!({"rows": count}) });
+        }
+    }
+    // Counters kept per workspace keep their values: each counter here goes on from past the highest that arrived,
+    // so the next audit event of this workspace comes after the ones it brought.
+    let counted: Vec<(String, String)> = sqlx::query_as(
+        "select table_name::text, column_name::text from information_schema.columns where table_schema = 'public' \
+         and (is_identity = 'YES' or column_default like 'nextval(%') and not (table_name = 'outbox' and column_name = 'id')",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    for (t, c) in counted.iter().filter(|(t, _)| tables.contains_key(t) && !left.contains(&t.as_str())) {
+        sqlx::query(AssertSqlSafe(format!(
+            "select setval(s, greatest(coalesce(pg_sequence_last_value(s), 0), m)) from \
+             (select pg_get_serial_sequence('\"{t}\"', '{c}')::regclass s, (select max(\"{c}\") from \"{t}\" where tenant_id = $1) m) x where m is not null"
+        )))
+        .bind(to)
+        .execute(&mut **tx)
+        .await?;
+    }
+    let broken = dangling(tx, to, tables).await?;
+    if !broken.is_empty() {
+        return Err(Error::Conflict(format!("the copy would leave references to nothing, so nothing was copied: {}", broken.join(", "))));
+    }
+    Ok(copied)
 }
 
 /// What signing in to a frozen workspace answers (503, to try again), whoever asks and whatever they give.
@@ -490,12 +589,12 @@ impl Kernel {
         if state.0 == "leaving" {
             if here.is_none() {
                 self.may_move(source, tenant, slug, from, say).await?;
-                self.copy_workspace(source, tenant, move_id, peer, from, say).await?;
+                self.copy_arriving(source, tenant, move_id, peer, from, say).await?;
                 if from.stop_after == Some(Stop::Copied) {
                     return Ok(json!({"workspace": slug, "state": "arriving", "stopped": "copied"}));
                 }
             }
-            self.carry_files(tenant, from.files.as_ref(), say).await?;
+            self.carry_files(tenant, from.files.as_ref(), None, say).await?;
             self.leave(source, tenant, move_id, slug, from.base_domain.as_deref(), say).await?;
             if from.stop_after == Some(Stop::Moved) {
                 return Ok(json!({"workspace": slug, "state": "moved", "stopped": "moved"}));
@@ -507,6 +606,63 @@ impl Kernel {
     /// What has to hold before anything is copied: one build on both sides, the same tables, nothing held, every value
     /// the workspace sealed opened with the keys given, nothing it has that does not travel yet.
     async fn may_move(&self, source: &Db, tenant: Uuid, slug: &str, from: &MoveSource, say: &(dyn Fn(&str) + Send + Sync)) -> Result<()> {
+        let here = self.one_build(source).await?;
+        self.counters_carried(&here).await?;
+        may_copy(&self.db).await?;
+        self.named_outside(source, tenant, slug, &here).await?;
+        let mut tx = system(source).await?;
+        // A process run lives in the source's workflow service as well as here: it does not travel.
+        let runs: i64 =
+            sqlx::query_scalar("select count(*) from logic_run where tenant_id = $1 and finished_at is null").bind(tenant).fetch_one(&mut *tx).await?;
+        // Waiting work asked for in a zone is done in it by name (crate::zones, level 2): a name these settings do not
+        // define would fail it here.
+        let zoned: Vec<String> = sqlx::query_scalar(
+            "select zone from job where tenant_id = $1 and status in ('queued', 'running') and zone is not null \
+             union select zone from outbox where tenant_id = $1 and processed_at is null and not dead and zone is not null \
+             union select zone from approval_request where tenant_id = $1 and status = 'pending' and zone is not null",
+        )
+        .bind(tenant)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        if runs > 0 {
+            return Err(Error::Conflict(format!(
+                "{runs} process runs of {slug} are open, and live in the source's workflow service too: let them end, or cancel them, first"
+            )));
+        }
+        let lacking = self.zones().lacking(&zoned);
+        if !lacking.is_empty() {
+            return Err(Error::Conflict(format!(
+                "work of {slug} waits to be done in the zones {}, which FERRUM_ZONES here does not define: define them here, or let that work finish first",
+                lacking.join(", ")
+            )));
+        }
+        self.apps_here(source, tenant, slug).await?;
+        let mut tx = self.db.system_tx().await?;
+        let taken: Option<String> =
+            sqlx::query_scalar("select slug from tenant where id = $1 or slug = $2").bind(tenant).bind(slug).fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
+        if let Some(t) = taken {
+            return Err(Error::Conflict(format!("this installation has a workspace {t} with that name or id already")));
+        }
+        let opened = self.prove_keys(source, tenant, from, &here).await?;
+        let unknown: Vec<String> = self.unknown_sealed(source, tenant, &here).await?.into_iter().filter(|c| !from.not_sealed.contains(c)).collect();
+        if !unknown.is_empty() {
+            return Err(Error::Conflict(format!(
+                "{slug} holds what looks like sealed values where a move does not know how they were sealed, so it could not seal them again here: {}. \
+                 If a column holds no sealed value (some other text of the same form), say so with not_sealed:{}",
+                unknown.join(", "),
+                unknown.join(",")
+            )));
+        }
+        say(&format!("checked: one build on both sides, the same tables, and {opened} sealed values open with the keys given"));
+        Ok(())
+    }
+
+    /// One build on both sides: the same build brought both databases up to date, nothing waits for a newer one, neither
+    /// is held after a restore or planned to move whole, and the two have the same migrations and tables (this one's,
+    /// returned). Changes nothing.
+    pub(crate) async fn one_build(&self, source: &Db) -> Result<Shape> {
         // An older build does not know the freeze: one running anywhere on either side would keep writing.
         if let Some(rec) = &self.booted.guest {
             return Err(Error::Conflict(format!(
@@ -555,10 +711,12 @@ impl Kernel {
         if !differ.is_empty() {
             return Err(Error::Conflict(format!("the two installations differ in their tables (other apps, or another version): {}", differ.join(", "))));
         }
-        self.counters_carried(&here).await?;
-        may_copy(&self.db).await?;
+        Ok(here)
+    }
+
+    /// Refuses a workspace named outside its own tables (a private app's release, say): that does not travel yet.
+    pub(crate) async fn named_outside(&self, source: &Db, tenant: Uuid, slug: &str, here: &Shape) -> Result<()> {
         let mut tx = system(source).await?;
-        // What names the workspace outside its own tables (a private app's release, say) does not travel yet.
         for (table, column) in workspace_columns(source, &mut tx).await? {
             if here.contains_key(&table) {
                 continue;
@@ -569,31 +727,13 @@ impl Kernel {
                 return Err(Error::Conflict(format!("{slug} has {n} rows in {table} ({column}), which a move does not carry yet")));
             }
         }
-        // A process run lives in the source's workflow service as well as here: it does not travel.
-        let runs: i64 =
-            sqlx::query_scalar("select count(*) from logic_run where tenant_id = $1 and finished_at is null").bind(tenant).fetch_one(&mut *tx).await?;
-        if runs > 0 {
-            return Err(Error::Conflict(format!(
-                "{runs} process runs of {slug} are open, and live in the source's workflow service too: let them end, or cancel them, first"
-            )));
-        }
-        // Waiting work asked for in a zone is done in it by name (crate::zones, level 2): a name these settings do not
-        // define would fail it here.
-        let zoned: Vec<String> = sqlx::query_scalar(
-            "select zone from job where tenant_id = $1 and status in ('queued', 'running') and zone is not null \
-             union select zone from outbox where tenant_id = $1 and processed_at is null and not dead and zone is not null \
-             union select zone from approval_request where tenant_id = $1 and status = 'pending' and zone is not null",
-        )
-        .bind(tenant)
-        .fetch_all(&mut *tx)
-        .await?;
-        let lacking = self.zones().lacking(&zoned);
-        if !lacking.is_empty() {
-            return Err(Error::Conflict(format!(
-                "work of {slug} waits to be done in the zones {}, which FERRUM_ZONES here does not define: define them here, or let that work finish first",
-                lacking.join(", ")
-            )));
-        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Refuses a workspace that runs an app version this installation does not have.
+    pub(crate) async fn apps_here(&self, source: &Db, tenant: Uuid, slug: &str) -> Result<()> {
+        let mut tx = system(source).await?;
         let apps: Vec<(String, String)> =
             sqlx::query_as("select app_id, version from tenant_app where tenant_id = $1 order by 1").bind(tenant).fetch_all(&mut *tx).await?;
         tx.commit().await?;
@@ -608,30 +748,14 @@ impl Kernel {
                 return Err(Error::Conflict(format!("{slug} runs {app} {version}, which this installation does not have: make it available here first")));
             }
         }
-        let taken: Option<String> =
-            sqlx::query_scalar("select slug from tenant where id = $1 or slug = $2").bind(tenant).bind(slug).fetch_optional(&mut *tx).await?;
         tx.commit().await?;
-        if let Some(t) = taken {
-            return Err(Error::Conflict(format!("this installation has a workspace {t} with that name or id already")));
-        }
-        let opened = self.prove_keys(source, tenant, from, &here).await?;
-        let unknown: Vec<String> = self.unknown_sealed(source, tenant, &here).await?.into_iter().filter(|c| !from.not_sealed.contains(c)).collect();
-        if !unknown.is_empty() {
-            return Err(Error::Conflict(format!(
-                "{slug} holds what looks like sealed values where a move does not know how they were sealed, so it could not seal them again here: {}. \
-                 If a column holds no sealed value (some other text of the same form), say so with not_sealed:{}",
-                unknown.join(", "),
-                unknown.join(",")
-            )));
-        }
-        say(&format!("checked: one build on both sides, the same tables, and {opened} sealed values open with the keys given"));
         Ok(())
     }
 
     /// Refuses a workspace whose rows count with a counter of the whole database other than the events' (which are
     /// renumbered), or that keeps an event's id somewhere this does not know of: such an id could meet another
     /// workspace's here. An id counted per workspace keeps its value (the workspace's id is new here).
-    async fn counters_carried(&self, tables: &Shape) -> Result<()> {
+    pub(crate) async fn counters_carried(&self, tables: &Shape) -> Result<()> {
         let mut tx = self.db.system_tx().await?;
         let counted: Vec<(String, String)> = sqlx::query_as(
             "select c.table_name::text, c.column_name::text from information_schema.columns c \
@@ -843,7 +967,7 @@ impl Kernel {
     /// Step 2: the target's copy, in one transaction with the target's `arriving` mark, read from one snapshot of the
     /// source. Referential triggers are off (tables refer to each other in circles); every reference is checked before
     /// it commits. What the copy read is kept with the mark, for step 4 to compare with.
-    async fn copy_workspace(&self, source: &Db, tenant: Uuid, move_id: Uuid, peer: &str, from: &MoveSource, say: &(dyn Fn(&str) + Send + Sync)) -> Result<()> {
+    async fn copy_arriving(&self, source: &Db, tenant: Uuid, move_id: Uuid, peer: &str, from: &MoveSource, say: &(dyn Fn(&str) + Send + Sync)) -> Result<()> {
         let tables = shape(&self.db).await?;
         let people = self.identities(source, tenant, from, say).await?;
         let to = self.settings.secret_key.as_ref();
@@ -877,93 +1001,27 @@ impl Kernel {
             .await?;
         new.sort_unstable();
         let events: HashMap<i64, i64> = old.iter().copied().zip(new).collect();
-        // An event purged before the move: its id negated, which no event here will ever have, so what refers to it keeps
-        // its history and never matches a new event.
-        let renumber = |v: &mut Value| {
-            if let Some(id) = v.as_i64() {
-                *v = json!(events.get(&id).copied().unwrap_or(-id.abs()));
-            }
-        };
-        let mut copied = Map::new();
         let mut sealed = 0;
-        for (t, columns) in travelling(&tables) {
-            let names: Vec<String> = columns.iter().filter(|(_, _, generated)| !generated).map(|(c, _, _)| format!("\"{c}\"")).collect();
-            let names = names.join(", ");
-            let insert = format!("insert into \"{t}\" ({names}) overriding system value select {names} from jsonb_populate_recordset(null::\"{t}\", $1)");
-            let refs: Vec<&str> = EVENT_REFS.iter().filter(|(table, _)| table == t).map(|(_, c)| *c).collect();
-            let mut rows =
-                sqlx::query_scalar::<_, Value>(AssertSqlSafe(format!("select to_jsonb(x) from \"{t}\" x where tenant_id = $1"))).bind(tenant).fetch(&mut *src);
-            let mut waiting = Vec::new();
-            loop {
-                let row = rows.try_next().await?;
-                let end = row.is_none();
-                if let Some(Value::Object(mut row)) = row {
-                    if t == "outbox" {
-                        let id = row.get("id").and_then(Value::as_i64).and_then(|id| events.get(&id).copied());
-                        row.insert("id".into(), json!(id.ok_or_else(|| Error::Internal("an event appeared during the copy".into()))?));
-                    }
-                    for c in &refs {
-                        if let Some(v) = row.get_mut(*c) {
-                            renumber(v);
-                        }
-                    }
-                    // The audit sink here sends what is written here: events the source wrote were its to send,
-                    // and their transaction ids mean nothing here (crate::audit_sink).
-                    if t == "audit_event" {
-                        row.insert("xid".into(), Value::Null);
-                    }
-                    if t == "app_user"
-                        && let Some(identity) = text(&row, "identity_id").and_then(|s| s.parse::<Uuid>().ok())
-                    {
-                        row.insert("identity_id".into(), json!(people.get(&identity).copied().flatten()));
-                    }
-                    sealed += reseal_row(t, tenant, &mut row, &from.keys, to)?;
-                    waiting.push(Value::Object(row));
-                }
-                if !waiting.is_empty() && (end || waiting.len() >= 1000) {
-                    sqlx::query(AssertSqlSafe(insert.clone())).bind(Value::Array(std::mem::take(&mut waiting))).execute(&mut *tx).await.map_err(|e| {
-                        match Error::from(e) {
-                            Error::Conflict(m) => Error::Conflict(format!("{t}: {m} (this installation has it already), so nothing was moved")),
-                            e => e,
-                        }
-                    })?;
-                }
-                if end {
-                    break;
-                }
+        let mut each = |t: &str, row: &mut Map<String, Value>| -> Result<()> {
+            if t == "outbox" {
+                let id = row.get("id").and_then(Value::as_i64).and_then(|id| events.get(&id).copied());
+                row.insert("id".into(), json!(id.ok_or_else(|| Error::Internal("an event appeared during the copy".into()))?));
             }
-            drop(rows);
-            let (count, print) = digest(&mut src, t, tenant).await?;
-            let arrived: i64 =
-                sqlx::query_scalar(AssertSqlSafe(format!("select count(*) from \"{t}\" where tenant_id = $1"))).bind(tenant).fetch_one(&mut *tx).await?;
-            if arrived != count {
-                return Err(Error::Internal(format!("{t}: {arrived} rows arrived of {count}")));
+            renumber_events(t, row, &events);
+            // The audit sink here sends what is written here: events the source wrote were its to send,
+            // and their transaction ids mean nothing here (crate::audit_sink).
+            if t == "audit_event" {
+                row.insert("xid".into(), Value::Null);
             }
-            if count > 0 {
-                copied.insert(t.clone(), json!({"rows": count, "digest": print}));
+            if t == "app_user"
+                && let Some(identity) = text(row, "identity_id").and_then(|s| s.parse::<Uuid>().ok())
+            {
+                row.insert("identity_id".into(), json!(people.get(&identity).copied().flatten()));
             }
-        }
-        // Counters kept per workspace keep their values: each counter here goes on from past the highest that arrived,
-        // so the next audit event of this workspace comes after the ones it brought.
-        let counted: Vec<(String, String)> = sqlx::query_as(
-            "select table_name::text, column_name::text from information_schema.columns where table_schema = 'public' \
-             and (is_identity = 'YES' or column_default like 'nextval(%') and not (table_name = 'outbox' and column_name = 'id')",
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-        for (t, c) in counted.iter().filter(|(t, _)| tables.contains_key(t)) {
-            sqlx::query(AssertSqlSafe(format!(
-                "select setval(s, greatest(coalesce(pg_sequence_last_value(s), 0), m)) from \
-                 (select pg_get_serial_sequence('\"{t}\"', '{c}')::regclass s, (select max(\"{c}\") from \"{t}\" where tenant_id = $1) m) x where m is not null"
-            )))
-            .bind(tenant)
-            .execute(&mut *tx)
-            .await?;
-        }
-        let broken = dangling(&mut tx, tenant, &tables).await?;
-        if !broken.is_empty() {
-            return Err(Error::Conflict(format!("the copy would leave references to nothing, so nothing was moved: {}", broken.join(", "))));
-        }
+            sealed += reseal_row(t, tenant, row, &from.keys, to)?;
+            Ok(())
+        };
+        let copied = Box::pin(copy_rows(&mut src, &mut tx, (tenant, tenant), &tables, LEFT_BEHIND, true, &mut each)).await?;
         let rows: i64 = copied.values().filter_map(|v| v["rows"].as_i64()).sum();
         sqlx::query("update workspace_move set copied = $2 where workspace = $1").bind(tenant).bind(Value::Object(copied)).execute(&mut *tx).await?;
         tx.commit().await?;
@@ -974,7 +1032,16 @@ impl Kernel {
 
     /// Step 3: every file the copy names, copied from the source's storage unless both share one (an object already here
     /// with the same size is left as it is), then each checked here. Runs again from the start, skipping what is here.
-    async fn carry_files(&self, tenant: Uuid, from: Option<&Arc<dyn FileStore>>, say: &(dyn Fn(&str) + Send + Sync)) -> Result<()> {
+    ///
+    /// `was`: the workspace's id at the source when it differs (a sandbox's): each file is read there under the key
+    /// that names that id, and written here under its own.
+    pub(crate) async fn carry_files(
+        &self,
+        tenant: Uuid,
+        from: Option<&Arc<dyn FileStore>>,
+        was: Option<Uuid>,
+        say: &(dyn Fn(&str) + Send + Sync),
+    ) -> Result<()> {
         let mut tx = self.db.system_tx().await?;
         let files: Vec<(Uuid, String, i64)> =
             sqlx::query_as("select id, storage_key, size_bytes from file_object where tenant_id = $1 order by id").bind(tenant).fetch_all(&mut *tx).await?;
@@ -989,7 +1056,11 @@ impl Kernel {
                 if here.size(key).await? == Some(*size as u64) {
                     continue;
                 }
-                let bytes = match there.get(key).await {
+                let at = match was {
+                    Some(was) => key.replace(&tenant.to_string(), &was.to_string()),
+                    None => key.clone(),
+                };
+                let bytes = match there.get(&at).await {
                     Ok(b) => b,
                     Err(Error::NotFound(_)) => return Err(Error::Conflict(format!("file {id} is missing from the source's storage ({key})"))),
                     Err(e) => return Err(e),
