@@ -978,7 +978,8 @@ renderer's state without a shell at `GET /api/admin/services`.
 docker compose -f deploy/docker-compose.yml exec ferrum ferrum task doctor
 ```
 
-Add `format:json` for a machine. Each finding's level is `ok`, `off` (a service switched off on purpose),
+Add `format:json` for a machine, and `busiest:` with the replicas' own addresses for the workspaces they spend their time
+on ([Monitoring](#monitoring), "The busiest workspaces"). Each finding's level is `ok`, `off` (a service switched off on purpose),
 `warning` or `blocker`. It exits non-zero on a blocker only, so a deployment can run it as a last
 step. The report holds no secret or connection string, so it can be pasted into a ticket.
 
@@ -1003,7 +1004,26 @@ of `page`, `records`, `app` (an app's own endpoints), `files`, `live` (sockets: 
 app compiled into this build, else `other`; apps installed from a store count as `other`. A header names
 nothing new: the series are at most (apps compiled in + 1) × 9 × 14, and only those with requests are
 written. There is no label for a workspace. The gateway controller's own metrics still say what reached the
-gateway. Suggested alerts:
+gateway.
+
+**The busiest workspaces.** `ferrum_busiest_workspace_seconds{workspace}` names this replica's ten busiest workspaces, by
+slug: the time it spent answering each one's requests over the last five minutes (this minute and the four before it),
+the same request times as above, added up. 300 seconds is one request in flight the whole time, on average. A request
+is a workspace's when it comes with that workspace's sign-in (a session, a token, a key), to one of its addresses, or to
+one of its plugins' public endpoints; anything else (a health check, the platform's files, the accounts host's sign-in
+pages, an unknown host) is no one's and is not counted. Each replica keeps this in its own memory, for at most 2,000
+workspaces at once (a new one takes the place of the one with the least time lately), writes nothing anywhere, and
+starts again from nothing when it restarts. Only the ten busiest are named, so a scrape holds ten series at most whatever
+the cluster holds. **Across replicas**, add them up by workspace: `topk(10, sum by (workspace)
+(ferrum_busiest_workspace_seconds))`, and for an hour `max_over_time` of that over the hour, or its graph. A workspace
+counts only on the replicas where it is among the ten, so a figure is at least what it says. Without Prometheus,
+`ferrum task doctor busiest:http://10.0.0.5:5150,http://10.0.0.6:5150` asks each replica named for its `/metrics` (with
+`FERRUM_METRICS_TOKEN`) and adds them up the same way (`load.busiest`); give each replica's own address (in Kubernetes
+the pods' addresses, `kubectl get pods -o wide`), not the gateway's, which answers from one replica at a time. One
+workspace taking much of the time while the others slow down is the one to give a share (`FERRUM_TENANT_REQUESTS`), or to
+move to an installation of its own ([Moving one workspace](#moving-one-workspace)).
+
+Suggested alerts:
 
 | Alert | Condition |
 |---|---|

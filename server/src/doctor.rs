@@ -421,6 +421,60 @@ pub async fn zone_findings(addresses: &[String]) -> Vec<Finding> {
     out
 }
 
+/// The busiest workspaces named in replicas' `/metrics` (`ferrum_busiest_workspace_seconds`, crate::request_metrics), added
+/// up by workspace across them, busiest first, the ten at most.
+pub fn busiest_of(texts: &[String]) -> Vec<(String, f64)> {
+    let mut sums: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+    for line in texts.iter().flat_map(|t| t.lines()) {
+        let Some((workspace, seconds)) = line.strip_prefix("ferrum_busiest_workspace_seconds{workspace=\"").and_then(|rest| rest.split_once("\"} ")) else {
+            continue;
+        };
+        if let Ok(s) = seconds.trim().parse::<f64>() {
+            *sums.entry(workspace.to_string()).or_default() += s;
+        }
+    }
+    let mut all: Vec<(String, f64)> = sums.into_iter().collect();
+    all.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    all.truncate(crate::request_metrics::BUSIEST);
+    all
+}
+
+/// `ferrum task doctor busiest:http://10.0.0.5:5150,…`: whom the replicas named spend their time on. Each replica counts its
+/// own and names its ten busiest workspaces on `/metrics` (asked with `FERRUM_METRICS_TOKEN`, `token`); added up here,
+/// by slug (`load.busiest`). A workspace counts only where it is among a replica's ten, so each figure is at least what it
+/// says. Nothing is fetched without addresses.
+pub async fn busiest_findings(replicas: &[String], token: &str) -> Vec<Finding> {
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).redirect(reqwest::redirect::Policy::none()).build().unwrap_or_default();
+    let (mut texts, mut out) = (Vec::new(), Vec::new());
+    for base in replicas.iter().map(|a| a.trim().trim_end_matches('/')).filter(|a| !a.is_empty()) {
+        let mut req = client.get(format!("{base}/metrics"));
+        if !token.is_empty() {
+            req = req.bearer_auth(token);
+        }
+        match async { req.send().await.ok()?.error_for_status().ok()?.text().await.ok() }.await {
+            Some(text) => texts.push(text),
+            None => out.push(Finding::warning(
+                "load.busiest",
+                format!("{base} did not answer GET /metrics"),
+                "Check the address (a replica's own, not the gateway's) and FERRUM_METRICS_TOKEN.",
+            )),
+        }
+    }
+    if texts.is_empty() {
+        return out;
+    }
+    let listed: Vec<String> = busiest_of(&texts).iter().map(|(w, s)| format!("{w} {s:.1} s")).collect();
+    out.push(Finding::ok(
+        "load.busiest",
+        if listed.is_empty() {
+            format!("no workspace's requests in the last five minutes on the {} replicas that answered", texts.len())
+        } else {
+            format!("the busiest workspaces over the last five minutes, on the {} replicas that answered: {}", texts.len(), listed.join(", "))
+        },
+    ));
+    out
+}
+
 pub fn render(findings: &[Finding]) -> String {
     let mut out = String::new();
     for f in findings {
@@ -477,6 +531,46 @@ mod tests {
         assert_eq!(level(&found, "zones.proxy_hops"), Some(Level::Warning), "a forged X-Forwarded-For believed");
         let gone = super::zone_findings(&["http://127.0.0.1:9".into()]).await;
         assert_eq!(level(&gone, "zones.public"), Some(Level::Warning), "no answer");
+    }
+
+    #[tokio::test]
+    async fn the_doctor_adds_up_the_busiest_workspaces_of_the_replicas_it_is_given() {
+        assert!(super::busiest_findings(&[], "t").await.is_empty(), "no addresses: no calls");
+        // Two replicas, each naming its own busiest; /metrics wants the token.
+        let replica = |text: &'static str| async move {
+            let app = axum::Router::new().route(
+                "/metrics",
+                axum::routing::get(move |h: axum::http::HeaderMap| async move {
+                    if h.get("authorization").and_then(|v| v.to_str().ok()) != Some("Bearer t") {
+                        return (axum::http::StatusCode::UNAUTHORIZED, String::new());
+                    }
+                    (axum::http::StatusCode::OK, format!("ferrum_up 1\n{text}"))
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            url
+        };
+        let a = replica("ferrum_busiest_workspace_seconds{workspace=\"acme\"} 120.500\nferrum_busiest_workspace_seconds{workspace=\"globex\"} 3.000\n").await;
+        let b = replica("ferrum_busiest_workspace_seconds{workspace=\"globex\"} 200.000\n").await;
+        let found = super::busiest_findings(&[a.clone(), format!("{b}/")], "t").await;
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].detail.ends_with("on the 2 replicas that answered: globex 203.0 s, acme 120.5 s"), "{}", found[0].detail);
+        let refused = super::busiest_findings(&[a, "http://127.0.0.1:9".into()], "wrong").await;
+        assert_eq!(refused.iter().filter(|f| f.level == Level::Warning).count(), 2, "a wrong token and no answer: {refused:?}");
+    }
+
+    #[test]
+    fn the_busiest_lines_are_read_whatever_else_metrics_holds() {
+        let texts = [
+            "# HELP x\nferrum_busiest_workspace_seconds{workspace=\"a\"} 1.5\nferrum_up 1\nnot a line\n".to_string(),
+            "ferrum_busiest_workspace_seconds{workspace=\"a\"} 2\nferrum_busiest_workspace_seconds{workspace=\"b\"} nonsense\n".to_string(),
+        ];
+        assert_eq!(busiest_of(&texts), vec![("a".to_string(), 3.5)]);
+        let many: Vec<String> = (0..30).map(|i| format!("ferrum_busiest_workspace_seconds{{workspace=\"w{i}\"}} {i}\n")).collect();
+        let top = busiest_of(&many);
+        assert_eq!((top.len(), top[0].0.as_str()), (crate::request_metrics::BUSIEST, "w29"), "ten at most, the busiest first");
     }
 
     use super::*;

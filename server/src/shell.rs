@@ -610,6 +610,8 @@ impl Shell {
             }
             match self.kernel.route_host(host).await? {
                 HostRoute::Serve { tenant, target } => {
+                    // Its requests are its, signed in or not (crate::request_metrics).
+                    crate::request_metrics::note_workspace(tenant);
                     return Ok(match target.as_str() {
                         "shell" => Place::Workspace(tenant),
                         "portal" => Place::Portal(tenant),
@@ -636,7 +638,10 @@ impl Shell {
             return Ok(Place::Nowhere);
         }
         Ok(match self.default_workspace().await? {
-            Some(t) => Place::Workspace(t),
+            Some(t) => {
+                crate::request_metrics::note_workspace(t);
+                Place::Workspace(t)
+            }
             None => Place::Any,
         })
     }

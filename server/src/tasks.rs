@@ -249,6 +249,9 @@ impl Task for Doctor {
         // `public:https://a,https://b`: the public addresses, checked through their gateway (zones).
         let public: Vec<String> = vars.cli_arg("public").map(|p| p.split(',').map(str::to_string).collect()).unwrap_or_default();
         findings.extend(crate::doctor::zone_findings(&public).await);
+        // `busiest:http://10.0.0.5:5150,…`: the replicas' busiest workspaces, added up (each replica counts its own).
+        let replicas: Vec<String> = vars.cli_arg("busiest").map(|p| p.split(',').map(str::to_string).collect()).unwrap_or_default();
+        findings.extend(crate::doctor::busiest_findings(&replicas, &st.settings.metrics_token).await);
         if vars.cli_arg("format").is_ok_and(|f| f == "json") {
             println!("{}", serde_json::to_string_pretty(&findings).map_err(refused)?);
         } else {
