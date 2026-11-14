@@ -150,6 +150,13 @@ impl Ctx {
                 Err(Error::Forbidden(format!("{work} of {entity} needs a person who has just proved who they are; a key cannot")))
             }
             Proof::Machine => Ok(()),
+            // People from outside (portal people and guests) sign in with an emailed code and have no password to give:
+            // never asked. Held by their roles (portal roles reach only their own records), as keys are, and refused
+            // outright where a rule says `keys: false`.
+            Proof::Person { staff: false, .. } if by_entity && rule.is_some_and(|r| !r.1) => {
+                Err(Error::Forbidden(format!("{work} of {entity} needs a staff member who has just proved who they are")))
+            }
+            Proof::Person { staff: false, .. } => Ok(()),
             Proof::Person { at, staff } => {
                 if fresh(at, if c.step_up_secs > 0 { c.step_up_secs } else { crate::shell::STEP_UP_SECS }) {
                     return Ok(());

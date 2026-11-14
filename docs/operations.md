@@ -1446,11 +1446,24 @@ records: opening one, and lists, searches and reports, which show the same field
 operation asks for its rights, after the rights: whoever may not do something is told that, not asked for a password.
 
 **The answer.** `403` with error `step_up`: "confirm it is you: enter your password again to do this". The interface asks
-for the password (`POST /api/auth/step-up`) and tries again. **How long it lasts:** a step-up counts for `minutes` after
+for the password (`POST /api/auth/step-up`) and tries again. **Every page asks, an app's older screens too:** the bar's
+runtime (`/_shell/v1/runtime.js`, loaded by every page from the server) answers that refusal for any request the page
+sends to its own address: one "Confirm it is you" dialog however many requests were refused (password, then the code
+from an authenticator app when the server asks for it), then each refused request is sent once more and the page gets
+that answer. Sending it again is safe for a change too: the refusal comes before anything is done. Cancel or Escape
+hands the page the refusal as it was. A page whose own interface answers it too (the newest Frontend packages) sees
+only the answer after the proof; if the person cancels, that page asks once more in its own dialog. Not answered there:
+requests to other addresses (an app on an origin of its own uses tokens), uploads sent with `XMLHttpRequest` (they get
+the plain `403`), a request whose body is a stream, and service workers.
+**Marking `read` asks on every page that lists the entity**, the home page included, as soon as the person lands there
+(once per `minutes`): mark it for entities that need it, not as a default. **How long it lasts:** a step-up counts for `minutes` after
 it is made (10 by default, the same as the other step-up screens), and so does signing in. Stepping up tells every
 replica to drop what it holds of the person's sessions at once, so the retry is let through wherever it lands.
 
-**Who is asked.** People, on their browser session. **A session token with no browser session behind it** (one from
+**Who is asked.** Staff, on their browser session. **People from outside** (portal people and guests, who sign in with
+an emailed code and have no password to give) **are never asked**: they are held by their roles, which for a portal
+person reach only their own records, and let through, unless the entity's rule says `"keys": false`, which refuses
+them as it refuses keys. **A session token with no browser session behind it** (one from
 `POST /api/auth/login` used as a bearer token, or an app token not bound to a page) **cannot step up, so it is refused
 for marked work**: do that work from the browser. API keys (app passwords and SCIM keys
 included), OAuth clients such as MCP, and service accounts cannot step up either: they are held by their scopes and

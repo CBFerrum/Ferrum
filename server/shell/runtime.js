@@ -57,6 +57,97 @@ function afterSignOut(status, body, fallback) {
   return /^\/api\/auth\/saml\/[0-9a-f-]{36}\/logout\?ticket=[A-Za-z0-9_-]+$/.test(next) ? next : fallback;
 }
 
+// Asking again on every page (docs/operations.md, "Asking again before sensitive work"): the server refuses work on a
+// marked entity with 403 {"error": "step_up"} until the person proves who they are again (crates/kernel/src/controls.rs
+// `needed`). The runtime answers that for every page, an app's older bundle included: one dialog, then each refused
+// request is sent once more.
+
+/** Whether `url` is a request to this page's own origin (`here`: the page's address). */
+function ownOrigin(url, here) {
+  try {
+    return new URL(url, here).origin === new URL(here).origin;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether an answer is the server's step-up refusal: `status`, its content type, and its body read as JSON (null if
+ *  it is not JSON). */
+function isStepUp(status, type, body) {
+  return status === 403 && /json/i.test(type ?? "") && body !== null && typeof body === "object" && body.error === "step_up";
+}
+
+/** How to send `fetch(input, init)` again, taken before it is first sent: a function giving the arguments once more,
+ *  or null when it cannot be sent again (a body that is a stream is read as it goes; a request whose body was read).
+ *  A `Request` is cloned now (its body is read by the first send); `init` is kept as it is (strings, forms, blobs and
+ *  buffers can be sent twice). */
+function replayPlan(input, init) {
+  if (init?.body != null && typeof ReadableStream !== "undefined" && init.body instanceof ReadableStream) return null;
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    if (input.bodyUsed) return null;
+    let kept;
+    try {
+      kept = input.clone();
+    } catch {
+      return null;
+    }
+    return () => [kept, init];
+  }
+  return () => [input, init];
+}
+
+/** One question for many refusals: `ask()` (true: the person proved who they are) is asked once however many
+ *  requests were refused while it was open, and a refusal of a request sent before the last proof is sent again
+ *  without asking (`mark()` before sending, `settle(mark)` on a refusal: true to send it again). */
+function stepUpGate(ask) {
+  let asking = null;
+  let proofs = 0;
+  return {
+    mark: () => proofs,
+    settle(seen) {
+      if (proofs !== seen) return Promise.resolve(true);
+      asking ??= Promise.resolve()
+        .then(ask)
+        .then(
+          (ok) => {
+            if (ok) proofs += 1;
+            return !!ok;
+          },
+          () => false,
+        )
+        .finally(() => {
+          asking = null;
+        });
+      return asking;
+    },
+  };
+}
+
+/** One try at `POST /api/auth/step-up` (server/src/controllers/auth.rs `step_up`) through `send` (the page's own
+ *  fetch, never the wrapped one: its 401 is a wrong password, not an ended session). The answer: `{ok}`, or what to
+ *  say (`wrong`, `code`: the code from an authenticator app is asked for, `busy`, `failed`) and `needsCode`. */
+async function proveItsYou(send, password, code) {
+  let r;
+  try {
+    r = await send("/api/auth/step-up", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(code ? { password, code } : { password }),
+    });
+  } catch {
+    return { ok: false, say: "failed" };
+  }
+  if (r.ok) return { ok: true };
+  const body = await r.json().catch(() => null);
+  if (Array.isArray(body?.fields) && body.fields.some((f) => f?.field === "code")) {
+    return { ok: false, needsCode: true, say: code ? "wrong" : "code" };
+  }
+  if (r.status === 401) return { ok: false, say: "wrong" };
+  if (r.status === 429) return { ok: false, say: "busy" };
+  return { ok: false, say: "failed" };
+}
+
 // ── end of the pure helpers ──
 
 // This origin's workspace (§7.2): a host of one workspace's that ever answers for another than
@@ -2875,6 +2966,164 @@ for (const type of ["pageswap", "pagereveal"]) window.addEventListener(type, (e)
 
 window.addEventListener("offline", () => bar()?.setIndicator("offline", tr("Offline"), () => {}));
 window.addEventListener("online", () => bar()?.setIndicator("offline", ""));
+
+// ───────────────────────── asking again before sensitive work ─────────────────────────
+
+// The page's own fetch, before the runtime wraps it: the step-up post goes through it, so its 401 (a wrong password)
+// never reaches the page's "sign in again" handling and never comes back into the wrapper.
+const pageFetch = window.fetch.bind(window);
+
+const STEP_UP_SAYS = {
+  wrong: tr("That is not right. Try again."),
+  code: tr("Enter the code from your authenticator app."),
+  busy: tr("Too many tries. Wait a moment and try again."),
+  failed: tr("Could not confirm it is you. Try again."),
+};
+
+// The bar's dialogs' look (theme.css `dialog[data-ferrum-dialog]`, the choice of app in `choose`), in a shadow root of
+// its own so that no app's styles reach it.
+const STEP_UP_CSS = `
+:host { all: initial; }
+dialog { box-sizing: border-box; width: min(400px, calc(100vw - 32px)); margin: auto; padding: 16px; border: 1px solid var(--ferrum-border, #dee3ea);
+  border-radius: var(--ferrum-radius-lg, 12px); background: var(--ferrum-surface, #fff); color: var(--ferrum-text, #202329); box-shadow: var(--ferrum-shadow);
+  font: 14px/20px var(--ferrum-font, system-ui, sans-serif); -webkit-font-smoothing: antialiased; }
+dialog::backdrop { background: rgb(0 0 0 / 0.45); }
+dialog[open] { animation: in var(--ferrum-duration-overlay, 150ms) ease-out; }
+@keyframes in { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
+@media (prefers-reduced-motion: reduce) { dialog[open] { animation: none; } }
+* { box-sizing: border-box; }
+h2 { margin: 0 0 4px; font-size: 15px; line-height: 22px; font-weight: 600; }
+p { margin: 0 0 12px; color: var(--ferrum-muted, #596273); }
+label { display: block; margin: 0 0 4px; font-weight: 500; }
+.row { margin: 0 0 12px; }
+input { width: 100%; height: var(--ferrum-control-h, 36px); padding: 0 10px; border: 1px solid var(--ferrum-border-control, #7c899c);
+  border-radius: var(--ferrum-radius-sm, 6px); background: var(--ferrum-surface, #fff); color: inherit; font: inherit; }
+.error { min-height: 20px; color: var(--ferrum-danger, #c4314b); }
+.error:empty { margin: 0; min-height: 0; }
+.actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+button { height: var(--ferrum-control-h-sm, 32px); padding: 0 12px; border: 1px solid var(--ferrum-border, #dee3ea); border-radius: var(--ferrum-radius-sm, 6px);
+  background: transparent; color: inherit; font: inherit; cursor: pointer; }
+button:hover { background: var(--ferrum-surface-2, #eff1f5); }
+button.primary { border-color: transparent; background: var(--ferrum-primary, #3157d5); color: var(--ferrum-primary-text, #fff); }
+button.primary:hover { background: var(--ferrum-primary-hover, #2447b3); }
+button[disabled] { opacity: .5; cursor: progress; }
+button:focus-visible, input:focus-visible { outline: var(--ferrum-focus-outline, 2px solid #3157d5); outline-offset: 2px; }
+@media print { dialog { display: none; } }
+`;
+
+/** What has the keyboard focus, inside shadow roots too: given back when the dialog closes. */
+function focusedDeep() {
+  let a = document.activeElement;
+  while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement;
+  return a;
+}
+
+/** "Confirm it is you": the person's password, and the code from their authenticator app when the server asks for it
+ *  (as the Frontend's `ConfirmItsYou`). A native modal dialog: its role, the page behind it inert (focus stays in it),
+ *  Escape cancels. Resolves true once the server accepted the proof, false when the person cancelled or closed it. */
+function askItsYou() {
+  return new Promise((resolve) => {
+    const back = focusedDeep();
+    const host = el("ferrum-step-up");
+    const root = host.attachShadow({ mode: "open" });
+    const dialog = el("dialog", { "aria-labelledby": "su-title", "aria-describedby": "su-why" });
+    const password = el("input", { id: "su-password", type: "password", autocomplete: "current-password", required: true });
+    const code = el("input", { id: "su-code", inputmode: "numeric", autocomplete: "one-time-code" });
+    const codeRow = el("div", { class: "row", hidden: true }, el("label", { for: "su-code", text: tr("Code from your authenticator app") }), code);
+    const error = el("p", { class: "error", role: "alert" });
+    const confirmButton = el("button", { type: "submit", class: "primary", text: tr("Confirm") });
+    let proved = false;
+    let sending = false;
+    let needsCode = false;
+    const form = el(
+      "form",
+      {
+        novalidate: true,
+        onsubmit: async (e) => {
+          e.preventDefault();
+          if (sending) return;
+          if (!password.value) return password.focus();
+          sending = true;
+          confirmButton.disabled = true;
+          form.setAttribute("aria-busy", "true");
+          const r = await proveItsYou(pageFetch, password.value, needsCode ? code.value.trim() : "");
+          sending = false;
+          confirmButton.disabled = false;
+          form.removeAttribute("aria-busy");
+          if (r.ok) {
+            proved = true;
+            dialog.close();
+            return;
+          }
+          error.textContent = STEP_UP_SAYS[r.say] ?? STEP_UP_SAYS.failed;
+          if (r.needsCode) {
+            needsCode = true;
+            codeRow.hidden = false;
+            code.focus();
+            code.select();
+          } else {
+            password.focus();
+            password.select();
+          }
+        },
+      },
+      el("h2", { id: "su-title", text: tr("Confirm it is you") }),
+      el("p", { id: "su-why", text: tr("To continue, confirm it is you.") }),
+      el("div", { class: "row" }, el("label", { for: "su-password", text: tr("Password") }), password),
+      codeRow,
+      error,
+      el("div", { class: "actions" }, el("button", { type: "button", text: tr("Cancel"), onclick: () => dialog.close() }), confirmButton),
+    );
+    dialog.append(form);
+    // Escape and the browser's own closing come here too: anything but a proof is a no.
+    dialog.addEventListener("close", () => {
+      host.remove();
+      try {
+        back?.focus?.();
+      } catch {}
+      resolve(proved);
+    });
+    root.append(el("style", { text: STEP_UP_CSS }), dialog);
+    document.body.append(host);
+    dialog.showModal();
+    password.focus();
+  });
+}
+
+const stepUp = stepUpGate(askItsYou);
+
+// Every same-origin request of the page goes through here; only the step-up refusal is touched. A page whose own
+// bundle answers it (the Frontend's newest packages: @ferrum/client `send`) never sees it when the person confirms
+// here: the request it made is sent again and the page gets that answer. Not for other origins (an isolated app's
+// origin uses tokens, not this session), uploads sent with XMLHttpRequest (the runtime's own transfers and some apps'
+// progress bars: such a refusal reaches them as a plain 403), service workers, or people from outside (portal people
+// and guests sign in with emailed codes and are never asked: crates/kernel/src/controls.rs).
+//
+// Sending a refused request again is safe for writes too: the refusal comes from the rights check every record
+// operation passes before it does anything (`Ctx::require` in crates/kernel/src/ctx.rs calls `check_step_up`, in
+// memory), and a refusal anywhere later in a request rolls its transaction back, so nothing was done the first time.
+if (boot?.person && hostKind !== "public" && !["portal", "guest"].includes(boot.person.kind) && typeof window.fetch === "function") {
+  window.fetch = async function ferrumFetch(input, init) {
+    let url;
+    try {
+      url = typeof Request !== "undefined" && input instanceof Request ? input.url : String(input);
+    } catch {
+      return pageFetch(input, init);
+    }
+    // A body that is a stream cannot be sent twice: such a request goes as it is, and a refusal reaches the page.
+    const again = ownOrigin(url, location.href) ? replayPlan(input, init) : null;
+    if (!again) return pageFetch(input, init);
+    const seen = stepUp.mark();
+    const res = await pageFetch(input, init);
+    if (res.status !== 403) return res;
+    const type = res.headers.get("content-type");
+    // Read from a copy: the page gets the answer unread whatever happens here.
+    const body = /json/i.test(type ?? "") ? await res.clone().json().catch(() => null) : null;
+    if (!isStepUp(res.status, type, body)) return res;
+    if (!(await stepUp.settle(seen)) || (init?.signal ?? input?.signal)?.aborted) return res;
+    return pageFetch(...again());
+  };
+}
 
 // ───────────────────────── the API ─────────────────────────
 

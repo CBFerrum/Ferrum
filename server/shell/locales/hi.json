@@ -340,5 +340,12 @@
   "This address is changing": "यह पता बदल रहा है",
   "Everything from this device has been sent.": "इस डिवाइस से सब कुछ भेज दिया गया है।",
   "1 upload still to send.": "1 अपलोड अभी भेजना बाकी है।",
-  "{n} uploads still to send.": "{n} अपलोड अभी भेजने बाकी हैं।"
+  "{n} uploads still to send.": "{n} अपलोड अभी भेजने बाकी हैं।",
+  "Confirm": "पुष्टि करें",
+  "Confirm it is you": "पुष्टि करें कि यह आप हैं",
+  "To continue, confirm it is you.": "जारी रखने के लिए पुष्टि करें कि यह आप हैं।",
+  "That is not right. Try again.": "यह सही नहीं है। फिर से कोशिश करें।",
+  "Enter the code from your authenticator app.": "अपने ऑथेंटिकेटर ऐप से कोड दर्ज करें।",
+  "Too many tries. Wait a moment and try again.": "बहुत ज़्यादा कोशिशें। थोड़ी देर रुककर फिर से कोशिश करें।",
+  "Could not confirm it is you. Try again.": "पुष्टि नहीं हो सकी कि यह आप हैं। फिर से कोशिश करें।"
 }

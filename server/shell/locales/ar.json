@@ -340,5 +340,12 @@
   "This address is changing": "هذا العنوان يتغير",
   "Everything from this device has been sent.": "أُرسل كل شيء من هذا الجهاز.",
   "1 upload still to send.": "ما زال ملف واحد بانتظار الإرسال.",
-  "{n} uploads still to send.": "ما زالت {n} ملفات بانتظار الإرسال."
+  "{n} uploads still to send.": "ما زالت {n} ملفات بانتظار الإرسال.",
+  "Confirm": "تأكيد",
+  "Confirm it is you": "أكّد أنه أنت",
+  "To continue, confirm it is you.": "للمتابعة، أكّد أنه أنت.",
+  "That is not right. Try again.": "هذا غير صحيح. حاول مرة أخرى.",
+  "Enter the code from your authenticator app.": "أدخل الرمز من تطبيق المصادقة.",
+  "Too many tries. Wait a moment and try again.": "محاولات كثيرة جدًا. انتظر قليلًا ثم حاول مرة أخرى.",
+  "Could not confirm it is you. Try again.": "تعذّر التأكد من أنه أنت. حاول مرة أخرى."
 }
