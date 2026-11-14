@@ -170,6 +170,19 @@ fn canonical_records_scope(ctx: &Ctx, scope: &str) -> Result<String> {
     Ok(format!("records:{}", parts.join(";")))
 }
 
+/// A key's networks, each checked and written as the zone code writes it; none: `None`.
+fn key_networks(networks: &[String]) -> Result<Option<Vec<String>>> {
+    if networks.len() > 100 {
+        return Err(Error::field("networks", "at most 100"));
+    }
+    let mut out = Vec::with_capacity(networks.len());
+    for n in networks {
+        let net = crate::zones::Net::parse(n).ok_or_else(|| Error::field("networks", format!("{n} is not a network: write 10.0.0.0/8 or 2001:db8::/32")))?;
+        out.push(net.to_string());
+    }
+    Ok((!out.is_empty()).then_some(out))
+}
+
 fn sha256_hex(s: &str) -> String {
     hex::encode(Sha256::digest(s.as_bytes()))
 }
@@ -444,6 +457,21 @@ impl Kernel {
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
         scope: Option<&str>,
     ) -> Result<(Uuid, String)> {
+        self.create_api_key_on(ctx, user, name, expires_at, scope, &[]).await
+    }
+
+    /// [`Kernel::create_api_key`] that works only from `networks` (none: from anywhere). A key made with
+    /// networks is on the audit trail with them.
+    pub async fn create_api_key_on(
+        &self,
+        ctx: &Ctx,
+        user: Uuid,
+        name: &str,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        scope: Option<&str>,
+        networks: &[String],
+    ) -> Result<(Uuid, String)> {
+        let networks = key_networks(networks)?;
         if !ctx.is_admin && user != ctx.user {
             return Err(Error::Forbidden("you can only create API keys for yourself".into()));
         }
@@ -466,37 +494,52 @@ impl Kernel {
         };
         let id = Uuid::now_v7();
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        sqlx::query("insert into api_key (tenant_id, id, user_id, name, prefix, secret_hash, expires_at, scope) values ($1, $2, $3, $4, $5, $6, $7, $8)")
-            .bind(ctx.tenant)
-            .bind(id)
-            .bind(user)
-            .bind(name)
-            .bind(&prefix)
-            .bind(sha256_hex(&secret))
-            .bind(expires_at)
-            .bind(scope)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "insert into api_key (tenant_id, id, user_id, name, prefix, secret_hash, expires_at, scope, networks) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(user)
+        .bind(name)
+        .bind(&prefix)
+        .bind(sha256_hex(&secret))
+        .bind(expires_at)
+        .bind(scope)
+        .bind(&networks)
+        .execute(&mut *tx)
+        .await?;
+        if let Some(n) = &networks {
+            crate::audit::record(&mut tx, ctx, "ApiKey", id, "create", None, serde_json::json!({"name": name, "user": user, "networks": n})).await?;
+        }
         tx.commit().await?;
         Ok((id, format!("fk_{prefix}_{secret}")))
     }
 
-    /// The session an API key opens, and the key's scope (`None`: the whole API).
+    /// The session an API key opens, and the key's scope (`None`: the whole API), from no address in
+    /// particular: a key with networks of its own is refused.
     pub async fn verify_api_key(&self, raw: &str) -> Result<(Session, Option<String>)> {
+        self.verify_api_key_from(raw, "").await
+    }
+
+    /// [`Kernel::verify_api_key`] from `address` (as `client_ip` derives it): a key with networks of its
+    /// own works only from inside one of them, and is refused elsewhere (403, `network`) once its secret
+    /// is known good.
+    pub async fn verify_api_key_from(&self, raw: &str, address: &str) -> Result<(Session, Option<String>)> {
         let denied = || Error::Unauthorized("invalid API key".into());
         let rest = raw.strip_prefix("fk_").ok_or_else(denied)?;
         let (prefix, secret) = rest.split_once('_').ok_or_else(denied)?;
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(Uuid, Uuid, String, bool, i32, Option<String>)> = sqlx::query_as(
+        #[allow(clippy::type_complexity)]
+        let row: Option<(Uuid, Uuid, String, bool, i32, Option<String>, Option<Vec<String>>)> = sqlx::query_as(
             "select k.tenant_id, k.user_id, k.secret_hash, \
-             (k.revoked_at is null and (k.expires_at is null or k.expires_at > now()) and u.is_active and t.status = 'active'), u.token_version, k.scope \
+             (k.revoked_at is null and (k.expires_at is null or k.expires_at > now()) and u.is_active and t.status = 'active'), u.token_version, k.scope, k.networks \
              from api_key k join app_user u on u.tenant_id = k.tenant_id and u.id = k.user_id join tenant t on t.id = k.tenant_id \
              where k.prefix = $1",
         )
         .bind(prefix)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((tenant, user, hash, valid, tv, scope)) = row else {
+        let Some((tenant, user, hash, valid, tv, scope, networks)) = row else {
             return Err(denied());
         };
         let computed = sha256_hex(secret);
@@ -504,12 +547,42 @@ impl Kernel {
         if !equal || !valid {
             return Err(denied());
         }
+        // Its own networks; one that cannot be read refuses.
+        if let Some(list) = networks.filter(|n| !n.is_empty()) {
+            let inside = address.parse::<std::net::IpAddr>().is_ok_and(|ip| list.iter().any(|n| crate::zones::Net::parse(n).is_some_and(|n| n.contains(ip))));
+            if !inside {
+                tracing::warn!(workspace = %tenant, person = %user, address, "an API key from outside its networks");
+                return Err(crate::gate::refusal());
+            }
+        }
         sqlx::query("update api_key set last_used_at = now() where prefix = $1 and (last_used_at is null or last_used_at < now() - interval '1 minute')")
             .bind(prefix)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
         Ok((Session { tenant, user, token_version: tv }, scope))
+    }
+
+    /// Sets the networks a key works from (none: anywhere): its owner's, or anyone's for an
+    /// administrator. On the audit trail.
+    pub async fn set_api_key_networks(&self, ctx: &Ctx, id: Uuid, networks: &[String]) -> Result<()> {
+        let networks = key_networks(networks)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let n = sqlx::query("update api_key set networks = $5 where tenant_id = $1 and id = $2 and revoked_at is null and (user_id = $3 or $4)")
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(ctx.user)
+            .bind(ctx.is_admin)
+            .bind(&networks)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if n == 0 {
+            return Err(Error::NotFound("API key".into()));
+        }
+        crate::audit::record(&mut tx, ctx, "ApiKey", id, "networks", None, serde_json::json!({"networks": networks})).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn revoke_api_key(&self, ctx: &Ctx, id: Uuid) -> Result<()> {

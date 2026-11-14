@@ -63,9 +63,9 @@ impl TokenSession {
 /// The session a token (session JWT, cookie token or `fk_` API key) carries. The ticket between
 /// the two steps of signing in is no session at all; a cookie's token names a browser session
 /// that must still be valid.
-async fn session_of(st: &crate::state::AppState, token: &str) -> Result<TokenSession, ApiError> {
+async fn session_of(st: &crate::state::AppState, token: &str, address: &str) -> Result<TokenSession, ApiError> {
     if token.starts_with("fk_") {
-        let (s, scope) = st.kernel.verify_api_key(token).await?;
+        let (s, scope) = st.kernel.verify_api_key_from(token, address).await?;
         // Support keys go through like anyone's: the role behind them decides what they reach.
         let records = match scope.as_deref() {
             None | Some("support") => None,
@@ -142,7 +142,7 @@ async fn only_through_the_api(st: &crate::state::AppState, ctx: &Ctx, method: &s
 /// use it for both kinds, in the zone their upgrade request came in by (`entry`); HTTP requests go
 /// through [`Auth`], which also checks where each kind may come from.
 pub async fn ctx_from_token(st: &crate::state::AppState, token: &str, request_id: String, entry: &Arc<Entry>) -> Result<Ctx, ApiError> {
-    let t = session_of(st, token).await?;
+    let t = session_of(st, token, &entry.address).await?;
     no_app_token(&t)?;
     if t.setup_only {
         return Err(ApiError(Error::Forbidden("set up two-factor sign-in first; this workspace requires it".into())));
@@ -210,7 +210,7 @@ async fn caller_with_app(
     if from_cookie && !crate::shell::may_change(method, headers) {
         return Err(ApiError(Error::Forbidden("this request did not come from this site's own pages".into())));
     }
-    let t = session_of(st, &token).await?;
+    let t = session_of(st, &token, &client_ip(headers)).await?;
     let mismatch = if from_cookie { t.sid.is_none() || t.bound.is_some() } else { t.sid.is_some() };
     if mismatch {
         return Err(ApiError(Error::Unauthorized(
@@ -258,7 +258,7 @@ pub async fn socket_credential(st: &crate::state::AppState, headers: &HeaderMap,
     }
     match crate::shell::session_cookie(headers, st.shell.secure) {
         Some(token) if crate::shell::origin_is_host(headers) => {
-            let t = session_of(st, &token).await?;
+            let t = session_of(st, &token, &entry.address).await?;
             no_app_token(&t)?;
             if t.sid.is_none() || t.bound.is_some() || t.setup_only {
                 return Err(ApiError(Error::Unauthorized("invalid session cookie".into())));
@@ -349,7 +349,7 @@ impl FromRequestParts<AppContext> for SetupAuth {
             let (ctx, _) = caller(&st, parts).await?;
             return Ok(SetupAuth(ctx, None));
         };
-        let t = session_of(&st, &token).await?;
+        let t = session_of(&st, &token, &client_ip(&parts.headers)).await?;
         no_app_token(&t)?;
         if t.sid.is_some() {
             return Err(ApiError(Error::Unauthorized("this token works only as the browser's session cookie".into())));

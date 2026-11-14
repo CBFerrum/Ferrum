@@ -1225,6 +1225,10 @@ while and which the workspace sees request by request. Portal people, guests and
 held to it. The caller's address is the one the server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS`;
 without a proxy in front there is no address, which is outside every list.
 
+**A key's own networks.** An API key (of any scope, an app password and a SCIM key included) may be pinned to
+networks of its own when it is made, or later (`networks` in the keys API); from anywhere else it is refused
+with `403` `network`. A key with none works from anywhere, as before. Pinning is on the audit trail.
+
 **What a refusal looks like.** A signed-in credential gets `403` with error `network`, which says nothing of
 the networks allowed. Signing in from outside fails as a wrong password does, before the password, code,
 passkey or OAuth code is read: the same answer for a right and a wrong password and for an address nobody

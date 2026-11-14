@@ -347,4 +347,47 @@ async fn scenario() {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(why["reason"], "the office moved");
+
+    // ── 2. An API key pinned to networks ──
+    let member_token = holds[0].token.clone();
+    let (status, answer) =
+        call(&r, Method::POST, "/api/auth/api_keys", INSIDE, Cred::Bearer(&member_token), Some(json!({"name": "pinned", "networks": ["10.0.0.1/8"]}))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a network that is not one: {answer}");
+    let (status, answer) = call(
+        &r,
+        Method::POST,
+        "/api/auth/api_keys",
+        INSIDE,
+        Cred::Bearer(&member_token),
+        Some(json!({"name": "pinned", "networks": ["10.0.0.0/8", "2001:db8::/32"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{answer}");
+    let made: Value = serde_json::from_str(&answer).unwrap();
+    let pinned = made["key"].as_str().unwrap().to_string();
+    for ip in [OUTSIDE, OUTSIDE_V6] {
+        let (status, answer) = call(&r, Method::GET, "/api/auth/me", ip, Cred::Bearer(&pinned), None).await;
+        assert!(refused_by_network(status, &answer), "a pinned key from {ip}: {status} {answer}");
+    }
+    for ip in [INSIDE, INSIDE_V6] {
+        assert_eq!(call(&r, Method::GET, "/api/auth/me", ip, Cred::Bearer(&pinned), None).await.0, StatusCode::OK, "a pinned key from {ip}");
+    }
+    assert!(k.verify_api_key(&pinned).await.is_err(), "from no address, a pinned key is refused");
+    let (_, list) = call(&r, Method::GET, "/api/auth/api_keys", INSIDE, Cred::Bearer(&member_token), None).await;
+    let list: Value = serde_json::from_str(&list).unwrap();
+    let listed = list["keys"].as_array().unwrap().iter().find(|k| k["id"] == made["id"]).cloned().unwrap();
+    assert_eq!(listed["networks"], json!(["10.0.0.0/8", "2001:db8::/32"]), "listed with its networks");
+    let path = format!("/api/auth/api_keys/{}", made["id"].as_str().unwrap());
+    let (status, _) = call(&r, Method::PATCH, &path, INSIDE, Cred::Bearer(&member_token), Some(json!({"networks": []}))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(call(&r, Method::GET, "/api/auth/me", OUTSIDE, Cred::Bearer(&pinned), None).await.0, StatusCode::OK, "unpinned: from anywhere");
+    assert_eq!(call(&r, Method::GET, "/api/auth/me", OUTSIDE, Cred::Bearer(&holds[0].key), None).await.0, StatusCode::OK, "a key with none, as before");
+    let mut tx = k.db.tenant_tx(acme).await.unwrap();
+    let trail: Vec<String> = sqlx::query_scalar("select action from audit_event where tenant_id = $1 and entity = 'ApiKey' order by id")
+        .bind(acme)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(trail, ["create", "networks"], "audited");
 }

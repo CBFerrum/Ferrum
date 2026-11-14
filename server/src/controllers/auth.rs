@@ -700,6 +700,20 @@ struct KeyReq {
     /// `dav`: an app password for calendar and contacts apps; `scim`: an administrator's key for an
     /// identity provider; none: a key to the whole API.
     scope: Option<String>,
+    /// The networks it works from (`10.0.0.0/8`, `2001:db8::/32`); none: anywhere.
+    #[serde(default)]
+    networks: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct KeyNetworks {
+    networks: Vec<String>,
+}
+
+/// `PATCH /api/auth/api_keys/{id} {networks}`: where a key works from (none: anywhere). Audited.
+async fn update_key(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(req): Json<KeyNetworks>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.set_api_key_networks(&ctx, id, &req.networks).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn create_key(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json<KeyReq>) -> ApiResult<Response> {
@@ -711,7 +725,7 @@ async fn create_key(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): J
     if st.kernel.directory().await? == Some(ctx.tenant) {
         return Err(ApiError(Error::Forbidden("make API keys in the workspace they are for".into())));
     }
-    let (id, key) = st.kernel.create_api_key(&ctx, ctx.user, req.name.trim(), req.expires_at, req.scope.as_deref()).await?;
+    let (id, key) = st.kernel.create_api_key_on(&ctx, ctx.user, req.name.trim(), req.expires_at, req.scope.as_deref(), &req.networks).await?;
     Ok((StatusCode::CREATED, Json(json!({"id": id, "key": key, "note": "Store this key now; it cannot be shown again."}))).into_response())
 }
 
@@ -727,8 +741,9 @@ async fn list_keys(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<
         Option<chrono::DateTime<chrono::Utc>>,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<String>,
+        Option<Vec<String>>,
     )> = sqlx::query_as(
-        "select id, name, prefix, created_at, expires_at, revoked_at, last_used_at, scope from api_key where tenant_id = $1 and user_id = $2 order by created_at desc",
+        "select id, name, prefix, created_at, expires_at, revoked_at, last_used_at, scope, networks from api_key where tenant_id = $1 and user_id = $2 order by created_at desc",
     )
     .bind(ctx.tenant)
     .bind(ctx.user)
@@ -738,8 +753,9 @@ async fn list_keys(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<
     tx.commit().await.map_err(Error::from)?;
     let keys: Vec<Value> = rows
         .into_iter()
-        .map(|(id, name, prefix, created, expires, revoked, used, scope)| {
-            json!({"id": id, "name": name, "prefix": format!("fk_{prefix}_…"), "created_at": created, "expires_at": expires, "revoked_at": revoked, "last_used_at": used, "scope": scope})
+        .map(|(id, name, prefix, created, expires, revoked, used, scope, networks)| {
+            json!({"id": id, "name": name, "prefix": format!("fk_{prefix}_…"), "created_at": created, "expires_at": expires, "revoked_at": revoked, "last_used_at": used, "scope": scope,
+                   "networks": networks.unwrap_or_default()})
         })
         .collect();
     Ok(Json(json!({"keys": keys})).into_response())
@@ -784,5 +800,5 @@ pub fn routes() -> Routes {
         .add("/step-up", post(step_up))
         .add("/password", post(change_password))
         .add("/api_keys", get(list_keys).post(create_key))
-        .add("/api_keys/{id}", delete(revoke_key))
+        .add("/api_keys/{id}", delete(revoke_key).patch(update_key))
 }

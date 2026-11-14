@@ -29,8 +29,16 @@ async fn person(st: &AppState, headers: &HeaderMap) -> ApiResult<Option<Ctx>> {
     };
     let decoded = base64::engine::general_purpose::STANDARD.decode(basic.trim()).ok().and_then(|b| String::from_utf8(b).ok());
     let mut found = None;
-    if let Some((email, password)) = decoded.as_deref().and_then(|d| d.split_once(':'))
-        && let Ok((s, scope)) = st.kernel.verify_api_key(password.trim()).await
+    let verified = match decoded.as_deref().and_then(|d| d.split_once(':')) {
+        Some((email, password)) => match st.kernel.verify_api_key_from(password.trim(), &crate::extract::client_ip(headers)).await {
+            Ok(v) => Some((email, v)),
+            // A key's own networks refuse it: said as such, the key is good.
+            Err(e @ Error::Refused { .. }) => return Err(e.into()),
+            Err(_) => None,
+        },
+        None => None,
+    };
+    if let Some((email, (s, scope))) = verified
         && scope.as_deref().is_none_or(|scope| scope == "dav")
     {
         let credential = if scope.is_some() { Credential::Dav } else { Credential::ApiKey };
