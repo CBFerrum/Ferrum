@@ -718,6 +718,25 @@ impl Task for OperatorAdmin {
     }
 }
 
+/// `clear_staff_networks tenant:<slug> reason:<text>`: the operator takes a workspace's staff networks
+/// away when its administrators are shut out (docs/operations.md, "Staff networks"), audited as the system's.
+pub struct ClearStaffNetworks;
+
+#[async_trait]
+impl Task for ClearStaffNetworks {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "clear_staff_networks".into(), detail: "Take a workspace's staff networks away, with a reason for the audit trail".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let reason = vars.cli_arg("reason").map_err(|_| Error::Message("say why: reason:\"…\" (it goes in the workspace's audit trail)".into()))?;
+        let tenant = vars.cli_arg("tenant")?;
+        k.clear_staff_networks(tenant, reason).await.map_err(refused)?;
+        println!("{tenant}'s staff may sign in from anywhere again; every replica knows at once");
+        Ok(())
+    }
+}
+
 /// `plan_move reason:"..." [valid:<hours, 24>] [wait:<seconds, 130>]`: before copying the whole installation elsewhere,
 /// stops what reaches outside, waits for the work in hand, and fences the database (crates/kernel/src/moves.rs).
 pub struct PlanMove;

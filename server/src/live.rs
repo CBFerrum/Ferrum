@@ -218,7 +218,7 @@ async fn serve(st: AppState, pre: Option<(String, Ctx)>, entry: std::sync::Arc<f
                 let _ = sink.send(close(4401, "send {\"auth\": token} first")).await;
                 return;
             };
-            match ctx_from_token(&st, &token, Uuid::now_v7().to_string(), &entry).await {
+            match ctx_from_token(&st, &token, Uuid::now_v7().to_string(), &entry, false).await {
                 Ok(ctx) => (token, ctx),
                 Err(ApiError(e)) => {
                     // Close reasons are limited to 123 bytes.
@@ -285,7 +285,7 @@ async fn serve(st: AppState, pre: Option<(String, Ctx)>, entry: std::sync::Arc<f
                     break;
                 }
             }
-            _ = recheck.tick() => match ctx_from_token(&st, &token, Uuid::now_v7().to_string(), &entry).await {
+            _ = recheck.tick() => match ctx_from_token(&st, &token, Uuid::now_v7().to_string(), &entry, false).await {
                 Ok(ctx) => st.live.set_ctx(id, ctx),
                 Err(_) => {
                     let _ = sink.send(close(4401, "session expired")).await;

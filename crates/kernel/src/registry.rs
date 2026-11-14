@@ -109,6 +109,14 @@ impl Registry {
                 .bind(tenant)
                 .fetch_all(&mut *tx)
                 .await?;
+        // Which audit categories its webhooks want (crate::audit): read here, with the schema, and dropped with it when a
+        // webhook changes (Registry::bump_version), so an audit write asks the database nothing more.
+        let audit_topics: Vec<String> = sqlx::query_scalar(
+            "select distinct t from webhook w, unnest(w.topics) t where w.tenant_id = $1 and w.is_active and w.app is null and t like 'audit.%' order by t",
+        )
+        .bind(tenant)
+        .fetch_all(&mut *tx)
+        .await?;
         tx.commit().await?;
         let mut overlays = Vec::with_capacity(rows.len());
         let mut parse_warnings = Vec::new();
@@ -143,6 +151,7 @@ impl Registry {
         for m in missing {
             schema.warnings.push(SchemaWarning { entity: m.clone(), message: format!("package {m} is installed but no longer available on this cluster") });
         }
+        schema.audit_topics = audit_topics;
         schema.fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
         // Every workspace uses the shell: today's web app has left /app/ (docs/plan/apps-ui.md U4b).
         // The `shell_v2` setting stays as it was, for the release before, which still has it.

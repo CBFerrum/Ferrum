@@ -105,7 +105,7 @@ impl Kernel {
         .bind(ctx.user)
         .fetch_one(&mut *tx)
         .await?;
-        crate::audit::record(&mut tx, ctx, "LogicDraft", id, "create", Some(1), json!({"solution": solution})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "LogicDraft", id, "create", Some(1), json!({"solution": solution})).await?;
         tx.commit().await?;
         Ok(json!({"id": id, "version": 1, "solution": solution, "label": label}))
     }
@@ -165,7 +165,7 @@ impl Kernel {
                 )),
             });
         };
-        crate::audit::record(&mut tx, ctx, "LogicDraft", id, "update", Some(version), json!({"solution": solution})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "LogicDraft", id, "update", Some(version), json!({"solution": solution})).await?;
         tx.commit().await?;
         Ok(json!({"id": id, "version": version}))
     }
@@ -183,7 +183,7 @@ impl Kernel {
         if n == 0 {
             return Err(Error::Conflict("this draft changed since you opened it, or is gone: open it again".into()));
         }
-        crate::audit::record(&mut tx, ctx, "LogicDraft", id, "delete", Some(expected), json!({})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "LogicDraft", id, "delete", Some(expected), json!({})).await?;
         tx.commit().await?;
         Ok(())
     }

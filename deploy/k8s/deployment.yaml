@@ -67,6 +67,10 @@ spec:
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_OPS_TELEMETRY_DAYS, optional: true}}
             - name: FERRUM_RETIRED_SECRET_KEYS
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_RETIRED_SECRET_KEYS, optional: true}}
+            - name: FERRUM_AUDIT_SINK_URL
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_AUDIT_SINK_URL, optional: true}}
+            - name: FERRUM_AUDIT_SINK_SECRET
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_AUDIT_SINK_SECRET, optional: true}}
             - name: FERRUM_BOOTSTRAP_TOKEN
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_BOOTSTRAP_TOKEN}}
             - name: FERRUM_METRICS_TOKEN

@@ -636,7 +636,7 @@ impl Kernel {
                                 .bind(serde_json::to_value(&moved_state).map_err(Error::internal)?)
                                 .execute(&mut *tx)
                                 .await?;
-                            crate::audit::record(
+                            crate::audit::record_admin(
                                 &mut tx,
                                 &sys,
                                 "LogicRun",
@@ -654,8 +654,16 @@ impl Kernel {
             }
         };
         if let Migration::Refused { why } = &outcome {
-            crate::audit::record(&mut tx, &sys, "LogicRun", run, "migration_refused", None, json!({"to": release, "map": map, "why": why, "approved_by": by}))
-                .await?;
+            crate::audit::record_admin(
+                &mut tx,
+                &sys,
+                "LogicRun",
+                run,
+                "migration_refused",
+                None,
+                json!({"to": release, "map": map, "why": why, "approved_by": by}),
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok(outcome)
@@ -703,8 +711,16 @@ impl Kernel {
         let moved = self.migration_check(&mut tx, ctx.tenant, run, release, map).await?;
         let digest = ferrum_logic::canonical::digest("ferrum.logic.migration/1", &json!({"run": run, "release": release, "map": map}))
             .map_err(|e| Error::field("map", e.to_string()))?;
-        crate::audit::record(&mut tx, ctx, "LogicRun", run, "plan_migration", None, json!({"release": release, "map": map, "digest": digest, "moved": moved}))
-            .await?;
+        crate::audit::record_admin(
+            &mut tx,
+            ctx,
+            "LogicRun",
+            run,
+            "plan_migration",
+            None,
+            json!({"release": release, "map": map, "digest": digest, "moved": moved}),
+        )
+        .await?;
         tx.commit().await?;
         Ok(json!({"digest": digest, "moved": moved, "next": "Another administrator approves exactly this; the run moves when its runtime takes it up."}))
     }
@@ -731,7 +747,7 @@ impl Kernel {
         let map: BTreeMap<String, String> = serde_json::from_value(plan["map"].clone()).map_err(Error::internal)?;
         self.migration_check(&mut tx, ctx.tenant, run, release, &map).await?;
         deliver(&mut tx, ctx.tenant, run, &Event::Migrated { release: release.to_string(), map, by: ctx.user.to_string() }).await?;
-        crate::audit::record(&mut tx, ctx, "LogicRun", run, "approve_migration", None, json!({"digest": digest, "reason": reason})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "LogicRun", run, "approve_migration", None, json!({"digest": digest, "reason": reason})).await?;
         tx.commit().await?;
         Ok(json!({
             "delivered": true,
@@ -1568,7 +1584,7 @@ impl Kernel {
         .bind(ctx.user)
         .execute(&mut *tx)
         .await?;
-        crate::audit::record(&mut tx, ctx, "User", user, "away", None, json!({"from": starts_on, "until": ends_on, "substitute": substitute})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "User", user, "away", None, json!({"from": starts_on, "until": ends_on, "substitute": substitute})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1614,7 +1630,7 @@ impl Kernel {
                 .await?
                 .rows_affected();
         if gone > 0 {
-            crate::audit::record(&mut tx, ctx, "User", user, "away:cleared", None, json!({"starts_on": starts_on, "periods": gone})).await?;
+            crate::audit::record_admin(&mut tx, ctx, "User", user, "away:cleared", None, json!({"starts_on": starts_on, "periods": gone})).await?;
         }
         tx.commit().await?;
         Ok(gone)
@@ -1701,7 +1717,7 @@ impl Kernel {
             m.remove("url");
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        crate::audit::record(&mut tx, ctx, "LogicTask", task, "attach_evidence", None, json!({"file": kept["id"], "sha256": kept["sha256"]})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "LogicTask", task, "attach_evidence", None, json!({"file": kept["id"], "sha256": kept["sha256"]})).await?;
         tx.commit().await?;
         Ok(kept)
     }
@@ -2054,7 +2070,7 @@ impl Kernel {
             .bind(&lookup)
             .execute(&mut *tx)
             .await?;
-        crate::audit::record(&mut tx, ctx, "LogicRun", run, "look_up_effects", None, json!({"recovery": id, "effects": lookup["effects"]})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "LogicRun", run, "look_up_effects", None, json!({"recovery": id, "effects": lookup["effects"]})).await?;
         tx.commit().await?;
         Ok(lookup)
     }
@@ -2103,7 +2119,7 @@ impl Kernel {
             return Err(Error::Forbidden("an administrator or whoever started the run stops it".into()));
         }
         deliver(&mut tx, ctx.tenant, run, &Event::CancelRequested { by: ctx.user.to_string(), reason: reason.trim().into() }).await?;
-        crate::audit::record(&mut tx, ctx, "LogicRun", run, "cancel", None, json!({"reason": reason.trim()})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "LogicRun", run, "cancel", None, json!({"reason": reason.trim()})).await?;
         tx.commit().await?;
         Ok(())
     }

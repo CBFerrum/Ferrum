@@ -98,7 +98,7 @@ impl Kernel {
                 .bind(s.events)
                 .execute(&mut *tx)
                 .await?;
-            audit::record(&mut tx, ctx, "ServiceApp", id, "upgrade", None, json!({"app": s.app, "version": s.version, "events": s.events})).await?;
+            audit::record_admin(&mut tx, ctx, "ServiceApp", id, "upgrade", None, json!({"app": s.app, "version": s.version, "events": s.events})).await?;
             tx.commit().await?;
             return Ok(false);
         }
@@ -114,7 +114,8 @@ impl Kernel {
             .bind((!ctx.user.is_nil()).then_some(ctx.user))
             .execute(&mut *tx)
             .await?;
-        audit::record(&mut tx, ctx, "ServiceApp", hook, "install", None, json!({"app": s.app, "version": s.version, "url": s.url, "events": s.events})).await?;
+        audit::record_admin(&mut tx, ctx, "ServiceApp", hook, "install", None, json!({"app": s.app, "version": s.version, "url": s.url, "events": s.events}))
+            .await?;
         tx.commit().await?;
         let (_, key) = self.create_api_key(ctx, user, &format!("Service {}", s.app), None, None).await?;
         let api = self.link_base(ctx.tenant).await.map(|b| format!("{b}/api"));
@@ -171,7 +172,7 @@ impl Kernel {
                 .await?;
         }
         if let Some((id, _)) = &hook {
-            audit::record(&mut tx, ctx, "ServiceApp", *id, "uninstall", None, json!({"app": app})).await?;
+            audit::record_admin(&mut tx, ctx, "ServiceApp", *id, "uninstall", None, json!({"app": app})).await?;
         }
         tx.commit().await?;
         if let Some(user) = user {

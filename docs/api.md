@@ -47,7 +47,7 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `POST /passkeys/options` | → `{request, publicKey}` for `navigator.credentials.create`: a passkey for the caller on this host (for `FERRUM_PASSKEY_RP` when the host is it or under it); `403` unless the session signed in or stepped up in the last ten minutes |
 | `POST /passkeys` | `{request, credential, name}` → `201` the passkey kept; `GET /passkeys` → `{passkeys: [{id, name, rp_id, transports, created_at, last_used_at}]}`; `PATCH /passkeys/{id}` `{name}`; `DELETE /passkeys/{id}` |
 | `POST /password` | `{current_password, new_password}` (policy: ≥10 chars, 3 of lower/upper/digit/symbol) |
-| `GET /api_keys`, `POST /api_keys` `{name, expires_at?, scope?}` → `{id, key}`, `DELETE /api_keys/{id}` | API keys (secret shown once). `scope: "dav"` makes an app password for calendar and contacts apps: it signs them in at `/api/dav/…` over HTTP Basic (email and password) and is refused as a bearer token. `scope: "records:Customer=read;SalesInvoice=read+create"` makes a records key: it reaches only `/api/v1/…` and `/api/meta/…`, with its owner's rights narrowed to the entities and actions it names (`read`, `write`, `create`, `delete`, `submit`, `cancel`, `export`, `import`), never more than theirs, never an administrator's, and no field group; an unknown entity or action is a `422` |
+| `GET /api_keys`, `POST /api_keys` `{name, expires_at?, scope?, networks?}` → `{id, key}`, `PATCH /api_keys/{id}` `{networks}` → 204, `DELETE /api_keys/{id}` | API keys (secret shown once). `networks` (`["10.0.0.0/8", "2001:db8::/32"]`, listed with each key, empty for none) pins a key: from any other address it is refused with `403` error `network`; setting them is audited. A workspace's staff networks never hold a key. `scope: "dav"` makes an app password for calendar and contacts apps: it signs them in at `/api/dav/…` over HTTP Basic (email and password) and is refused as a bearer token. `scope: "records:Customer=read;SalesInvoice=read+create"` makes a records key: it reaches only `/api/v1/…` and `/api/meta/…`, with its owner's rights narrowed to the entities and actions it names (`read`, `write`, `create`, `delete`, `submit`, `cancel`, `export`, `import`), never more than theirs, never an administrator's, and no field group; an unknown entity or action is a `422` |
 
 **Browser sessions** ([plan](plan/apps-ui.md) §12.3). When a page of the site signs in
 (`Sec-Fetch-Site: same-origin`), the answer also sets the session cookie: `__Host-ferrum` where the
@@ -703,7 +703,20 @@ has when it runs, not when they asked. A bulk job's `result` is `{total, succeed
 Workspace settings: `GET /api/admin/settings` → `{timezone, fiscal_year_start_month, require_two_factor}`;
 `PUT` with any of them (`timezone` is an IANA name such as `Asia/Kolkata`; `require_two_factor`
 applies from each person's next sign-in; `require_sso` refuses password sign-in to everyone but
-administrators and needs an enabled single sign-on provider).
+administrators and needs an enabled single sign-on provider). `staff_networks`
+(`{"networks": ["10.0.0.0/8", …], "mode": "enforce" | "report"}`, or `null` for none) is the networks staff
+may work from ([operations](operations.md#staff-networks)); a save in `enforce` is refused (422) unless the
+caller's own address is inside it. A credential refused by it gets `403` with error `network`. `new_device_notice` (true or false) e-mails staff when they sign in from a device they had not used.
+`break_glass` (`null`, or the ids of 1 to 20 active administrators) names the administrators who keep password
+sign-in when `require_sso` is on; a list naming nobody, or anyone who is not an active administrator, is refused
+(422). `idle_minutes` (0, or 5 to 10080) ends browser sessions unused that long; such a session's next request gets
+`401` "this device was signed out; please sign in again".
+
+Audit log: `GET /api/admin/audit?category=&before=&limit=` → `{events, next_before}`, newest first, at most
+500 (`limit`, 100 by default); `category` is `sign_in`, `administration` or `records`; pass `next_before` as
+`before` for the next page. Each event is in the format of [the audit sink](operations.md#sending-the-audit-log-elsewhere). A webhook whose
+topics name `audit.sign_in`, `audit.administration`, `audit.records` or `audit.*` receives each such event of the
+workspace as its body; `*` does not include them.
 
 Domains ([operations](operations.md#custom-domains)): `GET /api/admin/domains` → `{domains: [{host,
 kind (subdomain or custom), target (shell, portal, site:{app}), is_primary, verify_token, status

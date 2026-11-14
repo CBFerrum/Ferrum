@@ -121,7 +121,7 @@ async fn socket(
         // the browser's session cookie from a page of this site.
         let entry = crate::extract::socket_entry(&st, &headers).await;
         let ctx = match bearer(&headers).or_else(|| query.get("access_token").cloned()) {
-            Some(token) => ctx_from_token(&st, &token, request_id(&headers), &entry).await?,
+            Some(token) => ctx_from_token(&st, &token, request_id(&headers), &entry, false).await?,
             None => crate::extract::socket_credential(&st, &headers, &entry)
                 .await?
                 .map(|(_, ctx)| ctx)

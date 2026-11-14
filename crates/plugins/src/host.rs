@@ -281,7 +281,7 @@ impl Host<'_, '_> {
                     tracing::warn!(plugin = %self.plugin.name, tenant = %self.ctx().tenant, field, "a plugin tried to say more than a resource call takes");
                     let ctx = self.ctx();
                     let mut tx = self.kernel().db.tenant_tx(ctx.tenant).await?;
-                    audit::record(&mut tx, ctx, "Plugin", self.plugin.id, "resource.refused", None, json!({"call": op, "tried": field})).await?;
+                    audit::record_admin(&mut tx, ctx, "Plugin", self.plugin.id, "resource.refused", None, json!({"call": op, "tried": field})).await?;
                     tx.commit().await?;
                     return Err(Error::field(field, "is not something a plugin can say"));
                 }

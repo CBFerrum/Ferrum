@@ -192,7 +192,7 @@ impl Kernel {
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
         if last_failed(&mut tx, ctx.tenant, package, name).await?.is_some() {
             queue(&mut tx, ctx.tenant, package, name).await?;
-            crate::audit::record(&mut tx, ctx, "Backfill", Uuid::nil(), "rerun", None, json!({"package": package, "name": name, "failed": true})).await?;
+            crate::audit::record_admin(&mut tx, ctx, "Backfill", Uuid::nil(), "rerun", None, json!({"package": package, "name": name, "failed": true})).await?;
             tx.commit().await?;
             return Ok(());
         }
@@ -206,7 +206,7 @@ impl Kernel {
         if gone == 0 {
             return Err(Error::Conflict("it has not finished".into()));
         }
-        crate::audit::record(&mut tx, ctx, "Backfill", Uuid::nil(), "rerun", None, json!({"package": package, "name": name})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "Backfill", Uuid::nil(), "rerun", None, json!({"package": package, "name": name})).await?;
         tx.commit().await?;
         Ok(())
     }

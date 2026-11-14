@@ -340,7 +340,7 @@ impl Kernel {
         if inserted.rows_affected() == 0 {
             return Err(Error::Conflict("this passkey is already kept".into()));
         }
-        crate::audit::record(&mut tx, ctx, "Passkey", pid, "add", None, json!({"name": name, "rp_id": rp_id})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "Passkey", pid, "add", None, json!({"name": name, "rp_id": rp_id})).await?;
         tx.commit().await?;
         Ok(json!({"id": pid, "name": name, "rp_id": rp_id, "created_at": chrono::Utc::now(), "last_used_at": null}))
     }
@@ -364,7 +364,15 @@ impl Kernel {
 
     /// [`Kernel::passkey_sign_in`] where staff are refused (crate::zones): a staff account's passkey
     /// is then one not known here, before its signature is checked.
-    pub async fn passkey_sign_in_at(&self, request: Uuid, origins: &[String], credential: &Value, tenant: Option<Uuid>, refuse_staff: bool) -> Result<Session> {
+    pub async fn passkey_sign_in_at(
+        &self,
+        request: Uuid,
+        origins: &[String],
+        credential: &Value,
+        tenant: Option<Uuid>,
+        from: impl Into<crate::gate::Arrival>,
+    ) -> Result<Session> {
+        let from = from.into();
         let (challenge, _, _, rp_id) = self.take_challenge(request, "sign_in").await?;
         origins_may_use(origins, &rp_id)?;
         let res = &credential["response"];
@@ -393,19 +401,33 @@ impl Kernel {
             token_version: i32,
             tenant_active: bool,
             sso_only: bool,
+            break_glass: bool,
             kind: String,
         }
         let mut tx = self.db.system_tx().await?;
-        let row: Option<Row> = sqlx::query_as(
+        let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select p.tenant_id, p.id, p.user_id, p.rp_id, p.public_key, p.alg, p.sign_count, u.is_active, u.token_version, \
-             t.status = 'active' as tenant_active, (coalesce(t.settings->'require_sso' = 'true'::jsonb, false) and not u.is_admin) as sso_only, u.kind \
+             t.status = 'active' as tenant_active, {} as sso_only, {} as break_glass, u.kind \
              from passkey p join app_user u on u.tenant_id = p.tenant_id and u.id = p.user_id join tenant t on t.id = p.tenant_id \
              where p.credential_id = $1 for update of p",
-        )
+            crate::gate::SSO_ONLY,
+            crate::gate::BREAK_GLASS
+        )))
         .bind(&id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(p) = row.filter(|p| !(refuse_staff && crate::zones::is_staff(&p.kind))) else { return Err(refused("it is not known here")) };
+        let refused_here = match &row {
+            Some(p) => self.refuses_here(&from, p.tenant_id, p.user_id, &p.kind).await,
+            None => false,
+        };
+        if refused_here {
+            if let Some(p) = &row {
+                crate::gate::failure(&mut tx, p.tenant_id, p.user_id, "refused", &from, "passkey").await?;
+            }
+            tx.commit().await?;
+            return Err(refused("it is not known here"));
+        }
+        let Some(p) = row else { return Err(refused("it is not known here")) };
         if p.rp_id != rp_id || tenant.is_some_and(|t| t != p.tenant_id) {
             return Err(refused("it belongs to another address"));
         }
@@ -426,6 +448,9 @@ impl Kernel {
         }
         if p.sso_only {
             return Err(Error::Forbidden("this workspace signs in through single sign-on; use its button on the sign-in page".into()));
+        }
+        if p.break_glass {
+            crate::gate::break_glass(&mut tx, p.tenant_id, p.user_id, &from, "passkey").await?;
         }
         sqlx::query("update passkey set sign_count = $3, last_used_at = now() where tenant_id = $1 and id = $2")
             .bind(p.tenant_id)
@@ -486,7 +511,7 @@ impl Kernel {
         if done.rows_affected() == 0 {
             return Err(Error::NotFound("passkey".into()));
         }
-        crate::audit::record(&mut tx, ctx, "Passkey", id, if name.is_some() { "rename" } else { "remove" }, None, json!({})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "Passkey", id, if name.is_some() { "rename" } else { "remove" }, None, json!({})).await?;
         tx.commit().await?;
         Ok(())
     }

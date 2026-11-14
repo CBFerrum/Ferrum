@@ -465,7 +465,7 @@ impl Kernel {
             erased_again += self.erase_again(&mut tx, &system, erasure).await?.0;
         }
         let done = json!({"note": note, "tables": tables, "kept": kept, "erasures": erasures.len(), "erased_again": erased_again, "went_out_since": went_out});
-        audit::record(&mut tx, ctx, "Tenant", tenant, "platform.tenant_restored", None, done).await?;
+        audit::record_admin(&mut tx, ctx, "Tenant", tenant, "platform.tenant_restored", None, done).await?;
         sqlx::query("update tenant set status = $2 where id = $1").bind(tenant).bind(&was).execute(&mut *tx).await?;
         notify_users(&mut tx, tenant, None).await?;
         tx.commit().await?;
@@ -499,7 +499,7 @@ impl Kernel {
         let files = json!({"checked": checked, "unchecked": 0, "missing": missing});
         if !missing.is_empty() {
             let mut tx = self.db.system_tenant_tx(tenant).await?;
-            audit::record(&mut tx, ctx, "Tenant", tenant, "platform.tenant_restored_files_missing", None, files.clone()).await?;
+            audit::record_admin(&mut tx, ctx, "Tenant", tenant, "platform.tenant_restored_files_missing", None, files.clone()).await?;
             tx.commit().await?;
         }
         Ok(files)
@@ -591,7 +591,7 @@ impl Kernel {
             .await?;
         tx.commit().await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        audit::record(&mut tx, ctx, "Platform", Uuid::nil(), "platform.restore_released", None, serde_json::json!({"note": note})).await?;
+        audit::record_admin(&mut tx, ctx, "Platform", Uuid::nil(), "platform.restore_released", None, serde_json::json!({"note": note})).await?;
         tx.commit().await?;
         // Every open run says where it stands, so a history ahead of what came back names what is missing.
         self.recheck_logic_runs().await?;

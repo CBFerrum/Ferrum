@@ -202,7 +202,31 @@ impl Kernel {
                 "Each workspace's administrators can see them: GET /api/customize/conflicts.",
             )
         });
+        if let Some(f) = self.audit_sink_finding().await {
+            out.push(f);
+        }
         Ok(out)
+    }
+
+    /// The audit sink (crate::audit_sink): a warning when events have waited more than 15 minutes.
+    async fn audit_sink_finding(&self) -> Option<Finding> {
+        if self.settings.audit_sink.is_some() && (self.db.fenced() || self.holding().await.unwrap_or(true)) {
+            return Some(Finding::off(
+                "audit.sink",
+                "paused: held after a restore, or a planned move fences this database; it goes on from its cursor once that ends",
+            ));
+        }
+        Some(match self.audit_sink_behind().await {
+            Ok(None) if self.settings.audit_sink.is_none() => return None,
+            Ok(None) => Finding::ok("audit.sink", "set, and has not sent yet"),
+            Ok(Some(s)) if s <= 900.0 => Finding::ok("audit.sink", format!("{s:.0} seconds behind")),
+            Ok(Some(s)) => Finding::warning(
+                "audit.sink",
+                format!("the audit sink is {:.0} minutes behind", s / 60.0),
+                "Check that FERRUM_AUDIT_SINK_URL answers, and the servers' logs for 'sending the audit log' (docs/operations.md, Sending the audit log elsewhere).",
+            ),
+            Err(e) => Finding::warning("audit.sink", format!("how far behind it is cannot be read: {e}"), "See the database's state."),
+        })
     }
 }
 

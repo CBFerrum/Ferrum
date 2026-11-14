@@ -284,6 +284,9 @@ pub struct Schema {
     pub documents: Vec<DocumentDef>,
     /// Each installed package's direct dependencies (its manifest's `depends`): which package's default document wins.
     pub package_depends: BTreeMap<String, Vec<String>>,
+    /// The workspace's audit webhooks' topics (`audit.sign_in`, `audit.administration`, `audit.records`, `audit.*`):
+    /// filled by the kernel when it loads the schema, so writing an audit event asks no more than this.
+    pub audit_topics: Vec<String>,
 }
 
 impl Schema {
@@ -358,6 +361,7 @@ impl Default for Schema {
             messages: vec![],
             documents: vec![],
             package_depends: BTreeMap::new(),
+            audit_topics: vec![],
         }
     }
 }
@@ -1256,6 +1260,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         messages,
         documents,
         package_depends,
+        audit_topics: vec![],
     };
     // What expressions read as `settings` is there (BD-17); otherwise it is said, and a customization saying it refused.
     let wrong: Vec<SchemaWarning> = schema

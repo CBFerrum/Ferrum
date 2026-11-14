@@ -31,24 +31,46 @@ pub async fn refuses_staff(st: &AppState, headers: &HeaderMap) -> bool {
     entry(st, headers, Credential::SignIn).await.refuses_staff()
 }
 
+/// Where a sign-in comes from (ferrum_kernel::gate::Arrival): whether the zone refuses staff, and the
+/// caller's address, browser and zone. The kernel's sign-in steps check the workspace's staff
+/// networks with it, once they know the workspace, before any secret is read.
+pub async fn arrival(st: &AppState, headers: &HeaderMap) -> ferrum_kernel::gate::Arrival {
+    let entry = entry(st, headers, Credential::SignIn).await;
+    ferrum_kernel::gate::Arrival {
+        refuse_zone: entry.refuses_staff(),
+        address: entry.address.clone(),
+        user_agent: headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default().chars().take(300).collect(),
+        zone: entry.name().map(str::to_string),
+    }
+}
+
 /// A step of signing in for `user` that comes before any secret of theirs is checked (the second
 /// step's code): refused, without counting, when they are staff and the zone refuses staff. A kind
 /// that cannot be read counts as staff.
 pub async fn refuses_sign_in(st: &AppState, headers: &HeaderMap, tenant: uuid::Uuid, user: uuid::Uuid) -> bool {
     let entry = entry(st, headers, Credential::SignIn).await;
-    entry.refuses_staff() && staff(&st.kernel.user_kind(tenant, user).await)
+    staff(&st.kernel.user_kind(tenant, user).await) && (entry.refuses_staff() || st.kernel.network_refuses(tenant, user, &entry.address).await)
 }
 
 /// A sign-in about to open a session or hand out a token for `user`: refused as a failed sign-in is
-/// (`Err`) when they are staff and the zone admits no staff; admitted and counted in report mode.
-/// The entry is the session's zone.
+/// (`Err`) when they are staff and the zone admits no staff, or the workspace's staff networks do not
+/// hold the caller's address; admitted and counted in report mode. The entry is the session's zone.
 pub async fn sign_in(st: &AppState, headers: &HeaderMap, tenant: uuid::Uuid, user: uuid::Uuid) -> Result<Arc<Entry>, ()> {
     let entry = entry(st, headers, Credential::SignIn).await;
-    if entry.admits_staff() || !staff(&st.kernel.user_kind(tenant, user).await) {
+    if !staff(&st.kernel.user_kind(tenant, user).await) {
         return Ok(entry);
     }
-    ferrum_kernel::zones::count_refusal(&entry, tenant, user);
-    if entry.refuses_staff() { Err(()) } else { Ok(entry) }
+    if !entry.admits_staff() {
+        ferrum_kernel::zones::count_refusal(&entry, tenant, user);
+    }
+    if entry.refuses_staff() || st.kernel.network_refuses(tenant, user, &entry.address).await {
+        // On the audit trail, as a refusal (capped as failures are); the answer says nothing more.
+        if let Err(e) = st.kernel.record_sign_in_failure(tenant, user, "refused", "", &arrival(st, headers).await).await {
+            tracing::warn!("a refused sign-in could not be recorded: {e}");
+        }
+        return Err(());
+    }
+    Ok(entry)
 }
 
 /// The answer to a refused sign-in: the one a wrong password gets, which says nothing about the
@@ -88,6 +110,44 @@ pub fn metrics_text() -> String {
         out.push_str(&format!("ferrum_zone_refusals_total{{zone=\"{zone}\",mode=\"{mode}\",credential=\"{credential}\"}} {n}\n"));
     }
     out
+}
+
+/// `ferrum_staff_network_refusals_total{mode,credential}` for `/metrics`: staff credentials from
+/// outside their workspace's networks since this replica started (admitted in report mode).
+pub fn network_metrics_text() -> String {
+    let mut out = String::from(
+        "# HELP ferrum_staff_network_refusals_total Staff credentials from outside their workspace's networks (in report mode: admitted, and counted).\n\
+         # TYPE ferrum_staff_network_refusals_total counter\n",
+    );
+    for (mode, credential, n) in ferrum_kernel::gate::refusals() {
+        out.push_str(&format!("ferrum_staff_network_refusals_total{{mode=\"{mode}\",credential=\"{credential}\"}} {n}\n"));
+    }
+    out
+}
+
+/// `ferrum_sign_in_unknown_total` for `/metrics`: failed sign-ins for an address no account has (never
+/// recorded by address).
+pub fn unknown_sign_in_metrics_text() -> String {
+    format!(
+        "# HELP ferrum_sign_in_unknown_total Failed sign-ins for an address no account has.\n# TYPE ferrum_sign_in_unknown_total counter\nferrum_sign_in_unknown_total {}\n",
+        ferrum_kernel::gate::unknown_failures()
+    )
+}
+
+/// `ferrum_audit_sink_behind_seconds` for `/metrics`, when the operator's audit sink is set: how long the oldest
+/// event not yet sent has waited (0: none).
+pub async fn audit_sink_metrics_text(k: &ferrum_kernel::Kernel) -> String {
+    match k.audit_sink_behind().await {
+        Ok(Some(s)) => format!(
+            "# HELP ferrum_audit_sink_behind_seconds How long the oldest audit event not yet sent to the audit sink has waited.\n\
+             # TYPE ferrum_audit_sink_behind_seconds gauge\nferrum_audit_sink_behind_seconds {s}\n"
+        ),
+        Ok(None) => String::new(),
+        Err(e) => {
+            tracing::warn!("how far behind the audit sink is: {e}");
+            String::new()
+        }
+    }
 }
 
 #[cfg(test)]

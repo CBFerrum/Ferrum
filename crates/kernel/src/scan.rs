@@ -99,7 +99,8 @@ impl Kernel {
             Verdict::Infected(signature) => {
                 tracing::warn!(file = file_name, %signature, "upload refused: malware");
                 let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-                audit::record(&mut tx, ctx, "File", Uuid::now_v7(), "malware_refused", None, json!({"file_name": file_name, "signature": signature})).await?;
+                audit::record_admin(&mut tx, ctx, "File", Uuid::now_v7(), "malware_refused", None, json!({"file_name": file_name, "signature": signature}))
+                    .await?;
                 tx.commit().await?;
                 Err(Error::Invalid(format!("{file_name} was not stored: the scanner found {signature} in it")))
             }
