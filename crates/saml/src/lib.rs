@@ -79,6 +79,9 @@ pub struct Person {
     /// The provider's session the sign-in belongs to (the AuthnStatement's SessionIndex).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_index: Option<String>,
+    /// When the person signed in at the provider (the AuthnStatement's AuthnInstant), in seconds since 1970.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authn_instant: Option<i64>,
 }
 
 /// A NameID: its value and format (none for unspecified).
@@ -177,7 +180,7 @@ pub(crate) mod people {
             let whole = [first(attributes, &GIVEN, some_text), first(attributes, &FAMILY, some_text)].into_iter().flatten().collect::<Vec<_>>().join(" ");
             (!whole.is_empty()).then_some(whole)
         });
-        Ok(Person { subject, email, name, name_id: None, session_index: None })
+        Ok(Person { subject, email, name, name_id: None, session_index: None, authn_instant: None })
     }
 }
 
@@ -205,7 +208,8 @@ mod tests {
                 email: Some("pat.lee@contoso.test".into()),
                 name: Some("Pat Lee".into()),
                 name_id: None,
-                session_index: None
+                session_index: None,
+                authn_instant: None
             }
         );
 

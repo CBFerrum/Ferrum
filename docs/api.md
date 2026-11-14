@@ -43,7 +43,14 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `POST /token` | (session cookie) → `{token, token_type, expires_in, tenant, email}`: a bearer token for a page that still sends one, bound to the browser's session |
 | `GET /sessions?user=` | → `{sessions: [{id, user_id, actor, created_at, last_seen_at, expires_at, user_agent, ip, current}]}`: the signed-in browsers of the caller (administrators: of `user`) |
 | `DELETE /sessions/{id}` | signs one browser out (one's own; administrators: anyone's) |
-| `POST /step-up` | `{password, code?}` → `204`: the person proved themselves again; sensitive actions accept the session for ten minutes |
+| `POST /step-up` | `{password, code?}` → `204`: the person proved themselves again; sensitive actions accept the session for ten minutes (marked work: the workspace's `minutes`). `422` naming `code` when the authenticator's code is needed; `403` where the workspace requires single sign-on of the person (a password proves nothing there: sign in again at the provider) |
+| `GET /step-up/ways` | → `{ways, message?}`: the ways this browser session's person can confirm it is them on this host, in order of preference, as a `step_up` refusal lists them: `{"way": "passkey"}`, `{"way": "password", "code": true\|false}`, `{"way": "provider", "name": "Okta"}`. `[]` with a `message` when there is none (or the credential has no browser session) |
+| `POST /step-up/passkey/options` | → `{request, publicKey}` for `navigator.credentials.get`: a challenge for this session and person, `allowCredentials` only their passkeys for this host's relying party, `userVerification: "required"`. `422` without a passkey here; `403` where single sign-on is required of them |
+| `POST /step-up/passkey` | `{request, credential}` (the browser's answer, binary fields base64url) → `204`, the session stepped up; `401` when refused (another session's or person's challenge, another person's passkey, a replay, the person not verified, another site, a counter that went back) |
+| `POST /step-up/provider` | `{dialog}` (16–64 letters, digits, `-` or `_`, of the page's own) → `{url}`: open it in a small window. The provider the person is linked to has them sign in again (`prompt=login`, `max_age=0`; SAML `ForceAuthn`), comes back to its registered return address (`/app/login`, on the accounts host where sign-in happens there; SAML: the assertion consumer service), and the window ends at `/step-up/provider/done?dialog&state&code` on this host. `422` without a linked, enabled provider |
+| `GET /step-up/provider/back?state&code` | Where `/app/login` sends a provider's answer to a step-up (OpenID Connect): `303` to the done page with `state` and a one-time `code`, or a page saying why not (signed in long ago or not said: "did not ask you to sign in again"; another identity: "the account does not match"). Opens no session; reachable wherever `/app/login` is |
+| `GET /step-up/provider/done` | The window's last page: posts `{dialog, state, code}` on the same-origin `BroadcastChannel` `ferrum-step-up`, takes them out of its history and closes. No-store, no referrer, framed nowhere |
+| `POST /step-up/provider/finish` | `{state, code}` → `204`, the session stepped up: the proof handed to this host, for this session and person, within a minute, once; `401` otherwise |
 | `POST /passkey/options` | → `{request, publicKey, also?}`: what the browser needs to sign in with a passkey on this host (`navigator.credentials.get`; binary fields base64url). The relying party is the host, or `FERRUM_PASSKEY_RP` for a host under it; `also`, a second `{request, publicKey}` for passkeys made for this host itself before that was set, which the page asks for when the device offers none for the first. Each passkey is checked against the relying party it was made for, on this host's own origin |
 | `POST /passkey` | `{request, credential, session?}` → a session, as `/login`: the account the passkey belongs to (on a workspace's own host, only that workspace's); the device must have verified the person |
 | `POST /passkeys/options` | → `{request, publicKey}` for `navigator.credentials.create`: a passkey for the caller on this host (for `FERRUM_PASSKEY_RP` when the host is it or under it); `403` unless the session signed in or stepped up in the last ten minutes |
@@ -137,7 +144,9 @@ sessions and tokens work nowhere but on the accounts host.
 
 On a workspace's host, for someone whose account joined a Ferrum account: signing in with that
 workspace's own password or passkey answers `403` with the accounts host's address;
-step-up checks the Ferrum account's password (and app); changing the password, two-factor sign-in and
+step-up checks the Ferrum account's password (and app), or its passkeys where this host may use their relying party
+(with `FERRUM_PASSKEY_RP` set), or the workspace's single sign-on (signing in again goes through the accounts host's
+`/app/login`, and the proof comes back to this host); changing the password, two-factor sign-in and
 passkeys answer `403` (the Ferrum account keeps them). `POST /logout` signs out of that host only, and
 the next sign-in there asks which account. People of the portal still sign in on their host.
 
@@ -729,8 +738,10 @@ sign-in when `require_sso` is on; a list naming nobody, or anyone who is not an 
 (422). `idle_minutes` (0, or 5 to 10080) ends browser sessions unused that long; such a session's next request gets
 `401` "this device was signed out; please sign in again". `step_up` (`null`, or `{"minutes": 1 to 60, "entities":
 {"Entity": {"work": ["write", "delete", "export", "read"], "keys": true | false}}}`) names the work that needs a recent
-step-up; a staff member's request without one gets `403` with error `step_up`, and succeeds after `POST /api/auth/step-up`
-(the bar's runtime asks for it on every page and sends the request again). People from outside (portal, guest) are never
+step-up; a staff member's request without one gets `403` with error `step_up` and `ways`, the ways they have to confirm
+it is them (as `GET /api/auth/step-up/ways`; `[]` and a message saying to ask an administrator when there is none), and
+succeeds after any of them: `POST /api/auth/step-up`, a passkey, or signing in again at the provider (the bar's runtime
+asks on every page, in those ways, and sends the request again). People from outside (portal, guest) are never
 asked: let through, or `403` (not `step_up`) where the rule says `"keys": false`. `record_reads`
 (`null`, or `{"Entity": "open" | "all"}`) names entities whose reads are audit events of category `access`. Both refuse
 (422) an entity the workspace does not have, or that the caller's zone leaves out

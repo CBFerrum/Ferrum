@@ -21,7 +21,7 @@ pub fn sp_metadata(_sp: &Sp) -> Result<String, String> {
     Err(OFF.into())
 }
 
-pub fn request_url(_sp: &Sp, _idp: &Idp, _request_id: &str, _relay_state: &str) -> Result<String, String> {
+pub fn request_url(_sp: &Sp, _idp: &Idp, _request_id: &str, _relay_state: &str, _force_authn: bool) -> Result<String, String> {
     Err(OFF.into())
 }
 

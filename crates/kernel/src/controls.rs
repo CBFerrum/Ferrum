@@ -125,9 +125,10 @@ fn fresh(at: Option<DateTime<Utc>>, secs: i64) -> bool {
 }
 
 /// The answer when a step-up is needed: HTTP 403 as the other step-up answers, with the code `step_up` so that an
-/// interface asks for the password (`POST /api/auth/step-up`) and tries again.
+/// interface asks the person to confirm it is them, in one of their ways, and tries again. The server adds the ways to
+/// the answer (`ways`), and says plainly when there is none.
 pub fn needed() -> Error {
-    Error::Refused { code: "step_up", status: 403, message: "confirm it is you: enter your password again to do this".into(), pointer: None }
+    Error::Refused { code: "step_up", status: 403, message: "confirm it is you to do this".into(), pointer: None }
 }
 
 impl Ctx {

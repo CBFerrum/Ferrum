@@ -1419,7 +1419,9 @@ first sign-in, nor for the first sign-in of each person after the setting is tur
 account, with the address, browser (user agent), zone and method: a sign-in (`signed_in`, by `password`,
 `passkey`, `sso`, `code` or `accounts` for one handed over from the accounts host), a second step passed
 (`second_step`), a failed attempt for an account that exists (`failed`), a sign-in refused by zone or network
-(`refused`, with `by`), a break-glass sign-in (`break_glass`), and a session's end (`session_ended`, with
+(`refused`, with `by`), a break-glass sign-in (`break_glass`), a step-up (`stepped_up`, by `password`, `passkey` or
+`provider`) and a refused one (`step_up_failed`; [Asking again before sensitive
+work](#asking-again-before-sensitive-work)), and a session's end (`session_ended`, with
 `reason` `signed_out`, `idle`, `revoked`, `password_changed`, or `provider` when a SAML provider's logout
 request ended it). Failed and refused attempts are recorded one
 by one up to three an hour per account; the rest of that hour become one `failed_summary` with their `count`,
@@ -1437,8 +1439,9 @@ database each time.
 
 ## Asking again before sensitive work
 
-A workspace's administrators can say that some work needs the person to prove who they are again, recently: their
-password (and authenticator code), as for the passkey and incident-access screens. Off unless set.
+A workspace's administrators can say that some work needs the person to prove who they are again, recently: with a
+passkey, their password (and authenticator code), or by signing in again at their identity provider, as for the passkey
+and incident-access screens. Off unless set.
 
 | Workspace setting (`GET`/`PUT /api/admin/settings`) | Meaning | Default |
 |---|---|---|
@@ -1449,16 +1452,56 @@ buttons that change a record of it. `delete`. `export`: exports and e-mailing a 
 records: opening one, and lists, searches and reports, which show the same fields. It is checked where every record
 operation asks for its rights, after the rights: whoever may not do something is told that, not asked for a password.
 
-**The answer.** `403` with error `step_up`: "confirm it is you: enter your password again to do this". The interface asks
-for the password (`POST /api/auth/step-up`) and tries again. **Every page asks, an app's older screens too:** the bar's
-runtime (`/_shell/v1/runtime.js`, loaded by every page from the server) answers that refusal for any request the page
-sends to its own address: one "Confirm it is you" dialog however many requests were refused (password, then the code
-from an authenticator app when the server asks for it), then each refused request is sent once more and the page gets
-that answer. Sending it again is safe for a change too: the refusal comes before anything is done. Cancel or Escape
+**The answer.** `403` with error `step_up`, "confirm it is you to do this", and `ways`: the ways this person can confirm
+it is them on this address, in order of preference (below). The interface asks in one of them and tries again. With no
+way at all, `ways` is `[]` and the message says to ask an administrator; a credential with no browser session behind it
+gets `[]` too, and a message saying to do it from a page of the site. **Every page asks, an app's older screens too:** the
+bar's runtime (`/_shell/v1/runtime.js`, loaded by every page from the server) answers that refusal for any request the
+page sends to its own address: one "Confirm it is you" dialog however many requests were refused, offering the ways the
+answer lists (only one: just that; none: the plain message), then each refused request is sent once more and the page
+gets that answer. Sending it again is safe for a change too: the refusal comes before anything is done. Cancel or Escape
 hands the page the refusal as it was. A page whose own interface answers it too (the newest Frontend packages) sees
 only the answer after the proof; if the person cancels, that page asks once more in its own dialog. Not answered there:
 requests to other addresses (an app on an origin of its own uses tokens), uploads sent with `XMLHttpRequest` (they get
 the plain `403`), a request whose body is a stream, and service workers.
+
+**The ways to confirm it is you** (`ways`; `GET /api/auth/step-up/ways` gives the same to a page that asks first):
+* `{"way": "passkey"}`: a passkey of theirs made for a relying party this address may use (this host, or
+  `FERRUM_PASSKEY_RP` for a host under it). The dialog shows it only where the browser can use passkeys. The server's
+  challenge names this browser session and person and allows only their own passkeys; the device must verify the
+  person (a fingerprint, a face, a PIN), as for signing in with one, and the same relying party, origin, counter and
+  copy checks hold.
+* `{"way": "password", "code": true|false}`: their password, with the code from their authenticator app when `code`.
+* `{"way": "provider", "name": "Okta"}`: signing in again at the single sign-on provider they are linked to, when it is
+  enabled (a SAML one only on a server built with SAML; none in a sandbox).
+
+Which a person has: what they actually have now. Where the workspace requires single sign-on of them (everyone but the
+administrators `break_glass` names), a password or passkey proves nothing there, theirs or their Ferrum account's: only
+the provider. A workspace account joined to a Ferrum account, on a host that hands sign-in to the accounts host, confirms
+it with that account's password and passkeys; in the cloud (no `FERRUM_PASSKEY_RP`) those passkeys belong to the
+accounts host and a workspace's host cannot ask for them, so such a person is offered the password and the provider
+there. Someone with none of these (single sign-on unlinked, no password, no passkey) is told to ask an administrator,
+who can set a password, or unlink them so that their next single sign-on links them again.
+
+**Signing in again at the identity provider.** "Sign in again with Okta" opens a small window (the page behind keeps its
+unsaved work). The provider is asked to have the person sign in again rather than answer from a session it already has:
+OpenID Connect `prompt=login` with `max_age=0`, SAML `ForceAuthn="true"`. The answer counts only when it is the identity
+the person is linked to, after every check a sign-in's answer gets (signature, issuer or entity ID, audience, recipient,
+nonce or `InResponseTo`, once), and the sign-in it states (OpenID Connect `auth_time`, SAML `AuthnInstant`) is fresh:
+at most three minutes before the answer is checked and not before the step-up asked, either way allowing two minutes
+for the provider's clock. A provider that ignores the request and answers from an older session, or states no time, is
+refused with "Okta did not ask you to sign in again", and nothing changes. **What a provider must support:** OpenID
+Connect, `prompt=login` and `max_age`, with `auth_time` in the ID token (the standard requires it when `max_age` is
+asked); SAML, `ForceAuthn`. Check yours before marking work: a provider that does not leaves its people without this way
+(they get the refusal in the window, every time). Signed in as someone else: "the account does not match", and nothing
+changes. It uses the return address providers already have registered (`/app/login`, on the accounts host where
+sign-in happens there; SAML: the assertion consumer service as before), so nothing is registered anew. Its last page,
+on the host the person works on, hands the
+proof to the dialog and closes; the proof is a one-use code, good for a minute, taken only by the browser session that
+asked, on that host. If the browser blocks the window, or it is closed before the person finishes, the dialog says so
+and stays open. Signing in again never signs anyone in, links an identity or makes an account, and a sign-in's answer
+is never a step-up's (nor the other way round).
+
 **Marking `read` asks on every page that lists the entity**, the home page included, as soon as the person lands there
 (once per `minutes`): mark it for entities that need it, not as a default. **How long it lasts:** a step-up counts for `minutes` after
 it is made (10 by default, the same as the other step-up screens), and so does signing in. Stepping up tells every
@@ -1483,7 +1526,19 @@ for them (`DocHost::entity`); no app does yet, so co-edited documents are not as
 entity, and before reading an entity the workspace marked in `step_up`: "finance from outside the office works, but
 only after proving who you are again". A zone or network refusal comes first. In `FERRUM_ZONE_MODE=report` it is not
 asked: each time it would have been is logged and counted in `ferrum_zone_hidden_total{what="step_up"}`. Work queued
-there carries the zone.
+there carries the zone. The ways to step up are staff sign-in machinery: where a zone admits no staff, their routes
+(`/api/auth/step-up/ways`, `…/passkey/options`, `…/passkey`, `…/provider`, `…/provider/done`, `…/provider/finish`)
+answer `404`. The provider's way back (`/app/login`, `…/provider/back`, the SAML assertion consumer service) is reachable
+wherever a sign-in's is. A workspace's staff networks hold each of them as any staff request. A passkey's and the
+provider's steps share the password step-up's limit (20 a minute per address and person, whichever way); the way back
+is limited as a sign-in's return is (per address).
+
+**On the audit trail.** Each step-up is a sign-in event (`stepped_up`, with `method` `password`, `passkey` or
+`provider`, the address, browser, zone and session), written in the same transaction that marks the session. A refused
+one is `step_up_failed` (`method` `password`, `second_step`, `passkey` or `provider`), on the account whose credential
+was tried (for a workspace account joined to a Ferrum account, its password and passkeys are that account's), capped as
+failed sign-ins are: three an hour one by one, then the hour's summary. A wrong password or code still counts toward
+the account's lockout. Never a password, code, challenge, assertion or token.
 
 **Saving.** Unknown entities are refused, and so is an entity the saver's zone leaves out. Each save is an
 administration event on the audit trail. Switching it on keeps builds that would ignore it from starting.

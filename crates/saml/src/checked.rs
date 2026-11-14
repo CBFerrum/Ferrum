@@ -171,12 +171,14 @@ pub(crate) fn sp_metadata_with(sp: &Sp, can: Option<&xmlenc::Supported>) -> Resu
 
 /// Where to send the browser to sign in: the provider's sign-in service with a request (`request_id`,
 /// an XML ID: a letter or `_` first) and `relay_state`, which the provider posts back unchanged;
-/// signed (RSA-SHA256, the HTTP-Redirect binding's way) when this service has a key.
-pub fn request_url(sp: &Sp, idp: &Idp, request_id: &str, relay_state: &str) -> Result<String, String> {
+/// signed (RSA-SHA256, the HTTP-Redirect binding's way) when this service has a key. `force_authn`: the provider must
+/// have the person sign in again rather than answer from a session it already has (`ForceAuthn="true"`), as a step-up
+/// asks.
+pub fn request_url(sp: &Sp, idp: &Idp, request_id: &str, relay_state: &str, force_authn: bool) -> Result<String, String> {
     let provider = service_provider(sp, &idp.metadata)?;
     let mut request = provider.make_authentication_request(&idp.sso_url).map_err(|e| e.to_string())?;
     request.id = request_id.to_string();
-    request.force_authn = None;
+    request.force_authn = force_authn.then_some(true);
     let url = match sp.key {
         Some(key) => request.signed_redirect(relay_state, &private_key(key)?),
         None => request.redirect(relay_state),
@@ -252,6 +254,8 @@ pub(crate) fn verify_with(sp: &Sp, idp: &Idp, response: &str, request_id: &str, 
     let mut p = person(name_id, &attributes)?;
     p.name_id = name_id.map(|(value, format)| NameId { value: value.trim().to_string(), format: format.map(|f| f.trim().to_string()) });
     p.session_index = assertion.authn_statements.iter().flatten().find_map(|s| s.session_index.clone()).filter(|s| !s.is_empty() && s.len() <= 255);
+    // When the person signed in at the provider: the earliest the assertion states, as a step-up asks how fresh it is.
+    p.authn_instant = assertion.authn_statements.iter().flatten().filter_map(|s| s.authn_instant).min().map(|t| t.timestamp());
     Ok(p)
 }
 

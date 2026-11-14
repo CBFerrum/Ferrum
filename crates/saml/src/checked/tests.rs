@@ -361,7 +361,7 @@ fn metadata_must_let_responses_be_checked() {
 #[test]
 fn the_request_and_our_metadata_say_where_answers_go() {
     let k = idp();
-    let url = request_url(&SP, &metadata(&k), REQUEST, "relay-1").unwrap();
+    let url = request_url(&SP, &metadata(&k), REQUEST, "relay-1", false).unwrap();
     assert!(url.starts_with("https://idp.example.test/sso?"));
     let (xml, relay) = TestIdp::request(&url);
     assert_eq!((relay.as_str(), TestIdp::request_id(&url).as_str()), ("relay-1", REQUEST));
@@ -369,9 +369,26 @@ fn the_request_and_our_metadata_say_where_answers_go() {
         assert!(xml.contains(&part), "{part} in {xml}");
     }
 
+    assert!(!xml.contains("ForceAuthn"), "a sign-in lets the provider answer from a session it has: {xml}");
+
     let ours = SPMetadataExtractor::try_from_xml(&sp_metadata(&SP).unwrap()).unwrap();
     assert_eq!(ours.issuer().unwrap(), SP.entity_id);
     assert_eq!(ours.acs().unwrap().url, SP.acs_url);
+}
+
+#[test]
+fn a_step_up_asks_the_provider_to_have_the_person_sign_in_again_and_reads_when_they_did() {
+    let k = idp();
+    let key = new_sp_key("ferrum test").unwrap();
+    let url = request_url(&Sp { key: Some(&key), ..SP }, &metadata(&k), REQUEST, "su.relay-1", true).unwrap();
+    let (xml, relay) = TestIdp::request(&url);
+    assert!(xml.contains("ForceAuthn=\"true\""), "{xml}");
+    assert_eq!(relay, "su.relay-1");
+    // When the person signed in at the provider: the earliest of the assertion's statements, in seconds.
+    let at = chrono::Utc::now() - chrono::Duration::minutes(7);
+    let r = response(&k, |r| r.assertion.as_mut().unwrap().authn_statements.as_mut().unwrap()[0].authn_instant = Some(at));
+    let p = verify(&SP, &metadata(&k), &posted(&k.signed(&r)), REQUEST).unwrap();
+    assert_eq!(p.authn_instant, Some(at.timestamp()));
 }
 
 #[test]
@@ -383,7 +400,7 @@ fn xmlsec_works_here() {
 fn with_its_own_key_a_service_signs_its_requests() {
     let (k, key, other) = (idp(), new_sp_key("ferrum test").unwrap(), new_sp_key("someone else").unwrap());
     let sp = Sp { key: Some(&key), ..SP };
-    let url = url::Url::parse(&request_url(&sp, &metadata(&k), REQUEST, "relay-1").unwrap()).unwrap();
+    let url = url::Url::parse(&request_url(&sp, &metadata(&k), REQUEST, "relay-1", false).unwrap()).unwrap();
     let checks =
         |key: &SpKey| UrlVerifier::from_x509(&CertificateDer::from(key.certificate_der.clone())).unwrap().verify_signed_request_url(&url).unwrap_or(false);
     assert!(checks(&key), "{url}");

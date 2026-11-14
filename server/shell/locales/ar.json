@@ -347,5 +347,20 @@
   "That is not right. Try again.": "هذا غير صحيح. حاول مرة أخرى.",
   "Enter the code from your authenticator app.": "أدخل الرمز من تطبيق المصادقة.",
   "Too many tries. Wait a moment and try again.": "محاولات كثيرة جدًا. انتظر قليلًا ثم حاول مرة أخرى.",
-  "Could not confirm it is you. Try again.": "تعذّر التأكد من أنه أنت. حاول مرة أخرى."
+  "Could not confirm it is you. Try again.": "تعذّر التأكد من أنه أنت. حاول مرة أخرى.",
+  "That passkey was not accepted. Try again.": "لم يُقبل مفتاح المرور هذا. حاول مرة أخرى.",
+  "The window was blocked. Allow pop-ups for this site, then try again.": "حُظرت النافذة. اسمح بالنوافذ المنبثقة لهذا الموقع، ثم حاول مرة أخرى.",
+  "Finish signing in again in the window that opened.": "أكمل تسجيل الدخول مرة أخرى في النافذة التي فُتحت.",
+  "If you closed the window before signing in again, try again.": "إذا أغلقت النافذة قبل تسجيل الدخول مرة أخرى، فحاول مرة أخرى.",
+  "Signing in again did not finish. Try again.": "لم يكتمل تسجيل الدخول مرة أخرى. حاول مرة أخرى.",
+  "Or": "أو",
+  "Use a passkey": "استخدم مفتاح مرور",
+  "Sign in again with {provider}": "سجّل الدخول مرة أخرى عبر {provider}",
+  "This browser cannot use a passkey, your only way to confirm it is you here. Use another browser, or ask an administrator.": "لا يستطيع هذا المتصفح استخدام مفتاح مرور، وهو طريقتك الوحيدة هنا للتأكيد أنه أنت. استخدم متصفحًا آخر، أو اسأل أحد المسؤولين.",
+  "You have no way to confirm it is you here. Ask an administrator to set one up for you.": "ليست لديك طريقة هنا للتأكيد أنه أنت. اطلب من أحد المسؤولين إعداد واحدة لك.",
+  "Signing in again did not work": "لم ينجح تسجيل الدخول مرة أخرى",
+  "The identity provider's answer is not one this server asked for. Close this window and try again.": "إجابة مزوّد الهوية ليست مما طلبه هذا الخادم. أغلق هذه النافذة وحاول مرة أخرى.",
+  "Something went wrong on the server. Close this window and try again.": "حدث خطأ على الخادم. أغلق هذه النافذة وحاول مرة أخرى.",
+  "{provider} did not ask you to sign in again, so this cannot confirm it is you; an administrator can have the provider ask again when told to. Close this window and try again.": "لم يطلب منك {provider} تسجيل الدخول مرة أخرى، لذا لا يمكن بهذا التأكد من أنه أنت؛ يستطيع أحد المسؤولين ضبط المزوّد ليطلب ذلك عندما يُطلب منه. أغلق هذه النافذة وحاول مرة أخرى.",
+  "you signed in at {provider} as someone else: the account does not match, so nothing changed. Close this window and try again.": "سجّلت الدخول في {provider} بحساب شخص آخر: الحساب لا يطابق، فلم يتغير شيء. أغلق هذه النافذة وحاول مرة أخرى."
 }

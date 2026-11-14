@@ -10,8 +10,10 @@
 #![cfg(feature = "saml")]
 
 use ferrum_kernel::auth::Session;
+use ferrum_kernel::gate::Arrival;
 use ferrum_kernel::saml_logout::{Incoming, SloStep};
 use ferrum_kernel::secret::SecretKey;
+use ferrum_kernel::shell::StepUp;
 use ferrum_kernel::sso::SsoProviderInput;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
@@ -285,9 +287,129 @@ async fn saml_single_sign_on() {
     assert!(run.sign_in(fetched, &rotated, "persistent-pat", &[("email", "pat@samlco.test")], |_| {}).await.is_ok(), "the new one, unasked");
 
     encrypted_assertions(&run, provider, &idp).await;
+    step_up(&run, provider, &idp).await;
     let logout = single_logout(&run, &admin).await;
     saved_before(&run, &admin, provider, logout).await;
     accounts_host(&run, &admin, settings_again).await;
+}
+
+/// Where a step-up's proof goes on to: the page of the host the person works on, with the dialog's own value.
+const STEP_UP_BACK: &str = "https://erp.samlco.test/api/auth/step-up/provider/done?dialog=dlg-0123456789abcdef";
+
+/// Signing in again through SAML to confirm it is you (a step-up): the request makes the provider have the person sign
+/// in again (`ForceAuthn`), and the answer counts only when it names the identity Pat is linked to, signed in just now,
+/// for the session that asked, once; every check of an answer holds, encrypted ones included. It signs nobody in.
+async fn step_up(run: &Run, provider: Uuid, idp: &TestIdp) {
+    let k = &run.k;
+    let email = [("email", "pat@samlco.test")];
+    let (pat, sid) = run.session(provider, idp, "persistent-pat", "pat@samlco.test", "idx-up-1").await;
+    let (_, other) = run.session(provider, idp, "persistent-pat", "pat@samlco.test", "idx-up-2").await;
+    let who = StepUp { tenant: run.tenant, user: pat, session: sid, keys: (run.tenant, pat) };
+    let from = Arrival { address: "192.0.2.1".into(), step_up: true, ..Default::default() };
+    let ways = k.step_up_ways(&who, "erp.samlco.test").await.unwrap();
+    assert_eq!(ways, vec![json!({"way": "password", "code": false}), json!({"way": "provider", "name": "Contoso SAML"})]);
+    let sql = |q: String| async move {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let v: Option<bool> = sqlx::query_scalar(sqlx::AssertSqlSafe(q)).fetch_optional(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        v
+    };
+    let marked = |id: Uuid| sql(format!("select coalesce(step_up_at > now() - interval '10 minutes', false) from user_session where id = '{id}'"));
+    for id in [sid, other] {
+        sql(format!("update user_session set step_up_at = now() - interval '1 hour' where id = '{id}' returning true")).await;
+    }
+    // A step-up's request → its ID and relay state; the answer, as the provider would make it, to the request.
+    let begin = |who: StepUp| async move {
+        let url = k.sso_step_up_begin(&who, "https://unused.samlco.test/app/login", STEP_UP_BACK).await.unwrap();
+        let (xml, relay) = TestIdp::request(&url);
+        assert!(xml.contains("ForceAuthn=\"true\""), "{xml}");
+        assert!(relay.starts_with(ferrum_kernel::sso::STEP_UP_STATE));
+        assert!(TestIdp::signed_by_metadata(&url, &k.saml_metadata(run.tenant).await.unwrap()), "signed as a sign-in's");
+        (TestIdp::request_id(&url), relay)
+    };
+    let answer = |request: &str, name_id: &str, change: &dyn Fn(&mut Response)| {
+        TestIdp::posted(&idp.signed(&idp.response(&run.sp(), request, name_id, &email, |r| change(r))))
+    };
+    let handed = |next: &str| {
+        assert!(next.starts_with(&format!("{STEP_UP_BACK}&")), "{next}");
+        let q: std::collections::HashMap<String, String> = reqwest::Url::parse(next).unwrap().query_pairs().into_owned().collect();
+        (q["state"].clone(), q["code"].clone())
+    };
+    let here = "https://erp.samlco.test/";
+    let refused = |r: ferrum_kernel::Result<String>, what: &str| match r {
+        Err(Error::Unauthorized(m)) => assert!(m.contains(what), "{what}: {m}"),
+        other => panic!("{what}: {other:?}"),
+    };
+
+    // Signed in just now, as Pat: the proof goes to the page, which hands it to the session that asked.
+    let (request, relay) = begin(who).await;
+    let posted = answer(&request, "persistent-pat", &|_| {});
+    let (state, code) = handed(&k.saml_acs_from(run.tenant, &relay, &posted, &from).await.expect("a fresh sign-in as Pat"));
+    assert!(matches!(k.saml_acs_from(run.tenant, &relay, &posted, &from).await, Err(Error::Unauthorized(_))), "posted again");
+    assert!(k.sso_finish(&state, &code, BINDING).await.is_err(), "a step-up's answer signs no one in");
+    assert!(k.sso_step_up_finish(&StepUp { session: other, ..who }, here, &state, &code, &from).await.is_err(), "another session");
+    assert!(!marked(sid).await.unwrap() && !marked(other).await.unwrap());
+    k.sso_step_up_finish(&who, here, &state, &code, &from).await.expect("Pat confirmed it is them");
+    assert!(marked(sid).await.unwrap() && !marked(other).await.unwrap(), "that session alone");
+    assert!(k.sso_step_up_finish(&who, here, &state, &code, &from).await.is_err(), "once");
+
+    // A sign-in's answer for a step-up's request, and a step-up's answer for a sign-in's: each names its own request.
+    let (sign_in_request, sign_in_relay) = run.start(provider).await;
+    let (_, relay) = begin(who).await;
+    refused(k.saml_acs_from(run.tenant, &relay, &answer(&sign_in_request, "persistent-pat", &|_| {}), &from).await, "answer was refused");
+    let (request_b, _) = begin(who).await;
+    assert!(k.saml_acs_from(run.tenant, &sign_in_relay, &answer(&request_b, "persistent-pat", &|_| {}), &from).await.is_err(), "nor a sign-in");
+
+    // Refused: signed in long ago (a provider that ignored ForceAuthn), as someone else, or the answer changed.
+    let long_ago = |r: &mut Response| {
+        r.assertion.as_mut().unwrap().authn_statements.as_mut().unwrap()[0].authn_instant = Some(chrono::Utc::now() - chrono::Duration::hours(1))
+    };
+    let (request, relay) = begin(who).await;
+    refused(k.saml_acs_from(run.tenant, &relay, &answer(&request, "persistent-pat", &long_ago), &from).await, "did not ask you to sign in again");
+    refused(k.saml_acs_from(run.tenant, &relay, &answer(&request, "persistent-pat", &|_| {}), &from).await, "expired or was already used");
+    let before = |r: &mut Response| {
+        r.assertion.as_mut().unwrap().authn_statements.as_mut().unwrap()[0].authn_instant = Some(chrono::Utc::now() - chrono::Duration::seconds(150))
+    };
+    let (request, relay) = begin(who).await;
+    refused(k.saml_acs_from(run.tenant, &relay, &answer(&request, "persistent-pat", &before), &from).await, "did not ask you to sign in again");
+    let (request, relay) = begin(who).await;
+    refused(k.saml_acs_from(run.tenant, &relay, &answer(&request, "persistent-kim", &|_| {}), &from).await, "the account does not match");
+    let (request, relay) = begin(who).await;
+    let xml = idp.signed(&idp.response(&run.sp(), &request, "persistent-pat", &email, |_| {}));
+    refused(k.saml_acs_from(run.tenant, &relay, &TestIdp::posted(&xml.replace("persistent-pat", "persistent-adm")), &from).await, "answer was refused");
+    let rogue = TestIdp::new(&idp.entity_id, &idp.sso_url);
+    let (request, relay) = begin(who).await;
+    let forged = TestIdp::posted(&rogue.signed(&rogue.response(&run.sp(), &request, "persistent-pat", &email, |_| {})));
+    refused(k.saml_acs_from(run.tenant, &relay, &forged, &from).await, "answer was refused");
+
+    // Encrypted to the workspace's key, as a sign-in's may be: the same checks, the same proof.
+    sql(format!("update user_session set step_up_at = now() - interval '1 hour' where id = '{sid}' returning true")).await;
+    let to = certs(&k.saml_metadata(run.tenant).await.unwrap(), "encryption").remove(0);
+    let (request, relay) = begin(who).await;
+    let inner = idp.signed(&idp.response(&run.sp(), &request, "persistent-pat", &email, |r| {
+        r.signature = None;
+        let a = r.assertion.as_mut().unwrap();
+        a.signature = Some(idp.template(&a.id));
+    }));
+    let encrypted = TestIdp::posted(&encrypt(&inner, &to, Data::Gcm, RSA_OAEP, false));
+    let (state, code) = handed(&k.saml_acs_from(run.tenant, &relay, &encrypted, &from).await.expect("encrypted, fresh, Pat"));
+    k.sso_step_up_finish(&who, here, &state, &code, &from).await.unwrap();
+    assert!(marked(sid).await.unwrap());
+
+    // Nobody was signed in, linked or made; Pat's trail has each step-up and the failed ones, capped.
+    let mut tx = k.db.system_tx().await.unwrap();
+    let (ups, fails): (i64, i64) = sqlx::query_as(
+        "select count(*) filter (where action = 'stepped_up' and diff->>'method' = 'provider'), count(*) filter (where action = 'step_up_failed') \
+         from audit_event where category = 'sign_in' and record_id = $1",
+    )
+    .bind(pat)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let linked: Option<String> = sqlx::query_scalar("select sso_subject from app_user where id = $1").bind(pat).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!((ups, fails), (2, 3), "two step-ups; three failures one by one, the rest in the hour's summary");
+    assert_eq!(linked, Some(format!("{provider}|persistent-pat")));
 }
 
 /// Assertions encrypted to the key the workspace's metadata publishes for encryption.

@@ -68,6 +68,13 @@ pub fn answer(uri: &Uri) -> Response {
         h.insert("service-worker-allowed", HeaderValue::from_static("/app/"));
         return res;
     }
+    // A provider's answer to signing in again (a step-up) comes to the return address registered with it, as a
+    // sign-in's does: its state says which it is.
+    if path == "/login"
+        && let Some(back) = super::auth::step_up_return(uri.query())
+    {
+        return Redirect::to(&back).into_response();
+    }
     let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
     Redirect::to(&format!("{}{q}", new_home(path))).into_response()
 }
@@ -121,5 +128,26 @@ mod tests {
         ] {
             assert_eq!(new_home(old), new, "{old}");
         }
+    }
+
+    #[test]
+    fn a_step_up_answer_goes_on_to_be_checked_as_one_and_a_sign_in_answer_to_the_sign_in_page() {
+        use crate::controllers::auth::step_up_return;
+        let to = |uri: &str| super::answer(&uri.parse().unwrap()).headers().get("location").unwrap().to_str().unwrap().to_string();
+        assert_eq!(to("/app/login?code=c1&state=su.AbC-_9"), "/api/auth/step-up/provider/back?code=c1&state=su.AbC-_9");
+        assert_eq!(to("/app/login?code=c1&state=AbC-_9"), "/login?code=c1&state=AbC-_9", "a sign-in's");
+        assert_eq!(to("/app/settings?state=su.x"), "/account/?state=su.x", "only the return address");
+        assert_eq!(
+            step_up_return(Some("state=su%2Ex&code=c")).as_deref(),
+            Some("/api/auth/step-up/provider/back?state=su%2Ex&code=c"),
+            "as the provider encoded it"
+        );
+        assert_eq!(
+            step_up_return(Some("error=access_denied&state=su.x")).as_deref(),
+            Some("/api/auth/step-up/provider/back?error=access_denied&state=su.x"),
+            "a refusal too"
+        );
+        assert_eq!(step_up_return(Some("code=su.x&nstate=su.y")), None, "the state alone says so");
+        assert_eq!(step_up_return(None), None);
     }
 }

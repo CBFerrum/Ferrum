@@ -142,6 +142,9 @@ pub struct Arrival {
     pub address: String,
     pub user_agent: String,
     pub zone: Option<String>,
+    /// The person of a browser session confirming it is them (a step-up, crate::controls): a wrong password, code or
+    /// passkey is then a failed step-up (`step_up_failed`) on the trail rather than a failed sign-in, capped the same.
+    pub step_up: bool,
 }
 
 impl From<bool> for Arrival {
@@ -216,6 +219,26 @@ pub(crate) const SSO_ONLY: &str = "(coalesce(t.settings->'require_sso' = 'true':
 /// SQL as [`SSO_ONLY`]: a sign-in that gets past it while single sign-on is required is a break-glass one.
 pub(crate) const BREAK_GLASS: &str = "(coalesce(t.settings->'require_sso' = 'true'::jsonb, false) and u.is_admin)";
 
+/// The answer to a password or passkey offered to confirm it is you where the workspace requires single sign-on of you.
+pub const SSO_ONLY_STEP_UP: &str = "this workspace signs in through single sign-on; confirm it is you there";
+
+impl Kernel {
+    /// Whether `user` of `tenant` may prove who they are there only through single sign-on ([`SSO_ONLY`]): a password or
+    /// passkey, theirs or their Ferrum account's, then proves nothing. Someone not found counts as such (fail closed).
+    pub async fn sso_only(&self, tenant: Uuid, user: Uuid) -> Result<bool> {
+        let mut tx = self.db.system_tx().await?;
+        let only: Option<bool> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "select {SSO_ONLY} from app_user u join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2"
+        )))
+        .bind(tenant)
+        .bind(user)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(only.unwrap_or(true))
+    }
+}
+
 /// A break-glass sign-in, on the audit trail as its own kind.
 pub(crate) async fn break_glass(tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid, from: &Arrival, method: &str) -> Result<()> {
     event(tx, tenant, user, "break_glass", detail(from, method, json!({}))).await
@@ -275,7 +298,7 @@ pub fn unknown_failures() -> u64 {
 
 /// What a sign-in event holds: where it came from and how. The address and the browser are the
 /// person's data: an erasure blanks them, an export lists them.
-fn detail(from: &Arrival, method: &str, extra: Value) -> Value {
+pub(crate) fn detail(from: &Arrival, method: &str, extra: Value) -> Value {
     let mut d = json!({"address": from.address, "user_agent": from.user_agent, "zone": from.zone, "method": method});
     if let (Some(d), Value::Object(extra)) = (d.as_object_mut(), extra) {
         d.extend(extra);
@@ -298,6 +321,7 @@ pub(crate) async fn event(tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid, acti
 /// first [`FAILURES_PER_HOUR`] of an hour are recorded, the rest counted and recorded as one summary
 /// (`failed_summary`, with `count`) once the hour is over, so a flood cannot fill the trail.
 pub(crate) async fn failure(tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid, action: &str, from: &Arrival, method: &str) -> Result<()> {
+    let action = if from.step_up && action == "failed" { "step_up_failed" } else { action };
     flush_failures(tx, Some((tenant, user))).await?;
     let n: i32 = sqlx::query_scalar(
         "insert into sign_in_failure (tenant_id, user_id, hour) values ($1, $2, date_trunc('hour', now())) \
@@ -341,7 +365,7 @@ pub(crate) async fn session_ended(tx: &mut crate::db::Tx, tenant: Uuid, sid: Uui
             .fetch_optional(&mut **tx)
             .await?;
     if let Some((user, address, user_agent, zone)) = row {
-        let from = Arrival { refuse_zone: false, address, user_agent, zone };
+        let from = Arrival { address, user_agent, zone, ..Arrival::default() };
         event(tx, tenant, user, "session_ended", detail(&from, "", json!({"reason": reason, "session": sid}))).await?;
     }
     Ok(())
