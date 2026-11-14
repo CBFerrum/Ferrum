@@ -219,12 +219,13 @@ restricted) and are audited (`WorkspaceDomain` `add`/`shape`/`remove`, `Workspac
 advisory lock per workspace makes two adds at once take turns, so the last place is taken once; `PATCH` locks the row,
 so two changes each build on the other; `PUT` of short paths replaces the list (the later save stands whole).
 
-**Lifecycle.** A move: the target re-makes each live name under its own base, carrying what it shows, and releases the
-copies under the source's base (they cannot reach it); a portal or site whose main address was such a name gets the new
-one. A sandbox: no addresses travel (as before); short paths do. A rename (by hand: no task exists): names keep their
-form and keep leading to the workspace; the retired slug keeps anyone else from forming them. Closed or restricted:
-addresses keep answering and do not change. Deleted: rows go with the workspace, its addresses are quarantined and its
-slug stays retired, so names can never be formed again (second slice, below).
+**Lifecycle.** A move: the target re-makes each live name under its own base, carrying what it shows (taking back one it
+had let go of when the workspace left it), and releases the copies under the source's base (they cannot reach it); a
+portal or site whose main address was such a name gets the new one. A sandbox: no addresses travel (as before); short
+paths do. A rename (by hand: no task exists): names keep their form and keep leading to the workspace; the retired slug
+keeps anyone else from forming them. Closed or restricted: addresses keep answering and do not change. Deleted: rows go
+with the workspace, its addresses are quarantined and its slug stays retired, so names can never be formed again (second
+slice, below).
 
 **Older builds** (the two-version window): the new columns and the `paths` setting are ignored, so an address lands on
 Home and lists every app, and short paths answer "Nothing is installed here". Nothing protective is lost, so no floor.

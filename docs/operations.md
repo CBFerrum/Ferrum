@@ -540,6 +540,18 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   they are then level, which is safe.
   `deploy/smoke.sh` starts the previous image again on the database the new one migrated, when the previous image has
   the label.
+* **Rehearsed with two real binaries.** `scripts/window_rehearsal.sh <older commit> ferrum_windowrehearsal_<name>`
+  builds an older commit of main as the image build does (its tree read with `git archive`, `BUILD_DATE` its commit's
+  date, the core packages only, offline, in a directory of its own under `WINDOW_WORK`, about 2.7 GB while it builds,
+  refused with less than 8 GB free) and runs it with this build on one throwaway database: the older build makes a
+  workspace; this build migrates and, with its background work off, leaves an event and a job waiting; the older build
+  starts again with `FERRUM_MIGRATE_AT_START=false`, then `true`, and must run as a guest, read and write records, leave
+  the schema exactly as it was (columns, indexes, constraints, functions, migrations and the window's record, compared
+  before and after) and leave that event and job alone, which this build then takes; recorded reads switched on, the
+  older build is refused; `allow_older_builds` lets it start, and this build's next start puts the floor back. Run on
+  15 November 2026 with the merges of pull requests 226 (no floors yet, 18 migrations behind: refused with "Start a
+  build from 2026-11-14T08:54:21Z or newer") and 237 (floors, 4 migrations behind: refused naming `record_reads`, and
+  started with staff networks on, which it enforces). Both passed; nothing needed fixing.
 
 #### Protections an older build would not enforce
 
@@ -1144,8 +1156,9 @@ like any lost connection), and nothing half done stays.
 
 **Read address.** `database.readReplicas.enabled` sets `FERRUM_DATABASE_READ_URL` to CloudNativePG's
 read-only service (`ferrum-db-ro`, the standbys), and the chart refuses it with one instance, which has no
-standby. Reports (`/api/reports`, apps' reports, Studio's queries and dashboards) and the reading of a
-workspace's export then read there, in read-only transactions that set the workspace as on the primary,
+standby. Reports (`/api/reports`, apps' reports, Studio's queries and dashboards) and a workspace's export (its
+ledgers, the tables beside its records and its audit trail; its records come through the record API, from the
+primary) then read there, in read-only transactions that set the workspace as on the primary,
 when three things hold: the address is a replica (it is replaying), its lag, looked at every 2 seconds on
 each replica of the server, is within `FERRUM_DATABASE_READ_MAX_LAG_SECS` (10), and it has replayed
 everything the primary had committed when the read began (it may wait half a second for it). So whoever has
@@ -1153,15 +1166,35 @@ just written sees it in the next report. Otherwise the read goes to the primary,
 `ferrum_db_reads_total{to="primary",why=…}` says why (`down`, `lagging`, `not_replica`, `behind`, and the
 replica failures below;
 `{to="replica"}` counts the others). An address that is not a replica (the primary, or another database) is
-never read from: the server warns once and reads from the primary. A report read from a replica says how far
+never read from: the server warns once and reads from the primary. Each read asks again, in its own transaction,
+whether the address is replaying, so a standby promoted since the last look is never read from as a replica. A read
+that waited its half second in vain sends the reads after it to the primary at once, until the next look (counted
+`lagging`): a standby whose stream from the primary is cut has replayed all it received and measures its own lag as 0.
+A report read from a replica says how far
 behind it was in `X-Ferrum-Replica-Lag-Ms`. The read pool holds up to 10 connections per replica of the
 server, on the standby, not the primary. A report, a Studio query or an export whose read fails on the
 standby for any reason (the connection lost, a statement cancelled or timed out, the standby's replay
 cancelling it with a conflict, PostgreSQL's `max_standby_streaming_delay`) runs once more on the primary,
 never a third time, counted as `why="replica_conflict"`, `replica_cancelled`, `replica_lost` or
 `replica_failed`; an export first deletes what it had stored. A read that is wrong in itself (a bad report, a
-refusal) fails the same way on the primary, so its error is the one the caller gets. Not tried against a real lagging standby: the
-choice was tested with an injected lag, and the reading with the read address on the same test database.
+refusal) fails the same way on the primary, so its error is the one the caller gets.
+
+*Tried against a real standby* (15 November 2026, PostgreSQL 17.9, a primary and a streaming standby on one machine
+made by `scripts/replica_pair.sh`; `crates/kernel/tests/replica_pair_it.rs` repeats it, README *Testing*). A server on
+the pair read a trial balance, a Studio query and an export from the standby (`X-Ferrum-Replica-Lag-Ms` and
+`{to="replica"}`). With the standby's replay paused, a contact just made was in the next query, read from the
+primary after the half-second wait (`behind`), and the reads after it went there at once (`lagging`); once replay
+resumed they went back to the standby. A long read cancelled by the standby's replay (the primary vacuumed rows it
+needed, `max_standby_streaming_delay` 1 s), and one cut by stopping the standby, each answered from the primary on
+their second try (`replica_conflict`, `replica_lost`). With the standby stopped, the first read waited 2 seconds for
+the pool to give up on it (`down`), the next ten took a few milliseconds each, until the next look; one read looks at a
+time, and reads that come meanwhile go by the last look. A promoted standby was never read from again (`not_replica`).
+The real standby showed four faults, fixed since: a standby promoted within 2 seconds of the last look was read from as
+a replica; a standby whose stream was cut made every read wait half a second; a standby started again was judged
+lagging (it streams again from the start of its last segment, below what it has replayed) until the primary next
+wrote; with the standby stopped, every read that came while a look waited for it waited too (8 reads together, 2
+seconds each). Not tried: standbys on other machines, CloudNativePG's `-ro` service, and a pooler in front of the
+standbys.
 
 **Worker scaling on waiting work.** A pool with `background: only` can scale with KEDA (installed
 separately): `keda: {enabled: true}` on the pool, `autoscaling: {enabled: false}` beside it, and the rest from
@@ -2027,6 +2060,26 @@ key prefix this installation has already.
   know (refused, above), does not; nor does anything an app counts across the whole database (refused).
 * The privacy and access journals stay in the source's storage; they serve a restore of the source.
 
+**Rehearsed.** The second part of `scripts/move_rehearsal.sh --grant` moves a workspace between two running servers of
+the real binary and back, each on its own database, files directory and secret key, started as regions `a` and `b` that
+trust each other, each with a base domain of its own (`a.localhost`, `b.localhost`): `move_workspace` on `b` with the
+`FERRUM_MOVE_SOURCE_*` settings of `a`, then `finish_move` on `a` and the move back. Everything is checked from outside,
+over HTTP, both ways. While the run is held still after it froze the workspace, the source answers a change with 503,
+`Retry-After` and "…this workspace is moving", and still reads. Afterwards the target serves the records, the file's
+bytes, the API key, the audit chain of a record (`chain_valid`), the workspace's address and its name under the base made
+anew under the target's base (`sales--moving.b.localhost`); the webhook delivery left waiting at the source goes out once,
+from the target, signed with the webhook's secret (sealed again under the target's key), and so does a new one; a
+member's Ferrum account comes along (a visiting account at `b`, their own again at `a`: their workspace's password opens
+nothing there and names that region's accounts host); and the source's addresses redirect (308) to the target's. The
+real servers showed two faults, fixed since. A running server keeps its answer about an address for 20 seconds, and the
+move is a task of its own, so right after the move back `a` still sent the workspace's address on to `b`, which sent it
+back: the move now tells the running replicas on both sides as it leaves and as it arrives (the notification a change
+of a workspace's settings sends), and they answer anew at once. And `sales--moving.a.localhost`, let go of by `b` when
+the workspace arrived there, stayed let go of when it came back, leading to the main address: a workspace now takes its
+names under the target's base back. Not run: storage in a bucket (`_S3_BUCKET`), keys wrapped by a key-management
+service, signing in with a visiting account (the browser's round trip through the home region), waiting work asked for
+in a zone, and a source busy with work in hand (the rehearsal moves with `wait:1`).
+
 ## A sandbox of a workspace
 
 A sandbox is a copy of a live workspace under a new name and id, for trying an upgrade, an app or a change of
@@ -2149,6 +2202,11 @@ size is skipped), or `delete_sandbox` removes it.
 **What it costs.** The rows twice in the database (the source's and the sandbox's), and every file read and written
 again: a large file store takes as long as copying it, and doubles for as long as the sandbox lives. Each file is held
 whole in memory while it is copied.
+
+**Rehearsed.** The last part of `scripts/move_rehearsal.sh --grant` makes a sandbox with `copy_workspace … from:here`
+on a running server, over HTTP from outside: its administrator signs in to it under its own name and finds the
+workspace's records; a record made there reaches no webhook receiver, while one made in the live workspace at the same
+time is delivered once.
 
 ## Capacity
 
@@ -3243,8 +3301,9 @@ audit trail as administration, with who made it and what changed.
 
 * Moved to another installation (Moving one workspace): its names travel with it, and the target gives each the same name
   under its own base domain, showing what it showed; the copies under the source's base cannot reach the target, so the
-  target lets go of them. At the source every address says the workspace has moved and leads to its main address at the
-  target. Short paths travel with its settings.
+  target lets go of them. Moved back, it takes again the names it had under that installation's base, which the other side
+  let go of. At the source every address says the workspace has moved and leads to its main address at the target. Short
+  paths travel with its settings.
 * A sandbox gets none of the live workspace's addresses (only `{as}.{base}`); short paths come with its settings.
 * Renamed (its slug changed by hand: there is no task for it): its names keep their form and keep leading to it, and no
   other workspace can ever form them; new names take the new slug.

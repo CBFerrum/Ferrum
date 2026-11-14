@@ -15,7 +15,16 @@
 #           built from source); its OpenSSL is taken from it unless OPENSSL_DIR is set. When the xmlsec1 differs from
 #           the last run's, samael is built again: its bindings come from the headers, and nothing else tells cargo.
 #   audit   cargo audit (cargo install cargo-audit --locked) and the job's scripts (pyyaml, helm, node).
-#   move    the server without apps, and scripts/move_rehearsal.sh on two databases of its own.
+#   move    the server without apps, and scripts/move_rehearsal.sh --grant on databases of its own: an installation
+#           moved, one workspace moved between two running servers and back, a sandbox (the script grants the role SET
+#           on session_replication_role for each move and revokes it; other test runs on this PostgreSQL that use the
+#           same grant can fail once meanwhile).
+#   replica not in the workflow, and only when named: a private primary and standby (scripts/replica_pair.sh, PostgreSQL
+#           17's programs) and the kernel's replica_pair_it on them: real lag, a stopped standby, a cancelled query, a
+#           promotion.
+#   window  not in the workflow, and only when named: scripts/window_rehearsal.sh, an older build of main (WINDOW_OLD,
+#           default 8a34644e, the first with floors) and this one on one database. The older build is made once and kept
+#           in WINDOW_WORK (about 3 GB while it builds; refused under 8 GB free).
 #   editors not run here: it needs Docker and Playwright's browsers. The image job and the cluster workflow need
 #           Docker too: docs/operations.md, "Running the image and cluster checks on your own machine".
 #
@@ -191,7 +200,23 @@ job_audit() {
 
 job_move() {
   run "move build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
-  run "move rehearsal" scripts/move_rehearsal.sh "ferrum_moverehearsal_a$SFX" "ferrum_moverehearsal_b$SFX"
+  run "move rehearsal" scripts/move_rehearsal.sh --grant "ferrum_moverehearsal_a$SFX" "ferrum_moverehearsal_b$SFX"
+}
+
+job_replica() {
+  local dir code
+  dir=$(mktemp -u "${TMPDIR:-/tmp}/ferrum-pair.XXXXXX")
+  run "replica pair up" scripts/replica_pair.sh up "$dir" || { scripts/replica_pair.sh down "$dir" >/dev/null 2>&1; return; }
+  # The addresses in a shell of their own; `run` has already said how it went, its code says whether it failed.
+  (. "$dir/env" && run "replica test: replica_pair_it on a real standby" cargo test -p ferrum-kernel --locked --test replica_pair_it)
+  code=$?
+  run "replica pair down" scripts/replica_pair.sh down "$dir"
+  [ "$code" = 0 ] || failed=1
+}
+
+job_window() {
+  run "window build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
+  run "window rehearsal" scripts/window_rehearsal.sh "${WINDOW_OLD:-8a34644e}" "ferrum_windowrehearsal$SFX"
 }
 
 job_editors() { echo "SKIP editors: needs Docker (its nginx image) and Playwright's browsers; docs/operations.md says how to run it"; }
@@ -201,8 +226,8 @@ jobs=("$@")
 for j in "${jobs[@]}"; do
   case "$j" in
     # Each job in a shell of its own, so what one sets (saml's xmlsec1 and OpenSSL) never reaches the next.
-    rust | saml | audit | move | editors) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
-    *) echo "no job $j (rust, saml, audit, move, editors)"; exit 2 ;;
+    rust | saml | audit | move | editors | replica | window) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
+    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window)"; exit 2 ;;
   esac
 done
 echo "== $([ $failed = 0 ] && echo PASS || echo FAIL): ${jobs[*]}"

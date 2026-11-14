@@ -481,12 +481,22 @@ impl Db {
                             .fetch_one(&self.pool)
                             .await?;
                     match on_replica(r, tenant, timeout_ms, &at).await {
-                        Ok(Some(tx)) => {
+                        Ok(OnReplica::Caught(tx)) => {
                             r.served(Served::Replica);
                             crate::replica::note(lag);
                             return Ok(tx);
                         }
-                        Ok(None) => Served::Behind,
+                        // Behind its own lag (a standby whose stream from the primary is cut has replayed all it got,
+                        // so its lag reads 0): the reads after this one go to the primary at once, until the next look.
+                        Ok(OnReplica::Behind) => {
+                            r.seen(Health::Lagging);
+                            Served::Behind
+                        }
+                        // Promoted since the last look: never read from as a replica.
+                        Ok(OnReplica::NotReplica) => {
+                            r.seen(Health::NotReplica);
+                            Served::NotReplica
+                        }
                         Err(e) => {
                             tracing::warn!("the read address (FERRUM_DATABASE_READ_URL) failed, reading from the primary: {e}");
                             r.seen(Health::Down);
@@ -568,26 +578,41 @@ async fn as_tenant(tx: &mut Tx, tenant: Uuid, timeout_ms: u64, moves: bool, froz
         .await?)
 }
 
-/// A read-only tenant transaction on the read address, once it has replayed up to `at` (within
-/// [`crate::replica::CATCH_UP`]; `None` past it).
-async fn on_replica(r: &crate::replica::Reads, tenant: Uuid, timeout_ms: u64, at: &str) -> Result<Option<Tx>> {
+/// What [`on_replica`] found.
+enum OnReplica {
+    /// A read-only tenant transaction on the read address, which has replayed what the primary had committed.
+    Caught(Tx),
+    /// It had not replayed that far within [`crate::replica::CATCH_UP`].
+    Behind,
+    /// It replays nothing: promoted since the last look at it (or another database).
+    NotReplica,
+}
+
+/// A read-only tenant transaction on the read address, once it has replayed up to `at`.
+async fn on_replica(r: &crate::replica::Reads, tenant: Uuid, timeout_ms: u64, at: &str) -> Result<OnReplica> {
     let mut tx = r.pool.begin().await?;
     // A replica takes no changes anyway.
     as_tenant(&mut tx, tenant, timeout_ms, false, false).await?;
     sqlx::query("set transaction read only").execute(&mut *tx).await?;
     let started = std::time::Instant::now();
     loop {
-        // A primary standing in for a replica (tests) is always caught up with itself.
-        let caught: bool =
-            sqlx::query_scalar("select (case when pg_is_in_recovery() then pg_last_wal_replay_lsn() else pg_current_wal_lsn() end) >= $1::pg_lsn")
-                .bind(at)
-                .fetch_one(&mut *tx)
-                .await?;
+        // Asked in the transaction that reads, whatever the last look said: a standby promoted since is no replica, and
+        // its own position would pass for caught up. A primary standing in for a replica (tests) is caught up with itself.
+        let (replaying, caught): (bool, bool) = sqlx::query_as(
+            "select pg_is_in_recovery(), \
+             coalesce((case when pg_is_in_recovery() then pg_last_wal_replay_lsn() else pg_current_wal_lsn() end) >= $1::pg_lsn, false)",
+        )
+        .bind(at)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !replaying && !r.standing_in() {
+            return Ok(OnReplica::NotReplica);
+        }
         if caught {
-            return Ok(Some(tx));
+            return Ok(OnReplica::Caught(tx));
         }
         if started.elapsed() >= crate::replica::CATCH_UP {
-            return Ok(None);
+            return Ok(OnReplica::Behind);
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
