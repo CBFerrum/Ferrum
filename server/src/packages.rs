@@ -497,7 +497,7 @@ pub async fn round(pool: &PgPool, mut jobs: Vec<Upkeep>, concurrency: usize, eve
             }
             let started = Instant::now();
             // Its own task, so that a panic is caught here and the lock is released below.
-            match tokio::spawn(run()).await {
+            match tokio::spawn(ferrum_kernel::sandbox::upkeep(run())).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => tracing::warn!(app = name, "app maintenance failed: {e}"),
                 Err(e) => tracing::error!(app = name, "app maintenance panicked: {e}"),

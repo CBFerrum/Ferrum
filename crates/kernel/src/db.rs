@@ -48,6 +48,9 @@ pub struct Trace {
     /// How far down a chain of events this work is: 0 for a request or job, one more than the event's
     /// own for work that answers an event, whatever handler does it (FLC-HOOK-008).
     pub depth: i16,
+    /// The workspaces this work has served so far (a request's context, a workspace's transaction), shared with the
+    /// tasks it spawns: what the kernel's outbound client asks about (crate::sandbox).
+    pub serving: Arc<std::sync::Mutex<Vec<Uuid>>>,
 }
 
 tokio::task_local! {
@@ -74,6 +77,23 @@ impl Trace {
     /// person is shown to quote, and what an operator looks everything up by (FEO-079).
     pub fn operation() -> Option<String> {
         TRACE.try_with(|t| t.correlation.clone()).ok().filter(|c| !c.is_empty())
+    }
+
+    /// Notes that the work in hand serves `tenant` (nothing outside a trace).
+    pub fn serving(tenant: Uuid) {
+        let _ = TRACE.try_with(|t| {
+            if let Ok(mut w) = t.serving.lock()
+                && !w.contains(&tenant)
+            {
+                w.push(tenant);
+            }
+        });
+    }
+
+    /// The workspaces the work in hand has served; `None` when it has served none (start-up, operator tasks). When it
+    /// cannot tell (a poisoned lock), the nil id, which no workspace has, so every check refuses.
+    pub(crate) fn served() -> Option<Vec<Uuid>> {
+        TRACE.try_with(|t| t.serving.lock().map(|w| w.clone()).unwrap_or_else(|_| vec![Uuid::nil()])).ok().filter(|w| !w.is_empty())
     }
 
     /// The current trace, with what it sets off at `priority`.
@@ -381,6 +401,7 @@ impl Db {
     }
 
     pub async fn tenant_tx_with_timeout(&self, tenant: Uuid, timeout_ms: u64) -> Result<Tx> {
+        crate::sandbox::serving(tenant);
         let mut tx = self.pool.begin().await?;
         let row = as_tenant(&mut tx, tenant, timeout_ms, self.moves(), self.frozen()).await?;
         self.stay_fenced(&mut tx, row).await?;
@@ -463,6 +484,7 @@ impl Db {
     /// System transaction pinned to one tenant: RLS still allows everything, but code that relies on
     /// `ferrum_tenant()` (defaults, policies in package SQL) sees the right tenant.
     pub async fn system_tenant_tx(&self, tenant: Uuid) -> Result<Tx> {
+        crate::sandbox::serving(tenant);
         let mut tx = self.pool.begin().await?;
         let row = carrying(
             "set_config('ferrum.system', 'on', true), set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)",

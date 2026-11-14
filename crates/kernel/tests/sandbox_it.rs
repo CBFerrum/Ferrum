@@ -12,7 +12,8 @@ use ferrum_kernel::shell::HostRoute;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::twofactor::code;
 use ferrum_kernel::workspace_move::MoveSource;
-use ferrum_kernel::{Db, DbConfig, Error, EventSink, HookRegistry, Kernel, KernelSettings, Mailer, Result};
+use ferrum_kernel::zones::{Credential, Entry, Placed};
+use ferrum_kernel::{Db, DbConfig, Error, EventSink, HookRegistry, Kernel, KernelSettings, Mailer, Result, Trace};
 use ferrum_meta::Catalog;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -492,6 +493,37 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     assert!(
         matches!(a.sso_begin("acme-try", sso[0].0, "https://acme-try.example.test/", "0123456789abcdef").await, Err(Error::Forbidden(m)) if m.contains(SANDBOX))
     );
+    // An app's handler serving a person's request calls out with the kernel's client and no workspace named, as
+    // Bookings, Comms, Drive, Edge, Live, LMS and Social do: refused for a sandbox's request, also from a task it spawns.
+    let handler = |k: Arc<Kernel>, tenant: Uuid, url: String| async move {
+        let entry =
+            Arc::new(Entry { zones: Arc::new(Default::default()), placed: Placed::Nowhere, address: "127.0.0.1".into(), credential: Credential::Cookie });
+        k.request_ctx(tenant, acme.user, None, "req".into(), &entry).await.unwrap();
+        let direct = k.vetted_client(&url, true, Duration::from_secs(5), "an app").await.map(|_| ());
+        let k2 = k.clone();
+        let spawned = Trace::spawn(async move { k2.vetted_client(&url, true, Duration::from_secs(5), "an app").await.map(|_| ()) }).await.unwrap();
+        (direct, spawned)
+    };
+    let request = |tenant: Uuid| Trace { correlation: "req".into(), ..Default::default() }.scope(handler(a.clone(), tenant, hook_url.clone()));
+    let (direct, spawned) = request(sb).await;
+    for r in [direct, spawned] {
+        assert!(matches!(r, Err(Error::Forbidden(ref m)) if m.contains(SANDBOX)), "a sandbox's request: {r:?}");
+    }
+    let (direct, spawned) = request(t).await;
+    assert!(direct.is_ok() && spawned.is_ok(), "the live workspace's request");
+    assert!(a.vetted_client(&hook_url, true, Duration::from_secs(1), "a task").await.is_ok(), "no workspace named: as for the installation");
+    // An app's upkeep goes through every workspace in turn (as Social, Bookings, Control and Edge do): a sandbox's
+    // turn calls nothing outside, the live workspace's next turn still does.
+    let turns = ferrum_kernel::sandbox::upkeep(async {
+        let mut out = vec![];
+        for tenant in [sb, t] {
+            a.db.tenant_tx(tenant).await.unwrap().commit().await.unwrap();
+            out.push(a.vetted_client(&hook_url, true, Duration::from_secs(1), "an app's upkeep").await.is_ok());
+        }
+        out
+    })
+    .await;
+    assert_eq!(turns, vec![false, true]);
     assert_eq!(hits.load(Ordering::SeqCst), live_hits, "the receiver stayed silent");
     assert!(a.outward(t).await.is_ok() && a.outward(Uuid::now_v7()).await.is_err(), "a workspace it cannot find sends nothing");
     // The mark stays: no update turns a sandbox into a live workspace.

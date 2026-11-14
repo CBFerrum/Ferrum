@@ -485,7 +485,7 @@ impl Kernel {
             let mut shutdown = shutdown.clone();
             tokio::spawn(async move {
                 loop {
-                    if let Err(e) = k.maintenance().await {
+                    if let Err(e) = crate::sandbox::upkeep(k.maintenance()).await {
                         tracing::warn!("maintenance failed: {e}");
                     }
                     tokio::select! {

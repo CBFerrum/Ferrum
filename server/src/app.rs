@@ -443,7 +443,7 @@ impl Hooks for App {
                         _ = stop.changed() => return,
                         _ = tokio::time::sleep(Duration::from_secs(6 * 3600)) => {}
                     }
-                    if let Err(e) = ferrum_app_erp::maintenance(&k).await {
+                    if let Err(e) = ferrum_kernel::sandbox::upkeep(ferrum_app_erp::maintenance(&k)).await {
                         tracing::warn!("ERP's upkeep failed: {e}");
                     }
                 }

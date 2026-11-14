@@ -724,6 +724,8 @@ impl Kernel {
     /// person: the same person may arrive in another zone with the next request. The context
     /// carries the entry (`Ctx::zone`).
     pub async fn request_ctx(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>, request_id: String, entry: &Arc<crate::zones::Entry>) -> Result<Ctx> {
+        // What this request does outside is asked about this workspace (crate::sandbox).
+        crate::sandbox::serving(tenant);
         let core = self.core(tenant, user, token_version).await?;
         self.admit(&core.kind, tenant, user, entry).await?;
         admit_network(&core, tenant, user, entry)?;

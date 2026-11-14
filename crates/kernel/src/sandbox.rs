@@ -137,9 +137,38 @@ pub fn in_hand<F: std::future::Future>(tenant: Uuid, f: F) -> tokio::task::futur
     IN_HAND.scope(tenant, f)
 }
 
-/// The workspace whose background work is in hand, if any.
-pub(crate) fn workspace_in_hand() -> Option<Uuid> {
-    IN_HAND.try_with(|t| *t).ok()
+tokio::task_local! {
+    /// In an app's upkeep, which goes through every workspace in turn: the one whose transaction it opened last.
+    static UPKEEP: Arc<std::sync::Mutex<Option<Uuid>>>;
+}
+
+/// Runs an app's upkeep (one pass over every workspace): a call it makes outside is asked about the workspace whose
+/// transaction it opened last, so a sandbox's turn sends nothing and a live workspace's next turn still does.
+pub fn upkeep<F: std::future::Future>(f: F) -> tokio::task::futures::TaskLocalFuture<Arc<std::sync::Mutex<Option<Uuid>>>, F> {
+    UPKEEP.scope(Arc::default(), f)
+}
+
+/// Notes that the work in hand serves `tenant`: a request (every workspace it has served), an upkeep's turn (this
+/// one from now). Called where a request's context is made and where a workspace's transaction opens.
+pub fn serving(tenant: Uuid) {
+    crate::db::Trace::serving(tenant);
+    let _ = UPKEEP.try_with(|u| {
+        if let Ok(mut u) = u.lock() {
+            *u = Some(tenant);
+        }
+    });
+}
+
+/// Every workspace the work in hand acts for, as far as anything says: an event's or a job's, a request's, an upkeep's
+/// turn. None at all (start-up, an operator's task): the installation's own work. A lock it cannot read gives the nil
+/// id, which no workspace has, so the check refuses.
+pub(crate) fn served() -> Vec<Uuid> {
+    let mut all: Vec<Uuid> = IN_HAND.try_with(|t| *t).ok().into_iter().collect();
+    all.extend(crate::db::Trace::served().unwrap_or_default());
+    if let Ok(u) = UPKEEP.try_with(|u| u.lock().map(|u| *u).unwrap_or(Some(Uuid::nil()))) {
+        all.extend(u);
+    }
+    all
 }
 
 /// What `copy_workspace` is asked to do.

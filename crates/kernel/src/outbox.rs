@@ -409,6 +409,7 @@ impl Kernel {
                 traceparent: ev.traceparent.clone(),
                 priority: None,
                 depth: ev.depth.saturating_add(1),
+                ..Default::default()
             };
             let outcome = trace.scope(tokio::time::timeout(EVENT_TIMEOUT, crate::sandbox::in_hand(ev.tenant_id, self.handle_event(ev)))).await;
             let outcome = outcome.unwrap_or_else(|_| Err(Error::Unavailable(format!("handlers took longer than {} s", EVENT_TIMEOUT.as_secs()))));

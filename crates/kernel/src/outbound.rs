@@ -29,7 +29,9 @@ impl Kernel {
     /// event's handlers, a job) it is refused for a sandbox as [`Kernel::vetted_client_for`] is; elsewhere a call made
     /// for a workspace uses that one.
     pub async fn vetted_client(&self, url: &str, allow_private: bool, timeout: Duration, agent: &str) -> Result<(reqwest::Client, reqwest::Url)> {
-        if let Some(tenant) = crate::sandbox::workspace_in_hand() {
+        // Whatever names the workspace the call is made for: an event's or a job's own, and every one a request has
+        // served (its context, its transactions). None at all (start-up, an operator's task): as for the installation.
+        for tenant in crate::sandbox::served() {
             self.outward(tenant).await?;
         }
         let unreachable = |e: String| Error::Unavailable(format!("{url} cannot be reached: {e}"));

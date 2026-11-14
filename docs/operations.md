@@ -1765,9 +1765,20 @@ find or cannot ask about, every way out fails, saying "sandbox":
 The rest of the sandbox works as a workspace does: records, rules, automations, jobs and apps' own event handlers run;
 only what would leave is stopped. Webhooks on audit topics are webhooks like the others: set aside. The operator's own
 audit sink ("Sending the audit log elsewhere") takes the sandbox's audit events as any workspace's: it is the
-installation's, not the workspace's. Every replica must run this build or a newer one while a sandbox exists: an older
-one does not know the mark. An app that calls outside from a person's request with a client of its own, not the
-kernel's, is not stopped by this.
+installation's, not the workspace's.
+
+An app's call through the kernel's outbound client is refused whenever the work in hand acts for the sandbox: an
+event's handlers, a job, a person's request (and the tasks it starts), and an app's upkeep while it is at the
+sandbox's turn. That includes services of this installation an app reaches through that client (an office server, a
+meetings server, a metrics engine): in a sandbox those features do not work. An app that calls outside with an HTTP
+client of its own, not the kernel's, is not stopped by this.
+
+**One build that knows sandboxes.** Make a sandbox only when every replica runs a build that knows them (this one or
+newer), and keep it so for as long as any sandbox exists: an older build cannot see the mark, and would send mail,
+webhooks and calls for the sandbox as for a live workspace. `copy_workspace` refuses on a build that is a guest of a
+newer one, and while work waits for a newer build; it cannot see an older replica that is merely running, so check
+that every pod runs one image first. Do not roll back past this build while a sandbox exists: delete the sandboxes
+first.
 
 **Signing in.** With a password and, where the person had one, their second factor. Where single sign-on was required,
 it is not required in the sandbox (its secret is blank), and the command and the first audit event say so: people sign
