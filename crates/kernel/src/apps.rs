@@ -322,7 +322,7 @@ impl Kernel {
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
         .execute(&mut *tx)
         .await?;
-        crate::audit::record(&mut tx, ctx, "App", Uuid::nil(), "install", None, json!({"app": app_id, "version": version, "consent": consent})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "App", Uuid::nil(), "install", None, json!({"app": app_id, "version": version, "consent": consent})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -407,7 +407,7 @@ impl Kernel {
         if n == 0 {
             return Err(Error::NotFound(format!("app {app_id}")));
         }
-        crate::audit::record(&mut tx, ctx, "App", Uuid::nil(), if enabled { "enable" } else { "disable" }, None, json!({"app": app_id})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "App", Uuid::nil(), if enabled { "enable" } else { "disable" }, None, json!({"app": app_id})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -415,7 +415,7 @@ impl Kernel {
     pub async fn forget_installation(&self, ctx: &Ctx, app_id: &str, deleted_data: bool) -> Result<()> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query("delete from tenant_app where tenant_id = $1 and app_id = $2").bind(ctx.tenant).bind(app_id).execute(&mut *tx).await?;
-        crate::audit::record(&mut tx, ctx, "App", Uuid::nil(), "uninstall", None, json!({"app": app_id, "deleted_data": deleted_data})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "App", Uuid::nil(), "uninstall", None, json!({"app": app_id, "deleted_data": deleted_data})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -498,7 +498,7 @@ impl Kernel {
             sqlx::query("delete from role where tenant_id = $1 and package = $2").bind(ctx.tenant).bind(name).execute(&mut *tx).await?;
             sqlx::query("delete from installed_package where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(name).execute(&mut *tx).await?;
         }
-        crate::audit::record(
+        crate::audit::record_admin(
             &mut tx,
             ctx,
             "Package",

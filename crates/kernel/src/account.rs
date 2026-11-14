@@ -101,7 +101,7 @@ impl Kernel {
             return Err(Error::NotFound("workspace".into()));
         }
         let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
-        audit::record(&mut tx, &system, "Workspace", tenant, "account_state", None, json!({"state": state, "note": note})).await?;
+        audit::record_admin(&mut tx, &system, "Workspace", tenant, "account_state", None, json!({"state": state, "note": note})).await?;
         crate::auth::notify_users(&mut tx, tenant, None).await?;
         tx.commit().await?;
         self.invalidate_tenant_users(tenant);
@@ -131,7 +131,7 @@ impl Kernel {
             return Err(Error::NotFound("workspace".into()));
         }
         let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
-        audit::record(&mut tx, &system, "Workspace", tenant, "account_closed", None, json!({"retain_until": retain_until, "note": note})).await?;
+        audit::record_admin(&mut tx, &system, "Workspace", tenant, "account_closed", None, json!({"retain_until": retain_until, "note": note})).await?;
         crate::auth::notify_users(&mut tx, tenant, None).await?;
         tx.commit().await?;
         self.invalidate_tenant_users(tenant);

@@ -164,7 +164,7 @@ impl Kernel {
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         sqlx::query("update tenant set settings = settings - 'staff_networks' where id = $1").bind(tenant).execute(&mut *tx).await?;
         let system = crate::Ctx::system(tenant, self.registry.schema(tenant).await?);
-        crate::audit::record(&mut tx, &system, "Tenant", tenant, "clear_staff_networks", None, json!({"reason": reason, "by": "operator"})).await?;
+        crate::audit::record_admin(&mut tx, &system, "Tenant", tenant, "clear_staff_networks", None, json!({"reason": reason, "by": "operator"})).await?;
         crate::auth::notify_users(&mut tx, tenant, None).await?;
         crate::registry::Registry::bump_version(&mut tx, tenant).await?;
         tx.commit().await?;
@@ -260,7 +260,7 @@ pub(crate) async fn event(tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid, acti
         .bind(user)
         .execute(&mut **tx)
         .await?;
-    crate::audit::record_as(tx, tenant, Some(user), "", SIGN_IN, user, action, None, detail).await
+    crate::audit::record_as(tx, tenant, Some(user), "", crate::audit::SIGN_IN, SIGN_IN, user, action, None, detail).await
 }
 
 /// A failed attempt (`failed`) or a refusal by zone or network (`refused`) for a known account: the

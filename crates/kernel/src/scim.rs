@@ -367,7 +367,7 @@ impl Kernel {
             Error::Conflict(_) => Error::Conflict("someone with this userName or externalId exists".into()),
             other => other,
         })?;
-        audit::record(&mut tx, ctx, "User", id, "scim_create", None, json!({"returned": gone.is_some()})).await?;
+        audit::record_admin(&mut tx, ctx, "User", id, "scim_create", None, json!({"returned": gone.is_some()})).await?;
         // Someone back, or made inactive, is a change of access a restore must not undo (FEO-014).
         if gone.is_some() || !active {
             crate::outbox::enqueue(&mut tx, ctx.tenant, crate::lifecycle::ACCESS_TOPIC, Some("User"), Some(id), json!({"user": id, "active": active})).await?;
@@ -400,7 +400,7 @@ impl Kernel {
             Error::Conflict(_) => Error::Conflict("someone with this userName or externalId exists".into()),
             other => other,
         })?;
-        audit::record(
+        audit::record_admin(
             &mut tx,
             ctx,
             "User",
@@ -463,7 +463,7 @@ impl Kernel {
             .await?;
         sqlx::query("delete from scim_group_member where tenant_id = $1 and user_id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?;
         sync_roles(&mut tx, ctx.tenant, id).await?;
-        audit::record(&mut tx, ctx, "User", id, "scim_delete", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "User", id, "scim_delete", None, json!({})).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, id);
         Ok(())
@@ -562,7 +562,7 @@ impl Kernel {
         for user in &touched {
             sync_roles(&mut tx, ctx.tenant, *user).await?;
         }
-        audit::record(&mut tx, ctx, "ScimGroup", group, action, None, json!({"people": touched.len()})).await?;
+        audit::record_admin(&mut tx, ctx, "ScimGroup", group, action, None, json!({"people": touched.len()})).await?;
         let row = self.scim_group_row(&mut tx, ctx.tenant, group).await?;
         tx.commit().await?;
         for user in &touched {
@@ -701,7 +701,7 @@ impl Kernel {
             sync_roles(&mut tx, ctx.tenant, *user).await?;
         }
         sqlx::query("delete from scim_group where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?;
-        audit::record(&mut tx, ctx, "ScimGroup", id, "scim_delete", None, json!({"people": touched.len()})).await?;
+        audit::record_admin(&mut tx, ctx, "ScimGroup", id, "scim_delete", None, json!({"people": touched.len()})).await?;
         tx.commit().await?;
         for user in &touched {
             self.invalidate_user(ctx.tenant, *user);
@@ -754,7 +754,7 @@ impl Kernel {
         for user in &members {
             sync_roles(&mut tx, ctx.tenant, *user).await?;
         }
-        audit::record(&mut tx, ctx, "ScimGroup", group, "map_roles", None, json!({"roles": roles})).await?;
+        audit::record_admin(&mut tx, ctx, "ScimGroup", group, "map_roles", None, json!({"roles": roles})).await?;
         tx.commit().await?;
         for user in &members {
             self.invalidate_user(ctx.tenant, *user);

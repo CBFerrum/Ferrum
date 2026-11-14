@@ -426,7 +426,7 @@ impl Kernel {
     async fn audit_join(&self, tx: &mut Tx, m: &Session, identity: Uuid, proof: &str) -> Result<()> {
         let mut ctx = Ctx::system(m.tenant, self.registry.schema(m.tenant).await?);
         ctx.user = m.user;
-        crate::audit::record(tx, &ctx, "User", m.user, "join_identity", None, json!({"identity": identity, "proof": proof})).await
+        crate::audit::record_admin(tx, &ctx, "User", m.user, "join_identity", None, json!({"identity": identity, "proof": proof})).await
     }
 
     // ── codes sent to an address ──

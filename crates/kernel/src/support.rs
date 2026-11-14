@@ -149,7 +149,7 @@ impl Kernel {
             .bind(expires_at)
             .execute(&mut *tx)
             .await?;
-        audit::record(
+        audit::record_admin(
             &mut tx,
             ctx,
             "SupportGrant",
@@ -191,7 +191,7 @@ impl Kernel {
         .await?;
         let user = user.ok_or_else(|| Error::NotFound("support grant".into()))?;
         self.close_grant(&mut tx, ctx.tenant, user).await?;
-        audit::record(&mut tx, ctx, "SupportGrant", id, "revoke", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "SupportGrant", id, "revoke", None, json!({})).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
         Ok(())

@@ -52,7 +52,7 @@ impl Kernel {
             return Err(Error::NotFound("workspace".into()));
         }
         let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
-        audit::record(&mut tx, &system, "Workspace", tenant, "plan", None, json!({"plan": plan, "quotas": quotas})).await?;
+        audit::record_admin(&mut tx, &system, "Workspace", tenant, "plan", None, json!({"plan": plan, "quotas": quotas})).await?;
         // What was read of its quotas (the assistant's allowance) is stale on every replica.
         crate::registry::Registry::bump_version(&mut tx, tenant).await?;
         tx.commit().await?;

@@ -189,7 +189,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         let codes = self.replace_recovery_codes(&mut tx, ctx.tenant, ctx.user).await?;
-        audit::record(&mut tx, ctx, "User", ctx.user, "enable_two_factor", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "User", ctx.user, "enable_two_factor", None, json!({})).await?;
         tx.commit().await?;
         Ok(codes)
     }
@@ -259,7 +259,7 @@ impl Kernel {
             });
         }
         self.clear_two_factor(&mut tx, ctx.tenant, ctx.user).await?;
-        audit::record(&mut tx, ctx, "User", ctx.user, "disable_two_factor", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "User", ctx.user, "disable_two_factor", None, json!({})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -281,7 +281,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         crate::auth::notify_users(&mut tx, ctx.tenant, Some(user)).await?;
-        audit::record(&mut tx, ctx, "User", user, "reset_two_factor", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "User", user, "reset_two_factor", None, json!({})).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
         Ok(())

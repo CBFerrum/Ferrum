@@ -415,7 +415,7 @@ pub(crate) async fn save_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &Mess
     .bind((!ctx.user.is_nil()).then_some(ctx.user))
     .execute(&mut **tx)
     .await?;
-    audit::record(tx, ctx, "MessageTemplate", Uuid::nil(), "save", None, json!({"key": def.key})).await?;
+    audit::record_admin(tx, ctx, "MessageTemplate", Uuid::nil(), "save", None, json!({"key": def.key})).await?;
     Ok(if was.is_some() { "changed" } else { "created" })
 }
 
@@ -541,7 +541,7 @@ impl Kernel {
         if n.rows_affected() == 0 {
             return Err(Error::NotFound(format!("an edited message template {key}")));
         }
-        audit::record(&mut tx, ctx, "MessageTemplate", Uuid::nil(), "reset", None, json!({"key": key})).await?;
+        audit::record_admin(&mut tx, ctx, "MessageTemplate", Uuid::nil(), "reset", None, json!({"key": key})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1579,7 +1579,8 @@ impl Kernel {
         .bind(input.enabled)
         .execute(&mut *tx)
         .await?;
-        audit::record(&mut tx, ctx, "MessageChannel", id, "save", None, json!({"kind": input.kind, "name": name, "secrets": input.secrets.is_some()})).await?;
+        audit::record_admin(&mut tx, ctx, "MessageChannel", id, "save", None, json!({"kind": input.kind, "name": name, "secrets": input.secrets.is_some()}))
+            .await?;
         tx.commit().await?;
         Ok(id)
     }
@@ -1607,7 +1608,7 @@ impl Kernel {
         if n.rows_affected() == 0 {
             return Err(Error::NotFound("message channel".into()));
         }
-        audit::record(&mut tx, ctx, "MessageChannel", id, "delete", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "MessageChannel", id, "delete", None, json!({})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1726,7 +1727,7 @@ async fn record_choice(tx: &mut Tx, tenant: Uuid, by: Option<Uuid>, address: &st
     .execute(&mut **tx)
     .await?;
     let sys = Ctx::system(tenant, Arc::new(ferrum_meta::Schema::default()));
-    audit::record(
+    audit::record_admin(
         tx,
         &sys,
         "ContactConsent",
@@ -1767,7 +1768,7 @@ impl Kernel {
             if gone == 0 {
                 return Err(Error::NotFound("opt-out".into()));
             }
-            audit::record(&mut tx, ctx, "ContactConsent", Uuid::nil(), "erased_opt_out_removed", None, json!({"channel": channel})).await?;
+            audit::record_admin(&mut tx, ctx, "ContactConsent", Uuid::nil(), "erased_opt_out_removed", None, json!({"channel": channel})).await?;
             tx.commit().await?;
             return Ok(());
         }

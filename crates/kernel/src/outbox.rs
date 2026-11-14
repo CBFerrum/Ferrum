@@ -528,7 +528,7 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let Some(topic) = topic else { return Err(Error::NotFound("dead event".into())) };
-        crate::audit::record(&mut tx, ctx, "OutboxEvent", Uuid::from_u128(id as u128), "replay", None, json!({"event": id, "topic": topic})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "OutboxEvent", Uuid::from_u128(id as u128), "replay", None, json!({"event": id, "topic": topic})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -604,7 +604,7 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let Some(topic) = topic else { return Err(Error::NotFound("dead webhook delivery".into())) };
-        crate::audit::record(&mut tx, ctx, "WebhookDelivery", id, "replay", None, json!({"topic": topic})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "WebhookDelivery", id, "replay", None, json!({"topic": topic})).await?;
         tx.commit().await?;
         Ok(())
     }

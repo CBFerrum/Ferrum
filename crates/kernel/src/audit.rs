@@ -62,24 +62,57 @@ pub fn diff(old: Option<&Doc>, new: Option<&Doc>) -> Value {
     Value::Object(out)
 }
 
+/// An event about a record of the workspace's entities (packaged or its own): category `records`. The kernel's
+/// own changes of who may do what and how the workspace is set up go through [`record_admin`].
 #[allow(clippy::too_many_arguments)]
 pub async fn record(tx: &mut Tx, ctx: &Ctx, entity: &str, record_id: Uuid, action: &str, version: Option<i32>, diff: Value) -> Result<()> {
     let actor = (!ctx.user.is_nil()).then_some(ctx.user);
-    record_as(tx, ctx.tenant, actor, &ctx.request_id, entity, record_id, action, version, diff).await
+    insert(tx, ctx.tenant, actor, &ctx.request_id, RECORDS, entity, record_id, action, version, diff, Some(&ctx.schema.audit_topics)).await
 }
 
-/// [`record`] with no context: who acted (`actor`) and the request it came in, as given.
+/// An event of the workspace's administration, written by the kernel's own code (people, roles, settings, keys,
+/// apps, connections): category `administration`, whatever the entity is called.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_admin(tx: &mut Tx, ctx: &Ctx, entity: &str, record_id: Uuid, action: &str, version: Option<i32>, diff: Value) -> Result<()> {
+    let actor = (!ctx.user.is_nil()).then_some(ctx.user);
+    insert(tx, ctx.tenant, actor, &ctx.request_id, ADMIN, entity, record_id, action, version, diff, Some(&ctx.schema.audit_topics)).await
+}
+
+/// [`record`] with no context, in `category`: who acted (`actor`) and the request it came in, as given. With no
+/// schema at hand, it asks the database whether the workspace has an audit webhook (sign-ins, not the hot path).
 #[allow(clippy::too_many_arguments)]
 pub async fn record_as(
     tx: &mut Tx,
     tenant: Uuid,
     actor: Option<Uuid>,
     request_id: &str,
+    category: &'static str,
     entity: &str,
     record_id: Uuid,
     action: &str,
     version: Option<i32>,
     diff: Value,
+) -> Result<()> {
+    insert(tx, tenant, actor, request_id, category, entity, record_id, action, version, diff, None).await
+}
+
+pub const SIGN_IN: &str = "sign_in";
+pub const ADMIN: &str = "administration";
+pub const RECORDS: &str = "records";
+
+#[allow(clippy::too_many_arguments)]
+async fn insert(
+    tx: &mut Tx,
+    tenant: Uuid,
+    actor: Option<Uuid>,
+    request_id: &str,
+    category: &'static str,
+    entity: &str,
+    record_id: Uuid,
+    action: &str,
+    version: Option<i32>,
+    diff: Value,
+    topics: Option<&[String]>,
 ) -> Result<()> {
     let prev: Option<Vec<u8>> =
         sqlx::query_scalar("select hash from audit_event where tenant_id = $1 and entity = $2 and record_id = $3 order by id desc limit 1")
@@ -91,8 +124,8 @@ pub async fn record_as(
     let at = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
     let hash = event_hash(prev.as_deref(), &body(tenant, &at, actor, entity, record_id, action, version, &diff));
     let id: i64 = sqlx::query_scalar(
-        "insert into audit_event (tenant_id, at, actor, entity, record_id, action, version, diff, request_id, prev_hash, hash) \
-         values ($1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id",
+        "insert into audit_event (tenant_id, at, actor, entity, record_id, action, version, diff, request_id, prev_hash, hash, category) \
+         values ($1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning id",
     )
     .bind(tenant)
     .bind(&at)
@@ -105,28 +138,47 @@ pub async fn record_as(
     .bind(request_id)
     .bind(prev)
     .bind(&hash)
+    .bind(category)
     .fetch_one(&mut **tx)
     .await?;
     // A workspace's own sink: its webhooks subscribed to its audit events (`audit.sign_in`, `audit.administration`,
-    // `audit.records`, or `audit.*`), delivered as every webhook is. Queued only when one is there.
-    let topic = format!("audit.{}", category(entity));
-    let wanted: bool = sqlx::query_scalar(
-        "select exists (select 1 from webhook where tenant_id = $1 and is_active and app is null and topics && array[$2, 'audit.*']::text[])",
-    )
-    .bind(tenant)
-    .bind(&topic)
-    .fetch_one(&mut **tx)
-    .await?;
+    // `audit.records`, or `audit.*`), delivered as every webhook is. Which it has is held in its schema (loaded with
+    // it, dropped with it when a webhook changes), so a workspace without one pays a memory read.
+    let topic = format!("audit.{category}");
+    let wanted = match topics {
+        Some(t) => t.iter().any(|t| *t == topic || t == "audit.*"),
+        None => {
+            sqlx::query_scalar(
+                "select exists (select 1 from webhook where tenant_id = $1 and is_active and app is null and topics && array[$2, 'audit.*']::text[])",
+            )
+            .bind(tenant)
+            .bind(&topic)
+            .fetch_one(&mut **tx)
+            .await?
+        }
+    };
     if wanted {
         let at = chrono::DateTime::parse_from_rfc3339(&at).map_err(Error::internal)?.with_timezone(&Utc);
-        let row: EventRow = (tenant, id, at, actor, entity.to_string(), record_id, action.to_string(), Some(diff), Some(request_id.to_string()), hash);
+        let row: EventRow = (
+            tenant,
+            id,
+            at,
+            actor,
+            entity.to_string(),
+            record_id,
+            action.to_string(),
+            Some(diff),
+            Some(request_id.to_string()),
+            hash,
+            Some(category.to_string()),
+        );
         crate::outbox::enqueue(tx, tenant, &topic, None, None, event_json(&row)).await?;
     }
     Ok(())
 }
 
-/// The entities whose events are the administration of the workspace (who may do what, how it is set up),
-/// as opposed to its records' changes. Sign-ins are `SignIn`.
+/// The category of an event written before events carried one (or by a build from before): told apart by name.
+/// Events written since carry the category of where they were written ([`record`], [`record_admin`]).
 pub const ADMINISTRATION: &[&str] = &[
     "User",
     "UserSession",
@@ -163,7 +215,7 @@ pub const ADMINISTRATION: &[&str] = &[
     "Backfill",
 ];
 
-/// An event's category: `sign_in`, `administration` or `records`.
+/// An event's category by its entity's name alone: only for events that do not carry one.
 pub fn category(entity: &str) -> &'static str {
     if entity == crate::gate::SIGN_IN {
         "sign_in"
@@ -175,16 +227,16 @@ pub fn category(entity: &str) -> &'static str {
 }
 
 /// The columns [`event_json`] reads, of `audit_event e`.
-pub const EVENT_COLUMNS: &str = "e.tenant_id, e.id, e.at, e.actor, e.entity, e.record_id, e.action, e.diff, e.request_id, e.hash";
+pub const EVENT_COLUMNS: &str = "e.tenant_id, e.id, e.at, e.actor, e.entity, e.record_id, e.action, e.diff, e.request_id, e.hash, e.category";
 
 /// One audit event as it leaves the server (docs/operations.md, "Sending the audit log elsewhere"): the
 /// administrators' audit API, the deployment's sink and a workspace's webhooks all send this.
-pub type EventRow = (Uuid, i64, chrono::DateTime<Utc>, Option<Uuid>, String, Uuid, String, Option<Value>, Option<String>, Vec<u8>);
+pub type EventRow = (Uuid, i64, chrono::DateTime<Utc>, Option<Uuid>, String, Uuid, String, Option<Value>, Option<String>, Vec<u8>, Option<String>);
 
 pub fn event_json(r: &EventRow) -> Value {
-    let (tenant, id, at, actor, entity, record, action, diff, request_id, hash) = r;
+    let (tenant, id, at, actor, entity, record, action, diff, request_id, hash, kind) = r;
     json!({
-        "id": id.to_string(), "workspace": tenant, "at": at, "category": category(entity), "entity": entity, "record": record, "action": action,
+        "id": id.to_string(), "workspace": tenant, "at": at, "category": kind.as_deref().unwrap_or_else(|| category(entity)), "entity": entity, "record": record, "action": action,
         "actor": actor, "request_id": request_id.as_deref().filter(|r| !r.is_empty()), "details": diff, "hash": hex::encode(hash),
     })
 }
@@ -197,11 +249,12 @@ impl crate::Kernel {
             return Err(Error::Forbidden("administrator access required".into()));
         }
         let admin: Vec<String> = ADMINISTRATION.iter().map(|e| e.to_string()).collect();
+        // The category an event carries; one written before events carried one, by its entity's name.
         let filter = match category {
             None => "true",
-            Some("sign_in") => "e.entity = 'SignIn'",
-            Some("administration") => "e.entity = any($4)",
-            Some("records") => "e.entity <> 'SignIn' and not e.entity = any($4)",
+            Some("sign_in") => "coalesce(e.category, case when e.entity = 'SignIn' then 'sign_in' end) = 'sign_in'",
+            Some("administration") => "coalesce(e.category, case when e.entity = any($4) then 'administration' end) = 'administration'",
+            Some("records") => "coalesce(e.category, case when e.entity <> 'SignIn' and not e.entity = any($4) then 'records' end) = 'records'",
             Some(_) => return Err(Error::field("category", "sign_in, administration or records")),
         };
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;

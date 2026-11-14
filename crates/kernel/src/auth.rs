@@ -521,7 +521,7 @@ impl Kernel {
         .execute(&mut *tx)
         .await?;
         if let Some(n) = &networks {
-            crate::audit::record(&mut tx, ctx, "ApiKey", id, "create", None, serde_json::json!({"name": name, "user": user, "networks": n})).await?;
+            crate::audit::record_admin(&mut tx, ctx, "ApiKey", id, "create", None, serde_json::json!({"name": name, "user": user, "networks": n})).await?;
         }
         tx.commit().await?;
         Ok((id, format!("fk_{prefix}_{secret}")))
@@ -592,7 +592,7 @@ impl Kernel {
         if n == 0 {
             return Err(Error::NotFound("API key".into()));
         }
-        crate::audit::record(&mut tx, ctx, "ApiKey", id, "networks", None, serde_json::json!({"networks": networks})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "ApiKey", id, "networks", None, serde_json::json!({"networks": networks})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -832,7 +832,8 @@ impl Kernel {
         sqlx::query("update app_user set is_admin = $3 where tenant_id = $1 and id = $2").bind(tenant).bind(user).bind(admin).execute(&mut *tx).await?;
         let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
         let action = if admin { "grant_admin" } else { "revoke_admin" };
-        crate::audit::record(&mut tx, &system, "User", user, action, None, serde_json::json!({"email": email, "reason": reason, "by": "operator"})).await?;
+        crate::audit::record_admin(&mut tx, &system, "User", user, action, None, serde_json::json!({"email": email, "reason": reason, "by": "operator"}))
+            .await?;
         notify_users(&mut tx, tenant, Some(user)).await?;
         tx.commit().await?;
         self.users.remove(&(tenant, user));

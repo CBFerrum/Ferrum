@@ -273,7 +273,7 @@ impl Kernel {
             "assignments_moved": moved, "assignments_left_open": left_open, "tasks_handed_on": tasks, "reassign_to": successor,
         });
         // The audit trail outlives an erasure of the person, so it names them by id only.
-        audit::record(&mut tx, ctx, "User", user, "deprovision", None, json!({"reason": reason, "outcome": done})).await?;
+        audit::record_admin(&mut tx, ctx, "User", user, "deprovision", None, json!({"reason": reason, "outcome": done})).await?;
         let event = json!({"user": user, "email": email, "reassign_to": successor, "reason": reason});
         outbox::enqueue(&mut tx, ctx.tenant, DEPROVISIONED_TOPIC, Some("User"), Some(user), event).await?;
         notify_users(&mut tx, ctx.tenant, Some(user)).await?;
@@ -379,7 +379,7 @@ impl Kernel {
             return Err(Error::field("to", "must be another active member of the workspace"));
         }
         let moved = move_assignments(&mut tx, ctx, user, to).await?;
-        audit::record(&mut tx, ctx, "User", user, "hand_over", None, json!({"to": to, "reason": reason, "assignments_moved": moved})).await?;
+        audit::record_admin(&mut tx, ctx, "User", user, "hand_over", None, json!({"to": to, "reason": reason, "assignments_moved": moved})).await?;
         outbox::enqueue(
             &mut tx,
             ctx.tenant,

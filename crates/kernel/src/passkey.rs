@@ -340,7 +340,7 @@ impl Kernel {
         if inserted.rows_affected() == 0 {
             return Err(Error::Conflict("this passkey is already kept".into()));
         }
-        crate::audit::record(&mut tx, ctx, "Passkey", pid, "add", None, json!({"name": name, "rp_id": rp_id})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "Passkey", pid, "add", None, json!({"name": name, "rp_id": rp_id})).await?;
         tx.commit().await?;
         Ok(json!({"id": pid, "name": name, "rp_id": rp_id, "created_at": chrono::Utc::now(), "last_used_at": null}))
     }
@@ -511,7 +511,7 @@ impl Kernel {
         if done.rows_affected() == 0 {
             return Err(Error::NotFound("passkey".into()));
         }
-        crate::audit::record(&mut tx, ctx, "Passkey", id, if name.is_some() { "rename" } else { "remove" }, None, json!({})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "Passkey", id, if name.is_some() { "rename" } else { "remove" }, None, json!({})).await?;
         tx.commit().await?;
         Ok(())
     }

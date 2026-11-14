@@ -477,7 +477,7 @@ impl Kernel {
         job.dedupe_key = Some("export".into());
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let id = enqueue(&mut tx, ctx.tenant, Some(ctx.user), job).await?;
-        audit::record(&mut tx, ctx, "Workspace", ctx.tenant, "export", None, json!({"job": id})).await?;
+        audit::record_admin(&mut tx, ctx, "Workspace", ctx.tenant, "export", None, json!({"job": id})).await?;
         tx.commit().await?;
         Ok(id)
     }
@@ -497,7 +497,7 @@ impl Kernel {
                 .fetch_optional(&mut *tx)
                 .await?;
         let (name, key) = row.ok_or_else(|| Error::NotFound("export".into()))?;
-        audit::record(&mut tx, ctx, "Workspace", ctx.tenant, "export_download", None, json!({"job": job, "part": part})).await?;
+        audit::record_admin(&mut tx, ctx, "Workspace", ctx.tenant, "export_download", None, json!({"job": job, "part": part})).await?;
         tx.commit().await?;
         Ok((name, self.file_store()?.get(&key).await?))
     }

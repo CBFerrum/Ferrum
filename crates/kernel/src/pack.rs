@@ -1254,7 +1254,7 @@ impl Kernel {
             .bind(serde_json::to_value(&summary).map_err(Error::internal)?)
             .execute(&mut *tx)
             .await?;
-        crate::audit::record(&mut tx, ctx, "Pack", id, "install", None, json!({"name": pack.name, "version": pack.version, "digest": digest})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "Pack", id, "install", None, json!({"name": pack.name, "version": pack.version, "digest": digest})).await?;
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);
         self.invalidate_tenant_users(ctx.tenant);

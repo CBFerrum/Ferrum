@@ -668,6 +668,38 @@ async fn scenario() {
     for id in &fourth {
         assert_eq!(rx.ids("/sink").iter().filter(|g| *g == id).count(), 1, "{id} once");
     }
+    // Held after a restore, or fenced for a planned move: nothing goes out; released: on from the cursor, no gap.
+    use ferrum_kernel::audit_sink::Turn;
+    let fifth = write(2).await;
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update platform_incarnation set held_since = now(), held_because = 'test'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(k1.audit_sink_once().await.unwrap(), Turn::Held, "held after a restore");
+    assert!(k1.doctor(10).await.unwrap().iter().any(|f| f.check == "audit.sink" && f.detail.contains("paused")), "the doctor says why");
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update platform_incarnation set held_since = null, held_because = null").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    k.plan_move("test", std::time::Duration::from_secs(24 * 3600), std::time::Duration::ZERO).await.unwrap();
+    assert_eq!(k1.audit_sink_once().await.unwrap(), Turn::Held, "the fenced source of a move");
+    assert_eq!(k2.audit_sink_once().await.unwrap(), Turn::Held);
+    assert!(fifth.iter().all(|i| !rx.ids("/sink").contains(i)), "nothing sent while held or fenced");
+    k.cancel_move("test over").await.unwrap();
+    while let Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
+    for id in &fifth {
+        assert_eq!(rx.ids("/sink").iter().filter(|g| *g == id).count(), 1, "{id}: sent once released");
+    }
+    // A copy restored from a dump: its transaction counter is behind the cursor. Simulated by a cursor far ahead,
+    // with every event so far sent: the next turn notices and goes on above the ids it sent; nothing again, no gap.
+    let sent_before = rx.ids("/sink").len();
+    let high = *rx.ids("/sink").iter().max().unwrap();
+    cursor(Some(format!("999999999999/0/0/{high}"))).await;
+    let sixth = write(2).await;
+    while let Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
+    while let Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
+    for id in &sixth {
+        assert_eq!(rx.ids("/sink").iter().filter(|g| *g == id).count(), 1, "{id}: on the copy, once");
+    }
+    assert_eq!(rx.ids("/sink").len(), sent_before + sixth.len(), "nothing sent before is sent again");
     let (_, metrics) = call(&r, Method::GET, "/metrics", INSIDE, Cred::None, None).await;
     assert!(!metrics.contains("ferrum_audit_sink_behind_seconds"), "only where the sink is set");
     assert!(k1.doctor(10).await.unwrap().iter().any(|f| f.check == "audit.sink"), "the doctor reports it");
@@ -782,6 +814,82 @@ async fn scenario() {
     sign_in_with(&r, "10.7.0.6", "portal@acme.test", SAFARI).await;
     sign_in_with(&r, "10.7.0.6", "portal@acme.test", CHROME_130).await;
     assert_eq!(told("portal@acme.test").await, 0, "staff only");
+
+    // ── Saves pay nothing for audit webhooks they do not have ──
+    // With the webhook table locked by someone else, a record save that asked it anything would wait.
+    let quiet = k
+        .create_tenant(NewTenant {
+            slug: "quiet".into(),
+            name: "Quiet".into(),
+            admin_email: "admin@quiet.test".into(),
+            admin_password: PASSWORD.into(),
+            admin_name: None,
+            packages: vec![],
+            settings: None,
+        })
+        .await
+        .unwrap();
+    let qs = k.login("quiet", "admin@quiet.test", PASSWORD).await.unwrap();
+    let q_admin = k.load_ctx(quiet, qs.user, None, "it".into()).await.unwrap();
+    let save = |n: usize, ctx: ferrum_kernel::Ctx, prefix: &'static str| {
+        let k = k.clone();
+        async move {
+            let started = std::time::Instant::now();
+            for i in 0..n {
+                k.insert(&ctx, "Currency", json!({"code": format!("{prefix}{}{}", (b'A' + (i / 26) as u8) as char, (b'A' + (i % 26) as u8) as char), "currency_name": format!("Quiet {prefix}{i}")}).as_object().cloned().unwrap()).await.unwrap();
+            }
+            started.elapsed()
+        }
+    };
+    save(1, q_admin.clone(), "X").await;
+    let locker = sqlx::PgPool::connect(&url).await.unwrap();
+    let mut lock = locker.begin().await.unwrap();
+    sqlx::query("lock table webhook in access exclusive mode").execute(&mut *lock).await.unwrap();
+    let saved = tokio::time::timeout(std::time::Duration::from_secs(10), save(20, q_admin.clone(), "Y")).await;
+    lock.rollback().await.unwrap();
+    let took = saved.expect("saves never touch the webhook table");
+    eprintln!("20 saves with no audit webhook: {took:?}");
+
+    // ── Categories by where an event comes from ──
+    // A workspace's own entities start with X (its rule), but a package's may be named as the kernel's own
+    // administration entities are (an app's `Device`, `Site`): where the event is written decides, not the name.
+    let mut tx = k.db.tenant_tx(quiet).await.unwrap();
+    ferrum_kernel::audit::record(&mut tx, &q_admin, "Device", uuid::Uuid::now_v7(), "update", Some(1), json!({"title": ["a", "b"]})).await.unwrap();
+    ferrum_kernel::audit::record_admin(&mut tx, &q_admin, "XThing", uuid::Uuid::now_v7(), "configure", None, json!({})).await.unwrap();
+    tx.commit().await.unwrap();
+    k.update_tenant_settings(&q_admin, json!({"timezone": "UTC"}).as_object().unwrap()).await.unwrap();
+    let kinds = |category: &'static str| {
+        let (k, ctx) = (k.clone(), q_admin.clone());
+        async move {
+            let got = k.audit_events(&ctx, Some(category), None, 500).await.unwrap();
+            got["events"].as_array().unwrap().iter().map(|e| e["entity"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+        }
+    };
+    assert!(kinds("records").await.contains(&"Device".to_string()), "a record of a package's Device is a record");
+    assert!(!kinds("administration").await.contains(&"Device".to_string()));
+    assert!(kinds("administration").await.contains(&"XThing".to_string()), "the kernel's own change, whatever the name");
+    assert!(kinds("administration").await.contains(&"Tenant".to_string()), "the kernel's own settings change");
+    assert!(kinds("records").await.contains(&"Currency".to_string()), "saves are records");
+    // And with an audit webhook on records, a save queues its event (the schema knows at once).
+    let mut tx = k.db.tenant_tx(quiet).await.unwrap();
+    sqlx::query(
+        "insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, gen_random_uuid(), 'r', 'https://example.test', 'x', '{audit.records}')",
+    )
+    .bind(quiet)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    ferrum_kernel::Registry::bump_version(&mut tx, quiet).await.unwrap();
+    tx.commit().await.unwrap();
+    k.registry.invalidate(quiet);
+    let q_admin = k.load_ctx(quiet, qs.user, None, "it".into()).await.unwrap();
+    let took = save(20, q_admin.clone(), "Z").await;
+    eprintln!("20 saves with an audit webhook on records: {took:?}");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let queued: i64 =
+        sqlx::query_scalar("select count(*) from outbox where tenant_id = $1 and topic = 'audit.records'").bind(quiet).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(queued >= 20, "{queued}");
 }
 
 /// A password sign-in from a browser of `user_agent`.

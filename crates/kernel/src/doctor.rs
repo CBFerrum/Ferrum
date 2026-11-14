@@ -210,6 +210,12 @@ impl Kernel {
 
     /// The audit sink (crate::audit_sink): a warning when events have waited more than 15 minutes.
     async fn audit_sink_finding(&self) -> Option<Finding> {
+        if self.settings.audit_sink.is_some() && (self.db.fenced() || self.holding().await.unwrap_or(true)) {
+            return Some(Finding::off(
+                "audit.sink",
+                "paused: held after a restore, or a planned move fences this database; it goes on from its cursor once that ends",
+            ));
+        }
         Some(match self.audit_sink_behind().await {
             Ok(None) if self.settings.audit_sink.is_none() => return None,
             Ok(None) => Finding::ok("audit.sink", "set, and has not sent yet"),

@@ -56,7 +56,7 @@ impl Kernel {
             sqlx::query_as("select count(*), min(at), max(at) from audit_event where tenant_id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
         let (days, anchored): (i64, Option<chrono::NaiveDate>) =
             sqlx::query_as("select count(*), max(day) from audit_anchor where tenant_id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
-        audit::record(&mut tx, ctx, "Workspace", ctx.tenant, "evidence_pack", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "Workspace", ctx.tenant, "evidence_pack", None, json!({})).await?;
         tx.commit().await?;
         Ok(json!({
             "generated_at": chrono::Utc::now(),

@@ -74,7 +74,7 @@ impl Kernel {
         }
         let value = setting.map(|s| json!({"domains": s.domains.iter().map(|d| d.trim().to_lowercase()).collect::<Vec<_>>(), "passes": s.passes}));
         sqlx::query("update role set public_signup = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(&value).execute(&mut *tx).await?;
-        audit::record(&mut tx, ctx, "Role", Uuid::nil(), "public_signup", None, json!({"role": role, "setting": value})).await?;
+        audit::record_admin(&mut tx, ctx, "Role", Uuid::nil(), "public_signup", None, json!({"role": role, "setting": value})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -225,7 +225,7 @@ pub(crate) async fn confirm(tx: &mut Tx, slug: &str, email: &str, code: &str) ->
             .await?;
     sqlx::query("insert into user_role (tenant_id, user_id, role) values ($1, $2, $3)").bind(tenant).bind(user).bind(&role).execute(&mut **tx).await?;
     let sys = Ctx::system(tenant, std::sync::Arc::new(ferrum_meta::Schema::default()));
-    audit::record(tx, &sys, "User", user, "portal_signup", None, json!({"role": role, "passed": passed})).await?;
+    audit::record_admin(tx, &sys, "User", user, "portal_signup", None, json!({"role": role, "passed": passed})).await?;
     let event = json!({"user": user, "email": email, "name": name, "role": role, "passed": passed});
     crate::outbox::enqueue(tx, tenant, SIGNED_UP, None, None, event).await?;
     Ok(Some(Session { tenant, user, token_version }))

@@ -13,6 +13,12 @@
 //!   whose `id` it has seen.
 //! * **One sender.** The cursor's row is locked for a batch (`for update skip locked`): a replica that finds it
 //!   locked waits for its next turn. Writers of audit events never touch it, so sending never slows a write.
+//! * **Holds and moves.** While the database is held after a restore, or is the fenced source of a planned move
+//!   (`Kernel::holding`), nothing is sent, as with all outward work. A copy that adopted a move carries on from the
+//!   cursor it copied. A copy made by dump and restore has a transaction counter of its own, lower than the
+//!   source's: once every event after the cursor is sent and the counter is found behind the cursor, the cursor
+//!   starts again at the counter's beginning, above the highest event id it sent (ids go on from the copy), so
+//!   nothing is skipped and nothing is sent twice.
 //! * **The window.** A build that finds a newer build's schema (a guest, crate::window) sends nothing: the
 //!   newer build's events may be ones it cannot read, and the newer build's replicas send them.
 
@@ -71,14 +77,36 @@ pub enum Turn {
     Busy,
     /// This many events were sent and acknowledged (0: nothing new).
     Sent(usize),
+    /// Held after a restore, or a planned move fences this database: nothing goes out.
+    Held,
 }
 
-fn cursor_parts(v: &str) -> Result<(String, i64)> {
-    let (xid, id) = v.split_once('/').ok_or_else(|| Error::internal(format!("the audit sink's cursor is not one: {v}")))?;
-    if xid.is_empty() || !xid.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(Error::internal(format!("the audit sink's cursor is not one: {v}")));
+/// The cursor: `xid/id/floor/high`. Events after (`xid`, `id`) whose id is above `floor` go next; `high` is the
+/// highest id sent so far (the next `floor` if the transaction counter turns out behind the cursor).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Cursor {
+    xid: String,
+    id: i64,
+    floor: i64,
+    high: i64,
+}
+
+fn cursor_parts(v: &str) -> Result<Cursor> {
+    let bad = || Error::internal(format!("the audit sink's cursor is not one: {v}"));
+    let parts: Vec<&str> = v.split('/').collect();
+    let num = |i: usize| -> Result<i64> { parts.get(i).map_or(Ok(0), |p| p.parse().map_err(|_| bad())) };
+    let xid = parts.first().filter(|x| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit())).ok_or_else(bad)?;
+    if !(2..=4).contains(&parts.len()) {
+        return Err(bad());
     }
-    Ok((xid.to_string(), id.parse().map_err(|_| Error::internal(format!("the audit sink's cursor is not one: {v}")))?))
+    let id = num(1)?;
+    Ok(Cursor { xid: xid.to_string(), id, floor: num(2)?, high: num(3)?.max(id) })
+}
+
+impl Cursor {
+    fn text(&self) -> String {
+        format!("{}/{}/{}/{}", self.xid, self.id, self.floor, self.high)
+    }
 }
 
 impl Kernel {
@@ -88,6 +116,10 @@ impl Kernel {
         let Some(sink) = self.settings.audit_sink.clone() else { return Ok(Turn::Off) };
         if self.newer_build_here().await? {
             return Ok(Turn::Off);
+        }
+        // Outward work, as mail and webhooks are: nothing while held or fenced.
+        if self.db.fenced() || self.holding().await? {
+            return Ok(Turn::Held);
         }
         let mut tx = self.db.system_tx().await?;
         const HELD: &str = "select value from cluster_state where key = $1 for update skip locked";
@@ -107,7 +139,7 @@ impl Kernel {
             at = sqlx::query_scalar(HELD).bind(CURSOR).fetch_optional(&mut *tx).await?;
         }
         let Some(at) = at else { return Ok(Turn::Busy) };
-        let (xid, id) = cursor_parts(&at)?;
+        let mut cur = cursor_parts(&at)?;
         #[allow(clippy::type_complexity)]
         let rows: Vec<(
             uuid::Uuid,
@@ -120,24 +152,37 @@ impl Kernel {
             Option<serde_json::Value>,
             Option<String>,
             Vec<u8>,
+            Option<String>,
             String,
         )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {EVENT_COLUMNS}, e.xid::text from audit_event e \
-                 where e.xid is not null and (e.xid, e.id) > ($1::text::xid8, $2) and e.xid < pg_snapshot_xmin(pg_current_snapshot()) \
+                 where e.xid is not null and (e.xid, e.id) > ($1::text::xid8, $2) and e.id > $4 and e.xid < pg_snapshot_xmin(pg_current_snapshot()) \
                  order by e.xid, e.id limit $3"
         )))
-        .bind(&xid)
-        .bind(id)
+        .bind(&cur.xid)
+        .bind(cur.id)
         .bind(BATCH)
+        .bind(cur.floor)
         .fetch_all(&mut *tx)
         .await?;
-        let Some(last) = rows.last().map(|r| format!("{}/{}", r.10, r.1)) else {
+        let Some(last) = rows.last() else {
+            // Everything after the cursor is sent. A counter behind the cursor (a copy restored from a dump) would
+            // hold every new event back: start again from its beginning, above every id sent.
+            let behind: bool = sqlx::query_scalar("select pg_snapshot_xmin(pg_current_snapshot()) < $1::text::xid8").bind(&cur.xid).fetch_one(&mut *tx).await?;
+            if behind {
+                let from = Cursor { xid: "0".into(), id: 0, floor: cur.high, high: cur.high };
+                tracing::warn!(cursor = %cur.text(), now = %from.text(), "the audit sink's cursor is ahead of this database's transactions (a copy): it goes on above the events it sent");
+                sqlx::query("update cluster_state set value = $2, updated_at = now() where key = $1").bind(CURSOR).bind(from.text()).execute(&mut *tx).await?;
+            }
             tx.commit().await?;
             return Ok(Turn::Sent(0));
         };
+        let high = rows.iter().map(|r| r.1).max().unwrap_or(0).max(cur.high);
+        cur = Cursor { xid: last.11.clone(), id: last.1, floor: cur.floor, high };
+        let last = cur.text();
         let mut body = Vec::new();
         for r in &rows {
-            let row: EventRow = (r.0, r.1, r.2, r.3, r.4.clone(), r.5, r.6.clone(), r.7.clone(), r.8.clone(), r.9.clone());
+            let row: EventRow = (r.0, r.1, r.2, r.3, r.4.clone(), r.5, r.6.clone(), r.7.clone(), r.8.clone(), r.9.clone(), r.10.clone());
             serde_json::to_writer(&mut body, &event_json(&row)).map_err(Error::internal)?;
             body.push(b'\n');
         }
@@ -172,13 +217,14 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let at: Option<String> = sqlx::query_scalar("select value from cluster_state where key = $1").bind(CURSOR).fetch_optional(&mut *tx).await?;
         let Some(at) = at else { return Ok(None) };
-        let (xid, id) = cursor_parts(&at)?;
+        let cur = cursor_parts(&at)?;
         let behind: Option<f64> = sqlx::query_scalar(
             "select extract(epoch from now() - e.at)::float8 from audit_event e where e.xid is not null and (e.xid, e.id) > ($1::text::xid8, $2) \
-             order by e.xid, e.id limit 1",
+             and e.id > $3 order by e.xid, e.id limit 1",
         )
-        .bind(&xid)
-        .bind(id)
+        .bind(&cur.xid)
+        .bind(cur.id)
+        .bind(cur.floor)
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -198,7 +244,7 @@ impl Kernel {
                         failures = 0;
                         Duration::ZERO
                     }
-                    Ok(Turn::Sent(_)) | Ok(Turn::Off) => {
+                    Ok(Turn::Sent(_)) | Ok(Turn::Off) | Ok(Turn::Held) => {
                         failures = 0;
                         Duration::from_secs(2)
                     }
@@ -244,6 +290,8 @@ mod tests {
         assert_eq!(backoff(1), Duration::from_secs(2));
         assert_eq!(backoff(3), Duration::from_secs(8));
         assert_eq!(backoff(40), MAX_BACKOFF);
-        assert!(cursor_parts("123/45").is_ok() && cursor_parts("x/1").is_err() && cursor_parts("12").is_err());
+        assert_eq!(cursor_parts("123/45").unwrap(), Cursor { xid: "123".into(), id: 45, floor: 0, high: 45 });
+        assert_eq!(cursor_parts("0/0/900/900").unwrap().text(), "0/0/900/900");
+        assert!(cursor_parts("x/1").is_err() && cursor_parts("12").is_err() && cursor_parts("1/2/3/4/5").is_err());
     }
 }

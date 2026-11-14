@@ -1331,13 +1331,21 @@ are. The first time a replica with it starts, sending begins with the events wri
   holds the cursor in the database; the others wait their turn. Sending never slows or holds up anything that
   writes. While a newer build has the database (the two-version window), the older build sends nothing, and the
   newer one's replicas do.
+* **Holds and moves.** Like mail and webhooks, nothing is sent while the installation is held after a restore
+  or is the fenced source of a planned move ([Moving an installation](#moving-an-installation)); the doctor's
+  `audit.sink` line says it is paused, not behind. The copy that adopts a move goes on from the cursor it copied
+  (it may send the last batch again: drop duplicate `id`s). A copy restored from a dump counts its transactions
+  afresh, below the cursor: once everything after the cursor is sent, the sender notices and goes on above the
+  highest `id` it sent, so nothing is skipped.
 * **When the receiver is down,** the sender tries again after 2, 4, 8 … seconds, up to five minutes, and logs
   "sending the audit log". `ferrum_audit_sink_behind_seconds` on `/metrics` says how long the oldest event not yet
   sent has waited, and `ferrum task doctor` warns once that is more than 15 minutes.
 
 **For a workspace's administrators: their workspace only.** A webhook (Administration → Webhooks, `POST
 /api/admin/webhooks`) whose topics name `audit.sign_in`, `audit.administration`, `audit.records`, or `audit.*` for
-all three, gets each of the workspace's audit events of those kinds, one per delivery, signed and retried as every
+all three, gets each of the workspace's audit events of those kinds (which audit topics a workspace's webhooks
+name is kept with its schema, reloaded on every replica when a webhook is added or removed, so saving a record
+asks nothing more of the database when there is none), one per delivery, signed and retried as every
 webhook is, through the outbound guard. A webhook of `*` and an app's webhooks never get them.
 
 **The event.**
@@ -1349,8 +1357,10 @@ webhook is, through the outbound guard. A webhook of `*` and an app's webhooks n
  "hash": "9f2c…"}
 ```
 
-`id` is unique across the installation and never reused. `category` is `sign_in`, `administration` (people,
-roles, settings, keys, apps, connections and the like) or `records` (changes to a workspace's records). `entity`
+`id` is unique across the installation and never reused. `category` is `sign_in`, `administration` (the
+platform's own changes: people, roles, settings, keys, apps, connections and the like) or `records` (changes to a
+record of a packaged or a workspace's own entity), decided by where the event is written, not by its entity's name;
+events written before this release are told apart by name. `entity`
 and `record` say what it is about, `action` what happened, `actor` who did it (none for the system), `details` what
 changed, and `hash` is the event's place in the record's hash chain. **Personal data:** `actor` and `record` can
 name people; `details` holds the values that changed, which can be anyone's data, and for sign-ins the address and

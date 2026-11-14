@@ -313,7 +313,7 @@ impl Kernel {
             return Err(Error::NotFound("no such session".into()));
         }
         sqlx::query("delete from push_subscription where tenant_id = $1 and session_id = $2").bind(ctx.tenant).bind(sid).execute(&mut *tx).await?;
-        crate::audit::record(&mut tx, ctx, "UserSession", sid, "revoke", None, serde_json::json!({})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "UserSession", sid, "revoke", None, serde_json::json!({})).await?;
         crate::gate::session_ended(&mut tx, ctx.tenant, sid, "revoked").await?;
         tx.commit().await?;
         self.sessions.insert((ctx.tenant, sid), (None, Instant::now()));
@@ -584,7 +584,7 @@ impl Kernel {
             .bind(&token)
             .execute(&mut *tx)
             .await?;
-        crate::audit::record(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "add", None, serde_json::json!({"host": host, "target": target})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "add", None, serde_json::json!({"host": host, "target": target})).await?;
         tx.commit().await?;
         self.hosts.remove(&host);
         Ok(self.list_hosts(ctx).await?.into_iter().find(|h| h.host == host).expect("just added"))
@@ -612,7 +612,7 @@ impl Kernel {
             .bind(&host)
             .execute(&mut *tx)
             .await?;
-        crate::audit::record(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "primary", None, serde_json::json!({"host": host})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "primary", None, serde_json::json!({"host": host})).await?;
         tx.commit().await?;
         self.hosts.clear();
         Ok(())
@@ -787,7 +787,7 @@ impl Kernel {
         if dropped + released == 0 {
             return Err(Error::NotFound("no such domain".into()));
         }
-        crate::audit::record(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "remove", None, serde_json::json!({"host": host})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "remove", None, serde_json::json!({"host": host})).await?;
         tx.commit().await?;
         self.hosts.remove(&host);
         Ok(())
@@ -864,7 +864,7 @@ impl Kernel {
             return Err(Error::NotFound("no such user".into()));
         }
         crate::auth::notify_users(&mut tx, ctx.tenant, Some(user)).await?;
-        crate::audit::record(&mut tx, ctx, "User", user, "kind", None, serde_json::json!({"kind": kind})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "User", user, "kind", None, serde_json::json!({"kind": kind})).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
         Ok(())
@@ -981,7 +981,7 @@ impl Kernel {
                 sqlx::query("delete from tenant_ui_pin where tenant_id = $1 and app = $2").bind(ctx.tenant).bind(app).execute(&mut *tx).await?;
             }
         }
-        crate::audit::record(
+        crate::audit::record_admin(
             &mut tx,
             ctx,
             "UiRelease",

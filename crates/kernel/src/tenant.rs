@@ -502,7 +502,7 @@ impl Kernel {
         if people {
             crate::auth::notify_users(&mut tx, ctx.tenant, None).await?;
         }
-        crate::audit::record(&mut tx, ctx, "Tenant", ctx.tenant, "settings", None, Value::Object(clean)).await?;
+        crate::audit::record_admin(&mut tx, ctx, "Tenant", ctx.tenant, "settings", None, Value::Object(clean)).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);

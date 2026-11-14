@@ -496,7 +496,7 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
         .execute(&mut **tx)
         .await?;
     notify_users(tx, tenant, Some(id)).await?;
-    audit::record(tx, ctx, "User", id, "erase_personal_data", None, json!({"reason": reason})).await
+    audit::record_admin(tx, ctx, "User", id, "erase_personal_data", None, json!({"reason": reason})).await
 }
 
 /// Whether an active hold covers a person under any of these addresses.
@@ -929,7 +929,7 @@ impl Kernel {
             .bind(ctx.user)
             .execute(&mut *tx)
             .await?;
-        audit::record(&mut tx, ctx, "LegalHold", id, "place", None, json!({"reason": reason})).await?;
+        audit::record_admin(&mut tx, ctx, "LegalHold", id, "place", None, json!({"reason": reason})).await?;
         tx.commit().await?;
         Ok(id)
     }
@@ -957,7 +957,7 @@ impl Kernel {
         .execute(&mut *tx)
         .await?
         .rows_affected();
-        audit::record(&mut tx, ctx, "LegalHold", id, "release", None, json!({"versions_forgotten": forgotten})).await?;
+        audit::record_admin(&mut tx, ctx, "LegalHold", id, "release", None, json!({"versions_forgotten": forgotten})).await?;
         tx.commit().await?;
         Ok(())
     }

@@ -733,7 +733,10 @@ async fn create_webhook(Auth(ctx): Auth, State(app): State<AppContext>, Json(w):
         .execute(&mut *tx)
         .await
         .map_err(Error::from)?;
+    // The workspace's schema holds its audit webhooks' topics (crate::audit): every replica reloads it.
+    ferrum_kernel::registry::Registry::bump_version(&mut tx, ctx.tenant).await?;
     tx.commit().await.map_err(Error::from)?;
+    st.kernel.registry.invalidate(ctx.tenant);
     Ok((
         StatusCode::CREATED,
         Json(json!({"id": id, "secret": secret, "note": "Verify X-Ferrum-Signature (t=<ts>,v1=<hex HMAC-SHA256 of '<ts>.<body>'>) with this secret."})),
@@ -755,7 +758,9 @@ async fn delete_webhook(Auth(ctx): Auth, State(app): State<AppContext>, Path(id)
         return Err(ApiError(Error::invalid(format!("this webhook is how the {app} app hears of events; turn the app off or remove it instead"))));
     }
     sqlx::query("delete from webhook where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await.map_err(Error::from)?;
+    ferrum_kernel::registry::Registry::bump_version(&mut tx, ctx.tenant).await?;
     tx.commit().await.map_err(Error::from)?;
+    st.kernel.registry.invalidate(ctx.tenant);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
