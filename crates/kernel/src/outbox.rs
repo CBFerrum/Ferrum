@@ -528,7 +528,7 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let Some(topic) = topic else { return Err(Error::NotFound("dead event".into())) };
-        crate::audit::record(&mut tx, ctx, "OutboxEvent", Uuid::from_u128(id as u128), "replay", None, json!({"event": id, "topic": topic})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "OutboxEvent", Uuid::from_u128(id as u128), "replay", None, json!({"event": id, "topic": topic})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -604,7 +604,7 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let Some(topic) = topic else { return Err(Error::NotFound("dead webhook delivery".into())) };
-        crate::audit::record(&mut tx, ctx, "WebhookDelivery", id, "replay", None, json!({"topic": topic})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "WebhookDelivery", id, "replay", None, json!({"topic": topic})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -677,13 +677,16 @@ impl Kernel {
             }
         }
         let mut tx = self.db.tenant_tx(ev.tenant_id).await?;
+        // An audit event (crate::audit) goes only to webhooks that name its topic or `audit.*`, never to `*` or an app's:
+        // it holds people's data.
         let entity_wildcard = format!("{}.*", ev.topic.split('.').next().unwrap_or_default());
         // An app's webhook hears which record, never what it holds (nor what a change replaced): its
         // service reads that with its own key, as far as its rights go.
         sqlx::query(
             "insert into webhook_delivery (tenant_id, id, webhook_id, outbox_id, topic, payload) \
              select w.tenant_id, gen_random_uuid(), w.id, $2, $3, case when w.app is null then $4 else $4 - 'doc' - 'was' end from webhook w \
-             where w.tenant_id = $1 and w.is_active and ($3 = any(w.topics) or '*' = any(w.topics) or $5 = any(w.topics)) \
+             where w.tenant_id = $1 and w.is_active and ($3 = any(w.topics) or ('*' = any(w.topics) and $3 not like 'audit.%') or $5 = any(w.topics)) \
+               and (w.app is null or $3 not like 'audit.%') \
              on conflict (tenant_id, webhook_id, outbox_id) do nothing",
         )
         .bind(ev.tenant_id)

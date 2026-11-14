@@ -69,6 +69,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_ZONE` | no | The zone this replica is in for every request (one of `FERRUM_ZONES`). Default none: each request's host, network or the default decides |
 | `FERRUM_ZONE_DEFAULT` | no | The zone of a request no host and no network places, on replicas without `FERRUM_ZONE`. Default none: admitted as without zones |
 | `FERRUM_ZONE_MODE` | no | `enforce` (the default) refuses what a zone's rule refuses; `report` admits it, and counts and logs it |
+| `FERRUM_AUDIT_SINK_URL` | no | Where every workspace's audit events are sent, in order, as they are written (`https://siem.example.com/ferrum`). Default none: nothing is sent. See [Sending the audit log elsewhere](#sending-the-audit-log-elsewhere) |
+| `FERRUM_AUDIT_SINK_SECRET` | with the sink | The key the batches are signed with (HMAC-SHA256), at least 16 characters; the receiver checks it |
 | `FERRUM_PLANS` | no | The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up) |
 | `FERRUM_SIGNUP` | no | `open` lets people make workspaces of their own at `accounts.{base}/signup`; default `closed`. Needs `FERRUM_BASE_DOMAIN` and mail |
 | `FERRUM_SIGNUP_DOMAINS`, `FERRUM_SIGNUP_PACKAGES`, `FERRUM_SIGNUP_PLAN`, `FERRUM_SIGNUP_PER_ADDRESS` | with sign-up | The address domains sign-ups come from (comma-separated; empty: any), what a new workspace installs besides the core, the plan it starts on (one of `FERRUM_PLANS`), and how many workspaces one address may make (default 3) |
@@ -1225,6 +1227,146 @@ its zone: zones keep staff credentials from working in the wrong place, not a co
 reading. A pool in a public zone still holds every app's code. Staff working from the private network are
 admitted with whatever their rights are. Background work runs with staff rights wherever it runs.
 
+## Staff networks
+
+A workspace's administrators can name the networks its staff may work from: an office's addresses, a
+company VPN's. Staff using a password, a session, a token or an app from anywhere else are refused. It is
+the workspace's own setting, in addition to zones (which are the operator's), and checked at the same place,
+on every request. With no networks it is off, as before.
+
+| Workspace setting (`GET`/`PUT /api/admin/settings`) | Meaning | Default |
+|---|---|---|
+| `staff_networks` | `{"networks": ["10.0.0.0/8", "2001:db8::/32"], "mode": "enforce"}`, at most 100 networks; `mode` `enforce` or `report` | none: off |
+| `idle_minutes` | A browser session unused this many minutes ends: 0 (never) or 5 to 10080 | 0 |
+| `new_device_notice` | Tell staff by e-mail when their account signs in from a device it had not been used on | `false` |
+| `break_glass` | The ids of the administrators who keep password and passkey sign-in when single sign-on is required, 1 to 20 | `null`: every administrator, as before |
+
+**What it holds.** People's credentials of staff accounts (members and administrators): the browser's
+session, session tokens, OAuth and MCP tokens that act for a person, app passwords of calendar and contacts
+apps, app tokens, sockets, and signing in. It does not hold API keys and SCIM keys: those are machines',
+and a key has networks of its own. It does not hold support access, which an administrator grants for a
+while and which the workspace sees request by request. Portal people, guests and service accounts are never
+held to it. The caller's address is the one the server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS`;
+without a proxy in front there is no address, which is outside every list.
+
+**A key's own networks.** An API key (of any scope, an app password and a SCIM key included) may be pinned to
+networks of its own when it is made, or later (`networks` in the keys API); from anywhere else it is refused
+with `403` `network`. A key with none works from anywhere, as before. Pinning is on the audit trail.
+
+**What a refusal looks like.** A signed-in credential gets `403` with error `network`, which says nothing of
+the networks allowed. Signing in from outside fails as a wrong password does, before the password, code,
+passkey or OAuth code is read: the same answer for a right and a wrong password and for an address nobody
+has, nothing counted toward the account's lockout, and nothing used up.
+
+**Report mode first.** Save the list with `"mode": "report"`: nothing is refused, and each staff credential
+that would have been is logged (person, workspace, address, kind of credential; never a secret) and counted
+in `ferrum_staff_network_refusals_total{mode,credential}` on `/metrics`. Then save it with `enforce`.
+
+**Nobody shuts themselves out.** A save in `enforce` is refused unless the address it is saved from is inside
+the new list, and so is a switch from `report` to `enforce`. If the administrators are shut out all the same
+(their office's address changed), the operator clears it, with a reason that goes into the workspace's audit
+trail:
+
+```bash
+ferrum task clear_staff_networks tenant:acme reason:"office moved; ticket 5120"
+```
+
+**Idle sessions.** With `idle_minutes` set, a browser session nobody has used for that long is ended (so it
+cannot come back) the next time it is presented, with the answer "this device was signed out; please sign in
+again" that the interface already handles; tokens a page holds for that session end with it. A request
+through the session is use. A socket is not use of its own, so a tab left open with live updates does not
+keep a session alive: a live-updates socket of an ended or idle session closes at its next check, within a
+minute. A co-editing socket counts the messages the person's editor sends (their typing, their cursor) as
+use. A session's last use is written at most once a minute where the timeout is on (every five minutes
+otherwise), and a replica keeps its answer about a session for 20 seconds, so a session ends within about two
+minutes either side of the timeout; that is why the shortest timeout is five minutes. API keys and OAuth
+tokens are not browser sessions and do not end this way.
+
+**A sign-in from a new device.** With `new_device_notice` on, a staff member whose account signs in from a device it
+has not signed in from before is sent the message template `core.new_device` (Administration → Messages, where the
+workspace can change its wording): the time, the address and the browser, and where to sign that device out. The
+server knows no place from an address without asking another service, so it names none. A device is the browser's
+user agent with its version numbers taken out, so a browser's update is the same device, and a new browser or
+computer is a new one; the devices are kept per person (`known_device`), and go when the account is erased. It is sent
+through the outbox, once per new device even when two sign-ins from it come at once, and never for an account's very
+first sign-in, nor for the first sign-in of each person after the setting is turned on (no devices are known yet).
+
+**Sign-ins on the audit trail.** Each workspace's audit trail records, as events of `SignIn` on the person's
+account, with the address, browser (user agent), zone and method: a sign-in (`signed_in`, by `password`,
+`passkey`, `sso`, `code` or `accounts` for one handed over from the accounts host), a second step passed
+(`second_step`), a failed attempt for an account that exists (`failed`), a sign-in refused by zone or network
+(`refused`, with `by`), a break-glass sign-in (`break_glass`), and a session's end (`session_ended`, with
+`reason` `signed_out`, `idle`, `revoked` or `password_changed`). Failed and refused attempts are recorded one
+by one up to three an hour per account; the rest of that hour become one `failed_summary` with their `count`,
+written at the next attempt or the next maintenance run after the hour. Attempts for an address no account
+has are never recorded by address; they are counted in `ferrum_sign_in_unknown_total`. Administrators read
+them with `GET /api/admin/audit?category=sign_in`. The address and browser are the person's data: the
+person's export lists their sign-ins, and erasing them blanks both in every event (the events stay). Audit
+events are never deleted, so that is how long they are kept.
+
+**How soon a change holds.** Each replica keeps a person's settings with their roles for up to 30 seconds.
+Saving the networks, or clearing them with the task, tells every replica to drop what it keeps for that
+workspace at once, so a narrowing, a widening and a clearing all hold within moments; if a replica missed
+the notice (its database connection dropped), within 30 seconds. A sign-in reads the setting from the
+database each time.
+
+## Sending the audit log elsewhere
+
+Every workspace's audit trail can also go to another system as it is written: a security monitoring tool, a
+log store. Two ways, both off unless set.
+
+**For the operator: every workspace.** Set `FERRUM_AUDIT_SINK_URL` (https; plain http only to `localhost`, a
+collector beside the server) and `FERRUM_AUDIT_SINK_SECRET` (at least 16 characters). The server refuses to
+start with a URL and no secret. The URL is the operator's own setting, so it may name an address inside your
+network, unlike a workspace's webhooks; it is resolved once per batch and called with no redirects, as webhooks
+are. The first time a replica with it starts, sending begins with the events written from then on.
+
+* Batches of up to 500 events are POSTed as newline-delimited JSON (`application/x-ndjson`), one event per line,
+  with `X-Ferrum-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of '<t>.<body>' with the secret>`. Check the
+  signature, comparing in constant time, and refuse a timestamp more than five minutes old: that stops a replay.
+* **In order, at least once.** Events go in the order their transactions finished, and one batch waits for the
+  receiver's `2xx` before the next. A batch whose answer was lost, or whose sender stopped right after it, comes
+  again: drop events whose `id` you have already kept. Nothing is skipped.
+* **One sender.** It runs only where background work runs (`FERRUM_RUN_BACKGROUND`), and one replica at a time
+  holds the cursor in the database; the others wait their turn. Sending never slows or holds up anything that
+  writes. While a newer build has the database (the two-version window), the older build sends nothing, and the
+  newer one's replicas do.
+* **Holds and moves.** Like mail and webhooks, nothing is sent while the installation is held after a restore
+  or is the fenced source of a planned move ([Moving an installation](#moving-an-installation)); the doctor's
+  `audit.sink` line says it is paused, not behind. The copy that adopts a move goes on from the cursor it copied
+  (it may send the last batch again: drop duplicate `id`s). A copy restored from a dump counts its transactions
+  afresh, below the cursor: once everything after the cursor is sent, the sender notices and goes on above the
+  highest `id` it sent, so nothing is skipped.
+* **When the receiver is down,** the sender tries again after 2, 4, 8 … seconds, up to five minutes, and logs
+  "sending the audit log". `ferrum_audit_sink_behind_seconds` on `/metrics` says how long the oldest event not yet
+  sent has waited, and `ferrum task doctor` warns once that is more than 15 minutes.
+
+**For a workspace's administrators: their workspace only.** A webhook (Administration → Webhooks, `POST
+/api/admin/webhooks`) whose topics name `audit.sign_in`, `audit.administration`, `audit.records`, or `audit.*` for
+all three, gets each of the workspace's audit events of those kinds (which audit topics a workspace's webhooks
+name is kept with its schema, reloaded on every replica when a webhook is added or removed, so saving a record
+asks nothing more of the database when there is none), one per delivery, signed and retried as every
+webhook is, through the outbound guard. A webhook of `*` and an app's webhooks never get them.
+
+**The event.**
+
+```json
+{"id": "48213", "workspace": "0195f5d0-…", "at": "2026-11-14T09:30:12.004211Z", "category": "sign_in",
+ "entity": "SignIn", "record": "0195f5d0-…", "action": "signed_in", "actor": "0195f5d0-…", "request_id": null,
+ "details": {"address": "203.0.113.7", "user_agent": "Mozilla/5.0 …", "zone": null, "method": "password"},
+ "hash": "9f2c…"}
+```
+
+`id` is unique across the installation and never reused. `category` is `sign_in`, `administration` (the
+platform's own changes: people, roles, settings, keys, apps, connections and the like) or `records` (changes to a
+record of a packaged or a workspace's own entity), decided by where the event is written, not by its entity's name;
+events written before this release are told apart by name. `entity`
+and `record` say what it is about, `action` what happened, `actor` who did it (none for the system), `details` what
+changed, and `hash` is the event's place in the record's hash chain. **Personal data:** `actor` and `record` can
+name people; `details` holds the values that changed, which can be anyone's data, and for sign-ins the address and
+browser. An erasure blanks values in the trail here, not in a copy already sent: the receiver's own retention and
+erasure apply to what it keeps.
+
 ## Moving from one shape to another
 
 Every move below is a `helm upgrade` of the same release; nothing else changes and nothing is copied. The
@@ -1467,7 +1609,9 @@ carries history, unlike going back to a backup), its addresses (custom domains k
 here), API keys (integrations keep working), passwords, second factors and passkeys, and its waiting events
 and queued jobs. Values sealed with the source's key are sealed again with this installation's. Audit events
 keep their numbers, so each record's chain and each day's anchor still verify; events are numbered anew here,
-in the same order, and everything that names one follows.
+in the same order, and everything that names one follows. Known devices, failed sign-ins counted by the hour, and API keys' own networks travel
+too. The audit sink here sends only what is written here: audit events the source wrote arrive without the
+transaction id the sink reads by, since the source's sink sends them (and `finish_move` waits until it has).
 
 **What does not.** Sessions: everyone signs in again, and devices subscribe to notifications again on their next
 visit. Sign-ins of MCP clients and other OAuth clients: they connect again. Codes, sign-in flows and direct
@@ -2629,6 +2773,14 @@ administrator unlinks the account (Users → Unlink SSO). With "Create an accoun
 without an account get one with the provider's default roles; otherwise an administrator adds them
 first. Workspace → Single sign-on → Require it turns password sign-in off for everyone but
 administrators, who keep it to get in when the provider is down.
+
+**Break-glass administrators.** By default every administrator keeps password sign-in when single sign-on is
+required, to get in when the provider is down. To narrow that, set the workspace setting `break_glass` to the
+administrators who keep it (`PUT /api/admin/settings {"break_glass": ["<user id>", …]}`); the others then sign in
+through the provider like everyone else. A list is refused unless it names at least one active administrator, so
+someone can always get in; `null` goes back to every administrator. Each sign-in that uses this while single sign-on
+is required is on the audit trail as `break_glass`. Taking administration away from everyone named leaves nobody: name
+someone else first.
 
 Removing someone at the provider stops their next sign-in, not the session they have (it lasts up
 to `JWT_EXPIRATION_SECONDS`, 8 hours by default): deactivate them in Ferrum to end it at once, which

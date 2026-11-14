@@ -501,7 +501,7 @@ impl Kernel {
         if n.rows_affected() == 0 {
             return Err(Error::invalid("a connection cannot change provider"));
         }
-        audit::record(
+        audit::record_admin(
             &mut tx,
             ctx,
             "Connection",
@@ -584,7 +584,7 @@ impl Kernel {
         if n == 0 {
             return Err(Error::NotFound("connection".into()));
         }
-        audit::record(&mut tx, ctx, "Connection", id, "disconnect", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "Connection", id, "disconnect", None, json!({})).await?;
         tx.commit().await?;
         Ok(())
     }

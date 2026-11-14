@@ -211,6 +211,13 @@ pub struct Settings {
     /// `enforce` (empty) or `report` (`FERRUM_ZONE_MODE`).
     #[serde(default)]
     pub zone_mode: String,
+    /// Where every workspace's audit events are sent (`FERRUM_AUDIT_SINK_URL`, docs/operations.md, "Sending the
+    /// audit log elsewhere"). Empty: nothing is sent.
+    #[serde(default)]
+    pub audit_sink_url: String,
+    /// The key its batches are signed with (`FERRUM_AUDIT_SINK_SECRET`).
+    #[serde(default)]
+    pub audit_sink_secret: String,
     /// `FERRUM_DATABASE_DIRECT_URL`: PostgreSQL itself, for LISTEN, session locks and migrations, when `DATABASE_URL` is
     /// a pooler in transaction mode. Empty: `DATABASE_URL`.
     #[serde(default)]

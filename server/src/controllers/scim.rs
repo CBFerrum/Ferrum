@@ -68,7 +68,10 @@ async fn signed_in(app: &AppContext, headers: &HeaderMap) -> ferrum_kernel::Resu
     let refused = || Error::Unauthorized("use an API key of scope scim".into());
     let attempt = async {
         let token = bearer(headers).ok_or_else(refused)?;
-        let (session, scope) = st.kernel.verify_api_key(&token).await.map_err(|_| refused())?;
+        let (session, scope) = st.kernel.verify_api_key_from(&token, &crate::extract::client_ip(headers)).await.map_err(|e| match e {
+            e @ Error::Refused { .. } => e,
+            _ => refused(),
+        })?;
         if scope.as_deref() != Some("scim") {
             return Err(refused());
         }

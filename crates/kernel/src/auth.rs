@@ -132,6 +132,8 @@ pub struct CtxCore {
     pub outside: bool,
     /// The account's kind (`app_user.kind`): zones admit staff or not by it.
     pub kind: String,
+    /// The workspace's staff networks (crate::gate); `None` when they cannot be read, which refuses.
+    pub networks: Option<Arc<crate::gate::StaffNetworks>>,
 }
 
 /// A records key's scope (`records:Customer=read+write;SalesInvoice=read`): the entities it may
@@ -166,6 +168,19 @@ fn canonical_records_scope(ctx: &Ctx, scope: &str) -> Result<String> {
     }
     let parts: Vec<String> = grants.iter().map(|(entity, verbs)| format!("{entity}={}", verbs.iter().cloned().collect::<Vec<_>>().join("+"))).collect();
     Ok(format!("records:{}", parts.join(";")))
+}
+
+/// A key's networks, each checked and written as the zone code writes it; none: `None`.
+fn key_networks(networks: &[String]) -> Result<Option<Vec<String>>> {
+    if networks.len() > 100 {
+        return Err(Error::field("networks", "at most 100"));
+    }
+    let mut out = Vec::with_capacity(networks.len());
+    for n in networks {
+        let net = crate::zones::Net::parse(n).ok_or_else(|| Error::field("networks", format!("{n} is not a network: write 10.0.0.0/8 or 2001:db8::/32")))?;
+        out.push(net.to_string());
+    }
+    Ok((!out.is_empty()).then_some(out))
 }
 
 fn sha256_hex(s: &str) -> String {
@@ -220,7 +235,8 @@ impl Kernel {
     /// [`Kernel::sign_in`] where staff are refused (a zone that admits none, crate::zones): a staff
     /// account is then treated as one that does not exist, before its password is read. The answer
     /// and the time it takes are those of an unknown address, and nothing counts toward its lockout.
-    pub async fn sign_in_at(&self, tenant_slug: &str, email: &str, password: &str, refuse_staff: bool) -> Result<SignIn> {
+    pub async fn sign_in_at(&self, tenant_slug: &str, email: &str, password: &str, from: impl Into<crate::gate::Arrival>) -> Result<SignIn> {
+        let from = from.into();
         let denied = || Error::Unauthorized("invalid tenant, email or password".into());
         self.refuse_if_moving_slug(tenant_slug).await?;
         let email = email.trim().to_lowercase();
@@ -236,22 +252,33 @@ impl Kernel {
             tenant_active: bool,
             two_factor: bool,
             two_factor_required: bool,
-            sso_required: bool,
-            is_admin: bool,
+            sso_only: bool,
+            break_glass: bool,
             kind: String,
         }
-        let user: Option<U> = sqlx::query_as(
+        let user: Option<U> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select u.tenant_id, u.id, u.password_hash, u.is_active, u.token_version, \
              coalesce(u.locked_until > now(), false) as locked, t.status = 'active' as tenant_active, \
              u.totp_enabled_at is not null as two_factor, coalesce(t.settings->'require_two_factor' = 'true'::jsonb, false) as two_factor_required, \
-             coalesce(t.settings->'require_sso' = 'true'::jsonb, false) as sso_required, u.is_admin, u.kind \
+             {} as sso_only, {} as break_glass, u.kind \
              from app_user u join tenant t on t.id = u.tenant_id where t.slug = $1 and u.email = $2",
-        )
+            crate::gate::SSO_ONLY,
+            crate::gate::BREAK_GLASS
+        )))
         .bind(tenant_slug.trim().to_lowercase())
         .bind(&email)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(u) = user.filter(|u| !(refuse_staff && crate::zones::is_staff(&u.kind))) else {
+        let refused = match &user {
+            Some(u) => self.refuses_here(&from, u.tenant_id, u.id, &u.kind).await,
+            None => false,
+        };
+        match &user {
+            None => crate::gate::count_unknown_failure(),
+            Some(u) if refused => crate::gate::failure(&mut tx, u.tenant_id, u.id, "refused", &from, "password").await?,
+            Some(_) => {}
+        }
+        let Some(u) = user.filter(|_| !refused) else {
             tx.commit().await?;
             let _ = verify_password(password.to_string(), DUMMY_HASH.to_string()).await;
             return Err(denied());
@@ -266,13 +293,18 @@ impl Kernel {
         };
         if !ok || !u.is_active || !u.tenant_active {
             count_failure(&mut tx, u.tenant_id, u.id).await?;
+            crate::gate::failure(&mut tx, u.tenant_id, u.id, "failed", &from, "password").await?;
             tx.commit().await?;
             return Err(denied());
         }
-        if u.sso_required && !u.is_admin {
-            // Administrators keep their passwords, to get in when the provider is down.
+        if u.sso_only {
+            // The administrators named to (all of them unless some are) keep their passwords, to get in when the
+            // provider is down.
             tx.commit().await?;
             return Err(Error::Forbidden("this workspace signs in through single sign-on; use its button on the sign-in page".into()));
+        }
+        if u.break_glass {
+            crate::gate::break_glass(&mut tx, u.tenant_id, u.id, &from, "password").await?;
         }
         let session = Session { tenant: u.tenant_id, user: u.id, token_version: u.token_version };
         if u.two_factor {
@@ -439,6 +471,21 @@ impl Kernel {
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
         scope: Option<&str>,
     ) -> Result<(Uuid, String)> {
+        self.create_api_key_on(ctx, user, name, expires_at, scope, &[]).await
+    }
+
+    /// [`Kernel::create_api_key`] that works only from `networks` (none: from anywhere). A key made with
+    /// networks is on the audit trail with them.
+    pub async fn create_api_key_on(
+        &self,
+        ctx: &Ctx,
+        user: Uuid,
+        name: &str,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        scope: Option<&str>,
+        networks: &[String],
+    ) -> Result<(Uuid, String)> {
+        let networks = key_networks(networks)?;
         if !ctx.is_admin && user != ctx.user {
             return Err(Error::Forbidden("you can only create API keys for yourself".into()));
         }
@@ -461,43 +508,66 @@ impl Kernel {
         };
         let id = Uuid::now_v7();
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        sqlx::query("insert into api_key (tenant_id, id, user_id, name, prefix, secret_hash, expires_at, scope) values ($1, $2, $3, $4, $5, $6, $7, $8)")
-            .bind(ctx.tenant)
-            .bind(id)
-            .bind(user)
-            .bind(name)
-            .bind(&prefix)
-            .bind(sha256_hex(&secret))
-            .bind(expires_at)
-            .bind(scope)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "insert into api_key (tenant_id, id, user_id, name, prefix, secret_hash, expires_at, scope, networks) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(user)
+        .bind(name)
+        .bind(&prefix)
+        .bind(sha256_hex(&secret))
+        .bind(expires_at)
+        .bind(scope)
+        .bind(&networks)
+        .execute(&mut *tx)
+        .await?;
+        if let Some(n) = &networks {
+            crate::audit::record_admin(&mut tx, ctx, "ApiKey", id, "create", None, serde_json::json!({"name": name, "user": user, "networks": n})).await?;
+        }
         tx.commit().await?;
         Ok((id, format!("fk_{prefix}_{secret}")))
     }
 
-    /// The session an API key opens, and the key's scope (`None`: the whole API).
+    /// The session an API key opens, and the key's scope (`None`: the whole API), from no address in
+    /// particular: a key with networks of its own is refused.
     pub async fn verify_api_key(&self, raw: &str) -> Result<(Session, Option<String>)> {
+        self.verify_api_key_from(raw, "").await
+    }
+
+    /// [`Kernel::verify_api_key`] from `address` (as `client_ip` derives it): a key with networks of its
+    /// own works only from inside one of them, and is refused elsewhere (403, `network`) once its secret
+    /// is known good.
+    pub async fn verify_api_key_from(&self, raw: &str, address: &str) -> Result<(Session, Option<String>)> {
         let denied = || Error::Unauthorized("invalid API key".into());
         let rest = raw.strip_prefix("fk_").ok_or_else(denied)?;
         let (prefix, secret) = rest.split_once('_').ok_or_else(denied)?;
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(Uuid, Uuid, String, bool, i32, Option<String>)> = sqlx::query_as(
+        #[allow(clippy::type_complexity)]
+        let row: Option<(Uuid, Uuid, String, bool, i32, Option<String>, Option<Vec<String>>)> = sqlx::query_as(
             "select k.tenant_id, k.user_id, k.secret_hash, \
-             (k.revoked_at is null and (k.expires_at is null or k.expires_at > now()) and u.is_active and t.status = 'active'), u.token_version, k.scope \
+             (k.revoked_at is null and (k.expires_at is null or k.expires_at > now()) and u.is_active and t.status = 'active'), u.token_version, k.scope, k.networks \
              from api_key k join app_user u on u.tenant_id = k.tenant_id and u.id = k.user_id join tenant t on t.id = k.tenant_id \
              where k.prefix = $1",
         )
         .bind(prefix)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((tenant, user, hash, valid, tv, scope)) = row else {
+        let Some((tenant, user, hash, valid, tv, scope, networks)) = row else {
             return Err(denied());
         };
         let computed = sha256_hex(secret);
         let equal = computed.len() == hash.len() && computed.bytes().zip(hash.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
         if !equal || !valid {
             return Err(denied());
+        }
+        // Its own networks; one that cannot be read refuses.
+        if let Some(list) = networks.filter(|n| !n.is_empty()) {
+            let inside = address.parse::<std::net::IpAddr>().is_ok_and(|ip| list.iter().any(|n| crate::zones::Net::parse(n).is_some_and(|n| n.contains(ip))));
+            if !inside {
+                tracing::warn!(workspace = %tenant, person = %user, address, "an API key from outside its networks");
+                return Err(crate::gate::refusal());
+            }
         }
         sqlx::query(
             "update api_key set last_used_at = now() where prefix = $1 and (last_used_at is null or last_used_at < now() - interval '1 minute') \
@@ -508,6 +578,28 @@ impl Kernel {
         .await?;
         tx.commit().await?;
         Ok((Session { tenant, user, token_version: tv }, scope))
+    }
+
+    /// Sets the networks a key works from (none: anywhere): its owner's, or anyone's for an
+    /// administrator. On the audit trail.
+    pub async fn set_api_key_networks(&self, ctx: &Ctx, id: Uuid, networks: &[String]) -> Result<()> {
+        let networks = key_networks(networks)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let n = sqlx::query("update api_key set networks = $5 where tenant_id = $1 and id = $2 and revoked_at is null and (user_id = $3 or $4)")
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(ctx.user)
+            .bind(ctx.is_admin)
+            .bind(&networks)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if n == 0 {
+            return Err(Error::NotFound("API key".into()));
+        }
+        crate::audit::record_admin(&mut tx, ctx, "ApiKey", id, "networks", None, serde_json::json!({"networks": networks})).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn revoke_api_key(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
@@ -592,6 +684,13 @@ impl Kernel {
         let perms = PermSet::load(&mut tx, tenant, &roles, is_admin).await?;
         tx.commit().await?;
         let fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
+        let networks = match crate::gate::StaffNetworks::parse(settings.get("staff_networks")) {
+            Ok(n) => Some(Arc::new(n)),
+            Err(e) => {
+                tracing::warn!(workspace = %tenant, "the workspace's staff networks cannot be read: {e}");
+                None
+            }
+        };
         Ok(CtxCore {
             read_only,
             email,
@@ -606,6 +705,7 @@ impl Kernel {
             until,
             outside,
             kind,
+            networks,
         })
     }
 
@@ -626,6 +726,7 @@ impl Kernel {
     pub async fn request_ctx(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>, request_id: String, entry: &Arc<crate::zones::Entry>) -> Result<Ctx> {
         let core = self.core(tenant, user, token_version).await?;
         self.admit(&core.kind, tenant, user, entry).await?;
+        admit_network(&core, tenant, user, entry)?;
         self.ctx_of(&core, tenant, user, request_id, Some(entry.clone())).await
     }
 
@@ -658,6 +759,8 @@ impl Kernel {
     }
 
     async fn core(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>) -> Result<Arc<CtxCore>> {
+        // ponytail: one cached core per person; the networks ride in it, dropped with it on every replica when a
+        // workspace's settings change (USERS_CHANNEL), else after `ctx_ttl`.
         let key = (tenant, user);
         let cached = self.users.get(&key).filter(|c| c.1.elapsed() < self.settings.ctx_ttl && c.0.until.is_none_or(|u| Utc::now() < u)).map(|c| c.0.clone());
         let core = match cached {
@@ -734,7 +837,8 @@ impl Kernel {
         sqlx::query("update app_user set is_admin = $3 where tenant_id = $1 and id = $2").bind(tenant).bind(user).bind(admin).execute(&mut *tx).await?;
         let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
         let action = if admin { "grant_admin" } else { "revoke_admin" };
-        crate::audit::record(&mut tx, &system, "User", user, action, None, serde_json::json!({"email": email, "reason": reason, "by": "operator"})).await?;
+        crate::audit::record_admin(&mut tx, &system, "User", user, action, None, serde_json::json!({"email": email, "reason": reason, "by": "operator"}))
+            .await?;
         notify_users(&mut tx, tenant, Some(user)).await?;
         tx.commit().await?;
         self.users.remove(&(tenant, user));
@@ -1059,6 +1163,9 @@ impl Kernel {
         .bind(new_hash)
         .execute(&mut *tx)
         .await?;
+        let address = ctx.zone.as_ref().map(|e| e.address.clone()).unwrap_or_default();
+        crate::gate::event(&mut tx, ctx.tenant, user, "session_ended", serde_json::json!({"reason": "password_changed", "address": address, "by": ctx.user}))
+            .await?;
         notify_users(&mut tx, ctx.tenant, Some(user)).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
@@ -1221,6 +1328,21 @@ impl Kernel {
         sqlx::query("update role set portal = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(portal).execute(&mut **tx).await?;
         notify_users(tx, ctx.tenant, None).await
     }
+}
+
+/// The workspace's staff networks (crate::gate), after the zone: staff on a people's credential from
+/// outside them are refused (403, `network`), or admitted and counted in report mode. Support access,
+/// granted explicitly and seen request by request, is not held to them.
+fn admit_network(core: &CtxCore, tenant: Uuid, user: Uuid, entry: &crate::zones::Entry) -> Result<()> {
+    if !crate::zones::is_staff(&core.kind) || !crate::gate::applies_to(entry.credential) || core.email.ends_with(crate::support::SUPPORT_DOMAIN) {
+        return Ok(());
+    }
+    let Some(nets) = &core.networks else { return Err(crate::gate::refusal()) };
+    if nets.admits(&entry.address) {
+        return Ok(());
+    }
+    crate::gate::count_refusal(nets.mode, entry.credential, tenant, user, &entry.address);
+    if nets.mode == crate::zones::Mode::Enforce { Err(crate::gate::refusal()) } else { Ok(()) }
 }
 
 /// Whether records of `entity` hold personal data in this workspace (see

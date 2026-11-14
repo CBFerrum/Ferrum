@@ -189,7 +189,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         let codes = self.replace_recovery_codes(&mut tx, ctx.tenant, ctx.user).await?;
-        audit::record(&mut tx, ctx, "User", ctx.user, "enable_two_factor", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "User", ctx.user, "enable_two_factor", None, json!({})).await?;
         tx.commit().await?;
         Ok(codes)
     }
@@ -259,7 +259,7 @@ impl Kernel {
             });
         }
         self.clear_two_factor(&mut tx, ctx.tenant, ctx.user).await?;
-        audit::record(&mut tx, ctx, "User", ctx.user, "disable_two_factor", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "User", ctx.user, "disable_two_factor", None, json!({})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -281,7 +281,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         crate::auth::notify_users(&mut tx, ctx.tenant, Some(user)).await?;
-        audit::record(&mut tx, ctx, "User", user, "reset_two_factor", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "User", user, "reset_two_factor", None, json!({})).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
         Ok(())
@@ -306,6 +306,11 @@ impl Kernel {
     /// code. A wrong one counts against the lockout like a wrong password; a right one completes the
     /// sign-in. `token_version` is the one the first step saw (a password change since voids it).
     pub async fn second_factor(&self, tenant: Uuid, user: Uuid, token_version: i32, code: &str) -> Result<Session> {
+        self.second_factor_from(tenant, user, token_version, code, &crate::gate::Arrival::default()).await
+    }
+
+    /// [`Kernel::second_factor`] from `from`: a wrong code is on the audit trail with where it came from.
+    pub async fn second_factor_from(&self, tenant: Uuid, user: Uuid, token_version: i32, code: &str, from: &crate::gate::Arrival) -> Result<Session> {
         let again = || Error::Unauthorized("sign in again".into());
         self.refuse_if_moving(tenant).await?;
         let mut tx = self.db.system_tx().await?;
@@ -359,6 +364,7 @@ impl Kernel {
         };
         if !ok {
             crate::auth::count_failure(&mut tx, tenant, user).await?;
+            crate::gate::failure(&mut tx, tenant, user, "failed", from, "second_step").await?;
             tx.commit().await?;
             return Err(Error::Unauthorized("that code is not right; use the one your app shows now, or a recovery code".into()));
         }

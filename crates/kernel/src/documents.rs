@@ -711,7 +711,7 @@ pub(crate) async fn save_template(k: &Kernel, tx: &mut Tx, ctx: &Ctx, def: &Docu
     .bind(MAX_VERSIONS)
     .execute(&mut **tx)
     .await?;
-    audit::record(tx, ctx, "DocumentTemplate", Uuid::nil(), "save", None, json!({"key": def.key})).await?;
+    audit::record_admin(tx, ctx, "DocumentTemplate", Uuid::nil(), "save", None, json!({"key": def.key})).await?;
     // Marking a template the default makes it the workspace's choice; a template read back with its flag as it was
     // (a package's default, saved again) changes nothing: `PUT …/defaults` is the way to choose.
     let was_default = match &was {
@@ -751,7 +751,7 @@ async fn choose_default(tx: &mut Tx, ctx: &Ctx, entity: &str, key: Option<&str>)
             sqlx::query("delete from document_default where tenant_id = $1 and entity = $2").bind(ctx.tenant).bind(entity).execute(&mut **tx).await?;
         }
     }
-    audit::record(tx, ctx, "DocumentTemplate", Uuid::nil(), "default", None, json!({"entity": entity, "key": key})).await
+    audit::record_admin(tx, ctx, "DocumentTemplate", Uuid::nil(), "default", None, json!({"entity": entity, "key": key})).await
 }
 
 /// The workspace's own and edited templates, for a pack.
@@ -2033,7 +2033,7 @@ impl Kernel {
         if !ctx.schema.documents.iter().any(|d| d.key == key) {
             sqlx::query("delete from document_default where tenant_id = $1 and key = $2").bind(ctx.tenant).bind(key).execute(&mut *tx).await?;
         }
-        audit::record(&mut tx, ctx, "DocumentTemplate", Uuid::nil(), "reset", None, json!({"key": key})).await?;
+        audit::record_admin(&mut tx, ctx, "DocumentTemplate", Uuid::nil(), "reset", None, json!({"key": key})).await?;
         tx.commit().await?;
         Ok(())
     }

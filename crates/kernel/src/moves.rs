@@ -104,7 +104,7 @@ impl Kernel {
         if let Some(tenant) = first {
             // Only the trail is written: no schema needed (and none loaded while the fence's lock is held).
             let ctx = Ctx::system(tenant, std::sync::Arc::new(ferrum_meta::Schema::default()));
-            audit::record(tx, &ctx, "Platform", Uuid::nil(), action, None, diff).await?;
+            audit::record_admin(tx, &ctx, "Platform", Uuid::nil(), action, None, diff).await?;
         }
         Ok(())
     }

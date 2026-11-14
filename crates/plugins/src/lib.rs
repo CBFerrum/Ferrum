@@ -761,7 +761,7 @@ impl PluginHost {
             .execute(&mut *tx)
             .await?;
         }
-        ferrum_kernel::audit::record(
+        ferrum_kernel::audit::record_admin(
             &mut tx,
             ctx,
             "Plugin",
@@ -817,7 +817,7 @@ impl PluginHost {
         if n == 0 {
             return Err(Error::NotFound("plugin".into()));
         }
-        ferrum_kernel::audit::record(&mut tx, ctx, "Plugin", id, if enabled { "enable" } else { "disable" }, None, json!({})).await?;
+        ferrum_kernel::audit::record_admin(&mut tx, ctx, "Plugin", id, if enabled { "enable" } else { "disable" }, None, json!({})).await?;
         tx.commit().await?;
         self.invalidate(ctx.tenant);
         Ok(())
@@ -860,7 +860,7 @@ impl PluginHost {
             return Err(Error::NotFound("plugin".into()));
         }
         let keys: Vec<&String> = config.keys().collect();
-        ferrum_kernel::audit::record(&mut tx, ctx, "Plugin", id, "configure", None, json!({"keys": keys})).await?;
+        ferrum_kernel::audit::record_admin(&mut tx, ctx, "Plugin", id, "configure", None, json!({"keys": keys})).await?;
         tx.commit().await?;
         self.invalidate(ctx.tenant);
         Ok(())
@@ -878,7 +878,7 @@ impl PluginHost {
             .await?;
         let (name, user) = row.ok_or_else(|| Error::NotFound("plugin".into()))?;
         sqlx::query("delete from role_permission where tenant_id = $1 and role = $2").bind(ctx.tenant).bind(format!("plugin:{name}")).execute(&mut *tx).await?;
-        ferrum_kernel::audit::record(&mut tx, ctx, "Plugin", id, "remove", None, json!({"name": name})).await?;
+        ferrum_kernel::audit::record_admin(&mut tx, ctx, "Plugin", id, "remove", None, json!({"name": name})).await?;
         tx.commit().await?;
         if let Some(u) = user {
             k.set_user_active(ctx, u, false).await?;

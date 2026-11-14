@@ -368,7 +368,7 @@ async fn sign_up(State(app): State<AppContext>, headers: HeaderMap, Json(req): J
     let workspace = json!({"slug": slug, "host": host});
     match made.account {
         Some(s) => {
-            let mut res = session_response(&st, &s, &headers, true).await?;
+            let mut res = session_response(&st, &s, &headers, true, "sign_up").await?;
             *res.body_mut() = axum::body::Body::from(json!({"cookie": true, "workspace": workspace}).to_string());
             Ok(res)
         }
@@ -414,7 +414,7 @@ fn from_ticket(st: &AppState, ticket: &str, kind: &str) -> Result<Session, ApiEr
 /// The answer to a step of signing in: the cookie when signed in, else the next step's ticket.
 async fn answer(st: &AppState, headers: &HeaderMap, outcome: AccountSignIn) -> ApiResult<Response> {
     match outcome {
-        AccountSignIn::Signed(s) => session_response(st, &s, headers, true).await,
+        AccountSignIn::Signed(s) => session_response(st, &s, headers, true, "accounts").await,
         AccountSignIn::SecondFactor { session, found } => {
             Ok(Json(json!({"second_factor": true, "ticket": ticket(st, &session, if found { "found" } else { "mfa" })?, "expires_in": TICKET_SECS}))
                 .into_response())
@@ -822,6 +822,7 @@ async fn region_callback(st: &AppState, headers: &HeaderMap, q: &[(String, Strin
     };
     let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
     let ttl = st.shell.session_ttl;
+    st.kernel.record_sign_in(s.tenant, s.user, "signed_in", "accounts", &crate::zone::arrival(st, headers).await).await?;
     let sid = st.kernel.open_session_in(&s, ttl, ua, &client_ip(headers), None, entry.name()).await?;
     let mut res = Redirect::to(&shell::safe_next(&next)).into_response();
     let h = res.headers_mut();

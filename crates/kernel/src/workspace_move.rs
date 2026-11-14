@@ -890,6 +890,11 @@ impl Kernel {
                             renumber(v);
                         }
                     }
+                    // The audit sink here sends what is written here: events the source wrote were its to send,
+                    // and their transaction ids mean nothing here (crate::audit_sink).
+                    if t == "audit_event" {
+                        row.insert("xid".into(), Value::Null);
+                    }
                     if t == "app_user"
                         && let Some(identity) = text(&row, "identity_id").and_then(|s| s.parse::<Uuid>().ok())
                     {
@@ -1205,6 +1210,11 @@ impl Kernel {
             return Err(Error::Conflict(format!("{slug} is {state}, not moved: finish the move first (or abort it)")));
         }
         may_copy(&self.db).await?;
+        // The audit sink sends this installation's events in order: those of the workspace go with its rows.
+        let unsent = self.audit_sink_unsent(tenant).await?;
+        if unsent > 0 {
+            return Err(Error::Conflict(format!("the audit sink has not sent {unsent} of {slug}'s events yet: run this again once it has")));
+        }
         let mut tx = self.db.system_tx().await?;
         let keys: Vec<String> = sqlx::query_scalar("select storage_key from file_object where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
         tx.commit().await?;

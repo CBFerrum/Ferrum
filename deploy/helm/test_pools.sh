@@ -302,4 +302,15 @@ default = next(d for d in docs if d["kind"] == "HTTPRoute" and d["metadata"]["na
 paths = {m["path"]["value"] for rule in default["spec"]["rules"] for m in rule.get("matches", [])}
 assert {"/ws", "/mcp", "/files"} <= paths, paths
 PY
+echo "every server pool reads the audit sink's settings (docs/operations.md, Sending the audit log elsewhere)"
+python3 - "$tmp/zones.yaml" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+pools = [d for d in docs if d["kind"] == "Deployment" and any(c["name"] == "ferrum" for c in d["spec"]["template"]["spec"]["containers"])]
+assert len(pools) > 1, [p["metadata"]["name"] for p in pools]
+for p in pools:
+    env = {e["name"]: e for c in p["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])}
+    for k in ("FERRUM_AUDIT_SINK_URL", "FERRUM_AUDIT_SINK_SECRET"):
+        assert env[k]["valueFrom"]["secretKeyRef"]["key"] == k, (p["metadata"]["name"], k)
+PY
 echo "ok"

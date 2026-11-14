@@ -49,6 +49,9 @@ services:
       FERRUM_RETIRED_SECRET_KEYS: ${FERRUM_RETIRED_SECRET_KEYS:-}
       FERRUM_CLAMAV_ADDR: ${FERRUM_CLAMAV_ADDR:-}
       FERRUM_CLAMAV_MAX_MB: ${FERRUM_CLAMAV_MAX_MB:-25}
+      # Sending the audit log elsewhere (docs/operations.md): empty sends nothing, as before.
+      FERRUM_AUDIT_SINK_URL: ${FERRUM_AUDIT_SINK_URL:-}
+      FERRUM_AUDIT_SINK_SECRET: ${FERRUM_AUDIT_SINK_SECRET:-}
       # What a connection's call sends of stored files in one request, in MiB (docs/operations.md).
       FERRUM_CONNECTION_UPLOAD_MB: ${FERRUM_CONNECTION_UPLOAD_MB:-25}
       FERRUM_OPS_TELEMETRY_DAYS: ${FERRUM_OPS_TELEMETRY_DAYS:-30}

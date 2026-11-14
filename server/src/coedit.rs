@@ -711,7 +711,7 @@ async fn serve(st: AppState, package: String, doc: String, pre: Option<(String, 
                 let _ = sink.send(close(4401, "send {\"auth\": token} first")).await;
                 return;
             };
-            match ctx_from_token(&st, &token, Uuid::now_v7().to_string(), &entry).await {
+            match ctx_from_token(&st, &token, Uuid::now_v7().to_string(), &entry, false).await {
                 Ok(ctx) => (token, ctx),
                 Err(ApiError(e)) => {
                     let _ = sink.send(close(if e.status() == 401 { 4401 } else { 1011 }, &e.to_string())).await;
@@ -857,6 +857,8 @@ impl Conn<'_> {
         rx: &mut broadcast::Receiver<Out>,
     ) {
         let (mut window_start, mut in_window) = (Instant::now(), 0u32);
+        // A change the person sent since the last recheck is their activity, and keeps their session from going idle.
+        let mut active = false;
         let mut keepalive = tokio::time::interval(KEEPALIVE);
         let mut recheck = tokio::time::interval(RECHECK);
         keepalive.tick().await;
@@ -874,7 +876,10 @@ impl Conn<'_> {
                             return;
                         }
                         match self.on_message(&data, sink).await {
-                            Ok(()) => true,
+                            Ok(()) => {
+                                active = true;
+                                true
+                            }
                             Err(e @ Error::Validation(_)) => {
                                 let _ = sink.send(close(4400, &e.to_string())).await;
                                 return;
@@ -907,7 +912,7 @@ impl Conn<'_> {
                 },
                 _ = keepalive.tick() => sink.send(Ws::Ping(Vec::new().into())).await.is_ok(),
                 _ = recheck.tick() => {
-                    let now = match ctx_from_token(st, token.0, Uuid::now_v7().to_string(), token.1).await {
+                    let now = match ctx_from_token(st, token.0, Uuid::now_v7().to_string(), token.1, std::mem::take(&mut active)).await {
                         Ok(fresh) => host.access(self.k, &fresh, self.room.key.doc).await.map_err(ApiError),
                         Err(e) => Err(e),
                     };

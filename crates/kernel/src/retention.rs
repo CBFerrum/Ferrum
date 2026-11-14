@@ -288,7 +288,7 @@ impl Kernel {
         if n.rows_affected() == 0 {
             return Err(Error::NotFound("retention rule".into()));
         }
-        audit::record(
+        audit::record_admin(
             &mut tx,
             ctx,
             "RetentionRule",
@@ -309,7 +309,7 @@ impl Kernel {
         if n == 0 {
             return Err(Error::NotFound("retention rule".into()));
         }
-        audit::record(&mut tx, ctx, "RetentionRule", id, "delete", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "RetentionRule", id, "delete", None, json!({})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -376,7 +376,8 @@ impl Kernel {
             .await?;
         }
         // By reference to its reason only: the audit trail outlives the restriction.
-        audit::record(&mut tx, ctx, "PersonalData", Uuid::now_v7(), "restrict_processing", None, json!({"addresses": emails.len(), "reason": reason})).await?;
+        audit::record_admin(&mut tx, ctx, "PersonalData", Uuid::now_v7(), "restrict_processing", None, json!({"addresses": emails.len(), "reason": reason}))
+            .await?;
         tx.commit().await?;
         Ok(emails)
     }
@@ -399,7 +400,7 @@ impl Kernel {
         if n == 0 {
             return Err(Error::NotFound("restriction".into()));
         }
-        audit::record(&mut tx, ctx, "PersonalData", Uuid::now_v7(), "lift_restriction", None, json!({"addresses": n})).await?;
+        audit::record_admin(&mut tx, ctx, "PersonalData", Uuid::now_v7(), "lift_restriction", None, json!({"addresses": n})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -464,7 +465,7 @@ impl Kernel {
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
         .execute(&mut **tx)
         .await?;
-        audit::record(
+        audit::record_admin(
             tx,
             ctx,
             "ContactConsent",

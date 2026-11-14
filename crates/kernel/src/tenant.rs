@@ -373,6 +373,14 @@ impl Kernel {
             "assistant_egress": settings.get("assistant_egress").cloned().unwrap_or_else(|| serde_json::json!({})),
             "offline": settings.get("offline").cloned().unwrap_or_else(|| serde_json::json!({"allowed": true, "hours": 72})),
             "messages": settings.get("messages").cloned().unwrap_or_else(|| serde_json::json!({})),
+            // The networks staff may work from (crate::gate); no networks: off.
+            // Staff are told of a sign-in from a device they had not used.
+            "new_device_notice": settings.get("new_device_notice").and_then(Value::as_bool).unwrap_or(false),
+            // The administrators who keep password sign-in when single sign-on is required (null: all of them).
+            "break_glass": settings.get("break_glass").cloned().unwrap_or(Value::Null),
+            // Minutes of no use after which a browser session ends (0: never, as before).
+            "idle_minutes": settings.get("idle_minutes").and_then(Value::as_i64).unwrap_or(0),
+            "staff_networks": crate::gate::StaffNetworks::parse(settings.get("staff_networks")).map_err(Error::Internal)?.to_value(),
         }))
     }
 
@@ -442,10 +450,45 @@ impl Kernel {
                     crate::messages::check_settings(v)?;
                     clean.insert(k.clone(), v.clone());
                 }
+                // The networks staff may work from (crate::gate). Saved in `enforce` only with the saver's own
+                // address inside: nobody shuts themselves out by saving.
+                "staff_networks" => {
+                    let nets = crate::gate::StaffNetworks::parse(Some(v)).map_err(|m| Error::field(k.clone(), m))?;
+                    let address = ctx.zone.as_ref().map(|e| e.address.as_str()).unwrap_or_default();
+                    if nets.mode == crate::zones::Mode::Enforce && !nets.admits(address) {
+                        return Err(Error::field(
+                            k.clone(),
+                            format!(
+                                "your own address ({}) is not inside these networks, so saving them would shut you out: add it, or save them in report mode first",
+                                if address.is_empty() { "unknown" } else { address }
+                            ),
+                        ));
+                    }
+                    clean.insert(k.clone(), if nets.is_off() { Value::Null } else { nets.to_value() });
+                }
+                // Browser sessions unused this many minutes end (0: never).
+                "idle_minutes" => {
+                    let (lo, hi) = (crate::shell::IDLE_MIN_MINUTES, crate::shell::IDLE_MAX_MINUTES);
+                    let m = v
+                        .as_i64()
+                        .filter(|m| *m == 0 || (lo..=hi).contains(m))
+                        .ok_or_else(|| Error::field(k.clone(), format!("must be 0 (never) or {lo} to {hi} minutes")))?;
+                    clean.insert(k.clone(), serde_json::json!(m));
+                }
+                // Tell staff of a sign-in from a device they had not used (crate::gate).
+                "new_device_notice" => {
+                    let on = v.as_bool().ok_or_else(|| Error::field(k.clone(), "must be true or false"))?;
+                    clean.insert(k.clone(), serde_json::json!(on));
+                }
+                // Checked against the workspace's administrators below (crate::gate::check_break_glass).
+                "break_glass" => {}
                 other => return Err(Error::field(other, "unknown setting")),
             }
         }
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
+        if let Some(v) = patch.get("break_glass") {
+            clean.insert("break_glass".into(), crate::gate::check_break_glass(&mut tx, ctx.tenant, v).await?);
+        }
         if clean.get("require_sso") == Some(&serde_json::json!(true)) {
             let any: bool =
                 sqlx::query_scalar("select exists (select 1 from sso_provider where tenant_id = $1 and enabled)").bind(ctx.tenant).fetch_one(&mut *tx).await?;
@@ -454,10 +497,18 @@ impl Kernel {
             }
         }
         sqlx::query("update tenant set settings = settings || $2 where id = $1").bind(ctx.tenant).bind(Value::Object(clean.clone())).execute(&mut *tx).await?;
-        crate::audit::record(&mut tx, ctx, "Tenant", ctx.tenant, "settings", None, Value::Object(clean)).await?;
+        // People's cached contexts hold the networks: every replica drops them now.
+        let people = clean.contains_key("staff_networks");
+        if people {
+            crate::auth::notify_users(&mut tx, ctx.tenant, None).await?;
+        }
+        crate::audit::record_admin(&mut tx, ctx, "Tenant", ctx.tenant, "settings", None, Value::Object(clean)).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);
+        if people {
+            self.invalidate_tenant_users(ctx.tenant);
+        }
         self.tenant_settings(ctx).await
     }
 }

@@ -150,6 +150,8 @@ impl Hooks for App {
         let zones =
             Arc::new(ferrum_kernel::zones::Zones::parse(&settings.zones, &settings.zone, &settings.zone_default, &settings.zone_mode).map_err(Error::Message)?);
         zones.check_background(settings.run_background).map_err(Error::Message)?;
+        // The audit sink (docs/operations.md, "Sending the audit log elsewhere"): checked before anything else too.
+        let audit_sink = ferrum_kernel::audit_sink::Sink::parse(&settings.audit_sink_url, &settings.audit_sink_secret).map_err(Error::Message)?;
         // `ferrum task migrate` is what brings the database up to date, whatever the setting says.
         let migrating = is_migrate_task(std::env::args());
         let migrate_now = settings.migrate_at_start || migrating;
@@ -257,6 +259,7 @@ impl Hooks for App {
                 signup,
                 process_runtime: processes,
                 migrate_at_start: migrate_now,
+                audit_sink,
                 ..Default::default()
             },
             mailer,
@@ -430,6 +433,8 @@ impl Hooks for App {
         }
         if state.settings.run_background {
             let mut handles = state.kernel.spawn_background(state.shutdown.subscribe());
+            // The operator's audit sink, where background work runs.
+            handles.extend(state.kernel.spawn_audit_sink(state.shutdown.subscribe()));
             // ERP's upkeep (journal partitions for the coming year) on the same cadence.
             let (k, mut stop) = (state.kernel.clone(), state.shutdown.subscribe());
             handles.push(tokio::spawn(async move {
@@ -610,6 +615,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::SetHostZone);
         tasks.register(crate::tasks::OperatorAdmin(true));
         tasks.register(crate::tasks::OperatorAdmin(false));
+        tasks.register(crate::tasks::ClearStaffNetworks);
         tasks.register(crate::tasks::PlanMove);
         tasks.register(crate::tasks::CancelMove);
         tasks.register(crate::tasks::AdoptMove);

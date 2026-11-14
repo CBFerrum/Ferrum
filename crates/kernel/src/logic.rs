@@ -360,7 +360,7 @@ impl Kernel {
                 release.solution, release.version
             )));
         };
-        crate::audit::record(
+        crate::audit::record_admin(
             &mut tx,
             ctx,
             "LogicRelease",
@@ -443,7 +443,7 @@ impl Kernel {
             .bind(reason.trim())
             .execute(&mut *tx)
             .await?;
-        crate::audit::record(
+        crate::audit::record_admin(
             &mut tx,
             ctx,
             "LogicRelease",
@@ -587,7 +587,7 @@ impl Kernel {
                 .await?;
         let replaced = replaced.filter(|(id, _)| *id != release).map(|(id, version)| json!({"release": id, "version": version}));
         let account = grant_solution(self, &mut tx, ctx, &r.solution, &stored).await?;
-        crate::audit::record(
+        crate::audit::record_admin(
             &mut tx,
             ctx,
             "LogicRelease",
@@ -634,7 +634,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         crate::auth::notify_users(&mut tx, ctx.tenant, None).await?;
-        crate::audit::record(&mut tx, ctx, "LogicRelease", release, "deactivate", None, json!({"solution": solution, "generation": expected})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "LogicRelease", release, "deactivate", None, json!({"solution": solution, "generation": expected})).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);

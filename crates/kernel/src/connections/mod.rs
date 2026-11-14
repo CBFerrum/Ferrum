@@ -2276,8 +2276,16 @@ impl Kernel {
             other => other?,
         };
         self.after_save(&mut tx, ctx.tenant, id, &input.description).await?;
-        audit::record(&mut tx, ctx, "Connection", id, "save", None, json!({"name": input.name, "enabled": input.enabled, "secrets": input.secrets.is_some()}))
-            .await?;
+        audit::record_admin(
+            &mut tx,
+            ctx,
+            "Connection",
+            id,
+            "save",
+            None,
+            json!({"name": input.name, "enabled": input.enabled, "secrets": input.secrets.is_some()}),
+        )
+        .await?;
         tx.commit().await?;
         // A session signs in again with secrets given anew.
         if input.secrets.is_some() && matches!(input.description.auth, Auth::Session { .. }) {
@@ -2312,7 +2320,7 @@ impl Kernel {
         }
         let description: Value =
             sqlx::query_scalar("select description from conn where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_one(&mut *tx).await?;
-        audit::record(&mut tx, ctx, "Connection", id, "secrets", None, json!({"set": set.keys().collect::<Vec<_>>(), "removed": remove})).await?;
+        audit::record_admin(&mut tx, ctx, "Connection", id, "secrets", None, json!({"set": set.keys().collect::<Vec<_>>(), "removed": remove})).await?;
         tx.commit().await?;
         // A session signs in again with its secrets changed.
         if description["auth"]["type"] == "session" {
@@ -2375,7 +2383,7 @@ impl Kernel {
         if n.rows_affected() == 0 {
             return Err(Error::NotFound("connection".into()));
         }
-        audit::record(&mut tx, ctx, "Connection", id, "delete", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "Connection", id, "delete", None, json!({})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -2431,7 +2439,7 @@ impl Kernel {
         if n.rows_affected() == 0 {
             return Err(Error::NotFound("connection".into()));
         }
-        audit::record(&mut tx, ctx, "Connection", id, "debug", None, json!({"minutes": minutes})).await?;
+        audit::record_admin(&mut tx, ctx, "Connection", id, "debug", None, json!({"minutes": minutes})).await?;
         tx.commit().await?;
         Ok(())
     }

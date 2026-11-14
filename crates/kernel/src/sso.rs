@@ -549,7 +549,7 @@ impl Kernel {
         .execute(&mut *tx)
         .await?;
         let what = json!({"label": label, "protocol": input.protocol.name(), "issuer": issuer, "client_id": client_id, "secret_changed": secret.is_some(), "metadata_changed": saml_metadata.is_some(), "domains": domains, "auto_create": input.auto_create, "default_roles": roles, "enabled": input.enabled});
-        audit::record(&mut tx, ctx, "SsoProvider", id, "save", None, what).await?;
+        audit::record_admin(&mut tx, ctx, "SsoProvider", id, "save", None, what).await?;
         tx.commit().await?;
         Ok(id)
     }
@@ -582,7 +582,7 @@ impl Kernel {
         if done.rows_affected() == 0 {
             return Err(Error::NotFound("single sign-on provider".into()));
         }
-        audit::record(&mut tx, ctx, "SsoProvider", id, "delete", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "SsoProvider", id, "delete", None, json!({})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -600,7 +600,7 @@ impl Kernel {
         if done.rows_affected() == 0 {
             return Err(Error::NotFound("user".into()));
         }
-        audit::record(&mut tx, ctx, "User", user, "unlink_sso", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "User", user, "unlink_sso", None, json!({})).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -935,7 +935,7 @@ impl Kernel {
             .await?;
         crate::auth::end_sessions(&mut tx, tenant, user).await?;
         let by = Ctx::system(tenant, schema);
-        audit::record(&mut tx, &by, "User", user, "sso_logout", None, json!({"provider": p.label})).await?;
+        audit::record_admin(&mut tx, &by, "User", user, "sso_logout", None, json!({"provider": p.label})).await?;
         tx.commit().await?;
         self.invalidate_user(tenant, user);
         Ok(())

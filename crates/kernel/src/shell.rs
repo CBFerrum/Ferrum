@@ -12,8 +12,15 @@ use uuid::Uuid;
 /// How long a replica trusts its answer about a session or a host before asking the database
 /// again. Revocation on the same replica is immediate; on others it takes at most this long.
 const CACHE_TTL: Duration = Duration::from_secs(20);
-/// `last_seen_at` is written at most this often per session.
+/// `last_seen_at` is written at most this often per session…
 const SEEN_EVERY: chrono::Duration = chrono::Duration::minutes(5);
+/// …and this often where the workspace ends idle sessions (`idle_minutes`), so that the timeout holds to
+/// within a minute and the cache's 20 seconds.
+const SEEN_EVERY_IDLE: chrono::Duration = chrono::Duration::minutes(1);
+/// The shortest idle timeout a workspace may set, well above that precision.
+pub const IDLE_MIN_MINUTES: i64 = 5;
+/// And the longest: a week.
+pub const IDLE_MAX_MINUTES: i64 = 7 * 24 * 60;
 /// Hosts whose domain stopped pointing at us are marked unverified after this many failed checks.
 pub const HOST_MAX_FAILURES: i32 = 7;
 /// A released host (renamed or deleted workspace) redirects to the workspace for this long…
@@ -190,9 +197,17 @@ impl Kernel {
         Ok(id)
     }
 
-    /// Whether the browser session `sid` of `user` is still valid (not revoked, not expired), and
-    /// what it adds. Cached briefly; refreshes `last_seen_at` now and then.
+    /// Whether the browser session `sid` of `user` is still valid (not revoked, not expired, not idle
+    /// longer than the workspace allows), and what it adds. Cached briefly; a request through it is
+    /// activity, and refreshes `last_seen_at` now and then.
     pub async fn check_session(&self, tenant: Uuid, user: Uuid, sid: Uuid) -> Result<SessionState> {
+        self.check_session_as(tenant, user, sid, true).await
+    }
+
+    /// [`Kernel::check_session`]; `active`: whether the use is the person's activity (a socket's own
+    /// recheck is not). A session idle longer than the workspace's `idle_minutes` is ended here, so it
+    /// cannot come back, and answered as one signed out.
+    pub async fn check_session_as(&self, tenant: Uuid, user: Uuid, sid: Uuid, active: bool) -> Result<SessionState> {
         let expired = || Error::Unauthorized("this device was signed out; please sign in again".into());
         if let Some(e) = self.sessions.get(&(tenant, sid))
             && e.1.elapsed() < CACHE_TTL
@@ -200,19 +215,33 @@ impl Kernel {
             return e.0.filter(|(owner, _)| *owner == user).map(|(_, state)| state).ok_or_else(expired);
         }
         let mut tx = self.db.tenant_tx(tenant).await?;
-        type Row = (Uuid, DateTime<Utc>, Option<Uuid>, Option<DateTime<Utc>>);
+        type Row = (Uuid, DateTime<Utc>, Option<Uuid>, Option<DateTime<Utc>>, i32, bool);
+        // A setting that cannot be read as a number fails the query, which refuses. A workspace that takes no changes
+        // just now (moving, or the database fenced) is still read: its sessions are checked, not written.
         let row: Option<Row> = sqlx::query_as(
-            "select user_id, last_seen_at, actor, step_up_at from user_session \
+            "select user_id, last_seen_at, actor, step_up_at, \
+             (select coalesce((settings->>'idle_minutes')::int, 0) from tenant where id = $1), current_setting('transaction_read_only') = 'on' from user_session \
              where tenant_id = $1 and id = $2 and revoked_at is null and expires_at > now()",
         )
         .bind(tenant)
         .bind(sid)
         .fetch_optional(&mut *tx)
         .await?;
+        let idle = row.as_ref().map_or(0, |r| i64::from(r.4));
+        let writable = row.as_ref().is_some_and(|r| !r.5);
+        if let Some(r) = row.as_ref().filter(|r| writable && r.0 == user && idle > 0 && Utc::now() - r.1 > chrono::Duration::minutes(idle)) {
+            self.end_idle(&mut tx, tenant, sid, r.1).await?;
+            tx.commit().await?;
+            self.sessions.insert((tenant, sid), (None, Instant::now()));
+            return Err(expired());
+        }
         let row_owner = row.as_ref().map(|r| r.0);
         let state = row.filter(|r| r.0 == user).map(|r| (r.1, SessionState { actor: r.2, step_up_at: r.3 }));
+        let every = if idle > 0 { SEEN_EVERY_IDLE } else { SEEN_EVERY };
         if let Some((seen, _)) = state
-            && Utc::now() - seen > SEEN_EVERY
+            && active
+            && writable
+            && Utc::now() - seen > every
         {
             sqlx::query("update user_session set last_seen_at = now() where tenant_id = $1 and id = $2").bind(tenant).bind(sid).execute(&mut *tx).await?;
         }
@@ -225,6 +254,19 @@ impl Kernel {
         let owner = row_owner.filter(|_| state.is_some());
         self.sessions.insert((tenant, sid), (owner.zip(state), Instant::now()));
         state.ok_or_else(expired)
+    }
+
+    /// Ends a session that was idle too long (`seen`: when it was last used), and the device's pushes.
+    async fn end_idle(&self, tx: &mut crate::db::Tx, tenant: Uuid, sid: Uuid, seen: DateTime<Utc>) -> Result<()> {
+        sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and id = $2 and revoked_at is null")
+            .bind(tenant)
+            .bind(sid)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query("delete from push_subscription where tenant_id = $1 and session_id = $2").bind(tenant).bind(sid).execute(&mut **tx).await?;
+        crate::gate::session_ended(tx, tenant, sid, "idle").await?;
+        tracing::info!(workspace = %tenant, session = %sid, last_seen = %seen, "a session idle too long was ended");
+        Ok(())
     }
 
     /// Records that the person of session `sid` proved themselves again (password, passkey or a
@@ -274,7 +316,8 @@ impl Kernel {
             return Err(Error::NotFound("no such session".into()));
         }
         sqlx::query("delete from push_subscription where tenant_id = $1 and session_id = $2").bind(ctx.tenant).bind(sid).execute(&mut *tx).await?;
-        crate::audit::record(&mut tx, ctx, "UserSession", sid, "revoke", None, serde_json::json!({})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "UserSession", sid, "revoke", None, serde_json::json!({})).await?;
+        crate::gate::session_ended(&mut tx, ctx.tenant, sid, "revoked").await?;
         tx.commit().await?;
         self.sessions.insert((ctx.tenant, sid), (None, Instant::now()));
         Ok(())
@@ -284,11 +327,15 @@ impl Kernel {
     /// and with it the device's pushes.
     pub async fn end_session(&self, tenant: Uuid, sid: Uuid) -> Result<()> {
         let mut tx = self.db.tenant_tx(tenant).await?;
-        sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and id = $2 and revoked_at is null")
+        let ended = sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and id = $2 and revoked_at is null")
             .bind(tenant)
             .bind(sid)
             .execute(&mut *tx)
-            .await?;
+            .await?
+            .rows_affected();
+        if ended > 0 {
+            crate::gate::session_ended(&mut tx, tenant, sid, "signed_out").await?;
+        }
         sqlx::query("delete from push_subscription where tenant_id = $1 and session_id = $2").bind(tenant).bind(sid).execute(&mut *tx).await?;
         tx.commit().await?;
         self.sessions.insert((tenant, sid), (None, Instant::now()));
@@ -304,6 +351,8 @@ impl Kernel {
             .execute(&mut *tx)
             .await?
             .rows_affected();
+        // Failed sign-ins of hours that are over: their summaries.
+        crate::gate::flush_failures(&mut tx, None).await?;
         tx.commit().await?;
         self.sessions.retain(|_, v| v.1.elapsed() < CACHE_TTL);
         Ok(n)
@@ -542,7 +591,7 @@ impl Kernel {
             .bind(&token)
             .execute(&mut *tx)
             .await?;
-        crate::audit::record(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "add", None, serde_json::json!({"host": host, "target": target})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "add", None, serde_json::json!({"host": host, "target": target})).await?;
         tx.commit().await?;
         self.hosts.remove(&host);
         Ok(self.list_hosts(ctx).await?.into_iter().find(|h| h.host == host).expect("just added"))
@@ -570,7 +619,7 @@ impl Kernel {
             .bind(&host)
             .execute(&mut *tx)
             .await?;
-        crate::audit::record(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "primary", None, serde_json::json!({"host": host})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "primary", None, serde_json::json!({"host": host})).await?;
         tx.commit().await?;
         self.hosts.clear();
         Ok(())
@@ -745,7 +794,7 @@ impl Kernel {
         if dropped + released == 0 {
             return Err(Error::NotFound("no such domain".into()));
         }
-        crate::audit::record(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "remove", None, serde_json::json!({"host": host})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "remove", None, serde_json::json!({"host": host})).await?;
         tx.commit().await?;
         self.hosts.remove(&host);
         Ok(())
@@ -822,7 +871,7 @@ impl Kernel {
             return Err(Error::NotFound("no such user".into()));
         }
         crate::auth::notify_users(&mut tx, ctx.tenant, Some(user)).await?;
-        crate::audit::record(&mut tx, ctx, "User", user, "kind", None, serde_json::json!({"kind": kind})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "User", user, "kind", None, serde_json::json!({"kind": kind})).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
         Ok(())
@@ -939,7 +988,7 @@ impl Kernel {
                 sqlx::query("delete from tenant_ui_pin where tenant_id = $1 and app = $2").bind(ctx.tenant).bind(app).execute(&mut *tx).await?;
             }
         }
-        crate::audit::record(
+        crate::audit::record_admin(
             &mut tx,
             ctx,
             "UiRelease",

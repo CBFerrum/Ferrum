@@ -435,7 +435,7 @@ impl Kernel {
         if !owner_id.is_nil() {
             super::pull::person_connected(&mut tx, ctx.tenant, conn_id, owner_id, &conn.desc).await?;
         }
-        audit::record(
+        audit::record_admin(
             &mut tx,
             ctx,
             "Connection",
@@ -545,7 +545,7 @@ impl Kernel {
             }
             super::store_secrets(&mut tx, self, conn.tenant, conn.id, held, set, &[]).await?;
             let system = Ctx::system(conn.tenant, self.registry.schema(conn.tenant).await?);
-            audit::record(&mut tx, &system, "Connection", conn.id, "register_client", None, json!({"client_id": id})).await?;
+            audit::record_admin(&mut tx, &system, "Connection", conn.id, "register_client", None, json!({"client_id": id})).await?;
             tx.commit().await?;
             return self.load_connection(conn.tenant, &conn.id.to_string()).await;
         }
@@ -577,7 +577,7 @@ impl Kernel {
             }
             super::store_secrets(&mut tx, self, conn.tenant, conn.id, held, set, &[]).await?;
             let system = Ctx::system(conn.tenant, self.registry.schema(conn.tenant).await?);
-            audit::record(&mut tx, &system, "Connection", conn.id, "register_client", None, json!({"client_id": id})).await?;
+            audit::record_admin(&mut tx, &system, "Connection", conn.id, "register_client", None, json!({"client_id": id})).await?;
         }
         tx.commit().await?;
         self.load_connection(conn.tenant, &conn.id.to_string()).await
@@ -858,7 +858,7 @@ impl Kernel {
             .fetch_optional(&mut *tx)
             .await?;
         let Some(sealed) = sealed else { return Err(Error::NotFound("a connected account".into())) };
-        audit::record(&mut tx, ctx, "Connection", id, "disconnect", None, json!({"owner": if owner.is_nil() { "workspace" } else { "person" }})).await?;
+        audit::record_admin(&mut tx, ctx, "Connection", id, "disconnect", None, json!({"owner": if owner.is_nil() { "workspace" } else { "person" }})).await?;
         tx.commit().await?;
         self.revoke_tokens(&conn, provider, owner, &sealed).await
     }
@@ -896,7 +896,7 @@ impl Kernel {
             };
             let recorded = async {
                 let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-                audit::record(&mut tx, ctx, "Connection", id, "revoke_on_erasure", None, said.clone()).await?;
+                audit::record_admin(&mut tx, ctx, "Connection", id, "revoke_on_erasure", None, said.clone()).await?;
                 tx.commit().await?;
                 Ok::<(), Error>(())
             }
@@ -1045,7 +1045,7 @@ impl Kernel {
         self.forget_session(ctx, id).await?;
         self.session_sign_in(&conn, ctx).await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        audit::record(&mut tx, ctx, "Connection", id, "connect", None, json!({"owner": "workspace", "session": true})).await?;
+        audit::record_admin(&mut tx, ctx, "Connection", id, "connect", None, json!({"owner": "workspace", "session": true})).await?;
         tx.commit().await?;
         self.workspace_account(ctx.tenant, id).await
     }

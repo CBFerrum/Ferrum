@@ -287,6 +287,23 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let mut tx = a.db.tenant_tx(t).await.unwrap();
     ferrum_kernel::jobs::enqueue(&mut tx, t, Some(acme.user), NewJob::new("test.counted", json!({}))).await.unwrap();
     tx.commit().await.unwrap();
+    // What sign-in keeps of a person: devices they used, failures counted by the hour; a key pinned to networks.
+    let mut tx = a.db.system_tx().await.unwrap();
+    sqlx::query("insert into known_device (tenant_id, user_id, device) values ($1, $2, 'laptop')").bind(t).bind(acme.user).execute(&mut *tx).await.unwrap();
+    sqlx::query("insert into sign_in_failure (tenant_id, user_id, hour, n) values ($1, $2, date_trunc('hour', now()), 2)")
+        .bind(t)
+        .bind(acme.user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("update api_key set networks = array['192.0.2.0/24'] where tenant_id = $1").bind(t).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    // A browser signed in an hour ago, which keeps reading while the workspace is frozen.
+    let signed = a.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+    let sid = a.open_session(&signed, Duration::from_secs(7200), "it", "127.0.0.1", None).await.unwrap();
+    let mut tx = a.db.system_tx().await.unwrap();
+    sqlx::query("update user_session set last_seen_at = now() - interval '1 hour' where id = $1").bind(sid).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
     // Today's anchor, over the history the move carries.
     audit::anchor_day(&a.db, chrono::Utc::now().date_naive()).await.unwrap();
     let (anchored,): (i64,) = sql(&a, "select max(id) from audit_event where tenant_id = $1", t).await.remove(0);
@@ -341,6 +358,7 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let r = a.create_user(&acme, "late@acme.test", "Late", Some(PASSWORD), &[], false).await;
     assert!(matches!(&r, Err(Error::Unavailable(m)) if m.contains("this workspace is moving")), "{r:?}");
     a.read_record(&acme, "Contact", contact, false).await.expect("reading works while frozen");
+    a.check_session(t, acme.user, sid).await.expect("a signed-in browser's session is checked, not written, while frozen");
     for password in ["wrong", PASSWORD] {
         let r = a.sign_in("acme", "admin@acme.test", password).await;
         assert!(matches!(&r, Err(Error::Unavailable(m)) if m.contains("moving")), "{r:?}");
@@ -404,7 +422,12 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let kept: Vec<(i64, i64)> =
         sql(&b, "select (select count(*) from legal_hold where tenant_id = $1), (select count(*) from privacy_erasure where tenant_id = $1)", t).await;
     assert_eq!(kept[0], (1, 1), "the legal hold and the erasure's record moved too");
-    let (session, _) = b.verify_api_key(&api_key).await.expect("the integration's key works at B");
+    let (session, _) = b.verify_api_key_from(&api_key, "192.0.2.7").await.expect("the integration's key works at B, from its networks");
+    assert!(b.verify_api_key_from(&api_key, "198.51.100.7").await.is_err(), "and from nowhere else");
+    let kept: Vec<(i64, i64)> =
+        sql(&b, "select (select count(*) from known_device where tenant_id = $1), (select coalesce(sum(n), 0) from sign_in_failure where tenant_id = $1)", t)
+            .await;
+    assert_eq!(kept, vec![(1, 2)], "known devices and counted failures travel");
     assert_eq!(session.tenant, t);
     assert_eq!(b.route_host("erp.acme.example").await.unwrap(), HostRoute::Serve { tenant: t, target: "shell".into() });
     assert_eq!(a.route_host("erp.acme.example").await.unwrap(), HostRoute::Moved { tenant: t, to: None }, "the address still points at A");
@@ -434,6 +457,8 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let at_b: Vec<(i64,)> = sql(&b, "select id from audit_event where tenant_id = $1 order by id", t).await;
     assert!(at_b.starts_with(&at_a) && at_b.len() > at_a.len(), "audit events keep their numbers, and new ones come after them");
     assert_eq!(chains(&b, t).await, None);
+    let resent: Vec<(i64,)> = sql(&b, &format!("select count(*) from audit_event where tenant_id = $1 and xid is not null and id <= {anchored}"), t).await;
+    assert_eq!(resent, vec![(0,)], "B's audit sink does not send again what A wrote");
     assert!(anchor_holds(&b, t, anchored).await);
     // Events are numbered anew at B, in the same order.
     let topics = async |k: &Kernel| sql::<(String,)>(k, "select topic from outbox where tenant_id = $1 and topic in ('noted', 'pay') order by id", t).await;

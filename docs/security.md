@@ -46,6 +46,27 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   that the credential works elsewhere, and where.
 * Zones do not protect against a compromised replica: it reaches the whole database.
 
+**Staff networks** ([operations](operations.md#staff-networks))
+* A workspace may name the networks its staff work from. Staff on a people's credential (session, token,
+  OAuth token, app password, app token, socket, sign-in) from elsewhere are refused where the request's
+  context is built, after the zone, with `403` `network`, which names no network. API keys, SCIM keys and
+  support access are not held to them; keys have their own.
+* A staff sign-in from outside fails as a wrong password does, before any secret is read, without counting
+  toward lockout and without using up a code. A setting that cannot be read refuses.
+* Saving them in `enforce` needs the saver's own address inside; the operator can clear them.
+* Sign-ins, second steps, failed and refused attempts of known accounts (capped at three an hour, then a
+  summary), break-glass sign-ins and sessions' ends are audit events, with address, browser, zone and method.
+  Attempts for unknown addresses are only counted. No secret is ever in them.
+* With `new_device_notice`, staff are told once per new device (user agent without versions) that their
+  account signed in from it.
+* Under enforced single sign-on, only the administrators `break_glass` names (all of them when unset) keep a
+  password; the list must name at least one active administrator, and each such sign-in is its own audit event.
+* Audit events can go to the operator's sink (signed batches, in order, at least once, one sender) and to a
+  workspace's own webhooks on `audit.*` topics; never to a `*` webhook or an app's. The sink's secret is never
+  logged or sent.
+* A workspace may end browser sessions idle longer than `idle_minutes` (to within about two minutes); the
+  session is revoked, not only refused. A socket's own rechecks are not use.
+
 **Sites and devices** ([threat model](registry/threat-model.md), [authority](operations-authority.md))
 * Ferrum never replaces a safety system, and a safety function never depends on it.
 * Each device signs its requests with its own Ed25519 key. The server keeps public keys only. Enrollment

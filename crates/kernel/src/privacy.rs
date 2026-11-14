@@ -468,6 +468,8 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
     for passkey in passkeys {
         redact(tx, ctx, "Passkey", passkey, &["name".to_string()], reason).await?;
     }
+    // Where they signed in from, and with what browser: the events stay, without them.
+    redact(tx, ctx, crate::gate::SIGN_IN, id, &["address".to_string(), "user_agent".to_string()], reason).await?;
     // After the update: the trigger has just filed the old address.
     for table in [
         "user_role",
@@ -483,6 +485,8 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
         "passkey",
         "scim_group_member",
         "sign_in_code",
+        "sign_in_failure",
+        "known_device",
     ] {
         sqlx::query(sqlx::AssertSqlSafe(format!("delete from {table} where tenant_id = $1 and user_id = $2"))).bind(tenant).bind(id).execute(&mut **tx).await?;
     }
@@ -492,7 +496,7 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
         .execute(&mut **tx)
         .await?;
     notify_users(tx, tenant, Some(id)).await?;
-    audit::record(tx, ctx, "User", id, "erase_personal_data", None, json!({"reason": reason})).await
+    audit::record_admin(tx, ctx, "User", id, "erase_personal_data", None, json!({"reason": reason})).await
 }
 
 /// Whether an active hold covers a person under any of these addresses.
@@ -614,6 +618,21 @@ impl Kernel {
         let held = person_held(&mut tx, ctx.tenant, &emails).await?;
         // What apps keep of them in tables of their own.
         let account_id = account.as_ref().and_then(|a| a["id"].as_str()).and_then(|i| i.parse::<Uuid>().ok());
+        // Their sign-ins and sessions' ends, with the addresses and browsers they came from.
+        let sign_ins: Vec<Value> = match account_id {
+            Some(id) => {
+                sqlx::query_scalar(
+                    "select jsonb_build_object('at', at, 'action', action, 'details', diff) from audit_event \
+                     where tenant_id = $1 and entity = $2 and record_id = $3 order by id",
+                )
+                .bind(ctx.tenant)
+                .bind(crate::gate::SIGN_IN)
+                .bind(id)
+                .fetch_all(&mut *tx)
+                .await?
+            }
+            None => vec![],
+        };
         let mut apps = Vec::new();
         for app in self.hooks.personal_held() {
             for held in app.report(&mut tx, ctx.tenant, account_id, &emails).await? {
@@ -631,7 +650,7 @@ impl Kernel {
         tx.rollback().await?;
         Ok(json!({
             "email": email, "addresses": emails, "phone": phone, "records": records, "possibly": possibly, "account": account, "held": held,
-            "apps": apps, "not_searched": ctx.schema.undeclared_personal_data,
+            "sign_ins": sign_ins, "apps": apps, "not_searched": ctx.schema.undeclared_personal_data,
         }))
     }
 
@@ -910,7 +929,7 @@ impl Kernel {
             .bind(ctx.user)
             .execute(&mut *tx)
             .await?;
-        audit::record(&mut tx, ctx, "LegalHold", id, "place", None, json!({"reason": reason})).await?;
+        audit::record_admin(&mut tx, ctx, "LegalHold", id, "place", None, json!({"reason": reason})).await?;
         tx.commit().await?;
         Ok(id)
     }
@@ -938,7 +957,7 @@ impl Kernel {
         .execute(&mut *tx)
         .await?
         .rows_affected();
-        audit::record(&mut tx, ctx, "LegalHold", id, "release", None, json!({"versions_forgotten": forgotten})).await?;
+        audit::record_admin(&mut tx, ctx, "LegalHold", id, "release", None, json!({"versions_forgotten": forgotten})).await?;
         tx.commit().await?;
         Ok(())
     }
