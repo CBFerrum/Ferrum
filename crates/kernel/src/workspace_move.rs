@@ -1071,6 +1071,22 @@ impl Kernel {
             Ok(())
         };
         let copied = Box::pin(copy_rows(&mut src, &mut tx, (tenant, tenant), &tables, LEFT_BEHIND, true, &mut each)).await?;
+        // An address this installation keeps from all but the workspace that left it (crate::shell::quarantine_hosts) is
+        // no other's that moves in. Read here, after the copy's addresses and in its transaction, so a workspace leaving
+        // meanwhile is seen: its rows, which the copy meets, or (committed) what it left kept.
+        let kept: Option<(String, String)> = sqlx::query_as(
+            "select q.host, to_char(q.until, 'YYYY-MM-DD') from host_quarantine q join tenant_host h on h.host = q.host \
+             where h.tenant_id = $1 and q.until > now() and q.workspace is distinct from $1 order by q.host limit 1",
+        )
+        .bind(tenant)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((host, until)) = kept {
+            return Err(Error::Conflict(format!(
+                "the workspace has the address {host}, which another workspace here had and which is kept from every other until {until}: \
+                 abort this move, remove the address at the source, and move it again"
+            )));
+        }
         let rows: i64 = copied.values().filter_map(|v| v["rows"].as_i64()).sum();
         sqlx::query("update workspace_move set copied = $2 where workspace = $1").bind(tenant).bind(Value::Object(copied)).execute(&mut *tx).await?;
         tx.commit().await?;
@@ -1282,7 +1298,8 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         }
-        // What this installation kept of it from everyone else while it was away is its own again.
+        // What this installation kept of it from everyone else while it was away is its own again (the copy let in no
+        // address kept for another).
         sqlx::query("delete from host_quarantine where host in (select host from tenant_host where tenant_id = $1)").bind(tenant).execute(&mut *tx).await?;
         let ctx = Ctx::system(tenant, Arc::new(ferrum_meta::Schema::default()));
         audit::record(&mut tx, &ctx, "Platform", Uuid::nil(), "platform.workspace_arrived", None, json!({"move": move_id, "from": peer})).await?;
@@ -1405,7 +1422,7 @@ impl Kernel {
         // Its addresses may still point here, and its slug named them and its apps' origins: none is another workspace's
         // here; the workspace itself, coming back with its id, takes them back (crate::shell).
         crate::shell::retire_slug(&mut tx, tenant).await?;
-        crate::shell::quarantine_hosts(&mut tx, tenant).await?;
+        crate::shell::quarantine_hosts(&mut tx, tenant, true).await?;
         let mut rows = 0;
         for (table, column) in workspace_columns(&self.db, &mut tx).await?.into_iter().filter(|(t, _)| t != "tenant_slug_retired") {
             rows +=

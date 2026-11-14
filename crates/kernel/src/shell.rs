@@ -428,16 +428,18 @@ pub(crate) async fn retire_slug(tx: &mut crate::db::Tx, tenant: Uuid) -> Result<
 /// A workspace's addresses when its rows leave this database for good (deleted; moved away and finished), in `tx` before
 /// they go: kept from every other workspace as released ones are ([`HOST_QUARANTINE_DAYS`] from now, or from the end of a
 /// released one's leaving period), with no leaving or redirect period, since nothing is left to serve. All but a domain
-/// of its own that never worked, which a removal drops too.
-pub(crate) async fn quarantine_hosts(tx: &mut crate::db::Tx, tenant: Uuid) -> Result<()> {
+/// of its own that never worked, which a removal drops too. `moved`: it moved away and may come back, so they are kept as
+/// its own to take back (crate::workspace_move); a deleted workspace's are no one's. One kept already stays whose it was.
+pub(crate) async fn quarantine_hosts(tx: &mut crate::db::Tx, tenant: Uuid, moved: bool) -> Result<()> {
     sqlx::query(
-        "insert into host_quarantine (host, until) \
-         select host, coalesce(greatest(released_at, leaving_until), now()) + make_interval(days => $2) from tenant_host \
-         where tenant_id = $1 and (kind <> 'custom' or verified_at is not null or released_at is not null) \
+        "insert into host_quarantine (host, until, workspace) \
+         select host, coalesce(greatest(released_at, leaving_until), now()) + make_interval(days => $2), case when $3 then tenant_id end \
+         from tenant_host where tenant_id = $1 and (kind <> 'custom' or verified_at is not null or released_at is not null) \
          on conflict (host) do update set until = greatest(host_quarantine.until, excluded.until)",
     )
     .bind(tenant)
     .bind(HOST_QUARANTINE_DAYS as i32)
+    .bind(moved)
     .execute(&mut **tx)
     .await?;
     Ok(())

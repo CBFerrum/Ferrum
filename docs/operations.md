@@ -2007,7 +2007,8 @@ are sure of the new place. To move a workspace back to an installation it left, 
 Its addresses, whose DNS may still point at the source, are then kept there from every other workspace for a year, and
 its slug (and those it gave up before) is never another workspace's there, so no one else forms its names or its apps'
 origins (Addresses of a workspace). The workspace itself may still come back: it takes them back. Another workspace
-whose name is retired here (renamed, deleted or moved away) cannot move in under it.
+whose name is retired here (renamed, deleted or moved away) cannot move in under it, nor one with an address kept here
+for another: its copy stops (abort the move, remove the address at the source, and move it again).
 
 **What the freeze stops, and what it cannot.** Every kernel transaction of the workspace is read-only, for
 people and system work alike; every claim of background work across workspaces skips it, and so does the hourly
@@ -3318,7 +3319,8 @@ audit trail as administration, with who made it and what changed.
   kept from every other workspace for a year (`host_quarantine`), as removed ones are, but with no leaving or redirect
   period, since nothing is left to serve: a removed one for what was left of its quarantine, all but a domain of its own
   that never worked. Its slug stays retired there, with the slugs it gave up before, so its names can never be formed
-  there again; a moved workspace coming back takes its slug and names back.
+  there again; a moved workspace coming back takes its slug, names and kept addresses back, and no other workspace, one
+  moving in included, gets them before the year is out.
 
 **Certificates.** Caddy's on-demand TLS gets one certificate per name it is asked for. Under one base domain that can reach
 the certificate authority's limits per domain (Let's Encrypt allows 50 a week for one registered domain): serve the base

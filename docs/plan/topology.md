@@ -251,12 +251,15 @@ same host gets another, so an old record proves nothing. Decided:
   pointing alone. The default (`record` with a base domain) puts none, so the upgrade itself rolls back without
   `allow_older_builds`; operations.md says what an older build does meanwhile.
 - A workspace that leaves the database (`delete_tenant`; `finish_move` at the source, whose DNS may still point there)
-  leaves `host_quarantine (host, until)`: every row but a custom domain that never worked, a year from now or from a
-  removed one's leaving end; no workspace column, so no deletion, move or sandbox reaches it. `claimable` reads it with
-  `tenant_host` in one statement. Not for `delete_sandbox` (its name is documented as free again, and it has only the
-  operator's subdomain) nor an aborted move's copy (the workspace lives on at the source). A name the workspace takes back
-  when it returns (`on conflict … where tenant_host.tenant_id = excluded.tenant_id`) is its own, so arriving clears its
-  hosts' quarantine; nothing else lifts it before its time.
+  leaves `host_quarantine (host, until, workspace)`: every row but a custom domain that never worked, a year from now or
+  from a removed one's leaving end; `workspace` only for one that moved away (it may come back; a deleted one's id is not
+  kept), and not `tenant_id`, so no deletion, move or sandbox reaches it. `claimable` reads it with `tenant_host` in one
+  statement. Not for `delete_sandbox` (its name is documented as free again, and it has only the operator's subdomain)
+  nor an aborted move's copy (the workspace lives on at the source). A move's copy refuses a workspace holding a host
+  kept for another, read in the copy's transaction after its addresses (a workspace leaving meanwhile: its rows collide,
+  or its committed quarantine is seen), so what the arrival finds of its hosts is its own: a name it takes back (`on
+  conflict … where tenant_host.tenant_id = excluded.tenant_id`) and the hosts it holds come out of the quarantine.
+  Nothing else lifts it before its time.
 - Those deletions run with `session_replication_role = replica`, so the slug guard never fired there, and the loop
   deleted `tenant_slug_retired` rows too: a deleted workspace's slug, and so its names and apps' origins, could be
   taken. `delete_tenant` and `finish_move` now retire it (`retire_slug`, taking the guard's own lock before the row goes)

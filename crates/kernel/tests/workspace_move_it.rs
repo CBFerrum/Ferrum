@@ -516,7 +516,7 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     assert!(freeze_floor(&a).await.is_empty(), "finished, the source lets go");
     // Its domain may still point at A: no other workspace there may claim it for a year. Nor take its slug, which named its
     // addresses there and its apps' origins: no other workspace forms them again. It takes them back when it returns.
-    let kept: Vec<(String,)> = sql(&a, "select host from host_quarantine where host = 'erp.acme.example' and $1::uuid is not null", t).await;
+    let kept: Vec<(String,)> = sql(&a, "select host from host_quarantine where host = 'erp.acme.example' and workspace = $1", t).await;
     assert_eq!(kept, vec![("erp.acme.example".to_string(),)]);
     let taken = a
         .create_tenant(NewTenant {
@@ -600,6 +600,25 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     assert_eq!(a.route_host("sales--acme.eu.example").await.unwrap(), HostRoute::Serve { tenant: t, target: "shell".into() }, "A's name again");
     let shown = a.host_shown("sales--acme.eu.example").await.unwrap().expect("a shell address");
     assert_eq!(shown.shape.label.as_deref(), Some("Sales"), "showing what it showed");
+
+    // Anyone else is refused what A keeps: a workspace moving in with an address A keeps for no one (a deleted workspace's)
+    // stops at the copy, with nothing of it here; aborted, it works on at B.
+    let mut tx = a.db.system_tx().await.unwrap();
+    sqlx::query("insert into host_quarantine (host, until) values ('shop.gone.example', now() + interval '1 day')").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = b.db.system_tx().await.unwrap();
+    sqlx::query(
+        "insert into tenant_host (host, tenant_id, kind, target, verify_token, verified_at) values ('shop.gone.example', $1, 'custom', 'shell', 'x', now())",
+    )
+    .bind(bravo.tenant)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    refused(a.move_workspace("bravo", &back, Run::Start, &quiet).await, "shop.gone.example");
+    a.move_workspace("bravo", &back, Run::Abort, &quiet).await.expect("aborted");
+    assert_eq!(sql::<(i64,)>(&a, "select count(*) from tenant_host where tenant_id = $1", bravo.tenant).await, vec![(0,)]);
+    b.create_user(&bravo, "after@bravo.test", "After", Some(PASSWORD), &[], false).await.expect("bravo works on at B");
 
     for u in [&a_url, &b_url] {
         as_superuser(u, "revoke set on parameter session_replication_role from ferrum").await;

@@ -207,7 +207,7 @@ impl Kernel {
         // Its slug stays retired, with those it gave up before (passed over above), and its addresses are kept from every
         // other workspace (crate::shell).
         crate::shell::retire_slug(&mut tx, tenant).await?;
-        crate::shell::quarantine_hosts(&mut tx, tenant).await?;
+        crate::shell::quarantine_hosts(&mut tx, tenant, false).await?;
         for (table, column) in &columns {
             sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?;
         }
