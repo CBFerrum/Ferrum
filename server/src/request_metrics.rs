@@ -4,7 +4,8 @@
 //! The labels are fixed when the server starts: `app` is one of the apps compiled into this build, or `other`; `class` is
 //! one of [`CLASSES`]. Nothing a client sends adds a label: the `x-ferrum-ui` header only picks among the known apps. So
 //! the series are at most (apps + 1) × 9 classes × (12 buckets + sum + count), and only those with requests are written.
-//! Counting is a few atomic additions in a table made at start: no allocation, no lock.
+//! Counting is a few atomic additions in a table made at start: no allocation, no lock. The layer is the outermost
+//! (`after_routes`), so a request a zone refuses or a fenced database answers with 503 is counted too.
 
 use axum::extract::Request;
 use axum::middleware::Next;
@@ -217,5 +218,23 @@ mod tests {
         assert!(text.contains("ferrum_http_request_duration_seconds_bucket{app=\"other\",class=\"page\",le=\"0.1\"} 0"), "{text}");
         assert!(text.contains("ferrum_http_request_duration_seconds_count{app=\"other\",class=\"page\"} 1000"), "{text}");
         assert_eq!(r.counts.len(), 3 * CLASSES.len() * SLOTS, "fixed when made");
+    }
+
+    /// Outermost, so a request refused inside (a zone's refusal, a fenced database's 503) is counted where it belongs.
+    #[tokio::test]
+    async fn a_refused_request_is_counted() {
+        use tower::ServiceExt;
+        Requests::install(requests());
+        let app = axum::Router::new()
+            .route("/api/ext/board/cards", axum::routing::post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }))
+            .route("/crm/", axum::routing::get(|| async { axum::http::StatusCode::FORBIDDEN }))
+            .layer(axum::middleware::from_fn(count));
+        for (method, path) in [("POST", "/api/ext/board/cards"), ("GET", "/crm/")] {
+            let req = axum::http::Request::builder().method(method).uri(path).body(axum::body::Body::empty()).unwrap();
+            assert!(!app.clone().oneshot(req).await.unwrap().status().is_success(), "refused inside");
+        }
+        let text = text();
+        assert!(text.contains("ferrum_http_request_duration_seconds_count{app=\"board\",class=\"app\"} 1"), "{text}");
+        assert!(text.contains("ferrum_http_request_duration_seconds_count{app=\"crm\",class=\"page\"} 1"), "{text}");
     }
 }
