@@ -385,6 +385,11 @@ impl Kernel {
             .await?;
             tx.commit().await?;
             let Some(lease) = lease else { continue };
+            // A sandbox sends nothing outside: what it queued for outside is set aside, saying so (sandbox.rs).
+            if let Some(why) = self.sandbox_holds(ev).await? {
+                self.set_event_aside(ev.id, lease, &why).await?;
+                continue;
+            }
             if let Some(why) = self.chain_stops(ev).await? {
                 // Stopped before any handler runs, and kept where administrators look, saying why.
                 tracing::warn!(event = ev.id, topic = %ev.topic, "event chain stopped: {why}");
@@ -405,7 +410,7 @@ impl Kernel {
                 priority: None,
                 depth: ev.depth.saturating_add(1),
             };
-            let outcome = trace.scope(tokio::time::timeout(EVENT_TIMEOUT, self.handle_event(ev))).await;
+            let outcome = trace.scope(tokio::time::timeout(EVENT_TIMEOUT, crate::sandbox::in_hand(ev.tenant_id, self.handle_event(ev)))).await;
             let outcome = outcome.unwrap_or_else(|_| Err(Error::Unavailable(format!("handlers took longer than {} s", EVENT_TIMEOUT.as_secs()))));
             let mut tx = self.db.system_tx().await?;
             match outcome {
@@ -697,6 +702,7 @@ impl Kernel {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        self.set_deliveries_aside(ev).await?;
         crate::automation::run_for_event(self, ev).await?;
         for sink in self.hooks.event_sinks() {
             sink.on_event(self, ev).await?;
@@ -762,6 +768,8 @@ impl Kernel {
         .await?;
         tx.commit().await?;
         let outcomes = futures::future::join_all(due.iter().map(|d| async move {
+            // Nothing goes out for a sandbox (sandbox.rs).
+            self.outward(d.tenant_id).await.map_err(|e| (None, e.to_string()))?;
             // One whose secret cannot be opened is not sent unsigned: it fails, and says why.
             let secret = self.webhook_secret(d.tenant_id, d.webhook_id, &d.secret).map_err(|e| (None, e.to_string()))?;
             self.post_webhook(&d.url, &secret, &d.topic, d.id, &d.payload).await
@@ -784,7 +792,7 @@ impl Kernel {
                     .await?;
                 }
                 Err((code, err)) => {
-                    let dead = attempts >= WEBHOOK_MAX_ATTEMPTS;
+                    let dead = attempts >= WEBHOOK_MAX_ATTEMPTS || err.contains(crate::sandbox::SANDBOX);
                     sqlx::query(
                         "update webhook_delivery set status = case when $5 then 'dead' else 'pending' end, attempts = $3, \
                          response_code = $4, last_error = $6, next_attempt_at = now() + make_interval(secs => $7), updated_at = now() \

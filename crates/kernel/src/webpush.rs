@@ -336,7 +336,7 @@ impl Kernel {
             return self.forget_push(tenant, session, &endpoint).await;
         };
         let sealed = encrypt(&key, &secret, message.to_string().as_bytes())?;
-        let (client, url) = match self.vetted_client(&endpoint, self.settings.webhooks_allow_private, SEND_TIMEOUT, "Ferrum").await {
+        let (client, url) = match self.vetted_client_for(tenant, &endpoint, self.settings.webhooks_allow_private, SEND_TIMEOUT, "Ferrum").await {
             Ok(c) => c,
             // Not a public address (any more): nothing will reach it.
             Err(Error::Invalid(why)) => {

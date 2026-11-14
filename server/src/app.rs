@@ -622,6 +622,8 @@ impl Hooks for App {
         tasks.register(crate::tasks::CheckFiles);
         tasks.register(crate::tasks::MoveWorkspace);
         tasks.register(crate::tasks::FinishMove);
+        tasks.register(crate::tasks::CopyWorkspace);
+        tasks.register(crate::tasks::DeleteSandbox);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

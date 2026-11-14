@@ -8,10 +8,30 @@ use crate::Kernel;
 use crate::error::{Error, Result};
 use std::net::SocketAddr;
 use std::time::Duration;
+use uuid::Uuid;
 
 impl Kernel {
-    /// A client for `url` and the parsed URL, or why the address is refused.
+    /// [`Kernel::vetted_client`] for a call made for `tenant`: refused for a sandbox, which reaches nothing outside
+    /// (sandbox.rs). Every call made for a workspace goes through this one.
+    pub async fn vetted_client_for(
+        &self,
+        tenant: Uuid,
+        url: &str,
+        allow_private: bool,
+        timeout: Duration,
+        agent: &str,
+    ) -> Result<(reqwest::Client, reqwest::Url)> {
+        self.outward(tenant).await?;
+        self.vetted_client(url, allow_private, timeout, agent).await
+    }
+
+    /// A client for `url` and the parsed URL, or why the address is refused. Inside a workspace's background work (an
+    /// event's handlers, a job) it is refused for a sandbox as [`Kernel::vetted_client_for`] is; elsewhere a call made
+    /// for a workspace uses that one.
     pub async fn vetted_client(&self, url: &str, allow_private: bool, timeout: Duration, agent: &str) -> Result<(reqwest::Client, reqwest::Url)> {
+        if let Some(tenant) = crate::sandbox::workspace_in_hand() {
+            self.outward(tenant).await?;
+        }
         let unreachable = |e: String| Error::Unavailable(format!("{url} cannot be reached: {e}"));
         let parsed = reqwest::Url::parse(url).map_err(|_| Error::invalid(format!("{url} is not a URL")))?;
         if parsed.scheme() != "https" && !(allow_private && parsed.scheme() == "http") {

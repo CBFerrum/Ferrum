@@ -305,7 +305,7 @@ impl Kernel {
 
     async fn attempt(&self, handler: &dyn JobHandler, job: &Job, stopping: &mut watch::Receiver<bool>) -> Ended {
         let work = async {
-            match tokio::time::timeout(handler.timeout(), handler.run(self, job)).await {
+            match tokio::time::timeout(handler.timeout(), crate::sandbox::in_hand(job.tenant_id, handler.run(self, job))).await {
                 Ok(Ok(result)) => Ended::Done(result),
                 Ok(Err(e)) => Ended::Failed(e),
                 Err(_) => Ended::Failed(Error::Unavailable(format!("it took longer than {} s", handler.timeout().as_secs()))),

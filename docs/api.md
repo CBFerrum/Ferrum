@@ -593,7 +593,12 @@ Pages, for browsers, with the session cookie:
   client address. Mail, notifications, digests, action links and opt-out links are built this way
   when the link host is set.
 * `GET /login?next=` → the sign-in page. On the portal's host, and on the way to `/portal/`, it
-  offers an emailed code first.
+  offers an emailed code first. A sandbox's says so in its heading ("Sign in to Acme (sandbox)") and
+  in `workspace.sandbox` of its boot.
+* A sandbox's pages (docs/operations.md, "A sandbox of a workspace"): the bootstrap, a signed-in page's
+  and a public page's alike, carries `sandbox: {of, until}` (the workspace it is a copy of, as the
+  command named it, and its last day, `YYYY-MM-DD`); `sandbox: null` for a live workspace. The
+  interface shows a banner from it.
 * `GET /portal/` → the workspace's portal ([plan](plan/apps-ui.md) §9.1): the pages the apps give
   this person (`shell.portal`), straight to the only one for a portal person who has one; `GET
   /portal/{id}/…` → that page, the app's interface with `<ferrum-portal-bar>` (the workspace, the

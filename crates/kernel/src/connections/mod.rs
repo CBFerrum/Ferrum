@@ -1114,7 +1114,10 @@ impl Kernel {
     /// Makes `req` within `reach`: every hop, the first and each redirect's, checked as [`Kernel::vet`] says; at most
     /// [`MAX_REDIRECTS`]; the answer read up to its size limit. A service that does not answer in time, or at all, is
     /// `Unavailable` (worth trying again); a refused address or an answer too large is `Invalid`.
-    pub(crate) async fn fetch(&self, mut req: Request, reach: &Reach) -> Result<Answer> {
+    ///
+    /// Made for `tenant`: refused for a sandbox, which reaches nothing outside (sandbox.rs).
+    pub(crate) async fn fetch(&self, tenant: Uuid, mut req: Request, reach: &Reach) -> Result<Answer> {
+        self.outward(tenant).await?;
         let mut reach = reach.clone();
         if reach.hosts.is_empty() {
             reach.hosts.push(req.url.host_str().unwrap_or_default().trim_matches(['[', ']']).to_string());
@@ -1585,7 +1588,7 @@ impl Kernel {
                         if let Some(cap) = op.answer_cap() {
                             reach.max_bytes = cap;
                         }
-                        let got = self.fetch(req, &reach).await;
+                        let got = self.fetch(conn.tenant, req, &reach).await;
                         if let Ok(a) = &got {
                             oauth::remember_nonce(conn.id, a);
                         }
@@ -1831,7 +1834,7 @@ impl Kernel {
                 let address = at(&a.body, Some(p)).ok_or_else(|| Error::invalid(format!("the answer gives no file address at {p}")))?;
                 let url = a.url.join(&address).map_err(|_| Error::invalid("the file's address is not an address"))?;
                 let reach = Reach { max_bytes: cap, ..conn.reach() };
-                got = self.fetch(Request { method: reqwest::Method::GET, url, headers: vec![], body: None }, &reach).await?;
+                got = self.fetch(conn.tenant, Request { method: reqwest::Method::GET, url, headers: vec![], body: None }, &reach).await?;
                 if !(200..300).contains(&got.status) {
                     let said = format!("the file's address answered {}", got.status);
                     return Err(if TEMPORARY.contains(&got.status) { Error::Unavailable(said) } else { Error::invalid(said) });
