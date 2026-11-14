@@ -506,7 +506,7 @@ before a floor is refused at start, the older ones included.
 | `key_networks` | an API key is given networks | 2026-11-14T03:09:38Z |
 | `move_fence` | `plan_move` marks the database (until cancelled, adopted or not followed) | 2026-11-14T01:33:19Z |
 | `workspace_freeze` | `move_workspace` starts, on both sides (until it arrives, at the target; until `finish_move`, at the source; both at an abort) | 2026-11-14T04:00:04Z |
-| `sandbox` | a sandbox is made (until the last one is deleted) | 2026-11-14T06:26:16Z |
+| `sandbox` | `copy_workspace` makes a sandbox (until `delete_sandbox` deletes the last one) | 2026-11-14T06:47:14Z |
 
 * **What a refused rollback says.** The usual refusal (*Start a build from … or newer*), and, from a build that knows
   floors, which protections are switched on and since which build. A build from before floors existed prints only the
@@ -515,16 +515,23 @@ before a floor is refused at start, the older ones included.
   newer build, removes the floors (all, or one feature's), works the recorded value out again, prints exactly which
   protections builds from before those dates will then not enforce and the oldest build that may start, and records
   `platform.allow_older_builds` on the audit trail as the system's. While a move holds its floor it refuses, unless
-  `force:yes`: finish, cancel or abort the move first, since an older build would not honour it.
+  `force:yes`: finish, cancel or abort the move first, since an older build would not honour it. It lasts until the
+  next start of a build that knows floors (below), which is what a rollback needs: run it, then roll back.
+* **Every start looks at what is in use.** A build level with the database puts floors in place at each start, under the
+  start hold, for what is in use however it got there (saved by a build from before floors, or after
+  `allow_older_builds`): any workspace with staff networks, an idle timeout or a break-glass list, any key pinned to
+  networks, any sandbox, a move mark, and any workspace move not finished; zones from the server's settings. This is
+  one statement: `tenant` (a row per workspace) and `api_key` are read until the first match, sandboxes through their
+  index, and the two move tables hold a row per move.
 * **Turning a protection off does not lower its floor.** A workspace that clears its networks, or zone settings taken
   out, leave the floor where it is: the operator may turn them on again, and a stale floor costs only that a rollback
   needs `allow_older_builds`. A floor comes back by itself: zones' when a server starts with them, a workspace's when it
-  saves the setting, a move's when one starts. A guest of a newer build never writes or removes a floor, and the
+  saves the setting, a move's when one starts, and all of them at the next start. A guest of a newer build may raise a
+  floor of a protection it knows (that only refuses more) but never removes one or changes the recorded build, and the
   schema sync never records a value below the floors, whichever build syncs.
 * **What it does not cover.** Only starts are refused. A replica of an older build that is already running when a
   protection is switched on keeps running and does not enforce it: finish a rollout before switching protections on,
-  and switch them on with every replica on a build that enforces them. A guest of a newer build that saves one of these
-  settings writes no floor (it is the newer build's database).
+  and switch them on with every replica on a build that enforces them.
 * **Seeing it.** `ferrum task doctor` lists the floors in effect, when each was switched on and by which build, and the
   oldest build that may start (`window.floors`).
 

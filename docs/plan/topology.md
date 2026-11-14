@@ -68,17 +68,20 @@ the two differ, this file wins.
   can do that is not (a new required column without a default, a changed type, a dropped column) and make
   each either impossible or covered by the check.
 - **Floors (14 November 2026).** A rollback must never silently drop a protection that is switched on. Each
-  protection an older build in the window does not enforce (zones levels 1 and 2, staff networks, key networks, the
-  idle timeout, break-glass, a planned move's fence, a moving workspace's freeze, sandboxes) has a floor: a hand-kept
-  date next to the feature, the committer date of the merge that first enforced it on main (a branch commit's date
-  would let in main builds made between it and the merge). `window::require` puts it in `window_floor` where the
-  protection is switched on; temporary ones (moves, sandboxes) are held per holder and go with the last
-  (`window::release`). The floors act through the value every window-aware build already reads: the recorded
-  `schema_compatible_from` is the later of the syncing build's own `COMPATIBLE_FROM` (kept as
-  `schema_compatible_from_own`) and the latest floor, and only `record`, `require`, `release` and
-  `allow_older_builds` move it, under one transaction lock. A guest never writes floors; a build never writes one
-  later than itself. Turning a protection off does not lower its floor; `ferrum task allow_older_builds` is the
-  deliberate way down. Only starts are refused: replicas already running are not stopped.
+  protection an older build in the window does not enforce (zones levels 1 and 2, staff networks, key networks,
+  the idle timeout, break-glass, a planned move's fence, a moving workspace's freeze, sandboxes) has a floor: a
+  hand-kept date next to the feature, the committer date of the merge commit on main that first enforced it.
+  Images are built from main, and a build's date is its commit's, so the merge is the first build that enforces
+  it; the date of the branch's own commit would be earlier and would let in main builds made between it and the
+  merge, which do not. `window::require` puts it in `window_floor` where the protection is switched on; temporary
+  ones (moves, sandboxes) are held per holder and go with the last (`window::release`). The floors act through the
+  value every window-aware build already reads: the recorded `schema_compatible_from` is the later of the syncing
+  build's own `COMPATIBLE_FROM` (kept as `schema_compatible_from_own`) and the latest floor, and only `record`,
+  `require`, `release` and `allow_older_builds` move it, under one transaction lock. A build never writes a floor
+  later than itself, and a guest may raise a floor but never release or lower one. Every start of a level build
+  puts floors in place for what is in use, so `allow_older_builds` lasts until the next such start. Turning a
+  protection off does not lower its floor; `ferrum task allow_older_builds` is the deliberate way down. Only
+  starts are refused: replicas already running are not stopped.
 
 ## D3. Pools (phase 1, chart)
 

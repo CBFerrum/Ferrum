@@ -828,9 +828,7 @@ impl Task for AllowOlderBuilds {
             Some(from) => println!("The oldest build that may start now is of {}.", from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
             None => println!("No build has recorded itself here yet."),
         }
-        println!(
-            "Floors come back by themselves: zones' when a server of a newer build starts with them, a workspace's when it saves the setting again, a move's when one starts."
-        );
+        println!("This lasts until the next start of a build that knows floors: it puts them back for whatever is still in use. Roll back now.");
         Ok(())
     }
 }

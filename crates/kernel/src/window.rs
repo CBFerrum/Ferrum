@@ -61,12 +61,6 @@ pub struct Floor {
     pub temporary: bool,
 }
 
-/// Sandboxes that must never send anything. Not on main yet: the date of the commit that added this.
-// called by `copy_workspace` (require, holder: the sandbox's workspace id) and `delete_sandbox` (release, same holder),
-// wired when the sandbox change merges.
-pub const SANDBOX: Floor =
-    Floor { feature: "sandbox", since: "2026-11-14T06:26:16Z", what: "sandboxes never send mail, messages or calls to anyone outside", temporary: true };
-
 /// Every floor this build knows.
 pub const FLOORS: &[&Floor] = &[
     &crate::zones::FLOOR,
@@ -77,7 +71,7 @@ pub const FLOORS: &[&Floor] = &[
     &crate::gate::IDLE_FLOOR,
     &crate::gate::BREAK_GLASS_FLOOR,
     &crate::workspace_move::FLOOR,
-    &SANDBOX,
+    &crate::sandbox::FLOOR,
 ];
 
 fn parse(s: &str) -> DateTime<Utc> {
@@ -192,7 +186,7 @@ async fn settle(conn: &mut PgConnection) -> Result<()> {
     Ok(())
 }
 
-/// Whether a newer build than this one has synced the schema: this one is its guest and writes no floors.
+/// Whether a newer build than this one has synced the schema: this one is its guest, and releases and lowers no floor.
 async fn guest_here(conn: &mut PgConnection) -> Result<bool> {
     Ok(recorded(conn).await?.is_some_and(|r| r.build > build_date()))
 }
@@ -200,10 +194,12 @@ async fn guest_here(conn: &mut PgConnection) -> Result<bool> {
 /// Where a protection is switched on, before it takes effect: from now on no build from before `floor.since` starts on
 /// this database. `holder`: what holds a temporary floor (a move's id or a workspace's), `""` for a lasting one. Inside
 /// a transaction (it takes a transaction lock, so replicas and requests doing this at once leave one row and the right
-/// value). Done again, nothing changes; done by a guest of a newer build, nothing at all.
+/// value). Done again, nothing changes. A guest of a newer build does it too, for the features it knows: raising a
+/// floor only refuses more, and it leaves the recorded build and that build's own `COMPATIBLE_FROM` alone. Releasing and
+/// lowering are never a guest's.
 pub async fn require(conn: &mut PgConnection, floor: &Floor, holder: &str) -> Result<()> {
     lock_floors(conn).await?;
-    if guest_here(conn).await? || !have_floors(conn).await? {
+    if !have_floors(conn).await? {
         return Ok(());
     }
     // A build never puts a floor later than itself, which would keep its own kind out (a local build can carry an
@@ -455,6 +451,51 @@ impl Kernel {
         Ok(())
     }
 
+    /// At every start of a build level with the database, under the start hold: the floors of what is in use, whoever
+    /// switched it on (a build from before floors, or one after `allow_older_builds`). Zones are the server's (its
+    /// settings, at start). Only adds: a floor of something no longer in use stays until `allow_older_builds`.
+    /// Cost: one statement. `tenant` (a row per workspace) is read for the three workspace settings, stopping at the
+    /// first match; `api_key` (a few rows per workspace, never the size of the event or audit tables) likewise, a scan
+    /// of milliseconds when no key is pinned; sandboxes go through `tenant_sandbox_of`; `platform_move` holds at most one
+    /// row and `workspace_move` one per move. No index is added: building one would lock `api_key` during the upgrade.
+    async fn floors_in_use(&self) -> Result<()> {
+        let mut tx = self.db.system_tx_through_move().await?;
+        if !have_floors(&mut tx).await? {
+            return Ok(());
+        }
+        type InUse = (bool, bool, bool, bool, Vec<String>, Vec<String>, Vec<String>);
+        let (networks, keys, idle, glass, sandboxes, marks, moves): InUse = sqlx::query_as(
+            "select \
+               exists (select 1 from tenant where jsonb_typeof(settings->'staff_networks'->'networks') = 'array' \
+                 and jsonb_array_length(settings->'staff_networks'->'networks') > 0), \
+               exists (select 1 from api_key where networks is not null and cardinality(networks) > 0 and revoked_at is null), \
+               exists (select 1 from tenant where jsonb_typeof(settings->'idle_minutes') = 'number' and (settings->>'idle_minutes')::numeric > 0), \
+               exists (select 1 from tenant where jsonb_typeof(settings->'break_glass') = 'array'), \
+               array(select id::text from tenant where sandbox_of is not null), \
+               array(select id::text from platform_move), \
+               array(select workspace::text from workspace_move where finished_at is null and state <> 'arrived')",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        for (on, floor) in [
+            (networks, &crate::gate::STAFF_NETWORKS_FLOOR),
+            (keys, &crate::gate::KEY_NETWORKS_FLOOR),
+            (idle, &crate::gate::IDLE_FLOOR),
+            (glass, &crate::gate::BREAK_GLASS_FLOOR),
+        ] {
+            if on {
+                require(&mut tx, floor, "").await?;
+            }
+        }
+        for (holders, floor) in [(sandboxes, &crate::sandbox::FLOOR), (marks, &crate::moves::FLOOR), (moves, &crate::workspace_move::FLOOR)] {
+            for h in holders {
+                require(&mut tx, floor, &h).await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The floors in effect and what the database records (the doctor).
     pub async fn floors(&self) -> Result<(Vec<InEffect>, Option<Recorded>)> {
         let mut conn = self.db.pool.acquire().await?;
@@ -518,7 +559,13 @@ impl Kernel {
         let standing = standing_here(&mut conn, &self.db).await;
         let hold = StartHold(conn);
         match standing? {
-            Standing::Level => Ok(Some(hold)),
+            Standing::Level => match self.floors_in_use().await {
+                Ok(()) => Ok(Some(hold)),
+                Err(e) => {
+                    hold.release().await;
+                    Err(e)
+                }
+            },
             Standing::Guest(_) => {
                 hold.release().await;
                 Ok(None)

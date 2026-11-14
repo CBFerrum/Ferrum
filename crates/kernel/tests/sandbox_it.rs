@@ -205,6 +205,14 @@ async fn queue(k: &Kernel, tenant: Uuid, topic: &str) {
 
 fn quiet(_: &str) {}
 
+/// The holders of the sandbox floor (crates/kernel/src/window.rs), in order.
+async fn floor_holders(k: &Kernel) -> Vec<String> {
+    let (floors, _) = k.floors().await.unwrap();
+    let mut h: Vec<String> = floors.into_iter().filter(|f| f.feature == ferrum_kernel::sandbox::FLOOR.feature).map(|f| f.holder).collect();
+    h.sort();
+    h
+}
+
 fn refused(r: Result<Value>, says: &str) {
     match r {
         Err(Error::Conflict(m)) | Err(Error::Unavailable(m)) | Err(Error::NotFound(m)) => assert!(m.contains(says), "{m}"),
@@ -331,8 +339,10 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     // finishes and delete_sandbox removes.
     assert!(a.copy_workspace("acme", "acme-crash", &here(Some(Halt::BeforeCommit), false), &quiet).await.is_err());
     assert!(sql::<(i64,)>(&a, "select count(*) from tenant where slug = 'acme-crash' and $1::uuid is not null", t).await[0].0 == 0, "nothing");
+    assert!(floor_holders(&a).await.is_empty(), "and no floor");
     a.copy_workspace("acme", "acme-crash", &here(Some(Halt::BeforeFiles), false), &quiet).await.unwrap();
     let crashed = id_of(&a, "acme-crash").await;
+    assert_eq!(floor_holders(&a).await, vec![crashed.to_string()], "a sandbox never exists without its floor");
     assert!(matches!(a.outward(crashed).await, Err(Error::Forbidden(_))), "marked, and sends nothing");
     let crashed_key = file_key.replace(&t.to_string(), &crashed.to_string());
     assert!(!dir_a.join(&crashed_key).exists());
@@ -340,6 +350,7 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     a.copy_workspace("acme", "acme-crash", &here(None, true), &quiet).await.expect("resumed");
     assert_eq!(std::fs::read(dir_a.join(&crashed_key)).unwrap(), b"kept with the workspace");
     a.delete_sandbox("acme-crash").await.unwrap();
+    assert!(floor_holders(&a).await.is_empty(), "deleted, its floor goes");
 
     // Two sandboxes beside the live workspace, in its own database.
     let said = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -351,6 +362,9 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     a.copy_workspace("acme", "acme-two", &Copy { base_domain: None, ..here(None, false) }, &quiet).await.expect("a second one");
     let (sb, two) = (id_of(&a, "acme-try").await, id_of(&a, "acme-two").await);
     assert_ne!(sb, two);
+    let mut both = vec![sb.to_string(), two.to_string()];
+    both.sort();
+    assert_eq!(floor_holders(&a).await, both, "each sandbox holds the floor");
     let said = said.lock().unwrap().join("\n");
     assert!(said.contains("single sign-on was required there"), "{said}");
 
@@ -574,11 +588,14 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     refused(a.delete_sandbox("acme").await, "live workspace");
     a.delete_sandbox("acme-try").await.unwrap();
     assert_eq!(count(&a, "app_user", sb).await, 0);
+    assert_eq!(floor_holders(&a).await, vec![two.to_string()], "the second sandbox keeps the floor");
     assert!(!dir_a.join(&sb_key).exists());
     assert!(dir_a.join(&file_key).exists(), "the live workspace's file is its own");
     assert!(a.expired_sandboxes().await.unwrap().is_empty());
     run(&a, "update tenant set sandbox_until = current_date - 1 where id = $1", two).await;
     assert_eq!(a.expired_sandboxes().await.unwrap().iter().map(|e| e.0.as_str()).collect::<Vec<_>>(), vec!["acme-two"]);
+    a.delete_sandbox("acme-two").await.unwrap();
+    assert!(floor_holders(&a).await.is_empty(), "the last sandbox deleted, the floor goes");
 
     for u in [&a_url, &b_url] {
         as_superuser(u, "revoke set on parameter session_replication_role from ferrum").await;
