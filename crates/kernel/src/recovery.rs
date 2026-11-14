@@ -204,12 +204,9 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
-        // Its slug stays retired, as the slug guard keeps every slug given up: that trigger does not fire with triggers off,
-        // and the slugs it gave up before stay too (passed over above). Its addresses are kept from every other workspace.
-        sqlx::query("insert into tenant_slug_retired (slug, tenant_id) select slug, id from tenant where id = $1 on conflict (slug) do nothing")
-            .bind(tenant)
-            .execute(&mut *tx)
-            .await?;
+        // Its slug stays retired, with those it gave up before (passed over above), and its addresses are kept from every
+        // other workspace (crate::shell).
+        crate::shell::retire_slug(&mut tx, tenant).await?;
         crate::shell::quarantine_hosts(&mut tx, tenant).await?;
         for (table, column) in &columns {
             sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?;

@@ -66,8 +66,9 @@ pub enum Run {
     Abort,
 }
 
-/// Tables that do not travel: sessions and what hangs on them (people sign in again; devices subscribe again), and
-/// what only lives for minutes (codes, sign-in flows, direct uploads in progress).
+/// Tables that do not travel: sessions and what hangs on them (people sign in again; devices subscribe again), what only
+/// lives for minutes (codes, sign-in flows, direct uploads in progress), and the slugs retired here, which are this
+/// installation's record of the names it gave out (crate::shell::retire_slug): a workspace coming back finds its own.
 pub(crate) const LEFT_BEHIND: &[&str] = &[
     "user_session",
     "push_subscription",
@@ -82,6 +83,7 @@ pub(crate) const LEFT_BEHIND: &[&str] = &[
     "message_code",
     "file_upload",
     "saml_logout",
+    "tenant_slug_retired",
 ];
 
 /// Columns a read changes (when a key or a person was last seen): left out of the comparison that proves nothing changed
@@ -677,9 +679,19 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let taken: Option<String> =
             sqlx::query_scalar("select slug from tenant where id = $1 or slug = $2").bind(tenant).bind(slug).fetch_optional(&mut *tx).await?;
+        // A slug another workspace gave up here (renamed, deleted, or moved away) is never anyone else's here: the guard
+        // that says so does not see a move's copy, which turns triggers off. The workspace's own comes back to it.
+        let retired: bool = sqlx::query_scalar("select exists (select 1 from tenant_slug_retired where slug = $1 and tenant_id <> $2)")
+            .bind(slug)
+            .bind(tenant)
+            .fetch_one(&mut *tx)
+            .await?;
         tx.commit().await?;
         if let Some(t) = taken {
             return Err(Error::Conflict(format!("this installation has a workspace {t} with that name or id already")));
+        }
+        if retired {
+            return Err(Error::Conflict(format!("the name {slug} belonged to another workspace here, and is never used again here")));
         }
         let opened = self.prove_keys(source, tenant, from, &here).await?;
         let unknown: Vec<String> = self.unknown_sealed(source, tenant, &here).await?.into_iter().filter(|c| !from.not_sealed.contains(c)).collect();
@@ -1270,6 +1282,8 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         }
+        // What this installation kept of it from everyone else while it was away is its own again.
+        sqlx::query("delete from host_quarantine where host in (select host from tenant_host where tenant_id = $1)").bind(tenant).execute(&mut *tx).await?;
         let ctx = Ctx::system(tenant, Arc::new(ferrum_meta::Schema::default()));
         audit::record(&mut tx, &ctx, "Platform", Uuid::nil(), "platform.workspace_arrived", None, json!({"move": move_id, "from": peer})).await?;
         // This installation's running replicas (the move is a task, a process of its own) serve its addresses at once: one
@@ -1300,7 +1314,8 @@ impl Kernel {
         sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
         sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
         let mut rows = 0;
-        for (table, column) in workspace_columns(&self.db, &mut tx).await? {
+        // The slugs retired here are this installation's, never the copy's (LEFT_BEHIND).
+        for (table, column) in workspace_columns(&self.db, &mut tx).await?.into_iter().filter(|(t, _)| t != "tenant_slug_retired") {
             rows +=
                 sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?.rows_affected();
         }
@@ -1387,11 +1402,12 @@ impl Kernel {
         sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
         sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
         crate::window::release(&mut tx, &FLOOR, &tenant.to_string()).await?;
-        // Its addresses may still point here: kept from every other workspace. (Its slug is not retired here: the workspace
-        // may come back, bringing the slugs it retired, which a move copies and counts.)
+        // Its addresses may still point here, and its slug named them and its apps' origins: none is another workspace's
+        // here; the workspace itself, coming back with its id, takes them back (crate::shell).
+        crate::shell::retire_slug(&mut tx, tenant).await?;
         crate::shell::quarantine_hosts(&mut tx, tenant).await?;
         let mut rows = 0;
-        for (table, column) in workspace_columns(&self.db, &mut tx).await? {
+        for (table, column) in workspace_columns(&self.db, &mut tx).await?.into_iter().filter(|(t, _)| t != "tenant_slug_retired") {
             rows +=
                 sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?.rows_affected();
         }

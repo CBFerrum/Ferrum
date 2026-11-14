@@ -409,6 +409,22 @@ pub async fn domain_record(resolvers: &[std::net::SocketAddr], host: &str, token
     values.len() == 1 && values.contains(format!("ferrum-domain={token}").as_bytes())
 }
 
+/// A workspace's slugs when its rows leave this database for good (deleted; moved away and finished), in `tx` before they
+/// go: retired, as the slug guard retires every slug given up (that trigger does not fire while these deletions turn
+/// triggers off), beside those it gave up before. `tenant_slug_retired` is the installation's record, not the workspace's
+/// rows: a deletion passes over it and a move leaves it behind, so no other workspace takes one of them here again (nor
+/// forms the names and apps' origins they named), while the workspace itself, coming back with its id, does. The guard's
+/// own lock comes first, before the workspace's row goes: one made with that slug at that moment waits, then finds it
+/// retired.
+pub(crate) async fn retire_slug(tx: &mut crate::db::Tx, tenant: Uuid) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('ferrum-slug:' || slug, 0)) from tenant where id = $1").bind(tenant).execute(&mut **tx).await?;
+    sqlx::query("insert into tenant_slug_retired (slug, tenant_id) select slug, id from tenant where id = $1 on conflict (slug) do nothing")
+        .bind(tenant)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// A workspace's addresses when its rows leave this database for good (deleted; moved away and finished), in `tx` before
 /// they go: kept from every other workspace as released ones are ([`HOST_QUARANTINE_DAYS`] from now, or from the end of a
 /// released one's leaving period), with no leaving or redirect period, since nothing is left to serve. All but a domain

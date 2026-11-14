@@ -252,11 +252,17 @@ same host gets another, so an old record proves nothing. Decided:
   leaves `host_quarantine (host, until)`: every row but a custom domain that never worked, a year from now or from a
   removed one's leaving end; no workspace column, so no deletion, move or sandbox reaches it. `claimable` reads it with
   `tenant_host` in one statement. Not for `delete_sandbox` (its name is documented as free again, and it has only the
-  operator's subdomain) nor an aborted move's copy (the workspace lives on at the source).
+  operator's subdomain) nor an aborted move's copy (the workspace lives on at the source). A name the workspace takes back
+  when it returns (`on conflict … where tenant_host.tenant_id = excluded.tenant_id`) is its own, so arriving clears its
+  hosts' quarantine; nothing else lifts it before its time.
 - Those deletions run with `session_replication_role = replica`, so the slug guard never fired there, and the loop
   deleted `tenant_slug_retired` rows too: a deleted workspace's slug, and so its names and apps' origins, could be
-  taken. `delete_tenant` now retires it in the same transaction and keeps the earlier ones. Not `finish_move`: a move
-  copies and counts a workspace's retired slugs, so one kept at the source would stop it coming back.
+  taken. `delete_tenant` and `finish_move` now retire it (`retire_slug`, taking the guard's own lock before the row goes)
+  and keep the earlier ones. `tenant_slug_retired` is the installation's record, not the workspace's rows: a move leaves
+  it behind (`LEFT_BEHIND`) rather than copying and counting it, which is what had stopped a workspace coming back, and
+  an aborted copy keeps it. The workspace coming back (same id) takes its slug and names back; `may_move` refuses a
+  workspace whose slug is retired here for another one, which the guard cannot see under a move's copy. Arriving clears
+  the quarantine of the hosts it holds again.
 
 **Forwarding addresses** (second slice). `tenant_host.forward`, part of `HostShape`, set by `POST` and `PATCH` on a
 `shell` address that is not the main one nor the operator's. It reuses what a moved address does: `route_host` answers
@@ -310,7 +316,6 @@ it; the list's limit names no row).
 | A domain proven once comes back by pointing alone: if its owner changes and the new owner points it here, it opens the old workspace again | The row never left that workspace; seven failed checks unverify it, and the new owner can ask the operator to release it |
 | An older build ignores `host_quarantine` and the record | `record` puts a floor in place; in `points` mode an older build could hand a deleted workspace's domain on early, as it could any domain pointing here |
 | A deleted sandbox's slug stays free (documented: refresh by the same name) | Not changed: a sandbox has only the operator's `{as}.{base}` |
-| A moved workspace's slug is free at the source after `finish_move`, so another workspace there could get `{slug}.{base}` (`ensure_subdomains` does not ask `claimable`) | Its custom domains are quarantined there; its names under that base were released when it arrived elsewhere |
 | During a forwarding address's leaving period visitors get `308`, which browsers keep: turning forwarding off soon after leaves them going to the main address | The leaving machinery as it is; after the period every answer is `302` (`no-store`) |
 | A forwarding address in a zone that admits no staff names the main address to anyone | As a leaving address does; the main address's own zone still decides who is admitted there |
 

@@ -514,9 +514,22 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     assert!(a.finish_move("acme", " ").await.is_err(), "it takes saying why");
     let finished = a.finish_move("acme", "checked at B").await.expect("finished");
     assert!(freeze_floor(&a).await.is_empty(), "finished, the source lets go");
-    // Its domain may still point at A: no other workspace there may claim it for a year.
+    // Its domain may still point at A: no other workspace there may claim it for a year. Nor take its slug, which named its
+    // addresses there and its apps' origins: no other workspace forms them again. It takes them back when it returns.
     let kept: Vec<(String,)> = sql(&a, "select host from host_quarantine where host = 'erp.acme.example' and $1::uuid is not null", t).await;
     assert_eq!(kept, vec![("erp.acme.example".to_string(),)]);
+    let taken = a
+        .create_tenant(NewTenant {
+            slug: "acme".into(),
+            name: "Another Acme".into(),
+            admin_email: "a@another.test".into(),
+            admin_password: PASSWORD.into(),
+            admin_name: None,
+            packages: vec![],
+            settings: None,
+        })
+        .await;
+    assert!(taken.is_err(), "its slug stays out of reach at A: {taken:?}");
     assert_eq!(finished["files"], json!(1));
     assert!(!dir_a.join(&file_key).exists());
     // Another replica of A, running while the move (a task, a process of its own) brings the workspace back, which looked
@@ -539,6 +552,8 @@ async fn a_workspace_moves_to_another_installation_and_back() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(route, HostRoute::Serve { tenant: t, target: "shell".into() }, "the other replica kept its answer from before");
+    let kept: Vec<(i64,)> = sql(&a, "select count(*) from host_quarantine where host = 'erp.acme.example' and $1::uuid is not null", t).await;
+    assert_eq!(kept, vec![(0,)], "back, what A kept of it from everyone else is its own again");
     let _ = stop.send(true);
     for l in listening {
         let _ = l.await;

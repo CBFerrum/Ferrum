@@ -2004,8 +2004,10 @@ no longer lists it.
 **At the source, afterwards.** It keeps the workspace, frozen, with where it went, until `finish_move` deletes
 it (its rows, and its files unless the storage is shared); nothing deletes it by itself. Keep it until you
 are sure of the new place. To move a workspace back to an installation it left, run `finish_move` there first.
-Its addresses, whose DNS may still point at the source, are then kept there from every other workspace for a year
-(Addresses of a workspace); the workspace itself may still come back.
+Its addresses, whose DNS may still point at the source, are then kept there from every other workspace for a year, and
+its slug (and those it gave up before) is never another workspace's there, so no one else forms its names or its apps'
+origins (Addresses of a workspace). The workspace itself may still come back: it takes them back. Another workspace
+whose name is retired here (renamed, deleted or moved away) cannot move in under it.
 
 **What the freeze stops, and what it cannot.** Every kernel transaction of the workspace is read-only, for
 people and system work alike; every claim of background work across workspaces skips it, and so does the hourly
@@ -3310,8 +3312,8 @@ audit trail as administration, with who made it and what changed.
 * Deleted (`delete_tenant`), or moved away and finished at the source (`finish_move`): its rows go, and its addresses are
   kept from every other workspace for a year (`host_quarantine`), as removed ones are, but with no leaving or redirect
   period, since nothing is left to serve: a removed one for what was left of its quarantine, all but a domain of its own
-  that never worked. A deleted workspace's slug stays retired, with the slugs it gave up before, so its names can never
-  be formed again; a moved one's stays free at the source, so that the workspace can come back.
+  that never worked. Its slug stays retired there, with the slugs it gave up before, so its names can never be formed
+  there again; a moved workspace coming back takes its slug and names back.
 
 **Certificates.** Caddy's on-demand TLS gets one certificate per name it is asked for. Under one base domain that can reach
 the certificate authority's limits per domain (Let's Encrypt allows 50 a week for one registered domain): serve the base
