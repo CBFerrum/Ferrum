@@ -56,6 +56,8 @@ const MGFS: [&str; 4] = [
 const MAX_KEYS: usize = 4;
 const MAX_CIPHER: usize = 512 << 10;
 
+/// An encrypted assertion where the library cannot open one: in so many words, as before.
+pub(crate) const OFF: &str = "the provider encrypted the assertion, which this server does not read; have it send assertions unencrypted (HTTPS protects them)";
 /// Every failure once a key is used.
 pub(crate) const UNREADABLE: &str = "the encrypted assertion could not be opened";
 /// Anything refused before a key is used: what it is, which the sender chose anyway.
@@ -89,6 +91,53 @@ unsafe extern "C" {
     fn xmlSecEncCtxCreate(mngr: xmlSecPtr) -> xmlSecPtr;
     fn xmlSecEncCtxDestroy(ctx: xmlSecPtr);
     fn xmlSecEncCtxDecrypt(ctx: xmlSecPtr, node: *mut _xmlNode) -> c_int;
+    fn xmlSecTransformIdsGet() -> xmlSecPtr;
+    fn xmlSecTransformIdListFindByHref(list: xmlSecPtr, href: *const u8, usage: std::os::raw::c_uint) -> xmlSecPtr;
+}
+/// `xmlSecTransformUsageEncryptionMethod`, the same in 1.2 and 1.3.
+const USAGE_ENCRYPTION: std::os::raw::c_uint = 0x0010;
+/// The xmlsec1 this was built against.
+pub(crate) const VERSION: &str = env!("FERRUM_XMLSEC_VERSION");
+
+/// What the linked xmlsec1 can open, of what is accepted: asked of the library, algorithm by
+/// algorithm, not read from its version. xmlsec1 1.2 (Debian bookworm has 1.2.37, Ubuntu 24.04
+/// 1.2.39) has AES-GCM and `rsa-oaep-mgf1p` (with SHA-1 only), but not XML Encryption 1.1's
+/// `rsa-oaep`; 1.3 has all of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Supported {
+    pub data: Vec<&'static str>,
+    pub cbc: Vec<&'static str>,
+    pub transport: Vec<&'static str>,
+}
+
+/// [`Supported`], asked once → or why encrypted assertions are off: the library lacks AES-GCM or
+/// RSA-OAEP, without which nothing safe can be opened.
+pub fn supported() -> Result<&'static Supported, String> {
+    static ASKED: std::sync::OnceLock<Result<Supported, String>> = std::sync::OnceLock::new();
+    ASKED
+        .get_or_init(|| {
+            set_up();
+            let has = |href: &str| {
+                let href = format!("{href}\0");
+                !unsafe { xmlSecTransformIdListFindByHref(xmlSecTransformIdsGet(), href.as_ptr(), USAGE_ENCRYPTION) }.is_null()
+            };
+            let s = Supported {
+                data: GCM.iter().copied().filter(|a| has(a)).collect(),
+                cbc: CBC.iter().copied().filter(|a| has(a)).collect(),
+                transport: OAEP.iter().copied().filter(|a| has(a)).collect(),
+            };
+            let lacks: Vec<&str> = [(s.data.is_empty(), "AES-GCM"), (s.transport.is_empty(), "RSA-OAEP")].iter().filter(|l| l.0).map(|l| l.1).collect();
+            if lacks.is_empty() {
+                Ok(s)
+            } else {
+                Err(format!(
+                    "encrypted assertions are off: the xmlsec1 this server runs ({VERSION}) lacks {} (xmlsec1 1.2.27 or later with its OpenSSL backend has them)",
+                    lacks.join(" and ")
+                ))
+            }
+        })
+        .as_ref()
+        .map_err(Clone::clone)
 }
 /// `xmlSecKeyDataFormatDer`: the format samael loads the same keys in.
 const FORMAT_DER: c_int = 3;
@@ -127,12 +176,12 @@ fn cipher_value(node: &Node) -> Result<String, String> {
 
 /// An `EncryptedKey`, checked and written again without what it said about whose key it is: it names
 /// the one key being tried.
-fn encrypted_key(node: &Node) -> Result<String, String> {
+fn encrypted_key(node: &Node, s: &Supported) -> Result<String, String> {
     let shape = || NOT_ACCEPTED.to_string();
     let (mut method, mut value) = (None, None);
     for c in node.get_child_elements() {
         if is(&c, XENC, "EncryptionMethod") && method.is_none() {
-            let alg = algorithm(&c, &OAEP)?;
+            let alg = algorithm(&c, &s.transport)?;
             let mut params = String::new();
             for p in c.get_child_elements() {
                 if is(&p, DSIG, "DigestMethod") {
@@ -158,14 +207,14 @@ fn encrypted_key(node: &Node) -> Result<String, String> {
 
 /// The `EncryptedData` of an `EncryptedAssertion`, rebuilt from what was checked: its keys inside its
 /// `KeyInfo` wherever the provider put them (inside, or beside it as Shibboleth does).
-fn rebuild(encrypted_assertion: &Node, cbc: bool) -> Result<String, String> {
+fn rebuild(encrypted_assertion: &Node, cbc: bool, s: &Supported) -> Result<String, String> {
     let shape = || NOT_ACCEPTED.to_string();
     let (mut data, mut keys) = (None, Vec::new());
     for c in encrypted_assertion.get_child_elements() {
         if is(&c, XENC, "EncryptedData") && data.is_none() {
             data = Some(c);
         } else if is(&c, XENC, "EncryptedKey") {
-            keys.push(encrypted_key(&c)?);
+            keys.push(encrypted_key(&c, s)?);
         } else {
             return Err(shape());
         }
@@ -174,7 +223,7 @@ fn rebuild(encrypted_assertion: &Node, cbc: bool) -> Result<String, String> {
     if data.get_attribute("Type").is_some_and(|t| t.trim() != format!("{XENC}Element")) {
         return Err(shape());
     }
-    let allowed: Vec<&str> = if cbc { GCM.iter().chain(CBC.iter()).copied().collect() } else { GCM.to_vec() };
+    let allowed: Vec<&str> = if cbc { s.data.iter().chain(s.cbc.iter()).copied().collect() } else { s.data.clone() };
     let (mut method, mut value) = (None, None);
     for c in data.get_child_elements() {
         if is(&c, XENC, "EncryptionMethod") && method.is_none() {
@@ -187,7 +236,7 @@ fn rebuild(encrypted_assertion: &Node, cbc: bool) -> Result<String, String> {
         } else if is(&c, DSIG, "KeyInfo") {
             for k in c.get_child_elements() {
                 if is(&k, XENC, "EncryptedKey") {
-                    keys.push(encrypted_key(&k)?);
+                    keys.push(encrypted_key(&k, s)?);
                 } else if !(is(&k, DSIG, "RetrievalMethod") || is(&k, DSIG, "KeyName")) {
                     // A pointer to a key beside it (read above), or a name: neither is followed.
                     return Err(shape());
@@ -279,11 +328,11 @@ unsafe fn blank(n: *mut _xmlNode) -> bool {
 
 /// `response` (a `Response`, its one assertion encrypted to one of `keys`) with the assertion opened
 /// in its place. `cbc`: whether a signature over the whole response was checked already.
-pub(crate) fn open(response: &str, keys: &[SpKey], cbc: bool) -> Result<String, String> {
+pub(crate) fn open(response: &str, keys: &[SpKey], cbc: bool, s: &Supported) -> Result<String, String> {
     let parser = Parser::default();
     let rebuilt = {
         let doc = parser.parse_string_with_options(response, strict()).map_err(|_| NOT_ACCEPTED.to_string())?;
-        rebuild(&encrypted_assertion(&doc)?, cbc)?
+        rebuild(&encrypted_assertion(&doc)?, cbc, s)?
     };
     if keys.is_empty() {
         return Err(UNREADABLE.into());

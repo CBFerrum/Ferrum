@@ -123,15 +123,23 @@ fn web_address(s: &str) -> bool {
 /// This service's metadata, for an identity provider's administrator to load: its entity ID, where
 /// responses go, with a key the certificate its requests are signed with, the keys assertions may be
 /// encrypted to (with the algorithms it takes), and where logout messages go.
+/// Keys to encrypt to are published only when the linked xmlsec1 can open what is encrypted to them
+/// ([`xmlenc::supported`]), with the algorithms it can.
 pub fn sp_metadata(sp: &Sp) -> Result<String, String> {
+    sp_metadata_with(sp, xmlenc::supported().ok())
+}
+
+pub(crate) fn sp_metadata_with(sp: &Sp, can: Option<&xmlenc::Supported>) -> Result<String, String> {
     let descriptor = |use_: &str, k: &SpKey, methods: Option<Vec<EncryptionMethod>>| KeyDescriptor {
         key_use: Some(use_.into()),
         key_info: KeyInfo { id: None, x509_data: Some(X509Data { certificates: vec![STANDARD.encode(&k.certificate_der)] }) },
         encryption_methods: methods,
     };
-    let methods = || [xmlenc::GCM[2], xmlenc::GCM[0], xmlenc::OAEP[0], xmlenc::OAEP[1]].map(|a| EncryptionMethod { algorithm: a.into() }).to_vec();
-    let keys: Vec<KeyDescriptor> =
-        sp.key.map(|k| descriptor("signing", k, None)).into_iter().chain(sp.decrypt.iter().map(|k| descriptor("encryption", k, Some(methods())))).collect();
+    // The strongest first: AES-256-GCM, then the rest of what the library has.
+    let methods =
+        |can: &xmlenc::Supported| can.data.iter().rev().chain(can.transport.iter()).map(|a| EncryptionMethod { algorithm: a.to_string() }).collect::<Vec<_>>();
+    let encryption = can.map(|can| sp.decrypt.iter().map(|k| descriptor("encryption", k, Some(methods(can)))).collect::<Vec<_>>()).unwrap_or_default();
+    let keys: Vec<KeyDescriptor> = sp.key.map(|k| descriptor("signing", k, None)).into_iter().chain(encryption).collect();
     let logout = sp
         .slo_url
         .map(|slo| [HTTP_REDIRECT_BINDING, HTTP_POST_BINDING].map(|b| Endpoint { binding: b.into(), location: slo.into(), response_location: None }).to_vec());
@@ -188,6 +196,12 @@ pub fn request_url(sp: &Sp, idp: &Idp, request_id: &str, relay_state: &str) -> R
 /// one covering less, or none that checks, refuses the whole response, never falling back to the
 /// assertion's.
 pub fn verify(sp: &Sp, idp: &Idp, response: &str, request_id: &str) -> Result<Person, String> {
+    verify_with(sp, idp, response, request_id, xmlenc::supported().ok())
+}
+
+/// [`verify`], with what the library can open (none: an encrypted assertion is refused, as before
+/// it could be opened).
+pub(crate) fn verify_with(sp: &Sp, idp: &Idp, response: &str, request_id: &str, can: Option<&xmlenc::Supported>) -> Result<Person, String> {
     if response.len() > MAX_RESPONSE {
         return Err("the response is too large".into());
     }
@@ -200,7 +214,11 @@ pub fn verify(sp: &Sp, idp: &Idp, response: &str, request_id: &str) -> Result<Pe
     {
         return Err(format!("the provider did not sign you in ({})", code.rsplit(':').next().unwrap_or(code)));
     }
-    let encrypted = if xml.contains("EncryptedAssertion") { open_encrypted(sp, idp, &xml)? } else { None };
+    let encrypted = match can {
+        _ if !xml.contains("EncryptedAssertion") => None,
+        Some(can) => open_encrypted(sp, idp, &xml, can)?,
+        None => return Err(xmlenc::OFF.into()),
+    };
     let assertion = if let Some((opened, response_signed)) = encrypted {
         let checker = if response_signed {
             // Checked already, all of it: what is left is what the signature covered, opened.
@@ -240,7 +258,7 @@ pub fn verify(sp: &Sp, idp: &Idp, response: &str, request_id: &str) -> Result<Pe
 /// A response whose assertion is encrypted, with the assertion opened → it, and whether a signature
 /// over the whole response was checked (or else the opened assertion's own must be); `None` when its
 /// assertion is not encrypted. See [`verify`].
-fn open_encrypted(sp: &Sp, idp: &Idp, xml: &str) -> Result<Option<(String, bool)>, String> {
+fn open_encrypted(sp: &Sp, idp: &Idp, xml: &str, can: &xmlenc::Supported) -> Result<Option<(String, bool)>, String> {
     use libxml::parser::{Parser, ParserOptions};
     let doc = Parser::default()
         .parse_string_with_options(xml, ParserOptions { recover: false, no_net: true, ..ParserOptions::default() })
@@ -251,13 +269,13 @@ fn open_encrypted(sp: &Sp, idp: &Idp, xml: &str) -> Result<Option<(String, bool)
         return Ok(None);
     }
     if !signed {
-        return Ok(Some((xmlenc::open(xml, sp.decrypt, false)?, false)));
+        return Ok(Some((xmlenc::open(xml, sp.decrypt, false, can)?, false)));
     }
     // Only what the signature covers is kept; `open` then finds the response at the root, holding the
     // encrypted assertion, or refuses: a signature over less than that proves nothing about it.
     let covered = Crypto::reduce_xml_to_signed_with_allowed_algorithms(xml, &idp.certs()?, ReduceMode::default(), Some(&ALGORITHMS))
         .map_err(|_| "the response's signature is not valid")?;
-    Ok(Some((xmlenc::open(&covered, sp.decrypt, true)?, true)))
+    Ok(Some((xmlenc::open(&covered, sp.decrypt, true, can)?, true)))
 }
 
 /// Whether xmlsec1 works on this machine: a key made now signs a response, the signature verifies,

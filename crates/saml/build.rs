@@ -9,6 +9,9 @@ fn main() {
         return;
     }
     let flags = std::process::Command::new("xmlsec1-config").arg("--cflags").output().expect("xmlsec1-config (libxmlsec1's development files)").stdout;
+    // Which xmlsec1 it was built against, for saying so when it lacks what encrypted assertions need.
+    let version = std::process::Command::new("xmlsec1-config").arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    println!("cargo:rustc-env=FERRUM_XMLSEC_VERSION={}", version.unwrap_or_default());
     if String::from_utf8_lossy(&flags).split_whitespace().any(|f| f == "-DXMLSEC_CRYPTO_DYNAMIC_LOADING=1") {
         println!("cargo:rustc-cfg=xmlsec_dynamic");
     }

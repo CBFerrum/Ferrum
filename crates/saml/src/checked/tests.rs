@@ -401,3 +401,25 @@ fn with_its_own_key_a_service_signs_its_requests() {
     assert_eq!(verify(&sp, &metadata(&k), &posted(&k.signed(&response(&k, |_| {}))), REQUEST).unwrap().subject, "persistent-7");
     assert_eq!(format!("{key:?}"), "SpKey(…)", "never printed");
 }
+
+#[test]
+fn encryption_is_on_only_where_the_library_opens_it() {
+    let can = crate::encryption().expect("this xmlsec1 has AES-GCM and RSA-OAEP");
+    assert!(can.data.contains(&xmlenc::GCM[2]) && can.transport.contains(&xmlenc::OAEP[0]), "{can:?}");
+    let (k, ours) = (idp(), [new_sp_key("ours").unwrap()]);
+    let sp = Sp { decrypt: &ours, ..SP };
+    let xml = posted(&encrypt(&k.signed(&assertion_signed(&k)), &ours[0].certificate_der, Data::Gcm, RSA_OAEP, false));
+    // What xmlsec1 1.2 has (Debian bookworm's 1.2.37): AES-GCM and rsa-oaep-mgf1p, no XML Encryption 1.1 OAEP.
+    let older = xmlenc::Supported { data: xmlenc::GCM.to_vec(), cbc: xmlenc::CBC.to_vec(), transport: vec![xmlenc::OAEP[0]] };
+    assert_eq!(verify_with(&sp, &metadata(&k), &xml, REQUEST, Some(&older)).unwrap().subject, "persistent-7");
+    let published = sp_metadata_with(&sp, Some(&older)).unwrap();
+    assert!(published.contains("use=\"encryption\"") && !published.contains("xmlenc11#rsa-oaep\""), "{published}");
+    // A library without them: no key published, and an encrypted assertion refused in so many words, as before.
+    assert!(!sp_metadata_with(&sp, None).unwrap().contains("use=\"encryption\""));
+    assert_eq!(verify_with(&sp, &metadata(&k), &xml, REQUEST, None).unwrap_err(), xmlenc::OFF);
+    assert_eq!(
+        verify_with(&sp, &metadata(&k), &posted(&k.signed(&response(&k, |_| {}))), REQUEST, None).unwrap().subject,
+        "persistent-7",
+        "plain ones as before"
+    );
+}

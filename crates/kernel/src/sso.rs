@@ -127,6 +127,18 @@ pub fn saml_self_check() -> Option<std::result::Result<(), String>> {
     ferrum_saml::AVAILABLE.then(ferrum_saml::self_check)
 }
 
+/// Whether this server opens encrypted SAML assertions: `None` when it was built without SAML, else
+/// whether the linked xmlsec1 has AES-GCM and RSA-OAEP (crates/saml, xmlenc.rs). When it has not,
+/// says so once in the log, and nothing about encryption changes from before it was added.
+pub fn saml_encryption() -> Option<std::result::Result<(), String>> {
+    static SAID: std::sync::Once = std::sync::Once::new();
+    let can = ferrum_saml::AVAILABLE.then(|| ferrum_saml::encryption().map(|_| ()))?;
+    if let Err(e) = &can {
+        SAID.call_once(|| tracing::warn!("{e}"));
+    }
+    Some(can)
+}
+
 /// A provider as an administrator sets it up.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SsoProviderInput {
@@ -217,7 +229,7 @@ pub(crate) struct Provider {
     domains: Vec<String>,
     auto_create: bool,
     default_roles: Vec<String>,
-    /// SAML: the origin its addresses are under, when kept (see the migration 20261118002301).
+    /// SAML: the origin its addresses are under, when kept (see the migration 20261118002401).
     pub(crate) saml_sp_base: Option<String>,
     /// SAML: whether the provider may end sessions here (logout requests it sends).
     pub(crate) slo_in: Option<bool>,
@@ -527,7 +539,8 @@ impl Kernel {
         let n = SpNames::under(&base, tenant);
         let key = self.saml_key(tenant).await?;
         let as_then = earlier && !on_accounts;
-        let decrypt = if as_then { Vec::new() } else { self.saml_enc_keys(tenant).await? };
+        let can = saml_encryption().is_some_and(|c| c.is_ok());
+        let decrypt = if as_then || !can { Vec::new() } else { self.saml_enc_keys(tenant).await? };
         let sp = ferrum_saml::Sp {
             entity_id: &n.entity_id,
             acs_url: &n.acs_url,
@@ -978,7 +991,7 @@ impl Kernel {
     async fn saml_check(&self, tenant: Uuid, p: &Provider, response: &str, request: String) -> Result<ferrum_saml::Person> {
         let idp = self.saml_idp(p.saml_metadata.as_deref().unwrap_or_default()).await?;
         let n = self.saml_names(tenant, p)?;
-        let decrypt = self.saml_enc_keys(tenant).await?;
+        let decrypt = if saml_encryption().is_some_and(|c| c.is_ok()) { self.saml_enc_keys(tenant).await? } else { Vec::new() };
         let response = response.to_string();
         // xmlsec1 is synchronous work, kept off the request threads.
         let checked = tokio::task::spawn_blocking(move || {

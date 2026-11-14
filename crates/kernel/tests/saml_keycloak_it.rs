@@ -124,7 +124,9 @@ async fn keycloak(kc: &str, sp_metadata: &str) -> String {
 
 /// Has Keycloak encrypt its assertions, as an administrator could, to the encryption certificate the
 /// workspace's metadata gave (not the signing one).
-async fn encrypt(kc: &str, client: &str) {
+/// `oaep_1_0_only`: the server's xmlsec1 has `rsa-oaep-mgf1p` and not XML Encryption 1.1's `rsa-oaep`
+/// (xmlsec1 1.2), so Keycloak is told to wrap the key that way, with SHA-1.
+async fn encrypt(kc: &str, client: &str, oaep_1_0_only: bool) {
     let http = reqwest::Client::new();
     let token = admin_token(&http, kc).await;
     let url = format!("{kc}/admin/realms/{REALM}/clients/{client}");
@@ -133,6 +135,11 @@ async fn encrypt(kc: &str, client: &str) {
     assert!(signing.as_str().is_some_and(|s| !s.is_empty()), "the request signing certificate came from the metadata");
     assert!(encryption.as_str().is_some_and(|s| !s.is_empty()) && encryption != signing, "so did a key to encrypt to: {c}");
     c["attributes"]["saml.encrypt"] = json!("true");
+    if oaep_1_0_only {
+        c["attributes"]["saml.encryption.keyAlgorithm"] = json!("http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p");
+        c["attributes"]["saml.encryption.digestMethod"] = json!("http://www.w3.org/2000/09/xmldsig#sha1");
+        c["attributes"]["saml.encryption.algorithm"] = json!("http://www.w3.org/2009/xmlenc11#aes256-gcm");
+    }
     assert!(http.put(&url).bearer_auth(&token).json(&c).send().await.unwrap().status().is_success());
 }
 
@@ -238,12 +245,28 @@ async fn a_sign_in_through_keycloak() {
     };
     assert_eq!(back.expect("Keycloak's signed answer is accepted"), ferrum_kernel::saml_logout::SloStep::Back(BACK.into()));
 
-    // Encrypted to the workspace's encryption key, the assertion is opened and Pat signs in.
-    encrypt(&kc, &client).await;
+    // Encrypted to the workspace's encryption key, the assertion is opened and Pat signs in; where this
+    // server's xmlsec1 lacks what that needs, encryption is off, and says so.
+    let can = match ferrum_kernel::sso::saml_encryption() {
+        Some(Ok(())) => ferrum_saml::encryption().unwrap().clone(),
+        Some(Err(why)) => {
+            eprintln!("this xmlsec1 lacks what encrypted assertions need; encryption is off and not tried: {why}");
+            assert!(!k.saml_metadata(tenant).await.unwrap().contains("use=\"encryption\""), "no key to encrypt to is published");
+            return;
+        }
+        None => unreachable!("built with SAML"),
+    };
+    let oaep_1_0_only = !can.transport.contains(&"http://www.w3.org/2009/xmlenc11#rsa-oaep");
+    encrypt(&kc, &client, oaep_1_0_only).await;
     let (relay, response) = on_keycloak(&k, provider, &acs_url, &jar).await;
     use base64::Engine as _;
     let xml = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(&response).unwrap()).unwrap();
     assert!(xml.contains("EncryptedAssertion") && !xml.contains("pat@samlco.test"), "Keycloak encrypted it");
-    let (state, code) = finish(k.saml_acs(tenant, &relay, &response).await.expect("Keycloak's encrypted answer is accepted"));
+    let algorithms: Vec<&str> = xml.split("Algorithm=\"").skip(1).filter_map(|a| a.split('"').next()).collect();
+    let next = k
+        .saml_acs(tenant, &relay, &response)
+        .await
+        .unwrap_or_else(|e| panic!("Keycloak's encrypted answer was refused ({e}); it used {algorithms:?}, and this xmlsec1 opens {can:?}"));
+    let (state, code) = finish(next);
     assert_eq!(k.sso_finish(&state, &code, BINDING).await.unwrap().user, pat);
 }

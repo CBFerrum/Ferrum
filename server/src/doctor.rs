@@ -120,6 +120,14 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
             "Install libxmlsec1 with its OpenSSL backend (libxmlsec1-openssl) beside the server, the versions it was built with.",
         ),
     });
+    // Encrypted SAML assertions need what this xmlsec1 has, asked of it algorithm by algorithm.
+    if let Some(Err(e)) = tokio::task::spawn_blocking(ferrum_kernel::sso::saml_encryption).await.ok().flatten() {
+        out.push(Finding::warning(
+            "identity.saml_encryption",
+            e,
+            "Signing in by SAML works; assertions a provider encrypts are refused and no key to encrypt to is published. Install xmlsec1 1.2.27 or later with its OpenSSL backend for encryption.",
+        ));
+    }
     out.push(match st.objects.probe().await {
         Ok(()) => Finding::ok("storage", "object storage takes a write, a read and a delete"),
         Err(e) => Finding::blocker("storage", format!("object storage refused a probe: {e}"), "Check FERRUM_S3_BUCKET, its region, endpoint and credentials."),

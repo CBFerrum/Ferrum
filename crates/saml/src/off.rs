@@ -52,3 +52,7 @@ pub fn peek_issuer(_incoming: Incoming) -> Result<String, String> {
 pub fn read_logout(_sp: &Sp, _idp: &Idp, _incoming: Incoming) -> Result<Logout, String> {
     Err(OFF.into())
 }
+
+pub fn encryption() -> Result<&'static (), String> {
+    Err(OFF.into())
+}

@@ -203,7 +203,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   changed ciphertext is ever decrypted, which is what padding oracles need), RSA-OAEP for its key
   (never PKCS#1 v1.5), cipher values inline only (nothing fetched), and the key named by us rather
   than by a certificate or reference the sender chose. Once a key is tried, every failure reads the
-  same.
+  same. Only what the linked xmlsec1 has is accepted, asked of it algorithm by algorithm; without
+  AES-GCM and RSA-OAEP, encryption stays off as before (no key published, encrypted assertions
+  refused). Run on xmlsec1 1.3.13; 1.2 (the release image's 1.2.37) checked by reading its source.
 * SAML single logout (crates/kernel/src/saml_logout.rs), by the browser, both ways. Signing out ends
   the session at once, whatever the provider does; the logout request to the provider is signed, and
   its answer must be signed, answer a request of ours still open, and counts once. A provider's logout
@@ -347,7 +349,8 @@ Known and accepted:
   requests with an encrypted NameID are refused; and a sign-in API client given a bearer token (not a
   browser session) is not ended by the provider's logout. The SP-started logout carries the NameID's
   value and format, not its qualifiers, which a provider that checks them may refuse. Single logout
-  needs the sign-in page to follow the address `POST /api/auth/logout` gives. Neither workspace key
+  needs the page to follow the address `POST /api/auth/logout` gives (the bar and the portal do;
+  another client signs out here only). Neither workspace key
   rotates by itself (the signing key is good for ten years; the encryption key is replaced by a task),
   and encryption and logout have been checked against the repository's own test identity provider
   and, in CI, Keycloak, not yet against AD FS, Entra ID, Okta or Shibboleth.

@@ -3205,13 +3205,24 @@ response, or the assertion inside the encryption (or both); a response whose sig
 refused. `ferrum task saml_encryption_key slug:acme` replaces the key: the new one is published first,
 the old one is still published and accepted for 30 days, so a provider that reads the metadata again in
 that time goes on working; one given the certificate by hand needs the new one within the 30 days.
+Encryption is on only where the xmlsec1 the server runs has AES-GCM and RSA-OAEP, asked of the library
+algorithm by algorithm when first needed (1.2.27 or later with its OpenSSL backend). The release image's
+(Debian bookworm, xmlsec1 1.2.37) has AES-GCM and `rsa-oaep-mgf1p` with SHA-1, not XML Encryption 1.1's
+`rsa-oaep`: providers must wrap the key with `rsa-oaep-mgf1p` there (most do by default; Keycloak needs its
+key transport set so). Allowed when the library has them: `rsa-oaep-mgf1p` and `xmlenc11#rsa-oaep`, digests
+SHA-1, SHA-256, SHA-384, SHA-512, mask functions MGF1 with those. Where the library lacks AES-GCM or RSA-OAEP,
+nothing changes from before: no key to encrypt to is published, an encrypted assertion is refused in so many
+words, and the log (once) and `ferrum task doctor` (`identity.saml_encryption`) say which version is needed.
+It has been run on xmlsec1 1.3.13 (macOS, Homebrew) only; 1.2 was checked by reading its source, and runs
+first in CI (Ubuntu 24.04, 1.2.39).
 
 *Single logout.* With the provider's metadata offering a logout service, both directions are on for a
 provider saved from now on; its administrator can turn each off (`single_logout_out`, signing out here
 signs out there; `single_logout_in`, the provider may end sessions here). Signing out here ends the
 session at once, then sends the browser to the provider with a signed logout request, and back to the
-sign-in page; the sign-in page must follow the address `POST /api/auth/logout` gives
-([api](api.md)). A signed logout request from the provider ends the sessions its sign-ins opened for
+sign-in page: the bar's sign-out (and the portal's) follows the address `POST /api/auth/logout` gives
+([api](api.md)); a client that does not is signed out here only. Sessions a provider's logout ends stop
+on every replica at once, as after a step-up. A signed logout request from the provider ends the sessions its sign-ins opened for
 that person (those it names, or all of theirs through that provider), recorded as ended by the provider,
 and is answered, signed. A provider saved before this (and not saved since) has no single logout, and
 while one is left the metadata under `PUBLIC_URL` publishes neither the encryption key nor the logout

@@ -20,6 +20,8 @@ mod logout;
 pub use logout::{logout_request, logout_response, peek_issuer, read_logout};
 #[cfg(feature = "xmlsec")]
 mod xmlenc;
+#[cfg(feature = "xmlsec")]
+pub use xmlenc::{Supported, supported as encryption};
 
 #[cfg(all(feature = "xmlsec", any(test, feature = "testing")))]
 pub mod testing;
@@ -27,7 +29,7 @@ pub mod testing;
 #[cfg(not(feature = "xmlsec"))]
 mod off;
 #[cfg(not(feature = "xmlsec"))]
-pub use off::{Idp, logout_request, logout_response, new_sp_key, peek_issuer, read_logout, request_url, self_check, sp_metadata, verify};
+pub use off::{Idp, encryption, logout_request, logout_response, new_sp_key, peek_issuer, read_logout, request_url, self_check, sp_metadata, verify};
 
 /// Whether this build checks SAML at all.
 pub const AVAILABLE: bool = cfg!(feature = "xmlsec");
