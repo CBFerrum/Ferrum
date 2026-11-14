@@ -113,8 +113,14 @@ impl LiveHub {
         if let Some(msg) = personal {
             let Some(user) = v.get("user").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()) else { return };
             let msg = msg.to_string();
-            let targets: Vec<(Uuid, mpsc::Sender<String>)> =
-                self.conns.iter().filter(|c| c.ctx.tenant == tenant && c.ctx.user == user).map(|c| (*c.key(), c.tx.clone())).collect();
+            // A notification about a record of an app the socket's zone leaves out (crate::zones, level 2) is not pushed.
+            let about = v.pointer("/notification/entity").and_then(Value::as_str);
+            let targets: Vec<(Uuid, mpsc::Sender<String>)> = self
+                .conns
+                .iter()
+                .filter(|c| c.ctx.tenant == tenant && c.ctx.user == user && about.is_none_or(|e| c.ctx.sees(e)))
+                .map(|c| (*c.key(), c.tx.clone()))
+                .collect();
             for (id, tx) in targets {
                 self.push(id, &tx, &msg);
             }

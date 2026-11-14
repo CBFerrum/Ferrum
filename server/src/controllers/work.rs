@@ -32,11 +32,13 @@ async fn mentions(k: &Kernel, ctx: &Ctx) -> ferrum_kernel::Result<Vec<Value>> {
     type Row = (Uuid, String, Option<String>, Option<String>, Option<Uuid>, chrono::DateTime<chrono::Utc>);
     let rows: Vec<Row> = sqlx::query_as(
         "select id, title, body, entity, record_id, created_at from notification \
-         where tenant_id = $1 and user_id = $2 and kind = 'mention' and read_at is null order by created_at desc limit $3",
+         where tenant_id = $1 and user_id = $2 and kind = 'mention' and read_at is null \
+         and ($4::text[] is null or entity is null or entity = any($4)) order by created_at desc limit $3",
     )
     .bind(ctx.tenant)
     .bind(ctx.user)
     .bind(MOST as i64)
+    .bind(ctx.zone_entities())
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;

@@ -29,18 +29,24 @@ async fn list(Auth(ctx): Auth, State(app): State<AppContext>, Query(p): Query<Li
     let st = app_state(&app)?;
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
     let rows: Vec<Value> = sqlx::query_scalar(
-        "select to_jsonb(n) - 'tenant_id' from notification n where n.tenant_id = $1 and n.user_id = $2 order by n.created_at desc limit $3",
+        "select to_jsonb(n) - 'tenant_id' from notification n where n.tenant_id = $1 and n.user_id = $2 \
+         and ($4::text[] is null or n.entity is null or n.entity = any($4)) order by n.created_at desc limit $3",
     )
     .bind(ctx.tenant)
     .bind(ctx.user)
     .bind(p.limit.unwrap_or(100).clamp(0, 100))
+    .bind(ctx.zone_entities())
     .fetch_all(&mut *tx)
     .await
     .map_err(Error::from)?;
-    let unread: i64 = sqlx::query_scalar("select count(*) from notification where tenant_id = $1 and user_id = $2 and read_at is null")
-        .bind(ctx.tenant)
-        .bind(ctx.user)
-        .fetch_one(&mut *tx)
+    // About a record of an app the caller's zone leaves out (crate::zones, level 2): not there, not counted.
+    let unread: i64 = sqlx::query_scalar(
+        "select count(*) from notification where tenant_id = $1 and user_id = $2 and read_at is null and ($3::text[] is null or entity is null or entity = any($3))",
+    )
+    .bind(ctx.tenant)
+    .bind(ctx.user)
+    .bind(ctx.zone_entities())
+    .fetch_one(&mut *tx)
         .await
         .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
@@ -58,13 +64,17 @@ async fn mark_all_read(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiRes
 async fn read(app: &AppContext, ctx: &Ctx, id: Option<Uuid>) -> ApiResult<Response> {
     let st = app_state(app)?;
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
-    sqlx::query("update notification set read_at = now() where tenant_id = $1 and user_id = $2 and ($3::uuid is null or id = $3) and read_at is null")
-        .bind(ctx.tenant)
-        .bind(ctx.user)
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(Error::from)?;
+    sqlx::query(
+        "update notification set read_at = now() where tenant_id = $1 and user_id = $2 and ($3::uuid is null or id = $3) and read_at is null \
+         and ($4::text[] is null or entity is null or entity = any($4))",
+    )
+    .bind(ctx.tenant)
+    .bind(ctx.user)
+    .bind(id)
+    .bind(ctx.zone_entities())
+    .execute(&mut *tx)
+    .await
+    .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -74,7 +84,7 @@ async fn read(app: &AppContext, ctx: &Ctx, id: Option<Uuid>) -> ApiResult<Respon
 async fn kinds(st: &AppState, ctx: &Ctx) -> ferrum_kernel::Result<Vec<(String, String, Option<String>, &'static str)>> {
     let mut out: Vec<_> = notify::KINDS.iter().map(|(k, l)| (k.to_string(), l.to_string(), None, "inapp")).collect();
     let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
-    for a in st.apps.shell_apps(ctx.tenant).await? {
+    for a in st.apps.shell_apps_for(ctx).await? {
         if !a.items("shell.app").any(|i| crate::shell::may_use(ctx, &kind, i)) {
             continue;
         }

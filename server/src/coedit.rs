@@ -694,7 +694,10 @@ async fn socket(
     let st = app_state(&app)?;
     let entry = crate::extract::socket_entry(&st, &headers).await;
     let pre = crate::extract::socket_credential(&st, &headers, &entry).await?;
-    Ok(upgrade.max_message_size(MAX_MESSAGE).on_upgrade(move |ws| serve(st, package, doc, pre, entry, ws)))
+    // What the socket changes is done in the zone it was opened in (crate::zones, level 2), as a request's is.
+    let trace =
+        ferrum_kernel::Trace { correlation: crate::extract::request_id(&headers), zone: ferrum_kernel::Trace::in_zone(entry.marked()), ..Default::default() };
+    Ok(upgrade.max_message_size(MAX_MESSAGE).on_upgrade(move |ws| trace.scope(serve(st, package, doc, pre, entry, ws))))
 }
 
 async fn serve(st: AppState, package: String, doc: String, pre: Option<(String, Ctx)>, entry: Arc<ferrum_kernel::zones::Entry>, ws: WebSocket) {
@@ -721,7 +724,8 @@ async fn serve(st: AppState, package: String, doc: String, pre: Option<(String, 
         }
     };
     let k = st.kernel.clone();
-    let host = k.hooks.doc_host(&package).filter(|_| ctx.schema.packages.contains(&package)).cloned();
+    // A package the caller's zone leaves out (crate::zones, level 2) has no documents for them, as one not installed.
+    let host = k.hooks.doc_host(&package).filter(|_| ctx.schema.packages.contains(&package) && ctx.sees_package(&package)).cloned();
     let (Some(host), Ok(id)) = (host, doc.parse::<Uuid>()) else {
         let _ = sink.send(close(4404, "no such document")).await;
         return;
