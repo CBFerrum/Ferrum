@@ -540,8 +540,8 @@ impl Hooks for App {
     async fn after_routes(router: axum::Router, ctx: &AppContext) -> Result<axum::Router> {
         let state = crate::state::app_state(ctx).map_err(|e| Error::Message(e.0.to_string()))?;
         let limiter = state.address_limiter.clone();
-        let apps_base: Arc<str> = Arc::from(state.settings.apps_base.trim());
         let st = Arc::new(state.clone());
+        let origins = st.clone();
         Ok(router
             .layer(axum::middleware::from_fn(move |req, next| step_up_ways(st.clone(), req, next)))
             .layer(axum::middleware::from_fn(hold_place))
@@ -553,7 +553,7 @@ impl Hooks for App {
             .layer(axum::middleware::from_fn(traced))
             // A signed-out page goes by the browser's language (sign-in, a status page).
             .layer(axum::middleware::from_fn(crate::shell_words::browser))
-            .layer(axum::middleware::from_fn(move |req, next| app_origins(apps_base.clone(), req, next)))
+            .layer(axum::middleware::from_fn(move |req, next| app_origins(origins.clone(), req, next)))
             // Outermost: a request's whole time, by app and kind (/metrics).
             .layer(axum::middleware::from_fn(crate::request_metrics::count)))
     }
@@ -716,13 +716,20 @@ async fn screen_paths(req: axum::extract::Request, next: axum::middleware::Next)
 /// An isolated app's origin of its own (`{app}--{workspace}.{apps_base}`, docs/plan/apps-ui.md
 /// shape D) serves that app's files and, of the server's own paths, only the API its app tokens
 /// reach and the token endpoint: no cookie is ever read or set there, and no sign-in,
-/// administration or other app's endpoint answers.
-async fn app_origins(apps_base: Arc<str>, mut req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+/// administration or other app's endpoint answers. Where the apps base is the base domain, a workspace's own address of the
+/// same form is the workspace's (`Shell::app_host`); when that cannot be told, the host is kept to the app's paths.
+async fn app_origins(st: Arc<AppState>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let host = req.headers().get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default().to_string();
+    let host_app = match st.shell.app_host(&host).await {
+        Ok(found) => found,
+        Err(_) => crate::shell::app_origin_of(&host, &st.settings.apps_base),
+    };
+    kept_to_app(host_app, req, next).await
+}
+
+/// What an app's origin of its own answers (`host_app`: the app and workspace the host is the origin of, or none).
+async fn kept_to_app(host_app: Option<(String, String)>, mut req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::http::header;
-    if apps_base.is_empty() {
-        return next.run(req).await;
-    }
-    let host_app = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).and_then(|h| crate::shell::app_origin_of(h, &apps_base));
     let Some((app, _)) = host_app else { return next.run(req).await };
     req.headers_mut().remove(header::COOKIE);
     let path = req.uri().path();
@@ -1006,10 +1013,12 @@ mod tests {
         let echo = |headers: axum::http::HeaderMap| async move {
             ([(header::SET_COOKIE, "ferrum_session=x; Path=/")], if headers.contains_key(header::COOKIE) { "cookie" } else { "none" })
         };
-        let app = axum::Router::new()
-            .route("/", axum::routing::get(echo))
-            .route("/{*path}", axum::routing::get(echo).post(echo))
-            .layer(axum::middleware::from_fn(move |req, next| app_origins(base.clone(), req, next)));
+        let app = axum::Router::new().route("/", axum::routing::get(echo)).route("/{*path}", axum::routing::get(echo).post(echo)).layer(
+            axum::middleware::from_fn(move |req: axum::extract::Request, next| {
+                let host_app = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).and_then(|h| crate::shell::app_origin_of(h, &base));
+                kept_to_app(host_app, req, next)
+            }),
+        );
         let call = |host: &str, method: &str, path: &str| {
             let req = axum::http::Request::builder()
                 .method(method)

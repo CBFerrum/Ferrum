@@ -545,6 +545,11 @@ impl AppManager {
         self.native(id)
     }
 
+    /// The manifests of the apps compiled into this build.
+    pub fn native_manifests(&self) -> &[AppManifest] {
+        &self.natives
+    }
+
     /// Records a compiled-in app as installed in every workspace that has `package` (ERP, by its
     /// accounting; Studio, by its own): they became apps of their own after those workspaces
     /// installed the packages. Runs at start-up; idempotent; logged, not fatal.

@@ -49,6 +49,16 @@ function titleMarked(title, mark) {
   return title.startsWith(mark) ? title : `${mark}${title}`;
 }
 
+/** The launcher entries an address lists (docs/operations.md, "Addresses of a workspace"): with `apps` (the bootstrap's
+ *  `host.apps`), those of the apps it names, in the launcher's order, then `main` (an entry that opens the workspace's main
+ *  address, for every other app) when there is one; every entry where it names none. What it shows, not what opens here:
+ *  another app's page still opens on this address by link or typed path. */
+function addressEntries(entries, apps, main) {
+  if (!Array.isArray(apps)) return entries;
+  const shown = entries.filter((e) => apps.includes(e?.app));
+  return main ? [...shown, main] : shown;
+}
+
 // Where the browser goes after signing out: the address the server gave (POST /api/auth/logout answers
 // 200 {next} for a SAML sign-in whose provider signs out too), only when it is one of this server's
 // single-logout addresses on this origin; else the sign-in page (204, or anything else).
@@ -355,6 +365,7 @@ button[disabled] { opacity: .5; cursor: not-allowed; }
 .home { color: var(--ferrum-muted, #596273); text-decoration: none; padding: 0 8px; height: var(--h); display: inline-flex; align-items: center; border-radius: var(--ferrum-radius-sm, 6px);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 14em; transition: background-color var(--ferrum-duration-state, 100ms), color var(--ferrum-duration-state, 100ms); }
 .home:hover { color: var(--ferrum-text, #202329); background: var(--ferrum-surface-2, #eff1f5); }
+.home .addr { color: var(--ferrum-text, #202329); white-space: pre; }
 .sep { color: var(--ferrum-border-strong, #c8cfd9); line-height: 1; padding: 0 2px; font-size: 14px; user-select: none; }
 .app { display: inline-flex; align-items: center; gap: 8px; min-width: 0; height: var(--h); text-decoration: none; color: var(--ferrum-text, #202329); border-radius: var(--ferrum-radius-sm, 6px); padding: 0 8px 0 4px;
   transition: background-color var(--ferrum-duration-state, 100ms); }
@@ -715,6 +726,17 @@ function under(url) {
   return base !== "" && (location.pathname === base || location.pathname.startsWith(`${base}/`));
 }
 
+/** From an address that lists some apps only: the launcher's way to the workspace's main address, for the others. */
+function mainEntry() {
+  const to = boot?.host?.main_url;
+  return typeof to === "string" && /^https?:\/\//.test(to)
+    ? { id: "main-address", app: null, title: tr("All apps"), description: tr("Every app, at the workspace's main address"), icon: "external-link", url: `${to}/` }
+    : null;
+}
+
+/** The launcher's entries as this address lists them ([`addressEntries`]). */
+const listedApps = () => addressEntries(shellData?.apps ?? [], boot?.host?.apps, mainEntry());
+
 /** The launcher entry of the page's app: the one the page is under (Mail, not Chat), else its first. */
 function ownEntry() {
   const apps = (shellData?.apps ?? []).filter((a) => a.app === boot?.app?.id);
@@ -806,7 +828,7 @@ function createsMatching(q) {
 function appsMatching(q) {
   const t = q.trim().toLowerCase();
   if (!t) return [];
-  return (shellData?.apps ?? [])
+  return listedApps()
     .filter((a) => `${a.title} ${a.description ?? ""}`.toLowerCase().includes(t))
     .slice(0, 6)
     .map((a) => ({ title: a.title, subtitle: a.description ?? "App", url: a.url, app: a }));
@@ -1299,7 +1321,8 @@ class FerrumBar extends HTMLElement {
       { class: "bar", role: "banner" },
       el("a", { class: "skip", href: "#main", text: tr("Skip to content"), onclick: (e) => this.skip(e) }),
       this.launchBtn,
-      el("a", { class: "home", href: "/", title: tr("Home"), text: boot?.workspace?.name ?? tr("Home") }),
+      // The address's own name beside the workspace's (docs/operations.md, "Addresses of a workspace"): "Acme · Sales".
+      el("a", { class: "home", href: "/", title: tr("Home") }, boot?.workspace?.name ?? tr("Home"), boot?.host?.label ? el("span", { class: "addr", text: ` · ${boot.host.label}` }) : null),
       // A page of no app (a status page) shows the workspace alone.
       boot?.app ? el("span", { class: "sep", "aria-hidden": "true", text: "/" }) : null,
       (this.appLink = el("a", { class: "app", href: appRoute, hidden: !boot?.app }, this.tileEl, this.titleEl)),
@@ -1598,7 +1621,7 @@ class FerrumBar extends HTMLElement {
     const grid = el("div", { class: "apps", role: "list" });
     const draw = () => {
       const q = search.value.trim().toLowerCase();
-      const found = (shellData?.apps ?? []).filter((a) => !q || `${a.title} ${a.description ?? ""}`.toLowerCase().includes(q));
+      const found = listedApps().filter((a) => !q || `${a.title} ${a.description ?? ""}`.toLowerCase().includes(q));
       // Apps on their own first, then each family under its name (§11.5), its head first.
       const alone = found.filter((a) => !a.family);
       const families = [];
@@ -1620,8 +1643,11 @@ class FerrumBar extends HTMLElement {
             tile(a),
             el("span", { text: a.title }),
           );
-          link.addEventListener("pointerenter", () => speculate(a.url), { once: true });
-          link.addEventListener("focus", () => speculate(a.url), { once: true });
+          // Pages of this address only: the main address is another site.
+          if (sitePath(a.url)) {
+            link.addEventListener("pointerenter", () => speculate(a.url), { once: true });
+            link.addEventListener("focus", () => speculate(a.url), { once: true });
+          }
           return link;
         }),
       );

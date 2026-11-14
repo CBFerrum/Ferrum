@@ -1242,10 +1242,34 @@ impl Kernel {
                     .await?;
                 sqlx::query("update tenant_host set is_primary = true where tenant_id = $1 and host = $2").bind(tenant).bind(&host).execute(&mut *tx).await?;
             }
+            // The names it gave itself under another base domain (docs/operations.md, "Addresses of a workspace"): the same
+            // names under this one, showing what they showed, where they are free; the old ones cannot reach this
+            // installation (their base's addresses lead to the source), so they are let go of here.
+            sqlx::query(
+                "insert into tenant_host (host, tenant_id, kind, target, is_primary, verify_token, verified_at, base_name, home, apps, label) \
+                 select h.base_name || '--' || $2 || '.' || $3, h.tenant_id, 'subdomain', h.target, false, '', now(), h.base_name, h.home, h.apps, h.label \
+                 from tenant_host h where h.tenant_id = $1 and h.base_name is not null and h.released_at is null and right(h.host, length($3) + 1) <> '.' || $3 \
+                 on conflict (host) do nothing",
+            )
+            .bind(tenant)
+            .bind(slug)
+            .bind(base)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "update tenant_host set released_at = now(), is_primary = false where tenant_id = $1 and base_name is not null and released_at is null \
+                 and right(host, length($2) + 1) <> '.' || $2",
+            )
+            .bind(tenant)
+            .bind(base)
+            .execute(&mut *tx)
+            .await?;
         }
         let ctx = Ctx::system(tenant, Arc::new(ferrum_meta::Schema::default()));
         audit::record(&mut tx, &ctx, "Platform", Uuid::nil(), "platform.workspace_arrived", None, json!({"move": move_id, "from": peer})).await?;
         tx.commit().await?;
+        // A portal or site whose main address was such a name gets the one that took its place.
+        self.primary_where_none(Some(tenant)).await?;
         self.hosts.clear();
         self.registry.invalidate(tenant);
         self.invalidate_tenant_users(tenant);

@@ -242,7 +242,7 @@ async fn app_client(st: &crate::state::AppState, ctx: &ferrum_kernel::Ctx, heade
         Err(problem) => return Ok(Err(problem)),
     };
     let host = crate::shell::request_host(headers).unwrap_or_default();
-    let Some(origin) = crate::shell::app_origin(app_id, slug, &st.settings.apps_base, host, st.shell.secure) else {
+    let Some(origin) = st.shell.app_origin_for(app_id, slug, host).await? else {
         return Ok(Err("This app has no address of its own here: open it in the workspace."));
     };
     st.kernel.oauth_ensure_client(client_id, &name, &[format!("{origin}/_ferrum/callback")]).await?;

@@ -626,7 +626,8 @@ async fn scenario() {
     assert!(sessions["sessions"].as_array().unwrap().iter().any(|s| s["zone"] == "office"), "{sessions}");
     assert!(sessions["sessions"].as_array().unwrap().iter().any(|s| s["zone"].is_null()), "opened without zones: none");
 
-    // A workspace's administrator cannot put a host in a zone; only the operator's tasks can.
+    // A workspace's administrator cannot put a host in a zone; only the operator's tasks can. The admin API refuses one
+    // (docs/operations.md, "Addresses of a workspace").
     let (status, answer) = call(
         &open,
         Method::POST,
@@ -637,9 +638,20 @@ async fn scenario() {
         Some(json!({"host": "new.acme.example", "target": "shell", "zone": "office"})),
     )
     .await;
+    assert!(status == StatusCode::UNPROCESSABLE_ENTITY && answer.contains("only the operator"), "{status} {answer}");
+    let (status, answer) = call(
+        &open,
+        Method::POST,
+        STAFF_HOST,
+        "/api/admin/domains",
+        ip,
+        Cred::Bearer(&admin_token),
+        Some(json!({"host": "new.acme.example", "target": "shell"})),
+    )
+    .await;
     assert!(status.is_success(), "{status} {answer}");
     let zone: Option<String> = read(&k, "select zone from tenant_host where host = $1", "new.acme.example").await;
-    assert_eq!(zone, None, "the admin API ignores a zone");
+    assert_eq!(zone, None, "an administrator's address has no zone");
     k.set_host_zone("new.acme.example", Some("public")).await.unwrap();
     assert_eq!(k.host_zone("new.acme.example").await.unwrap(), None, "a host not yet verified serves nothing, zone or not");
     assert!(k.set_host_zone("nowhere.acme.example", None).await.is_err(), "no such host");

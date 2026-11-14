@@ -92,6 +92,143 @@ pub struct TenantHost {
     pub created_at: DateTime<Utc>,
     /// A released host still serves the people signed in there until then ([`Kernel::release_host`]).
     pub leaving_until: Option<DateTime<Utc>>,
+    /// The zone the operator put it in (crate::zones); only the operator sets it.
+    pub zone: Option<String>,
+    /// What it shows ([`HostShape`]): a `shell` address only.
+    pub home: Option<String>,
+    pub apps: Option<Vec<String>>,
+    pub label: Option<String>,
+    /// The name an administrator gave it under the base domain (`{base_name}--{slug}.{base}`, [`name_under_base`]).
+    pub base_name: Option<String>,
+}
+
+/// What a `shell` address shows (docs/operations.md, "Addresses of a workspace"), as its administrators set it. It chooses
+/// where a person lands and what the bar lists there, never what the address admits: every app opens on every `shell`
+/// address, by link or typed path, and only the operator's zone keeps anything out.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct HostShape {
+    /// The app `/` opens there (its launcher route), for whoever may open that app; Home for everyone else.
+    pub home: Option<String>,
+    /// The apps the launcher and the bar's search list there, with a way to the main address for the rest; `None`: all.
+    pub apps: Option<Vec<String>>,
+    /// Its name beside the workspace's in the bar ("Sales").
+    pub label: Option<String>,
+}
+
+/// A change to a [`HostShape`]: `None` leaves a part as it is, `Some(None)` clears it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostPatch {
+    pub home: Option<Option<String>>,
+    pub apps: Option<Option<Vec<String>>>,
+    pub label: Option<Option<String>>,
+}
+
+/// What a request's host shows ([`Kernel::host_shown`]): its shape, and whether it is the workspace's main address.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostShown {
+    pub shape: HostShape,
+    pub primary: bool,
+}
+
+/// How many live addresses a workspace holds when its plan names no `addresses` quota (crate::plans): as before quotas.
+pub const ADDRESSES_DEFAULT: i64 = 20;
+/// At most this many apps on one address, and this many short paths in one workspace.
+pub const SHAPE_APPS_MAX: usize = 50;
+pub const PATHS_MAX: usize = 50;
+/// Names an administrator may not give an address under the base domain: they read as the service's own, or (`xn`, as in
+/// `xn--…`) as a name in another script. The server adds its own hosts' first labels.
+pub const RESERVED_NAMES: &[&str] = &["accounts", "hooks", "www", "api", "admin", "login", "mail", "xn"];
+/// What an operator's address answers when an administrator tries to change it.
+pub const OPERATOR_OWNS: &str = "this address is the operator's: only the operator changes or removes it";
+
+/// `{name}--{slug}.{base}`: a name a workspace gives itself under the cluster's base domain. One DNS label, so the base's
+/// wildcard certificate covers it, and never another workspace's: it ends in this workspace's own slug, a slug is never
+/// another workspace's (`tenant_slug_retired`), and no slug made since this form exists holds `--`.
+pub fn name_under_base(name: &str, slug: &str, base: &str) -> Result<String> {
+    let shaped = (1..=30).contains(&name.len())
+        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && !name.contains("--");
+    if !shaped {
+        return Err(Error::field("name", "use 1 to 30 lowercase letters, digits or single hyphens, not at either end"));
+    }
+    if RESERVED_NAMES.contains(&name) {
+        return Err(Error::field("name", "is kept for the service's own addresses"));
+    }
+    let base = base.trim().trim_matches('.').to_ascii_lowercase();
+    let host = format!("{name}--{slug}.{base}");
+    match normalize_host(&host) {
+        Some(h) if h == host => Ok(h),
+        _ => Err(Error::field("name", format!("{name}--{slug} does not fit in one part of an address (63 characters at most)"))),
+    }
+}
+
+/// A shape as an administrator sets it, tidied (`label` trimmed, `apps` without repeats), or refused: only a `shell`
+/// address has one; `home` and each of `apps` an app's id, at most [`SHAPE_APPS_MAX`]; `label` 1 to 40 characters with no
+/// control characters. Which apps are the workspace's the server checks.
+pub fn check_shape(target: &str, shape: &HostShape) -> Result<HostShape> {
+    if shape == &HostShape::default() {
+        return Ok(HostShape::default());
+    }
+    if target != "shell" {
+        return Err(Error::field("target", "home, apps and label are for addresses that open the workspace (shell)"));
+    }
+    let app_id = |s: &str| {
+        (2..=40).contains(&s.len())
+            && s.starts_with(|c: char| c.is_ascii_lowercase())
+            && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    };
+    if shape.home.as_deref().is_some_and(|h| !app_id(h)) {
+        return Err(Error::field("home", "is not an app's id"));
+    }
+    let mut apps: Option<Vec<String>> = None;
+    if let Some(list) = &shape.apps {
+        if list.len() > SHAPE_APPS_MAX {
+            return Err(Error::field("apps", format!("at most {SHAPE_APPS_MAX} apps")));
+        }
+        let mut out: Vec<String> = Vec::with_capacity(list.len());
+        for a in list {
+            if !app_id(a) {
+                return Err(Error::field("apps", format!("{a:?} is not an app's id")));
+            }
+            if !out.contains(a) {
+                out.push(a.clone());
+            }
+        }
+        apps = Some(out);
+    }
+    let label = match shape.label.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(l) if l.chars().count() > 40 || l.chars().any(char::is_control) => return Err(Error::field("label", "1 to 40 characters of plain text")),
+        Some(l) => Some(l.to_string()),
+    };
+    Ok(HostShape { home: shape.home.clone(), apps, label })
+}
+
+/// A short path of a workspace (docs/operations.md, "Addresses of a workspace", short paths): `/{alias}` and `/{alias}/…` on every `shell` address
+/// redirect to `target`, a path of the workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct ShortPath {
+    pub alias: String,
+    pub target: String,
+}
+
+/// A short path's own form: 2 to 30 lowercase letters, digits or hyphens, starting with a letter (as an app's route).
+pub fn alias_shaped(alias: &str) -> bool {
+    let b = alias.as_bytes();
+    (2..=30).contains(&b.len()) && b[0].is_ascii_lowercase() && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+}
+
+/// A target's own form: a path on the same host (`/`, not `//` or `/\`), without a fragment or control characters, at most
+/// 2,000 characters. Which first segments it may have the server checks.
+pub fn target_shaped(target: &str) -> bool {
+    target.starts_with('/')
+        && !target.starts_with("//")
+        && !target.starts_with("/\\")
+        && !target.contains(['\\', '#', ' '])
+        && !target.chars().any(char::is_control)
+        && target.len() <= 2000
 }
 
 /// Where a host name leads.
@@ -476,35 +613,64 @@ impl Kernel {
     /// cached as [`Kernel::route_host`] is.
     pub async fn host_zone(&self, host: &str) -> Result<Option<String>> {
         Ok(match self.host_row(host).await? {
-            (HostRoute::Serve { .. } | HostRoute::Leaving { .. }, zone) => zone,
+            (HostRoute::Serve { .. } | HostRoute::Leaving { .. }, zone, _) => zone,
             _ => None,
         })
     }
 
-    async fn host_row(&self, host: &str) -> Result<(HostRoute, Option<String>)> {
-        let Some(host) = normalize_host(host) else { return Ok((HostRoute::Unknown, None)) };
+    /// What a host that serves a workspace's shell shows there ([`HostShape`]) and whether it is the main address, cached
+    /// as [`Kernel::route_host`] is; `None` for any other host (a portal, a site, one moved or not ours).
+    pub async fn host_shown(&self, host: &str) -> Result<Option<HostShown>> {
+        Ok(match self.host_row(host).await? {
+            (HostRoute::Serve { target, .. } | HostRoute::Leaving { target, .. }, _, shown) if target == "shell" => Some(shown),
+            _ => None,
+        })
+    }
+
+    async fn host_row(&self, host: &str) -> Result<(HostRoute, Option<String>, HostShown)> {
+        let Some(host) = normalize_host(host) else { return Ok((HostRoute::Unknown, None, HostShown::default())) };
         if let Some(e) = self.hosts.get(&host)
-            && e.2.elapsed() < CACHE_TTL
+            && e.3.elapsed() < CACHE_TTL
         {
-            return Ok((e.0.clone(), e.1.clone()));
+            return Ok((e.0.clone(), e.1.clone(), e.2.clone()));
         }
         let mut tx = self.db.system_tx().await?;
-        type Row = (Uuid, String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>, Option<String>, bool, Option<String>, Option<DateTime<Utc>>);
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            tenant_id: Uuid,
+            kind: String,
+            target: String,
+            verified_at: Option<DateTime<Utc>>,
+            released_at: Option<DateTime<Utc>>,
+            zone: Option<String>,
+            moved: bool,
+            moved_to: Option<String>,
+            leaving_until: Option<DateTime<Utc>>,
+            home: Option<String>,
+            apps: Option<Vec<String>>,
+            label: Option<String>,
+            is_primary: bool,
+        }
         // A workspace that moved to another installation (workspace_move.rs) answers as moved on every host it had here.
         let row: Option<Row> = sqlx::query_as(
-            "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at, h.zone, m.workspace is not null, m.moved_to, h.leaving_until from tenant_host h \
+            "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at, h.zone, m.workspace is not null as moved, m.moved_to, h.leaving_until, \
+             h.home, h.apps, h.label, h.is_primary from tenant_host h \
              join tenant t on t.id = h.tenant_id left join workspace_move m on m.workspace = h.tenant_id and m.state = 'moved' where h.host = $1",
         )
         .bind(&host)
         .fetch_optional(&mut *tx)
         .await?;
-        let zone = row.as_ref().and_then(|r| r.5.clone());
+        let zone = row.as_ref().and_then(|r| r.zone.clone());
+        let shown = row
+            .as_ref()
+            .map(|r| HostShown { shape: HostShape { home: r.home.clone(), apps: r.apps.clone(), label: r.label.clone() }, primary: r.is_primary })
+            .unwrap_or_default();
         let route = match row {
             None => HostRoute::Unknown,
             // To its address there when it has another one; otherwise the address still points here, and only says so.
-            Some((tenant, .., true, to, _)) => HostRoute::Moved { tenant, to: to.filter(|to| *to != host) },
+            Some(r) if r.moved => HostRoute::Moved { tenant: r.tenant_id, to: r.moved_to.filter(|to| *to != host) },
             // Its leaving period first, then the redirect window from its end.
-            Some((tenant, _, target, _, Some(released), .., leaving)) => {
+            Some(Row { tenant_id: tenant, target, released_at: Some(released), leaving_until: leaving, .. }) => {
                 let now = Utc::now();
                 if now - leaving.unwrap_or(released) < chrono::Duration::days(HOST_REDIRECT_DAYS) {
                     let to: Option<String> = sqlx::query_scalar(
@@ -523,15 +689,15 @@ impl Kernel {
                     HostRoute::Unknown
                 }
             }
-            Some((tenant, kind, target, verified, None, ..)) if kind == "subdomain" || verified.is_some() => HostRoute::Serve { tenant, target },
+            Some(r) if r.kind == "subdomain" || r.verified_at.is_some() => HostRoute::Serve { tenant: r.tenant_id, target: r.target },
             Some(_) => HostRoute::Unknown,
         };
         tx.commit().await?;
         if self.hosts.len() > 100_000 {
-            self.hosts.retain(|_, v| v.2.elapsed() < CACHE_TTL);
+            self.hosts.retain(|_, v| v.3.elapsed() < CACHE_TTL);
         }
-        self.hosts.insert(host, (route.clone(), zone.clone(), Instant::now()));
-        Ok((route, zone))
+        self.hosts.insert(host, (route.clone(), zone.clone(), shown.clone(), Instant::now()));
+        Ok((route, zone, shown))
     }
 
     /// The workspace a host name serves the shell for (verified custom domain or subdomain).
@@ -546,8 +712,8 @@ impl Kernel {
     pub async fn list_hosts(&self, ctx: &Ctx) -> Result<Vec<TenantHost>> {
         let mut tx = self.db.system_tx().await?;
         let rows = sqlx::query_as(
-            "select host, kind, target, is_primary, verify_token, verified_at, checked_at, failures, released_at, created_at, leaving_until \
-             from tenant_host where tenant_id = $1 order by created_at",
+            "select host, kind, target, is_primary, verify_token, verified_at, checked_at, failures, released_at, created_at, leaving_until, \
+             zone, home, apps, label, base_name from tenant_host where tenant_id = $1 order by created_at",
         )
         .bind(ctx.tenant)
         .fetch_all(&mut *tx)
@@ -626,15 +792,7 @@ impl Kernel {
     /// the zone its requests are in (crate::zones), or none.
     pub async fn add_operator_host(&self, tenant_slug: &str, host: &str, target: &str, zone: Option<&str>) -> Result<()> {
         let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a host name"))?;
-        let site = target.strip_prefix("site:").is_some_and(|a| {
-            a.len() >= 2
-                && a.len() <= 40
-                && a.starts_with(|c: char| c.is_ascii_lowercase())
-                && a.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        });
-        if !(target == "shell" || target == "portal" || site) {
-            return Err(Error::field("target", "must be shell, portal or site:{app}"));
-        }
+        check_target(target)?;
         let (tenant, _) = self.tenant_by_slug(tenant_slug).await?;
         let mut tx = self.db.system_tx().await?;
         self.claimable(&mut tx, &host).await?;
@@ -753,47 +911,185 @@ impl Kernel {
     /// Adds a custom domain to the caller's workspace, unverified until [`Kernel::host_checked`]
     /// finds it pointing here. `target`: `shell`, `portal` or `site:{app}`.
     pub async fn add_host(&self, ctx: &Ctx, host: &str, target: &str) -> Result<TenantHost> {
-        if !ctx.is_admin {
-            return Err(Error::Forbidden("administrator access required".into()));
-        }
+        self.add_host_shaped(ctx, host, target, &HostShape::default()).await
+    }
+
+    /// [`Kernel::add_host`], with what the address shows ([`HostShape`], a `shell` address only).
+    pub async fn add_host_shaped(&self, ctx: &Ctx, host: &str, target: &str, shape: &HostShape) -> Result<TenantHost> {
+        may_change_addresses(ctx)?;
         let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a valid domain name"))?;
-        let target_ok = matches!(target, "shell" | "portal")
-            || target.strip_prefix("site:").is_some_and(|a| {
-                a.len() >= 2
-                    && a.len() <= 40
-                    && a.starts_with(|c: char| c.is_ascii_lowercase())
-                    && a.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            });
-        if !target_ok {
-            return Err(Error::field("target", "must be shell, portal or site:{app}"));
-        }
+        check_target(target)?;
+        let shape = check_shape(target, shape)?;
         let mut tx = self.db.system_tx().await?;
-        let count: i64 =
-            sqlx::query_scalar("select count(*) from tenant_host where tenant_id = $1 and released_at is null").bind(ctx.tenant).fetch_one(&mut *tx).await?;
-        if count >= 20 {
-            return Err(Error::invalid("a workspace has at most 20 domains"));
-        }
+        room_for_address(&mut tx, ctx.tenant).await?;
         self.claimable(&mut tx, &host).await?;
         let token = hex::encode(rand::random::<[u8; 16]>());
-        sqlx::query("insert into tenant_host (host, tenant_id, kind, target, verify_token) values ($1, $2, 'custom', $3, $4)")
+        sqlx::query("insert into tenant_host (host, tenant_id, kind, target, verify_token, home, apps, label) values ($1, $2, 'custom', $3, $4, $5, $6, $7)")
             .bind(&host)
             .bind(ctx.tenant)
             .bind(target)
             .bind(&token)
+            .bind(&shape.home)
+            .bind(&shape.apps)
+            .bind(&shape.label)
             .execute(&mut *tx)
             .await?;
-        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "add", None, serde_json::json!({"host": host, "target": target})).await?;
+        let mut said = serde_json::json!({"host": host, "target": target});
+        said_shape(&mut said, &shape);
+        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "add", None, said).await?;
         tx.commit().await?;
         self.hosts.remove(&host);
         Ok(self.list_hosts(ctx).await?.into_iter().find(|h| h.host == host).expect("just added"))
     }
 
+    /// Gives the caller's workspace a name under the cluster's base domain, `{name}--{slug}.{base}` ([`name_under_base`]),
+    /// for `target`, with what it shows: live at once, with nothing to prove (the cluster owns the base domain), a
+    /// certificate on demand like the workspace's own subdomain, and sign-ins handed to it by the accounts host like any
+    /// `shell` address. The first live address of a target becomes its main one. A name of its own that it let go of comes
+    /// back to it at once, even while leaving: no other workspace can ever have it, so there is nobody to keep it from.
+    pub async fn add_name(&self, ctx: &Ctx, base: &str, name: &str, target: &str, shape: &HostShape) -> Result<TenantHost> {
+        may_change_addresses(ctx)?;
+        check_target(target)?;
+        let shape = check_shape(target, shape)?;
+        let mut tx = self.db.system_tx().await?;
+        room_for_address(&mut tx, ctx.tenant).await?;
+        let slug: String = sqlx::query_scalar("select slug from tenant where id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
+        let host = name_under_base(name, &slug, base)?;
+        let held: Option<(Uuid, bool)> =
+            sqlx::query_as("select tenant_id, released_at is null from tenant_host where host = $1").bind(&host).fetch_optional(&mut *tx).await?;
+        match held {
+            Some((t, true)) if t == ctx.tenant => return Err(Error::Conflict(format!("{host} is already an address of this workspace"))),
+            Some((t, false)) if t == ctx.tenant => {
+                sqlx::query("delete from tenant_host where host = $1").bind(&host).execute(&mut *tx).await?;
+            }
+            // Only a workspace whose slug was made with `--` before this form existed can hold such a name.
+            _ => self.claimable(&mut tx, &host).await?,
+        }
+        sqlx::query(
+            "insert into tenant_host (host, tenant_id, kind, target, is_primary, verify_token, verified_at, base_name, home, apps, label) \
+             values ($1, $2, 'subdomain', $3, not exists (select 1 from tenant_host where tenant_id = $2 and target = $3 and is_primary and released_at is null), \
+             '', now(), $4, $5, $6, $7)",
+        )
+        .bind(&host)
+        .bind(ctx.tenant)
+        .bind(target)
+        .bind(name)
+        .bind(&shape.home)
+        .bind(&shape.apps)
+        .bind(&shape.label)
+        .execute(&mut *tx)
+        .await?;
+        let mut said = serde_json::json!({"host": host, "target": target, "kind": "subdomain", "name": name});
+        said_shape(&mut said, &shape);
+        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "add", None, said).await?;
+        tx.commit().await?;
+        self.hosts.remove(&host);
+        Ok(self.list_hosts(ctx).await?.into_iter().find(|h| h.host == host).expect("just added"))
+    }
+
+    /// Changes what one of the caller's workspace's live `shell` addresses shows. The row is locked while it changes, so
+    /// two changes at once each build on the other: neither is lost. An operator's address is the operator's.
+    pub async fn shape_host(&self, ctx: &Ctx, host: &str, patch: &HostPatch) -> Result<TenantHost> {
+        may_change_addresses(ctx)?;
+        let host = normalize_host(host).ok_or_else(|| Error::NotFound("no such domain".into()))?;
+        let mut tx = self.db.system_tx().await?;
+        type Row = (String, String, bool, Option<String>, Option<Vec<String>>, Option<String>);
+        let row: Option<Row> =
+            sqlx::query_as("select kind, target, released_at is not null, home, apps, label from tenant_host where host = $1 and tenant_id = $2 for update")
+                .bind(&host)
+                .bind(ctx.tenant)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let (kind, target, released, home, apps, label) = row.ok_or_else(|| Error::NotFound("no such domain".into()))?;
+        if kind == "operator" {
+            return Err(Error::Forbidden(OPERATOR_OWNS.into()));
+        }
+        if released {
+            return Err(Error::invalid("this address is leaving the workspace: it no longer changes"));
+        }
+        let before = HostShape { home, apps, label };
+        let after = HostShape {
+            home: patch.home.clone().unwrap_or_else(|| before.home.clone()),
+            apps: patch.apps.clone().unwrap_or_else(|| before.apps.clone()),
+            label: patch.label.clone().unwrap_or_else(|| before.label.clone()),
+        };
+        let after = check_shape(&target, &after)?;
+        sqlx::query("update tenant_host set home = $2, apps = $3, label = $4 where host = $1")
+            .bind(&host)
+            .bind(&after.home)
+            .bind(&after.apps)
+            .bind(&after.label)
+            .execute(&mut *tx)
+            .await?;
+        let said = serde_json::json!({"host": host, "before": before, "after": after});
+        crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "shape", None, said).await?;
+        tx.commit().await?;
+        // ponytail: this replica sees it now; the others within the host cache's 20 seconds.
+        self.hosts.remove(&host);
+        Ok(self.list_hosts(ctx).await?.into_iter().find(|h| h.host == host).expect("just changed"))
+    }
+
+    /// How many live addresses the workspace may hold (its plan's `addresses` quota, else [`ADDRESSES_DEFAULT`]) and holds.
+    pub async fn address_room(&self, tenant: Uuid) -> Result<(i64, i64)> {
+        let mut tx = self.db.system_tx().await?;
+        let room = address_room(&mut tx, tenant).await?;
+        tx.commit().await?;
+        Ok(room)
+    }
+
+    /// The workspace's short paths (docs/operations.md, "Addresses of a workspace", short paths), in the order its administrators gave them.
+    pub async fn short_paths(&self, tenant: Uuid) -> Result<Vec<ShortPath>> {
+        let mut tx = self.db.system_tx().await?;
+        let paths: Option<Value> =
+            sqlx::query_scalar("select settings->'paths' from tenant where id = $1").bind(tenant).fetch_optional(&mut *tx).await?.flatten();
+        tx.commit().await?;
+        Ok(paths.and_then(|p| serde_json::from_value(p).ok()).unwrap_or_default())
+    }
+
+    /// Replaces the workspace's short paths with `paths`, checked together: each alias of its form ([`alias_shaped`]) and
+    /// given once, each target a path of the same host ([`target_shaped`]), at most [`PATHS_MAX`]. The refusal names the
+    /// alias at fault. Which segments are free and which targets lead into the workspace the server checks first. Kept in
+    /// the workspace's settings, so they go wherever the workspace goes (a move, a sandbox). Two saves at once: the later
+    /// one's list stands whole.
+    pub async fn set_short_paths(&self, ctx: &Ctx, paths: &[ShortPath]) -> Result<Vec<ShortPath>> {
+        may_change_addresses(ctx)?;
+        if paths.len() > PATHS_MAX {
+            return Err(Error::field("paths", format!("a workspace has at most {PATHS_MAX} short paths")));
+        }
+        for (i, p) in paths.iter().enumerate() {
+            if !alias_shaped(&p.alias) {
+                return Err(Error::field("paths", format!("/{}: use 2 to 30 lowercase letters, digits or hyphens, starting with a letter", p.alias)));
+            }
+            if paths[..i].iter().any(|q| q.alias == p.alias) {
+                return Err(Error::field("paths", format!("/{} is given twice", p.alias)));
+            }
+            if !target_shaped(&p.target) {
+                return Err(Error::field("paths", format!("/{} must lead to a path here, such as /crm/, never to another address", p.alias)));
+            }
+        }
+        let mut tx = self.db.system_tx().await?;
+        let before: Option<Value> =
+            sqlx::query_scalar("select settings->'paths' from tenant where id = $1 for update").bind(ctx.tenant).fetch_one(&mut *tx).await?;
+        let after = serde_json::to_value(paths).map_err(Error::internal)?;
+        if paths.is_empty() {
+            sqlx::query("update tenant set settings = settings - 'paths' where id = $1").bind(ctx.tenant).execute(&mut *tx).await?;
+        } else {
+            sqlx::query("update tenant set settings = settings || jsonb_build_object('paths', $2::jsonb) where id = $1")
+                .bind(ctx.tenant)
+                .bind(&after)
+                .execute(&mut *tx)
+                .await?;
+        }
+        let said = serde_json::json!({"before": before.unwrap_or_else(|| serde_json::json!([])), "after": after});
+        crate::audit::record_admin(&mut tx, ctx, "WorkspacePaths", ctx.tenant, "set", None, said).await?;
+        tx.commit().await?;
+        Ok(paths.to_vec())
+    }
+
     /// Makes a verified host the primary one of its workspace and target: links, emails and
     /// redirects use it, and the workspace's other hosts of that target redirect to it.
     pub async fn make_primary_host(&self, ctx: &Ctx, host: &str) -> Result<()> {
-        if !ctx.is_admin {
-            return Err(Error::Forbidden("administrator access required".into()));
-        }
+        may_change_addresses(ctx)?;
         let host = normalize_host(host).ok_or_else(|| Error::NotFound("no such domain".into()))?;
         let mut tx = self.db.system_tx().await?;
         let target: Option<String> = sqlx::query_scalar(
@@ -960,9 +1256,7 @@ impl Kernel {
     /// work kept in browsers can be sent and old links and data never reach a new owner. Returns the
     /// end of the leaving period, if it has one (a domain never verified is simply dropped).
     pub async fn remove_host(&self, ctx: &Ctx, host: &str) -> Result<Option<DateTime<Utc>>> {
-        if !ctx.is_admin {
-            return Err(Error::Forbidden("administrator access required".into()));
-        }
+        may_change_addresses(ctx)?;
         let host = normalize_host(host).ok_or_else(|| Error::NotFound("no such domain".into()))?;
         let mut tx = self.db.system_tx().await?;
         let until = self.release_in(&mut tx, ctx.tenant, &host, true, self.settings.host_leaving_days).await?;
@@ -1008,17 +1302,24 @@ impl Kernel {
     /// Releases one host of `tenant` in `tx`: a custom domain never verified is dropped (nothing can depend on
     /// it); any other is released with a leaving period of `days` (none at 0). A primary host (or any, when its target has
     /// no primary) hands that place to another live host of the workspace for the same target first, by [`SUCCESSION`],
-    /// so links and redirects keep leading somewhere; with none left, the target has no primary, as before. `custom_only`: an administrator's removal, which reaches only the workspace's custom domains.
+    /// so links and redirects keep leading somewhere; with none left, the target has no primary, as before. `custom_only`: an
+    /// administrator's removal, which reaches only the workspace's custom domains and the names it gave itself under the base
+    /// domain (an operator's address is the operator's; the workspace's own subdomain stays).
     async fn release_in(&self, tx: &mut crate::db::Tx, tenant: Uuid, host: &str, custom_only: bool, days: i64) -> Result<Option<DateTime<Utc>>> {
         // The workspace's live hosts are locked in one order, so two releases at once wait for each other
         // instead of each handing the primary to the other's host.
-        let live: Vec<(String, String, String, bool, bool, DateTime<Utc>)> = sqlx::query_as(
-            "select host, kind, target, is_primary, verified_at is not null, created_at from tenant_host where tenant_id = $1 and released_at is null order by host for update",
+        let live: Vec<(String, String, String, bool, bool, DateTime<Utc>, bool)> = sqlx::query_as(
+            "select host, kind, target, is_primary, verified_at is not null, created_at, base_name is not null from tenant_host \
+             where tenant_id = $1 and released_at is null order by host for update",
         )
         .bind(tenant)
         .fetch_all(&mut **tx)
         .await?;
-        let Some((_, kind, target, primary, verified, _)) = live.iter().find(|h| h.0 == host).filter(|h| !custom_only || h.1 == "custom") else {
+        let found = live.iter().find(|h| h.0 == host);
+        if custom_only && found.is_some_and(|h| h.1 == "operator") {
+            return Err(Error::Forbidden(OPERATOR_OWNS.into()));
+        }
+        let Some((_, kind, target, primary, verified, ..)) = found.filter(|h| !custom_only || h.1 == "custom" || h.6) else {
             return Err(Error::NotFound("no such domain".into()));
         };
         if kind == "custom" && !verified {
@@ -1286,6 +1587,61 @@ impl Kernel {
     }
 }
 
+/// Administrators change a workspace's addresses and short paths; nobody does while the workspace is read-only (closed or
+/// restricted): they stay as they are, so people can still read and export there. The operator's tasks still can.
+fn may_change_addresses(ctx: &Ctx) -> Result<()> {
+    if !ctx.is_admin {
+        return Err(Error::Forbidden("administrator access required".into()));
+    }
+    if ctx.read_only {
+        return Err(Error::Forbidden("this workspace is read-only now that its account is closed or restricted: its addresses stay as they are".into()));
+    }
+    Ok(())
+}
+
+/// `shell`, `portal` or `site:{app}`.
+fn check_target(target: &str) -> Result<()> {
+    let site = target.strip_prefix("site:").is_some_and(|a| {
+        a.len() >= 2
+            && a.len() <= 40
+            && a.starts_with(|c: char| c.is_ascii_lowercase())
+            && a.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    });
+    if matches!(target, "shell" | "portal") || site { Ok(()) } else { Err(Error::field("target", "must be shell, portal or site:{app}")) }
+}
+
+/// (how many live addresses `tenant` may hold, how many it holds).
+async fn address_room(tx: &mut crate::db::Tx, tenant: Uuid) -> Result<(i64, i64)> {
+    Ok(sqlx::query_as(
+        "select coalesce((select (quotas->>'addresses')::bigint from tenant where id = $1), $2), \
+         (select count(*) from tenant_host where tenant_id = $1 and released_at is null)",
+    )
+    .bind(tenant)
+    .bind(ADDRESSES_DEFAULT)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+/// Refuses an address past the workspace's limit. One change of a workspace's addresses at a time (a lock held to the
+/// end of `tx`), so two at once cannot both take its last place, on one replica or many.
+async fn room_for_address(tx: &mut crate::db::Tx, tenant: Uuid) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('ferrum-hosts:' || $1::text, 0))").bind(tenant).execute(&mut **tx).await?;
+    let (limit, used) = address_room(tx, tenant).await?;
+    if used >= limit {
+        return Err(Error::invalid(format!("a workspace has at most {limit} addresses")));
+    }
+    Ok(())
+}
+
+/// What an audit record says of a shape: only the parts set.
+fn said_shape(said: &mut Value, shape: &HostShape) {
+    for (k, v) in [("home", serde_json::json!(shape.home)), ("apps", serde_json::json!(shape.apps)), ("label", serde_json::json!(shape.label))] {
+        if !v.is_null() {
+            said[k] = v;
+        }
+    }
+}
+
 /// Makes `host` the main one of its target in `tenant`: the others first lose it (the unique index `tenant_host_primary`
 /// allows one at a time).
 async fn primary_in(tx: &mut crate::db::Tx, tenant: Uuid, host: &str) -> Result<()> {
@@ -1303,7 +1659,62 @@ async fn primary_in(tx: &mut crate::db::Tx, tenant: Uuid, host: &str) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_host;
+    use super::{HostShape, alias_shaped, check_shape, name_under_base, normalize_host, target_shaped};
+
+    #[test]
+    fn a_name_under_the_base_is_one_label_ending_in_its_own_slug() {
+        assert_eq!(name_under_base("sales", "acme", ".Ferrum.Cloud.").unwrap(), "sales--acme.ferrum.cloud");
+        assert_eq!(name_under_base("eu-2", "acme", "ferrum.cloud").unwrap(), "eu-2--acme.ferrum.cloud");
+        for bad in ["", "Sales", "sa--les", "-sales", "sales-", "s.a", "s_a", &"a".repeat(31)] {
+            assert!(name_under_base(bad, "acme", "ferrum.cloud").is_err(), "{bad:?}");
+        }
+        // Read as the service's own, or as a name in another script.
+        for kept in ["accounts", "hooks", "www", "api", "admin", "login", "mail", "xn"] {
+            assert!(name_under_base(kept, "acme", "ferrum.cloud").is_err(), "{kept}");
+        }
+        // One DNS label of at most 63 characters, or nothing.
+        assert!(name_under_base(&"a".repeat(30), &"b".repeat(31), "ferrum.cloud").is_ok());
+        assert!(name_under_base(&"a".repeat(30), &"b".repeat(32), "ferrum.cloud").is_err());
+    }
+
+    #[test]
+    fn what_an_address_shows_is_for_shell_addresses_and_kept_tidy() {
+        let shape = |home: Option<&str>, apps: Option<&[&str]>, label: Option<&str>| HostShape {
+            home: home.map(str::to_string),
+            apps: apps.map(|a| a.iter().map(|s| s.to_string()).collect()),
+            label: label.map(str::to_string),
+        };
+        assert_eq!(check_shape("portal", &HostShape::default()).unwrap(), HostShape::default(), "nothing set: any address");
+        assert!(check_shape("portal", &shape(Some("crm"), None, None)).is_err());
+        assert!(check_shape("site:commerce", &shape(None, None, Some("Shop"))).is_err());
+        assert_eq!(
+            check_shape("shell", &shape(Some("crm"), Some(&["crm", "helpdesk", "crm"]), Some("  Sales "))).unwrap(),
+            shape(Some("crm"), Some(&["crm", "helpdesk"]), Some("Sales"))
+        );
+        assert_eq!(check_shape("shell", &shape(None, Some(&[]), Some(" "))).unwrap(), shape(None, Some(&[]), None), "an empty label is none");
+        for bad in [shape(Some("CRM"), None, None), shape(None, Some(&["x"]), None), shape(None, None, Some(&"x".repeat(41))), shape(None, None, Some("a\nb"))]
+        {
+            assert!(check_shape("shell", &bad).is_err(), "{bad:?}");
+        }
+        let many: Vec<String> = (0..51).map(|i| format!("app{i}")).collect();
+        assert!(check_shape("shell", &HostShape { apps: Some(many), ..Default::default() }).is_err());
+    }
+
+    #[test]
+    fn short_paths_and_their_targets_keep_to_this_host() {
+        for ok in ["sales", "q4", "team-a", &"a".repeat(30)] {
+            assert!(alias_shaped(ok), "{ok}");
+        }
+        for bad in ["s", "4q", "-a", "Sales", "a/b", "a.b", &"a".repeat(31)] {
+            assert!(!alias_shaped(bad), "{bad}");
+        }
+        for ok in ["/", "/crm/", "/crm/e/Lead?view=mine", "/data/e/Customer"] {
+            assert!(target_shaped(ok), "{ok}");
+        }
+        for bad in ["crm", "//evil.example/x", "/\\evil.example", "https://evil.example", "/crm#x", "/a b", "/a\nb", &format!("/{}", "a".repeat(2000))] {
+            assert!(!target_shaped(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn hosts_are_normalized_or_refused() {

@@ -8,9 +8,9 @@ import { readFileSync } from "node:fs";
 const src = readFileSync(new URL("./runtime.js", import.meta.url), "utf8");
 const block = src.slice(src.indexOf("// ── Pure helpers"), src.indexOf("// ── end of the pure helpers"));
 assert.ok(block.length > 100, "the block is where the markers say");
-const { originStep, stillToSend, movedUrl, titleMarked, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof } =
+const { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof } =
   new Function(
-    `${block}; return { originStep, stillToSend, movedUrl, titleMarked, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof };`,
+    `${block}; return { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof };`,
   )();
 
 test("the origin guard keeps a workspace's storage while its host is leaving, and wipes it for the next owner", () => {
@@ -48,6 +48,26 @@ test("the same page at the new address keeps to the new origin", () => {
 test("a sandbox's mark goes before the title once", () => {
   assert.equal(titleMarked("Deals · CRM", "Sandbox · "), "Sandbox · Deals · CRM");
   assert.equal(titleMarked("Sandbox · Deals · CRM", "Sandbox · "), "Sandbox · Deals · CRM");
+});
+
+test("an address lists the apps it names, and a way to the main address for the rest", () => {
+  const entries = [
+    { id: "crm", app: "crm", title: "CRM", url: "/crm/" },
+    { id: "mail", app: "comms", title: "Mail", url: "/mail/" },
+    { id: "chat", app: "comms", title: "Chat", url: "/chat/" },
+    { id: "records-helpdesk", app: "helpdesk", title: "Helpdesk", url: "/data/helpdesk/" },
+  ];
+  const main = { id: "main-address", app: null, title: "All apps", url: "https://acme.ferrum.cloud/" };
+  // Naming none: every entry, as on any address.
+  assert.deepEqual(addressEntries(entries, null, main), entries);
+  assert.deepEqual(addressEntries(entries, undefined, null), entries);
+  // Naming some: theirs, in the launcher's order (every entry of an app), then the way to the rest.
+  assert.deepEqual(addressEntries(entries, ["comms", "crm"], main).map((e) => e.id), ["crm", "mail", "chat", "main-address"]);
+  // On the main address itself, or with no main address, nothing is added.
+  assert.deepEqual(addressEntries(entries, ["crm"], null).map((e) => e.id), ["crm"]);
+  // An app the person cannot use here is not in the launcher's data: naming it adds nothing.
+  assert.deepEqual(addressEntries(entries, ["finance"], main).map((e) => e.id), ["main-address"]);
+  assert.deepEqual(addressEntries(entries, [], null), []);
 });
 
 // The server loads these as modules (`<script type="module">`), where a name declared twice at the top is a syntax

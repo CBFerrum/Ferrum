@@ -414,6 +414,151 @@ async fn scenario() {
     // Unchanged slugs and other columns pass untouched.
     sql(&k, &format!("update tenant set name = 'Initech Inc' where id = '{initech}'")).await;
     assert!(k.create_tenant(tenant("umbrella")).await.is_ok());
+
+    Box::pin(names_and_what_addresses_show(&k)).await;
+}
+
+/// The addresses a workspace gives itself (docs/operations.md, "Addresses of a workspace"): names under the base domain,
+/// what each `shell` address shows, the limit, short paths, a renamed and a closed workspace.
+async fn names_and_what_addresses_show(k: &Kernel) {
+    use ferrum_kernel::shell::{HostPatch, HostShape, HostShown, ShortPath};
+    const BASE: &str = "names.test";
+    let nova = Box::pin(k.create_tenant(tenant("nova"))).await.expect("tenant");
+    let other = Box::pin(k.create_tenant(tenant("other"))).await.expect("tenant");
+    let ctx = |t, slug: &'static str| async move {
+        let s = k.login(slug, &format!("admin@{slug}.test"), "Correct-Horse-9").await.unwrap();
+        k.load_ctx(t, s.user, Some(s.token_version), "it".into()).await.unwrap()
+    };
+    let (admin, other_admin) = (ctx(nova, "nova").await, ctx(other, "other").await);
+    k.add_subdomain(nova, "nova.names.test").await.unwrap();
+    let shape = |home: Option<&str>, apps: Option<&[&str]>, label: Option<&str>| HostShape {
+        home: home.map(str::to_string),
+        apps: apps.map(|a| a.iter().map(|s| s.to_string()).collect()),
+        label: label.map(str::to_string),
+    };
+
+    // A name under the base: its own form, live at once, a certificate on demand, what it shows kept with it.
+    let sales = k.add_name(&admin, BASE, "sales", "shell", &shape(Some("crm"), Some(&["crm"]), Some("Sales"))).await.unwrap();
+    assert_eq!((sales.host.as_str(), sales.kind.as_str(), sales.base_name.as_deref()), ("sales--nova.names.test", "subdomain", Some("sales")));
+    assert!(sales.verified_at.is_some() && !sales.is_primary, "live at once; the subdomain stays the main address");
+    assert_eq!(k.route_host("sales--nova.names.test").await.unwrap(), HostRoute::Serve { tenant: nova, target: "shell".into() });
+    assert!(k.host_may_have_certificate("sales--nova.names.test").await.unwrap());
+    assert_eq!(
+        k.host_shown("SALES--nova.names.test:443").await.unwrap(),
+        Some(HostShown { shape: shape(Some("crm"), Some(&["crm"]), Some("Sales")), primary: false })
+    );
+    assert_eq!(k.host_shown("nova.names.test").await.unwrap().map(|s| s.primary), Some(true));
+    assert!(matches!(k.add_name(&admin, BASE, "sales", "shell", &HostShape::default()).await, Err(Error::Conflict(_))), "once");
+    for (name, why) in [("accounts", "kept"), ("sa--les", "two hyphens"), ("Sales!", "not a name")] {
+        assert!(matches!(k.add_name(&admin, BASE, name, "shell", &HostShape::default()).await, Err(Error::Validation(_))), "{why}");
+    }
+    assert!(matches!(k.add_name(&admin, BASE, "help", "portal", &shape(Some("crm"), None, None)).await, Err(Error::Validation(_))), "a portal shows no apps");
+    let portal = k.add_name(&admin, BASE, "help", "portal", &HostShape::default()).await.unwrap();
+    assert!(portal.is_primary, "the first address of a target is its main one");
+    // Another workspace's names end in its own slug; it cannot take this one by any way in.
+    assert_eq!(k.add_name(&other_admin, BASE, "sales", "shell", &HostShape::default()).await.unwrap().host, "sales--other.names.test");
+    assert!(matches!(k.add_host(&other_admin, "sales--nova.names.test", "shell").await, Err(Error::Conflict(_))));
+    let taken = k.create_tenant(tenant("sales--nova")).await.unwrap_err();
+    assert!(matches!(&taken, Error::Validation(f) if f[0].field == "slug"), "no new slug has two hyphens: {taken}");
+    let ana = k.create_user(&admin, "ana@nova.test", "Ana", Some("Correct-Horse-9"), &[], false).await.unwrap();
+    let a = k.login("nova", "ana@nova.test", "Correct-Horse-9").await.unwrap();
+    let ana = k.load_ctx(nova, ana, Some(a.token_version), "it".into()).await.unwrap();
+    assert!(matches!(k.add_name(&ana, BASE, "mine", "shell", &HostShape::default()).await, Err(Error::Forbidden(_))), "administrators only");
+
+    // What an address shows changes part by part, never on another target, never on an operator's address. Two changes
+    // at once each build on the other (the row is locked while it changes).
+    let label = HostPatch { label: Some(Some("Sales team".into())), ..Default::default() };
+    let home = HostPatch { home: Some(None), ..Default::default() };
+    let (a, b) = tokio::join!(k.shape_host(&admin, "sales--nova.names.test", &label), k.shape_host(&admin, "sales--nova.names.test", &home));
+    a.unwrap();
+    b.unwrap();
+    let row = k.list_hosts(&admin).await.unwrap().into_iter().find(|h| h.host == "sales--nova.names.test").unwrap();
+    assert_eq!((row.home, row.apps, row.label), (None, Some(vec!["crm".to_string()]), Some("Sales team".to_string())), "neither change lost");
+    assert!(matches!(k.shape_host(&admin, "help--nova.names.test", &label).await, Err(Error::Validation(_))), "a portal shows no apps");
+    k.add_operator_host("nova", "erp.nova.internal", "shell", Some("office")).await.unwrap();
+    assert!(matches!(k.shape_host(&admin, "erp.nova.internal", &label).await, Err(Error::Forbidden(m)) if m.contains("operator")));
+    assert!(matches!(k.remove_host(&admin, "erp.nova.internal").await, Err(Error::Forbidden(m)) if m.contains("operator")));
+    assert!(matches!(k.remove_host(&admin, "nova.names.test").await, Err(Error::NotFound(_))), "the workspace's own subdomain stays");
+    let listed = k.list_hosts(&admin).await.unwrap();
+    assert_eq!(
+        listed.iter().find(|h| h.host == "erp.nova.internal").and_then(|h| h.zone.clone()).as_deref(),
+        Some("office"),
+        "its zone, as the operator set it"
+    );
+
+    // Removing a name: its leaving period, as any address; it comes back to the same workspace at once.
+    let until = k.remove_host(&admin, "sales--nova.names.test").await.unwrap();
+    assert!(until.is_some());
+    assert!(matches!(k.route_host("sales--nova.names.test").await.unwrap(), HostRoute::Leaving { .. }));
+    k.add_name(&admin, BASE, "sales", "shell", &HostShape::default()).await.expect("its own name, again");
+    assert_eq!(k.route_host("sales--nova.names.test").await.unwrap(), HostRoute::Serve { tenant: nova, target: "shell".into() });
+
+    // The limit: the plan's `addresses` quota (20 without one), held when two adds race for the last place.
+    let (limit, used) = k.address_room(nova).await.unwrap();
+    assert_eq!((limit, used), (20, 4), "the subdomain, two names (one the portal's), the operator's");
+    sql(k, &format!("update tenant set quotas = '{{\"addresses\": 5}}' where id = '{nova}'")).await;
+    let plain = HostShape::default();
+    let (x, y) = tokio::join!(k.add_name(&admin, BASE, "x1", "shell", &plain), k.add_name(&admin, BASE, "x2", "shell", &plain));
+    assert_eq!([x.is_ok(), y.is_ok()].iter().filter(|ok| **ok).count(), 1, "one place, one name");
+    let refused = k.add_host(&admin, "erp.nova.example", "shell").await.unwrap_err();
+    assert!(refused.to_string().contains("at most 5 addresses"), "{refused}");
+
+    // Short paths, kept in the workspace's settings, checked together.
+    let p = |alias: &str, target: &str| ShortPath { alias: alias.into(), target: target.into() };
+    k.set_short_paths(&admin, &[p("deals", "/crm/"), p("leads", "/crm/e/Lead")]).await.unwrap();
+    assert_eq!(k.short_paths(nova).await.unwrap(), vec![p("deals", "/crm/"), p("leads", "/crm/e/Lead")]);
+    for (bad, says) in [
+        (vec![p("deals", "/crm/"), p("deals", "/x/")], "/deals is given twice"),
+        (vec![p("ok", "/crm/"), p("x", "/crm/")], "/x:"),
+        (vec![p("away", "//evil.example/")], "/away must lead"),
+        (vec![p("away", "https://evil.example/")], "/away must lead"),
+    ] {
+        let e = k.set_short_paths(&admin, &bad).await.unwrap_err();
+        assert!(e.to_string().contains(says), "{e}");
+    }
+    let many: Vec<ShortPath> = (0..51).map(|i| p(&format!("p{i}"), "/crm/")).collect();
+    assert!(k.set_short_paths(&admin, &many).await.unwrap_err().to_string().contains("at most 50"));
+    assert!(matches!(k.set_short_paths(&ana, &[]).await, Err(Error::Forbidden(_))));
+    assert_eq!(k.short_paths(nova).await.unwrap().len(), 2, "a refused list changes nothing");
+
+    // Every change is the administrator's, on the audit trail.
+    let audited: Vec<(String, String, Option<uuid::Uuid>)> = {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let rows = sqlx::query_as(
+            "select entity, action, actor from audit_event where tenant_id = $1 and entity in ('WorkspaceDomain', 'WorkspacePaths') order by id",
+        )
+        .bind(nova)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        rows
+    };
+    for action in ["add", "shape", "remove", "set"] {
+        assert!(audited.iter().any(|(_, a, by)| a == action && *by == Some(admin.user)), "{action}: {audited:?}");
+    }
+
+    // A renamed workspace (its slug changed by hand: there is no task for it): its names keep leading to it, and no other
+    // workspace can ever form them, its old slug being retired; new names take the new slug.
+    sql(k, &format!("update tenant set slug = 'nova-co', quotas = '{{}}' where id = '{nova}'")).await;
+    k.release_hosts(uuid::Uuid::nil()).await.unwrap(); // clears this replica's host cache
+    assert_eq!(k.route_host("sales--nova.names.test").await.unwrap(), HostRoute::Serve { tenant: nova, target: "shell".into() });
+    let admin = k.load_ctx(nova, admin.user, None, "it".into()).await.unwrap();
+    assert_eq!(k.add_name(&admin, BASE, "eu", "shell", &HostShape::default()).await.unwrap_or_else(|e| panic!("{e}")).host, "eu--nova-co.names.test");
+    assert!(k.create_tenant(tenant("nova")).await.is_err(), "its old slug, and so its names, are never another's");
+
+    // A closed workspace is read-only: its addresses keep answering, and stay as they are.
+    k.close_account(nova, chrono::Utc::now().date_naive() + chrono::Days::new(30), "the contract ended").await.unwrap();
+    let closed = k.load_ctx(nova, admin.user, None, "it".into()).await.unwrap();
+    for refused in [
+        k.add_name(&closed, BASE, "late", "shell", &HostShape::default()).await.map(|_| ()),
+        k.shape_host(&closed, "sales--nova.names.test", &label).await.map(|_| ()),
+        k.remove_host(&closed, "sales--nova.names.test").await.map(|_| ()),
+        k.set_short_paths(&closed, &[]).await.map(|_| ()),
+    ] {
+        assert!(matches!(refused, Err(Error::Forbidden(ref m)) if m.contains("read-only")), "{refused:?}");
+    }
+    assert_eq!(k.route_host("sales--nova.names.test").await.unwrap(), HostRoute::Serve { tenant: nova, target: "shell".into() });
 }
 
 /// A server on this machine answering every request with `body`; its proof address.

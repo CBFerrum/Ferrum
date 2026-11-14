@@ -110,6 +110,18 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
             "They run once a server at least as new as the one that wrote them runs again; roll forward when it is safe.",
         ));
     }
+    // A short path whose segment an app has come to claim no longer works: the app wins (docs/operations.md, "Addresses of a workspace", short paths).
+    let shadowed = crate::controllers::domains::shadowed_paths(st).await.map_err(|e| e.0)?;
+    out.push(if shadowed.is_empty() {
+        Finding::ok("paths.shadowed", "no workspace's short path is an app's address")
+    } else {
+        let said: Vec<String> = shadowed.iter().map(|(ws, alias, app)| format!("{ws}: /{alias} is now {app}'s")).collect();
+        Finding::warning(
+            "paths.shadowed",
+            format!("{} short paths no longer work, an app having taken their address: {}", shadowed.len(), said.join("; ")),
+            "The app's page opens there now. The workspace's administrators choose another short path under Administration, Domains.",
+        )
+    });
 
     out.push(match tokio::task::spawn_blocking(ferrum_kernel::sso::saml_self_check).await.ok().flatten() {
         None => Finding::ok("identity.saml", "built without SAML: single sign-on is OpenID Connect only"),

@@ -362,5 +362,6 @@
   "The identity provider's answer is not one this server asked for. Close this window and try again.": "पहचान प्रदाता का जवाब वह नहीं है जो इस सर्वर ने माँगा था। यह विंडो बंद करें और फिर से कोशिश करें।",
   "Something went wrong on the server. Close this window and try again.": "सर्वर पर कुछ गड़बड़ हो गई। यह विंडो बंद करें और फिर से कोशिश करें।",
   "{provider} did not ask you to sign in again, so this cannot confirm it is you; an administrator can have the provider ask again when told to. Close this window and try again.": "{provider} ने आपसे फिर से साइन इन करने को नहीं कहा, इसलिए इससे पुष्टि नहीं हो सकती कि यह आप हैं; कोई व्यवस्थापक प्रदाता को ऐसा कहे जाने पर फिर से पूछने के लिए सेट कर सकता है। यह विंडो बंद करें और फिर से कोशिश करें।",
-  "you signed in at {provider} as someone else: the account does not match, so nothing changed. Close this window and try again.": "आपने {provider} पर किसी और के रूप में साइन इन किया: खाता मेल नहीं खाता, इसलिए कुछ नहीं बदला। यह विंडो बंद करें और फिर से कोशिश करें।"
+  "you signed in at {provider} as someone else: the account does not match, so nothing changed. Close this window and try again.": "आपने {provider} पर किसी और के रूप में साइन इन किया: खाता मेल नहीं खाता, इसलिए कुछ नहीं बदला। यह विंडो बंद करें और फिर से कोशिश करें।",
+  "Every app, at the workspace's main address": "हर ऐप, कार्यक्षेत्र के मुख्य पते पर"
 }
