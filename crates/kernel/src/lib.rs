@@ -303,6 +303,9 @@ pub struct Kernel {
     pub(crate) failures: std::sync::Mutex<std::collections::BTreeMap<(String, String, String, &'static str), u64>>,
     /// What service targets take as now when a test pins it (targets.rs).
     pub(crate) clock: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
+    /// This replica's zone settings (crate::zones), set by the server once checked: work a request
+    /// queued in a zone is done in it by name, against these ([`Kernel::set_zones`]).
+    pub(crate) zones: std::sync::RwLock<Arc<zones::Zones>>,
 }
 
 impl Kernel {
@@ -458,6 +461,7 @@ impl Kernel {
             vapid: tokio::sync::OnceCell::new(),
             failures: Default::default(),
             clock: Default::default(),
+            zones: Default::default(),
         });
         kernel.notice_restore().await?;
         // From this build's packages: a guest's are older than the database's (window.rs).

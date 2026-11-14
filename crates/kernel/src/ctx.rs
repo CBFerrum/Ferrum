@@ -164,6 +164,57 @@ impl EntityAccess {
 pub struct PermSet {
     pub admin: bool,
     pub entities: BTreeMap<String, EntityAccess>,
+    /// Level 2 of zones (crate::zones): only these entities are reached, administrator or not. For a
+    /// seen entity everything else here holds as it is; for any other, nothing does.
+    #[serde(skip)]
+    pub limit: Option<Arc<Limit>>,
+}
+
+/// What a context reaches in a zone that limits staff to some apps (crate::zones, level 2): the
+/// entities of those apps' packages, of the packages they depend on, and (when the rule says
+/// `custom: true`) the workspace's own. Anything else, an entity no package is known for included,
+/// is not there.
+#[derive(Debug, Clone, Default)]
+pub struct Limit {
+    pub zone: String,
+    pub entities: BTreeSet<String>,
+    /// The packages those entities come from (the apps' and those they depend on).
+    pub packages: BTreeSet<String>,
+    /// `FERRUM_ZONE_MODE=report`: nothing is hidden; what would be is counted.
+    pub report: bool,
+}
+
+impl Limit {
+    /// Within `rule` of zone `zone`, for a workspace of `schema`.
+    pub fn of(zone: &str, rule: &crate::zones::Rule, schema: &Schema, report: bool) -> Limit {
+        Limit {
+            zone: zone.into(),
+            entities: crate::zones::entities_seen(rule, schema),
+            packages: crate::zones::packages_seen(rule, schema).into_iter().map(String::from).collect(),
+            report,
+        }
+    }
+
+    /// Whether package `package`'s own code and capabilities are reached.
+    pub fn sees_package(&self, package: &str) -> bool {
+        if self.packages.contains(package) {
+            return true;
+        }
+        if self.report {
+            crate::zones::count_hidden(&self.zone, "report", "entity");
+        }
+        self.report
+    }
+
+    pub fn sees(&self, entity: &str) -> bool {
+        if self.entities.contains(entity) {
+            return true;
+        }
+        if self.report {
+            crate::zones::count_hidden(&self.zone, "report", "entity");
+        }
+        self.report
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -188,9 +239,19 @@ struct PermRow {
 }
 
 impl PermSet {
+    /// Whether a zone's limit lets the holder reach `entity` at all (no limit: yes).
+    pub fn sees(&self, entity: &str) -> bool {
+        self.limit.as_ref().is_none_or(|l| l.sees(entity))
+    }
+
+    /// This set, within `limit`.
+    pub fn within(&self, limit: Option<Arc<Limit>>) -> PermSet {
+        PermSet { limit, ..self.clone() }
+    }
+
     pub async fn load(tx: &mut Tx, tenant: Uuid, roles: &[String], admin: bool) -> Result<PermSet> {
         if admin {
-            return Ok(PermSet { admin: true, entities: BTreeMap::new() });
+            return Ok(PermSet { admin: true, ..Default::default() });
         }
         let rows: Vec<PermRow> = sqlx::query_as(
             "select entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, can_export, can_import, \
@@ -262,13 +323,16 @@ impl PermSet {
 
     /// Fields of `entity` hidden from the holder wherever a set of its records is read, and never written (BD-40).
     pub fn hidden(&self, entity: &str) -> Option<&BTreeSet<String>> {
-        if self.admin {
+        if self.admin || !self.sees(entity) {
             return None;
         }
         self.entities.get(entity).map(|e| &e.hidden).filter(|h| !h.is_empty())
     }
 
     pub fn access(&self, entity: &str, action: Action) -> Access {
+        if !self.sees(entity) {
+            return Access::None;
+        }
         if self.admin {
             return Access::All;
         }
@@ -291,17 +355,26 @@ impl PermSet {
 
     /// The grants of the rules naming action `action` of `entity` (`None`: none names it).
     pub fn action_grants(&self, entity: &str, action: &str) -> Option<Vec<Grant>> {
+        if !self.sees(entity) {
+            return None;
+        }
         self.entities.get(entity).and_then(|e| e.actions.get(action)).cloned()
     }
 
     /// What the holder sees of the conversation on `entity`'s records they read (BD-22): `None` nothing, `Some(false)`
     /// the shared comments and files, `Some(true)` those and their own. Only outside people are asked.
     pub fn shared(&self, entity: &str) -> Option<bool> {
+        if !self.sees(entity) {
+            return None;
+        }
         self.entities.get(entity).and_then(|e| e.shared)
     }
 
     /// The actions of `entity` some rule names, whatever their own permission asks.
     pub fn named_actions(&self, entity: &str) -> Vec<&str> {
+        if !self.sees(entity) {
+            return vec![];
+        }
         self.entities.get(entity).map(|e| e.actions.keys().map(String::as_str).collect()).unwrap_or_default()
     }
 
@@ -317,7 +390,7 @@ impl PermSet {
     }
 
     pub fn can_read_field(&self, entity: &str, f: &FieldDef) -> bool {
-        self.group_readable(entity, f) && self.hidden(entity).is_none_or(|h| !h.contains(&f.name))
+        self.sees(entity) && self.group_readable(entity, f) && self.hidden(entity).is_none_or(|h| !h.contains(&f.name))
     }
 
     /// Whether the field's group lets the holder read it, whatever rules hide.
@@ -329,7 +402,7 @@ impl PermSet {
     }
 
     pub fn can_write_field(&self, entity: &str, f: &FieldDef) -> bool {
-        if self.hidden(entity).is_some_and(|h| h.contains(&f.name)) {
+        if !self.sees(entity) || self.hidden(entity).is_some_and(|h| h.contains(&f.name)) {
             return false;
         }
         match &f.perm_group {
@@ -343,7 +416,8 @@ impl PermSet {
     /// `read`, `write (own records)`, `read field group <g>`...) and to every action on `own`, the
     /// app's own entities. Field groups only as declared; never administrator power.
     pub fn limited_to(&self, declared: &BTreeMap<String, BTreeSet<String>>, own: &BTreeSet<String>) -> PermSet {
-        let mut out = PermSet::default();
+        // A zone's limit holds on whatever is narrowed from it.
+        let mut out = PermSet { limit: self.limit.clone(), ..Default::default() };
         let names: BTreeSet<&str> = self.entities.keys().chain(declared.keys()).chain(own).map(String::as_str).chain(["*"]).collect();
         for name in names {
             let decl: BTreeSet<&str> = [name, "*"].into_iter().filter_map(|k| declared.get(k)).flatten().map(String::as_str).collect();
@@ -474,12 +548,39 @@ impl Ctx {
             default_company: None,
             fy_start_month: schema.fy_start_month,
             schema,
-            perms: Arc::new(PermSet { admin: true, entities: BTreeMap::new() }),
+            perms: Arc::new(PermSet { admin: true, ..Default::default() }),
             depth: 0,
             settings: None,
             origin: None,
             zone: None,
         }
+    }
+
+    /// The system, acting where `ctx`'s request came in: every right, within the limit of `ctx`'s zone
+    /// (crate::zones, level 2). What a limited person sets going reaches no more than their zone does.
+    pub fn system_for(ctx: &Ctx) -> Ctx {
+        let mut sys = Ctx::system(ctx.tenant, ctx.schema.clone());
+        sys.zone = ctx.zone.clone();
+        sys.perms = Arc::new(PermSet { admin: true, limit: ctx.perms.limit.clone(), ..Default::default() });
+        sys
+    }
+
+    /// The entities this context's zone shows, when it hides any (crate::zones, level 2; not in report mode): what
+    /// SQL listing things about records (notifications, mentions) keeps to, as `$n::text[] is null or entity is null
+    /// or entity = any($n)`.
+    pub fn zone_entities(&self) -> Option<Vec<String>> {
+        self.perms.limit.as_ref().filter(|l| !l.report).map(|l| l.entities.iter().cloned().collect())
+    }
+
+    /// Whether this context reaches package `package`'s own code at all in its zone (crate::zones, level 2): its
+    /// signed-in app endpoints, its co-edited documents, its capabilities.
+    pub fn sees_package(&self, package: &str) -> bool {
+        self.perms.limit.as_ref().is_none_or(|l| l.sees_package(package))
+    }
+
+    /// Whether this context reaches `entity` at all in its zone (crate::zones, level 2).
+    pub fn sees(&self, entity: &str) -> bool {
+        self.perms.sees(entity)
     }
 
     /// The `user` variable visible to CEL expressions.
@@ -1138,7 +1239,7 @@ mod tests {
         assert_eq!(p.groups("Customer", false), BTreeSet::from(["credit"]));
 
         // An administrator gets exactly the declaration.
-        let a = PermSet { admin: true, entities: BTreeMap::new() }.limited_to(&declared, &mine);
+        let a = PermSet { admin: true, ..Default::default() }.limited_to(&declared, &mine);
         assert!(!a.admin);
         assert_eq!(a.access("Customer", Action::Read), Access::All);
         assert_eq!(a.access("Customer", Action::Delete), Access::None);

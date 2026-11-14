@@ -134,6 +134,9 @@ pub struct CtxCore {
     pub kind: String,
     /// The workspace's staff networks (crate::gate); `None` when they cannot be read, which refuses.
     pub networks: Option<Arc<crate::gate::StaffNetworks>>,
+    /// An administrator's rights through their roles alone: theirs where a zone admits no administrators
+    /// (crate::zones, level 2). `None` for everyone else, whose `perms` are those.
+    pub role_perms: Option<Arc<PermSet>>,
 }
 
 /// A records key's scope (`records:Customer=read+write;SalesInvoice=read`): the entities it may
@@ -677,6 +680,7 @@ impl Kernel {
             }
         }
         let perms = PermSet::load(&mut tx, tenant, &roles, is_admin).await?;
+        let role_perms = if is_admin { Some(Arc::new(PermSet::load(&mut tx, tenant, &roles, false).await?)) } else { None };
         tx.commit().await?;
         let fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
         let networks = match crate::gate::StaffNetworks::parse(settings.get("staff_networks")) {
@@ -701,6 +705,7 @@ impl Kernel {
             outside,
             kind,
             networks,
+            role_perms,
         })
     }
 
@@ -725,6 +730,65 @@ impl Kernel {
         self.ctx_of(&core, tenant, user, request_id, Some(entry.clone())).await
     }
 
+    /// Builds the context of `user` for work a request queued in zone `zone` (`None`: from inside, no
+    /// zone applies): narrowed as the request was (crate::zones, level 2), by the zone's name against
+    /// this replica's own settings. A name they do not hold fails the work, closed.
+    pub async fn load_ctx_in(&self, tenant: Uuid, user: Uuid, zone: Option<&str>, request_id: String) -> Result<Ctx> {
+        let Some(name) = zone else { return self.load_ctx(tenant, user, None, request_id).await };
+        let entry = self.queued_entry(name)?;
+        let core = self.core(tenant, user, None).await?;
+        self.ctx_of(&core, tenant, user, request_id, Some(entry)).await
+    }
+
+    /// The system, for work a request queued in zone `zone`: every right, within what that zone
+    /// shows (crate::zones, level 2). `None`: from inside, unlimited, as [`Ctx::system`].
+    pub async fn system_in(&self, tenant: Uuid, zone: Option<&str>) -> Result<Ctx> {
+        self.within_zone(Ctx::system(tenant, self.registry.schema(tenant).await?), zone)
+    }
+
+    /// `ctx`, kept within what zone `zone` shows (crate::zones, level 2), whoever it is: for work
+    /// done on behalf of a request made there by someone other than its person (an automation runs
+    /// as whoever saved it). `None`: unchanged.
+    pub fn within_zone(&self, mut ctx: Ctx, zone: Option<&str>) -> Result<Ctx> {
+        let Some(name) = zone else { return Ok(ctx) };
+        let entry = self.queued_entry(name)?;
+        if let Some((name, rule)) = entry.limit()
+            && rule.apps.is_some()
+        {
+            let report = entry.zones.mode == crate::zones::Mode::Report;
+            let limit = crate::ctx::Limit::of(name, rule, &ctx.schema, report);
+            ctx.perms = Arc::new(ctx.perms.within(Some(Arc::new(limit))));
+        }
+        ctx.zone = Some(entry);
+        Ok(ctx)
+    }
+
+    /// The entry of work queued in zone `name` (crate::zones::Credential::Queued), or why it is not done.
+    fn queued_entry(&self, name: &str) -> Result<Arc<crate::zones::Entry>> {
+        let zones = self.zones();
+        if !zones.has(name) {
+            return Err(Error::Forbidden(format!(
+                "this was asked for in the zone {name}, which this server's zone settings (FERRUM_ZONES) do not hold, so it is not done here"
+            )));
+        }
+        Ok(Arc::new(crate::zones::Entry {
+            zones,
+            placed: crate::zones::Placed::In(name.into()),
+            address: String::new(),
+            credential: crate::zones::Credential::Queued,
+        }))
+    }
+
+    /// This replica's zone settings.
+    pub fn zones(&self) -> Arc<crate::zones::Zones> {
+        self.zones.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Sets this replica's zone settings, once checked (the server, at start).
+    pub fn set_zones(&self, zones: Arc<crate::zones::Zones>) {
+        *self.zones.write().unwrap_or_else(|e| e.into_inner()) = zones;
+    }
+
     /// `ctx`'s person as they stand now, in the zone `ctx` came in by (none: inside).
     pub async fn reload(&self, ctx: &Ctx, token_version: Option<i32>) -> Result<Ctx> {
         match &ctx.zone {
@@ -745,12 +809,18 @@ impl Kernel {
         if !entry.refuses_staff() {
             return Ok(());
         }
-        // The address is a courtesy: not finding it refuses all the same.
-        let address = self.staff_address(tenant, &entry.zones.admitting_staff()).await.unwrap_or_else(|e| {
+        Err(self.zone_refusal(tenant, &entry.zones).await)
+    }
+
+    /// The refusal of something a zone keeps from staff (crate::zones::refusal), naming the workspace's
+    /// staff address where the whole of it opens. The address is a courtesy: not finding it refuses all
+    /// the same.
+    pub async fn zone_refusal(&self, tenant: Uuid, zones: &crate::zones::Zones) -> Error {
+        let address = self.staff_address(tenant, &zones.admitting_staff()).await.unwrap_or_else(|e| {
             tracing::warn!("the staff address of a workspace: {e}");
             None
         });
-        Err(crate::zones::refusal(address))
+        crate::zones::refusal(address)
     }
 
     async fn core(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>) -> Result<Arc<CtxCore>> {
@@ -777,6 +847,19 @@ impl Kernel {
 
     async fn ctx_of(&self, core: &CtxCore, tenant: Uuid, user: Uuid, request_id: String, zone: Option<Arc<crate::zones::Entry>>) -> Result<Ctx> {
         let schema = self.registry.schema(tenant).await?;
+        // Level 2 of zones: staff admitted where the zone narrows them, on every request (never cached by person).
+        let (is_admin, roles, perms) = match zone.as_deref().and_then(|e| e.limit().map(|(n, r)| (e, n, r))) {
+            Some((entry, name, rule)) => {
+                // What this request queues is done later in this zone (crate::db::Trace).
+                crate::db::Trace::mark_zone(name);
+                if crate::zones::is_staff(&core.kind) {
+                    self.narrowed(core, &schema, entry.zones.mode == crate::zones::Mode::Report, name, rule)
+                } else {
+                    (core.is_admin, core.roles.clone(), core.perms.clone())
+                }
+            }
+            None => (core.is_admin, core.roles.clone(), core.perms.clone()),
+        };
         Ok(Ctx {
             egress: None,
             read_only: core.read_only,
@@ -784,8 +867,8 @@ impl Kernel {
             user,
             email: core.email.clone(),
             full_name: core.full_name.clone(),
-            roles: core.roles.clone(),
-            is_admin: core.is_admin,
+            roles,
+            is_admin,
             is_system: false,
             outside: core.outside,
             request_id,
@@ -793,12 +876,56 @@ impl Kernel {
             default_company: core.default_company,
             fy_start_month: core.fy_start_month,
             schema,
-            perms: core.perms.clone(),
+            perms,
             depth: 0,
             settings: None,
             origin: None,
             zone,
         })
+    }
+
+    /// A staff member's administrator flag, roles and rights in a zone whose rule narrows staff
+    /// (crate::zones, level 2). Rights: for an entity the rule shows, all they hold (named actions,
+    /// shares, own-record scopes, field groups); for any other, none. An administrator is one only
+    /// where the rule says `admin: true`, and is otherwise a member with their roles' rights. Roles:
+    /// one shipped only by packages the rule leaves out is dropped, so code that checks a role by
+    /// name sees it nowhere else; a role the workspace made (no package ships it) stays, its rights
+    /// being entities' and narrowed with them. In report mode nothing is narrowed: it is counted.
+    fn narrowed(&self, core: &CtxCore, schema: &ferrum_meta::Schema, report: bool, name: &str, rule: &crate::zones::Rule) -> (bool, Vec<String>, Arc<PermSet>) {
+        let mode = if report { "report" } else { "enforce" };
+        if core.is_admin && !rule.admin {
+            crate::zones::count_hidden(name, mode, "admin");
+        }
+        let limit = rule.apps.is_some().then(|| Arc::new(crate::ctx::Limit::of(name, rule, schema, report)));
+        let within = |perms: &Arc<PermSet>| match &limit {
+            Some(_) => Arc::new(perms.within(limit.clone())),
+            None => perms.clone(),
+        };
+        if report {
+            return (core.is_admin, core.roles.clone(), within(&core.perms));
+        }
+        let admin = core.is_admin && rule.admin;
+        let base = match (&core.role_perms, admin) {
+            (Some(roles), false) => roles.clone(),
+            _ => core.perms.clone(),
+        };
+        let roles = match &rule.apps {
+            None => core.roles.clone(),
+            Some(_) => {
+                let seen = crate::zones::packages_seen(rule, schema);
+                let catalog = self.registry.catalog();
+                let ships = |p: &str, role: &str| catalog.package(p).is_some_and(|pkg| pkg.manifest.roles.iter().any(|r| r.name == role));
+                core.roles
+                    .iter()
+                    .filter(|role| {
+                        let by: Vec<&str> = schema.packages.iter().map(String::as_str).filter(|p| ships(p, role)).collect();
+                        by.is_empty() || by.iter().any(|p| seen.contains(p))
+                    })
+                    .cloned()
+                    .collect()
+            }
+        };
+        (admin, roles, within(&base))
     }
 
     /// `ferrum task grant_admin` / `revoke_admin`: the operator makes a member of a workspace an

@@ -84,6 +84,23 @@ fn staff(kind: &ferrum_kernel::Result<String>) -> bool {
     kind.as_ref().map_or(true, |k| ferrum_kernel::zones::is_staff(k))
 }
 
+/// Resolves the app ids of zones that limit staff to some apps (crate::zones, level 2) to their packages, through
+/// the apps' manifests: those compiled into this build and those available on the cluster. An app this server does
+/// not know refuses to start.
+pub async fn resolve(mut zones: ferrum_kernel::zones::Zones, k: &ferrum_kernel::Kernel) -> Result<ferrum_kernel::zones::Zones, String> {
+    if zones.app_ids().is_empty() {
+        return Ok(zones);
+    }
+    let mut known: std::collections::BTreeMap<String, Vec<String>> =
+        crate::appmgr::compiled_natives().into_iter().map(|m| (m.id.clone(), m.packages.clone())).collect();
+    for r in k.releases(None).await.map_err(|e| format!("the apps available on the cluster could not be read: {e}"))? {
+        let packages = r.manifest.get("packages").and_then(|p| serde_json::from_value::<Vec<String>>(p.clone()).ok()).unwrap_or_default();
+        known.entry(r.app_id.clone()).or_insert(packages);
+    }
+    zones.resolve(|app| known.get(app).cloned())?;
+    Ok(zones)
+}
+
 /// `GET /_zone`, on any host and with no session: the zone this request is in, whether it admits
 /// staff and administrators, and the caller's address as the server sees it (`ferrum task doctor`
 /// checks a public address with it). No secrets; limited like the other public endpoints.
@@ -91,9 +108,13 @@ pub async fn answer(st: &AppState, headers: &HeaderMap) -> Result<serde_json::Va
     st.public_limiter.check(&format!("{}|zone", crate::extract::client_ip(headers))).await?;
     let entry = entry(st, headers, Credential::Cookie).await;
     let rule = entry.name().and_then(|n| st.zones.rule(n));
+    let staff = match rule.and_then(|r| r.apps.as_ref()) {
+        Some(apps) if entry.admits_staff() => serde_json::json!(apps),
+        _ => serde_json::json!(if entry.admits_staff() { "all" } else { "none" }),
+    };
     Ok(serde_json::json!({
         "zone": entry.name(),
-        "staff": if entry.admits_staff() { "all" } else { "none" },
+        "staff": staff,
         "admin": entry.admits_staff() && rule.is_none_or(|r| r.admin),
         "address": entry.address,
     }))
@@ -108,6 +129,20 @@ pub fn metrics_text() -> String {
     );
     for (zone, mode, credential, n) in ferrum_kernel::zones::refusals() {
         out.push_str(&format!("ferrum_zone_refusals_total{{zone=\"{zone}\",mode=\"{mode}\",credential=\"{credential}\"}} {n}\n"));
+    }
+    out
+}
+
+/// `ferrum_zone_hidden_total{zone,mode,what}` for `/metrics`: what zones that narrow staff kept from them since this
+/// replica started (level 2): `admin`, an administrator admitted as a member; `entity`, in report mode, each check
+/// that would have found an entity of an app the zone leaves out.
+pub fn hidden_metrics_text() -> String {
+    let mut out = String::from(
+        "# HELP ferrum_zone_hidden_total What zones that limit staff kept from them (in report mode: admitted, and counted).\n\
+         # TYPE ferrum_zone_hidden_total counter\n",
+    );
+    for (zone, mode, what, n) in ferrum_kernel::zones::hidden() {
+        out.push_str(&format!("ferrum_zone_hidden_total{{zone=\"{zone}\",mode=\"{mode}\",what=\"{what}\"}} {n}\n"));
     }
     out
 }
