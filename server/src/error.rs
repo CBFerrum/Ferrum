@@ -10,8 +10,10 @@ use serde_json::json;
 pub struct ApiError(pub Error);
 
 /// Marks a step-up refusal, for the layer that adds the caller's ways to confirm it is them (app.rs, `step_up_ways`).
-#[derive(Debug, Clone, Copy)]
-pub struct StepUpAsked;
+/// It carries the refusal as it was written: by the time that layer sees the answer its body may be compressed (the
+/// compression layer sits nearer the handler, and every browser asks for it), so the body itself is never read back.
+#[derive(Debug, Clone)]
+pub struct StepUpAsked(pub serde_json::Value);
 
 impl From<Error> for ApiError {
     fn from(e: Error) -> Self {
@@ -64,9 +66,10 @@ impl ApiError {
         if let Some(b) = body.as_object_mut() {
             b.extend(extra);
         }
+        let asked = matches!(e, Error::Refused { code: "step_up", .. }).then(|| StepUpAsked(body.clone()));
         let mut resp = (status, axum::Json(body)).into_response();
-        if matches!(e, Error::Refused { code: "step_up", .. }) {
-            resp.extensions_mut().insert(StepUpAsked);
+        if let Some(asked) = asked {
+            resp.extensions_mut().insert(asked);
         }
         if matches!(e, Error::Retryable(_) | Error::Unavailable(_) | Error::RetryAfter(..) | Error::TooManyRequests(_) | Error::Wait(..)) {
             resp.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("2"));

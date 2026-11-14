@@ -14,6 +14,9 @@ server:
     limit_payload:
       enable: true
       body_limit: 30mb
+    # As production: a test that asks the way a browser does (Accept-Encoding) gets what a browser gets.
+    compression:
+      enable: true
 
 workers:
   mode: ForegroundBlocking
