@@ -334,9 +334,11 @@ impl Kernel {
             return Ok((e.0.clone(), e.1.clone()));
         }
         let mut tx = self.db.system_tx().await?;
-        type Row = (Uuid, String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>, Option<String>);
+        type Row = (Uuid, String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>, Option<String>, bool, Option<String>);
+        // A workspace that moved to another installation (workspace_move.rs) answers as moved on every host it had here.
         let row: Option<Row> = sqlx::query_as(
-            "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at, h.zone from tenant_host h join tenant t on t.id = h.tenant_id where h.host = $1",
+            "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at, h.zone, m.workspace is not null, m.moved_to from tenant_host h \
+             join tenant t on t.id = h.tenant_id left join workspace_move m on m.workspace = h.tenant_id and m.state = 'moved' where h.host = $1",
         )
         .bind(&host)
         .fetch_optional(&mut *tx)
@@ -344,7 +346,9 @@ impl Kernel {
         let zone = row.as_ref().and_then(|r| r.5.clone());
         let route = match row {
             None => HostRoute::Unknown,
-            Some((tenant, _, target, _, Some(released), _)) => {
+            // To its address there when it has another one; otherwise the address still points here, and only says so.
+            Some((tenant, .., true, to)) => HostRoute::Moved { tenant, to: to.filter(|to| *to != host) },
+            Some((tenant, _, target, _, Some(released), ..)) => {
                 if Utc::now() - released < chrono::Duration::days(HOST_REDIRECT_DAYS) {
                     let to: Option<String> = sqlx::query_scalar(
                         "select host from tenant_host where tenant_id = $1 and target = $2 and is_primary and released_at is null \
@@ -359,7 +363,7 @@ impl Kernel {
                     HostRoute::Unknown
                 }
             }
-            Some((tenant, kind, target, verified, None, _)) if kind == "subdomain" || verified.is_some() => HostRoute::Serve { tenant, target },
+            Some((tenant, kind, target, verified, None, ..)) if kind == "subdomain" || verified.is_some() => HostRoute::Serve { tenant, target },
             Some(_) => HostRoute::Unknown,
         };
         tx.commit().await?;

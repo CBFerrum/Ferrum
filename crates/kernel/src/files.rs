@@ -33,6 +33,14 @@ pub trait FileStore: Send + Sync {
             Err(e) => Err(e),
         }
     }
+    /// An object's size, `None` when nothing is stored there. By default it reads it, as [`FileStore::exists`] does.
+    async fn size(&self, key: &str) -> Result<Option<u64>> {
+        match self.get(key).await {
+            Ok(bytes) => Ok(Some(bytes.len() as u64)),
+            Err(Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// The most an app reads of a file at once (FERRUM-OPS-006), the size of the largest an app works on
