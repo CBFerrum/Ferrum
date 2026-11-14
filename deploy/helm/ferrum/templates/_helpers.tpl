@@ -89,6 +89,9 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{- with .Values.names.linkHost }}
 - {name: FERRUM_LINK_HOST, value: {{ . | quote }}}
 {{- end }}
+{{- if ne (toString .Values.names.hostLeavingDays) "" }}
+- {name: FERRUM_HOST_LEAVING_DAYS, value: {{ .Values.names.hostLeavingDays | toString | quote }}}
+{{- end }}
 {{- if .Values.pdf.enabled }}
 - {name: FERRUM_PDF_URL, value: "http://{{ include "ferrum.fullname" . }}-pdf:3000"}
 {{- end }}

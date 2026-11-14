@@ -228,6 +228,10 @@ pub struct Settings {
     /// `FERRUM_DATABASE_READ_MAX_LAG_SECS`: past this replay lag, they read from the primary.
     #[serde(default = "default_read_max_lag")]
     pub database_read_max_lag_secs: u64,
+    /// `FERRUM_HOST_LEAVING_DAYS`: how long a released address keeps serving the people already signed in there,
+    /// so that what their browsers keep for it can be sent, before it redirects. 0: it redirects at once.
+    #[serde(default = "default_host_leaving_days")]
+    pub host_leaving_days: u32,
 }
 
 fn default_read_max_lag() -> u64 {
@@ -235,6 +239,10 @@ fn default_read_max_lag() -> u64 {
 }
 
 fn default_session_days() -> u32 {
+    14
+}
+
+fn default_host_leaving_days() -> u32 {
     14
 }
 

@@ -90,6 +90,8 @@ spec:
             # - {name: FERRUM_HOOKS_HOST, value: "hooks.example.com"}
             # - {name: FERRUM_PASSKEY_RP, value: "example.com"}
             # - {name: FERRUM_LINK_HOST, value: "go.example.com"}
+            # How long a removed address still serves those signed in there (default 14 days; 0: none):
+            # - {name: FERRUM_HOST_LEAVING_DAYS, value: "14"}
             # Zones (docs/operations.md, "Zones"), each empty by default (everyone admitted everywhere):
             # - {name: FERRUM_ZONES, value: '{"public":{"staff":"none"},"office":{"staff":"all"}}'}
             # - {name: FERRUM_ZONE, value: "office"}

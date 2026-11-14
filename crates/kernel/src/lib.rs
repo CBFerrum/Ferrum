@@ -208,6 +208,9 @@ pub struct KernelSettings {
     /// Migrate the database and sync the schema as the kernel boots (the default). Off, boot changes no schema and
     /// refuses to start on a database `ferrum task migrate` has not brought to this build ([`Kernel::boot`]).
     pub migrate_at_start: bool,
+    /// How long a released host keeps serving the people already signed in there (`FERRUM_HOST_LEAVING_DAYS`),
+    /// so that what their browsers keep for it can be sent, before it redirects ([`Kernel::release_host`]); 0: none.
+    pub host_leaving_days: i64,
 }
 
 impl KernelSettings {
@@ -261,6 +264,7 @@ impl Default for KernelSettings {
             process_runtime: false,
             retention_daily_records: 5000,
             migrate_at_start: true,
+            host_leaving_days: 14,
         }
     }
 }
