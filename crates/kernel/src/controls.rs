@@ -27,14 +27,14 @@ use uuid::Uuid;
 /// request.
 pub const STEP_UP_FLOOR: crate::window::Floor = crate::window::Floor {
     feature: "step_up",
-    since: "2026-11-14T08:00:00Z",
+    since: "2026-11-14T08:54:21Z",
     what: "marked work asks the person to prove who they are again",
     temporary: false,
 };
 /// A workspace's recorded reads: an older build reads marked entities without recording it.
 pub const READS_FLOOR: crate::window::Floor = crate::window::Floor {
     feature: "record_reads",
-    since: "2026-11-14T08:00:00Z",
+    since: "2026-11-14T08:54:21Z",
     what: "reads of marked entities are recorded, or refused",
     temporary: false,
 };

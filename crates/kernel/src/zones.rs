@@ -30,7 +30,7 @@ pub const FLOOR_LIMITED: crate::window::Floor = crate::window::Floor {
 /// build lets them work there without it. Dated by the merge of its pull request.
 pub const FLOOR_STEP_UP: crate::window::Floor = crate::window::Floor {
     feature: "zones_step_up",
-    since: "2026-11-14T08:00:00Z",
+    since: "2026-11-14T08:54:21Z",
     what: "zones that ask staff to prove who they are again before changes ask them",
     temporary: false,
 };

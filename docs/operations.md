@@ -505,9 +505,9 @@ before a floor is refused at start, the older ones included.
 | `idle_timeout` | a workspace saves an idle timeout | 2026-11-14T03:09:38Z |
 | `break_glass` | a workspace saves a break-glass list | 2026-11-14T03:09:38Z |
 | `key_networks` | an API key is given networks | 2026-11-14T03:09:38Z |
-| `step_up` | a workspace saves step-up rules | 2026-11-14T08:00:00Z |
-| `record_reads` | a workspace saves entities whose reads are recorded | 2026-11-14T08:00:00Z |
-| `zones_step_up` | a server starts with a zone that says `step_up: true` | 2026-11-14T08:00:00Z |
+| `step_up` | a workspace saves step-up rules | 2026-11-14T08:54:21Z |
+| `record_reads` | a workspace saves entities whose reads are recorded | 2026-11-14T08:54:21Z |
+| `zones_step_up` | a server starts with a zone that says `step_up: true` | 2026-11-14T08:54:21Z |
 | `move_fence` | `plan_move` marks the database (until cancelled, adopted or not followed) | 2026-11-14T01:33:19Z |
 | `workspace_freeze` | `move_workspace` starts, on both sides (until it arrives, at the target; until `finish_move`, at the source; both at an abort) | 2026-11-14T04:00:04Z |
 | `sandbox` | `copy_workspace` makes a sandbox (until `delete_sandbox` deletes the last one) | 2026-11-14T06:47:14Z |
