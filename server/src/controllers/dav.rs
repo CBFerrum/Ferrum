@@ -5,7 +5,7 @@
 //! `/.well-known/carddav` lead to Comms, which serves calendars and address books.
 
 use super::sites::{range, read_body, request, respond};
-use crate::error::ApiResult;
+use crate::error::{ApiError, ApiResult};
 use crate::extract::{client_ip, request_id};
 use crate::state::{AppState, app_state};
 use axum::body::Body;
@@ -85,6 +85,10 @@ async fn dav(
     let (package, path) = rest.split_once('/').unwrap_or((&rest, ""));
     let site = st.kernel.hooks.site(package).filter(|_| ctx.schema.packages.iter().any(|p| p == package)).cloned();
     let site = site.ok_or_else(|| Error::NotFound(format!("package {package}")))?;
+    // A package the caller's zone leaves out (crate::zones, level 2) runs its own SQL: refused, as its app endpoints are.
+    if !ctx.sees_package(package) {
+        return Err(ApiError(st.kernel.zone_refusal(ctx.tenant, &st.zones).await));
+    }
     let path = format!("dav/{path}");
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let tenant = ctx.tenant;

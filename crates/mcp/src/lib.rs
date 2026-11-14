@@ -630,7 +630,9 @@ fn overview(ctx: &Ctx) -> Value {
                    "description": e.def.description, "permissions": permissions(ctx, &e.def.name)})
         })
         .collect();
-    let modules: Vec<Value> = ctx.schema.modules.iter().map(|m| json!({"name": m.name, "label": m.label, "items": m.items})).collect();
+    // A module of a package the caller's zone leaves out (zones, level 2) is not named.
+    let modules: Vec<Value> =
+        ctx.schema.modules.iter().filter(|m| ctx.sees_package(&m.package)).map(|m| json!({"name": m.name, "label": m.label, "items": m.items})).collect();
     json!({
         "user": {"id": ctx.user, "email": ctx.email, "full_name": ctx.full_name, "roles": ctx.roles, "is_admin": ctx.is_admin,
                  "default_company": ctx.default_company},

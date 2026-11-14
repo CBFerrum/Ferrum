@@ -335,7 +335,7 @@ async fn shell_core(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &str, 
         return shell_page(st, headers, ctx, device, first, scope).await;
     }
     if first == "data" && !shell::DATA_PAGES.contains(&app_id) {
-        let apps = st.apps.shell_apps(ctx.tenant).await?;
+        let apps = st.apps.shell_apps_for(&ctx).await?;
         let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
         let Some((app, packages)) = shell::records_app(&apps, app_id) else {
             // The app has an interface of its own now: the same page there (an app's records have
@@ -403,6 +403,11 @@ async fn page(
         Place::Hooks | Place::Nowhere if !matches!(first, "_shell" | "favicon.ico") => return Ok(nowhere()),
         _ => {}
     }
+    // Administration where the zone keeps administrators out (crate::zones, level 2): the plain page.
+    if first == "admin" && crate::zone::entry(&st, &headers, ferrum_kernel::zones::Credential::Cookie).await.keeps_admins_out() {
+        let tenant = if let Place::Workspace(t) = place { Some(t) } else { None };
+        return not_opened_here(&st, tenant).await;
+    }
     if shell::SHELL_ROUTES.contains(&first) {
         return shell_core(&st, &headers, &uri, first, rest).await;
     }
@@ -448,6 +453,10 @@ async fn page(
     };
     let apps = st.apps.shell_apps(ctx.tenant).await?;
     let found = shell::find_route(&apps, first);
+    // An app the caller's zone leaves out (crate::zones, level 2): the plain page, naming where the whole workspace opens.
+    if found.is_some_and(|(a, ..)| !shell::app_seen(&ctx, a)) && rest != Some("sw.js") {
+        return not_opened_here(&st, Some(ctx.tenant)).await;
+    }
     if rest == Some("sw.js") {
         return app_worker(&st, &ctx, found, first).await;
     }
@@ -729,7 +738,7 @@ async fn portal(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: Option<&str
             None,
         ));
     }
-    let apps = st.apps.shell_apps(ctx.tenant).await?;
+    let apps = st.apps.shell_apps_for(&ctx).await?;
     // Studio's generic records page shows what portal roles reach (docs/builder/decisions.md BD-02), an
     // entry per portal menu and one for the rest (docs/builder/portal.md): nothing to show, no entry.
     let reached = st.kernel.portal_menus(&ctx).await?;
@@ -1028,7 +1037,7 @@ async fn manifest(st: &AppState, headers: &HeaderMap, q: &[(String, String)]) ->
     let body = match (query(q, "app"), &caller) {
         (None, _) => shell::suite_manifest(&workspace),
         (Some(route), Some(ctx)) => {
-            let apps = st.apps.shell_apps(ctx.tenant).await?;
+            let apps = st.apps.shell_apps_for(ctx).await?;
             let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
             match shell::find_route(&apps, route) {
                 Some((_, item, _)) if item.get("installable").and_then(Value::as_bool) == Some(true) && may_use(ctx, &kind, item) => {
@@ -1104,6 +1113,12 @@ async fn walled(st: &AppState, headers: &HeaderMap, place: &Place, first: &str, 
     if shell::session_cookie(headers, st.shell.secure).is_some() && caller_on(st, &Method::GET, headers).await.is_ok() {
         return Ok(None);
     }
+    Ok(Some(not_opened_here(st, tenant).await?))
+}
+
+/// The plain page of something a zone keeps from staff: this part of the workspace is opened at its staff address
+/// (named when the workspace has one), with the portal's sign-in when there is a portal.
+async fn not_opened_here(st: &AppState, tenant: Option<Uuid>) -> ApiResult<Response> {
     let address = match tenant {
         Some(t) => st.kernel.staff_address(t, &st.zones.admitting_staff()).await.unwrap_or_else(|e| {
             tracing::warn!("the staff address of a workspace: {e}");
@@ -1133,7 +1148,7 @@ async fn walled(st: &AppState, headers: &HeaderMap, place: &Place, first: &str, 
     }
     let mut res = status_page(StatusCode::FORBIDDEN, "Not opened here", &message, &actions, None);
     res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    Ok(Some(res))
+    Ok(res)
 }
 
 /// `/login?next=…`: the sign-in page; someone already signed in goes on.
@@ -1195,7 +1210,7 @@ async fn open(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: &str, q: &[(S
         id => id,
     };
     let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
-    let apps = st.apps.shell_apps(ctx.tenant).await?;
+    let apps = st.apps.shell_apps_for(&ctx).await?;
     // A portal person opens records in the portal, on the page that shows them.
     if kind == "portal" {
         let reached = st.kernel.portal_menus(&ctx).await?;
@@ -1300,7 +1315,7 @@ async fn app_token(
     let st = app_state(&app)?;
     let Some(device) = device else { return Err(ApiError(Error::Forbidden("app tokens are for pages of this site, signed in with the cookie".into()))) };
     let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
-    let apps = st.apps.shell_apps(ctx.tenant).await?;
+    let apps = st.apps.shell_apps_for(&ctx).await?;
     let Some(a) = apps.iter().find(|a| a.id == req.app && a.isolated) else {
         return Err(ApiError(Error::NotFound(format!("no interface of {} runs isolated here", req.app))));
     };
@@ -1318,7 +1333,7 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
     let st = app_state(&app)?;
     let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
     let ws = st.shell.workspace(ctx.tenant).await?;
-    let apps = st.apps.shell_apps(ctx.tenant).await?;
+    let apps = st.apps.shell_apps_for(&ctx).await?;
     let (family_of, families) = shell::families(&apps);
     let (mut launcher, mut create, mut intents, mut panels) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     // The apps' providers for the bar's search, Home's My work and record cards (§11.6, §11.8).
@@ -1423,7 +1438,7 @@ async fn app_words(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<
     }
     let st = app_state(&app)?;
     let mut out = Vec::new();
-    for a in st.apps.shell_apps(ctx.tenant).await? {
+    for a in st.apps.shell_apps_for(&ctx).await? {
         // An app whose interface cannot be read (its bundle gone from storage, say) is left out,
         // rather than the list.
         match words_of(&st, ctx.tenant, &a).await {
@@ -1453,7 +1468,7 @@ async fn version(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query
         let release = st.shell.release_for(ctx.tenant, shell::SHELL_APP, shell::SHELL_VERSION).await?;
         return Ok(Json(json!({"app": q.app, "version": shell::SHELL_VERSION, "release": release.map(|r| r.digest.clone())})).into_response());
     }
-    let apps = st.apps.shell_apps(ctx.tenant).await?;
+    let apps = st.apps.shell_apps_for(&ctx).await?;
     let Some(a) = apps.iter().find(|a| a.id == q.app) else { return Err(ApiError(Error::NotFound(format!("app {}", q.app)))) };
     // An app served by its developer's Vite server is never outdated: it reloads itself.
     if st.shell.dev_ui(ctx.tenant, &a.id).is_some() {
