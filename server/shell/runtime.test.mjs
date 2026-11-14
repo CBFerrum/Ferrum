@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 const src = readFileSync(new URL("./runtime.js", import.meta.url), "utf8");
 const block = src.slice(src.indexOf("// ── Pure helpers"), src.indexOf("// ── end of the pure helpers"));
 assert.ok(block.length > 100, "the block is where the markers say");
-const { originStep, stillToSend, movedUrl, marked } = new Function(`${block}; return { originStep, stillToSend, movedUrl, marked };`)();
+const { originStep, stillToSend, movedUrl, titleMarked } = new Function(`${block}; return { originStep, stillToSend, movedUrl, titleMarked };`)();
 
 test("the origin guard keeps a workspace's storage while its host is leaving, and wipes it for the next owner", () => {
   const acme = "0195-acme";
@@ -43,6 +43,31 @@ test("the same page at the new address keeps to the new origin", () => {
 });
 
 test("a sandbox's mark goes before the title once", () => {
-  assert.equal(marked("Deals · CRM", "Sandbox · "), "Sandbox · Deals · CRM");
-  assert.equal(marked("Sandbox · Deals · CRM", "Sandbox · "), "Sandbox · Deals · CRM");
+  assert.equal(titleMarked("Deals · CRM", "Sandbox · "), "Sandbox · Deals · CRM");
+  assert.equal(titleMarked("Sandbox · Deals · CRM", "Sandbox · "), "Sandbox · Deals · CRM");
+});
+
+// The server loads these as modules (`<script type="module">`), where a name declared twice at the top is a syntax
+// error that stops the whole file: the bar then draws nothing on any page. Checking the file as a plain script, or
+// only its pure helpers, does not see that, so each is parsed here the way a browser parses it.
+test("each shell script parses as a module", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, copyFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const dir = mkdtempSync(join(tmpdir(), "ferrum-shell-"));
+  try {
+    for (const name of ["runtime.js", "portal.js", "login.js", "assistant.js"]) {
+      const copy = join(dir, name.replace(/\.js$/, ".mjs"));
+      copyFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), copy);
+      try {
+        execFileSync(process.execPath, ["--check", copy], { stdio: "pipe" });
+      } catch (e) {
+        assert.fail(`${name} does not parse as a module: ${String(e.stderr ?? e).split("\n").slice(0, 4).join(" ")}`);
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
