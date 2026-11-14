@@ -168,7 +168,8 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     replica checks those due every minute: pending ones every five minutes, working ones daily, through
     the vetted client); seven failures in a row stop it. `/_tls/ask` lets an edge with on-demand TLS
     get certificates only for the cluster's own hosts; operations.md gives the Caddy recipe. Removing
-    a working domain redirects it for 90 days and quarantines it for a year.
+    a working domain keeps it serving those signed in there for a leaving period (`FERRUM_HOST_LEAVING_DAYS`,
+    so browsers can send what they kept for it), then redirects it for 90 days and quarantines it for a year.
   * Passkeys (§12.3) for shape A: the relying party is the host. People add them on their Account page
     (a session that signed in or stepped up in the last ten minutes; the page asks for the password
     otherwise) and sign in with one alone from the sign-in page: the account is the passkey's.
@@ -710,7 +711,8 @@ the new primary host.
 * **Unknown hosts** are refused before any application code runs: no Host-header tricks, and no DNS
   left pointing at us can show someone else's workspace.
 * **Renamed or deleted workspaces**: their hosts redirect for 90 days, then stay quarantined for a year
-  before anyone may claim them, so old links, emails, bookmarks and data stored in browsers never reach
+  before anyone may claim them (a removed address first has a leaving period, in which it still serves the
+  people signed in there: operations.md, "Changing or removing an address"), so old links, emails, bookmarks and data stored in browsers never reach
   a new owner. As a second guard, `@ferrum/client` remembers the workspace id per origin in the browser
   and wipes that origin's storage if the host ever answers for another workspace.
 * **Custom domains**: the admin adds a domain; Ferrum shows a CNAME and a TXT record and checks them.

@@ -96,6 +96,7 @@ settings:
   retired_secret_keys: "<%= get_env(name="FERRUM_RETIRED_SECRET_KEYS", default="") %>"
   clamav_addr: "<%= get_env(name="FERRUM_CLAMAV_ADDR", default="") %>"
   clamav_max_mb: <%= get_env(name="FERRUM_CLAMAV_MAX_MB", default="25") %>
+  host_leaving_days: <%= get_env(name="FERRUM_HOST_LEAVING_DAYS", default="14") %>
   apps:
     # App stores (comma-separated base URLs) and the keys whose signatures this server trusts
     # (comma-separated store:<base64> / publisher:<base64>). Uploads: off | private | cluster.

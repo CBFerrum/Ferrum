@@ -328,5 +328,15 @@
   "The connection stopped responding.": "कनेक्शन ने जवाब देना बंद कर दिया।",
   "Waiting for the connection to come back.": "कनेक्शन के लौटने की प्रतीक्षा है।",
   "The upload stopped: the page sending it was closed or left.": "अपलोड रुक गया: उसे भेजने वाला पेज बंद हुआ या छोड़ दिया गया।",
-  "Trying again…": "फिर से कोशिश हो रही है…"
+  "Trying again…": "फिर से कोशिश हो रही है…",
+  "This address is moving to {to}. It stops working here on {until}.": "यह पता {to} पर जा रहा है। यहाँ यह {until} को काम करना बंद कर देगा।",
+  "This address stops working on {until}.": "यह पता {until} को काम करना बंद कर देगा।",
+  "If you worked offline on this device, open each app once so it can send your work.": "अगर आपने इस डिवाइस पर ऑफ़लाइन काम किया है, तो हर ऐप एक बार खोलें ताकि वह आपका काम भेज सके।",
+  "Hide this notice on this page": "इस पेज पर यह सूचना छिपाएँ",
+  "Hide": "छिपाएँ",
+  "Open this page at the new address": "यह पेज नए पते पर खोलें",
+  "This address is changing": "यह पता बदल रहा है",
+  "Everything from this device has been sent.": "इस डिवाइस से सब कुछ भेज दिया गया है।",
+  "1 upload still to send.": "1 अपलोड अभी भेजना बाकी है।",
+  "{n} uploads still to send.": "{n} अपलोड अभी भेजने बाकी हैं।"
 }

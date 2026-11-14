@@ -1032,6 +1032,32 @@ impl Task for FinishMove {
     }
 }
 
+/// `release_host host:<name> [leaving_days:<n>]`: an address of a workspace (a subdomain too) is going away. It keeps
+/// serving the people signed in there for its leaving period (`FERRUM_HOST_LEAVING_DAYS` unless given; 0: none),
+/// then redirects to the workspace's main address for 90 days, and is quarantined for a year. A main address hands
+/// its place to another of the workspace's first. Audited as the system's.
+pub struct ReleaseHost;
+
+#[async_trait]
+impl Task for ReleaseHost {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "release_host".into(), detail: "Release an address of a workspace, with a leaving period for those signed in there".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let host = vars.cli_arg("host")?;
+        let days = match vars.cli_arg("leaving_days") {
+            Ok(d) => Some(d.trim().parse::<i64>().map_err(|_| Error::Message("leaving_days: a number of days, 0 for none".into()))?),
+            Err(_) => None,
+        };
+        match k.release_host(host, days).await.map_err(refused)?.1 {
+            Some(until) => println!("{host} is leaving: it serves those signed in there until {until}, then redirects"),
+            None => println!("{host} is released with no leaving period"),
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

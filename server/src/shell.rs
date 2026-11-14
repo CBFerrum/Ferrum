@@ -543,6 +543,17 @@ impl Shell {
                     });
                 }
                 HostRoute::Moved { to, .. } => return Ok(Place::Moved(to)),
+                // Its leaving period: still the workspace's for a browser that comes signed in (the session is
+                // checked as anywhere, and must be the workspace's); everyone else goes on as if it had moved,
+                // so nobody starts anything there. A site has no sessions.
+                HostRoute::Leaving { tenant, target, to, .. } => {
+                    return Ok(match target.as_str() {
+                        _ if session_cookie(headers, self.secure).is_none() => Place::Moved(to),
+                        "shell" => Place::Workspace(tenant),
+                        "portal" => Place::Portal(tenant),
+                        _ => Place::Moved(to),
+                    });
+                }
                 HostRoute::Unknown => {}
             }
         }
@@ -552,6 +563,16 @@ impl Shell {
         Ok(match self.default_workspace().await? {
             Some(t) => Place::Workspace(t),
             None => Place::Any,
+        })
+    }
+
+    /// The request's host is in its leaving period (ferrum_kernel::shell::HostRoute::Leaving): where it leads (an
+    /// origin, as this request reaches the cluster) and until when. Nobody signs in on such a host.
+    pub async fn leaving(&self, headers: &HeaderMap) -> Result<Option<(Option<String>, chrono::DateTime<chrono::Utc>)>> {
+        let Some(host) = request_host(headers) else { return Ok(None) };
+        Ok(match self.kernel.route_host(host).await? {
+            HostRoute::Leaving { to, until, .. } => Some((to.and_then(|h| self.host_origin(&h, headers)), until)),
+            _ => None,
         })
     }
 

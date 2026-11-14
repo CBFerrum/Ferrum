@@ -259,6 +259,7 @@ impl Hooks for App {
                 process_runtime: processes,
                 migrate_at_start: migrate_now,
                 audit_sink,
+                host_leaving_days: settings.host_leaving_days.min(365).into(),
                 ..Default::default()
             },
             mailer,
@@ -626,6 +627,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::FinishMove);
         tasks.register(crate::tasks::CopyWorkspace);
         tasks.register(crate::tasks::DeleteSandbox);
+        tasks.register(crate::tasks::ReleaseHost);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

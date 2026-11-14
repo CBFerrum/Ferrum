@@ -58,6 +58,7 @@ fn edge(app: &AppContext) -> Option<String> {
 
 fn status(h: &ferrum_kernel::shell::TenantHost) -> &'static str {
     match (h.released_at.is_some(), h.verified_at.is_some(), h.checked_at.is_some()) {
+        (true, ..) if h.leaving_until.is_some_and(|u| u > chrono::Utc::now()) => "leaving",
         (true, ..) => "released",
         (false, true, _) => "verified",
         (false, false, true) => "failing",
@@ -135,9 +136,12 @@ async fn add(Auth(ctx): Auth, State(app): State<AppContext>, Json(d): Json<NewDo
     Ok((StatusCode::CREATED, Json(host)).into_response())
 }
 
+/// `DELETE /api/admin/domains/{host}`: removes a custom domain. One that was in use keeps serving the people
+/// signed in there until `leaving_until` (so what their browsers keep can be sent), then redirects; `null`: it
+/// stopped at once (never verified, or `FERRUM_HOST_LEAVING_DAYS=0`).
 async fn remove(Auth(ctx): Auth, State(app): State<AppContext>, Path(host): Path<String>) -> ApiResult<Response> {
-    app_state(&app)?.kernel.remove_host(&ctx, &host).await?;
-    Ok(StatusCode::NO_CONTENT.into_response())
+    let until = app_state(&app)?.kernel.remove_host(&ctx, &host).await?;
+    Ok(Json(json!({"host": host.trim().to_ascii_lowercase(), "leaving_until": until})).into_response())
 }
 
 async fn primary(Auth(ctx): Auth, State(app): State<AppContext>, Path(host): Path<String>) -> ApiResult<Response> {

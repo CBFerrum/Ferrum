@@ -62,6 +62,8 @@ services:
       FERRUM_HOOKS_HOST: ${FERRUM_HOOKS_HOST:-}
       FERRUM_PASSKEY_RP: ${FERRUM_PASSKEY_RP:-}
       FERRUM_LINK_HOST: ${FERRUM_LINK_HOST:-}
+      # Days a removed address still serves the people signed in there (0: none).
+      FERRUM_HOST_LEAVING_DAYS: ${FERRUM_HOST_LEAVING_DAYS:-14}
       # Zones (docs/operations.md): empty admits everyone everywhere, as before.
       FERRUM_ZONES: ${FERRUM_ZONES:-}
       FERRUM_ZONE: ${FERRUM_ZONE:-}

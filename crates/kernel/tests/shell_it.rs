@@ -151,7 +151,7 @@ async fn sessions_hosts_kinds_and_releases() {
     assert!(!k.host_answers("books.acme.example", &answer_with("another".into()).await).await, "another token");
     assert!(!k.host_answers("nobody.acme.example", &answering).await, "not a domain of any workspace");
     assert!(!k.host_answers("books.acme.example", "http://127.0.0.1:9/.well-known/ferrum-domain").await, "nothing listening");
-    k.remove_host(&admin, "books.acme.example").await.unwrap();
+    assert_eq!(k.remove_host(&admin, "books.acme.example").await.unwrap(), None, "never verified: dropped, with no leaving period");
 
     // Seven failed checks in a row unverify a domain.
     for _ in 0..6 {
@@ -161,23 +161,82 @@ async fn sessions_hosts_kinds_and_releases() {
     k.host_checked(&shop.host, false).await.unwrap();
     assert_eq!(k.route_host(&shop.host).await.unwrap(), HostRoute::Unknown);
 
-    // Removed after use: it redirects, then is quarantined; never claimable meanwhile.
-    k.remove_host(&admin, "erp.acme.example").await.unwrap();
-    assert_eq!(k.route_host("erp.acme.example").await.unwrap(), HostRoute::Moved { tenant: acme, to: None }, "no primary left for shell");
-    k.make_primary_host(&admin, "acme.ferrum.test").await.unwrap();
-    assert_eq!(k.route_host("erp.acme.example").await.unwrap(), HostRoute::Moved { tenant: acme, to: Some("acme.ferrum.test".into()) });
+    // Removed after use: it is leaving for FERRUM_HOST_LEAVING_DAYS (those signed in there go on), then redirects, then
+    // is quarantined; never claimable meanwhile. Being the main host, it hands that place on first (the oldest subdomain).
+    // (Boxed, here and below: the test's future stays within a test thread's stack.)
+    Box::pin(async {
+        let until = k.remove_host(&admin, "erp.acme.example").await.unwrap().expect("a leaving period");
+        let days = (until - chrono::Utc::now()).num_hours();
+        assert!((13 * 24..=14 * 24).contains(&days), "the setting's 14 days: {days} hours");
+        assert_eq!(k.primary_host(acme, "shell").await.unwrap().as_deref(), Some("acme.ferrum.test"), "the main host's place was handed on");
+        assert_eq!(
+            k.route_host("erp.acme.example").await.unwrap(),
+            HostRoute::Leaving { tenant: acme, target: "shell".into(), to: Some("acme.ferrum.test".into()), until }
+        );
+        assert_eq!(k.host_zone("erp.acme.example").await.unwrap(), None, "its zone, as while it served");
+        assert!(k.host_may_have_certificate("erp.acme.example").await.unwrap(), "still served");
+        let listed = k.list_hosts(&admin).await.unwrap().into_iter().find(|h| h.host == "erp.acme.example").unwrap();
+        assert_eq!((listed.released_at.is_some(), listed.leaving_until, listed.is_primary), (true, Some(until), false));
+        assert!(matches!(k.remove_host(&admin, "erp.acme.example").await, Err(Error::NotFound(_))), "released already");
+        sql(&k, "update tenant_host set leaving_until = now() - interval '1 second' where host = 'erp.acme.example'").await;
+        k.release_hosts(globex).await.unwrap(); // clears the replica's cache
+        assert_eq!(k.route_host("erp.acme.example").await.unwrap(), HostRoute::Moved { tenant: acme, to: Some("acme.ferrum.test".into()) }, "then redirects");
+        let audited: i64 = {
+            let mut tx = k.db.system_tx().await.unwrap();
+            let n = sqlx::query_scalar(
+                "select count(*) from audit_event where entity = 'WorkspaceDomain' and action = 'remove' and diff->>'leaving_until' is not null",
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            n
+        };
+        assert_eq!(audited, 1, "the removal and its leaving period are in the audit trail");
+    })
+    .await;
     let g = k.login("globex", "admin@globex.test", "Correct-Horse-9").await.unwrap();
     let globex_admin = k.load_ctx(globex, g.user, Some(g.token_version), "it".into()).await.unwrap();
     assert!(matches!(k.add_host(&globex_admin, "erp.acme.example", "shell").await, Err(Error::Conflict(_))), "released recently");
-    sql(&k, "update tenant_host set released_at = now() - interval '100 days' where host = 'erp.acme.example'").await;
+    sql(&k, "update tenant_host set released_at = now() - interval '114 days', leaving_until = now() - interval '100 days' where host = 'erp.acme.example'")
+        .await;
     k.release_hosts(globex).await.unwrap(); // clears the replica's cache
     assert_eq!(k.route_host("erp.acme.example").await.unwrap(), HostRoute::Unknown, "past the redirect window");
     assert!(matches!(k.add_host(&globex_admin, "erp.acme.example", "shell").await, Err(Error::Conflict(_))), "still quarantined");
-    sql(&k, "update tenant_host set released_at = now() - interval '400 days' where host = 'erp.acme.example'").await;
+    sql(&k, "update tenant_host set released_at = now() - interval '360 days', leaving_until = now() - interval '346 days' where host = 'erp.acme.example'")
+        .await;
+    assert!(
+        matches!(k.add_host(&globex_admin, "erp.acme.example", "shell").await, Err(Error::Conflict(_))),
+        "a year counts from the end of its leaving period"
+    );
+    sql(&k, "update tenant_host set released_at = now() - interval '414 days', leaving_until = now() - interval '400 days' where host = 'erp.acme.example'")
+        .await;
     k.add_host(&globex_admin, "erp.acme.example", "shell").await.expect("claimable a year on");
     // Never verified: removing it simply drops it.
     k.remove_host(&globex_admin, "erp.acme.example").await.unwrap();
     k.add_host(&admin, "erp.acme.example", "shell").await.expect("free again at once");
+
+    Box::pin(async {
+        // The operator's task releases any address, a subdomain too: with no leaving period it redirects at once.
+        k.add_subdomain(acme, "acme-b.ferrum.test").await.unwrap();
+        assert_eq!(k.release_host("ACME-B.ferrum.test", Some(0)).await.unwrap(), (acme, None));
+        assert_eq!(k.route_host("acme-b.ferrum.test").await.unwrap(), HostRoute::Moved { tenant: acme, to: Some("acme.ferrum.test".into()) });
+        assert!(matches!(k.release_host("acme-b.ferrum.test", None).await, Err(Error::NotFound(_))), "released already");
+        assert!(matches!(k.release_host("acme.ferrum.test", Some(400)).await, Err(Error::Validation(_))));
+        assert!(matches!(k.release_host("nobody.ferrum.test", None).await, Err(Error::NotFound(_))));
+        // Two releases at once (two replicas): one waits for the other, so neither hands the main place to a host the
+        // other is releasing, and nothing is left half done.
+        k.add_subdomain(globex, "g1.ferrum.test").await.unwrap();
+        k.add_subdomain(globex, "g2.ferrum.test").await.unwrap();
+        k.add_subdomain(globex, "g3.ferrum.test").await.unwrap();
+        let (r1, r2) = tokio::join!(k.release_host("g1.ferrum.test", None), k.release_host("g2.ferrum.test", None));
+        assert!(r1.unwrap().1.is_some() && r2.unwrap().1.is_some());
+        assert_eq!(k.primary_host(globex, "shell").await.unwrap().as_deref(), Some("g3.ferrum.test"), "the one left is the main host");
+        for g in ["g1.ferrum.test", "g2.ferrum.test"] {
+            assert!(matches!(k.route_host(g).await.unwrap(), HostRoute::Leaving { to: Some(ref to), .. } if to == "g3.ferrum.test"), "{g}");
+        }
+    })
+    .await;
 
     // A deleted or renamed workspace releases every host.
     assert!(k.release_hosts(acme).await.unwrap() >= 3);
