@@ -620,14 +620,17 @@ mod tests {
     }
 
     #[test]
-    fn every_floor_is_a_date_no_later_than_this_build_and_inside_the_window() {
+    fn every_floor_is_a_past_date_inside_the_window() {
         let mut names = std::collections::BTreeSet::new();
         for f in FLOORS {
             assert!(names.insert(f.feature), "{} twice", f.feature);
             let since = parse(f.since);
             assert!(since > DateTime::<Utc>::MIN_UTC, "{}: not a date", f.feature);
-            // A floor later than the build that sets it would keep that build's own kind out.
-            assert!(!dated() || since <= build_date(), "{} is dated {}, after this build ({})", f.feature, f.since, shown(build_date()));
+            // A floor later than the build that sets it would keep that build's own kind out. Checked against the
+            // clock, not the build's date: a local build keeps the date of the commit its build script last ran on
+            // (build.rs), which can be older than a floor added since; at run time a floor is capped at the build's
+            // own date for the same reason.
+            assert!(since <= Utc::now(), "{} is dated {}, which is still to come", f.feature, f.since);
             assert!(since >= compatible_from(), "{}: a floor before COMPATIBLE_FROM changes nothing", f.feature);
         }
     }
