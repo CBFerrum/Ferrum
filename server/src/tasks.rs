@@ -966,7 +966,63 @@ impl Task for CheckFiles {
             .await
             .map_err(refused)?;
         println!("{checked} checked, {missing} missing");
-        if missing > 0 { Err(Error::Message(format!("{missing} files are not in storage"))) } else { Ok(()) }
+        // `digest:yes` (the restore drill): every workspace file read through, its length and SHA-256 against its row's.
+        let mut differ = 0u64;
+        if vars.cli_arg("digest").is_ok_and(|v| v == "yes") {
+            let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+            let read = crate::store::verify_files(&k.db, &st.objects, tenant, |line| {
+                differ += 1;
+                println!("differs: {line}");
+            })
+            .await
+            .map_err(refused)?;
+            println!("{read} read through, {differ} not as their rows say");
+        }
+        if missing + differ > 0 { Err(Error::Message(format!("{missing} files are not in storage, {differ} differ from their rows"))) } else { Ok(()) }
+    }
+}
+
+/// `files_move`: copies the local directory's files into the object store, verified, and then records that the directory
+/// is no longer read (docs/operations.md, "Object storage", Moving files from a directory). Run where the store is set;
+/// safe to run again, beside traffic, and on several machines (one copies at a time).
+pub struct FilesMove;
+
+#[async_trait]
+impl Task for FilesMove {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "files_move".into(),
+            detail: "Copies the local directory's files into object storage, each read back the same, then stops reading the directory".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        if st.settings.s3_bucket.trim().is_empty() {
+            return Err(Error::Message("no object store is set here: set FERRUM_S3_BUCKET (with its endpoint, region and keys) first, then run this".into()));
+        }
+        let moved = crate::store::move_files(&st.kernel.db, &st.objects, &st.settings.files_dir, None).await.map_err(refused)?;
+        println!("{} files copied and read back the same, {} copied before or already in the store", moved.copied, moved.already);
+        for f in &moved.failed {
+            println!("not copied: {f}");
+        }
+        for w in &moved.writers {
+            println!("may still write to the directory: replica {w}");
+        }
+        if moved.confirmed {
+            println!("the directory {} is no longer read: start the servers again, and keep it until you are sure", st.settings.files_dir);
+            return Ok(());
+        }
+        if !moved.failed.is_empty() {
+            return Err(Error::Message(format!(
+                "{} files did not copy as they are: the directory is still read; fix them and run this again",
+                moved.failed.len()
+            )));
+        }
+        Err(Error::Message(
+            "servers started before the store was set (or of an older build) may still write to the directory: start them again with the store's \
+             settings, then run this again"
+                .into(),
+        ))
     }
 }
 

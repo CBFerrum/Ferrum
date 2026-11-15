@@ -42,6 +42,11 @@ ALLOWED = {
     "FERRUM_DOCX_COMMENTS": "a test's sample files (crates/kernel/src/coedit/docx.rs)",
     "FERRUM_PARITY_STATES": "a test's sample files (crates/kernel/src/coedit/docx.rs)",
     "FERRUM_PARITY_OUT": "a test's sample files (crates/kernel/src/coedit/docx.rs)",
+    # A machine's own identity, which the S3 library reads; the server only asks whether one is named
+    # (server/src/objects.rs, `IDENTITY`).
+    "AWS_WEB_IDENTITY_TOKEN_FILE": "a machine's identity for the object store (IRSA)",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI": "a machine's identity for the object store (EKS Pod Identity, ECS)",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "a machine's identity for the object store (ECS)",
 }
 TEST_NAME = re.compile(r"(^|_)TEST(_|$)|^CARGO_")
 READ = re.compile(r"(?:env::var|env::var_os|\benv|\bvar|\bsome|\bset|option_env!|\benv!)\(\s*\"([A-Z][A-Z0-9_]{2,})\"")

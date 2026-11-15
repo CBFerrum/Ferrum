@@ -141,7 +141,7 @@ guest() {
   echo "    a guest (migrate at start: $mode): read and wrote, left the schema and the newer build's event and job alone"
 }
 
-step "the older build ($SHORT) on a fresh database: a workspace and a record"
+step "the older build ($SHORT) on a fresh database: a workspace, a record and a file"
 sql postgres "drop database if exists $DB with (force)"
 sql postgres "create database $DB owner ferrum"
 start old old-first || fail "the older build did not start on an empty database"
@@ -149,10 +149,13 @@ curl -fsS "$URL/api/tenants" -H 'x-ferrum-bootstrap-token: rehearsal-token' -H '
   -d "{\"slug\":\"window\",\"name\":\"Window\",\"admin_email\":\"admin@window.test\",\"admin_password\":\"$PASSWORD\",\"packages\":[\"contacts\"]}" >/dev/null
 T=$(token)
 [ "$(contact "$T" Old-1)" = 201 ] || fail "a record with the older build"
+# An installation keeping its files in a local directory, as one from before object storage only (D6) does.
+curl -fsS -o /dev/null "$URL/api/files" -H "authorization: Bearer $T" -F "file=@$ROOT/README.md" || fail "a file with the older build"
 stop
 
 step "this build migrates; with its background work off it leaves an event and a job waiting"
 start new new-first || fail "this build did not start"
+grep -q "files are kept in a local directory" "$work/new-first.log" || fail "this build did not warn about the files' directory"
 T=$(token)
 [ "$(contact "$T" New-1)" = 201 ] || fail "a record with this build"
 stop

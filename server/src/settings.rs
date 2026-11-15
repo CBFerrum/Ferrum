@@ -656,6 +656,10 @@ pub fn live_view(start: &Settings, new: &Settings) -> Settings {
         host_leaving_days: new.host_leaving_days,
         dns_resolvers: new.dns_resolvers.clone(),
         zone_mode: new.zone_mode.clone(),
+        files_delete_after_days: new.files_delete_after_days,
+        backup_reach_days: new.backup_reach_days,
+        files_direct_links: new.files_direct_links,
+        files_direct_link_seconds: new.files_direct_link_seconds,
         ..start.clone()
     }
 }
@@ -777,6 +781,7 @@ pub async fn refresh(st: &AppState) {
     }
     crate::extract::PROXY_HOPS.store(next.settings.proxy_hops, Ordering::Relaxed);
     st.shell.set_session_days(next.settings.session_days);
+    st.objects.releases.set_days(next.settings.files_delete_after_days);
     *st.live_settings.now.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(next);
     budgets(st);
     tracing::info!(version = stored.version, now = %at_once.join(", "), at_next_start = %later.join(", "), "the settings changed in the database");

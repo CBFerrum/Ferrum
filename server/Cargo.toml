@@ -200,6 +200,11 @@ rust_xlsxwriter = "0.102"
 ring = "0.17"
 # Loco builds OpenDAL without an HTTP client; S3 storage needs one installed.
 opendal = { version = "0.58", default-features = false, features = ["http-transport-reqwest"] }
+# The bucket's own configuration (versioning, lifecycle, encryption) asked with the files' keys or identity, signed as
+# OpenDAL signs (store.rs): the crates OpenDAL's S3 already uses, at its versions.
+reqsign-core = { version = "3.3", default-features = false }
+reqsign-aws-v4 = { version = "3.3", default-features = false }
+reqsign-file-read-tokio = { version = "3.0", default-features = false }
 # Traces over OTLP (HTTP, protobuf) when an endpoint is configured (telemetry.rs).
 opentelemetry = "0.33"
 tracing-opentelemetry = "0.34"
