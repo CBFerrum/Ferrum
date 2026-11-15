@@ -619,6 +619,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::LogicReplay);
         tasks.register(crate::tasks::Doctor);
         tasks.register(crate::tasks::KmsWrap);
+        crate::tasks::register_vault(tasks);
         tasks.register(crate::tasks::AccountState);
         tasks.register(crate::tasks::SetPlan);
         tasks.register(crate::tasks::ReapplyErasures);

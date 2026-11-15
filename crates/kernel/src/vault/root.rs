@@ -288,22 +288,23 @@ struct SlotRow {
     salt: Option<Vec<u8>>,
     params: Value,
     kms_wrapped: Option<String>,
+    created_at: DateTime<Utc>,
 }
 
-type SlotTuple = (String, i32, DateTime<Utc>, Vec<u8>, Vec<u8>, Option<Vec<u8>>, Value, Option<String>);
+type SlotTuple = (String, i32, DateTime<Utc>, Vec<u8>, Vec<u8>, Option<Vec<u8>>, Value, Option<String>, DateTime<Utc>);
 
 async fn read_slots(db: &Db) -> Result<Vec<SlotRow>> {
     let mut tx = db.vault_tx(None).await?;
     let rows: Vec<SlotTuple> = sqlx::query_as(
-        "select kind, installation_version, installation_made_at, wrapped, check_value, salt, params, kms_wrapped from vault.root_slot order by kind",
+        "select kind, installation_version, installation_made_at, wrapped, check_value, salt, params, kms_wrapped, created_at from vault.root_slot order by kind",
     )
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
     rows.into_iter()
-        .map(|(kind, version, made_at, wrapped, check, salt, params, kms_wrapped)| {
+        .map(|(kind, version, made_at, wrapped, check, salt, params, kms_wrapped, created_at)| {
             let kind = SlotKind::parse(&kind).ok_or_else(|| Error::Internal(format!("the vault has a slot of no known kind ({kind})")))?;
-            Ok(SlotRow { kind, version, made_at, wrapped, check, salt, params, kms_wrapped })
+            Ok(SlotRow { kind, version, made_at, wrapped, check, salt, params, kms_wrapped, created_at })
         })
         .collect()
 }
@@ -496,6 +497,7 @@ impl Made {
             salt: self.salt.clone(),
             params: self.params.clone(),
             kms_wrapped: self.kms_wrapped.clone(),
+            created_at: Utc::now(),
         })
     }
 }
@@ -845,6 +847,202 @@ pub async fn rewrap(db: &Db, with: Rewrap) -> Result<()> {
     tx.commit().await?;
     root.set_open(installation, opener, SlotKind::Credential);
     Ok(())
+}
+
+/// A slot, as the status shows it.
+#[derive(Debug, Clone, Serialize)]
+pub struct SlotStatus {
+    pub kind: SlotKind,
+    pub made_at: DateTime<Utc>,
+    /// For a kms slot: how the service is asked, and which Transit key wraps it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub how: Option<String>,
+}
+
+/// The vault as an operator reads it (`ferrum task vault_status`, the doctor): never a key.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Status {
+    pub open: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closed_because: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opened_with: Option<SlotKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installation_version: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installation_made_at: Option<DateTime<Utc>>,
+    pub slots: Vec<SlotStatus>,
+    pub workspace_keys: i64,
+    pub owner_keys: i64,
+    pub secrets: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_workspace_key: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_owner_key: Option<DateTime<Utc>>,
+    /// Owner keys with secrets still sealed by an older version: (workspace, or none for the installation; owner;
+    /// how many; since when the newest version is there).
+    pub resealing: Vec<Resealing>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Resealing {
+    pub workspace: Option<Uuid>,
+    pub owner: String,
+    pub secrets: i64,
+    pub since: DateTime<Utc>,
+}
+
+/// What the vault of `db` holds, counted, and how this process holds it.
+pub async fn status(db: &Db) -> Result<Status> {
+    let mut st = Status::default();
+    match db.vault.opened() {
+        Ok(by) => {
+            st.open = true;
+            st.opened_with = Some(by);
+        }
+        Err(why) => st.closed_because = Some(why),
+    }
+    if !tables_there(db).await? {
+        return Ok(st);
+    }
+    let slots = read_slots(db).await?;
+    st.installation_version = slots.first().map(|s| s.version);
+    st.installation_made_at = slots.first().map(|s| s.made_at);
+    st.slots = slots
+        .iter()
+        .map(|s| SlotStatus {
+            kind: s.kind,
+            made_at: s.created_at,
+            how: (s.kind == SlotKind::Kms).then(|| match (s.params["how"].as_str(), s.params["key"].as_str()) {
+                (Some(how), Some(key)) => format!("{how} {key}"),
+                (Some(how), None) => how.to_string(),
+                _ => "?".into(),
+            }),
+        })
+        .collect();
+    let mut tx = db.vault_tx(None).await?;
+    let counts: (i64, i64, i64, Option<DateTime<Utc>>, Option<DateTime<Utc>>) = sqlx::query_as(
+        "select (select count(*) from vault.key where owner = ''), (select count(*) from vault.key where owner <> ''), \
+         (select count(*) from vault.secret where valid_until is null), \
+         (select min(created_at) from vault.key k where owner = '' and version = (select max(version) from vault.key x where x.scope = k.scope and x.owner = '')), \
+         (select min(created_at) from vault.key k where owner <> '' and version = (select max(version) from vault.key x where x.scope = k.scope and x.owner = k.owner))",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    (st.workspace_keys, st.owner_keys, st.secrets, st.oldest_workspace_key, st.oldest_owner_key) = counts;
+    let resealing: Vec<(Uuid, String, i64, DateTime<Utc>)> = sqlx::query_as(
+        "select s.scope, s.owner, count(*), max(k.created_at) from vault.secret s \
+         join vault.key k on k.scope = s.scope and k.owner = s.owner and k.version = (select max(version) from vault.key x where x.scope = s.scope and x.owner = s.owner) \
+         where s.key_version < k.version group by s.scope, s.owner order by 1, 2",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    st.resealing = resealing
+        .into_iter()
+        .map(|(scope, owner, secrets, since)| Resealing { workspace: (!scope.is_nil()).then_some(scope), owner, secrets, since })
+        .collect();
+    Ok(st)
+}
+
+/// How each slot fares with what this process has (the doctor): `Ok` for a slot that opens the vault here, else why
+/// not. The recovery slot is never tried: its key is offline.
+pub(crate) async fn try_slots(db: &Db) -> Result<Vec<(SlotKind, std::result::Result<(), String>)>> {
+    let Some(opener) = db.vault.opener() else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    for slot in read_slots(db).await? {
+        if slot.kind == SlotKind::Recovery {
+            continue;
+        }
+        out.push((slot.kind, unlock(&slot, &opener).await.map(|_| ()).map_err(|m| m.to_string())));
+    }
+    Ok(out)
+}
+
+/// The doctor's name for a slot's check.
+fn slot_check(kind: SlotKind) -> &'static str {
+    match kind {
+        SlotKind::File => "vault.slot.file",
+        SlotKind::Kms => "vault.slot.kms",
+        SlotKind::Credential => "vault.slot.credential",
+        SlotKind::Recovery => "vault.slot.recovery",
+    }
+}
+
+impl crate::Kernel {
+    /// What the doctor says of the vault (`ferrum task doctor`): whether it is open and with which slot, which slots
+    /// there are and whether each opens it here, whether there is a recovery key, how old its keys are, and what waits
+    /// to be sealed again. Never a key.
+    pub async fn vault_findings(&self) -> Result<Vec<crate::doctor::Finding>> {
+        use crate::doctor::Finding;
+        let st = status(&self.db).await?;
+        let mut out = Vec::new();
+        match (&st.opened_with, &st.closed_because) {
+            (Some(by), _) => out.push(Finding::ok("vault", format!("open: its {by} slot opened it"))),
+            (None, _) if self.db.vault.opener().is_none() => {
+                out.push(Finding::off("vault", "this process did not open the vault"));
+                return Ok(out);
+            }
+            (None, why) => {
+                out.push(Finding::blocker(
+                    "vault",
+                    format!("the vault is closed: {}", why.as_deref().unwrap_or("it was not opened")),
+                    "Each slot's reason says what it needs; docs/operations.md, \"The vault\".",
+                ));
+                return Ok(out);
+            }
+        }
+        let kinds: Vec<&str> = st.slots.iter().map(|s| s.kind.as_str()).collect();
+        out.push(Finding::ok("vault.slots", format!("slots: {}", kinds.join(", "))));
+        out.push(match st.slots.iter().find(|s| s.kind == SlotKind::Recovery) {
+            Some(s) => Finding::ok("vault.recovery", format!("a recovery key made {} opens it when nothing else does", s.made_at.format("%Y-%m-%d"))),
+            None => Finding::warning(
+                "vault.recovery",
+                "the vault has no recovery key: if its slots' keys are lost (the database password reset, the key file gone), every secret is lost",
+                "Run ferrum task vault_recovery and keep what it prints offline.",
+            ),
+        });
+        for (kind, opens) in try_slots(&self.db).await? {
+            out.push(match opens {
+                Ok(()) => Finding::ok(slot_check(kind), format!("the {kind} slot opens the vault here")),
+                Err(why) => Finding::warning(
+                    slot_check(kind),
+                    format!("the {kind} slot does not open the vault here: {why}"),
+                    "A replica that cannot use one slot opens with another; make this one again (ferrum task vault_add_slot) or remove it.",
+                ),
+            });
+        }
+        let day = |t: Option<DateTime<Utc>>| t.map_or("-".to_string(), |t| t.format("%Y-%m-%d").to_string());
+        out.push(Finding::ok(
+            "vault.keys",
+            format!(
+                "installation key version {} made {}; {} workspace keys, the oldest in use made {}; {} owner keys, the oldest in use made {}; {} secrets",
+                st.installation_version.unwrap_or(0),
+                day(st.installation_made_at),
+                st.workspace_keys,
+                day(st.oldest_workspace_key),
+                st.owner_keys,
+                day(st.oldest_owner_key),
+                st.secrets
+            ),
+        ));
+        let late: Vec<String> = st
+            .resealing
+            .iter()
+            .filter(|r| Utc::now() - r.since > chrono::Duration::days(1))
+            .map(|r| format!("{} of {} in {}", r.secrets, r.owner, r.workspace.map_or("the installation".into(), |w| w.to_string())))
+            .collect();
+        out.push(if late.is_empty() {
+            Finding::ok("vault.resealing", format!("{} owner keys have secrets being sealed again", st.resealing.len()))
+        } else {
+            Finding::warning(
+                "vault.resealing",
+                format!("secrets still sealed with an older key a day after it was rotated: {}", late.join("; ")),
+                "The job platform.vault_reseal and the hourly upkeep seal them again; ferrum task vault_rotate level:owner … wait:yes does it now.",
+            )
+        });
+        Ok(out)
+    }
 }
 
 #[cfg(test)]

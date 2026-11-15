@@ -817,6 +817,22 @@ impl Kernel {
         Ok(Changed { secret, shown })
     }
 
+    /// A new value of `owner`'s secret `name` in `scope`, made by the vault as the one before was (a random value of 32
+    /// bytes, or a new Ed25519 pair) and never shown: an operator's rotation of a key that code uses and nobody types.
+    pub async fn vault_regenerate(&self, scope: Scope, owner: &str, name: &str) -> Result<Described> {
+        let v = of_owner(self, owner)?;
+        let owner = v.bound(self)?;
+        check_name(name)?;
+        let mut tx = self.db.vault_tx(scope.tenant()).await?;
+        let kind = described(scope, owner, name, &rows(&mut tx, scope, owner, name).await?).map(|d| d.kind);
+        tx.commit().await?;
+        let new = match kind.ok_or_else(|| Error::NotFound("secret".into()))? {
+            Kind::Value => New::Random(32),
+            Kind::Ed25519 => New::Ed25519,
+        };
+        write(self, scope, owner, name, new, None, &CODE).await.map(|(d, _)| d)
+    }
+
     /// Removes `owner`'s secret `name` from the workspace, for a person, as [`Kernel::vault_set`].
     pub async fn vault_remove(&self, ctx: &Ctx, owner: &str, name: &str) -> Result<bool> {
         may_manage(ctx, true)?;

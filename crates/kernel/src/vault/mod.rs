@@ -45,10 +45,15 @@ mod seal;
 mod secrets;
 
 pub(crate) use root::{CHANNEL, Root, finish};
-pub use root::{Opened, Opener, Printed, ROOT_FILE, RecoveryKey, Rewrap, SlotKind, open, put_slot, remove_slot, rewrap, rotate_installation_key};
+pub use root::{
+    Opened, Opener, Printed, ROOT_FILE, RecoveryKey, Resealing, Rewrap, SlotKind, SlotStatus, Status, open, put_slot, remove_slot, rewrap,
+    rotate_installation_key, status,
+};
 pub use seal::Kdf;
 pub use secrets::{Changed, Described, Kind, MAX_OVERLAP_SECS, New, Rule, Sandbox, USES_PER_HOUR};
 pub(crate) use secrets::{handler, upkeep};
+/// What holds a key, a password or a secret's value, zeroed when dropped: the vault's own type, for its callers.
+pub use zeroize::Zeroizing;
 
 use crate::db::{Tx, with_retry};
 use crate::error::{Error, Result};
@@ -58,7 +63,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
-use zeroize::Zeroizing;
 
 /// Where a secret belongs: a workspace, or the installation as a whole (what belongs to no workspace).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -1192,6 +1192,243 @@ impl Task for SamlEncryptionKey {
     }
 }
 
+// The vault's tasks (docs/operations.md, "The vault"). Each runs as an operator, with the servers' DATABASE_URL: the
+// credential slot is made from its password. They never print a key, except the recovery key, once, when one is made.
+
+/// The vault's tasks, registered together.
+pub fn register_vault(tasks: &mut loco_rs::task::Tasks) {
+    tasks.register(VaultStatus);
+    tasks.register(VaultAddSlot);
+    tasks.register(VaultRemoveSlot);
+    tasks.register(VaultRecovery);
+    tasks.register(VaultRewrap);
+    tasks.register(VaultRotate);
+}
+
+fn slot_kind(vars: &Vars) -> Result<ferrum_kernel::vault::SlotKind> {
+    let kind = vars.cli_arg("kind").map_err(|_| Error::Message("say which slot: kind:file, kind:kms, kind:credential or kind:recovery".into()))?;
+    ferrum_kernel::vault::SlotKind::parse(kind).ok_or_else(|| Error::Message(format!("{kind} is not a kind of slot: file, kms, credential or recovery")))
+}
+
+/// The scope a task names: `workspace:<slug>`, or `workspace:installation` for what belongs to no workspace.
+async fn vault_scope(k: &ferrum_kernel::Kernel, vars: &Vars) -> Result<ferrum_kernel::vault::Scope> {
+    let at = vars.cli_arg("workspace").map_err(|_| Error::Message("say where: workspace:<slug>, or workspace:installation".into()))?;
+    if at == "installation" {
+        return Ok(ferrum_kernel::vault::Scope::Installation);
+    }
+    let (id, _) = k.tenant_by_slug(at).await.map_err(refused)?;
+    Ok(ferrum_kernel::vault::Scope::Workspace(id))
+}
+
+/// One line from standard input, for a password or a recovery key given once (never on the command line, where the
+/// shell's history and the process list would keep it).
+fn read_once(what: &str) -> Result<ferrum_kernel::vault::Zeroizing<String>> {
+    eprint!("{what}: ");
+    let mut line = ferrum_kernel::vault::Zeroizing::new(String::new());
+    std::io::stdin().read_line(&mut line).map_err(|e| Error::Message(format!("reading {what}: {e}")))?;
+    let given = ferrum_kernel::vault::Zeroizing::new(line.trim_end_matches(['\r', '\n']).to_string());
+    if given.is_empty() {
+        return Err(Error::Message(format!("no {what} was given")));
+    }
+    Ok(given)
+}
+
+fn print_recovery(key: &str) {
+    println!(
+        "The recovery key, shown this once:\n\n    {key}\n\nWrite it down and keep it offline, apart from the database and its backups. With it, `ferrum task vault_rewrap with:recovery` opens the vault when nothing else does."
+    );
+}
+
+/// `vault_status [format:json]`: the vault's slots, keys and secrets, counted; never a key.
+pub struct VaultStatus;
+
+#[async_trait]
+impl Task for VaultStatus {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "vault_status".into(), detail: "The vault's slots, keys and secrets, counted, and how this process opened it; never a key".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let st = ferrum_kernel::vault::status(&k.db).await.map_err(refused)?;
+        if vars.cli_arg("format").is_ok_and(|f| f == "json") {
+            println!("{}", serde_json::to_string_pretty(&st).map_err(refused)?);
+            return Ok(());
+        }
+        match (&st.opened_with, &st.closed_because) {
+            (Some(slot), _) => println!("open: its {slot} slot opened it here"),
+            (None, Some(why)) => println!("closed: {why}"),
+            _ => {}
+        }
+        if let (Some(v), Some(at)) = (st.installation_version, st.installation_made_at) {
+            println!("installation key: version {v}, made {}", at.format("%Y-%m-%d"));
+        }
+        for s in &st.slots {
+            println!("slot {}: made {}{}", s.kind, s.made_at.format("%Y-%m-%d"), s.how.as_deref().map(|h| format!(", {h}")).unwrap_or_default());
+        }
+        println!("{} workspace keys, {} owner keys, {} secrets", st.workspace_keys, st.owner_keys, st.secrets);
+        for r in &st.resealing {
+            let at = r.workspace.map_or("the installation".to_string(), |w| w.to_string());
+            println!("sealing again: {} secrets of {} in {at}, since {}", r.secrets, r.owner, r.since.format("%Y-%m-%d %H:%M"));
+        }
+        Ok(())
+    }
+}
+
+/// `vault_add_slot kind:file|kms|credential|recovery`: adds a slot, or replaces the one of that kind with a new key
+/// (rotating it): `file` from /run/ferrum/root.key here, `kms` from the key-management service set here, `credential`
+/// from this DATABASE_URL's password, `recovery` with a new recovery key, printed once.
+pub struct VaultAddSlot;
+
+#[async_trait]
+impl Task for VaultAddSlot {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "vault_add_slot".into(),
+            detail: "Adds a slot that opens the vault, or makes one again with a new key: kind:file|kms|credential|recovery".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let kind = slot_kind(vars)?;
+        let k = kernel(ctx)?;
+        match ferrum_kernel::vault::put_slot(&k.db, kind).await.map_err(refused)? {
+            Some(key) => print_recovery(&key),
+            None => println!("the {kind} slot now opens the vault"),
+        }
+        Ok(())
+    }
+}
+
+/// `vault_remove_slot kind:…`: removes a slot; never the last one a server opens the vault with.
+pub struct VaultRemoveSlot;
+
+#[async_trait]
+impl Task for VaultRemoveSlot {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "vault_remove_slot".into(), detail: "Removes a slot of the vault (never the last one a server opens it with): kind:…".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let kind = slot_kind(vars)?;
+        ferrum_kernel::vault::remove_slot(&kernel(ctx)?.db, kind).await.map_err(refused)?;
+        println!("the {kind} slot is gone");
+        Ok(())
+    }
+}
+
+/// `vault_recovery`: a new recovery key, printed once; the one before it, if any, opens nothing from now on.
+pub struct VaultRecovery;
+
+#[async_trait]
+impl Task for VaultRecovery {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "vault_recovery".into(), detail: "Prints a new recovery key for the vault, once; the one before it opens nothing from now on".into() }
+    }
+    async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
+        let key = ferrum_kernel::vault::put_slot(&kernel(ctx)?.db, ferrum_kernel::vault::SlotKind::Recovery).await.map_err(refused)?;
+        print_recovery(&key.ok_or_else(|| Error::Message("no recovery key was made".into()))?);
+        Ok(())
+    }
+}
+
+/// `vault_rewrap [with:password|recovery]`: after the database password changed (or was lost), makes the credential
+/// slot again for this DATABASE_URL's password, opening the vault with the old password, or the recovery key, read
+/// once from standard input. Runs with the vault closed.
+pub struct VaultRewrap;
+
+#[async_trait]
+impl Task for VaultRewrap {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "vault_rewrap".into(),
+            detail: "After the database password changed: the credential slot made again for this DATABASE_URL, with the old password or the recovery key from standard input".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        use ferrum_kernel::vault::Rewrap;
+        let with = match vars.cli_arg("with").unwrap_or("password") {
+            "password" => Rewrap::OldPassword(read_once("the old database password")?),
+            "recovery" => Rewrap::Recovery(read_once("the recovery key")?),
+            other => return Err(Error::Message(format!("with:{other}: say with:password or with:recovery"))),
+        };
+        ferrum_kernel::vault::rewrap(&kernel(ctx)?.db, with).await.map_err(refused)?;
+        println!("the credential slot now opens the vault with this DATABASE_URL's password: start the servers with it");
+        Ok(())
+    }
+}
+
+/// `vault_rotate level:…`: a new key at one level, with no moment at which anything cannot be opened.
+/// * `level:slot kind:…`: the slot made again with a new key (as `vault_add_slot`);
+/// * `level:installation [recovery:keep|new]`: a new installation key, every slot and workspace key wrapped again
+///   (a recovery slot needs `recovery:keep`, its key read from standard input, or `recovery:new`, printed once);
+/// * `level:workspace workspace:<slug>|installation`: a new workspace key, its owners' keys wrapped again;
+/// * `level:owner workspace:… owner:<id> [wait:yes]`: a new owner key; its secrets are sealed again in the background,
+///   or here and now with `wait:yes` (and always for the installation's own);
+/// * `level:secret workspace:… owner:<id> name:<name>`: a new value of a secret the vault made (a random value or an
+///   Ed25519 pair), never shown; the version before still verifies for its rule's overlap.
+pub struct VaultRotate;
+
+#[async_trait]
+impl Task for VaultRotate {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "vault_rotate".into(),
+            detail: "A new key at one level of the vault: level:slot|installation|workspace|owner|secret (docs/operations.md)".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        use ferrum_kernel::vault::{self, RecoveryKey, Scope};
+        let k = kernel(ctx)?;
+        let owner = || vars.cli_arg("owner").map_err(|_| Error::Message("say whose: owner:platform, owner:<app id> or owner:plugin:<name>".into()));
+        match vars.cli_arg("level").unwrap_or("") {
+            "slot" => {
+                let kind = slot_kind(vars)?;
+                if let Some(key) = vault::put_slot(&k.db, kind).await.map_err(refused)? {
+                    print_recovery(&key);
+                }
+                println!("the {kind} slot has a new key");
+            }
+            "installation" => {
+                let recovery = match vars.cli_arg("recovery") {
+                    Ok("keep") => Some(RecoveryKey::Keep(read_once("the recovery key")?)),
+                    Ok("new") => Some(RecoveryKey::New),
+                    Ok(other) => return Err(Error::Message(format!("recovery:{other}: say recovery:keep or recovery:new"))),
+                    Err(_) => None,
+                };
+                if let Some(key) = vault::rotate_installation_key(&k.db, recovery).await.map_err(refused)? {
+                    print_recovery(&key);
+                }
+                println!("the installation key is new: every slot and every workspace key is wrapped with it");
+            }
+            "workspace" => {
+                let scope = vault_scope(&k, vars).await?;
+                let v = k.rotate_workspace_key(scope).await.map_err(refused)?;
+                println!("the workspace key is at version {v}, its owners' keys wrapped with it");
+            }
+            "owner" => {
+                let (scope, owner) = (vault_scope(&k, vars).await?, owner()?);
+                let v = k.rotate_owner_key(scope, owner).await.map_err(refused)?;
+                if scope == Scope::Installation || vars.cli_arg("wait").is_ok_and(|w| w == "yes") {
+                    let left = k.vault_reseal(scope, owner).await.map_err(refused)?;
+                    println!("{owner}'s key is at version {v}; {left} secrets left to seal again (another replica holds them)");
+                } else {
+                    println!("{owner}'s key is at version {v}; its secrets are being sealed again in the background (ferrum task vault_status)");
+                }
+            }
+            "secret" => {
+                let (scope, owner) = (vault_scope(&k, vars).await?, owner()?);
+                let name = vars.cli_arg("name").map_err(|_| Error::Message("say which: name:<name>".into()))?;
+                let d = k.vault_regenerate(scope, owner, name).await.map_err(refused)?;
+                println!(
+                    "{owner}'s {name} is at version {}{}",
+                    d.version,
+                    d.previous_until.map(|t| format!("; the version before verifies until {t}")).unwrap_or_default()
+                );
+            }
+            _ => return Err(Error::Message("say which: level:slot, level:installation, level:workspace, level:owner or level:secret".into())),
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

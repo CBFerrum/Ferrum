@@ -1,5 +1,5 @@
 //! The vault against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`; the public schema and the vault's are reset first,
-//! and the vault's dropped again at the end): its slots open it, and each way opening can fail is refused with its
+//! and again at the end): its slots open it, and each way opening can fail is refused with its
 //! reason; replicas starting together make one installation key; nothing that does not go through the vault's module
 //! sees a row of it; and the vault's settings never outlive their transaction. Its keys are made on first use, once,
 //! by replicas at once; each owner has its own, a handle another registry gave out opens nothing, and a key's row
@@ -205,7 +205,8 @@ async fn scenario() {
         eprintln!("Transit's part skipped: FERRUM_KMS_TEST_TRANSIT is not set");
     }
 
-    sqlx::raw_sql("drop schema if exists vault cascade").execute(&db.pool).await.unwrap();
+    // Left as the next suite expects a database: nothing of the vault, and nothing that says it was made.
+    sqlx::raw_sql("drop schema if exists vault cascade; drop schema if exists public cascade; create schema public;").execute(&db.pool).await.unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -710,4 +711,32 @@ async fn rotation_under_use(dir: &Path, no_file: &Path) {
     assert_eq!(vault::open(&replica().await, opener(Some("ferrum"), no_file, None), false).await.unwrap(), Opened::With(SlotKind::Credential));
     let (d, crm_d, _) = kernel_with_apps(no_file).await;
     assert_eq!(&**crm_d.reveal(&d, ws, "v1").await.unwrap(), b"value-1", "and everything opens as before");
+
+    // ── what an operator and the doctor are told: never a key ──
+    let st = vault::status(&d.db).await.unwrap();
+    assert!(st.open && st.opened_with == Some(SlotKind::Credential) && st.installation_version == Some(2), "{st:?}");
+    assert_eq!(st.slots.iter().map(|s| s.kind).collect::<Vec<_>>(), [SlotKind::Credential, SlotKind::Recovery]);
+    assert!(st.workspace_keys >= 2 && st.owner_keys >= 3 && st.secrets as usize > MANY && st.resealing.is_empty(), "{st:?}");
+    let said = serde_json::to_string(&st).unwrap();
+    assert!(!said.contains(&printed) && !said.contains("value-"), "{said}");
+    let level = |f: &[ferrum_kernel::doctor::Finding], check: &str| f.iter().find(|x| x.check == check).map(|x| x.level);
+    use ferrum_kernel::doctor::Level;
+    let found = d.vault_findings().await.unwrap();
+    for check in ["vault", "vault.slots", "vault.recovery", "vault.slot.credential", "vault.keys", "vault.resealing"] {
+        assert_eq!(level(&found, check), Some(Level::Ok), "{check}: {found:?}");
+    }
+    d.rotate_owner_key(ws, "hr").await.unwrap();
+    as_vault(&db, &format!("with u as (update vault.key set created_at = now() - interval '2 days' where scope = '{w}' and owner = 'hr' and version = 3 returning 1) select count(*) from u")).await;
+    assert_eq!(level(&d.vault_findings().await.unwrap(), "vault.resealing"), Some(Level::Warning), "still waiting a day on");
+    d.vault_reseal(ws, "hr").await.unwrap();
+    let closed = replica().await;
+    let _ = vault::open(&closed, opener(Some("wrong"), no_file, None), true).await;
+    let k_closed = Kernel::boot(closed, core(), HookRegistry::default(), KernelSettings::default(), None).await.unwrap();
+    let found = k_closed.vault_findings().await.unwrap();
+    assert_eq!(level(&found, "vault"), Some(Level::Blocker), "{found:?}");
+    assert!(found[0].detail.contains("not the one it was made with"), "the reason, as at start: {found:?}");
+    let never = Kernel::boot(replica().await, core(), HookRegistry::default(), KernelSettings::default(), None).await.unwrap();
+    assert_eq!(level(&never.vault_findings().await.unwrap(), "vault"), Some(Level::Off), "a process that never opened it");
+    vault::remove_slot(&d.db, SlotKind::Recovery).await.unwrap();
+    assert_eq!(level(&d.vault_findings().await.unwrap(), "vault.recovery"), Some(Level::Warning), "no recovery key");
 }
