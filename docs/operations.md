@@ -954,11 +954,9 @@ secret_set`. To use a store of your own instead, set its address and keys and `S
 
 An installation from before this release keeps its `files` volume: with the new Compose file it starts with the store
 set and files moving, reads both, and moves its files with `docker compose exec ferrum ferrum task files_move`. With
-its old Compose file it keeps the directory, warned, as above. Back the store up beside the database: the dump first,
-then the store's volume with the store paused (`docker compose pause store`, an archive of its volume as *Backups and
-restore* takes the files' one, `docker compose unpause store`), and `files_delete_after_days` at least the time
-between the two, so that nothing the dump names is deleted before the archive. Not run here: there is no Docker on the
-machine this was built on.
+its old Compose file it keeps the directory, warned, as above. Back the store up beside the database with the commands
+in *Backups and restore* (the dump, then the store's volume while the store is paused); they were not run here, as
+there is no Docker on the machine this was built on.
 
 ## Backups and restore
 
@@ -1024,10 +1022,47 @@ machine this was built on.
   ```
 
   Then run `ferrum task reapply_erasures` (After restoring a backup, below) before anyone uses it.
-* With the store Compose bundles (from the release that adds it), files, journals and the restore marker are in the
-  `store` volume, not `files`: archive that one instead, with the store paused, and restore it the same way (*Object
-  storage*, The store Compose bundles). Files deleted between the dump and the archive are kept for
-  `files_delete_after_days`; the restore drill (*Object storage*, Backups of files) checks the result.
+* Docker Compose with the store it bundles (from the release that adds it): files, journals and the restore marker are
+  in the `store` volume, not `files` (the commands above are for an installation that still keeps its files there). That
+  volume also holds the key that encrypts what the store keeps, and the store's own access key: keep its archive as
+  carefully as the dump. Set `FERRUM_FILES_DELETE_AFTER_DAYS` to at least the time between the two, so nothing the dump
+  names is deleted before the archive. Commands run in `deploy/`; **not run here: there is no Docker on the machine
+  this was written on.** The backup, the dump first:
+
+  ```bash
+  docker compose exec -T -e PGOPTIONS='-c ferrum.system=on -c ferrum.vault=on' db pg_dump -U ferrum --enable-row-security -Fc ferrum > ferrum-$(date +%F).dump
+  docker compose pause store
+  docker compose run --rm --no-deps -T --entrypoint tar store -C /data -czf - . > store-$(date +%F).tgz
+  docker compose unpause store
+  ```
+
+  While the store is paused, uploads and downloads wait (a large store takes a while to archive). Onto a new host:
+
+  ```bash
+  docker compose up -d db
+  docker compose exec db pg_isready -h 127.0.0.1    # until it answers
+  docker compose exec -T db pg_restore -U postgres -d ferrum --clean --if-exists --exit-on-error < ferrum.dump
+  docker compose run --rm --no-deps -T --entrypoint tar store -C /data -xzf - < store.tgz
+  docker compose up -d
+  ```
+
+  In place, into an empty database and an empty store volume (the project is named `ferrum`, so its volume is
+  `ferrum_store`):
+
+  ```bash
+  docker compose stop ferrum store
+  docker compose rm -f store
+  docker volume rm ferrum_store
+  docker compose exec -T db dropdb -U postgres --force ferrum
+  docker compose exec -T db createdb -U postgres -O ferrum ferrum
+  docker compose exec -T db pg_restore -U postgres -d ferrum --exit-on-error < ferrum.dump
+  docker compose run --rm --no-deps -T --entrypoint tar store -C /data -xzf - < store.tgz
+  docker compose up -d
+  ```
+
+  The keys come back with the vault in the dump, and the store's own with its volume. Then, as after any restore,
+  `docker compose exec ferrum ferrum task reapply_erasures`, and `ferrum task release_restore` once checked (*After
+  restoring a backup*); `deploy/drill.sh` checks every file a row names (*Object storage*, Backups of files).
 * Test a restore at least quarterly. After restoring, run the audit verification below.
 
 ## Regions
