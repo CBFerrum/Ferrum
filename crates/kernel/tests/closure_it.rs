@@ -191,7 +191,7 @@ async fn scenario() {
 
     // The store fails part way: no row goes, and running it again finishes the job.
     // Without the grant on session_replication_role (D7).
-    as_superuser(&url, "revoke set on parameter session_replication_role from ferrum").await;
+    as_superuser(&url, "do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
     store.failing.store(true, Ordering::SeqCst);
     assert!(matches!(deleting("acme", true).await, Err(Error::Unavailable(m)) if m.contains("no row was")));
     assert!(left_of(&k, acme).await > 0, "everything is still there");
@@ -202,7 +202,7 @@ async fn scenario() {
     assert!(kept_hosts().await.is_empty(), "and nothing is kept for it yet: its marks go with its rows, in one transaction");
     store.failing.store(false, Ordering::SeqCst);
     let done = deleting("acme", true).await.expect("deleted");
-    as_superuser(&url, "revoke set on parameter session_replication_role from ferrum").await;
+    as_superuser(&url, "do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
     assert_eq!(done["deleted"], json!(true), "{done}");
 
     // Gone, all of it, and nothing of anyone else's.

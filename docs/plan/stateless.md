@@ -198,6 +198,13 @@ Decided while building it (15 November 2026):
   (this replica's last look, or that its outward work waits for the store) and `failover` (the setting's value and
   where it comes from). The guide's *Any PostgreSQL* has a row per service; every line about a service is marked as
   remembered, not run.
+- **The rehearsal.** `scripts/managed_pg.sh` (a private PostgreSQL 17 with PgBouncer 1.21 or later in transaction mode
+  beside it, an ordinary role owning only its databases, no grant, the extensions an administrator made in their own
+  schema, TLS with its own certificate authority) and `scripts/local_ci.sh managed`, run only when named. Suites reach
+  each database through the pooler, with each one's direct address by host (`FERRUM_TEST_DATABASE_DIRECT_HOST`, a
+  test's own variable). It found that a source given as a pooler's address (a move's, a sandbox's, an extraction's,
+  which start with session settings and a move holds a session lock on) failed in PgBouncer's words: such an address,
+  and a `DATABASE_URL` that is a pooler without a direct address, is now refused saying to give PostgreSQL's own.
 
 ## D8. Git
 

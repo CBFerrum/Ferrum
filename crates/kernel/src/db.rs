@@ -180,7 +180,8 @@ pub struct DbConfig {
     pub report_timeout_ms: u64,
     /// `FERRUM_DATABASE_DIRECT_URL`: where whatever needs one session for longer than a transaction connects (LISTEN,
     /// session advisory locks, migrations and the schema sync), when `url` is a connection pooler in transaction mode.
-    /// `None`: `FERRUM_TEST_DATABASE_DIRECT_URL` when a test sets it, else `url` itself (the server always says).
+    /// `None`: `FERRUM_TEST_DATABASE_DIRECT_URL` when a test sets it, else `url` at `FERRUM_TEST_DATABASE_DIRECT_HOST`
+    /// when a test sets that, else `url` itself (the server always says).
     pub direct_url: Option<String>,
     /// The most connections the direct side opens when it is a pool of its own:
     /// [`LISTENERS`] + [`DIRECT_LOCKS`] + apps' upkeep at once (`FERRUM_UPKEEP_CONCURRENCY`, default 2).
@@ -278,6 +279,8 @@ impl Db {
             .direct_url
             .clone()
             .or_else(|| std::env::var("FERRUM_TEST_DATABASE_DIRECT_URL").ok())
+            // Suites on several databases through a pooler (scripts/local_ci.sh managed): each one's own, by host.
+            .or_else(|| std::env::var("FERRUM_TEST_DATABASE_DIRECT_HOST").ok().and_then(|h| with_host(&config.url, &h).ok()))
             .map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty() && *u != config.url);
         let main = url(&config.url, "database url")?;
@@ -299,7 +302,8 @@ impl Db {
             .max_lifetime(Some(Duration::from_secs(1800)))
             .test_before_acquire(true)
             .connect_with(main)
-            .await?;
+            .await
+            .map_err(pooler_refused)?;
         let direct = match &direct_url {
             None => pool.clone(),
             Some(d) => PgPoolOptions::new()
@@ -647,6 +651,19 @@ where
             other => return other,
         }
     }
+}
+
+/// A connection pooler in transaction mode refuses the settings a session starts with, which an address given as
+/// PostgreSQL's own sends (DATABASE_URL without a direct address; a move's, a sandbox's or an extraction's source,
+/// which needs one session there): said plainly.
+fn pooler_refused(e: sqlx::Error) -> Error {
+    if e.to_string().contains("unsupported startup parameter") {
+        return Error::Invalid(format!(
+            "this address is a connection pooler, which refuses a session's settings ({e}): give PostgreSQL's own address here; \
+             a server takes the pooler's in DATABASE_URL and PostgreSQL's in FERRUM_DATABASE_DIRECT_HOST"
+        ));
+    }
+    e.into()
 }
 
 /// Where an outside database's certificate authority is read from when it is there (docs/plan/stateless.md, D1).

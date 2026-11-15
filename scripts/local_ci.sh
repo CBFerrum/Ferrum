@@ -21,6 +21,13 @@
 #   replica not in the workflow, and only when named: a private primary and standby (scripts/replica_pair.sh, PostgreSQL
 #           17's programs) and the kernel's replica_pair_it on them: real lag, a stopped standby, a cancelled query, a
 #           promotion.
+#   managed not in the workflow, and only when named: a private PostgreSQL that behaves like a managed service
+#           (scripts/managed_pg.sh: an ordinary role owning only its databases, no grant on session_replication_role,
+#           the extensions made by an administrator, PgBouncer in transaction mode with PostgreSQL beside it, TLS with
+#           its own certificate authority). The server binary starts on it through the pooler with only a direct host,
+#           and the suites of moves, sandboxes, taking a workspace back, deleting one, copies without the grant, the
+#           restore marker, the dump and restore, the listeners and the session locks run against it through the
+#           pooler, each database's direct address by host (FERRUM_TEST_DATABASE_DIRECT_HOST).
 #   window  not in the workflow, and only when named: scripts/window_rehearsal.sh, an older build of main (WINDOW_OLD,
 #           default 8a34644e, the first with floors) and this one on one database. The older build is made once and kept
 #           in WINDOW_WORK (about 3 GB while it builds; refused under 8 GB free).
@@ -214,6 +221,53 @@ job_replica() {
   [ "$code" = 0 ] || failed=1
 }
 
+job_managed() {
+  local dir
+  dir=$(mktemp -u "${TMPDIR:-/tmp}/ferrum-managed.XXXXXX")
+  run "managed build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
+  run "managed up" scripts/managed_pg.sh up "$dir" || { scripts/managed_pg.sh down "$dir" >/dev/null 2>&1; return; }
+  (
+    failed=0
+    . "$dir/env"
+    read -r port bouncer <<<"$FERRUM_MANAGED_PORTS"
+    # Every suite's database, made by the administrator and owned by the application's role.
+    for kv in "${DBENV[@]}"; do
+      scripts/managed_pg.sh db "$dir" "${kv##*/}" >/dev/null || exit 1
+      export "${kv%%=*}=$FERRUM_MANAGED_BASE:$bouncer/${kv##*/}"
+    done
+    export FERRUM_TEST_DATABASE_DIRECT_HOST=127.0.0.1:$port FERRUM_TEST_SUPERUSER=${FERRUM_MANAGED_ADMIN_URL%/postgres}
+    run "managed: the server starts through the pooler with only a direct host" scripts/managed_pg.sh serve "$dir" || failed=1
+    managed_tests "managed: TLS with the service's certificate authority" -p ferrum-kernel --lib address_tests
+    # This one takes PostgreSQL's own address and the pooler's beside it.
+    (export FERRUM_TEST_POOLER_URL=$FERRUM_TEST_DATABASE_URL FERRUM_TEST_DATABASE_URL=$FERRUM_MANAGED_BASE:$port/${FERRUM_TEST_DATABASE_URL##*/}
+      managed_tests "managed: listeners and session locks through the pooler" -p ferrum-kernel --test database_urls_it; exit $failed) || failed=1
+    managed_tests "managed: copies without the grant, deleting a workspace, the dump and restore, starts together"       -p ferrum-kernel --test copy_ready_it --test closure_it --test dump_it --test boot_migrate_it
+    managed_tests "managed: taking a workspace back, the restore marker, failovers" -p ferrum-kernel --test recovery_it
+    managed_tests "managed: moving a workspace" -p ferrum-kernel --test workspace_move_it
+    managed_tests "managed: sandboxes" -p ferrum-kernel --test sandbox_it
+    # Two running servers as the application's role on PostgreSQL itself: an installation moved, a workspace moved
+    # between them and back, a sandbox; the role makes the extensions itself there.
+    run "managed: move rehearsal (an installation, a workspace there and back, a sandbox) with no grant"       env MOVE_ADMIN_URL="${FERRUM_MANAGED_ADMIN_URL%/postgres}" MOVE_APP_URL="$FERRUM_MANAGED_BASE:$port"       scripts/move_rehearsal.sh "ferrum_moverehearsal_a$SFX" "ferrum_moverehearsal_b$SFX" || failed=1
+    exit $failed
+  )
+  [ $? = 0 ] || failed=1
+  run "managed down" scripts/managed_pg.sh down "$dir"
+}
+
+# cargo test against the managed rehearsal's databases (the environment job_managed set), reported as `tests` does.
+managed_tests() { # name args...
+  local name=$1 log t0 code summary
+  shift
+  room
+  log="$LOGS/$(echo "$name" | tr -c 'a-zA-Z0-9_.-' '_').log"
+  t0=$(date +%s)
+  cargo test --workspace --locked --features "$FEATURE" --no-fail-fast "$@" >"$log" 2>&1
+  code=$?
+  summary=$(awk '/^test result:/ {n++; p += $4; f += $6} END {printf "%d suites, %d tests passed, %d failed", n, p, f}' "$log")
+  report "$name" "$code" "$(($(date +%s) - t0))" "$log" "$summary"
+  [ "$code" = 0 ] || failed=1
+}
+
 job_window() {
   run "window build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
   run "window rehearsal" scripts/window_rehearsal.sh "${WINDOW_OLD:-8a34644e}" "ferrum_windowrehearsal$SFX"
@@ -226,8 +280,8 @@ jobs=("$@")
 for j in "${jobs[@]}"; do
   case "$j" in
     # Each job in a shell of its own, so what one sets (saml's xmlsec1 and OpenSSL) never reaches the next.
-    rust | saml | audit | move | editors | replica | window) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
-    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window)"; exit 2 ;;
+    rust | saml | audit | move | editors | replica | window | managed) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
+    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, managed)"; exit 2 ;;
   esac
 done
 echo "== $([ $failed = 0 ] && echo PASS || echo FAIL): ${jobs[*]}"

@@ -29,8 +29,15 @@ async fn database(url: &str, reset: bool) -> Db {
     db
 }
 
+/// `deploy/dump.sh` on the database at `args[1]`, by PostgreSQL's own address: through a pooler the script refuses (it
+/// needs one session, and the setting it gives pg_dump's), so where suites run through one (scripts/local_ci.sh managed)
+/// the direct host stands in.
 fn script(args: &[&str]) -> std::process::Output {
-    Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/dump.sh")).args(args).output().expect("deploy/dump.sh")
+    let mut args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    if let Ok(host) = std::env::var("FERRUM_TEST_DATABASE_DIRECT_HOST") {
+        args[1] = ferrum_kernel::db::with_host(&args[1], &host).expect("a direct address");
+    }
+    Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/dump.sh")).args(&args).output().expect("deploy/dump.sh")
 }
 
 /// Every table's rows (as the system sees them) and every sequence, by name: a count and a digest that do not depend on

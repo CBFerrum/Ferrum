@@ -992,6 +992,9 @@ remembered:
   every connection checks the database's certificate (*Configuration*). Connecting by IP address, put
   `sslmode=verify-ca` in the address: the certificate names a host, not the address.
 - A dump as the server's role: `deploy/dump.sh` (*Backups and restore*), from the direct address.
+- The address given to `move_workspace`, `copy_workspace from:` and `extract_tenant` is PostgreSQL's own (direct): a
+  move holds a session lock there, and each starts with session settings, which a pooler in transaction mode refuses.
+  A pooler's address is refused, saying so.
 
 **After the service restores, clones, branches or fails over.** Its own tools take the snapshots and the point-in-time
 restores. A restore into a new database or cluster has another identity, which the server notices; a snapshot, clone

@@ -123,6 +123,15 @@ fn superuser(address: &str) -> String {
     format!("{base}/{}", address.rsplit('/').next().unwrap())
 }
 
+/// A database's own address, as a move's, a sandbox's or an extraction's source must be: where the suites run through a
+/// pooler (scripts/local_ci.sh managed), the direct host stands in.
+fn direct(url: &str) -> String {
+    match std::env::var("FERRUM_TEST_DATABASE_DIRECT_HOST") {
+        Ok(host) => ferrum_kernel::db::with_host(url, &host).expect("a direct address"),
+        Err(_) => url.to_string(),
+    }
+}
+
 fn backup(address: &str) -> PathBuf {
     let dump = std::env::temp_dir().join(format!("ferrum-restore-{}.dump", Uuid::now_v7()));
     let done = Command::new("pg_dump").args(["-Fc", "-f", dump.to_str().unwrap(), &superuser(address)]).status().expect("pg_dump");
@@ -133,6 +142,11 @@ fn backup(address: &str) -> PathBuf {
 async fn restore(dump: &Path, address: &str) {
     let db = database(address, true).await;
     db.pool.close().await;
+    // A schema of the extensions an administrator made there (as on a managed service, scripts/managed_pg.sh) is in
+    // the dump too: the database is emptied of it first, as an administrator restoring a whole database would.
+    let root = database(&superuser(address), false).await;
+    sqlx::query("drop schema if exists extensions cascade").execute(&root.pool).await.unwrap();
+    root.pool.close().await;
     let done = Command::new("pg_restore").args(["--exit-on-error", "-d", &superuser(address), dump.to_str().unwrap()]).status().expect("pg_restore");
     assert!(done.success());
     let _ = std::fs::remove_file(dump);
@@ -390,12 +404,14 @@ async fn a_restored_database_does_not_act_on_its_past() {
 async fn one_workspace_goes_back_alone() {
     const PASSWORD: &str = "Correct-Horse-9";
     let (live, copy) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
+    // The copy as an operator gives it: PostgreSQL's own address. Through a pooler it is refused, saying so.
+    let source = direct(&copy);
     let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
     let k = kernel(database(&live, true).await, sent.clone(), app.clone()).await;
     k.set_file_store(Arc::new(MemFiles::default()));
     let (acme, bravo) = (workspace(&k, "acme").await, workspace(&k, "bravo").await);
     drain(&k).await;
-    assert!(k.extract_tenant(&acme, &copy, false, "not yet").await.is_err(), "there is nothing there");
+    assert!(k.extract_tenant(&acme, &source, false, "not yet").await.is_err(), "there is nothing there");
     let file = |v: serde_json::Value| -> Uuid { v["id"].as_str().unwrap().parse().unwrap() };
     k.store_file(&acme, None, "kept.txt", "text/plain", b"still here").await.unwrap();
     let gone = file(k.store_file(&acme, None, "gone.txt", "text/plain", b"deleted later").await.unwrap());
@@ -441,12 +457,17 @@ async fn one_workspace_goes_back_alone() {
         sqlx::query(sql).execute(&root.pool).await.unwrap();
         root.pool.close().await;
     };
-    grant("revoke set on parameter session_replication_role from ferrum").await;
+    grant("do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
     let granted: bool = sqlx::query_scalar("select has_parameter_privilege('session_replication_role', 'SET')").fetch_one(&k.db.pool).await.unwrap();
     assert!(!granted);
 
     // Comparing changes nothing, and it says what would go.
-    let compared = k.extract_tenant(&acme, &copy, false, "to see").await.expect("compared");
+    // A pooler's address for the copy is refused, saying what to give instead (the rehearsal runs through one).
+    if std::env::var("FERRUM_TEST_DATABASE_DIRECT_HOST").is_ok() {
+        let r = k.extract_tenant(&acme, &copy, false, "through the pooler").await;
+        assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("connection pooler")), "{r:?}");
+    }
+    let compared = k.extract_tenant(&acme, &source, false, "to see").await.expect("compared");
     let people = compared["tables"].as_array().unwrap().iter().find(|t| t["table"] == json!("app_user")).unwrap().clone();
     assert_eq!((people["now"].clone(), people["in_copy"].clone()), (json!(5), json!(4)), "{compared}");
     assert_eq!(compared["applied"], json!(false));
@@ -455,13 +476,13 @@ async fn one_workspace_goes_back_alone() {
     assert_eq!(emails(acme.tenant).await, acme_now);
 
     // What it will not do.
-    assert!(k.extract_tenant(&acme, &copy, true, " ").await.is_err(), "it takes saying why");
+    assert!(k.extract_tenant(&acme, &source, true, " ").await.is_err(), "it takes saying why");
     let clerk = k.load_ctx(acme.tenant, stays, None, "it".into()).await.unwrap();
-    assert!(matches!(k.extract_tenant(&clerk, &copy, true, "mine").await, Err(Error::Forbidden(_))));
-    let r = k.extract_tenant(&acme, &live, true, "the wrong address").await;
+    assert!(matches!(k.extract_tenant(&clerk, &source, true, "mine").await, Err(Error::Forbidden(_))));
+    let r = k.extract_tenant(&acme, &direct(&live), true, "the wrong address").await;
     assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("this database")), "{r:?}");
 
-    let done = k.extract_tenant(&acme, &copy, true, "the customer asked").await.expect("extracted");
+    let done = k.extract_tenant(&acme, &source, true, "the customer asked").await.expect("extracted");
     assert_eq!((done["applied"].clone(), done["status"].clone()), (json!(true), json!("active")), "{done}");
     assert!(!emails(acme.tenant).await.contains(&"later@acme.test".to_string()), "acme is as it was");
     assert!(!emails(acme.tenant).await.contains(&"forget-me@acme.test".to_string()), "but what was erased since stays erased, without a task");
@@ -523,7 +544,7 @@ async fn one_workspace_goes_back_alone() {
         .unwrap();
     tx.commit().await.unwrap();
     let before = emails(acme.tenant).await;
-    let r = k.extract_tenant(&acme, &copy, true, "again").await;
+    let r = k.extract_tenant(&acme, &source, true, "again").await;
     assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("support_access_tenant_id_grant_id_fkey")), "{r:?}");
     assert_eq!(emails(acme.tenant).await, before);
     let mut tx = root.pool.begin().await.unwrap();
@@ -535,9 +556,9 @@ async fn one_workspace_goes_back_alone() {
     let older = database(&superuser(&copy), false).await;
     sqlx::query("alter table app_user add column left_over text").execute(&older.pool).await.unwrap();
     older.pool.close().await;
-    let r = k.extract_tenant(&acme, &copy, true, "too late").await;
+    let r = k.extract_tenant(&acme, &source, true, "too late").await;
     assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("another version") && m.contains("app_user")), "{r:?}");
-    grant("revoke set on parameter session_replication_role from ferrum").await;
+    grant("do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
 }
 
 /// A connection to the witness that can be cut, the way a partition does.
@@ -600,7 +621,8 @@ async fn only_one_region_writes() {
     let w = sqlx::PgPool::connect_with(options.clone()).await.expect("the witness");
     sqlx::raw_sql("drop table if exists ferrum_authority").execute(&w).await.unwrap();
     let (host, port) = (options.get_host().to_string(), options.get_port());
-    let through = |link: &Link| format!("postgres://ferrum:ferrum@127.0.0.1:{}/{}", link.port, options.get_database().unwrap_or("ferrum_witness_test"));
+    // The witness's own address, role and password, through the link.
+    let through = |link: &Link| ferrum_kernel::db::with_host(&witness, &format!("127.0.0.1:{}", link.port)).unwrap();
     let ttl = Duration::from_millis(1600);
 
     let a = kernel(database(&url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), true).await, Arc::default(), Arc::default()).await;
