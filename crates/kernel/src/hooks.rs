@@ -239,6 +239,12 @@ pub struct HookRegistry {
     health: Vec<(String, Arc<dyn crate::support::Health>)>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
+    /// Apps registered with [`HookRegistry::app`], each with what its vault handles carry (crate::vault).
+    vault_apps: HashMap<String, u128>,
+    /// The app whose registration is running.
+    app: Option<String>,
+    /// What registering apps went wrong, said by [`HookRegistry::settle`], which stops the server.
+    problems: Vec<String>,
 }
 
 /// The order an entity's hooks run in, as indices of `hooks`: each after what it waits for, and
@@ -310,6 +316,54 @@ impl HookRegistry {
         self
     }
 
+    /// Registers what `f` adds as app `id`'s: for the workspaces that installed one of `packages`, as
+    /// [`HookRegistry::scoped`] does (none: for every workspace), and with `id` known to the vault, so that `f` may take
+    /// the app's own handle ([`HookRegistry::vault`]). Once per app, and never inside another app's registration:
+    /// either stops the server ([`HookRegistry::settle`]).
+    pub fn app(&mut self, id: &str, packages: &[String], f: impl FnOnce(&mut Self)) -> &mut Self {
+        let problem = if let Some(outer) = &self.app {
+            Some(format!("app {id} was registered inside app {outer}'s registration"))
+        } else if !crate::vault::app_id_ok(id) {
+            Some(format!("{id:?} is not an app's id (lowercase letters, digits and dashes, and not platform)"))
+        } else if self.vault_apps.contains_key(id) {
+            Some(format!("app {id} was registered twice"))
+        } else {
+            None
+        };
+        if let Some(p) = problem {
+            self.problems.push(p);
+            return self;
+        }
+        self.vault_apps.insert(id.to_string(), crate::vault::mint());
+        self.app = Some(id.to_string());
+        if packages.is_empty() {
+            f(self);
+        } else {
+            self.scoped(packages, f);
+        }
+        self.app = None;
+        self
+    }
+
+    /// The vault handle of the app whose registration is running ([`HookRegistry::app`]): its own keys and secrets,
+    /// and nobody else's. Keep it in what you register: it works with the kernel this registry boots, and no other.
+    /// Asked for outside an app's registration, it is a handle nothing accepts, and the server does not start.
+    pub fn vault(&mut self) -> crate::vault::Vault {
+        let found = self.app.as_ref().and_then(|a| self.vault_apps.get(a).map(|m| (a.clone(), *m)));
+        match found {
+            Some((app, mint)) => crate::vault::Vault::app(&app, mint),
+            None => {
+                self.problems.push("a vault handle was asked for outside an app's registration".into());
+                crate::vault::Vault::none()
+            }
+        }
+    }
+
+    /// What app `id`'s vault handles carry, when this registry registered it.
+    pub(crate) fn vault_mint(&self, id: &str) -> Option<u128> {
+        self.vault_apps.get(id).copied()
+    }
+
     /// Each document hook's entity and the packages it runs for (`None`: every tenant), in
     /// registration order (`ferrum task deps_report`).
     pub fn scopes(&self) -> Vec<(String, Option<Vec<String>>)> {
@@ -334,7 +388,7 @@ impl HookRegistry {
     /// everything that cannot work: a hook waiting for one that does not exist, a cycle, two hooks
     /// filling one field with neither declared to go first.
     pub fn settle(&mut self) -> std::result::Result<(), Vec<String>> {
-        let mut problems = Vec::new();
+        let mut problems = self.problems.clone();
         let names: HashMap<String, Vec<&'static str>> = self.by_entity.iter().map(|(e, hs)| (e.clone(), hs.iter().map(|h| h.hook.name()).collect())).collect();
         let mut entities: Vec<&String> = names.keys().collect();
         entities.sort();
@@ -583,6 +637,43 @@ mod tests {
 
     struct Noop;
     impl DocHook for Noop {}
+
+    #[test]
+    fn an_app_gets_its_own_vault_handle_and_nothing_else_does() {
+        let mut r = HookRegistry::default();
+        let mut crm = None;
+        r.app("crm", &["selling".to_string()], |h| {
+            h.register("Lead", Arc::new(Noop));
+            crm = Some(h.vault());
+            // Inside its registration an app cannot register as another, nor take another's handle.
+            h.app("hr", &[], |h| {
+                h.vault();
+            });
+        });
+        assert_eq!(crm.as_ref().map(|v| v.owner()), Some("crm"));
+        assert_eq!(r.scopes(), [("Lead".to_string(), Some(vec!["selling".to_string()]))], "scoped to its packages, as scoped() does");
+        assert!(r.vault_mint("crm").is_some() && r.vault_mint("hr").is_none());
+        r.app("crm", &[], |_| {});
+        r.app("platform", &[], |_| {});
+        r.app("plugin:x", &[], |_| {});
+        r.vault();
+        let problems = r.settle().unwrap_err().join("; ");
+        for said in [
+            "app hr was registered inside app crm's registration",
+            "app crm was registered twice",
+            "\"platform\" is not an app's id",
+            "\"plugin:x\" is not an app's id",
+            "outside an app's registration",
+        ] {
+            assert!(problems.contains(said), "{said}: {problems}");
+        }
+        let mut plain = HookRegistry::default();
+        plain.app("erp", &[], |h| {
+            h.register("Invoice", Arc::new(Noop));
+        });
+        assert_eq!(plain.scopes(), [("Invoice".to_string(), None)], "no packages: every workspace, as before");
+        assert!(plain.settle().is_ok());
+    }
 
     #[test]
     fn scoped_hooks_run_only_where_their_package_is_installed() {

@@ -81,7 +81,8 @@ macro_rules! apps {
         /// Registers every compiled app's hooks, reports and endpoints: ERP's first, so the apps
         /// that build on its documents see their totals, postings and open items.
         pub fn register(hooks: &mut HookRegistry) -> Result<(), String> {
-            ferrum_app_erp::register(hooks);
+            // Each app registers as itself, so that it can take its own vault handle (crates/kernel/src/vault).
+            hooks.app("erp", &[], ferrum_app_erp::register);
             let mut sources: Vec<(String, std::sync::Arc<dyn ferrum_domain::reports::ReportSource>)> = Vec::new();
             // Which packages give each report (zones, level 2): its app's own.
             let mut owners: std::collections::HashMap<String, Vec<String>> = Default::default();
@@ -98,11 +99,7 @@ macro_rules! apps {
                 {
                     // An app's document hooks run only for workspaces that installed one of its packages.
                     let packages: Vec<String> = $nkrate::packages().map(|ps| ps.iter().map(|p| p.name().to_string()).collect()).unwrap_or_default();
-                    if packages.is_empty() {
-                        $nkrate::register(hooks);
-                    } else {
-                        hooks.scoped(&packages, |h| $nkrate::register(h));
-                    }
+                    hooks.app($nfeature, &packages, |h| $nkrate::register(h));
                     own(&packages, &$nkrate::reports());
                     sources.extend($nkrate::reports().into_iter().map(|s| ($nfeature.to_string(), s)));
                 }
@@ -110,14 +107,16 @@ macro_rules! apps {
             $(
                 #[cfg(feature = $lfeature)]
                 {
-                    $lkrate::register(hooks);
+                    hooks.app($lfeature, &[], |h| $lkrate::register(h));
                     sources.extend($lkrate::reports().into_iter().map(|s| ($lfeature.to_string(), s)));
                 }
             )*
             // Apps built in elsewhere, scoped to their packages as native ones are.
             for app in crate::extensions::all() {
                 let packages: Vec<String> = (app.packages)().map(|ps| ps.iter().map(|p| p.name().to_string()).collect()).unwrap_or_default();
-                hooks.scoped(&packages, |h| (app.register)(h));
+                hooks.app(app.id, &[], |h| {
+                    h.scoped(&packages, |h| (app.register)(h));
+                });
                 own(&packages, &(app.reports)());
                 sources.extend((app.reports)().into_iter().map(|s| (app.id.to_string(), s)));
             }

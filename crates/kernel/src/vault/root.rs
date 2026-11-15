@@ -115,11 +115,13 @@ enum State {
     Open { installation: Arc<Installation>, opener: Opener },
 }
 
-/// The vault of one database, as this process holds it (`Db::vault`): the installation key once opened.
+/// The vault of one database, as this process holds it (`Db::vault`): the installation key once opened, and the keys
+/// below it unwrapped so far.
 pub(crate) struct Root {
     state: std::sync::RwLock<State>,
-    /// One opening at a time.
+    /// One opening at a time: at start, and again once another process has rotated the installation key.
     opening: tokio::sync::Mutex<()>,
+    pub(crate) cache: super::keys::Cache,
 }
 
 impl Default for Root {
@@ -127,6 +129,7 @@ impl Default for Root {
         Root {
             state: std::sync::RwLock::new(State::Closed { why: "it was not opened (a server opens it as it starts)".into(), opener: None }),
             opening: tokio::sync::Mutex::new(()),
+            cache: Default::default(),
         }
     }
 }
@@ -160,7 +163,28 @@ impl Root {
     }
 
     fn set_open(&self, installation: Arc<Installation>, opener: Opener) {
+        self.cache.forget(None, None);
         self.set(State::Open { installation, opener });
+    }
+
+    /// Opens again with the slot it opened with, after another process changed the root: what it held keeps working
+    /// until then, and an opening that fails leaves it as it was.
+    pub(crate) async fn reopen(&self, db: &Db) -> Result<Arc<Installation>> {
+        let before = self.installation()?;
+        let _one = self.opening.lock().await;
+        let now = self.installation()?;
+        if now.version != before.version {
+            // Another task here opened it again meanwhile.
+            return Ok(now);
+        }
+        let opener = self.opener().ok_or_else(|| Error::Unavailable("the vault is closed".into()))?;
+        let slots = read_slots(db).await?;
+        let (installation, by) = unlock_any(&slots, &opener).await?;
+        if installation.version != now.version {
+            tracing::info!(version = installation.version, slot = by.as_str(), "the vault's installation key changed: opened again");
+        }
+        self.set_open(installation.clone(), opener);
+        Ok(installation)
     }
 }
 

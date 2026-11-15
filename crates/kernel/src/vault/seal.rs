@@ -7,10 +7,13 @@ use crate::error::{Error, Result};
 use base64::Engine as _;
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
+use uuid::Uuid;
 use zeroize::Zeroizing;
 
 pub(crate) const KEY_LEN: usize = 32;
 const TAG_LEN: usize = 16;
+/// The salt every key derived from another starts from (the purpose and where it is from go into its info).
+const DERIVE_SALT: &[u8] = b"ferrum-vault/derive";
 
 /// A key: 32 bytes, zeroed when dropped, never shown.
 pub(crate) struct Key(Zeroizing<[u8; KEY_LEN]>);
@@ -103,6 +106,11 @@ impl Key {
     pub(crate) fn checks(&self, what: &str, value: &[u8]) -> bool {
         ring::hmac::verify(&self.hmac(), what.as_bytes(), value).is_ok()
     }
+
+    /// A key for `info` from this one (HKDF-SHA256): the same key and info give the same key, and it says nothing of this one.
+    pub(crate) fn derive(&self, info: &str) -> Key {
+        derive_from(DERIVE_SALT, &*self.0, info)
+    }
 }
 
 /// HKDF-SHA256 of `ikm` with `salt`, for `info`.
@@ -175,7 +183,8 @@ pub(crate) fn key_base64(key: &Key) -> Zeroizing<String> {
 }
 
 // Where each kind of value is kept, as its associated data says it: every part of the place is in it, so a value
-// copied to another place does not open.
+// copied to another workspace, owner, name, version or slot, or under another version of the key above it, does not
+// open. No part but the last (an app's own context) can hold a `/`.
 
 /// The installation key, wrapped by a slot.
 pub(crate) fn root_place(kind: &str, installation_version: i32) -> String {
@@ -185,6 +194,21 @@ pub(crate) fn root_place(kind: &str, installation_version: i32) -> String {
 /// What a slot's check value is of.
 pub(crate) fn check_place(kind: &str) -> String {
     format!("ferrum-vault/check/{kind}")
+}
+
+/// A workspace key (owner `""`) under the installation key, or an owner key under its workspace key.
+pub(crate) fn key_place(scope: Uuid, owner: &str, version: i32, parent_version: i32) -> String {
+    format!("ferrum-vault/key/{scope}/{owner}/{version}/{parent_version}")
+}
+
+/// Data an owner sealed to keep outside the vault, in the context it names (the one part that can hold a `/`, last).
+pub(crate) fn sealed_place(scope: Uuid, owner: &str, key_version: i32, context: &str) -> String {
+    format!("ferrum-vault/sealed/{scope}/{owner}/{key_version}/{context}")
+}
+
+/// A key an owner derived for a purpose.
+pub(crate) fn derive_info(scope: Uuid, owner: &str, key_version: i32, purpose: &str) -> String {
+    format!("ferrum-vault/derived/{scope}/{owner}/{key_version}/{purpose}")
 }
 
 #[cfg(test)]
@@ -211,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn keys_wrap_and_check() {
+    fn keys_wrap_check_and_derive() {
         let (a, b) = (Key::random().unwrap(), Key::random().unwrap());
         let wrapped = a.wrap("p", &b).unwrap();
         assert_eq!(a.unwrap("p", &wrapped).unwrap().bytes(), b.bytes());
@@ -221,6 +245,10 @@ mod tests {
         assert!(a.checks("credential", &check));
         assert!(!a.checks("file", &check), "a check value is of one thing");
         assert!(!b.checks("credential", &check), "and under one key");
+        assert_eq!(a.derive("x").bytes(), a.derive("x").bytes());
+        assert_ne!(a.derive("x").bytes(), a.derive("y").bytes());
+        assert_ne!(a.derive("x").bytes(), b.derive("x").bytes());
+        assert_ne!(a.derive("x").bytes(), a.bytes());
         assert_eq!(format!("{a:?}"), "Key(..)", "a key never shows itself");
     }
 
@@ -241,5 +269,20 @@ mod tests {
         let file = key_base64(&recovery);
         assert_eq!(read_key_file(&format!("{}\n", *file)).unwrap().bytes(), recovery.bytes());
         assert!(read_key_file("c2hvcnQ=").is_none(), "not 32 bytes");
+    }
+
+    #[test]
+    fn every_part_of_a_place_is_in_it() {
+        let (s, t) = (Uuid::now_v7(), Uuid::now_v7());
+        let key = key_place(s, "crm", 1, 1);
+        for other in [key_place(t, "crm", 1, 1), key_place(s, "", 1, 1), key_place(s, "hr", 1, 1), key_place(s, "crm", 2, 1), key_place(s, "crm", 1, 2)] {
+            assert_ne!(key, other);
+        }
+        assert_ne!(root_place("file", 1), root_place("credential", 1));
+        assert_ne!(root_place("file", 1), root_place("file", 2));
+        assert_ne!(sealed_place(s, "crm", 1, "a/b"), sealed_place(s, "crm", 1, "a/c"));
+        assert_ne!(sealed_place(s, "crm", 1, "a"), sealed_place(s, "crm", 2, "a"));
+        assert_ne!(derive_info(s, "crm", 1, "links"), derive_info(s, "crm", 2, "links"));
+        assert_ne!(derive_info(s, "crm", 1, "links"), derive_info(t, "crm", 1, "links"));
     }
 }

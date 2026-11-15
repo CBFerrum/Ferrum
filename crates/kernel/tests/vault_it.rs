@@ -1,13 +1,16 @@
 //! The vault against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`; the public schema and the vault's are reset first,
 //! and the vault's dropped again at the end): its slots open it, and each way opening can fail is refused with its
 //! reason; replicas starting together make one installation key; nothing that does not go through the vault's module
-//! sees a row of it; and the vault's settings never outlive their transaction. Transit's part runs when
-//! `FERRUM_KMS_TEST_TRANSIT` is set (OpenBao, as kms_it.rs).
+//! sees a row of it; and the vault's settings never outlive their transaction. Its keys are made on first use, once,
+//! by replicas at once; each owner has its own, a handle another registry gave out opens nothing, and a key's row
+//! copied to another place does not open. Transit's part runs when `FERRUM_KMS_TEST_TRANSIT` is set (OpenBao, as
+//! kms_it.rs).
 
-use ferrum_kernel::vault::{self, Kdf, Opened, Opener, SlotKind};
+use ferrum_kernel::vault::{self, Kdf, Opened, Opener, Scope, SlotKind, Vault};
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use uuid::Uuid;
 
 fn url() -> String {
@@ -180,6 +183,8 @@ async fn scenario() {
     assert!(vault::put_slot(&k.db, SlotKind::Recovery).await.unwrap().is_some(), "open once booted");
     assert_eq!(as_vault(&db, "select count(*) from vault.root_slot").await, 2, "made then: credential and recovery");
 
+    keys_and_handles(&no_file).await;
+
     if let Ok(base) = std::env::var("FERRUM_KMS_TEST_TRANSIT") {
         transit(&base, &no_file).await;
     } else {
@@ -220,4 +225,146 @@ async fn transit(base: &str, no_file: &Path) {
     let why = refusal(vault::open(&replica().await, away, false).await);
     assert!(why.contains("cannot be reached"), "{why}");
     let _ = reqwest::Client::new().delete(format!("{base}/v1/sys/mounts/{mount}")).header("x-vault-token", root).send().await;
+}
+
+fn core() -> Catalog {
+    let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
+    Catalog::from_packages(vec![core]).unwrap()
+}
+
+/// A replica's kernel, with apps `crm` and `hr` registered and their handles, its vault opened with the password.
+async fn kernel_with_apps(no_file: &Path) -> (Arc<Kernel>, Vault, Vault) {
+    let db = replica().await;
+    vault::open(&db, opener(Some("ferrum"), no_file, None), false).await.unwrap();
+    let mut hooks = HookRegistry::default();
+    let (mut crm, mut hr) = (None, None);
+    hooks.app("crm", &[], |h| crm = Some(h.vault()));
+    hooks.app("hr", &[], |h| hr = Some(h.vault()));
+    let k = Kernel::boot(db, core(), hooks, KernelSettings::default(), None).await.expect("boot");
+    (k, crm.unwrap(), hr.unwrap())
+}
+
+async fn workspace(k: &Kernel, slug: &str) -> Uuid {
+    k.create_tenant(ferrum_kernel::tenant::NewTenant {
+        slug: slug.into(),
+        name: slug.into(),
+        admin_email: format!("admin@{slug}.test"),
+        admin_password: "Correct-Horse-9".into(),
+        admin_name: None,
+        packages: vec![],
+        settings: None,
+    })
+    .await
+    .unwrap()
+}
+
+/// Copies one key row's wrapped key over another's, as someone with the database could.
+async fn copy_wrapped(db: &Db, from: (Uuid, &str), to: (Uuid, &str)) -> Vec<u8> {
+    let mut tx = db.pool.begin().await.unwrap();
+    sqlx::query("select set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
+    let was: Vec<u8> = sqlx::query_scalar("select wrapped from vault.key where scope = $1 and owner = $2 and version = 1")
+        .bind(to.0)
+        .bind(to.1)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("update vault.key set wrapped = (select wrapped from vault.key where scope = $1 and owner = $2 and version = 1) where scope = $3 and owner = $4 and version = 1")
+        .bind(from.0)
+        .bind(from.1)
+        .bind(to.0)
+        .bind(to.1)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    was
+}
+
+async fn put_wrapped(db: &Db, at: (Uuid, &str), wrapped: &[u8]) {
+    let mut tx = db.pool.begin().await.unwrap();
+    sqlx::query("select set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
+    sqlx::query("update vault.key set wrapped = $3 where scope = $1 and owner = $2 and version = 1")
+        .bind(at.0)
+        .bind(at.1)
+        .bind(wrapped)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn keys_and_handles(no_file: &Path) {
+    let db = replica().await;
+    reset(&db).await;
+    let (a, crm_a, hr_a) = kernel_with_apps(no_file).await;
+    let (b, crm_b, _) = kernel_with_apps(no_file).await;
+    let (w, w2) = (workspace(&a, "acme").await, workspace(&a, "globex").await);
+    let ws = Scope::Workspace(w);
+    assert!(matches!(crm_a.derive(&a, Scope::Workspace(Uuid::now_v7()), "links").await, Err(Error::NotFound(_))), "no keys for a workspace that is not there");
+
+    // ── a workspace's keys are made on first use, once, by replicas asking at the same moment ──
+    let (x, y) = tokio::join!(crm_a.derive(&a, ws, "links"), crm_b.derive(&b, ws, "links"));
+    let (x, y) = (x.unwrap(), y.unwrap());
+    assert_eq!((x.bytes(), x.version()), (y.bytes(), 1), "one owner key, whichever replica made it");
+    assert_eq!(as_vault(&db, &format!("select count(*) from vault.key where scope = '{w}'")).await, 2, "a workspace key and crm's key");
+    let at_once = futures::future::join_all((0..8).map(|i| {
+        let (k, v) = if i % 2 == 0 { (&a, &crm_a) } else { (&b, &crm_b) };
+        v.derive(k, Scope::Workspace(w2), "links")
+    }))
+    .await;
+    let first = at_once[0].as_ref().unwrap().bytes().to_vec();
+    assert!(at_once.iter().all(|d| d.as_ref().unwrap().bytes() == first.as_slice()));
+    assert_eq!(as_vault(&db, &format!("select count(*) from vault.key where scope = '{w2}'")).await, 2);
+
+    // ── each owner, scope and purpose its own key; the installation's own scope beside the workspaces' ──
+    let hr_x = hr_a.derive(&a, ws, "links").await.unwrap();
+    let other = crm_a.derive(&a, ws, "other").await.unwrap();
+    let inst = crm_a.derive(&a, Scope::Installation, "links").await.unwrap();
+    assert!(hr_x.bytes() != x.bytes() && other.bytes() != x.bytes() && inst.bytes() != x.bytes() && first.as_slice() != x.bytes());
+    assert_eq!(as_vault(&db, "select count(*) from vault.key where scope = '00000000-0000-0000-0000-000000000000'").await, 2);
+    assert_eq!(crm_a.derive_at(&a, ws, "links", 1).await.unwrap().bytes(), x.bytes());
+    assert!(matches!(crm_a.derive_at(&a, ws, "links", 2).await, Err(Error::NotFound(_))), "a version that is not there");
+    assert_eq!(format!("{x:?}"), "Derived(version 1)", "a derived key never shows itself");
+
+    // ── sealed data opens for its owner, scope and context, from any replica, and nowhere else ──
+    let sealed = crm_a.seal(&a, ws, "deal/1", b"the deal's terms").await.unwrap();
+    assert!(sealed.starts_with("fv1.1.") && !sealed.contains("terms"), "{sealed}");
+    assert_eq!(&**crm_b.open(&b, ws, "deal/1", &sealed).await.unwrap(), b"the deal's terms");
+    assert!(hr_a.open(&a, ws, "deal/1", &sealed).await.is_err(), "another owner");
+    assert!(crm_a.open(&a, Scope::Workspace(w2), "deal/1", &sealed).await.is_err(), "another workspace");
+    assert!(crm_a.open(&a, ws, "deal/2", &sealed).await.is_err(), "another context");
+    assert!(crm_a.open(&a, ws, "deal/1", &sealed.replace("fv1.1.", "fv1.2.")).await.is_err(), "another version");
+    let mut changed = sealed.clone().into_bytes();
+    let last = changed.len() - 3;
+    changed[last] = if changed[last] == b'A' { b'B' } else { b'A' };
+    assert!(crm_a.open(&a, ws, "deal/1", &String::from_utf8(changed).unwrap()).await.is_err(), "changed");
+    assert_eq!(
+        as_vault(&db, &format!("select count(*) from vault.key where scope = '{w}' and owner = 'crm' and outside")).await,
+        1,
+        "kept, as it sealed what is kept outside"
+    );
+
+    // ── a handle is good with the kernel whose registry gave it out, and no other ──
+    let mut stray = HookRegistry::default();
+    let mut fake = None;
+    stray.app("crm", &[], |h| fake = Some(h.vault()));
+    assert!(matches!(fake.unwrap().derive(&a, ws, "links").await, Err(Error::Forbidden(_))), "crm's name, another registry's handle");
+    assert!(matches!(crm_a.derive(&b, ws, "links").await, Err(Error::Forbidden(_))), "another replica's handle");
+    let outside = HookRegistry::default().vault();
+    assert!(matches!(outside.derive(&a, ws, "links").await, Err(Error::Forbidden(_))), "a handle asked for outside a registration");
+
+    // ── a key's row copied to another owner or another workspace does not open there (a replica with nothing cached) ──
+    let was = copy_wrapped(&db, (w, "crm"), (w, "hr")).await;
+    let (c, _, hr_c) = kernel_with_apps(no_file).await;
+    let e = hr_c.derive(&c, ws, "links").await.unwrap_err();
+    assert!(e.to_string().contains("hr's key") && e.to_string().contains("does not open"), "{e}");
+    put_wrapped(&db, (w, "hr"), &was).await;
+    let was = copy_wrapped(&db, (w, ""), (w2, "")).await;
+    let (c, crm_c, _) = kernel_with_apps(no_file).await;
+    let e = crm_c.derive(&c, Scope::Workspace(w2), "links").await.unwrap_err();
+    assert!(e.to_string().contains("workspace key") && e.to_string().contains("does not open"), "{e}");
+    put_wrapped(&db, (w2, ""), &was).await;
+    let (c, crm_c, hr_c) = kernel_with_apps(no_file).await;
+    assert_eq!(crm_c.derive(&c, Scope::Workspace(w2), "links").await.unwrap().bytes(), first.as_slice(), "put back, they open again");
+    assert_eq!(hr_c.derive(&c, ws, "links").await.unwrap().bytes(), hr_x.bytes());
 }
