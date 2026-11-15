@@ -232,6 +232,13 @@ pub struct Settings {
     /// so that what their browsers keep for it can be sent, before it redirects. 0: it redirects at once.
     #[serde(default = "default_host_leaving_days")]
     pub host_leaving_days: u32,
+    /// `FERRUM_DOMAIN_PROOF`: `points` or `record` (ferrum_kernel::shell::DomainProof). Empty: `record` with a base domain,
+    /// else `points`.
+    #[serde(default)]
+    pub domain_proof: String,
+    /// `FERRUM_DNS_RESOLVERS`: the DNS servers asked for a domain's record, comma-separated. Empty: the system's.
+    #[serde(default)]
+    pub dns_resolvers: String,
 }
 
 fn default_read_max_lag() -> u64 {

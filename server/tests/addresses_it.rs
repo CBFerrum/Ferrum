@@ -322,6 +322,31 @@ async fn scenario() {
     assert_eq!(k.primary_host(solo, "shell").await.unwrap(), None);
     assert_eq!(call(&router, Method::GET, "erp.solo.internal", "/crm/", None, None, None).await.0, StatusCode::GONE);
 
+    // Proof by pointing here alone, where the cluster asks no more (no base domain, FERRUM_DOMAIN_PROOF unset): as before,
+    // with what the list adds (docs/operations.md, "Custom domains").
+    assert_eq!(k.settings.domain_proof, ferrum_kernel::shell::DomainProof::Points);
+    let (status, _, body, _) = call(&router, Method::POST, NEW, "/api/admin/domains", None, Some(&token), Some(json!({"host": "points.acme.test"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let added: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        (added["status"].clone(), added["waiting"].clone(), added["record"].clone()),
+        (json!("pending"), json!("domain"), json!(null)),
+        "no record to add"
+    );
+    let (status, _, body, _) = call(&router, Method::POST, NEW, "/api/admin/domains/points.acme.test/check", None, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!({"host": "points.acme.test", "answers": false, "points": false, "waiting": "domain"}));
+    let found = k.host_reached("points.acme.test", true).await.unwrap();
+    assert_eq!(found, Some(ferrum_kernel::shell::HostCheck { works: true, points: true, record: None }), "verified by pointing here: no record asked for");
+    let (_, _, body, _) = call(&router, Method::GET, NEW, "/api/admin/domains", None, Some(&token), None).await;
+    let listed: Value = serde_json::from_str(&body).unwrap();
+    let row = listed["domains"].as_array().unwrap().iter().find(|d| d["host"] == "points.acme.test").cloned().unwrap();
+    assert_eq!(
+        (listed["proof"].clone(), row["status"].clone(), row["waiting"].clone(), row["record"].clone(), row["proved_at"].clone()),
+        (json!("points"), json!("verified"), json!(null), json!(null), json!(null))
+    );
+    assert_eq!(k.route_host("points.acme.test").await.unwrap(), HostRoute::Serve { tenant: acme, target: "shell".into() });
+
     Box::pin(shapes(&base, &st)).await;
 }
 
@@ -426,6 +451,7 @@ async fn shapes(base: &AppContext, st: &AppState) {
     let homes: Vec<(&str, &str)> = listed["homes"].as_array().unwrap().iter().map(|h| (h["id"].as_str().unwrap(), h["route"].as_str().unwrap())).collect();
     assert!(homes.contains(&("crm", "crm")) && homes.contains(&("helpdesk", "helpdesk")), "{homes:?}");
     assert_eq!((listed["limits"].clone(), listed["used"].clone()), (json!({"addresses": 20, "paths": 50}), json!({"addresses": 2, "paths": 0})));
+    assert_eq!((listed["read_only"].clone(), listed["leaving_days"].clone()), (json!(null), json!(14)), "changes taken; 14 days of leaving");
     let main = row(&listed, MAIN);
     assert_eq!(
         (main["kind"].clone(), main["primary"].clone(), main["is_primary"].clone(), main["status"].clone()),
@@ -572,6 +598,15 @@ async fn shapes(base: &AppContext, st: &AppState) {
         let (status, body) = api(Method::PUT, MAIN, "/api/admin/paths", Some(json!({"paths": refused}))).await;
         assert!(status == StatusCode::UNPROCESSABLE_ENTITY && body.contains(says), "{says}: {status} {body}");
     }
+    let (status, body) = api(
+        Method::PUT,
+        MAIN,
+        "/api/admin/paths",
+        Some(json!({"paths": [{"alias": "fine", "target": "/crm/"}, {"alias": "fine-too", "target": "/"}, {"alias": "fine", "target": "/data/"}]})),
+    )
+    .await;
+    let refused: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((status, refused["fields"][0]["row"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!(["paths", 2])), "the row at fault: {body}");
     // A short path saved before an app came to claim its segment: the app's page opens there, and the doctor says so.
     sql(&k, &format!("update tenant set settings = settings || '{{\"paths\": [{{\"alias\": \"helpdesk\", \"target\": \"/crm/\"}}]}}' where id = '{beta}'"))
         .await;
@@ -580,7 +615,7 @@ async fn shapes(base: &AppContext, st: &AppState) {
     let shadowed = ferrum_server::controllers::domains::shadowed_paths(&st).await.unwrap();
     assert!(shadowed.contains(&("beta".into(), "helpdesk".into(), "helpdesk".into())), "{shadowed:?}");
     let listed: Value = serde_json::from_str(&api(Method::GET, MAIN, "/api/admin/paths", None).await.1).unwrap();
-    assert_eq!(listed["paths"][0]["works"], false);
+    assert_eq!((listed["paths"][0]["works"].clone(), listed["paths"][0]["taken_by"].clone()), (json!(false), json!("helpdesk")), "the app that took it");
     assert_eq!(api(Method::PUT, MAIN, "/api/admin/paths", Some(json!({"paths": []}))).await.0, StatusCode::OK);
 
     // ── Nothing widens a zone. An address the operator put in a zone keeps that zone whatever is edited; what it shows
@@ -631,6 +666,15 @@ async fn shapes(base: &AppContext, st: &AppState) {
         (row(&listed, SALES)["status"].clone(), row(&listed, SALES)["can"].clone()),
         (json!("leaving"), json!({"edit": false, "remove": false, "make_primary": false}))
     );
+    assert_eq!((row(&listed, SALES)["redirecting"].clone(), row(&listed, MAIN)["redirecting"].clone()), (json!(true), json!(null)));
+    sql(&k, &format!("update tenant_host set released_at = now() - interval '200 days', leaving_until = now() - interval '199 days' where host = '{SALES}'"))
+        .await;
+    let listed: Value = serde_json::from_str(&api(Method::GET, MAIN, "/api/admin/domains", None).await.1).unwrap();
+    assert_eq!((row(&listed, SALES)["status"].clone(), row(&listed, SALES)["redirecting"].clone()), (json!("released"), json!(false)), "no longer answers");
+    k.set_account_state(beta, "restricted", Some("a test of what the list says")).await.unwrap();
+    let listed: Value = serde_json::from_str(&api(Method::GET, MAIN, "/api/admin/domains", None).await.1).unwrap();
+    assert_eq!(listed["read_only"], "restricted", "changes are refused now, and why");
+    k.set_account_state(beta, "active", None).await.unwrap();
 
     // Every change is on the audit trail, as the administrator's.
     let mut tx = k.db.system_tx().await.unwrap();
@@ -646,4 +690,88 @@ async fn shapes(base: &AppContext, st: &AppState) {
     for (entity, action) in [("WorkspaceDomain", "add"), ("WorkspaceDomain", "shape"), ("WorkspaceDomain", "remove"), ("WorkspacePaths", "set")] {
         assert!(audited.contains(&(entity.into(), action.into())), "{entity} {action}: {audited:?}");
     }
+    // ── A forwarding address (docs/operations.md, "Addresses of a workspace"): a named front door that serves nothing and
+    // sends every page on to the main address. ──
+    sql(&k, &format!("update tenant set quotas = '{{\"addresses\": 20}}' where id = '{beta}'")).await;
+    const FRONT: &str = "front--beta.ferrum.test";
+    for (refused, says) in [
+        (json!({"name": "front", "forward": true, "target": "portal"}), "addresses that open the workspace"),
+        (json!({"name": "front", "forward": true, "apps": ["crm"]}), "shows no bar"),
+        (json!({"name": "front", "forward": true, "label": "Front"}), "shows no bar"),
+        (json!({"name": "front", "forward": "yes"}), "forward"),
+    ] {
+        let (status, body) = api(Method::POST, MAIN, "/api/admin/domains", Some(refused.clone())).await;
+        assert!(status == StatusCode::UNPROCESSABLE_ENTITY && body.contains(says), "{refused}: {status} {body}");
+    }
+    let (status, body) = api(Method::POST, MAIN, "/api/admin/domains", Some(json!({"name": "front", "forward": true, "home": "crm"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    show("POST /api/admin/domains {name, forward}", &body);
+    let added: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((added["forward"].clone(), added["primary"].clone(), added["can"]["make_primary"].clone()), (json!(true), json!(false), json!(false)));
+    // Every page goes on to the main address, `/` to the app it names; with a session cookie or without, and no cookie set.
+    for cookie in [None, Some(nina_main.as_str())] {
+        let (status, location, _, set) = get(FRONT, "/", cookie).await;
+        assert_eq!((status, location.as_str(), set), (StatusCode::FOUND, "http://beta.ferrum.test/crm/", false), "{cookie:?}");
+        assert_eq!(get(FRONT, "/?view=mine", cookie).await.1, "http://beta.ferrum.test/crm/?view=mine");
+        let (status, location, ..) = get(FRONT, "/helpdesk/t/9?x=1", cookie).await;
+        assert_eq!((status, location.as_str()), (StatusCode::FOUND, "http://beta.ferrum.test/helpdesk/t/9?x=1"));
+    }
+    let (status, location, body, set) = get(FRONT, "/login?next=/crm/", None).await;
+    assert!(status == StatusCode::FOUND && location == "http://beta.ferrum.test/login?next=/crm/" && !set && body.is_empty(), "no sign-in page");
+    // No API: before any credential is read, and naming where the workspace is.
+    for (cookie, bearer) in [(Some(nina_main.as_str()), None), (None, Some(token.as_str()))] {
+        let (status, _, body, set) = call(&router, Method::GET, FRONT, "/api/auth/me", cookie, bearer, None).await;
+        assert!(status == StatusCode::NOT_FOUND && body.contains("http://beta.ferrum.test") && !set, "{status} {body}");
+    }
+    let (status, .., set) =
+        call(&router, Method::POST, FRONT, "/api/auth/login", None, None, Some(json!({"tenant": "beta", "email": "nina@beta.test", "password": PASSWORD})))
+            .await;
+    assert!(status == StatusCode::NOT_FOUND && !set, "no session starts there: {status}");
+    assert_eq!(get("localhost", &format!("/_tls/ask?domain={FRONT}"), None).await.0, StatusCode::OK, "it still has its certificate");
+    // Never the main address, nor the operator's.
+    let (status, body) = api(Method::PUT, MAIN, &format!("/api/admin/domains/{FRONT}/primary"), None).await;
+    assert!(status == StatusCode::UNPROCESSABLE_ENTITY && body.contains("forward"), "{status} {body}");
+    let (status, body) = patch(MAIN, json!({"forward": true})).await;
+    assert!(status == StatusCode::UNPROCESSABLE_ENTITY && body.contains("main address"), "{status} {body}");
+    assert_eq!(patch("erp.beta.internal", json!({"forward": true})).await.0, StatusCode::FORBIDDEN);
+    // In a zone it names only the main address.
+    k.set_host_zone(FRONT, Some("field")).await.unwrap();
+    assert_eq!(get(FRONT, "/", None).await.1, "http://beta.ferrum.test/", "Home there, never the app it names");
+    k.set_host_zone(FRONT, None).await.unwrap();
+    // The main address never forwards, even one an older build made main (its succession knows no `forward`): it would
+    // send people to itself, so it serves as any address.
+    sql(&k, &format!("update tenant_host set is_primary = false where host = '{MAIN}'; update tenant_host set is_primary = true where host = '{FRONT}'")).await;
+    k.release_hosts(uuid::Uuid::nil()).await.unwrap(); // clears this replica's host cache
+    let (status, location, ..) = get(FRONT, "/", None).await;
+    assert!(status.is_redirection() && location.starts_with("/login"), "served, not sent to itself: {status} {location}");
+    sql(&k, &format!("update tenant_host set is_primary = false where host = '{FRONT}'; update tenant_host set is_primary = true where host = '{MAIN}'")).await;
+    k.release_hosts(uuid::Uuid::nil()).await.unwrap();
+    // While the workspace is restricted it goes on forwarding, and stays as it is.
+    k.set_account_state(beta, "restricted", Some("a test of what a forwarding address does meanwhile")).await.unwrap();
+    assert_eq!(get(FRONT, "/", None).await.1, "http://beta.ferrum.test/crm/");
+    assert_eq!(patch(FRONT, json!({"forward": false})).await.0, StatusCode::FORBIDDEN);
+    k.set_account_state(beta, "active", None).await.unwrap();
+    // Turned off, it is an address like any other again.
+    let (status, body) = patch(FRONT, json!({"forward": false})).await;
+    assert!(status == StatusCode::OK && serde_json::from_str::<Value>(&body).unwrap()["forward"] == json!(false), "{status} {body}");
+    let (status, location, ..) = get(FRONT, "/", None).await;
+    assert!(status.is_redirection() && location.starts_with("/login"), "its own sign-in: {status} {location}");
+
+    // An address in use that comes to forward: those signed in there keep it for its leaving period, as when one is
+    // removed; everyone else goes on to the main address at once, as they will after it, by a redirect no browser keeps.
+    let (status, body) = patch(FIELD, json!({"forward": true, "apps": null, "label": null})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let changed: Value = serde_json::from_str(&body).unwrap();
+    assert!(changed["forward"] == json!(true) && changed["leaving_until"].is_string() && changed["status"] == "verified", "{changed}");
+    let (status, _, html, _) = get(FIELD, "/data/", Some(&nina_field)).await;
+    assert!(!status.is_redirection(), "still served to those signed in there: {status}");
+    assert_eq!(bootstrap(&html)["host"]["leaving"]["to"], "http://beta.ferrum.test", "and told where to go");
+    let (status, location, ..) = get(FIELD, "/crm/", None).await;
+    assert_eq!((status, location.as_str()), (StatusCode::FOUND, "http://beta.ferrum.test/crm/"), "never a 308 a browser keeps");
+    let status = get(FIELD, "/", Some("not-a-session")).await.0;
+    assert!(status.is_redirection() && status != StatusCode::PERMANENT_REDIRECT, "a dead cookie: a redirect no browser keeps too ({status})");
+    sql(&k, &format!("update tenant_host set leaving_until = now() - interval '1 second' where host = '{FIELD}'")).await;
+    k.release_hosts(uuid::Uuid::nil()).await.unwrap(); // clears this replica's host cache
+    let (status, location, ..) = get(FIELD, "/data/", Some(&nina_field)).await;
+    assert_eq!((status, location.as_str()), (StatusCode::FOUND, "http://beta.ferrum.test/data/"), "then it only forwards");
 }

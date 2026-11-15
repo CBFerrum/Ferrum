@@ -227,6 +227,9 @@ impl Hooks for App {
         if signup.open && mailer.is_none() {
             return Err(Error::Message("FERRUM_SIGNUP=open needs mail (settings.mailer): sign-up proves addresses with emailed codes".into()));
         }
+        let domain_proof =
+            ferrum_kernel::shell::DomainProof::from_setting(&settings.domain_proof, crate::shell::base_domain(&settings).is_some()).map_err(Error::Message)?;
+        let dns_resolvers = ferrum_kernel::shell::dns_resolvers(&settings.dns_resolvers).map_err(Error::Message)?;
         let kernel = Kernel::boot(
             db,
             catalog,
@@ -260,6 +263,8 @@ impl Hooks for App {
                 migrate_at_start: migrate_now,
                 audit_sink,
                 host_leaving_days: settings.host_leaving_days.min(365).into(),
+                domain_proof,
+                dns_resolvers,
                 ..Default::default()
             },
             mailer,
@@ -272,6 +277,12 @@ impl Hooks for App {
         // From now on a rollback to a build that would not enforce them is refused (docs/operations.md, "Protections an
         // older build would not enforce"). A guest of a newer build writes nothing.
         kernel.require_zone_floors(&zones).await.map_err(|e| Error::Message(format!("zones: {e}")))?;
+        // Proof by record, where the operator asked for it: a build that would verify a domain pointing here alone may no
+        // longer start (window.rs). Taken by default (a cluster of many workspaces), it puts no floor in place, so that the
+        // upgrade itself rolls back as any does (docs/operations.md, "Custom domains").
+        if proof_floor(&settings.domain_proof) {
+            kernel.require_floor(&ferrum_kernel::shell::PROOF_FLOOR, "").await.map_err(|e| Error::Message(format!("domain proof: {e}")))?;
+        }
         ferrum_app_erp::maintenance(&kernel).await.map_err(|e| Error::Message(format!("ERP's upkeep: {e}")))?;
         if let Err(e) = kernel.registry.catalog().closure(&kernel.settings.signup.packages) {
             return Err(Error::Message(format!("FERRUM_SIGNUP_PACKAGES: {e}")));
@@ -542,9 +553,11 @@ impl Hooks for App {
         let limiter = state.address_limiter.clone();
         let st = Arc::new(state.clone());
         let origins = st.clone();
+        let forwards = st.clone();
         Ok(router
             .layer(axum::middleware::from_fn(move |req, next| step_up_ways(st.clone(), req, next)))
             .layer(axum::middleware::from_fn(hold_place))
+            .layer(axum::middleware::from_fn(move |req, next| forwarding(forwards.clone(), req, next)))
             .layer(axum::middleware::from_fn(move |req, next| per_address(limiter.clone(), req, next)))
             .layer(axum::middleware::from_fn(api_no_store))
             .layer(axum::middleware::from_fn(speculation_csp))
@@ -656,6 +669,11 @@ impl Hooks for App {
     }
 }
 
+/// Whether `FERRUM_DOMAIN_PROOF` asks for proof by record in so many words, which puts its floor in place.
+fn proof_floor(setting: &str) -> bool {
+    setting.trim().eq_ignore_ascii_case("record")
+}
+
 /// Each client address's budget. Only requests that came through the proxy (`X-Forwarded-For`)
 /// count: probes, port-forwards and the cluster's own calls have no address to tell apart.
 /// Runs a request under its trace: the events it writes name its request id, and the caller's W3C
@@ -686,6 +704,63 @@ async fn per_address(limiter: Arc<RateLimiter>, req: axum::extract::Request, nex
         return crate::error::ApiError(e).into_response();
     }
     next.run(req).await
+}
+
+/// A forwarding address (docs/operations.md, "Addresses of a workspace") serves no workspace, so it answers here, before
+/// any credential is read: no cookie is set, no bootstrap runs and no sign-in page is shown. A page (`GET`, `HEAD`) goes on
+/// (`302`) to the workspace's main address, `/` to the address's `home` there (its app's first launcher route; Home without
+/// one), any other path with its query as it came. Anything else, the API among it, is `404` naming the main address. Its
+/// proof (`/.well-known/ferrum-domain`) answers as on any address. The rest of the server takes it for a moved address.
+/// One that served before still has its leaving period, serving those signed in there; a visitor's page is sent on here
+/// already, as it will be once the period ends, with this redirect no browser keeps, never a removed address's `308`.
+async fn forwarding(st: Arc<AppState>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::http::{HeaderValue, Method, StatusCode, header};
+    use axum::response::IntoResponse;
+    use ferrum_kernel::shell::HostRoute;
+    let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
+    let path = req.uri().path();
+    let server = ["/api", "/oauth", "/ws", "/mcp", "/files", "/.well-known", "/metrics"].iter().any(|p| path == *p || path.starts_with(&format!("{p}/")));
+    let page = matches!(*req.method(), Method::GET | Method::HEAD) && !server && !path.starts_with("/_");
+    let (tenant, to, home) = match st.kernel.route_host(host).await {
+        Ok(HostRoute::Forward { tenant, to, home }) => (tenant, to, home),
+        Ok(HostRoute::Leaving { tenant, to, .. }) if page && crate::shell::session_cookie(req.headers(), st.shell.secure).is_none() => {
+            match (st.kernel.host_shown(host).await, st.kernel.host_zone(host).await) {
+                (Ok(Some(shown)), Ok(zone)) if shown.shape.forward => (tenant, to, shown.shape.home.filter(|_| zone.is_none())),
+                _ => return next.run(req).await,
+            }
+        }
+        _ => return next.run(req).await,
+    };
+    if path == "/.well-known/ferrum-domain" {
+        return next.run(req).await;
+    }
+    let main = to.as_deref().and_then(|h| st.shell.origin_of(h, req.headers()));
+    let Some(main) = main.filter(|_| page) else {
+        let said = match &to {
+            Some(h) => format!(
+                "this address only sends people on to the workspace's main address, {}: use that one",
+                st.shell.origin_of(h, req.headers()).unwrap_or_else(|| h.clone())
+            ),
+            None => "this address leads nowhere now".into(),
+        };
+        return crate::error::ApiError(ferrum_kernel::Error::NotFound(said)).into_response();
+    };
+    let landing = match (path, home) {
+        ("/", Some(app)) => match st.apps.shell_apps(tenant).await {
+            Ok(apps) => {
+                crate::shell::home_choices(&apps).into_iter().find(|(id, ..)| *id == app).map_or_else(|| "/".to_string(), |(.., route)| format!("/{route}/"))
+            }
+            Err(_) => "/".to_string(),
+        },
+        _ => path.to_string(),
+    };
+    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let mut res = StatusCode::FOUND.into_response();
+    if let Ok(location) = HeaderValue::from_str(&format!("{main}{landing}{query}")) {
+        res.headers_mut().insert(header::LOCATION, location);
+    }
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
 }
 
 /// Keeps the turn a request takes among its workspace's (`Auth`) until its response is made, and says how
@@ -921,6 +996,12 @@ async fn secret_key(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_proof_by_record_asked_for_puts_its_floor_in_place() {
+        assert!(super::proof_floor("record") && super::proof_floor(" Record "));
+        assert!(!super::proof_floor("") && !super::proof_floor("points"), "the default, even where it is record, rolls back as before");
+    }
+
     #[test]
     fn the_migrate_task_is_found_on_the_command_line() {
         let args = |a: &[&str]| super::is_migrate_task(a.iter().map(|s| s.to_string()));

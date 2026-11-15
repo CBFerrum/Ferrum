@@ -224,11 +224,81 @@ had let go of when the workspace left it), and releases the copies under the sou
 portal or site whose main address was such a name gets the new one. A sandbox: no addresses travel (as before); short
 paths do. A rename (by hand: no task exists): names keep their form and keep leading to the workspace; the retired slug
 keeps anyone else from forming them. Closed or restricted: addresses keep answering and do not change. Deleted: rows go
-with the workspace; names can never be formed again.
+with the workspace, its addresses are quarantined and its slug stays retired, so names can never be formed again (second
+slice, below).
 
 **Older builds** (the two-version window): the new columns and the `paths` setting are ignored, so an address lands on
 Home and lists every app, and short paths answer "Nothing is installed here". Nothing protective is lost, so no floor.
 A name under a base equal to the apps base is taken there for an app's origin and answers "Nothing is here" (closed).
+
+**Proof by record** (second slice, 15 November). Pointing here proves only that a domain points at the cluster, which
+itself serves the token. So, with `FERRUM_DOMAIN_PROOF=record` (the default with a base domain), a custom domain first
+becomes verified only when it points here and `_ferrum.{host}` TXT `ferrum-domain={verify_token}` is there
+(`proved_at`). The token is the row's own, 16 random bytes from a cryptographic generator, unchanged: a later row for the
+same host gets another, so an old record proves nothing. Decided:
+- Asked through `hickory-resolver` (the system's resolvers, or `FERRUM_DNS_RESOLVERS`), a resolver per question with no
+  cache, 2 s and two tries. Only TXT records whose name is `_ferrum.{host}` count, their strings joined; any CNAME in the
+  answer, two different `ferrum-domain=` values, no answer or a failure: not proven. Other TXT records there are ignored.
+- The record is asked only when the domain points here, and never again once proven. A row verified before (the
+  migration sets `proved_at = verified_at`) or proven once is verified again by pointing alone; a row verified by
+  pointing alone after the change (a cluster switched from `points`) keeps working, but once it stops it needs its
+  record.
+- A check that finds the domain pointing here counts no failure, so "waits for its record" is `failures = 0` with
+  `checked_at` set: no column for it. The list keeps its five `status` words (that state is `pending`) and adds
+  `waiting` and `record`: the current screen maps `status` through closed tables (`Addresses.tsx` `TONE`, `STATUS()`,
+  `detail`), where a sixth word would show an empty badge and the text of a released address.
+- A floor (`domain_proof`) only when the operator sets `FERRUM_DOMAIN_PROOF=record`: an older build would verify by
+  pointing alone. The default (`record` with a base domain) puts none, so the upgrade itself rolls back without
+  `allow_older_builds`; operations.md says what an older build does meanwhile.
+- A workspace that leaves the database (`delete_tenant`; `finish_move` at the source, whose DNS may still point there)
+  leaves `host_quarantine (host, until, workspace)`: every row but a custom domain that never worked, a year from now or
+  from a removed one's leaving end; `workspace` only for one that moved away (it may come back; a deleted one's id is not
+  kept), and not `tenant_id`, so no deletion, move or sandbox reaches it. `claimable` reads it with `tenant_host` in one
+  statement. Not for `delete_sandbox` (its name is documented as free again, and it has only the operator's subdomain)
+  nor an aborted move's copy (the workspace lives on at the source). A move's copy refuses a workspace holding a host
+  kept for another, read in the copy's transaction after its addresses (a workspace leaving meanwhile: its rows collide,
+  or its committed quarantine is seen), so what the arrival finds of its hosts is its own: a name it takes back (`on
+  conflict … where tenant_host.tenant_id = excluded.tenant_id`) and the hosts it holds come out of the quarantine.
+  Nothing else lifts it before its time.
+- Those deletions run with `session_replication_role = replica`, so the slug guard never fired there, and the loop
+  deleted `tenant_slug_retired` rows too: a deleted workspace's slug, and so its names and apps' origins, could be
+  taken. `delete_tenant` and `finish_move` now retire it (`retire_slug`, taking the guard's own lock before the row goes)
+  and keep the earlier ones. `tenant_slug_retired` is the installation's record, not the workspace's rows: a move leaves
+  it behind (`LEFT_BEHIND`) rather than copying and counting it, which is what had stopped a workspace coming back, and
+  an aborted copy keeps it. The workspace coming back (same id) takes its slug and names back; `may_move` refuses a
+  workspace whose slug is retired here for another one, which the guard cannot see under a move's copy. Arriving clears
+  the quarantine of the hosts it holds again.
+
+**Forwarding addresses** (second slice). `tenant_host.forward`, part of `HostShape`, set by `POST` and `PATCH` on a
+`shell` address that is not the main one nor the operator's. It reuses what a moved address does: `route_host` answers
+`HostRoute::Forward { to, home }`, which every page path takes as `Place::Moved(to)`, and one middleware
+(`server/src/app.rs`, `forwarding`, inside the per-address limit) answers its requests before any credential is read:
+a page `GET`/`HEAD` → `302` to the main address (`/` → `home`'s first launcher route, else Home; else the same path and
+query), anything else → `404` naming it; only `/.well-known/ferrum-domain` passes. Decided:
+- Closed or restricted: it goes on forwarding (addresses keep answering); it cannot change meanwhile.
+- In a zone: `home` is dropped, so the redirect names only the main address, as a leaving address's does.
+- The main address changes: it follows (looked up with the route, cached 20 s). It is never the main one: `PUT
+  …/primary` and `set_primary_host` refuse it, succession (`release_in`, `primary_where_none`, `host_successor`) skips it,
+  and a name added with `forward` is never made main. With no main address left: `404` for everything. Setting it needs
+  a main address.
+- Portal and `site:`: refused (`check_shape`). `apps` and `label`: refused together with `forward` (no bar shows them);
+  `home` stays meaningful.
+- An address that served and comes to forward first gets its leaving period (`leaving_until` on the live row, the leaving
+  machinery: those signed in there are served and told), so offline work kept for it is not lost. A visitor's page there
+  (no session cookie) is answered by the middleware as after the period, `302` to its landing: a `308` would be kept by
+  the browser and skip the landing for good. Turned off: `leaving_until` cleared, it serves at once.
+- Never named as a serving or staff address (`serving_hosts`, `staff_address`); a move re-makes it forwarding.
+- An older build ignores `forward` and serves the workspace there: nothing protective is lost, so no floor. It could
+  make a forwarding address the main one (its succession knows no `forward`); a main address never forwards, so that
+  one then serves as any address until another is made main.
+
+**What the Addresses screen asked for** (second slice), all additions: the list's `read_only` (`null`, `closed` or
+`restricted`: the account state when the caller's context is read-only, so the screen need not ask `/api/admin/usage`) and
+`leaving_days`; a removed address's `redirecting` (by the same rule `route_host` keeps: its leaving end, or its release,
+plus `HOST_REDIRECT_DAYS`); a short path's `taken_by`, only where `works` is false, named only when the app is compiled in
+or the caller's zone shows it (as `taken` is), else `null`; and `row: ["paths", i]` on each refusal of a short path's own,
+the server now checking "given twice" itself so that every refusal of a row names it (the kernel's own checks stay behind
+it; the list's limit names no row).
 
 **Drawbacks kept** (each with what was done):
 
@@ -247,7 +317,12 @@ A name under a base equal to the apps base is taken there for an app's origin an
 | Removing a name by mistake | Its workspace takes it back at once |
 | An administrator in a zone that leaves apps out replaces an address's `apps` | They see and set only the zone's apps; the list they save replaces the address's |
 | Renaming a workspace leaves its names in the old slug's form | They keep working and no one else can form them; no rename task exists to re-make them |
-| A deleted workspace's custom domains are deleted with it (no quarantine) | Found, not changed here: names under the base are safe by their form, custom domains are not |
+| A deleted workspace's custom domains went with it, unquarantined (first slice) | Fixed in the second: `host_quarantine`, and its slug retired, which it was not |
+| Pointing here proves no consent where `FERRUM_DOMAIN_PROOF=points` | The default is `record` with a base domain; operations.md says a cluster of several companies must use it |
+| A domain proven once comes back by pointing alone: if its owner changes and the new owner points it here, it opens the old workspace again | The row never left that workspace; seven failed checks unverify it, and the new owner can ask the operator to release it |
+| An older build ignores `host_quarantine` and the record | `FERRUM_DOMAIN_PROOF=record`, set explicitly, puts a floor in place; by default none (the upgrade rolls back freely), and operations.md says an older build, while it runs, checks the old way and knows no quarantine |
+| A deleted sandbox's slug stays free (documented: refresh by the same name) | Not changed: a sandbox has only the operator's `{as}.{base}` |
+| A forwarding address in a zone that admits no staff names the main address to anyone | As a leaving address does; the main address's own zone still decides who is admitted there |
 
 ## Not doing
 

@@ -65,6 +65,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_HOOKS_HOST` | no | The host other services call back (`hooks.example.com`): webhooks and `/api/public/…` calls, a mail or calendar connector's sign-in return (`/api/connections/callback`), the addresses services pull files from. Default `hooks.{base}` for pages and public calls with `FERRUM_BASE_DOMAIN`, else `PUBLIC_URL`; connectors and pulled files use `PUBLIC_URL` unless this is set. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_PASSKEY_RP` | no | The passkeys' relying party, a domain (`example.com`): passkeys made on it or a host under it work on every host under it. Default none: each host is its own, as before. Never the base domain. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_HOST_LEAVING_DAYS` | no | How long a removed address keeps serving the people already signed in there, so that what their browsers kept for it is sent, before it redirects (default 14 days; 0: it redirects at once, as before; at most 365). See [Changing or removing an address](#changing-or-removing-an-address) |
+| `FERRUM_DOMAIN_PROOF` | no | What a domain of a workspace's own must show before it works: `points` (it points at this cluster, as before) or `record` (its DNS record `_ferrum.{domain}` as well). Default `record` with `FERRUM_BASE_DOMAIN`, else `points`; set to `record` in so many words, it also keeps builds from before it from starting (a floor). A cluster that serves workspaces of different companies must use `record`. See [Custom domains](#custom-domains) |
+| `FERRUM_DNS_RESOLVERS` | no | The DNS servers asked for that record, as addresses separated by commas (`10.96.0.10`, `10.0.0.2:5353`). Default: the system's (`/etc/resolv.conf`). The server does not start with one that is not an address |
 | `FERRUM_LINK_HOST` | no | The host every mailed, notified or printed link goes through (`go.example.com`): links become `https://{it}/go/{workspace}/{s\|p}/…`, which lead on to wherever the workspace is when someone follows them. Default none: links name the workspace's host, as before. See [Names that should never change](#names-that-should-never-change) |
 | `FERRUM_ZONES` | no | Zones, JSON: zone name → rule, `{"public": {"staff": "none"}, "office": {"staff": "all", "networks": ["10.0.0.0/8"]}}`. Default none: everyone is admitted everywhere, as before. See [Zones](#zones) |
 | `FERRUM_ZONE` | no | The zone this replica is in for every request (one of `FERRUM_ZONES`). Default none: each request's host, network or the default decides |
@@ -574,6 +576,7 @@ before a floor is refused at start, the older ones included.
 | `move_fence` | `plan_move` marks the database (until cancelled, adopted or not followed) | 2026-11-14T01:33:19Z |
 | `workspace_freeze` | `move_workspace` starts, on both sides (until it arrives, at the target; until `finish_move`, at the source; both at an abort) | 2026-11-14T04:00:04Z |
 | `sandbox` | `copy_workspace` makes a sandbox (until `delete_sandbox` deletes the last one) | 2026-11-14T06:47:14Z |
+| `domain_proof` | a server starts with `FERRUM_DOMAIN_PROOF=record` set (not when it is `record` by default) | 2026-11-15T00:51:00Z |
 
 * **What a refused rollback says.** The usual refusal (*Start a build from … or newer*), and, from a build that knows
   floors, which protections are switched on and since which build. A build from before floors existed prints only the
@@ -587,9 +590,9 @@ before a floor is refused at start, the older ones included.
 * **Every start looks at what is in use.** A build level with the database puts floors in place at each start, under the
   start hold, for what is in use however it got there (saved by a build from before floors, or after
   `allow_older_builds`): any workspace with staff networks, an idle timeout, a break-glass list, step-up rules or
-  recorded reads, any key pinned to networks, any sandbox, a move mark, and any workspace move not finished; zones from the server's settings. This is
-  one statement: `tenant` (a row per workspace) and `api_key` are read until the first match, sandboxes through their
-  index, and the two move tables hold a row per move.
+  recorded reads, any key pinned to networks, any sandbox, a move mark, and any workspace move not finished; zones, and
+  proof by record when set, from the server's settings. This is one statement: `tenant` (a row per workspace) and `api_key` are
+  read until the first match, sandboxes through their index, and the two move tables hold a row per move.
 * **Turning a protection off does not lower its floor.** A workspace that clears its networks, or zone settings taken
   out, leave the floor where it is: the operator may turn them on again, and a stale floor costs only that a rollback
   needs `allow_older_builds`. A floor comes back by itself: zones' when a server starts with them, a workspace's when it
@@ -2044,6 +2047,11 @@ no longer lists it.
 **At the source, afterwards.** It keeps the workspace, frozen, with where it went, until `finish_move` deletes
 it (its rows, and its files unless the storage is shared); nothing deletes it by itself. Keep it until you
 are sure of the new place. To move a workspace back to an installation it left, run `finish_move` there first.
+Its addresses, whose DNS may still point at the source, are then kept there from every other workspace for a year, and
+its slug (and those it gave up before) is never another workspace's there, so no one else forms its names or its apps'
+origins (Addresses of a workspace). The workspace itself may still come back: it takes them back. Another workspace
+whose name is retired here (renamed, deleted or moved away) cannot move in under it, nor one with an address kept here
+for another: its copy stops (abort the move, remove the address at the source, and move it again).
 
 **What the freeze stops, and what it cannot.** Every kernel transaction of the workspace is read-only, for
 people and system work alike; every claim of background work across workspaces skips it, and so does the hourly
@@ -3135,13 +3143,32 @@ site (`site:{app}`), within its limit of addresses (Addresses of a workspace, wh
 * **Pointing a domain**: a CNAME record to the cluster's address (the host of `PUBLIC_URL`, shown on
   the page), or A/AAAA records to the same addresses for an apex domain.
 * **Verification**: once a minute one replica checks up to six domains that are due: pending ones every
-  five minutes, working ones daily. A domain works when `https://{domain}/.well-known/ferrum-domain`
+  five minutes, working ones daily. A domain points here when `https://{domain}/.well-known/ferrum-domain`
   answers its token, which the server gives to whoever asks on that host; it stops working after seven
   failed checks in a row (a week of daily checks). Administrators can check one at once. The check
   refuses private addresses and follows no redirect; with `settings.webhooks_allow_private` (development)
   it uses plain http. On a developer's machine, whose base domain is `localhost`, a name under it
   (`shop.localhost`) is accepted and works at once, since it can only reach that machine, and is not
   checked again.
+* **Proof by the domain's DNS record** (`FERRUM_DOMAIN_PROOF`). Pointing here proves only that the domain points at
+  this cluster: the cluster itself answers the token. On a cluster that serves workspaces of different companies, that
+  lets one company take another's domain: one that points here but was never added (a wildcard record, or DNS set up
+  before the address was added), one a deleted workspace had, or one released once its quarantine is over. So with
+  `record` (the default with `FERRUM_BASE_DOMAIN`) a domain works only when it points here **and** its owner has added
+  the record `_ferrum.{domain}` TXT `ferrum-domain={token}`, the token being that address's own: another workspace that
+  adds the same domain later gets another token, so an old record proves nothing for it. The list of addresses shows
+  the record to add (`record`) and what a domain waits for (`waiting`: `domain`, then `record`). The record is asked of
+  `FERRUM_DNS_RESOLVERS` (default: the system's), with a short timeout and nothing kept between checks; no answer, an
+  alias (CNAME) at `_ferrum.{domain}`, or two different `ferrum-domain=` values there mean not proven. Once proven (or
+  working before `record` was asked for), a domain goes on working by pointing here alone, even after it stopped for a
+  while: it never left its workspace, so nobody can have taken it. The record may then go. Domains that work without a
+  record are listed by `ferrum task doctor` (`domains.proof`), as information. `points` keeps the check as it was: use it
+  only where every workspace is one company's. Set in so many words (`FERRUM_DOMAIN_PROOF=record`), it puts a floor in
+  place (*Protections an older build would not enforce*), since a build from before it would verify by pointing alone.
+  Taken by default, it puts none, so the upgrade rolls back as any does; but a build from before this one, while it runs
+  (a rollback, or a replica not yet upgraded), checks domains the old way, by pointing here alone, and does not know the
+  quarantine of a deleted or moved workspace's addresses. Set it explicitly on a cluster of several companies once the
+  upgrade has settled.
 * **Certificates**: the edge in front of Ferrum gets one per domain. With Caddy's on-demand TLS:
 
   ```caddyfile
@@ -3252,6 +3279,28 @@ each address's zone and cannot change it, and cannot change or remove an operato
 out, what an address shows never names them: its `home` falls back to Home, its `apps` lose them, and the
 administration screen offers only the zone's apps.
 
+**Forwarding addresses.** Every address is a place of its own for the browser (*Signing in on several addresses*,
+below): its own sign-in, storage, offline work, service worker and notifications. For a name that is only a front door
+(`crm.acme.com`), `forward` saves all of that: the address serves nothing and sends each page on (`302`) to the
+workspace's main address, `/` to the address's `home` there (that app's first launcher route; Home without one), any
+other path with its query as it came. It answers before anything is read of who is asking: it sets no cookie, never shows
+a sign-in page and serves no API (`404`, naming the main address). Only its proof (`/.well-known/ferrum-domain`) answers
+as on any address: it still needs its certificate and, for a domain of the workspace's own, its proof.
+
+* Set on a `shell` address that is not the main one nor the operator's (`forward` when it is added, or changed later);
+  refused for the portal and a site, and together with `apps` or `label`, which would mean nothing without a bar. `home`
+  is where `/` goes. It needs a main address to send people to.
+* An address that already served, set to forward, first has its leaving period (`FERRUM_HOST_LEAVING_DAYS`), as a removed
+  one has: those signed in there go on until it ends, told so under the bar, and everyone else's pages are sent on as they
+  will be after it (`302`, which no browser keeps; a removed address answers `308`). Turned off, it is an address like any
+  other again at once.
+* It always leads to the current main address, which it can never become: making it the main one is refused, and when the
+  main address is removed the one that takes its place is never a forwarding one. With no main address left it answers
+  `404` to everything.
+* In a zone it names only the main address: `/` goes to the main address's Home, never to `home`.
+* While the workspace is closed or restricted it goes on forwarding, as every address goes on answering.
+* An older build ignores `forward` and serves the workspace there, as it did: nothing protective is lost.
+
 **Names under the base domain.** With `FERRUM_BASE_DOMAIN`, administrators add names as `{name}--{slug}.{base}`, one
 part of the address: `sales--acme.ferrum.cloud`. Such a name works at once (the cluster owns the base domain, so there is
 nothing to prove), the base's wildcard certificate covers it (`/_tls/ask` says yes for it too), and the accounts host hands
@@ -3280,9 +3329,9 @@ rest of the path after the target) to a path of the workspace: `/sales` → `/cr
 * A target is `/` (Home), a page of the shell (`/data/…`, `/store/…`, `/admin/…`, `/account/…`), `/open/…`, or a path
   under the route of one of the workspace's apps (`/crm/`, `/crm/e/Lead?view=mine`). Never the portal, sign-in, the API,
   the server's files, another host, or a `#` part.
-* At most 50, saved as one list and checked together: a refusal names the alias at fault.
+* At most 50, saved as one list and checked together: a refusal names the alias at fault and its row.
 * An app that comes later and takes the segment wins: its page opens there, the short path stops working, the list marks
-  it (`works: false`) and `ferrum task doctor` warns (`paths.shadowed`).
+  it (`works: false`, naming the app) and `ferrum task doctor` warns (`paths.shadowed`).
 * Someone signed out signs in first and is then led on. It is a redirect on purpose: the address bar shows the real path,
   apps need nothing, and no short path can hide an app.
 
@@ -3309,7 +3358,12 @@ audit trail as administration, with who made it and what changed.
 * A sandbox gets none of the live workspace's addresses (only `{as}.{base}`); short paths come with its settings.
 * Renamed (its slug changed by hand: there is no task for it): its names keep their form and keep leading to it, and no
   other workspace can ever form them; new names take the new slug.
-* Deleted: its addresses go with it. Its names can never be formed again, its slug being retired.
+* Deleted (`delete_tenant`), or moved away and finished at the source (`finish_move`): its rows go, and its addresses are
+  kept from every other workspace for a year (`host_quarantine`), as removed ones are, but with no leaving or redirect
+  period, since nothing is left to serve: a removed one for what was left of its quarantine, all but a domain of its own
+  that never worked. Its slug stays retired there, with the slugs it gave up before, so its names can never be formed
+  there again; a moved workspace coming back takes its slug, names and kept addresses back, and no other workspace, one
+  moving in included, gets them before the year is out.
 
 **Certificates.** Caddy's on-demand TLS gets one certificate per name it is asked for. Under one base domain that can reach
 the certificate authority's limits per domain (Let's Encrypt allows 50 a week for one registered domain): serve the base
@@ -3698,9 +3752,10 @@ ferrum task delete_tenant slug:acme confirm:acme note:"kept until 2027-02-01, as
 The first says what would go: rows by table, files, legal holds in force, and anything an app still holds outside the
 database. A hold, or anything outside, stops it: release each hold first (Administration, Legal holds), which is
 recorded. The second deletes the workspace's files, then its private app bundles, then every row that names it, in one
-transaction, and records in `tenant_deletion` that it happened. A file store failing part way leaves every row in place,
-so running it again finishes the job. Like extraction, it needs `GRANT SET ON PARAMETER session_replication_role TO
-ferrum` for as long as it runs.
+transaction, and records in `tenant_deletion` that it happened. In the same transaction its addresses are kept from every
+other workspace for a year (Addresses of a workspace), and its slugs stay retired. A file store failing part way leaves
+every row in place, so running it again finishes the job. Like extraction, it needs `GRANT SET ON PARAMETER
+session_replication_role TO ferrum` for as long as it runs.
 
 Backups taken before the deletion still hold the workspace until they expire. Say so to whoever asked for the deletion.
 

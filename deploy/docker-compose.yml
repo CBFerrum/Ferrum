@@ -64,6 +64,10 @@ services:
       FERRUM_LINK_HOST: ${FERRUM_LINK_HOST:-}
       # Days a removed address still serves the people signed in there (0: none).
       FERRUM_HOST_LEAVING_DAYS: ${FERRUM_HOST_LEAVING_DAYS:-14}
+      # How a domain of a workspace's own is proven (points or record; empty: record with a base domain), and the DNS
+      # servers asked for its record (empty: the system's).
+      FERRUM_DOMAIN_PROOF: ${FERRUM_DOMAIN_PROOF:-}
+      FERRUM_DNS_RESOLVERS: ${FERRUM_DNS_RESOLVERS:-}
       # Zones (docs/operations.md): empty admits everyone everywhere, as before.
       FERRUM_ZONES: ${FERRUM_ZONES:-}
       FERRUM_ZONE: ${FERRUM_ZONE:-}

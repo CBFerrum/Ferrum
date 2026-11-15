@@ -435,6 +435,7 @@ async fn names_and_what_addresses_show(k: &Kernel) {
         home: home.map(str::to_string),
         apps: apps.map(|a| a.iter().map(|s| s.to_string()).collect()),
         label: label.map(str::to_string),
+        forward: false,
     };
 
     // A name under the base: its own form, live at once, a certificate on demand, what it shows kept with it.

@@ -775,45 +775,62 @@ domains](operations.md#custom-domains)). What a `shell` address shows chooses wh
 lists there, never what opens: every app opens on every `shell` address, and only the operator puts an address in a
 zone.
 
-* `GET /api/admin/domains` → `{domains: [{host, kind, target, primary, is_primary, status, zone, home, apps, label,
-  base_name, can: {edit, remove, make_primary}, verify_token, verified_at, checked_at, failures, released_at,
-  leaving_until, created_at}], point_to, sites: [{app, title}], base, name_form, reserved_names, homes: [{id, name,
-  route}], limits: {addresses, paths}, used: {addresses, paths}}`.
+* `GET /api/admin/domains` → `{domains: [{host, kind, target, primary, is_primary, status, waiting, record, zone, home,
+  apps, label, forward, base_name, can: {edit, remove, make_primary}, verify_token, verified_at, proved_at, checked_at,
+  failures, released_at, leaving_until, redirecting, created_at}], point_to, proof, sites: [{app, title}], base,
+  name_form, reserved_names, homes: [{id, name, route}], limits: {addresses, paths}, used: {addresses, paths},
+  read_only, leaving_days}`.
   * `kind`: `subdomain` (the workspace's `{slug}.{base}`, or a name it gave itself under the base, which has
     `base_name`), `custom` (a domain of its own) or `operator` (the operator's, `ferrum task add_host`). `target`:
     `shell`, `portal` or `site:{app}`. `primary` (and, as before, `is_primary`): the main address of its target.
     `status`: `verified`, `pending`, `failing`, `leaving` or `released`. `zone`: the zone's name, or `null`; read only.
+    `redirecting`, for a removed address: `true` while it still sends visitors on (its leaving period, then 90 days),
+    `false` once it no longer answers; `null` for a live one.
+  * `read_only` (top level): `null`, or why every change is refused now, `closed` or `restricted`. `leaving_days`: how
+    long a removed address keeps serving those signed in there (`FERRUM_HOST_LEAVING_DAYS`; 0: none), so that the day
+    it stops can be named before removing it.
+  * A domain of the workspace's own: `proof` (top level) is what one needs before it works, `points` or `record`
+    (`FERRUM_DOMAIN_PROOF`). One that does not work yet has `waiting`: `domain` until a check finds it pointing here,
+    then `record` while its record is missing (its `status` then stays `pending`, not `failing`); else `null`. Where
+    `proof` is `record`, one never proven by its record has `record: {name: "_ferrum.{host}", type: "TXT", value:
+    "ferrum-domain={verify_token}"}`, the record its owner adds; else `null`. `proved_at`: when its record proved it.
   * `home`, `apps`, `label`: what a `shell` address shows (`null`: Home, every app, no name), naming only apps the
-    caller's zone shows.
+    caller's zone shows. `forward`: it serves nothing and sends each page on to the main address, `/` to `home` there
+    ([operations](operations.md#addresses-of-a-workspace), Forwarding addresses); a live one with `leaving_until` still
+    serves those signed in there until then.
   * `can`: `edit` (a live `shell` address that is not the operator's), `remove` (a live custom domain or name under
-    the base), `make_primary` (a live, working address that is not the main one).
+    the base), `make_primary` (a live, working address that is not the main one nor forwarding).
   * `base`: the base domain, or `null`; `name_form`: the form a new name takes there (`{name}--acme.ferrum.cloud`), or
     `null` without a base. `reserved_names`: names refused. `homes`: the apps that can be a `home` or be in `apps`,
     those with a launcher route that the caller's zone shows. `limits` and `used`: addresses (live, every kind; the
     plan's `addresses` quota, else 20) and short paths (50). `sites`: the apps here with a public site.
-* `POST /api/admin/domains` `{host, target?, home?, apps?, label?}` adds a domain of the workspace's own (verified
-  before it works); `{name, target?, home?, apps?, label?}` a name under the base domain, `{name}--{slug}.{base}`, live
+* `POST /api/admin/domains` `{host, target?, home?, apps?, label?, forward?}` adds a domain of the workspace's own (verified
+  before it works; one a deleted workspace had, or removed less than a year after its leaving period: `409`); `{name, target?, home?, apps?, label?}` a name under the base domain, `{name}--{slug}.{base}`, live
   at once (the name is 1 to 30 lowercase letters, digits and single hyphens; one that is an app's id is refused where
   the apps base is the base domain). `target` is `shell` unless given, a `site:{app}` only for one of `sites`; `home`,
   `apps` and `label` only for `shell`, `home` and each of `apps` one of `homes`, at most 50 apps, `label` 1 to 40
-  characters. → `201` and the address as the list shows it. `zone` is refused (`422`): only the operator puts an
+  characters; `forward` (default `false`) only for `shell`, without `apps` or `label`, and only while the workspace has a
+  main address. → `201` and the address as the list shows it. `zone` is refused (`422`): only the operator puts an
   address in a zone. Past the limit: `422`, "a workspace has at most N addresses".
-* `PATCH /api/admin/domains/{host}` `{home?, apps?, label?}` changes what a live `shell` address shows: a key left out
-  stays, `null` clears it (`apps: null` lists every app). → the address as the list shows it. `zone` or any other key:
+* `PATCH /api/admin/domains/{host}` `{home?, apps?, label?, forward?}` changes what a live `shell` address shows: a key left
+  out stays, `null` clears it (`apps: null` lists every app); `forward` is `true` or `false`, never on the main address
+  (`422`), and one that served starts forwarding after its leaving period (`leaving_until`). → the address as the list shows it. `zone` or any other key:
   `422`. An operator's address: `403`, "this address is the operator's: only the operator changes or removes it".
 * `DELETE /api/admin/domains/{host}` removes a custom domain or a name under the base → `{host, leaving_until}`: one in
   use keeps serving the people signed in there until `leaving_until`, then redirects (`null`: it stopped at once, being
   never verified or with `FERRUM_HOST_LEAVING_DAYS=0`); the main address hands its place to another of the workspace's
   first. (Before, this answered `204`.) An operator's address: `403`; the workspace's own subdomain: `404`.
-* `PUT …/{host}/primary` makes a working one the main address of its kind; `POST …/{host}/check` checks a custom
-  domain now → `{host, answers}`.
-* `GET /api/admin/paths` → `{paths: [{alias, target, works}], limit: 50, taken}`: the workspace's short paths
-  (`works`: false once an app has taken the segment, whose page then opens there), and `taken`, the first segments the
+* `PUT …/{host}/primary` makes a working one the main address of its kind (a forwarding one: `422`); `POST …/{host}/check` checks a custom
+  domain now, that it points here and, where `proof` is `record`, its record → `{host, answers, points, waiting}`:
+  `answers`, it works; `points`, it points here; `waiting` as in the list (`null` once it works).
+* `GET /api/admin/paths` → `{paths: [{alias, target, works, taken_by?}], limit: 50, taken}`: the workspace's short paths
+  (`works`: false once an app has taken the segment, whose page then opens there; `taken_by` then names that app when
+  it is compiled in or the caller's zone shows it, else `null`), and `taken`, the first segments the
   server keeps and the routes of the apps here and compiled in. `PUT /api/admin/paths` `{paths: [{alias, target}]}`
   replaces the whole list → `{paths}`. An alias: 2 to 30 lowercase letters, digits and hyphens, starting with a letter,
   not one of `taken`, given once. A target: `/`, `/data/…`, `/store/…`, `/admin/…`, `/account/…`, `/open/…` or a path
   under the route of one of the workspace's apps; never `/portal/…`, sign-in, the API, another host or a `#` part. At
-  most 50. A refusal (`422`) names the alias at fault.
+  most 50. A refusal (`422`) names the alias at fault, and its place in the list (`fields[0].row`: `["paths", index]`).
 * While the workspace is closed or restricted, every change is refused (`403`). Every change is on the audit trail
   (category `administration`: `WorkspaceDomain` `add`, `shape` with `before` and `after`, `remove`, `primary`;
   `WorkspacePaths` `set` with `before` and `after`).

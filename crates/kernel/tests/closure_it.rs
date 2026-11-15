@@ -81,10 +81,11 @@ async fn workspace(k: &Kernel, slug: &str) -> (Uuid, Ctx) {
 }
 
 /// What is left of a workspace in any table, by any column that names one.
+/// What is left of a workspace: every row that names it but the record that its slug is retired, which outlives it.
 async fn left_of(k: &Kernel, tenant: Uuid) -> i64 {
     let tables: Vec<String> = sqlx::query_scalar(
         "select c.table_name::text from information_schema.columns c join information_schema.tables t using (table_schema, table_name) \
-         where c.table_schema = 'public' and c.column_name = 'tenant_id' and t.table_type = 'BASE TABLE'",
+         where c.table_schema = 'public' and c.column_name = 'tenant_id' and t.table_type = 'BASE TABLE' and c.table_name <> 'tenant_slug_retired'",
     )
     .fetch_all(&k.db.pool)
     .await
@@ -131,6 +132,23 @@ async fn scenario() {
         .execute(&k.db.pool)
         .await
         .unwrap();
+    // Its addresses: its subdomain, a domain of its own that works, one it removed, one that never worked; and a slug it
+    // gave up when it was renamed for a while.
+    k.add_subdomain(acme, "acme.closure.test").await.unwrap();
+    for host in ["erp.acme.example", "old.acme.example", "try.acme.example"] {
+        k.add_host(&admin, host, "shell").await.unwrap();
+    }
+    k.host_checked("erp.acme.example", true).await.unwrap();
+    k.host_checked("old.acme.example", true).await.unwrap();
+    let old_until = k.remove_host(&admin, "old.acme.example").await.unwrap().expect("leaving");
+    let mut tx = k.db.system_tx().await.unwrap();
+    for slug in ["acme-inc", "acme"] {
+        sqlx::query("update tenant set slug = $2 where id = $1").bind(acme).bind(slug).execute(&mut *tx).await.unwrap();
+    }
+    // Back under its first slug, which renaming it away retired: as if it had never left it, so that the deletion is seen
+    // retiring the slug it has.
+    sqlx::query("delete from tenant_slug_retired where slug = 'acme'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
     let bravo_before = left_of(&k, bravo).await;
 
     let deleting = async |confirm: &str, apply: bool| k.delete_tenant("acme", confirm, apply, "the customer left, and the retention passed").await;
@@ -176,6 +194,11 @@ async fn scenario() {
     store.failing.store(true, Ordering::SeqCst);
     assert!(matches!(deleting("acme", true).await, Err(Error::Unavailable(m)) if m.contains("no row was")));
     assert!(left_of(&k, acme).await > 0, "everything is still there");
+    let kept_hosts = async || -> Vec<(String, chrono::DateTime<Utc>)> {
+        // Kept for no one: a deleted workspace never comes back, and its id is not kept with them.
+        sqlx::query_as("select host, until from host_quarantine where workspace is null order by host").fetch_all(&k.db.pool).await.unwrap()
+    };
+    assert!(kept_hosts().await.is_empty(), "and nothing is kept for it yet: its marks go with its rows, in one transaction");
     store.failing.store(false, Ordering::SeqCst);
     let done = deleting("acme", true).await.expect("deleted");
     as_superuser(&url, "revoke set on parameter session_replication_role from ferrum").await;
@@ -196,4 +219,29 @@ async fn scenario() {
         .unwrap();
     assert_eq!((&record["slug"], &record["files"]), (&json!("acme"), &json!(1)), "and a record that it happened");
     assert!(matches!(deleting("acme", false).await, Err(Error::NotFound(_))));
+
+    // Its addresses are kept from every other workspace as released ones are, a year from now or from the end of a removed
+    // one's leaving period; a domain that never worked is free. Its slugs, which named its addresses, are never another's.
+    let kept = kept_hosts().await;
+    let hosts: Vec<&str> = kept.iter().map(|(h, _)| h.as_str()).collect();
+    assert_eq!(hosts, ["acme.closure.test", "erp.acme.example", "old.acme.example"]);
+    let year = |from: chrono::DateTime<Utc>, until: chrono::DateTime<Utc>| (until - from - Duration::days(365)).num_seconds().abs() < 120;
+    assert!(year(Utc::now(), kept[1].1) && year(old_until, kept[2].1), "{kept:?}");
+    for host in ["erp.acme.example", "old.acme.example", "acme.closure.test"] {
+        let taken = k.add_host(&theirs, host, "shell").await;
+        assert!(matches!(&taken, Err(Error::Conflict(m)) if m.contains("recently")), "{host}: {taken:?}");
+    }
+    k.add_host(&theirs, "try.acme.example", "shell").await.expect("never worked: free");
+    for slug in ["acme", "acme-inc"] {
+        let again = NewTenant {
+            slug: slug.into(),
+            name: "Acme again".into(),
+            admin_email: "a@again.test".into(),
+            admin_password: "Correct-Horse-9".into(),
+            admin_name: None,
+            packages: vec![],
+            settings: None,
+        };
+        assert!(k.create_tenant(again).await.is_err(), "{slug} stays retired");
+    }
 }

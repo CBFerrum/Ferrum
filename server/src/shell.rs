@@ -619,7 +619,9 @@ impl Shell {
                         t => Place::Site(tenant, t.strip_prefix("site:").unwrap_or_default().to_string()),
                     });
                 }
-                HostRoute::Moved { to, .. } => return Ok(Place::Moved(to)),
+                // A forwarding address serves nothing: to every page of the shell it is as one that moved, sending people on
+                // (crate::app's `forwarding` answers each of its requests before any of this, the same way).
+                HostRoute::Moved { to, .. } | HostRoute::Forward { to, .. } => return Ok(Place::Moved(to)),
                 // Its leaving period: still the workspace's for a browser that comes signed in (the session is
                 // checked as anywhere, and must be the workspace's); everyone else goes on as if it had moved,
                 // so nobody starts anything there. A site has no sessions.

@@ -54,6 +54,8 @@ yrs = "=0.28.0"
 ammonia = "4.2"
 # Documents as Word files (coedit/docx.rs).
 zip = { version = "9", default-features = false, features = ["deflate"] }
+# The DNS record that proves a domain of a workspace's own (shell.rs, `domain_record`): TXT lookups, no cache kept.
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "system-config"] }
 
 [dev-dependencies]
 tokio = { workspace = true }
