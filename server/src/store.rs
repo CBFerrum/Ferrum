@@ -875,6 +875,7 @@ impl Bucket {
             ok(put("?encryption", Some(body.into())).await?, "turning encryption on")?;
             done.push("turned default encryption on");
         }
+        SET_UP.store(true, Ordering::SeqCst);
         Ok(done)
     }
 }
@@ -948,17 +949,42 @@ pub fn handoff_path() -> std::path::PathBuf {
     }
 }
 
-/// The keys in [`HANDOFF`], by the setting each is (`aws_access_key_id`, `aws_secret_access_key`), when the file is there.
-pub fn handed_over() -> Vec<(&'static str, ferrum_kernel::vault::Zeroizing<String>)> {
-    let Ok(text) = std::fs::read_to_string(handoff_path()) else { return vec![] };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-        tracing::error!("{} is not the object store's keys as JSON: not used", handoff_path().display());
-        return vec![];
-    };
-    ["aws_access_key_id", "aws_secret_access_key"]
+/// What the bundled store handed over at its first start: its keys, by the setting each is (`aws_access_key_id`,
+/// `aws_secret_access_key`), and whether the bucket is this installation's alone, for the server to make and set up
+/// (`set_up_bucket`; only the store Compose bundles says so, so that a bucket of an installation's own is never changed
+/// unasked).
+#[derive(Default)]
+pub struct Handoff {
+    pub keys: Vec<(&'static str, ferrum_kernel::vault::Zeroizing<String>)>,
+    pub set_up_bucket: bool,
+}
+
+/// [`Handoff`] from the file's text; `None` when it is not JSON.
+pub fn parse_handoff(text: &str) -> Option<Handoff> {
+    let v = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let keys = ["aws_access_key_id", "aws_secret_access_key"]
         .into_iter()
         .filter_map(|k| Some((k, ferrum_kernel::vault::Zeroizing::new(v[k].as_str().filter(|s| !s.is_empty())?.to_string()))))
-        .collect()
+        .collect();
+    Some(Handoff { keys, set_up_bucket: v["set_up_bucket"] == serde_json::json!(true) })
+}
+
+/// [`HANDOFF`], when the file is there.
+pub fn handed_over() -> Option<Handoff> {
+    let text = std::fs::read_to_string(handoff_path()).ok()?;
+    let handoff = parse_handoff(&text);
+    if handoff.is_none() {
+        tracing::error!("{} is not the object store's keys as JSON: not used", handoff_path().display());
+    }
+    handoff
+}
+
+/// Whether this process has made and set up the bucket (`s3_set_up_bucket`, or the bundled store's handoff asking for
+/// it): until it has, the handoff's file stays, and the next start tries again.
+static SET_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn bucket_set_up() -> bool {
+    SET_UP.load(Ordering::SeqCst)
 }
 
 #[cfg(test)]
@@ -993,6 +1019,19 @@ mod tests {
     }
 
     #[test]
+    fn only_the_bundled_store_asks_for_its_bucket_to_be_set_up() {
+        let bundled = parse_handoff(r#"{"aws_access_key_id":"FERRUMAB","aws_secret_access_key":"s3cr3t","set_up_bucket":true}"#).unwrap();
+        assert!(bundled.set_up_bucket);
+        assert_eq!(
+            bundled.keys.iter().map(|(k, v)| (*k, v.as_str())).collect::<Vec<_>>(),
+            [("aws_access_key_id", "FERRUMAB"), ("aws_secret_access_key", "s3cr3t")]
+        );
+        let keys_only = parse_handoff(r#"{"aws_access_key_id":"A","aws_secret_access_key":"B"}"#).unwrap();
+        assert!(!keys_only.set_up_bucket, "without the store saying so, a bucket is never changed");
+        assert!(!parse_handoff(r#"{"set_up_bucket":"yes"}"#).unwrap().set_up_bucket);
+        assert!(parse_handoff("not json").is_none());
+    }
+
     #[test]
     fn the_lag_against_the_backups_reach() {
         use ferrum_kernel::doctor::Level;

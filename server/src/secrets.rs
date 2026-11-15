@@ -91,7 +91,7 @@ pub async fn at_start(db: &Db, hooks: &HookRegistry, platform: &Vault, config: &
         let found = platform.reveal_at_start(db, hooks, &def.key).await.map_err(|e| format!("{} in the vault: {e}", def.key))?;
         let Some((value, rule)) = found else {
             // The keys a bundled store handed over at its first start, until the vault keeps them (adopt_handoff).
-            if let Some((_, text)) = crate::store::handed_over().into_iter().find(|(k, _)| *k == def.key) {
+            if let Some((_, text)) = crate::store::handed_over().into_iter().flat_map(|h| h.keys).find(|(k, _)| *k == def.key) {
                 out.values.insert(def.key.clone(), text);
             }
             continue;
@@ -165,15 +165,16 @@ pub async fn adopt(st: &AppState, env: &(dyn Fn(&str) -> Option<String> + Sync))
 
 /// The keys a bundled store handed over at its first start (crate::store::HANDOFF, deploy/docker-compose.yml), stored in
 /// the vault once, as `adopt` stores the environment's; the file is then deleted, so that the vault alone keeps them
-/// here. Kept while the vault is closed or a key could not be stored (the next start tries again). The keys stored.
+/// here. Kept while the vault is closed, a key could not be stored, or the bucket the store asked to have set up is not
+/// yet (the next start tries again). The keys stored.
 pub async fn adopt_handoff(st: &AppState) -> Vec<String> {
-    let keys = crate::store::handed_over();
-    if keys.is_empty() || !st.vault_open {
+    let Some(handoff) = crate::store::handed_over() else { return Vec::new() };
+    if handoff.keys.is_empty() || !st.vault_open {
         return Vec::new();
     }
     let snapshot = &st.live_settings.start.snapshot;
-    let (mut stored, mut all) = (Vec::new(), true);
-    for (key, text) in keys {
+    let (mut stored, mut all) = (Vec::new(), !handoff.set_up_bucket || crate::store::bucket_set_up());
+    for (key, text) in handoff.keys {
         let Some(def) = find(key) else { continue };
         let (value, rule) = kept(def, text.trim(), snapshot);
         match st.vault.adopt(&st.kernel, Scope::Installation, key, value, rule, "object store").await {

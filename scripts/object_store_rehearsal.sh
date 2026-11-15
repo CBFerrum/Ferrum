@@ -164,9 +164,10 @@ end "$A_PID"
 step "the bundled store's first start (deploy/store/start.sh, SeaweedFS), its keys handed over"
 store_up
 [ -f "$work/run/object-store/keys.json" ] || fail "the store's first start handed over no keys"
+grep -q '"set_up_bucket":true' "$work/run/object-store/keys.json" || fail "the bundled store does not ask for its bucket to be set up"
 
 step "two servers set to the store, files moving: each reads what the other wrote, and the directory's files"
-serve "${NAME}_live" "$A_PORT" a "${STORE[@]}" FERRUM_S3_SET_UP_BUCKET=true || fail "server A did not start on the store"
+serve "${NAME}_live" "$A_PORT" a "${STORE[@]}" || fail "server A did not start on the store"
 A_PID=$SERVED
 grep -q "files are moving from the local directory" "$work/a.log" || fail "no warning that files are moving"
 for _ in $(seq 1 30); do [ -f "$work/run/object-store/keys.json" ] || break; sleep 1; done

@@ -444,8 +444,9 @@
   doc: >-
     `true`: at start, make the bucket when it is missing, and turn on what the doctor looks for when the bucket has
     none of it: versioning, lifecycle rules (old versions end after `backup_reach_days`, 30 when not set; unfinished
-    uploads after a day) and default encryption. Never replaces a bucket's own rules. For a store this installation
-    alone uses, such as the one Compose bundles; its keys need the right to change the bucket's configuration.
+    uploads after a day) and default encryption. Never replaces a bucket's own rules. The store Compose bundles asks
+    for this itself at its first start; a bucket of your own is changed only when this is set, with keys allowed to
+    change its configuration.
 - key: files_delete_after_days
   env: FERRUM_FILES_DELETE_AFTER_DAYS
   type: int

@@ -80,7 +80,8 @@ services:
       FERRUM_ZONE_MODE: ${FERRUM_ZONE_MODE:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Files go to the bundled object store (the `store` service below; docs/operations.md, "Object storage"). Its keys
-      # are made at its first start and kept in the server's vault. Another store: set FERRUM_S3_BUCKET,
+      # are made at its first start and kept in the server's vault, and the server sets its bucket up then (versioning,
+      # lifecycle rules, encryption); a store of your own is never changed unasked. Another store: set FERRUM_S3_BUCKET,
       # FERRUM_S3_ENDPOINT, FERRUM_S3_REGION, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and STORE_REPLICAS=0.
       # An installation from before keeps reading its files from the `files` volume until `ferrum task files_move`.
       FERRUM_REQUIRE_OBJECT_STORAGE: ${FERRUM_REQUIRE_OBJECT_STORAGE:-false}
@@ -93,9 +94,6 @@ services:
       FERRUM_S3_BUCKET: ${FERRUM_S3_BUCKET:-ferrum}
       FERRUM_S3_ENDPOINT: ${FERRUM_S3_ENDPOINT:-http://store:8333}
       FERRUM_S3_REGION: ${FERRUM_S3_REGION:-us-east-1}
-      # Makes the bucket with versioning, lifecycle rules and encryption where it has none (false for a store of your own
-      # whose configuration you keep yourself).
-      FERRUM_S3_SET_UP_BUCKET: ${FERRUM_S3_SET_UP_BUCKET:-true}
       # Days a deleted file stays in the store, and how far back your database dumps reach (docs/operations.md, "Backups
       # of files"); 0, 0: at once, not said.
       FERRUM_FILES_DELETE_AFTER_DAYS: ${FERRUM_FILES_DELETE_AFTER_DAYS:-0}

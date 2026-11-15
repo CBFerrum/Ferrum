@@ -360,8 +360,9 @@ impl Hooks for App {
         }
         let releases = Arc::new(crate::store::Releases::new(kernel.db.clone(), settings.files_delete_after_days));
         let objects = Arc::new(objects.with_releases(releases));
-        // The bucket made and protected where the settings ask (the store Compose bundles).
-        if settings.s3_set_up_bucket && !guest {
+        // The bucket made and protected where the settings ask, or where the store Compose bundles asks at its first start
+        // (its handoff): never a bucket of an installation's own unasked.
+        if (settings.s3_set_up_bucket || crate::store::handed_over().is_some_and(|h| h.set_up_bucket)) && !guest {
             match crate::store::Bucket::new(&settings) {
                 Ok(Some(bucket)) => match bucket.set_up(crate::store::keep_versions_days(&settings)).await {
                     Ok(done) if !done.is_empty() => tracing::info!(done = %done.join(", "), "set up the object store's bucket"),

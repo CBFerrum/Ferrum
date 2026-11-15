@@ -4,8 +4,8 @@
 #
 # Its first start makes, in the store's own volume, an access key for the Ferrum server and the key that encrypts what
 # the store keeps (SSE-S3), and hands the access key to the server once, in a volume only the two share
-# (keys.json): the server keeps it in its vault and deletes the file. Nothing is typed into deploy/.env. The server
-# makes the bucket, with versioning, lifecycle rules and default encryption (FERRUM_S3_SET_UP_BUCKET).
+# (keys.json): the server keeps it in its vault and deletes the file. Nothing is typed into deploy/.env. The handoff
+# also asks the server to make the bucket, with versioning, lifecycle rules and default encryption.
 # Then the store runs: S3 on the network, its master, volume server and filer inside the container alone.
 #
 # Settings, for running it elsewhere (scripts/object_store_rehearsal.sh runs it with the store's own binary):
@@ -24,7 +24,9 @@ if [ ! -f "$conf/s3.json" ]; then
   hex 32 >"$conf/kek"
   printf '{"identities":[{"name":"ferrum","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}\n' \
     "$id" "$secret" >"$conf/s3.json.new"
-  printf '{"aws_access_key_id":"%s","aws_secret_access_key":"%s"}\n' "$id" "$secret" >"$handoff/keys.json.new"
+  # set_up_bucket: this store is the installation's alone, so the server makes the bucket with versioning, lifecycle
+  # rules and encryption (a store of an installation's own is never changed unasked).
+  printf '{"aws_access_key_id":"%s","aws_secret_access_key":"%s","set_up_bucket":true}\n' "$id" "$secret" >"$handoff/keys.json.new"
   # The server reads the file and then deletes it: its user owns both (as root here), or, run as one user, it is that user.
   chown "${STORE_OWNER:-10001}" "$handoff" "$handoff/keys.json.new" 2>/dev/null || true
   mv "$handoff/keys.json.new" "$handoff/keys.json"
