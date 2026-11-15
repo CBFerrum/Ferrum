@@ -174,7 +174,8 @@ pub async fn started_elsewhere(
     query: Option<&str>,
     state: Option<&str>,
 ) -> ApiResult<Option<String>> {
-    let Some((tenant, host)) = state.filter(|s| s.len() <= 1024).and_then(|s| k.connection_state_host(s)) else { return Ok(None) };
+    let Some(state) = state.filter(|s| s.len() <= 1024) else { return Ok(None) };
+    let Some((tenant, host)) = k.connection_state_host(state).await else { return Ok(None) };
     let here = crate::shell::request_host(headers).and_then(ferrum_kernel::shell::normalize_host);
     if here.as_deref() == Some(host.as_str()) || shell.workspace_at(&host).await? != Some(tenant) {
         return Ok(None);

@@ -146,10 +146,12 @@
   path: settings.secret_key
   secret: true
   doc: >-
-    Required. Base64 of exactly 32 random bytes: `openssl rand -base64 32`, or that key as a key-management service's
-    ciphertext (`vault:v1:…`, [below](#the-secret-key-from-a-key-management-service)). Seals secret fields (mail
-    passwords, API keys) and plugins' settings (payment gateways' keys among them) with AES-256-GCM; every replica
-    needs the same key. Back it up: values sealed with a lost key must be entered again.
+    The old master key. A new installation leaves it out: where the vault opens, the vault keeps and keys everything.
+    One that has it keeps it until `ferrum task legacy_key` says it may go ([Retiring the old key](#retiring-the-old-key));
+    where the vault cannot open, production requires it. Base64 of exactly 32 random bytes (`openssl rand -base64 32`),
+    or that key as a key-management service's ciphertext (`vault:v1:…`,
+    [below](#the-secret-key-from-a-key-management-service)); every replica needs the same key. Back it up while you
+    keep backups taken with it: values sealed with a lost key must be entered again.
 - key: secret_key_command
   env: FERRUM_SECRET_KEY_COMMAND
   path: settings.secret_key_command

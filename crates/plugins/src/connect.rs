@@ -19,13 +19,13 @@ pub struct PluginConnectors(pub Arc<PluginHost>);
 #[async_trait]
 impl ConnectorSource for PluginConnectors {
     async fn find(&self, k: &Kernel, tenant: Uuid, provider: &str) -> Result<Option<Arc<dyn Connector>>> {
-        let plugins = self.0.plugins(&k.db, tenant).await?;
+        let plugins = self.0.plugins(k, tenant).await?;
         let plugin = plugins.iter().find(|p| p.name == provider && p.manifest.connector.is_some());
         Ok(plugin.map(|p| Arc::new(PluginConnector { host: self.0.clone(), plugin: p.clone() }) as Arc<dyn Connector>))
     }
 
     async fn list(&self, k: &Kernel, tenant: Uuid) -> Result<Vec<ConnectorInfo>> {
-        Ok(self.0.plugins(&k.db, tenant).await?.iter().filter_map(info_of).collect())
+        Ok(self.0.plugins(k, tenant).await?.iter().filter_map(info_of).collect())
     }
 }
 

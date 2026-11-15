@@ -1,11 +1,13 @@
 //! A short-lived public address of a stored file, for a service that pulls media by address rather than taking bytes
 //! (BD-64): an operation's `public_files` gives its templates `public_files.<name>`, good for one file, for a while,
 //! readable without signing in at `{PUBLIC_URL}/files/pull/{id}?s={signature}`, and recorded with the call it was made
-//! for. The signature is an HMAC of the address's id under the server's key, so the address cannot be changed to reach
-//! anything else; the row says which file, until when, and whether it was ended early.
+//! for. The signature is an HMAC of the address's id under the workspace's key for these addresses (the platform's, from
+//! the vault: crate::vault::keyed), so the address cannot be changed to reach anything else; the row says which file,
+//! until when, and whether it was ended early.
 
 use super::{Loaded, More, render};
 use crate::error::{Error, Result};
+use crate::vault::{Keyed, Scope};
 use crate::{Ctx, Kernel};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -79,10 +81,8 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 impl Kernel {
-    fn address_signature(&self, id: Uuid) -> Result<String> {
-        let key = self
-            .keyed("file_address")
-            .ok_or_else(|| Error::Unavailable("a public address of a file needs the server's secret key (FERRUM_SECRET_KEY)".into()))?;
+    async fn address_signature(&self, tenant: Uuid, id: Uuid) -> Result<String> {
+        let (_, key) = self.making_key(Scope::Workspace(tenant), Keyed::FileAddress).await?;
         Ok(key.fingerprint("pulled-file", &id.to_string()))
     }
 
@@ -155,7 +155,7 @@ impl Kernel {
                 }
             };
             tx.commit().await?;
-            out.insert(name.clone(), json!(format!("{base}{PULL_PATH}{id}?s={}", self.address_signature(id)?)));
+            out.insert(name.clone(), json!(format!("{base}{PULL_PATH}{id}?s={}", self.address_signature(conn.tenant, id).await?)));
             if p.end_with_call {
                 ends.push(id);
             }
@@ -178,11 +178,11 @@ impl Kernel {
         Ok(())
     }
 
-    /// The file an address leads to, for anyone holding it: its signature right, not ended, not past its time, its
-    /// workspace active. Anything else is not found, alike.
+    /// The file an address leads to, for anyone holding it: its signature right (under any key of the workspace's that
+    /// made one), not ended, not past its time, its workspace active. Anything else is not found, alike.
     pub async fn pulled_file(&self, id: Uuid, signature: &str) -> Result<Pulled> {
         let gone = || Error::NotFound("file".into());
-        if self.settings.secret_key.is_none() || !same(&self.address_signature(id)?, signature) {
+        if signature.len() != 64 {
             return Err(gone());
         }
         let mut tx = self.db.system_tx().await?;
@@ -196,6 +196,10 @@ impl Kernel {
         .await?;
         tx.commit().await?;
         let (tenant, name, content_type, size, key) = row.ok_or_else(gone)?;
+        let id = id.to_string();
+        if !self.checking_keys(Scope::Workspace(tenant), Keyed::FileAddress).await?.iter().any(|(_, k)| same(&k.fingerprint("pulled-file", &id), signature)) {
+            return Err(gone());
+        }
         Ok(Pulled { tenant, name, content_type, size, key })
     }
 

@@ -38,10 +38,11 @@ storage:
   endpoint: ""  # MinIO, Cloudflare R2 and other S3-compatible stores: https://<account>.r2.cloudflarestorage.com
 
 # The name of a Secret you created. The chart creates none and holds no secret value. Keys:
-#   JWT_SECRET, FERRUM_SECRET_KEY, FERRUM_BOOTSTRAP_TOKEN, FERRUM_METRICS_TOKEN,
+#   JWT_SECRET, FERRUM_BOOTSTRAP_TOKEN, FERRUM_METRICS_TOKEN,
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # and, optional: FERRUM_CLAMAV_ADDR, FERRUM_CLAMAV_MAX_MB, FERRUM_CONNECTION_UPLOAD_MB, FERRUM_OPS_TELEMETRY_DAYS,
-#   FERRUM_RETIRED_SECRET_KEYS, FERRUM_OPERATOR_TOKEN (the settings routes for the Operations screen).
+#   FERRUM_SECRET_KEY and FERRUM_RETIRED_SECRET_KEYS (the old master key, where an installation still has it:
+#   docs/operations.md, "Retiring the old key"), FERRUM_OPERATOR_TOKEN (the settings routes for the Operations screen).
 secrets:
   existingSecret: ferrum-secrets
   # Optional: have the External Secrets Operator (installed separately) make that Secret from your

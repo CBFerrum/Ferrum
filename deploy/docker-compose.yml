@@ -48,7 +48,9 @@ services:
     environment:
       DATABASE_URL: postgres://ferrum:${FERRUM_DB_PASSWORD}@db:5432/ferrum
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (openssl rand -base64 48)}
-      FERRUM_SECRET_KEY: ${FERRUM_SECRET_KEY:?set FERRUM_SECRET_KEY (openssl rand -base64 32)}
+      # The old master key: a new installation leaves it out (the vault keeps and keys everything); one that has it keeps
+      # it until `ferrum task legacy_key` says it may go (docs/operations.md, "Retiring the old key").
+      FERRUM_SECRET_KEY: ${FERRUM_SECRET_KEY:-}
       FERRUM_RETIRED_SECRET_KEYS: ${FERRUM_RETIRED_SECRET_KEYS:-}
       FERRUM_CLAMAV_ADDR: ${FERRUM_CLAMAV_ADDR:-}
       FERRUM_CLAMAV_MAX_MB: ${FERRUM_CLAMAV_MAX_MB:-25}

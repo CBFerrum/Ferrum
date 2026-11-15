@@ -54,6 +54,7 @@
 //! ```
 
 pub(crate) mod kept;
+mod keyed;
 mod keys;
 mod root;
 mod scope;
@@ -61,6 +62,8 @@ mod seal;
 mod secrets;
 
 pub use kept::{LegacyKey, Moved};
+pub use keyed::OLD_KEY_FLOOR;
+pub(crate) use keyed::{Keyed, PLUGIN_VAULT, Ring, adopted_ids, at_boot, older_builds_refused, sealed_by_vault};
 pub(crate) use root::{CHANNEL, Root, finish};
 pub use root::{
     Opened, Opener, Printed, ROOT_FILE, RecoveryKey, Resealing, Rewrap, SlotKind, SlotStatus, Status, open, put_slot, remove_slot, rewrap,
@@ -198,6 +201,11 @@ impl Vault {
     /// says so, and why).
     fn bound(&self, k: &Kernel) -> Result<&str> {
         k.db.vault.installation()?;
+        self.given(k)
+    }
+
+    /// The owner, once `k` has checked that it gave this handle out, the vault open or not.
+    fn given(&self, k: &Kernel) -> Result<&str> {
         let ok = match &self.owner {
             Owner::App(id) => self.mint != 0 && k.hooks.vault_mint(id) == Some(self.mint),
             Owner::Kernel(o) => self.mint == 0 && (&**o == "platform" || o.strip_prefix("plugin:").is_some_and(plugin_name_ok)),
@@ -232,7 +240,7 @@ impl std::fmt::Debug for Derived {
 /// The most data [`Vault::seal`] takes at once.
 pub const MAX_SEALED: usize = 1 << 20;
 /// How what [`Vault::seal`] makes begins (and then the owner key's version).
-const SEALED_PREFIX: &str = "fv1.";
+pub(crate) const SEALED_PREFIX: &str = "fv1.";
 
 fn check_purpose(purpose: &str) -> Result<()> {
     let b = purpose.as_bytes();

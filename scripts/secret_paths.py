@@ -16,8 +16,9 @@ in (`cargo metadata`, as scripts/mutation_paths.py reads them), and checks:
 * no app has `unsafe` code, nor a cryptography crate of its own (one that keys, seals or signs: hashes alone are not
   counted), beyond what the baseline lists from before;
 * the master key (`secret_key`, `SecretKey`, `FERRUM_SECRET_KEY`, `open_sealed`, ...) is named outside the vault only
-  where the baseline says, no more often: the baseline may only shrink, and the slice that moves the stores into the
-  vault empties it;
+  where the baseline says, no more often, and each file that names it says why (`WHY`): the baseline may only shrink.
+  What is left reads the old key to adopt it into the vault, opens and writes the columns the previous build reads,
+  or makes what an older build checks while one may still run (docs/operations.md, "Retiring the old key");
 * no app reads past the vault more than the baseline says: `Kernel::secret` (deprecated: an app reads its own secret
   fields with its handle, `Vault::field`) and the old key itself (`settings.secret_key`, `retired_secret_keys`). These
   two tables are what the server names as still depending on the old key (`ferrum task legacy_key`, the doctor).
@@ -40,6 +41,30 @@ VAULT_TX = (
     "crates/kernel/migrations/20261119000401_vault_transfer.sql",
     "crates/kernel/migrations/20261119000501_vault_kept.sql",
 )
+# Why each file still names the master key (the old key, FERRUM_SECRET_KEY) outside the vault.
+WHY = {
+    "crates/kernel/src/approvals.rs": "a refusal names it: with the vault closed it still seals, as before",
+    "crates/kernel/src/connect.rs": "a refusal names it: with the vault closed it still seals, as before",
+    "crates/kernel/src/connections/mod.rs": "a refusal names it: with the vault closed it still seals, as before",
+    "crates/kernel/src/connections/oauth.rs": "a sign-in's state is made and checked with the key it is given (the vault's, or the old key while older builds may run)",
+    "crates/kernel/src/kms.rs": "unwraps the old key from a key-management service, where an installation still configures it",
+    "crates/kernel/src/lib.rs": "the settings that carry the old key to the kernel (adopted from them), and what apps that still read it are given",
+    "crates/kernel/src/messages.rs": "opt-out tokens and erased opt-outs are made with the key they are given (the vault's, or the old key); a refusal names it",
+    "crates/kernel/src/sandbox.rs": "a sandbox of another installation's workspace opens what that one's old keys sealed, and seals the previous build's columns",
+    "crates/kernel/src/secret.rs": "the old key itself: opens the previous build's columns, seals them while it is configured, rotates them",
+    "crates/kernel/src/sso.rs": "a refusal names it: with the vault closed it still seals, as before",
+    "crates/kernel/src/twofactor.rs": "a refusal names it: with the vault closed it still seals, as before",
+    "crates/kernel/src/webpush.rs": "what it says when the push key does not open names it",
+    "crates/kernel/src/workspace_move.rs": "a move opens what the source's old keys sealed, and seals the previous build's columns here",
+    "ferrum-app-commerce:gateways/stripe/src/lib.rs": "Stripe's own `secret_key` (the name of a plugin's credential), not the old key",
+    "ferrum-app-commerce:src/gift_card.rs": "asks whether the old key is set: moves to `Kernel::seals_secret_values` in its repository",
+    "ferrum-app-commerce:src/shopper.rs": "asks whether the old key is set: moves to `Kernel::seals_secret_values` in its repository",
+    "ferrum-app-pos:src/snapshot.rs": "signs snapshots with the old key: moves to a key of its own (`derive`) in its repository",
+    "server/src/app.rs": "reads the old keys from the environment for the kernel to adopt and for the previous build's columns",
+    "server/src/doctor.rs": "says whether the old key is set, and how",
+    "server/src/state.rs": "the old keys' settings",
+    "server/src/tasks.rs": "`kms_wrap` prints the old keys wrapped by the key-management service",
+}
 # Apps in this workspace (the rest come from their own repositories): their packages are compiled in as apps.
 WORKSPACE_APPS = {"ferrum-studio", "ferrum-ops"}
 
@@ -179,7 +204,7 @@ def read_baseline() -> tuple:
             elif section == OLD_KEYS:
                 old_key = {}
             continue
-        m = re.match(r"^\| `([^`]+)` \| (\S+) \|$", line)
+        m = re.match(r"^\| `([^`]+)` \| (\S+) \|(?: .* \|)?$", line)
         if not m:
             continue
         if section == "The master key outside the vault":
@@ -209,11 +234,12 @@ for a while, or reads it to move what it sealed, and goes as each moves.
 
 ## The master key outside the vault
 
-`FERRUM_SECRET_KEY` and what reads it, by file (an app's as `package:path`), not counting tests and comments.
+`FERRUM_SECRET_KEY` and what reads it, by file (an app's as `package:path`), not counting tests and comments, and why
+(`WHY` in scripts/secret_paths.py).
 
-| Where | Uses |
-|---|---|
-{rows([f"| `{k}` | {v} |" for k, v in sorted(master.items())])}
+| Where | Uses | Why |
+|---|---|---|
+{rows([f"| `{k}` | {v} | {WHY.get(k, '')} |" for k, v in sorted(master.items())])}
 
 ## Cryptography crates in apps
 
@@ -255,6 +281,7 @@ def main() -> int:
     refusals, master, crypto, unsafe, (readers, old_key) = scan(packages())
     base_master, base_crypto, base_unsafe, (base_readers, base_old) = read_baseline()
     grew = [f"{k}: names the master key {v} times, the baseline {base_master.get(k, 0)}" for k, v in sorted(master.items()) if v > base_master.get(k, 0)]
+    grew += [f"{k}: names the master key and says not why (WHY in scripts/secret_paths.py)" for k in sorted(master) if not WHY.get(k)]
     grew += [f"{a} uses the cryptography crate {c} itself, which the baseline does not list" for a, c in sorted(crypto - base_crypto)]
     grew += [f"{k}: {v} unsafe blocks in an app, the baseline {base_unsafe.get(k, 0)}" for k, v in sorted(unsafe.items()) if v > base_unsafe.get(k, 0)]
     # A table the baseline does not have yet is written once as found; from then on it only shrinks.

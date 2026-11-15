@@ -17,8 +17,8 @@ fn is_local(url: &str) -> bool {
     ["localhost", "127.0.0.1", "[::1]"].iter().any(|h| url.contains(h))
 }
 
-/// What can be said from settings alone.
-pub fn settings_findings(production: bool, jwt_secret: &str, st: &crate::state::Settings, public_url: &str) -> Vec<Finding> {
+/// What can be said from settings alone, and whether the vault opened as the server started.
+pub fn settings_findings(production: bool, jwt_secret: &str, st: &crate::state::Settings, public_url: &str, vault_open: bool) -> Vec<Finding> {
     let mut out = Vec::new();
     let blocker_in_production = |check, detail: &str, fix| if production { Finding::blocker(check, detail, fix) } else { Finding::warning(check, detail, fix) };
     out.push(if jwt_secret.len() < 32 || placeholder(jwt_secret) {
@@ -29,11 +29,15 @@ pub fn settings_findings(production: bool, jwt_secret: &str, st: &crate::state::
     out.push(if !st.secret_key_command.trim().is_empty() {
         Finding::ok("secrets.seal", "the secret key comes from FERRUM_SECRET_KEY_COMMAND")
     } else if st.secret_key.trim().is_empty() {
-        blocker_in_production(
-            "secrets.seal",
-            "FERRUM_SECRET_KEY is not set",
-            "Set it to `openssl rand -base64 32`, and keep it: secret fields cannot be read without it.",
-        )
+        // The old key: where the vault opens, nothing needs it (docs/operations.md, "Retiring the old key").
+        match vault_open {
+            true => Finding::ok("secrets.seal", "the old key is not set: the vault keeps and keys what the platform makes"),
+            false => blocker_in_production(
+                "secrets.seal",
+                "the old key is not set, and the vault is closed",
+                "Open the vault (docs/operations.md, \"The vault\"), or set FERRUM_SECRET_KEY to `openssl rand -base64 32` and keep it.",
+            ),
+        }
     } else if ferrum_kernel::kms::is_wrapped(&st.secret_key) {
         Finding::ok("secrets.seal", "FERRUM_SECRET_KEY is wrapped by the key-management service (FERRUM_KMS_TRANSIT)")
     } else {
@@ -247,7 +251,7 @@ pub async fn storage_findings(st: &AppState, production: bool) -> Vec<Finding> {
 /// Everything, worst first.
 pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, ferrum_kernel::Error> {
     let production = ctx.environment == Environment::Production;
-    let mut out = settings_findings(production, st.sessions.configured(), &st.settings, &ctx.config.server.host);
+    let mut out = settings_findings(production, st.sessions.configured(), &st.settings, &ctx.config.server.host, st.vault_open);
     crate::secrets::findings(st, &mut out).await;
     out.extend(database_settings_findings(st).await);
     out.extend(st.kernel.doctor(st.settings.db_max_connections).await?);
@@ -757,18 +761,21 @@ mod tests {
     #[test]
     fn unsafe_defaults_are_blockers_in_production_and_warnings_elsewhere() {
         let good = "x".repeat(40);
-        let fine = settings_findings(true, &good, &settings(), "https://erp.example.com");
+        let fine = settings_findings(true, &good, &settings(), "https://erp.example.com", false);
         assert!(fine.iter().all(|f| f.level == Level::Ok), "{fine:?}");
         let mut open = settings();
         open.webhooks_allow_private = true;
         open.secret_key = String::new();
         for (production, want) in [(true, Level::Blocker), (false, Level::Warning)] {
-            let f = settings_findings(production, "change-me-change-me-change-me-change-me", &open, "http://erp.example.com");
+            let f = settings_findings(production, "change-me-change-me-change-me-change-me", &open, "http://erp.example.com", false);
             for check in ["secrets.jwt", "secrets.seal", "network.public_url", "network.webhooks"] {
                 assert_eq!(level(&f, check), Some(want), "{check}");
             }
+            // Where the vault opens, the old key is not needed.
+            let f = settings_findings(production, &good, &open, "https://erp.example.com", true);
+            assert_eq!(level(&f, "secrets.seal"), Some(Level::Ok));
         }
-        assert_eq!(level(&settings_findings(false, &good, &settings(), "http://localhost:5150"), "network.public_url"), Some(Level::Warning));
+        assert_eq!(level(&settings_findings(false, &good, &settings(), "http://localhost:5150", true), "network.public_url"), Some(Level::Warning));
     }
 
     #[test]
@@ -778,7 +785,7 @@ mod tests {
         s.secret_key = secret.into();
         s.metrics_token = secret.into();
         s.bootstrap_token = secret.into();
-        let text = render(&settings_findings(true, secret, &s, "https://erp.example.com"));
+        let text = render(&settings_findings(true, secret, &s, "https://erp.example.com", true));
         assert!(!text.contains(secret), "{text}");
     }
 

@@ -24,7 +24,7 @@ impl EventSink for PluginEvents {
         if depth >= MAX_DEPTH as u64 {
             return Ok(());
         }
-        let plugins = self.0.plugins(&k.db, ev.tenant_id).await?;
+        let plugins = self.0.plugins(k, ev.tenant_id).await?;
         for p in plugins.iter().filter(|p| p.user_id.is_some() && p.manifest.subscribes(&ev.topic)) {
             let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
             let attempt: Option<i32> = sqlx::query_scalar(
