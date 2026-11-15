@@ -150,10 +150,29 @@ pub struct Stored {
 }
 
 impl Stored {
-    /// `def`'s row for a replica of `pool`: the installation's.
-    fn row(&self, def: &Def, _pool: &str) -> Option<&Row> {
-        self.rows.iter().find(|r| r.key == def.key && r.scope == "installation")
+    /// `def`'s row for a replica of `pool`: its pool's for a pool's own setting, else the installation's.
+    fn row(&self, def: &Def, pool: &str) -> Option<&Row> {
+        let (scope, name) = place(def, pool);
+        self.rows.iter().find(|r| r.key == def.key && r.scope == scope && r.scope_name == name)
     }
+}
+
+/// The pool of replicas whose address names none.
+pub const DEFAULT_POOL: &str = "default";
+
+/// The pool a replica is in (D1): `application_name=pool:<name>` in its database address names it; without one (or
+/// with another application name), `default`. A name that is not lower-case letters, digits and dashes is refused.
+pub fn pool_name(url: &str) -> Result<String, String> {
+    let named = reqwest::Url::parse(url).ok().and_then(|u| u.query_pairs().find(|(k, _)| k == "application_name").map(|(_, v)| v.into_owned()));
+    let Some(name) = named.as_deref().and_then(|a| a.strip_prefix("pool:")) else { return Ok(DEFAULT_POOL.into()) };
+    let plain = (1..=63).contains(&name.len())
+        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !name.starts_with('-')
+        && !name.ends_with('-');
+    if !plain {
+        return Err(format!("DATABASE_URL names the pool {name:?} (application_name=pool:...): a pool's name is lower-case letters, digits and dashes"));
+    }
+    Ok(name.to_string())
 }
 
 /// Reads the table over a pool of two connections of its own, closed again before the server opens its real pools.
@@ -559,6 +578,33 @@ mod tests {
         assert_eq!(pools, ["db_max_connections", "run_background", "zone"], "a pool's own: the connection budget, background work, the zone pin");
         assert_eq!(find("FERRUM_SESSION_DAYS").map(|d| d.key.as_str()), Some("session_days"), "found by variable or key");
         assert!(find("DATABASE_URL").is_none(), "the boot contract is not a setting");
+    }
+
+    #[test]
+    fn the_address_names_the_pool() {
+        assert_eq!(pool_name("postgres://u:p@db:5432/ferrum").unwrap(), "default");
+        assert_eq!(pool_name("postgres://u:p@db:5432/ferrum?sslmode=require&application_name=pool:web").unwrap(), "web");
+        assert_eq!(pool_name("postgres://u:p@db/ferrum?application_name=pool%3Abackground").unwrap(), "background", "as the address encodes it");
+        assert_eq!(pool_name("postgres://u:p@db/ferrum?application_name=main").unwrap(), "default", "another application name");
+        for bad in ["pool:Web", "pool:", "pool:-a", "pool:a_b"] {
+            assert!(pool_name(&format!("postgres://db/f?application_name={bad}")).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_pools_own_settings_come_from_its_row() {
+        let rows = vec![
+            Row { scope: "pool".into(), scope_name: "web".into(), key: "db_max_connections".into(), value: Some("40".into()), version: 1 },
+            Row { scope: "installation".into(), scope_name: String::new(), key: "db_max_connections".into(), value: Some("9".into()), version: 2 },
+            Row { scope: "pool".into(), scope_name: "web".into(), key: "session_days".into(), value: Some("2".into()), version: 3 },
+        ];
+        let table = Stored { rows, version: 3 };
+        let web = Snapshot::resolve(&table, "web", &|_| None);
+        assert_eq!(web.get("db_max_connections"), (Source::Database, Some("40")));
+        assert_eq!(web.get("session_days"), (Source::Default, None), "the installation's setting is read from the installation's row only");
+        assert_eq!(Snapshot::resolve(&table, "default", &|_| None).get("db_max_connections"), (Source::Default, None), "another pool's row");
+        let env = |name: &str| (name == "FERRUM_DB_MAX_CONNECTIONS").then(|| "12".to_string());
+        assert_eq!(Snapshot::resolve(&table, "web", &env).get("db_max_connections"), (Source::Environment, Some("12")), "the pool's environment still wins");
     }
 
     #[test]

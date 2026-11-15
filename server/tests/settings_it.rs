@@ -99,7 +99,34 @@ async fn scenario() {
     assert_eq!(third.settings.metrics_token, "", "a secret stays the environment's");
 
     adopted_once(&third).await;
+    pools(&third).await;
     third.kernel.db.close().await;
+}
+
+/// A replica's address names its pool, and a pool's rows hold its own connection budget, background work and zone.
+async fn pools(st: &AppState) {
+    row(st, "pool", "web", "db_max_connections", Some("7")).await;
+    row(st, "pool", "web", "run_background", Some("true")).await;
+    row(st, "pool", "other", "db_max_connections", Some("9")).await;
+    row(st, "installation", "", "db_max_connections", Some("11")).await;
+    let web = state(&replica(config(Some("pool:web"))).await);
+    assert_eq!(web.settings.db_max_connections, 7, "its pool's row");
+    assert_eq!(web.kernel.db.pool.options().get_max_connections(), 7, "and its pool is opened that size");
+    assert!(web.settings.run_background, "its row over the test file's false");
+    web.kernel.db.close().await;
+    let plain = state(&replica(config(Some("main"))).await);
+    assert_eq!(plain.settings.db_max_connections, 10, "no pool named: the default pool, which has no row; the file's 10");
+    assert!(!plain.settings.run_background, "the test file's");
+    plain.kernel.db.close().await;
+    let refused = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config(Some("pool:Web"))).build()).await;
+    let said = refused.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(said.contains("lower-case letters, digits and dashes"), "{said}");
+    let written = ferrum_server::settings::adopt(&st.kernel.db, "web", &|n: &str| (n == "FERRUM_ZONE").then(|| "office".to_string())).await.unwrap();
+    assert_eq!(written, ["zone"]);
+    let mut tx = st.kernel.db.system_tx().await.unwrap();
+    let at: (String, String) = sqlx::query_as("select scope, scope_name from setting where key = 'zone'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(at, ("pool".to_string(), "web".to_string()), "copied to the pool's own row");
 }
 
 /// What a variable says and the table does not hold is written once, however many replicas copy it at once; what the

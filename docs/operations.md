@@ -106,6 +106,12 @@ the text the variable would hold), and the server reads them as each replica sta
    empty behaves exactly as one configured by the environment alone.
 4. Only then does it check its host names and zones and open its real pools, sized by those settings.
 
+**Pools.** A replica's database address names its pool: `application_name=pool:<name>` (lower-case letters, digits
+and dashes; `DATABASE_URL=postgres://ferrum:…@db:5432/ferrum?application_name=pool:web`). Without one it is in the
+pool `default`. Three settings are each pool's own, in rows of their own (`scope` `pool`, `scope_name` the pool's
+name): `db_max_connections`, `run_background` and `zone`, the connection budget, background work and the zone pin. A
+pool's environment still sets them and wins, as the chart's pools do today (*Deployment shapes*).
+
 **Copied once.** As a replica starts to serve, each setting its environment sets and the table does not hold yet is
 written to the table, once, as the environment's (`updated_by` is `environment`; replicas starting together write it
 once, under one lock). An installation configured by its environment so ends with its settings in the table, and

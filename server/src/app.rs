@@ -147,9 +147,11 @@ impl Hooks for App {
         // connects, under the environment's, which still wins. They land where the file put the variables, so that
         // everything below reads them as before; Loco's mail sender, made from the file before this runs, is made again
         // when the table sets any of it.
+        // The address names the replica's pool (`application_name=pool:<name>`), whose rows hold its own settings.
+        let pool = crate::settings::pool_name(&ctx.config.database.uri).map_err(Error::Message)?;
         let stored = crate::settings::read(&ctx.config.database.uri).await.map_err(Error::Message)?;
         // (The installation's root, D3, is opened here: after the table is read, before its values are used.)
-        let snapshot = crate::settings::Snapshot::resolve(&stored, "default", &|name| std::env::var(name).ok());
+        let snapshot = crate::settings::Snapshot::resolve(&stored, &pool, &|name| std::env::var(name).ok());
         crate::settings::Base::of(&ctx.config).apply(&snapshot, &mut ctx.config).map_err(Error::Message)?;
         if snapshot.mailer_from_database() {
             ctx.mailer = crate::settings::mailer(&ctx.config)?;
@@ -431,7 +433,8 @@ impl Hooks for App {
         // R1: what the environment sets and the table does not hold yet is copied there once, as a replica starts to
         // serve (docs/operations.md, "Settings in the database"). A guest of a newer build's database writes nothing.
         if state.kernel.booted.guest.is_none() {
-            match crate::settings::adopt(&state.kernel.db, "default", &|name| std::env::var(name).ok()).await {
+            let pool = crate::settings::pool_name(&ctx.config.database.uri).map_err(Error::Message)?;
+            match crate::settings::adopt(&state.kernel.db, &pool, &|name| std::env::var(name).ok()).await {
                 Ok(written) if !written.is_empty() => {
                     tracing::info!(settings = %written.join(", "), "copied the settings the environment sets into the database")
                 }
