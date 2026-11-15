@@ -722,7 +722,7 @@ pub async fn render_for(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message, channel
     } else if promotional && k.opted_out(tx, ctx.tenant, channel, &address).await? {
         return Err(Error::Forbidden("opted out".into()));
     }
-    let opt_out = match (promotional, k.settings.secret_key.as_ref()) {
+    let opt_out = match (promotional, if promotional { k.keyed("opt_out") } else { None }) {
         (false, _) => None,
         (true, Some(key)) => {
             k.person_link(ctx.tenant, Outside, &format!("/api/messages/opt-out?token={}", opt_out_token(key, ctx.tenant, channel, &address))).await
@@ -831,7 +831,7 @@ impl Kernel {
 
     /// The marks an erased opt-out of `address` on `channel` may carry: under the server's key and those being rotated out.
     pub(crate) fn erased_marks(&self, tenant: Uuid, channel: &str, address: &str) -> Vec<String> {
-        self.secret_keys().map(|k| erased_mark(k, tenant, channel, address)).collect()
+        self.keyed_all("erased_opt_out").map(|k| erased_mark(k, tenant, channel, address)).collect()
     }
 }
 
@@ -898,7 +898,7 @@ fn secret_values<'a>(k: &'a Kernel, m: &Message) -> Result<(Vec<String>, Option<
         return Ok((masks, None));
     }
     let masks = encodings(&masks);
-    let key = k.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("a message with a secret value needs the server's secret key".into()))?;
+    let key = k.keyed("message_secrets").ok_or_else(|| Error::Unavailable("a message with a secret value needs the server's secret key".into()))?;
     Ok((masks, Some(key)))
 }
 
@@ -994,7 +994,7 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Ve
                     continue;
                 }
             };
-            let opt_out = match (&address, promotional, k.settings.secret_key.as_ref()) {
+            let opt_out = match (&address, promotional, if promotional { k.keyed("opt_out") } else { None }) {
                 (Some(a), true, Some(key)) => k
                     .person_link(ctx.tenant, Outside, &format!("/api/messages/opt-out?token={}", opt_out_token(key, ctx.tenant, ch, a)))
                     .await
@@ -1370,6 +1370,7 @@ pub(crate) fn masked(v: &Value, mask: &[String]) -> Value {
 impl Kernel {
     /// What a message with secret values holds sealed (`{message, mask}`, or a mail's `{subject, html, mask}`), opened.
     pub(crate) fn open_message(&self, tenant: Uuid, sealed: &Value) -> Result<(Value, Vec<String>)> {
+        self.note_old_key("keyed:message_secrets");
         let open: Value = serde_json::from_str(&self.open_sealed(&sealed_message(tenant), sealed.as_str().unwrap_or_default())?).map_err(Error::internal)?;
         let mask = open["mask"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
         Ok((open, mask))
@@ -1377,7 +1378,7 @@ impl Kernel {
 
     /// `plain` sealed as a message with secret values is.
     pub(crate) fn seal_message(&self, tenant: Uuid, plain: &Value) -> Result<String> {
-        let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("a message with a secret value needs the server's secret key".into()))?;
+        let key = self.keyed("message_secrets").ok_or_else(|| Error::Unavailable("a message with a secret value needs the server's secret key".into()))?;
         key.seal(&sealed_message(tenant), &plain.to_string())
     }
 }
@@ -1552,12 +1553,12 @@ impl Kernel {
             return Err(Error::field("description", p));
         }
         let id = id.unwrap_or_else(Uuid::now_v7);
-        let sealed = match &input.secrets {
         if input.secrets.is_some() && !self.kept_here() {
             return Err(Error::Unavailable("channel secrets need the vault or a configured secret key (FERRUM_SECRET_KEY)".into()));
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         // Kept in the transaction that saves the channel.
+        let sealed = match &input.secrets {
             Some(s) => Some(self.keep(&mut tx, &channel_place(ctx.tenant, id), &serde_json::to_string(s).map_err(Error::internal)?).await?),
             None => None,
         };
@@ -1609,8 +1610,8 @@ impl Kernel {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let n = sqlx::query("delete from message_channel where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?;
-        if n.rows_affected() == 0 {
         crate::vault::kept::forget(&mut tx, &channel_place(ctx.tenant, id)).await?;
+        if n.rows_affected() == 0 {
             return Err(Error::NotFound("message channel".into()));
         }
         audit::record_admin(&mut tx, ctx, "MessageChannel", id, "delete", None, json!({})).await?;
@@ -1830,7 +1831,7 @@ impl Kernel {
     pub async fn opt_out_by_link(&self, token: &str) -> Result<String> {
         use base64::Engine as _;
         let refused = || Error::invalid("this link is not one of ours, or was changed");
-        let key = self.settings.secret_key.as_ref().ok_or_else(refused)?;
+        let key = self.keyed("opt_out").ok_or_else(refused)?;
         let (said, sig) = token.split_once('.').ok_or_else(refused)?;
         let said = String::from_utf8(base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(said).map_err(|_| refused())?).map_err(|_| refused())?;
         if !subtle_eq(key.fingerprint("message opt-out", &said).as_bytes(), sig.as_bytes()) {

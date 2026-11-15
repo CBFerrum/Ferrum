@@ -844,6 +844,25 @@ impl Kernel {
         self.note_old_key_by(what, "");
     }
 
+    /// The old key, for what this release still keys or seals with it beside the vault (opt-out links, erased opt-outs'
+    /// marks, sign-ins to accounts, public addresses of files, connectors' accounts, receipts' secret parameters, messages
+    /// waiting): each use noted as `keyed:<what>` (`ferrum task legacy_key`).
+    pub(crate) fn keyed(&self, what: &str) -> Option<&crate::secret::SecretKey> {
+        let key = self.settings.secret_key.as_ref();
+        if key.is_some() {
+            self.note_old_key(&format!("keyed:{what}"));
+        }
+        key
+    }
+
+    /// The old key and those being rotated out, to check or open what one of them keyed or sealed: noted as [`Kernel::keyed`].
+    pub(crate) fn keyed_all(&self, what: &str) -> impl Iterator<Item = &crate::secret::SecretKey> {
+        if self.secret_keys().next().is_some() {
+            self.note_old_key(&format!("keyed:{what}"));
+        }
+        self.secret_keys()
+    }
+
     /// The move found nothing waiting: noted from now (kept since the first time), or forgotten when something waits.
     async fn note_all_moved(&self, all: bool) -> Result<()> {
         let mut tx = self.db.system_tx().await?;
@@ -856,6 +875,118 @@ impl Kernel {
         }
         tx.commit().await?;
         Ok(())
+    }
+}
+
+/// What `ferrum task legacy_key` and the doctor say of the old key (docs/operations.md, "Retiring the old key").
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LegacyKey {
+    /// FERRUM_SECRET_KEY is set here.
+    pub configured: bool,
+    /// The vault is open here.
+    pub vault_open: bool,
+    /// Values the old stores hold that the vault does not, by store (none with the vault closed: unknown).
+    pub waiting: Vec<(String, i64)>,
+    /// What is kept elsewhere that still needs the old key, and how much: plugins' settings, erased people's opt-outs
+    /// (kept as digests under it), public addresses of files still open, processes' payloads.
+    pub held: Vec<(String, i64)>,
+    /// Apps compiled in that read the old key themselves (the server's list, from scripts/secret_paths.py).
+    pub apps: Vec<String>,
+    /// Since when the move has found nothing waiting.
+    pub moved_since: Option<chrono::DateTime<chrono::Utc>>,
+    /// Paths that used the old key, and readers that passed the vault by, with when last: (what, caller, last).
+    pub uses: Vec<(String, String, chrono::DateTime<chrono::Utc>)>,
+    /// Whether nothing depends on the old key any more: every value moved, nothing held under it, no app reading it, and
+    /// no path used it since nothing was left to move (the deprecated readers, which read through the vault, aside).
+    pub retirable: bool,
+}
+
+impl Kernel {
+    /// Whether the old key can go (docs/operations.md, "Retiring the old key"): every value of the old stores moved into
+    /// the vault and checked there, nothing else kept under it, no app compiled in reading it (`apps`, from the server),
+    /// and no path that used it since; and what still depends on it if not.
+    pub async fn legacy_key(&self, apps: Vec<String>) -> Result<LegacyKey> {
+        let mut out =
+            LegacyKey { configured: self.settings.secret_key.is_some(), vault_open: self.db.vault.installation().is_ok(), apps, ..Default::default() };
+        if out.vault_open {
+            out.waiting = self.vault_waiting().await?;
+        }
+        let mut tx = self.db.system_tx().await?;
+        sqlx::query("set transaction read only").execute(&mut *tx).await?;
+        let (plugins, erased, files): (i64, i64, i64) = sqlx::query_as(
+            "select (select count(*) from plugin, jsonb_each(case when jsonb_typeof(config) = 'object' then config else '{}' end) c \
+                     where jsonb_typeof(c.value) = 'object' and c.value ? '$sealed' and c.value->>'$sealed' <> 'vault'), \
+                    (select count(*) from contact_consent where email::text like 'erased:%'), \
+                    (select count(*) from conn_file_address where expires_at > now() and ended_at is null)",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        let rows: Vec<(String, String, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> =
+            sqlx::query_as("select what, caller, first_at, last_at from legacy_key_use order by what, caller").fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        let processes = i64::from(self.settings.process_runtime);
+        out.held = [
+            ("plugins' settings sealed with it", plugins),
+            ("erased people's opt-outs kept as digests under it", erased),
+            ("public addresses of files still open", files),
+            ("a process runtime, whose payloads it seals", processes),
+        ]
+        .into_iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(w, n)| (w.to_string(), n))
+        .collect();
+        out.moved_since = rows.iter().find(|r| r.0 == "moved").map(|r| r.2);
+        out.uses = rows.into_iter().filter(|r| r.0 != "moved").map(|(what, caller, _, last)| (what, caller, last)).collect();
+        out.retirable = out.vault_open
+            && out.waiting.is_empty()
+            && out.held.is_empty()
+            && out.apps.is_empty()
+            && out.moved_since.is_some_and(|since| out.uses.iter().filter(|u| !u.0.starts_with("reader:")).all(|u| u.2 < since));
+        Ok(out)
+    }
+
+    /// What the doctor says of the old key: whether it can go, and what still depends on it if not. Never a value.
+    pub async fn legacy_key_findings(&self, apps: Vec<String>) -> Result<Vec<crate::doctor::Finding>> {
+        use crate::doctor::Finding;
+        let l = self.legacy_key(apps).await?;
+        let mut out = Vec::new();
+        let readers: Vec<String> = l.uses.iter().filter(|u| u.0.starts_with("reader:")).map(|u| u.1.clone()).collect();
+        if !readers.is_empty() || !l.apps.is_empty() {
+            out.push(Finding::warning(
+                "legacy_key.apps",
+                format!(
+                    "apps read past the vault: {}{}{}",
+                    l.apps.join(", "),
+                    if l.apps.is_empty() || readers.is_empty() { "" } else { "; " },
+                    readers.iter().map(|r| format!("Kernel::secret from {r}")).collect::<Vec<_>>().join(", ")
+                ),
+                "Each moves onto its own vault handle in its repository (Vault::field, derive, seal); these readers go in the next release.",
+            ));
+        }
+        if !l.configured {
+            out.push(Finding::ok("legacy_key", "FERRUM_SECRET_KEY is not set: the vault alone keeps what it sealed"));
+            return Ok(out);
+        }
+        let mut still: Vec<String> = l.waiting.iter().map(|(w, n)| format!("{n} values of {w} wait to move into the vault")).collect();
+        still.extend(l.held.iter().map(|(w, n)| format!("{w}: {n}")));
+        if l.moved_since.is_some() {
+            still.extend(l.uses.iter().filter(|u| !u.0.starts_with("reader:") && l.moved_since.is_some_and(|s| u.2 >= s)).map(|u| format!("{} used it", u.0)));
+        }
+        out.push(if l.retirable {
+            Finding::ok(
+                "legacy_key",
+                "nothing depends on FERRUM_SECRET_KEY any more: it may go once no build before this one will run (docs/operations.md, Retiring the old key)",
+            )
+        } else {
+            Finding::ok(
+                "legacy_key",
+                format!(
+                    "FERRUM_SECRET_KEY is still needed{}",
+                    if still.is_empty() { ": the move has not yet found everything moved".to_string() } else { format!(": {}", still.join("; ")) }
+                ),
+            )
+        });
+        Ok(out)
     }
 }
 

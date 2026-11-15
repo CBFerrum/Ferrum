@@ -1206,6 +1206,70 @@ pub fn register_vault(tasks: &mut loco_rs::task::Tasks) {
     tasks.register(VaultRecovery);
     tasks.register(VaultRewrap);
     tasks.register(VaultRotate);
+    tasks.register(VaultMove);
+    tasks.register(LegacyKey);
+}
+
+/// `vault_move`: moves into the vault, now, what the old key's stores hold that it does not (the hourly upkeep does it
+/// too), and says what it did. Safe beside the servers, and on several at once.
+pub struct VaultMove;
+
+#[async_trait]
+impl Task for VaultMove {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "vault_move".into(), detail: "Moves into the vault what the old key's stores still hold (format:json); never a value".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let done = k.vault_move().await.map_err(refused)?;
+        if vars.cli_arg("format").is_ok_and(|f| f == "json") {
+            println!("{}", serde_json::to_string_pretty(&done).map_err(refused)?);
+            return Ok(());
+        }
+        println!("{} values moved into the vault; {} left; {} removed (their rows are gone)", done.moved, done.left, done.removed);
+        for (what, n) in &done.unopened {
+            println!("{n} values of {what} open with no configured key: they stay where they are (ferrum task doctor names them)");
+        }
+        Ok(())
+    }
+}
+
+/// `legacy_key [format:json]`: what still depends on the old key (FERRUM_SECRET_KEY), and whether it can go
+/// (docs/operations.md, Retiring the old key).
+pub struct LegacyKey;
+
+#[async_trait]
+impl Task for LegacyKey {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "legacy_key".into(), detail: "What still depends on the old master key, and whether it can go (format:json)".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let l = k.legacy_key(crate::doctor::apps_reading_the_old_key()).await.map_err(refused)?;
+        if vars.cli_arg("format").is_ok_and(|f| f == "json") {
+            println!("{}", serde_json::to_string_pretty(&l).map_err(refused)?);
+            return Ok(());
+        }
+        println!("the old master key {}; the vault {}", if l.configured { "is set" } else { "is not set" }, if l.vault_open { "is open" } else { "is closed" });
+        for (what, n) in &l.waiting {
+            println!("waiting to move: {n} values of {what}");
+        }
+        for (what, n) in &l.held {
+            println!("still under the key: {what} ({n})");
+        }
+        for app in &l.apps {
+            println!("reads the key itself: {app}");
+        }
+        match l.moved_since {
+            Some(at) => println!("nothing has waited to move since {}", at.format("%Y-%m-%d %H:%M UTC")),
+            None => println!("the move has not yet found everything moved (ferrum task vault_move)"),
+        }
+        for (what, caller, last) in &l.uses {
+            println!("used: {what}{}, last {}", if caller.is_empty() { String::new() } else { format!(" by {caller}") }, last.format("%Y-%m-%d %H:%M UTC"));
+        }
+        println!("retirable: {}", l.retirable);
+        Ok(())
+    }
 }
 
 fn slot_kind(vars: &Vars) -> Result<ferrum_kernel::vault::SlotKind> {

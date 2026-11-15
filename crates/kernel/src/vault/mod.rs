@@ -60,7 +60,7 @@ mod scope;
 mod seal;
 mod secrets;
 
-pub use kept::Moved;
+pub use kept::{LegacyKey, Moved};
 pub(crate) use root::{CHANNEL, Root, finish};
 pub use root::{
     Opened, Opener, Printed, ROOT_FILE, RecoveryKey, Resealing, Rewrap, SlotKind, SlotStatus, Status, open, put_slot, remove_slot, rewrap,

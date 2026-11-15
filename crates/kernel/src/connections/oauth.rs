@@ -349,7 +349,7 @@ impl Kernel {
             }
         };
         let redirect = self.connection_callback()?;
-        let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("signing in to an account needs the server's secret key".into()))?;
+        let key = self.keyed("account_sign_in").ok_or_else(|| Error::Unavailable("signing in to an account needs the server's secret key".into()))?;
         // A provider that registers its clients: registered once, the first time anyone connects.
         let conn = if provider.client_id.trim().is_empty() { self.register_client(&conn, &redirect).await? } else { conn };
         let (provider, _) = oauth(&conn)?;
@@ -392,7 +392,7 @@ impl Kernel {
     /// The workspace and the host a sign-in started on, when its `state` names them under this
     /// server's key ([`Kernel::connect_start_on`]); nothing for any other state.
     pub fn connection_state_host(&self, state: &str) -> Option<(Uuid, String)> {
-        state_names(self.settings.secret_key.as_ref()?, state)
+        state_names(self.keyed("account_sign_in")?, state)
     }
 
     /// The provider sent the browser back: the sign-in `state` started must be this person's, in this browser session,
@@ -418,6 +418,7 @@ impl Kernel {
             return Err(Error::invalid(format!("the provider did not connect the account: {said}")));
         }
         let code = code.filter(|c| !c.is_empty() && c.len() <= 2048).ok_or_else(|| Error::invalid("the provider sent no code"))?;
+        self.note_old_key("keyed:account_sign_in");
         let verifier = self.open_sealed(&signin_label(ctx.tenant, &state_digest), &sealed)?;
         let conn = self.load_connection(ctx.tenant, &conn_id.to_string()).await?;
         let (provider, _) = oauth(&conn)?;
@@ -866,11 +867,11 @@ impl Kernel {
             .fetch_optional(&mut *tx)
             .await?;
         let Some(sealed) = sealed else { return Err(Error::NotFound("a connected account".into())) };
-        audit::record_admin(&mut tx, ctx, "Connection", id, "disconnect", None, json!({"owner": if owner.is_nil() { "workspace" } else { "person" }})).await?;
         // Opened before they go from the vault with the row, to be revoked at the provider.
         let place = token_place(ctx.tenant, id, owner);
         let tokens = self.kept(&mut tx, &place, &sealed).await?;
         crate::vault::kept::forget(&mut tx, &place).await?;
+        audit::record_admin(&mut tx, ctx, "Connection", id, "disconnect", None, json!({"owner": if owner.is_nil() { "workspace" } else { "person" }})).await?;
         tx.commit().await?;
         self.revoke_tokens(&conn, provider, &tokens).await
     }
@@ -894,8 +895,8 @@ impl Kernel {
         let mut out = Vec::new();
         for (id, tokens) in taken {
             let tried = async {
-                let conn = self.load_connection(ctx.tenant, &id.to_string()).await?;
                 let tokens = tokens.ok_or_else(|| Error::Unavailable("its tokens could not be opened, so they were not revoked".into()))?;
+                let conn = self.load_connection(ctx.tenant, &id.to_string()).await?;
                 let (provider, _) = oauth(&conn)?;
                 if provider.revoke_url.is_none() {
                     return Ok(None);
@@ -1042,8 +1043,8 @@ impl Kernel {
             .bind(Uuid::nil())
             .execute(&mut *tx)
             .await?;
-        tx.commit().await?;
         crate::vault::kept::forget(&mut tx, &token_place(ctx.tenant, id, Uuid::nil())).await?;
+        tx.commit().await?;
         Ok(())
     }
 

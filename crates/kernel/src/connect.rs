@@ -477,7 +477,7 @@ impl Kernel {
             return Err(Error::Unavailable("connections need the vault or a configured secret key (FERRUM_SECRET_KEY)".into()));
         }
         // The account they open, known by a fingerprint: connections on one account wait together (FEO-067).
-        let account_key = match (&input.credentials, self.settings.secret_key.as_ref()) {
+        let account_key = match (&input.credentials, if input.credentials.is_some() { self.keyed("connector_account") } else { None }) {
             (Some(c), Some(key)) => {
                 Some(key.fingerprint("connection account", &format!("{}:{}", input.provider, String::from_utf8_lossy(&crate::value::canonical_json(c)))))
             }
