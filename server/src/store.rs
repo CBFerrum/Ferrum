@@ -354,19 +354,21 @@ pub struct Rescued {
 /// Files the database names that the store lacks and the old directory still holds (one an older build wrote there after
 /// the move, or while it ran): copied over as `files_move` copies them (read back, compared, recorded in `file_move`), and
 /// logged. Rows made from `from` on (`None`: from an hour before files began to move); under the move's lock, so that one
-/// replica does it at a time (`None` back when another holds it). `copy` false only counts them (the doctor). Nothing
-/// without the directory mounted.
+/// replica does it at a time. `None` back when another holds it, or before the move is confirmed (until then
+/// `files_move` does this): nothing was looked at. `copy` false only counts them (the doctor). Nothing without the
+/// directory mounted.
 // ponytail: one look at the store per row made since files began to move, at each start; a watermark kept in the
 // database if installations keep the old directory mounted for months.
 pub async fn rescue(db: &Db, objects: &Objects, from: Option<chrono::DateTime<chrono::Utc>>, copy: bool) -> Result<Option<Rescued>> {
     let Some(dir) = &objects.directory else { return Ok(Some(Rescued::default())) };
-    let from = match from {
-        Some(f) => f,
-        None => match state(db).await? {
-            Some((_, since)) => since - chrono::Duration::hours(1),
-            None => return Ok(Some(Rescued::default())),
-        },
+    let (moved, since) = match state(db).await? {
+        Some((s, since)) => (s == "store", since),
+        None => (false, chrono::Utc::now()),
     };
+    if !moved {
+        return Ok(None);
+    }
+    let from = from.unwrap_or(since - chrono::Duration::hours(1));
     let mut lock = None;
     if copy {
         let mut conn = db.direct.acquire().await?.detach();
