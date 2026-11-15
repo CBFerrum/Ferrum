@@ -13,6 +13,9 @@
 #    keys in the vault and deletes the file that handed them over. `ferrum task files_move` is killed partway and run
 #    again: it goes on, and records that the directory is no longer read; restarted, with the directory moved away, both
 #    servers serve every file, each as its row says.
+#    Readiness: with the store stopped after the first answer, a replica stays ready (asked as a browser asks), the
+#    metric and the doctor say so; a server started with the store down is not ready, saying why (the log says it once),
+#    and becomes ready without a restart when the store comes up; one with a wrong bucket never becomes ready.
 # 3. The doctor's lines on moto: versioning, a lifecycle rule for old versions and encryption at rest, bad, then good
 #    once each is switched on; moto takes requests without keys, and the doctor says the bucket is public.
 # 4. The drill: a dump at a moment T; after it, files deleted at once and files whose deletion waits; the dump restored
@@ -47,7 +50,7 @@ for port in $(seq "$BASE" $((BASE + 7))) $((BASE + 10)) $((BASE + 11)) $((BASE +
   if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then echo "refused: something listens on 127.0.0.1:$port (set OBJECT_PORT)" >&2; exit 2; fi
 done
 work=$(mktemp -d)
-A_PID='' B_PID='' STORE_PID='' MOTO_PID='' CRED_PID=''
+A_PID='' B_PID='' C_PID='' STORE_PID='' MOTO_PID='' CRED_PID=''
 DBS=("${NAME}_live" "${NAME}_fresh" "${NAME}_restored" "${NAME}_bare")
 
 step() { echo "==> $*"; }
@@ -57,7 +60,7 @@ sql() { psql "$APP/$1" -v ON_ERROR_STOP=1 -Atqc "$2"; }
 end() { [ -z "$1" ] || { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }; }
 cleanup() {
   status=$?
-  for p in "$A_PID" "$B_PID" "$STORE_PID" "$MOTO_PID" "$CRED_PID"; do end "$p"; done
+  for p in "$A_PID" "$B_PID" "$C_PID" "$STORE_PID" "$MOTO_PID" "$CRED_PID"; do end "$p"; done
   if [ "$status" -ne 0 ]; then
     for log in "$work"/*.log; do [ -f "$log" ] && { echo "--- $log"; tail -25 "$log"; }; done
   fi
@@ -95,6 +98,31 @@ serve() {
   done
   fail "the server on $db ($log) neither answered nor ended"
 }
+# Starts a server and waits only until it is alive (/_ping), not ready: 0 when it answers.
+launch() {
+  local db=$1 port=$2 log=$3; shift 3
+  (cd "$ROOT/server" && exec env LOCO_ENV="${LOCO_ENV:-production}" DATABASE_URL="$APP/$db" FERRUM_FILES_DIR="$work/files" PORT="$port" \
+    BINDING=127.0.0.1 PUBLIC_URL="http://127.0.0.1:$port" "$@" "$BIN" start) >"$work/$log.log" 2>&1 &
+  SERVED=$!
+  for _ in $(seq 1 120); do
+    curl -fsS "http://127.0.0.1:$port/_ping" >/dev/null 2>&1 && return 0
+    kill -0 "$SERVED" 2>/dev/null || return 1
+    sleep 1
+  done
+  return 1
+}
+# The bundled store, as Compose runs it (deploy/store/start.sh); its first start makes and hands over its keys.
+store_up() {
+  STORE_DATA="$work/store" STORE_HANDOFF="$work/run/object-store" STORE_BIND=127.0.0.1 STORE_PORT=$S3_PORT \
+    STORE_ARGS="-master.port=$((BASE + 10)) -volume.port=$((BASE + 11)) -filer.port=$((BASE + 12)) -master.volumeSizeLimitMB=64" \
+    sh "$ROOT/deploy/store/start.sh" >>"$work/store.log" 2>&1 &
+  STORE_PID=$!
+  for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$S3_PORT/healthz" >/dev/null 2>&1 && return 0; sleep 1; done
+  fail "the store did not come up"
+}
+# Readiness as a browser asks for it: status and body.
+readiness() { curl -sS -H 'Accept-Encoding: gzip' --compressed -o "$work/ready.json" -w '%{http_code}' "$1/api/ready"; }
+up_metric() { curl -fsS "$1/metrics" | awk '$1 == "ferrum_object_storage_up" {print $2}'; }
 token() { curl -fsS "$1/api/auth/login" -H 'content-type: application/json' -d "{\"tenant\":\"files\",\"email\":\"admin@files.test\",\"password\":\"$PASSWORD\"}" | json 'd["token"]'; }
 # Uploads a file of N bytes named NAME; prints its id and SHA-256.
 upload() {
@@ -134,12 +162,7 @@ line=$(doctor_line "${NAME}_live" storage.directory)
 end "$A_PID"
 
 step "the bundled store's first start (deploy/store/start.sh, SeaweedFS), its keys handed over"
-STORE_DATA="$work/store" STORE_HANDOFF="$work/run/object-store" STORE_BIND=127.0.0.1 STORE_PORT=$S3_PORT \
-  STORE_ARGS="-master.port=$((BASE + 10)) -volume.port=$((BASE + 11)) -filer.port=$((BASE + 12)) -master.volumeSizeLimitMB=64" \
-  sh "$ROOT/deploy/store/start.sh" >"$work/store.log" 2>&1 &
-STORE_PID=$!
-for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$S3_PORT/healthz" >/dev/null 2>&1 && break; sleep 1; done
-curl -fsS "http://127.0.0.1:$S3_PORT/healthz" >/dev/null || fail "the store did not come up"
+store_up
 [ -f "$work/run/object-store/keys.json" ] || fail "the store's first start handed over no keys"
 
 step "two servers set to the store, files moving: each reads what the other wrote, and the directory's files"
@@ -198,6 +221,33 @@ while read -r fid fsha; do
 done <"$work/old.txt"
 on "${NAME}_live" "${STORE[@]}" "$BIN" task check_files digest:yes >"$work/check.log" 2>&1 || fail "check_files after the move: $(tail -3 "$work/check.log")"
 echo "    $(tail -1 "$work/check.log")"
+
+step "readiness: a store gone after the first answer, one that comes up late, a wrong bucket"
+end "$STORE_PID"
+STORE_PID=''
+[ "$(readiness "$A")" = 200 ] || fail "a store gone after the first answer took a ready replica out of service: $(cat "$work/ready.json")"
+for _ in $(seq 1 45); do [ "$(up_metric "$A")" = 0 ] && break; sleep 1; done
+[ "$(up_metric "$A")" = 0 ] || fail "the metric does not say the store is gone"
+line=$(doctor_line "${NAME}_live" storage "${STORE[@]}")
+[[ "$line" == blocker:* ]] || fail "the doctor does not say the store is gone: $line"
+echo "    store gone: still ready (as a browser asks), ferrum_object_storage_up 0, the doctor: ${line:0:90}"
+C="http://127.0.0.1:$((BASE + 5))"
+launch "${NAME}_live" $((BASE + 5)) late "${STORE[@]}" || fail "a server with its store down did not come up alive"
+C_PID=$SERVED
+[ "$(readiness "$C")" = 503 ] || fail "a server whose store never answered is ready"
+grep -q "object storage has not taken a write and a read" "$work/ready.json" || fail "not ready, without saying why: $(cat "$work/ready.json")"
+[ "$(grep -c 'did not take a write and a read' "$work/late.log")" = 1 ] || fail "the log does not say it once"
+store_up
+for _ in $(seq 1 30); do [ "$(readiness "$C")" = 200 ] && break; sleep 1; done
+[ "$(readiness "$C")" = 200 ] || fail "the store came up and the server did not become ready without a restart"
+end "$C_PID"
+echo "    a store that comes up late: not ready, then ready, no restart"
+launch "${NAME}_live" $((BASE + 5)) wrong "${STORE[@]}" FERRUM_S3_BUCKET=nosuch || fail "a server with a wrong bucket did not come up alive"
+C_PID=$SERVED
+sleep 12
+[ "$(readiness "$C")" = 503 ] || fail "a server with a wrong bucket became ready"
+echo "    a wrong bucket: never ready: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["message"][:140])' "$work/ready.json")"
+end "$C_PID"
 
 step "3. the doctor's lines on moto: bad, then good as versioning, lifecycle and encryption are switched on"
 "$PY" -m moto.server -H 127.0.0.1 -p "$MOTO_PORT" >"$work/moto.log" 2>&1 &

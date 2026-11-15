@@ -832,6 +832,15 @@ endpoint) and no keys, the server starts only when the machine names an identity
 keys to set. `scripts/object_store_rehearsal.sh` proves the container's credentials against a store that checks every
 signature; that IRSA's token is accepted by AWS's STS, and that a role's policy reaches the bucket, only a cloud shows.
 
+**Readiness.** A replica is not ready (`/api/ready` answers 503, saying why: the store's own refusal, such as a bucket
+that does not exist) until its store has taken a write and a read since it started; the log says so once, and it asks
+again every five seconds, so a store that comes up late makes it ready with no restart. A rollout with a wrong bucket or
+wrong keys therefore never becomes ready, and the replicas before it keep serving. After that first answer a failing
+store does not take a replica out of service, which would take every replica out at once for a fault of the store: the
+doctor's `storage` line says so, and so do `ferrum_object_storage_up` (0 when this replica's last probe, every thirty
+seconds, failed) and `ferrum_object_storage_probe_failures_total`. The chart has no alert rules for the server; alert on
+`ferrum_object_storage_up == 0` for five minutes. Compose starts the server once the store's health check passes.
+
 **A local directory** (`files_dir`) is for development and tests. Elsewhere a server without a bucket starts only for
 an installation that already keeps its files there: the newest file its database names (a workspace's newest file,
 else the newest interface's) must be in that directory. A new database names none, an empty or wrong directory (a

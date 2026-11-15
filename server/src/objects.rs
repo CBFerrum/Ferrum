@@ -74,6 +74,8 @@ pub struct Objects {
     pub(crate) directory: Option<Operator>,
     /// Deletions that wait (`files_delete_after_days`).
     pub(crate) releases: Arc<Releases>,
+    /// Whether the store has answered since this replica started (readiness, the metric).
+    pub health: crate::store::Health,
 }
 
 fn storage_err(e: impl std::fmt::Display) -> Error {
@@ -133,14 +135,14 @@ impl Objects {
     /// directory may be used, and whether it is read while files move).
     pub fn new(settings: &Settings) -> std::result::Result<Objects, String> {
         match s3(settings)? {
-            Some(op) => Ok(Objects { op, presigns: true, directory: None, releases: Arc::default() }),
+            Some(op) => Ok(Objects { op, presigns: true, directory: None, releases: Arc::default(), health: Default::default() }),
             None => Objects::local(&settings.files_dir),
         }
     }
 
     /// A store on a local directory (tests, a single host).
     pub fn local(dir: &str) -> std::result::Result<Objects, String> {
-        Ok(Objects { op: directory(dir)?, presigns: false, directory: None, releases: Arc::default() })
+        Ok(Objects { op: directory(dir)?, presigns: false, directory: None, releases: Arc::default(), health: Default::default() })
     }
 
     /// This store, with the local directory `dir` read where it lacks a key and deleted from too, while files move.

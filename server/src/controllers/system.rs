@@ -20,8 +20,14 @@ use uuid::Uuid;
 
 static STARTED: LazyLock<Instant> = LazyLock::new(Instant::now);
 
+/// Ready once object storage has taken a write and a read since this replica started (crate::store::Health), and while
+/// the database answers. Not ready, it says why at each ask (the log says it once).
 async fn ready(State(app): State<AppContext>) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    if let Err(why) = st.objects.health.ready() {
+        let body = json!({"status": "not ready", "error": "unavailable", "message": why});
+        return Ok((StatusCode::SERVICE_UNAVAILABLE, [(header::RETRY_AFTER, HeaderValue::from_static("5"))], Json(body)).into_response());
+    }
     st.kernel.health().await?;
     Ok(Json(json!({"status": "ready"})).into_response())
 }
@@ -196,6 +202,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     apps.push_str(&crate::zone::audit_sink_metrics_text(&st.kernel).await);
     apps.push_str(&logic);
     apps.push_str(&reads);
+    apps.push_str(&st.objects.health.metrics_text());
     let body = format!(
         "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n{apps}\
          # TYPE ferrum_restore_held gauge\nferrum_restore_held {held}\n\

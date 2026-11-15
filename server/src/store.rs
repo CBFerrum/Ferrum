@@ -100,6 +100,126 @@ pub async fn sweep(k: &Kernel, objects: &Objects) -> Result<usize> {
     Ok(keys.len())
 }
 
+/// Whether this replica's object store has answered (rule 8). A replica is not ready until a write-then-read probe has
+/// worked since it started, so that a rollout with a wrong bucket or wrong keys never takes traffic and the replicas
+/// before it keep serving. After that, a failure no longer takes it out of service (that would turn a fault of the store
+/// into an outage of every replica at once): the doctor and the metrics say so instead.
+#[derive(Default)]
+pub struct Health {
+    answered: std::sync::atomic::AtomicBool,
+    up: std::sync::atomic::AtomicBool,
+    failures: AtomicU64,
+    cause: std::sync::Mutex<Option<String>>,
+}
+
+impl Health {
+    /// Whether a probe has worked since this replica started.
+    pub fn answered(&self) -> bool {
+        self.answered.load(Ordering::SeqCst)
+    }
+
+    /// `Ok` once the store has answered since this replica started; else why not, in plain words.
+    pub fn ready(&self) -> std::result::Result<(), String> {
+        if self.answered() {
+            return Ok(());
+        }
+        let cause = self.cause.lock().ok().and_then(|c| c.clone()).unwrap_or_else(|| "it has not been asked yet".into());
+        Err(format!("object storage has not taken a write and a read since this replica started: {cause}"))
+    }
+
+    /// Records one probe's outcome; what changed, for the log to say once.
+    pub fn record(&self, outcome: &std::result::Result<(), String>) -> Change {
+        let (answered, was_up) = (self.answered(), self.up.swap(outcome.is_ok(), Ordering::SeqCst));
+        if let Ok(mut cause) = self.cause.lock() {
+            *cause = outcome.as_ref().err().cloned();
+        }
+        match outcome {
+            Ok(()) => {
+                self.answered.store(true, Ordering::SeqCst);
+                match (answered, was_up) {
+                    (false, _) => Change::Ready,
+                    (true, false) => Change::Back,
+                    (true, true) => Change::None,
+                }
+            }
+            Err(_) => {
+                let first = self.failures.fetch_add(1, Ordering::SeqCst) == 0;
+                match (answered, was_up) {
+                    (false, _) if first => Change::NotReady,
+                    (true, true) => Change::Down,
+                    _ => Change::None,
+                }
+            }
+        }
+    }
+
+    /// `ferrum_object_storage_up` (this replica's last probe) and `ferrum_object_storage_probe_failures_total`.
+    pub fn metrics_text(&self) -> String {
+        format!(
+            "# HELP ferrum_object_storage_up 1 when this replica's last write-then-read probe of object storage worked.\n\
+             # TYPE ferrum_object_storage_up gauge\nferrum_object_storage_up {}\n\
+             # HELP ferrum_object_storage_probe_failures_total Probes of object storage that failed since this replica started.\n\
+             # TYPE ferrum_object_storage_probe_failures_total counter\nferrum_object_storage_probe_failures_total {}\n",
+            u8::from(self.up.load(Ordering::SeqCst)),
+            self.failures.load(Ordering::SeqCst)
+        )
+    }
+}
+
+/// What one probe changed of what is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    None,
+    /// The first failure before any success: the replica is not ready.
+    NotReady,
+    /// The first success: the replica is ready.
+    Ready,
+    /// A failure after it was up.
+    Down,
+    /// Up again after a failure.
+    Back,
+}
+
+/// One write-then-read probe of `objects`, recorded, and said in the log when it changes what is known (once each).
+pub async fn check(objects: &Objects) {
+    let outcome = objects.probe().await.map_err(|e| e.to_string());
+    match (objects.health.record(&outcome), &outcome) {
+        (Change::NotReady, Err(e)) => tracing::error!(
+            "object storage did not take a write and a read ({e}): this replica is not ready until it does, and asks it again every \
+             {} seconds",
+            NOT_READY_EVERY.as_secs()
+        ),
+        (Change::Ready, _) if objects.health.failures.load(Ordering::SeqCst) > 0 => {
+            tracing::warn!("object storage takes a write and a read now: this replica is ready")
+        }
+        (Change::Ready, _) => tracing::info!("object storage reachable"),
+        (Change::Down, Err(e)) => {
+            tracing::error!("object storage stopped taking a write and a read ({e}): this replica stays ready; the doctor and ferrum_object_storage_up say so")
+        }
+        (Change::Back, _) => tracing::warn!("object storage takes a write and a read again"),
+        _ => {}
+    }
+}
+
+/// How often a replica asks its store until it has answered, and after.
+const NOT_READY_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+const READY_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Asks the store again on every replica that serves: until it has answered, every five seconds; after, every thirty, for
+/// the metric and the log.
+pub fn spawn_health(objects: std::sync::Arc<Objects>, mut stop: tokio::sync::watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let wait = if objects.health.answered() { READY_EVERY } else { NOT_READY_EVERY };
+            tokio::select! {
+                _ = stop.changed() => return,
+                _ = tokio::time::sleep(wait) => {}
+            }
+            check(&objects).await;
+        }
+    })
+}
+
 /// What a start found about where files are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Found {
@@ -853,6 +973,26 @@ mod tests {
         assert!(reused("ui/shell/d/index.js") && reused("apps/x/1.0.0-abc.fapp"));
     }
 
+    #[test]
+    fn ready_once_the_store_has_answered_and_not_out_of_service_after() {
+        let h = Health::default();
+        assert!(h.ready().is_err(), "not ready before any probe");
+        let down = Err("NoSuchBucket: The specified bucket does not exist".to_string());
+        assert_eq!(h.record(&down), Change::NotReady, "said once");
+        assert_eq!(h.record(&down), Change::None, "not said again");
+        let why = h.ready().unwrap_err();
+        assert!(why.contains("not taken a write and a read") && why.contains("NoSuchBucket"), "the cause, in the answer: {why}");
+        assert!(h.metrics_text().contains("ferrum_object_storage_up 0\n") && h.metrics_text().contains("probe_failures_total 2\n"));
+        assert_eq!(h.record(&Ok(())), Change::Ready, "a store that comes up late: ready, without a restart");
+        assert!(h.ready().is_ok() && h.metrics_text().contains("ferrum_object_storage_up 1\n"));
+        assert_eq!(h.record(&down), Change::Down);
+        assert!(h.ready().is_ok(), "a failure after the first success does not take the replica out of service");
+        assert!(h.metrics_text().contains("ferrum_object_storage_up 0\n"), "the metric says so");
+        assert_eq!(h.record(&down), Change::None);
+        assert_eq!(h.record(&Ok(())), Change::Back);
+    }
+
+    #[test]
     #[test]
     fn the_lag_against_the_backups_reach() {
         use ferrum_kernel::doctor::Level;

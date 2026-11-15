@@ -47,21 +47,6 @@ pub(crate) fn storage_of(objects: Arc<crate::objects::Objects>) -> Storage {
     Storage::single(Box::new(crate::objects::Files(objects)))
 }
 
-/// Writes and deletes a probe object so a wrong bucket or credentials show up at boot, not at
-/// the first upload. Logged, not fatal: a store outage must not keep the API from starting.
-async fn probe_storage(storage: &Storage) {
-    let path = std::path::PathBuf::from(format!(".ferrum-probe/{}", uuid::Uuid::now_v7()));
-    let outcome = async {
-        storage.upload(&path, &bytes::Bytes::from_static(b"ok")).await?;
-        storage.delete(&path).await
-    }
-    .await;
-    match outcome {
-        Ok(()) => tracing::info!("object storage reachable"),
-        Err(e) => tracing::error!("object storage probe failed (uploads will fail until it is fixed): {e}"),
-    }
-}
-
 /// How long a stopping replica keeps answering the requests in flight. Kubernetes gives a replica
 /// 40 s after its 5 s preStop pause (deploy/k8s/deployment.yaml); this and the background loops'
 /// 10 s fit inside it.
@@ -387,9 +372,10 @@ impl Hooks for App {
                 Err(e) => tracing::error!("setting up the object store's bucket: {e}"),
             }
         }
-        let storage = storage_of(objects.clone());
-        probe_storage(&storage).await;
-        let storage = Arc::new(storage);
+        // One write-then-read probe: until one has worked this replica is not ready (/api/ready), and it keeps asking
+        // (crate::store::spawn_health); the start goes on, so that it serves its liveness and says why.
+        crate::store::check(&objects).await;
+        let storage = Arc::new(storage_of(objects.clone()));
         crate::request_metrics::Requests::install(crate::request_metrics::Requests::new(&crate::appmgr::compiled_natives()));
         let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())
             .map_err(Error::Message)?;
@@ -543,6 +529,8 @@ impl Hooks for App {
         if state.kernel.booted.guest.is_none() {
             listeners.push(state.kernel.spawn_restore_marker(state.shutdown.subscribe()));
         }
+        // Object storage, asked again until it has answered (readiness) and then every thirty seconds (the metric).
+        listeners.push(crate::store::spawn_health(state.objects.clone(), state.shutdown.subscribe()));
         listeners.push(state.plugins.sockets.spawn_listener(state.kernel.db.clone(), state.shutdown.subscribe()));
         listeners.push(state.live.spawn_listener(state.kernel.clone(), state.shutdown.subscribe()));
         listeners.extend(state.docs.spawn(state.kernel.clone(), state.shutdown.subscribe()));
