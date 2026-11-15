@@ -23,6 +23,48 @@ fn kernel(ctx: &AppContext) -> Result<std::sync::Arc<ferrum_kernel::Kernel>> {
     app_state(ctx).map(|s| s.kernel).map_err(|e| Error::Message(format!("{:?}", e.0)))
 }
 
+/// The tasks that run with the vault closed: they report on it or repair it (docs/operations.md, "The vault").
+const VAULT_REPAIRS: [&str; 3] = ["doctor", "vault_status", "vault_rewrap"];
+
+/// Whether the command line runs one of [`VAULT_REPAIRS`].
+fn repairs_vault(args: impl IntoIterator<Item = String>) -> bool {
+    let args: Vec<String> = args.into_iter().collect();
+    args.windows(2).any(|w| w[0] == "task" && VAULT_REPAIRS.contains(&w[1].as_str()))
+}
+
+/// Opens the vault (crates/kernel/src/vault): the one call a server makes as it starts, and a task before it runs. Its
+/// slots' keys come from where they are read today: `DATABASE_URL`'s password, the file at its fixed path,
+/// `FERRUM_SECRET_KEY_COMMAND` and `FERRUM_KMS_TRANSIT`. A vault that does not open stops the start, saying why; only a
+/// task that reports on it or repairs it runs with it closed.
+pub async fn open_vault(
+    db: &ferrum_kernel::Db,
+    settings: &crate::state::Settings,
+    database_url: &str,
+    transit: Option<&ferrum_kernel::kms::Transit>,
+) -> Result<()> {
+    use ferrum_kernel::vault::{Opened, Opener};
+    let opener = Opener {
+        database_url: database_url.to_string(),
+        file: ferrum_kernel::vault::ROOT_FILE.into(),
+        transit: transit.cloned(),
+        command: Some(settings.secret_key_command.trim().to_string()).filter(|c| !c.is_empty()),
+        kdf: Default::default(),
+    };
+    let tolerate = repairs_vault(std::env::args());
+    match ferrum_kernel::vault::open(db, opener, tolerate).await {
+        Ok(Opened::With(slot)) => {
+            tracing::info!(%slot, "the vault is open");
+            Ok(())
+        }
+        Ok(Opened::Later) => Ok(()),
+        Err(e) if tolerate => {
+            tracing::error!("the vault is closed: {e}");
+            Ok(())
+        }
+        Err(e) => Err(Error::Message(format!("the vault: {e}"))),
+    }
+}
+
 /// `kms_wrap`: the configured secret keys as ciphertext of the Transit key `FERRUM_KMS_TRANSIT`
 /// names, to configure in their place (crates/kernel/src/kms.rs). Keys given as ciphertext already
 /// are wrapped again by the Transit key's newest version, after it was rotated. It prints no key.
@@ -1158,6 +1200,13 @@ mod tests {
     fn a_refusal_gives_each_fields_reason() {
         assert_eq!(refused(ferrum_kernel::Error::field("retain_until", "a date after today")).to_string(), "retain_until: a date after today");
         assert_eq!(refused(ferrum_kernel::Error::Invalid("no workspace acme".into())).to_string(), "no workspace acme");
+    }
+
+    #[test]
+    fn only_the_tasks_that_report_on_the_vault_or_repair_it_run_with_it_closed() {
+        let args = |a: &[&str]| repairs_vault(a.iter().map(|s| s.to_string()));
+        assert!(args(&["ferrum", "task", "vault_rewrap"]) && args(&["ferrum", "-e", "production", "task", "doctor"]));
+        assert!(!args(&["ferrum", "start"]) && !args(&["ferrum", "task", "migrate"]) && !args(&["ferrum", "task", "kms_wrap", "doctor"]));
     }
 }
 

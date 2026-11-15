@@ -89,6 +89,7 @@ pub mod targets;
 pub mod tenant;
 pub mod twofactor;
 pub mod value;
+pub mod vault;
 pub mod views;
 pub mod webpush;
 pub mod window;
@@ -448,6 +449,8 @@ impl Kernel {
                 }
             }
         }
+        // The vault, when it could not be opened before its tables were there (crate::vault::open).
+        vault::finish(&db).await?;
         if booted.guest.is_some() || !settings.migrate_at_start {
             ddl::words(&full)?;
         }

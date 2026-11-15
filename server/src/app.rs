@@ -216,6 +216,7 @@ impl Hooks for App {
         let jwt = ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).ok_or_else(|| Error::Message("auth.jwt is not configured".into()))?;
         let transit = kms_transit(&settings)?;
         let secret_key = secret_key(&settings, transit.as_ref(), &jwt.secret, &ctx.environment).await?;
+        crate::tasks::open_vault(&db, &settings, &ctx.config.database.uri, transit.as_ref()).await?;
         let mut retired = Vec::new();
         for k in settings.retired_secret_keys.split(',').map(str::trim).filter(|k| !k.is_empty()) {
             retired.push(ferrum_kernel::kms::resolve(k, transit.as_ref()).await.map_err(|e| Error::Message(format!("settings.retired_secret_keys: {e}")))?);
