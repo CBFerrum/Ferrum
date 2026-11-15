@@ -576,7 +576,7 @@ before a floor is refused at start, the older ones included.
 | `move_fence` | `plan_move` marks the database (until cancelled, adopted or not followed) | 2026-11-14T01:33:19Z |
 | `workspace_freeze` | `move_workspace` starts, on both sides (until it arrives, at the target; until `finish_move`, at the source; both at an abort) | 2026-11-14T04:00:04Z |
 | `sandbox` | `copy_workspace` makes a sandbox (until `delete_sandbox` deletes the last one) | 2026-11-14T06:47:14Z |
-| `domain_proof` | a server starts with `FERRUM_DOMAIN_PROOF=record` set (not when it is `record` by default) | 2026-11-14T21:00:00Z |
+| `domain_proof` | a server starts with `FERRUM_DOMAIN_PROOF=record` set (not when it is `record` by default) | 2026-11-15T00:51:00Z |
 
 * **What a refused rollback says.** The usual refusal (*Start a build from … or newer*), and, from a build that knows
   floors, which protections are switched on and since which build. A build from before floors existed prints only the
