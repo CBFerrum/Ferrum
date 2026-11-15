@@ -39,7 +39,7 @@ fn a_step_up_counts_on_every_replica_at_once() {
 
 async fn scenario() {
     let db = connect().await;
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let a = replica().await;
     let tenant = a
         .create_tenant(NewTenant {

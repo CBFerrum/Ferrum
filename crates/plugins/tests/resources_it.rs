@@ -81,7 +81,7 @@ async fn who_is_asking_comes_from_the_host() {
     let url = std::env::var("FERRUM_PLUGIN_RESOURCES_TEST_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_plugin_resources_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 5, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     let provider = Arc::new(Remembers::default());
     let mut hooks = HookRegistry::default();

@@ -72,7 +72,7 @@ async fn scalar(db: &Db, sql: &'static str) -> i64 {
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 12, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let seen = Arc::new(Seen::default());
     let boot = |migrate_at_start: bool| {
         let (db, seen) = (db.clone(), seen.clone());
@@ -280,7 +280,7 @@ async fn floors() {
     use ferrum_kernel::zones::Zones;
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 20, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let boot = |migrate_at_start: bool| {
         let db = db.clone();
         async move { Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings { migrate_at_start, ..Default::default() }, None).await }
