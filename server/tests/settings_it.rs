@@ -102,6 +102,151 @@ async fn scenario() {
     pools(&third).await;
     third.kernel.db.close().await;
     live().await;
+    the_binary().await;
+}
+
+/// A free port on this machine.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+/// `ferrum start` in production, given only `env` (the database's address and the secrets), from the server's
+/// directory (Loco reads `config/` there); its output to `log`.
+fn start(env: &[(&str, String)], log: &std::path::Path) -> std::process::Child {
+    let out = std::fs::File::create(log).unwrap();
+    std::process::Command::new(env!("CARGO_BIN_EXE_ferrum"))
+        .args(["-e", "production", "start", "--no-banner"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .stdout(out.try_clone().unwrap())
+        .stderr(out)
+        .spawn()
+        .expect("the server binary")
+}
+
+/// Waits up to three minutes for the server on `port` to answer `/api/ready`.
+async fn ready(port: u16, child: &mut std::process::Child, log: &std::path::Path) {
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap();
+    for _ in 0..360 {
+        if let Ok(Some(status)) = child.try_wait() {
+            panic!("the server stopped ({status}): {}", std::fs::read_to_string(log).unwrap_or_default());
+        }
+        if client.get(format!("http://127.0.0.1:{port}/api/ready")).send().await.is_ok_and(|r| r.status().is_success()) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    panic!("the server did not answer on {port}: {}", std::fs::read_to_string(log).unwrap_or_default());
+}
+
+fn stop(child: &mut std::process::Child) {
+    let _ = std::process::Command::new("kill").args(["-TERM", &child.id().to_string()]).status();
+    for _ in 0..100 {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// The binary, as an operator runs it: it starts in production with only the database's address and the secrets, and
+/// takes everything else from the table (its port, where its files and packages are, that one server needs no object
+/// store, its pool's connection budget); the environment still wins where it sets a variable; and two started
+/// together copy what their environment sets into the table once.
+async fn the_binary() {
+    let dir = std::env::temp_dir().join(format!("ferrum-settings-it-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let st = state(&replica(config(None)).await);
+    let port = free_port();
+    for (key, value) in [
+        ("port", port.to_string()),
+        ("binding", "127.0.0.1".to_string()),
+        ("public_url", format!("http://127.0.0.1:{port}")),
+        ("require_object_storage", "false".to_string()),
+        ("files_dir", dir.join("files").to_string_lossy().into_owned()),
+        ("packages_dir", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages").to_string_lossy().into_owned()),
+        ("log_level", "warn".to_string()),
+    ] {
+        row(&st, "installation", "", key, Some(&value)).await;
+    }
+    // Its pool's own budget: a small one, above the floor the replica's own loops need (POOL_FLOOR).
+    row(&st, "pool", "default", "db_max_connections", Some("12")).await;
+    st.kernel.db.close().await;
+    let secrets = vec![
+        ("DATABASE_URL", url()),
+        ("JWT_SECRET", "c2V0dGluZ3MtaXQtand0LXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg==".to_string()),
+        ("FERRUM_SECRET_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=".to_string()),
+    ];
+
+    // Only the database's address and the secrets: everything else from the table.
+    let log = dir.join("only-the-address.log");
+    let mut only = start(&secrets, &log);
+    ready(port, &mut only, &log).await;
+    let version: serde_json::Value = reqwest::get(format!("http://127.0.0.1:{port}/api/version")).await.unwrap().json().await.unwrap();
+    assert!(version["packages"].as_array().is_some_and(|p| !p.is_empty()), "serving the packages the table points at: {version}");
+    stop(&mut only);
+
+    // A task, given the same: it changes the table.
+    let task = std::process::Command::new(env!("CARGO_BIN_EXE_ferrum"))
+        .args(["-e", "production", "task", "set", "key:FERRUM_SESSION_DAYS", "value:6"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env_clear()
+        .envs(secrets.iter().map(|(k, v)| (*k, v.as_str())))
+        .output()
+        .expect("the task");
+    assert!(task.status.success(), "{}", String::from_utf8_lossy(&task.stdout));
+    let check = state(&replica(config(None)).await);
+    let mut tx = check.kernel.db.system_tx().await.unwrap();
+    let (value, by): (serde_json::Value, String) =
+        sqlx::query_as("select value, updated_by from setting where scope = 'installation' and key = 'session_days'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!((value, by.as_str()), (json!("6"), "task"));
+    check.kernel.db.close().await;
+
+    // Two at once, each with a port of its own in its environment (over the table's) and a setting the table lacks.
+    let (p1, p2) = (free_port(), free_port());
+    let with = |p: u16| {
+        let mut env = secrets.clone();
+        env.push(("PORT", p.to_string()));
+        env.push(("FERRUM_ASSISTANT_MODEL", "a-model-of-the-environment".to_string()));
+        env
+    };
+    let (log1, log2) = (dir.join("first.log"), dir.join("second.log"));
+    let (mut one, mut two) = (start(&with(p1), &log1), start(&with(p2), &log2));
+    ready(p1, &mut one, &log1).await;
+    ready(p2, &mut two, &log2).await;
+    let check = state(&replica(config(None)).await);
+    let mut written = 0;
+    for _ in 0..60 {
+        let mut tx = check.kernel.db.system_tx().await.unwrap();
+        let n: i64 = sqlx::query_scalar("select count(*) from setting_change where key = 'assistant_model' and updated_by = 'environment'")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        written = n;
+        if n > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let mut tx = check.kernel.db.system_tx().await.unwrap();
+    let rows: Vec<(serde_json::Value, String)> =
+        sqlx::query_as("select value, updated_by from setting where key = 'assistant_model'").fetch_all(&mut *tx).await.unwrap();
+    let changes: i64 = sqlx::query_scalar("select count(*) from setting_change where key = 'assistant_model'").fetch_one(&mut *tx).await.unwrap();
+    let replicas: i64 = sqlx::query_scalar("select count(*) from replica where pool = 'default'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(written, 1, "copied by one of the two");
+    assert_eq!((rows, changes), (vec![(json!("a-model-of-the-environment"), "environment".to_string())], 1), "once, however many start together");
+    assert_eq!(replicas, 2, "each keeps its row");
+    stop(&mut one);
+    stop(&mut two);
+    check.kernel.db.close().await;
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Changing settings as the tasks do: refused by type, as a secret, as someone else's, unknown, out of scope, or as the
@@ -280,7 +425,9 @@ async fn live() {
     row(&a, "installation", "", "zone_mode", Some("report")).await;
     row(&a, "installation", "", "default_workspace", Some("acme")).await;
     notify(&a).await;
-    until("the change reaches the other replica", || b.live_settings.now().settings.user_requests_per_minute == 600).await;
+    // The rows were written one by one: the compare may take the first before the notice comes.
+    until("the change reaches the other replica", || b.live_settings.now().snapshot.get("default_workspace").1 == Some("acme")).await;
+    assert_eq!(b.live_settings.now().settings.user_requests_per_minute, 600);
     assert_eq!(b.user_limiter.max(), 300, "and its share of it");
     assert_eq!(b.shell.session_ttl(), std::time::Duration::from_secs(2 * 86_400));
     assert_eq!(b.zones.mode(), ferrum_kernel::zones::Mode::Report);
