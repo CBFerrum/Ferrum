@@ -203,6 +203,25 @@ pub fn marker_findings(st: &AppState) -> Vec<Finding> {
     vec![marker, timeline]
 }
 
+/// Object storage beyond the probe (docs/operations.md, "Object storage"): files still in a local directory or moving
+/// from one; how long deletions wait against the backups' reach; and the bucket's versioning, lifecycle rules,
+/// encryption at rest, public access and clock.
+pub async fn storage_findings(st: &AppState, production: bool) -> Vec<Finding> {
+    let now = st.live_settings.now();
+    let mut out = crate::store::place_findings(&st.kernel.db, &st.settings, production, st.objects.reads_directory()).await;
+    out.push(crate::store::lag_finding(now.settings.files_delete_after_days, now.settings.backup_reach_days));
+    match crate::store::Bucket::new(&st.settings) {
+        Ok(Some(bucket)) => out.extend(bucket.findings(now.settings.backup_reach_days).await),
+        Ok(None) => {}
+        Err(e) => out.push(Finding::warning(
+            "storage.bucket",
+            format!("the bucket cannot be asked about its configuration: {e}"),
+            "Check the object store's settings.",
+        )),
+    }
+    out
+}
+
 /// Everything, worst first.
 pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, ferrum_kernel::Error> {
     let production = ctx.environment == Environment::Production;
@@ -269,13 +288,7 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
         Ok(()) => Finding::ok("storage", "object storage takes a write, a read and a delete"),
         Err(e) => Finding::blocker("storage", format!("object storage refused a probe: {e}"), "Check FERRUM_S3_BUCKET, its region, endpoint and credentials."),
     });
-    if production && st.settings.s3_bucket.trim().is_empty() {
-        out.push(Finding::warning(
-            "storage.replicas",
-            "files are on this machine's disk",
-            "Set FERRUM_S3_BUCKET before running a second replica: each would have its own files.",
-        ));
-    }
+    out.extend(storage_findings(st, production).await);
     out.push(match st.kernel.scanner_ok().await {
         None => Finding::warning("uploads.scanning", "uploads are not scanned for malware", "Set FERRUM_CLAMAV_ADDR (docs/operations.md, Malware scanning)."),
         Some(Ok(())) => Finding::ok("uploads.scanning", "the malware scanner answers"),
