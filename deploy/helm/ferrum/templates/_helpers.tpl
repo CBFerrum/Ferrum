@@ -266,7 +266,10 @@ reads another server or a backup, its `externalClusters`. CloudNativePG reads th
 Cluster. Fields checked against CloudNativePG 1.30 (docs/src/bootstrap.md, database_import.md,
 recovery.md) and the Barman Cloud plugin 0.16 (web/docs/usage.md).
   empty     initdb: a new, empty database (today's).
-  import    initdb.import, type microservice: pg_dump of one database from a running server, restored here.
+  import    initdb.import, type microservice: pg_dump of one database from a running server, restored here, read
+            through row-level security as the system's own session, so the source's own role will do.
+            pgDumpExtraOptions is in CloudNativePG's main branch (the release that added it is not checked), and the
+            `options` connection parameter is passed to libpq as given (from memory, not checked against the operator).
             The server sees a database it never knew and holds outbound work ("After restoring a backup").
   copy      pg_basebackup: a physical copy of a running server, same PostgreSQL major version. It keeps the
             database's identity, but the copy starts on a new timeline, which the server also holds for
@@ -286,7 +289,7 @@ bootstrap:
     owner: ferrum
 {{- else if or (eq $mode "import") (eq $mode "copy") -}}
 {{- $host := required (printf "database.bootstrap.mode %s copies from another server: set database.bootstrap.source.host" $mode) $src.host -}}
-{{- $user := required (printf "database.bootstrap.mode %s: set database.bootstrap.source.user (%s)" $mode (ternary "a superuser: row-level security hides every workspace's rows from any other role" "a role with REPLICATION and LOGIN" (eq $mode "import"))) $src.user -}}
+{{- $user := required (printf "database.bootstrap.mode %s: set database.bootstrap.source.user (%s)" $mode (ternary "the role the server runs as there, which owns the database, or a superuser" "a role with REPLICATION and LOGIN" (eq $mode "import"))) $src.user -}}
 {{- $pw := $src.passwordSecret | default dict -}}
 {{- $pwName := required (printf "database.bootstrap.mode %s: set database.bootstrap.source.passwordSecret.name, a Secret holding that role's password" $mode) $pw.name -}}
 bootstrap:
@@ -298,6 +301,9 @@ bootstrap:
       type: microservice
       databases: [{{ $src.database | default "ferrum" }}]
       source: {externalCluster: origin}
+      # Through row-level security as the system's own session (`options` below), so the source's ordinary role
+      # reads every workspace's rows (docs/operations.md, "Backups and restore"); harmless for a superuser.
+      pgDumpExtraOptions: ["--enable-row-security"]
   {{- else }}
   pg_basebackup:
     source: origin
@@ -312,6 +318,9 @@ externalClusters:
       user: {{ $user | quote }}
       dbname: {{ $src.database | default "ferrum" | quote }}
       sslmode: {{ $src.sslmode | default "prefer" | quote }}
+      {{- if eq $mode "import" }}
+      options: "-c ferrum.system=on -c ferrum.vault=on"
+      {{- end }}
     password: {name: {{ $pwName }}, key: {{ $pw.key | default "password" }}}
 {{- else if eq $mode "recovery" -}}
 {{- $r := $b.recovery | default dict -}}

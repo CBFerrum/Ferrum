@@ -313,7 +313,8 @@ database:
       host: ""
       port: 5432
       database: ferrum         # the database to import or, for copy, the one the application uses
-      user: ""                 # import: a superuser (row-level security hides rows from any other role);
+      user: ""                 # import: the role the server runs as there (it reads every row through row-level
+                               # security as the system's own session; a superuser also will do);
                                # copy: a role with REPLICATION and LOGIN
       passwordSecret: {name: "", key: password}   # a Secret you created, holding that role's password
       sslmode: prefer

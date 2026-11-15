@@ -823,12 +823,21 @@ before a floor is refused at start, the older ones included.
 * Clusters set up with the earlier manifests (`spec.backup.barmanObjectStore`, removed in
   CloudNativePG 1.31): install the plugin, then apply the new `database.yaml`. The `ObjectStore`
   takes the same `destinationPath`, so earlier backups and WAL stay usable for recovery.
-* Docker Compose (commands run in `deploy/`): schedule a dump of the database as its superuser —
-  as `ferrum` it fails, since that role is held to the workspaces' row-level security, and
-  leaves a truncated file — and an archive of the attachments volume, and copy both off the host:
+* A whole database as the server's own role, on any PostgreSQL: `deploy/dump.sh dump <address> <file>` and
+  `deploy/dump.sh restore <address> <file>`, with PostgreSQL's direct address (never a pooler in transaction mode)
+  and the role the server runs as. That role is held to the workspaces' row-level security: a plain `pg_dump` as
+  it fails, and one with `--enable-row-security` alone writes every workspace's table empty without a word. The
+  script sets `ferrum.system` (and `ferrum.vault`) for pg_dump's session alone, which the policies let through, with
+  `--enable-row-security`, and checks that the session took it. The restore goes into an empty database the role
+  owns, in one transaction, without owners or grants, leaving out a schema the database already has (an
+  administrator's `extensions`) and comments on extensions (only their owner may write them). It is proven by
+  `crates/kernel/tests/dump_it.rs`: every row of every table and every sequence came back, and the server started on
+  the copy. By hand: `PGOPTIONS='-c ferrum.system=on -c ferrum.vault=on' pg_dump --enable-row-security -Fc`.
+* Docker Compose (commands run in `deploy/`): schedule a dump of the database (as `ferrum`, as above, or as the
+  `postgres` superuser) and an archive of the attachments volume, and copy both off the host:
 
   ```bash
-  docker compose exec -T db pg_dump -U postgres -Fc ferrum > ferrum-$(date +%F).dump
+  docker compose exec -T -e PGOPTIONS='-c ferrum.system=on -c ferrum.vault=on' db pg_dump -U ferrum --enable-row-security -Fc ferrum > ferrum-$(date +%F).dump
   docker compose exec -T ferrum tar -C /var/lib/ferrum/files --warning=no-file-changed -czf - . > files-$(date +%F).tgz
   ```
 
@@ -2019,7 +2028,7 @@ installation it comes from.
 | Mode | What it does | Use it when you come from | Needs | After it |
 |---|---|---|---|---|
 | `empty` (default) | A new database | nothing: a new installation | | |
-| `import` | `pg_dump` of one database from a running PostgreSQL, restored here (`source`) | a Docker Compose installation, or any PostgreSQL up to the cluster's version (17), when an hour of downtime is acceptable: stop the server first, so nothing is written after the dump starts | the source reachable from the cluster; a superuser in `source.user` (row-level security hides every workspace's rows from any other role) and its password in a Secret | after `plan_move` at the source: nothing to do, the copy carries on. Without it: held as after a restore ("After restoring a backup") |
+| `import` | `pg_dump` of one database from a running PostgreSQL, restored here (`source`) | a Docker Compose installation, or any PostgreSQL up to the cluster's version (17), when an hour of downtime is acceptable: stop the server first, so nothing is written after the dump starts | the source reachable from the cluster; in `source.user` the role the server runs as there (it reads every row through row-level security as the system's own session: `pgDumpExtraOptions` and the `options` connection parameter, which CloudNativePG passes on; not yet run against a cluster) or a superuser, and its password in a Secret | after `plan_move` at the source: nothing to do, the copy carries on. Without it: held as after a restore ("After restoring a backup") |
 | `copy` | `pg_basebackup`: a physical copy of a running PostgreSQL (`source`) | another cluster or server on the same PostgreSQL major version, when the database is too large to dump | the same major version, architecture and tablespaces; a role with `REPLICATION` and `LOGIN` that `pg_hba.conf` admits from the cluster; two free `max_wal_senders`. Stop writes to the source before: the copy does not follow it | after `plan_move`: fenced until `ferrum task adopt_move` on the copy (the same database on a new timeline could also be the source's own standby). Without it: held unless `FERRUM_HOLD_ON_TIMELINE=false` |
 | `recovery` | the newest state, or `recovery.targetTime`, from backups in object storage (`recovery.objectStore`, `recovery.serverName`) | a lost cluster, or another cluster that backs up the way this chart does | the `ObjectStore` (this chart's own by default) and, when it is this chart's own, a new `database.backup.serverName` so the new cluster does not write over the backups it reads | after `plan_move`, from a backup taken once the source was fenced: as `copy`. Otherwise held as after any restore |
 
@@ -2138,9 +2147,9 @@ mark's time runs out would still carry on as moved, and send what the source the
 ### Kubernetes to Compose
 
 1. `kubectl -n ferrum exec deploy/ferrum -- ferrum task plan_move reason:"to Compose"`.
-2. Dump the database as its superuser (`kubectl -n ferrum cnpg psql` gives the address; `pg_dump -Fc`), and
-   restore it into the Compose database as in "Backups and restore" (an empty database, then
-   `pg_restore`).
+2. Dump the database (`deploy/dump.sh dump`, as the server's role, or as its superuser; `kubectl -n ferrum cnpg psql`
+   gives the address), and restore it into the Compose database as in "Backups and restore" (an empty database,
+   then `deploy/dump.sh restore` or `pg_restore`).
 3. Copy the bucket into the files volume (`aws s3 sync s3://<bucket>/ files/`, then `tar` into the volume).
 4. Start Compose with the cluster's `JWT_SECRET`, `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS`; run
    the doctor and `check_files`; point the names; scale the cluster's Deployments to 0.

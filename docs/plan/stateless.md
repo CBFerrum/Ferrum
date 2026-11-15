@@ -136,6 +136,28 @@ settings holding a host; the credential is the one in `DATABASE_URL`. A full dum
 "same database" check uses a lock. A restore is noticed through a marker in the object store. Moves and sandboxes
 run with an ordinary role. A rehearsal behaves like a managed service on this machine.
 
+Decided while building it (15 November 2026):
+
+- **The chart.** `database.external`: `urlSecret` (the older `database.urlSecret` still read), `directHost`, `readHost`,
+  `caSecret` (a projected volume at `/run/ferrum`, so D3's `root.key` can join it there), `egress` (`cidrs`, `ports`).
+  With an outside database the chart runs no Cluster, backups, pooler, read service or bootstrap; the migrate and
+  settings Jobs get the direct host and the certificate authority, never the read host.
+- **Hosts.** `database_direct_host` and `database_read_host` are stored settings (`host`, `host:port`; 5432 without a
+  port), applied at start; the address is `DATABASE_URL` with its host replaced and any `host`, `hostaddr` or `port`
+  in its query dropped. The old full addresses still win. A row in `setting` can therefore choose where the server
+  sends `DATABASE_URL`'s credential, which D2's rule for addresses given a secret keeps every other secret from;
+  with the certificate authority and `verify-full` a host it did not certify gets nothing (TLS fails before
+  authentication). The two settings stay in the environment in `minimal`, as the migrate Job needs the direct
+  host before the settings Job has run.
+- **The certificate authority.** Read by the `ferrum` command before anything else: the three database addresses in
+  the environment get `sslrootcert`, and a mode that checks it (none or `prefer` becomes `verify-full`, `require`
+  becomes `verify-ca` as libpq does; an address's own `sslrootcert` is left alone; `disable` or `allow` refuses to
+  start). One connection is tried first, so that a certificate that does not verify refuses the start in those words.
+- **The dump.** `deploy/dump.sh`: pg_dump as the server's role with `ferrum.system` and `ferrum.vault` set for its
+  session and `--enable-row-security`; the restore into an empty database in one transaction, without owners or
+  grants, leaving out schemas the database has and comments on extensions. The chart's `import` mode passes the same
+  setting as the `options` connection parameter and `--enable-row-security` as `pgDumpExtraOptions`.
+
 ## D8. Git
 
 The forge keeps its database in PostgreSQL, its eight kinds of objects in the object store, its sessions and issue
