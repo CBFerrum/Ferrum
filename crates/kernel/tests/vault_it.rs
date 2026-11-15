@@ -685,6 +685,18 @@ async fn rotation_under_use(dir: &Path, no_file: &Path) {
     let failed = failed.lock().unwrap().clone();
     assert!(failed.is_empty(), "{} uses failed during the rotations: {:?}", failed.len(), &failed[..failed.len().min(10)]);
     assert!(uses.load(Ordering::Relaxed) > 40);
+    // Changes to one secret from both replicas at once: none lost, none made twice, one current version.
+    let before = crm_a.describe(&a, ws, "hooks").await.unwrap().unwrap().version;
+    let changes = futures::future::join_all((0..8).map(|i| {
+        let (k, v) = if i % 2 == 0 { (&a, &crm_a) } else { (&b, &crm_b) };
+        v.rotate(k, ws, "hooks", New::Random(32))
+    }))
+    .await;
+    let mut versions: Vec<i32> = changes.into_iter().map(|c| c.unwrap().version).collect();
+    versions.sort();
+    assert_eq!(versions, (before + 1..=before + 8).collect::<Vec<_>>(), "each its own version, one after another");
+    assert_eq!(count(&db, format!("select count(*) from vault.secret where scope = '{w}' and name = 'hooks' and valid_until is null")).await, 1);
+    assert_eq!(count(&db, format!("select count(*) from vault.secret where scope = '{w}' and name = 'hooks'")).await, 2, "the current, and the one before it");
     a.maintenance().await.unwrap();
     assert_eq!(&**crm_b.reveal(&b, ws, "v9").await.unwrap(), b"value-9");
 

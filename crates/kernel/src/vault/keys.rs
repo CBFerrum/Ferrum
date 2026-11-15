@@ -84,36 +84,41 @@ pub(crate) fn raced(e: sqlx::Error) -> Error {
 
 type KeyRow = (i32, i32, Vec<u8>);
 
+/// Opens the vault again in the background, with the slot it opened with (one opening at a time: those that come
+/// meanwhile find it done).
+fn reopen_soon(db: &Db) {
+    let db = db.clone();
+    tokio::spawn(async move {
+        if let Err(e) = db.vault.reopen(&db).await {
+            tracing::warn!("opening the vault again after its root changed: {e}");
+        }
+    });
+}
+
 impl Root {
     /// What another replica's change means here: what it held of that key let go; after a change of the root, the
     /// vault opened again (in the background: what it holds keeps working meanwhile).
-    pub(crate) fn heard(self: &Arc<Self>, db: &Db, payload: &str) {
+    pub(crate) fn heard(&self, db: &Db, payload: &str) {
         let Some((scope, owner)) = heard(payload) else { return };
         self.cache.forget(scope, owner);
         if scope.is_none() {
-            let db = db.clone();
-            tokio::spawn(async move {
-                if let Err(e) = db.vault.reopen(&db).await {
-                    tracing::warn!("opening the vault again after its root changed: {e}");
-                }
-            });
+            reopen_soon(db);
         }
     }
 
-    /// The installation key at `version`: the one held, or, once another process has rotated it, the one the slots
-    /// open now.
+    /// The installation key at `version`: the one held. A newer one (another process rotated it) is opened again in
+    /// the background, and the caller asked to try again: opening needs a connection of its own, and the caller holds
+    /// one, so that callers waiting at once could otherwise take every connection there is.
     pub(crate) async fn installation_at(&self, db: &Db, version: i32) -> Result<Arc<Installation>> {
         let held = self.installation()?;
         if held.version == version {
             return Ok(held);
         }
-        let now = if version > held.version { self.reopen(db).await? } else { held };
-        if now.version == version {
-            Ok(now)
-        } else {
-            // A row read before a rotation this process has since seen: read again, it names the new version.
-            Err(Error::Retryable(format!("the vault's installation key is at version {}, a key named version {version}", now.version)))
+        if version > held.version {
+            reopen_soon(db);
         }
+        // Or a row read before a rotation this process has since seen: read again, it names the new version.
+        Err(Error::Retryable(format!("the vault's installation key is at version {}, a key named version {version}", held.version)))
     }
 
     async fn workspace_key_from(&self, db: &Db, scope: Uuid, version: i32, parent: i32, wrapped: &[u8]) -> Result<Arc<Key>> {
@@ -216,7 +221,7 @@ impl Root {
         super::root::lock(tx, false).await?;
         let installation = self.installation()?;
         if super::root::current_version(tx).await? != Some(installation.version) {
-            self.reopen(db).await?;
+            reopen_soon(db);
             return Err(Error::Retryable("the installation key changed meanwhile".into()));
         }
         let key = Key::random()?;
@@ -262,7 +267,7 @@ impl Kernel {
             super::root::lock(&mut tx, false).await?;
             let installation = root.installation()?;
             if super::root::current_version(&mut tx).await? != Some(installation.version) {
-                root.reopen(&self.db).await?;
+                reopen_soon(&self.db);
                 return Err(Error::Retryable("the installation key changed meanwhile".into()));
             }
             let version = current + 1;
