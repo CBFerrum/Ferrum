@@ -567,9 +567,102 @@ impl Vault {
     }
 }
 
+// R1 only, and gone in R2 with the old key: what an app sealed or keyed with the old key itself (`settings.secret_key`,
+// deprecated) keeps working through the app's own handle, from the copies adopted into the vault once the key is gone
+// from the environment, and never anything wider. Each names a context of the app's own ([`app_context`]); each use is
+// noted for `ferrum task legacy_key` and the doctor, as the other readers past the vault are.
+
+/// What may follow an app's id at the start of a context of its own.
+const SEPARATORS: &[char] = &[' ', '-', '.', ':', '/', '|'];
+
+/// Words the kernel's own labels for the old key begin with (`message opt-out`, `pulled-file`, `saml-sp|…`, `ferrum.…`,
+/// …), and owners that are not apps: an app with one of these ids is refused these calls, so that no app can name what
+/// the kernel sealed or keyed.
+const KERNEL_WORDS: &[&str] = &["action", "conn", "connection", "erased", "ferrum", "message", "platform", "plugin", "pulled", "saml", "server", "sso", "totp"];
+
+/// Whether app `id`, among the apps `all` registered here, may name `context`: it is `{id}`, then a separator, then more;
+/// it is not another app's (one whose longer id it also begins with, then a separator: `cloud-ops-x` is app
+/// `cloud-ops`'s, not `cloud`'s); it does not begin with a workspace's id (what the kernel seals for a workspace does);
+/// and `id` is not a word the kernel's own labels begin with.
+fn app_context<'a>(id: &str, mut all: impl Iterator<Item = &'a str>, context: &str) -> bool {
+    let after = |o: &str| context.strip_prefix(o).and_then(|rest| rest.chars().next().map(|c| (SEPARATORS.contains(&c), rest.len())));
+    (1..=200).contains(&context.len())
+        && !context.chars().any(char::is_control)
+        && matches!(after(id), Some((true, n)) if n > 1)
+        && !all.any(|o| o != id && o.len() > id.len() && matches!(after(o), Some((true, _))))
+        && context.get(..36).is_none_or(|s| s.parse::<Uuid>().is_err())
+        && !KERNEL_WORDS.contains(&id)
+}
+
+impl Vault {
+    /// This app's id, when `context` is one of its own ([`app_context`]); refused otherwise, and to any handle that is
+    /// not an app's.
+    fn own_context(&self, k: &Kernel, context: &str) -> Result<&str> {
+        let id = self.given(k)?;
+        if !matches!(self.owner, super::Owner::App(_)) || !app_context(id, k.hooks.vault_app_ids(), context) {
+            return Err(Error::Forbidden(
+                "an app names only contexts of its own: its id, then one of ' -.:/|', then more; never another app's or the platform's".into(),
+            ));
+        }
+        Ok(id)
+    }
+
+    /// R1 only: what the old key sealed for `context`, a context of this app's own, opened with every old key (the
+    /// environment's, and those adopted into the vault, so it opens once the key is gone). Goes in R2.
+    pub fn open_old(&self, k: &Kernel, context: &str, sealed: &str) -> Result<zeroize::Zeroizing<String>> {
+        let id = self.own_context(k, context)?;
+        k.note_old_key_by("reader:Vault::open_old", id);
+        k.old_keys
+            .iter()
+            .find_map(|key| key.open(context, sealed).ok())
+            .map(zeroize::Zeroizing::new)
+            .ok_or_else(|| Error::Invalid("this does not open with the old key: it was sealed for another context, or changed".into()))
+    }
+
+    /// R1 only: `plain` sealed with the old key for `context`, a context of this app's own, while the key is in the
+    /// environment, for the column this app's previous release reads; `None` once it is gone (no release that reads it
+    /// starts then). Goes in R2.
+    pub fn seal_old(&self, k: &Kernel, context: &str, plain: &str) -> Result<Option<String>> {
+        let id = self.own_context(k, context)?;
+        k.note_old_key_by("reader:Vault::seal_old", id);
+        k.env_key().map(|key| key.seal(context, plain)).transpose()
+    }
+
+    /// R1 only: `data`'s fingerprint for `context`, a context of this app's own, under each old key, as
+    /// `SecretKey::fingerprint` made it: to check what this app issued with the old key until it lapses, never to
+    /// issue anything new (its own keys do that: `derive`, `sign`). Goes in R2.
+    pub fn old_fingerprints(&self, k: &Kernel, context: &str, data: &str) -> Result<Vec<String>> {
+        let id = self.own_context(k, context)?;
+        k.note_old_key_by("reader:Vault::old_fingerprints", id);
+        Ok(k.old_keys.iter().map(|key| key.fingerprint(context, data)).collect())
+    }
+}
+
+impl Kernel {
+    /// Whether a message's secret values can be sealed here while they wait: what an app asks before it makes something
+    /// it sends that way, in place of asking whether the old key is set (`settings.secret_key`, deprecated).
+    pub fn seals_secret_values(&self) -> bool {
+        self.old_making().is_some() || self.db.vault.installation().is_ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_app_names_only_contexts_of_its_own() {
+        let apps = ["cloud", "cloud-ops", "helpdesk", "pos", "message"];
+        let ok = |id: &str, c: &str| app_context(id, apps.into_iter(), c);
+        assert!(ok("cloud", "cloud-dns-key") && ok("helpdesk", "helpdesk mail token") && ok("pos", "pos snapshot") && ok("cloud", "cloud:x"));
+        assert!(!ok("cloud", "cloud-ops-key"), "another app's: the longer id it begins with");
+        assert!(ok("cloud-ops", "cloud-ops-key"));
+        assert!(!ok("pos", "pos") && !ok("pos", "pos ") && !ok("pos", "posx snapshot") && !ok("pos", "helpdesk mail token"), "its id, a separator, then more");
+        assert!(!ok("message", "message opt-out"), "the kernel's own");
+        let workspace = format!("{}/plugin/x/y", Uuid::now_v7());
+        assert!(!ok(&workspace[..8], &workspace), "a workspace's");
+        assert!(!ok("pos", "pos \nx") && !ok("pos", &format!("pos {}", "x".repeat(200))));
+    }
 
     #[test]
     fn each_purpose_is_its_own() {

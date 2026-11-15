@@ -197,17 +197,45 @@ Status: being built (started 15 November 2026). The plan and its reasons: `STATE
   its hosts asks for them again; each request still goes through the connection's guard and `vault::carried`.
 - **Rotation.** Owner, workspace and installation keys rotate these secrets as any other. `reseal_secrets` and the
   retired keys keep rotating what the old columns hold (each then reads from there until the move takes it again).
-- **The old key's end.** `Kernel::legacy_key` (`ferrum task legacy_key`, the doctor) says it can go once nothing waits to
-  move and no path used it since the move first found nothing waiting; reads of the deprecated readers do not count,
-  apps that name `secret_key` do (the server's list of them).
+- **The old key's end.** Built in the old key's last uses, below: `Kernel::legacy_key` (`ferrum task legacy_key`, the
+  doctor) says it can go once every key is adopted, nothing waits to move and older builds are refused.
 - **Moves, sandboxes, deletion, dumps.** A workspace's values travel with its vault rows (the first half); old columns
   holding the mark pass a move as they are, and the source's old keys still open the rest. A sandbox has each by its
   rule; a deleted workspace's go with its vault; a deleted record's, channel's, connection's, provider's, token's or
   person's second factor go in the transaction that deletes it. A dump holds sealed rows and wrapped keys only.
-- **Not in this half**: plugins' settings, which the plugin host still seals with the old key; and what the old key
-  still keys or seals for a while (opt-out links, erased opt-outs' marks, OAuth state and sign-in verifiers, public file
-  addresses, connector account fingerprints, receipts' secret parameters, messages waiting with secret values, process
-  payloads). So `FERRUM_SECRET_KEY` stays required in production in this release.
+- **Not in this half**: plugins' settings, and what the old key keyed or sealed for a while: the old key's last uses.
+
+### D5, the old key's last uses (built)
+
+A new installation needs no `FERRUM_SECRET_KEY`, and one that has it takes it out of its environment
+(crates/kernel/src/vault/keyed.rs; docs/operations.md, "Retiring the old key").
+
+- **Keys of the platform's own.** What the old key keyed or sealed for a while has a key derived from the platform's
+  owner key for one purpose (`derive`): a workspace's for opt-out links, erased opt-outs (`erased:v<version>:…`),
+  sign-ins' states and verifiers, public addresses of files, connectors' account fingerprints, receipts' digests and
+  messages waiting with secret values (`seal`, under the platform's key, for those); the installation's for processes'
+  payloads (the codec is not told which run a payload is for), each naming the version that sealed it. Every version
+  that derived or sealed one is kept (`outside`): links, addresses and erased opt-outs are checked under each, so they
+  outlive a rotation; receipts' digests and connectors' fingerprints are made with the current version only, so a
+  request repeated across a rotation is answered as a new one. With the vault closed each is refused; nothing falls back
+  to the old key once it is retired.
+- **The window.** The previous build checks these with the old key alone, so while the key is configured and an older
+  build may still start, they are made with it, as before; a rollback finds every link, sign-in, address and receipt
+  still good. Older builds are refused by a floor (`old-key-retired`): `ferrum task legacy_key retire:yes` puts it in
+  place, once every key is adopted and nothing waits to move; so does the first thing a replica makes without the key.
+- **Adopted once.** Each key the environment configures (`FERRUM_SECRET_KEY`, `FERRUM_RETIRED_SECRET_KEYS`, and
+  development's key derived from `JWT_SECRET` before the vault) is a secret of the platform's in the installation's scope
+  (`legacy.key.<id>`, used, never revealed, its name refused to the verbs), written at the first start with the vault open
+  under the secret's lock, so replicas starting together write it once. Whatever the old key sealed or keyed is opened
+  and checked with these copies once the environment no longer has it.
+- **Apps.** `settings.secret_key` stays public through R1 (apps compiled in at their pinned revisions read it): it holds
+  the environment's key, else the one it last had (adopted), else a key of the platform's own. An app moves onto its
+  own handle; what it sealed or keyed with the old key itself it keeps through the R1-only calls `open_old`, `seal_old`
+  and `old_fingerprints`, for contexts of its own (docs/app-contract.md, *The vault*).
+- **Plugins' settings** are sealed under each plugin's own key in the workspace's vault, beside the old key while it is
+  configured; the move takes those from before (sealed with the old key, or plain). Never stored plain.
+- **Production** no longer requires the key where the vault opens; development with the vault open no longer derives
+  one. Compose, Kubernetes and the chart pass it through where it is set.
 
 ## D6. Object storage only
 

@@ -39,6 +39,52 @@ compiles in; the rest is reviewed, and walked in a browser (docs/platform/eviden
 - **A walk on a running server** before a release that changes flows people use, with what it found
   and fixed recorded.
 
+## The vault
+
+An app keeps its keys and secrets in the platform's vault, through a handle of its own, and never holds a key of the
+platform's (docs/security.md, *The vault*; docs/plan/stateless.md, D4).
+
+**Its handle.** An app registers under its id (`HookRegistry::app(id, packages, |h| ...)`), and takes its handle inside
+that registration (`h.vault()`): a `Vault` that opens only what is this app's, and works with the kernel the registry
+boots and no other. Keep it in what you register. Asked for anywhere else, it is a handle nothing accepts, and the
+server does not start.
+
+**Its verbs**, each for a workspace (`Scope::Workspace`) or the installation (`Scope::Installation`):
+
+| Verb | What it does |
+| --- | --- |
+| `set`, `rotate`, `remove`, `describe`, `list` | its secrets, under a rule: whether its code may read the value, the hosts it may be sent to, what a sandbox has of it, how long the version before still verifies |
+| `reveal` | a secret's value, where its rule allows it |
+| `sign`, `verify` | HMAC (a value) or Ed25519 (a key pair the vault made); `verify` takes the version before during its overlap |
+| `derive`, `derive_at` | a key for one purpose from the app's own key, and again at an older version for what was made with it |
+| `seal`, `open` | data sealed under the app's own key for a context, kept wherever the app keeps it; it names the version that sealed it, and opens after a rotation |
+| `carry` | a secret put on an outbound request, for the hosts its rule names |
+| `field` | the value of a secret field its own packages declare (a field one app adds to another's entity is the adder's), read in the caller's transaction and recorded; another app's is refused |
+
+`Kernel::secret` (any app's secret field) still works and is noted, and goes in the next release.
+
+**What it made with the old key (R1 only).** An app that sealed or keyed things of its own with the old key
+(`settings.secret_key`, deprecated) keeps them working through its handle until they lapse, with no key in its hands and
+nothing wider. Each names a context of the app's own: its id, then one of ` -.:/|`, then more (`cloud-dns-key`,
+`helpdesk mail token`, `pos snapshot`); not one that another app's longer id also begins (`cloud-ops-…` is `cloud-ops`'s,
+not `cloud`'s), not one that begins with a workspace's id, and never for an app whose id is a word the platform's own
+labels begin with (`message`, `connection`, `ferrum`, …). Anything else is refused. They work from the copies the vault
+adopted, so they keep working once the key is gone from the environment, each use is noted for `ferrum task
+legacy_key`, and they go in R2 with the key:
+
+| Call | What it does |
+| --- | --- |
+| `open_old(k, context, sealed)` | what the old key sealed for `context`, opened with every old key |
+| `seal_old(k, context, plain)` | `plain` sealed with the old key for the column the app's previous release reads, while the key is in the environment; `None` once it is gone |
+| `old_fingerprints(k, context, data)` | `data`'s fingerprint under each old key, as `SecretKey::fingerprint` made it: to check what the app issued, never to issue anything new |
+
+What each compiled-in app does in its repository: Commerce asks `Kernel::seals_secret_values()` in place of whether the
+old key is set (a message's secret values are sealed with the vault now); Helpdesk checks the mail tokens 0.11 issued with
+`old_fingerprints` (`helpdesk mail token`, `helpdesk mail token hash`); POS signs its snapshots with a key it derives
+(`derive`), the server never checks their old signatures, and a till comparing one sees it change once; Cloud opens and
+writes what it sealed with `open_old` and `seal_old` (its contexts begin `cloud-`). Until each has, the old key's field
+stays public: apps that still read it are given the same key once it is gone from the environment.
+
 ## How the check works
 
 `scripts/check_apps.py` reads `cargo metadata` for the packages that come from CBFerrum's app

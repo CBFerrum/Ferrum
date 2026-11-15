@@ -948,7 +948,7 @@ impl Kernel {
         use crate::doctor::Finding;
         let l = self.legacy_key(apps).await?;
         let mut out = Vec::new();
-        let readers: Vec<String> = l.uses.iter().filter(|u| u.0.starts_with("reader:")).map(|u| u.1.clone()).collect();
+        let readers: Vec<String> = l.uses.iter().filter_map(|u| u.0.strip_prefix("reader:").map(|what| format!("{what} from {}", u.1))).collect();
         if !readers.is_empty() || !l.apps.is_empty() {
             out.push(Finding::warning(
                 "legacy_key.apps",
@@ -956,9 +956,9 @@ impl Kernel {
                     "apps read past the vault: {}{}{}",
                     l.apps.join(", "),
                     if l.apps.is_empty() || readers.is_empty() { "" } else { "; " },
-                    readers.iter().map(|r| format!("Kernel::secret from {r}")).collect::<Vec<_>>().join(", ")
+                    readers.join(", ")
                 ),
-                "Each moves onto its own vault handle in its repository (Vault::field, derive, seal); these readers go in the next release.",
+                "Each moves onto its own vault handle in its repository (Vault::field, derive, seal); these readers, and the old key's calls (open_old, seal_old, old_fingerprints), go in the next release.",
             ));
         }
         let finding = match (l.configured, l.adopted.is_empty()) {

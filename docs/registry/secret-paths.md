@@ -9,35 +9,32 @@ for a while, or reads it to move what it sealed, and goes as each moves.
 
 ## The master key outside the vault
 
-`FERRUM_SECRET_KEY` and what reads it, by file (an app's as `package:path`), not counting tests and comments.
+`FERRUM_SECRET_KEY` and what reads it, by file (an app's as `package:path`), not counting tests and comments, and why
+(`WHY` in scripts/secret_paths.py).
 
-| Where | Uses |
-|---|---|
-| `crates/kernel/src/approvals.rs` | 1 |
-| `crates/kernel/src/connect.rs` | 1 |
-| `crates/kernel/src/connections/mod.rs` | 1 |
-| `crates/kernel/src/connections/oauth.rs` | 3 |
-| `crates/kernel/src/connections/public.rs` | 2 |
-| `crates/kernel/src/kms.rs` | 14 |
-| `crates/kernel/src/lib.rs` | 4 |
-| `crates/kernel/src/messages.rs` | 6 |
-| `crates/kernel/src/sandbox.rs` | 6 |
-| `crates/kernel/src/secret.rs` | 20 |
-| `crates/kernel/src/sso.rs` | 3 |
-| `crates/kernel/src/twofactor.rs` | 1 |
-| `crates/kernel/src/webpush.rs` | 2 |
-| `crates/kernel/src/workspace_move.rs` | 11 |
-| `crates/plugins/src/lib.rs` | 9 |
-| `crates/process/src/lib.rs` | 3 |
-| `ferrum-app-commerce:gateways/stripe/src/lib.rs` | 1 |
-| `ferrum-app-commerce:src/gift_card.rs` | 1 |
-| `ferrum-app-commerce:src/shopper.rs` | 1 |
-| `ferrum-app-pos:src/snapshot.rs` | 1 |
-| `server/src/app.rs` | 18 |
-| `server/src/doctor.rs` | 8 |
-| `server/src/process.rs` | 3 |
-| `server/src/state.rs` | 2 |
-| `server/src/tasks.rs` | 7 |
+| Where | Uses | Why |
+|---|---|---|
+| `crates/kernel/src/approvals.rs` | 1 | a refusal names it: with the vault closed it still seals, as before |
+| `crates/kernel/src/connect.rs` | 1 | a refusal names it: with the vault closed it still seals, as before |
+| `crates/kernel/src/connections/mod.rs` | 1 | a refusal names it: with the vault closed it still seals, as before |
+| `crates/kernel/src/connections/oauth.rs` | 2 | a sign-in's state is made and checked with the key it is given (the vault's, or the old key while older builds may run) |
+| `crates/kernel/src/kms.rs` | 14 | unwraps the old key from a key-management service, where an installation still configures it |
+| `crates/kernel/src/lib.rs` | 4 | the settings that carry the old key to the kernel (adopted from them), and what apps that still read it are given |
+| `crates/kernel/src/messages.rs` | 3 | opt-out tokens and erased opt-outs are made with the key they are given (the vault's, or the old key); a refusal names it |
+| `crates/kernel/src/sandbox.rs` | 5 | a sandbox of another installation's workspace opens what that one's old keys sealed, and seals the previous build's columns |
+| `crates/kernel/src/secret.rs` | 14 | the old key itself: opens the previous build's columns, seals them while it is configured, rotates them |
+| `crates/kernel/src/sso.rs` | 3 | a refusal names it: with the vault closed it still seals, as before |
+| `crates/kernel/src/twofactor.rs` | 1 | a refusal names it: with the vault closed it still seals, as before |
+| `crates/kernel/src/webpush.rs` | 2 | what it says when the push key does not open names it |
+| `crates/kernel/src/workspace_move.rs` | 9 | a move opens what the source's old keys sealed, and seals the previous build's columns here |
+| `ferrum-app-commerce:gateways/stripe/src/lib.rs` | 1 | Stripe's own `secret_key` (the name of a plugin's credential), not the old key |
+| `ferrum-app-commerce:src/gift_card.rs` | 1 | asks whether the old key is set: moves to `Kernel::seals_secret_values` in its repository |
+| `ferrum-app-commerce:src/shopper.rs` | 1 | asks whether the old key is set: moves to `Kernel::seals_secret_values` in its repository |
+| `ferrum-app-pos:src/snapshot.rs` | 1 | signs snapshots with the old key: moves to a key of its own (`derive`) in its repository |
+| `server/src/app.rs` | 16 | reads the old keys from the environment for the kernel to adopt and for the previous build's columns |
+| `server/src/doctor.rs` | 8 | says whether the old key is set, and how |
+| `server/src/state.rs` | 2 | the old keys' settings |
+| `server/src/tasks.rs` | 7 | `kms_wrap` prints the old keys wrapped by the key-management service |
 
 ## Cryptography crates in apps
 
