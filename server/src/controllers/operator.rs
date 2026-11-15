@@ -85,7 +85,127 @@ async fn unset(State(app): State<AppContext>, headers: HeaderMap, Path(key): Pat
     changed(&st, crate::settings::Change { name: key, pool: q.pool, value: None }, None).await
 }
 
+/// `GET /api/operator/vault`: the vault as `ferrum task vault_status` shows it: open or why not, its slots, its keys and
+/// secrets counted. Never a key.
+async fn vault_status(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    operator(&st, &headers).await?;
+    Ok(no_store(Json(ferrum_kernel::vault::status(&st.kernel.db).await?).into_response()))
+}
+
+/// The installation's secrets, by owner: names, rules, when set and last used. Never a value.
+pub(crate) fn by_owner(secrets: Vec<ferrum_kernel::vault::Described>) -> Value {
+    let mut owners: std::collections::BTreeMap<String, Vec<ferrum_kernel::vault::Described>> = Default::default();
+    for d in secrets {
+        owners.entry(d.owner.clone()).or_default().push(d);
+    }
+    Value::Array(owners.into_iter().map(|(owner, secrets)| json!({"owner": owner, "secrets": secrets})).collect())
+}
+
+/// `GET /api/operator/secrets`: the installation's secrets by owner, and the platform's own (the registry's), each
+/// with where it comes from now (`environment`, `vault`, or `default`: none) and when a change of it applies.
+async fn secrets(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    operator(&st, &headers).await?;
+    let owners = by_owner(st.vault.installation_secrets(&st.kernel).await?);
+    let platform: Vec<Value> = crate::secrets::sources(&st)
+        .await
+        .into_iter()
+        .filter_map(|(key, (source, _))| {
+            let d = crate::secrets::find(&key)?;
+            let applies = if d.vault == Some(crate::settings::Held::Library) { "start" } else { "live" };
+            Some(json!({"key": key, "env": d.env, "held": d.vault, "source": source, "applies": applies}))
+        })
+        .collect();
+    Ok(no_store(Json(json!({"owners": owners, "platform": platform})).into_response()))
+}
+
+/// What a person or the operator gives to set or rotate a secret: exactly one of a value, a random value the vault
+/// makes (`random`: its bytes, shown once) or an Ed25519 pair; the rule, to set one.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SecretBody {
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    random: Option<usize>,
+    #[serde(default)]
+    ed25519: bool,
+    #[serde(default)]
+    pub(crate) rule: Option<ferrum_kernel::vault::Rule>,
+    /// For a token of the platform's: how long the one before still works, in seconds.
+    #[serde(default)]
+    overlap_secs: Option<i64>,
+}
+
+impl SecretBody {
+    pub(crate) fn new_value(&mut self) -> Result<ferrum_kernel::vault::New, ApiError> {
+        use ferrum_kernel::vault::{New, Zeroizing};
+        match (self.value.take(), self.random, self.ed25519) {
+            (Some(v), None, false) => Ok(New::Value(Zeroizing::new(v.into_bytes()))),
+            (None, Some(n), false) => Ok(New::Random(n)),
+            (None, None, true) => Ok(New::Ed25519),
+            _ => Err(ApiError(Error::field("value", "give one of value, random (its bytes) or ed25519"))),
+        }
+    }
+}
+
+/// What a change of a secret answers: it described, and a value the vault made, this once.
+pub(crate) fn changed_secret(c: ferrum_kernel::vault::Changed) -> Response {
+    let mut out = json!({"secret": c.secret});
+    if let Some(shown) = &c.shown {
+        out["shown"] = json!(shown.as_str());
+    }
+    no_store(Json(out).into_response())
+}
+
+/// `PUT /api/operator/secrets/{owner}/{name}` (and `POST …/rotate`): sets one of the installation's secrets. The
+/// platform's own are the registry's, each as its kind says (crate::secrets::set): a token made here and shown once, a
+/// new key that signs sessions, or a value given. Another owner's takes the body's value and rule.
+async fn set_secret(
+    State(app): State<AppContext>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Json(mut body): Json<SecretBody>,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    operator(&st, &headers).await?;
+    if owner == "platform" {
+        let def = crate::secrets::find(&name).ok_or_else(|| ApiError(Error::NotFound(format!("platform secret {name}"))))?;
+        let given = match body.value.take() {
+            Some(v) => crate::secrets::Given::Value(ferrum_kernel::vault::Zeroizing::new(v)),
+            None => crate::secrets::Given::Made,
+        };
+        let done = crate::secrets::set(&st, def, given, body.overlap_secs.unwrap_or(0)).await?;
+        return Ok(no_store(Json(done).into_response()));
+    }
+    let value = body.new_value()?;
+    Ok(changed_secret(match body.rule.take() {
+        Some(rule) => st.vault.operator_set(&st.kernel, &owner, &name, value, rule).await?,
+        None => st.vault.operator_rotate(&st.kernel, &owner, &name, value).await?,
+    }))
+}
+
+/// `DELETE /api/operator/secrets/{owner}/{name}`: removes one of the installation's secrets.
+async fn remove_secret(State(app): State<AppContext>, headers: HeaderMap, Path((owner, name)): Path<(String, String)>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    operator(&st, &headers).await?;
+    let removed = if owner == "platform" {
+        let def = crate::secrets::find(&name).ok_or_else(|| ApiError(Error::NotFound(format!("platform secret {name}"))))?;
+        st.vault.remove(&st.kernel, ferrum_kernel::vault::Scope::Installation, &def.key).await?
+    } else {
+        st.vault.operator_remove(&st.kernel, &owner, &name).await?
+    };
+    Ok(no_store(Json(json!({"removed": removed})).into_response()))
+}
+
 pub fn routes() -> Routes {
-    use axum::routing::{get, put};
-    Routes::new().add("/api/operator/settings", get(list)).add("/api/operator/settings/{key}", put(set).delete(unset))
+    use axum::routing::{get, post, put};
+    Routes::new()
+        .add("/api/operator/settings", get(list))
+        .add("/api/operator/settings/{key}", put(set).delete(unset))
+        .add("/api/operator/vault", get(vault_status))
+        .add("/api/operator/secrets", get(secrets))
+        .add("/api/operator/secrets/{owner}/{name}", put(set_secret).delete(remove_secret))
+        .add("/api/operator/secrets/{owner}/{name}/rotate", post(set_secret))
 }

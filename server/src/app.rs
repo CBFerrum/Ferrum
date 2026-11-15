@@ -665,6 +665,7 @@ impl Hooks for App {
             .add_route(controllers::domains::routes())
             .add_route(controllers::shell::routes())
             .add_route(controllers::operator::routes())
+            .add_route(controllers::secrets::routes())
     }
 
     async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {

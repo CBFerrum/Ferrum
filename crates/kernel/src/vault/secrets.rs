@@ -919,6 +919,51 @@ impl Kernel {
     }
 }
 
+// Operators: the installation's own secrets (every owner's), changed behind the operator's token. Only the platform's
+// handle does it, which the server alone holds: an app's handle, or a plugin's, is refused.
+
+impl Vault {
+    /// The owner `owner`'s handle, for an operator acting through the platform's handle (refused for any other).
+    fn for_operator(&self, k: &Kernel, owner: &str) -> Result<Vault> {
+        if self.bound(k)? != "platform" {
+            return Err(Error::Forbidden("only the platform's handle acts for the operator".into()));
+        }
+        of_owner(k, owner)
+    }
+
+    /// The installation's secrets, every owner's, as its operator sees them: names, rules and dates, never a value.
+    pub async fn installation_secrets(&self, k: &Kernel) -> Result<Vec<Described>> {
+        self.for_operator(k, "platform")?;
+        list(k, Scope::Installation, None).await
+    }
+
+    /// Sets `owner`'s secret `name` of the installation for the operator; recorded as the operator's. A value the vault
+    /// made is returned to show once.
+    pub async fn operator_set(&self, k: &Kernel, owner: &str, name: &str, value: New, rule: Rule) -> Result<Changed> {
+        let v = self.for_operator(k, owner)?;
+        let request = crate::db::Trace::operation().unwrap_or_default();
+        let who = Who { actor: None, request: &request, by: Some("operator") };
+        let (secret, shown) = write(k, Scope::Installation, v.bound(k)?, name, value, Some(rule), &who).await?;
+        Ok(Changed { secret, shown })
+    }
+
+    /// Rotates `owner`'s secret `name` of the installation for the operator, as [`Vault::operator_set`].
+    pub async fn operator_rotate(&self, k: &Kernel, owner: &str, name: &str, value: New) -> Result<Changed> {
+        let v = self.for_operator(k, owner)?;
+        let request = crate::db::Trace::operation().unwrap_or_default();
+        let who = Who { actor: None, request: &request, by: Some("operator") };
+        let (secret, shown) = write(k, Scope::Installation, v.bound(k)?, name, value, None, &who).await?;
+        Ok(Changed { secret, shown })
+    }
+
+    /// Removes `owner`'s secret `name` of the installation for the operator; whether there was one.
+    pub async fn operator_remove(&self, k: &Kernel, owner: &str, name: &str) -> Result<bool> {
+        let v = self.for_operator(k, owner)?;
+        let request = crate::db::Trace::operation().unwrap_or_default();
+        remove(k, Scope::Installation, v.bound(k)?, name, &Who { actor: None, request: &request, by: Some("operator") }).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

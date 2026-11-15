@@ -2243,6 +2243,53 @@ time); without it, or while the server has none, `403` with the same answer eith
 Each change is recorded in `setting_change` with its value before and after (`updated_by` `operator`) and announced to
 every replica.
 
+## The vault and the installation's secrets — `/api/operator/vault`, `/api/operator/secrets` (the operator)
+
+The installation's own scope of the vault ([operations](operations.md#the-vault)), behind the operator's token as the
+settings are, never cached. No answer holds a value; one the vault or the server makes is shown once, in the answer
+that made it (`shown`).
+
+* `GET /api/operator/vault` → the vault as `ferrum task vault_status` shows it: `open`, `closed_because`,
+  `opened_with`, `installation_version`, `slots` (`kind`, `made_at`, `how`), the keys and secrets counted, what is
+  being sealed again. Never a key.
+* `GET /api/operator/secrets` → `{owners: [{owner, secrets: [...]}], platform: [...]}`. Each secret: `owner`,
+  `workspace` (`null`), `name`, `kind` (`value` or `ed25519`), `version`, `rule` (`reveal`, `hosts`, `sandbox`,
+  `overlap_secs`, `expires_at`), `set_at`, `set_by`, `last_used` (a day), `public_key` (an Ed25519 pair's), and
+  `previous_until` (until when the version before still verifies). `platform`: each of the platform's own secrets
+  (the registry's `vault:`): `key`, `env`, `held` (`session`, `compared` or `library`), `source` (`environment`,
+  `vault` or `default`: none), `applies` (`live`: at once on every replica; `start`: at each replica's next start).
+* `PUT /api/operator/secrets/{owner}/{name}` (and `POST /api/operator/secrets/{owner}/{name}/rotate`). For the owner
+  `platform`, `{name}` is the registry's key, and what happens is its kind's: a token the server compares (`{}`, or
+  `{"overlap_secs": 3600}` for how long the one before still works) is made and shown once → `{secret, shown}`;
+  `jwt_secret` (`{}`) makes a new key that signs sessions → `{secret}` (`session.<n>`); a secret handed to a library
+  takes `{"value": "…"}`, bound to the host it is sent to now → `{secret}`. For any other owner (an app's id,
+  `plugin:<name>`): exactly one of `{"value": "…"}`, `{"random": 32}` (bytes; shown once) or `{"ed25519": true}`, with
+  `{"rule": {...}}` to set it (without one, a rotation under its rule) → `{secret, shown?}`. `404`: no such owner or
+  platform secret; `422`: a value where none is taken, none where one is needed, a rule that is not one; `503`: the
+  vault is closed.
+* `DELETE /api/operator/secrets/{owner}/{name}` → `{"removed": true|false}`.
+
+Each change is on the vault's own record (`ferrum task vault_events`), `by` `operator`, never a value.
+
+## Secrets — `/api/admin/secrets` (a workspace's administrators)
+
+A workspace's secrets in the vault, every owner's, for the Administration screen ([operations](operations.md#the-vault)).
+An administrator of the workspace reads them; setting, rotating and removing one also needs a confirmed identity:
+without one, `403` with error `step_up` and the ways to confirm it (*Confirming it is you*). No answer holds a value;
+one the vault makes is shown once, in the answer that made it. Never cached.
+
+* `GET /api/admin/secrets` → `{owners: [{owner, secrets: [...]}]}`, each secret described as above (`workspace` its
+  id). `403`: not an administrator of it.
+* `PUT /api/admin/secrets/{owner}/{name}` with exactly one of `{"value": "…"}`, `{"random": 32}` (bytes, 16 to 64; shown
+  once) or `{"ed25519": true}`, and `{"rule": {"reveal": false, "hosts": ["api.example.com"], "sandbox": "blank|regenerate|keep",
+  "overlap_secs": 0, "expires_at": null}}` (absent: used, never revealed, blank in a sandbox) → `{secret, shown?}`.
+  `{owner}`: `platform`, an app's id, or `plugin:<name>`. `{name}`: lowercase letters, digits and `_ . -`.
+* `POST /api/admin/secrets/{owner}/{name}/rotate` with one of `value`, `random`, `ed25519` → `{secret, shown?}`: a new
+  version under its rule; the one before verifies for its rule's overlap. `404`: no such secret.
+* `DELETE /api/admin/secrets/{owner}/{name}` → `{"removed": true|false}`.
+
+Each change is on the workspace's audit trail (owner, name, verb, version; never a value).
+
 ## ERPNext compatibility
 
 `GET|POST /api/resource/{DocType}`, `GET|PUT|DELETE /api/resource/{DocType}/{name}` (`name` = document number or id; DocType names map by removing spaces), `GET /api/method/frappe.auth.get_logged_user`. Responses use `{"data": ...}`.
