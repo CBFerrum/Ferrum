@@ -144,6 +144,24 @@ pub async fn database_settings_findings(st: &AppState) -> Vec<Finding> {
     out
 }
 
+/// A direct or read host from the settings table that this replica does not use, because it could draw the database's
+/// password elsewhere (docs/operations.md, "Any PostgreSQL").
+pub fn stored_host_findings(st: &AppState, database_url: &str) -> Vec<Finding> {
+    let now = st.live_settings.start.clone();
+    ["database_direct_host", "database_read_host"]
+        .into_iter()
+        .filter_map(|key| {
+            crate::settings::stored_host_refused(&now.snapshot, key, database_url).err().map(|why| {
+                Finding::warning(
+                    if key == "database_direct_host" { "database.direct_host" } else { "database.read_host" },
+                    format!("the setting {key} from the database is not used: {why}"),
+                    "Give the host in the environment (FERRUM_DATABASE_DIRECT_HOST, FERRUM_DATABASE_READ_HOST), mount the database's certificate authority, or remove the setting.",
+                )
+            })
+        })
+        .collect()
+}
+
 /// The restore marker as this replica last saw it, and what a new timeline does here (docs/operations.md, "After
 /// restoring a backup" and "Any PostgreSQL").
 pub fn marker_findings(st: &AppState) -> Vec<Finding> {
@@ -203,6 +221,7 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
         Finding::ok("restore", "no restore is waiting for anyone")
     });
     out.extend(marker_findings(st));
+    out.extend(stored_host_findings(st, &ctx.config.database.uri));
     if st.kernel.db.fenced() {
         out.push(Finding::blocker("authority", "this region does not hold the right to write", "See docs/operations.md, Regions."));
     }

@@ -731,6 +731,34 @@ pub fn with_host(url: &str, host: &str) -> Result<String> {
     Ok(u.to_string())
 }
 
+/// Whether a host taken from the settings table may be given `url`'s password (D7): only `url`'s own host (another port is
+/// fine: several services put their pooler and their direct port on one name), or any host when the connection checks
+/// the server's certificate and its name against an authority given here (`sslmode=verify-full` with `sslrootcert`:
+/// the mounted one, which [`with_ca`] names, or the address's own). The authorities built into the program are not
+/// enough (nor `sslrootcert=system`, libpq's word for them): anyone can have a certificate from one for a name of their own. A host from the environment is not asked.
+/// Why not, in plain words, otherwise.
+pub fn may_send_password(url: &str, host: &str) -> std::result::Result<(), String> {
+    let u = address(url).map_err(|e| e.to_string())?;
+    let h = host.trim();
+    let name = match h.rsplit_once(':') {
+        Some((name, port)) if port.bytes().all(|b| b.is_ascii_digit()) && (!name.contains(':') || name.starts_with('[')) => name,
+        _ => h,
+    };
+    if u.host_str().is_some_and(|own| own.eq_ignore_ascii_case(name)) {
+        return Ok(());
+    }
+    let query: Vec<(String, String)> = u.query_pairs().into_owned().collect();
+    let says = |k: &str| query.iter().find(|(q, _)| q == k).map(|(_, v)| v.to_ascii_lowercase());
+    if says("sslmode").as_deref() == Some("verify-full") && says("sslrootcert").is_some_and(|f| !f.is_empty() && f != "system") {
+        return Ok(());
+    }
+    Err(format!(
+        "{h} is not DATABASE_URL's host, and the connection to it would not check the server's certificate and name against an authority \
+         given here, so it would be given the database's password: set it in the environment, or mount the database's certificate \
+         authority at {DB_CA} (or give sslmode=verify-full and sslrootcert in DATABASE_URL)"
+    ))
+}
+
 /// `url` trusting the certificate authority at `ca` (D1): the address's own `sslrootcert`, when it names one, wins and
 /// nothing changes; otherwise `ca` becomes it, and the TLS mode is raised so that the certificate is checked: none or
 /// `prefer` becomes `verify-full`, `require` becomes `verify-ca` (as libpq treats `require` with a root certificate).
@@ -818,6 +846,30 @@ mod address_tests {
             assert!(matches!(with_host(url, bad), Err(Error::Invalid(_))), "{bad:?}");
         }
         assert!(with_host("not an address", "db").is_err());
+    }
+
+    #[test]
+    fn a_stored_host_gets_the_password_only_where_it_cannot_be_drawn_elsewhere() {
+        let plain = "postgres://u:p@db.example.com:6543/d";
+        assert_eq!(may_send_password(plain, "db.example.com:5432"), Ok(()), "the same host, another port");
+        assert_eq!(may_send_password(plain, "DB.Example.com"), Ok(()), "names are not case-sensitive");
+        assert_eq!(may_send_password("postgres://u:p@[2001:db8::1]:6432/d", "[2001:db8::1]:5432"), Ok(()));
+        for other in ["evil.example.com", "evil.example.com:5432", "db.example.com.evil.net", "[2001:db8::2]:5432", "127.0.0.1:5432"] {
+            let e = may_send_password(plain, other).unwrap_err();
+            assert!(e.contains(other.trim()) && e.contains("password"), "{other}: {e}");
+        }
+        let checked = "postgres://u:p@db.example.com/d?sslmode=verify-full&sslrootcert=/run/ferrum/db-ca.pem";
+        assert_eq!(may_send_password(checked, "replica.example.com:5432"), Ok(()), "verified against an authority given here, name and all");
+        assert_eq!(may_send_password(&with_ca(plain, DB_CA).unwrap(), "replica.example.com"), Ok(()), "the mounted one");
+        for weaker in [
+            "postgres://u:p@db.example.com/d?sslmode=verify-full",
+            "postgres://u:p@db.example.com/d?sslmode=verify-full&sslrootcert=system",
+            "postgres://u:p@db.example.com/d?sslmode=verify-ca&sslrootcert=/ca.pem",
+            "postgres://u:p@db.example.com/d?sslmode=require&sslrootcert=/ca.pem",
+        ] {
+            assert!(may_send_password(weaker, "replica.example.com").is_err(), "{weaker}: built-in authorities, or no name checked");
+        }
+        assert!(may_send_password(&with_ca("postgres://u:p@h/d?sslmode=require", DB_CA).unwrap(), "elsewhere").is_err(), "require: no name checked");
     }
 
     #[test]

@@ -700,6 +700,16 @@ impl KernelLive {
     }
 }
 
+/// Whether the host setting `key` (`database_direct_host`, `database_read_host`) may not be used: only when it comes from
+/// the table and could draw `database_url`'s password to a machine of someone else's (ferrum_kernel::db::may_send_password).
+/// Why, when it may not.
+pub fn stored_host_refused(snapshot: &Snapshot, key: &str, database_url: &str) -> Result<(), String> {
+    match snapshot.get(key) {
+        (Source::Database, Some(host)) if !host.trim().is_empty() => ferrum_kernel::db::may_send_password(database_url, host),
+        _ => Ok(()),
+    }
+}
+
 /// A per-replica budget's share: the pool's `limit` divided among its `replicas` (0 stays no limit).
 pub fn share(limit: u32, replicas: u32) -> u32 {
     if limit == 0 { 0 } else { limit.div_ceil(replicas.max(1)).max(1) }

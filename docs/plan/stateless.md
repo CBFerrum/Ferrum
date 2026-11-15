@@ -144,11 +144,16 @@ Decided while building it (15 November 2026):
   settings Jobs get the direct host and the certificate authority, never the read host.
 - **Hosts.** `database_direct_host` and `database_read_host` are stored settings (`host`, `host:port`; 5432 without a
   port), applied at start; the address is `DATABASE_URL` with its host replaced and any `host`, `hostaddr` or `port`
-  in its query dropped. The old full addresses still win. A row in `setting` can therefore choose where the server
-  sends `DATABASE_URL`'s credential, which D2's rule for addresses given a secret keeps every other secret from;
-  with the certificate authority and `verify-full` a host it did not certify gets nothing (TLS fails before
-  authentication). The two settings stay in the environment in `minimal`, as the migrate Job needs the direct
-  host before the settings Job has run.
+  in its query dropped. The old full addresses still win. A row in `setting` would otherwise choose where the server
+  sends `DATABASE_URL`'s credential, which D2's rule for addresses given a secret keeps every other secret from (that
+  rule cannot say it here: `DATABASE_URL` is no setting, and it would refuse every stored host). So a host from the
+  table is used only on `DATABASE_URL`'s own host, any port, or when the address says `verify-full` with an
+  `sslrootcert` (the mounted authority, or the address's own; the program's built-in roots certify anyone's names).
+  Otherwise it is not used and never connected to: one error in the log at start, and a doctor warning
+  (`database.direct_host`, `database.read_host`). The check is at the point of use (`server/src/app.rs`), so the
+  registry's mechanics are unchanged; a host from the environment is used as before. An authority shared by a
+  provider's customers still vouches for all of them. The two settings stay in the environment in `minimal`, as the
+  migrate Job needs the direct host before the settings Job has run.
 - **The certificate authority.** Read by the `ferrum` command before anything else: the three database addresses in
   the environment get `sslrootcert`, and a mode that checks it (none or `prefer` becomes `verify-full`, `require`
   becomes `verify-ca` as libpq does; an address's own `sslrootcert` is left alone; `disable` or `allow` refuses to
