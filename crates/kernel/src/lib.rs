@@ -418,6 +418,10 @@ impl Kernel {
                         if !booted.schema.skipped {
                             tracing::info!(statements = booted.schema.statements, sql = ?booted.schema.sql_files_applied, warnings = booted.schema.warnings.len(), "schema synced");
                         }
+                        // What lets a copy of a workspace run as this ordinary role (D7; ddl::copy_ready).
+                        for problem in ddl::copy_ready(&db).await? {
+                            tracing::warn!("a copy of a workspace could not be made ready here: {problem}");
+                        }
                         Ok(full)
                     }
                 }

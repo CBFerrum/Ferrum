@@ -227,8 +227,9 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let seen = Arc::new(Seen::default());
     let a = installation(&a_url, &key_a, &seen, &dir_a).await;
     let b = installation(&b_url, &key_b, &seen, &dir_b).await;
+    // Without the grant on session_replication_role (D7): moves and copies run as the server's own role.
     for u in [&a_url, &b_url] {
-        as_superuser(u, "grant set on parameter session_replication_role to ferrum").await;
+        as_superuser(u, "revoke set on parameter session_replication_role from ferrum").await;
     }
 
     // B holds a workspace of its own, with events whose numbers the moving one's would take.

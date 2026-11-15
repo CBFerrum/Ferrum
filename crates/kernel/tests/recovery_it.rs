@@ -411,15 +411,15 @@ async fn one_workspace_goes_back_alone() {
     let (acme_now, bravo_now) = (emails(acme.tenant).await, emails(bravo.tenant).await);
     assert!(acme_now.contains(&"later@acme.test".to_string()));
 
-    // It takes being let, for as long as it takes.
-    let r = k.extract_tenant(&acme, &copy, false, "to see").await;
-    assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("GRANT SET ON PARAMETER")), "{r:?}");
+    // It needs no grant (D7): the role holds none, as on a managed service, where only the administrator could give it.
     let grant = async |sql: &'static str| {
         let root = database(&superuser(&live), false).await;
         sqlx::query(sql).execute(&root.pool).await.unwrap();
         root.pool.close().await;
     };
-    grant("grant set on parameter session_replication_role to ferrum").await;
+    grant("revoke set on parameter session_replication_role from ferrum").await;
+    let granted: bool = sqlx::query_scalar("select has_parameter_privilege('session_replication_role', 'SET')").fetch_one(&k.db.pool).await.unwrap();
+    assert!(!granted);
 
     // Comparing changes nothing, and it says what would go.
     let compared = k.extract_tenant(&acme, &copy, false, "to see").await.expect("compared");
@@ -488,7 +488,8 @@ async fn one_workspace_goes_back_alone() {
     // A reference that would point at nothing stops it, and leaves everything as it was. A support record is
     // kept while what it refers to goes back, so this one is what such a thing looks like.
     let dangling = Uuid::now_v7();
-    let mut tx = k.db.system_tx().await.unwrap();
+    let root = database(&superuser(&live), false).await;
+    let mut tx = root.pool.begin().await.unwrap();
     sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await.unwrap();
     sqlx::query("insert into support_access (tenant_id, grant_id, method, path) values ($1, $2, 'GET', '/')")
         .bind(acme.tenant)
@@ -501,10 +502,10 @@ async fn one_workspace_goes_back_alone() {
     let r = k.extract_tenant(&acme, &copy, true, "again").await;
     assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("support_access_tenant_id_grant_id_fkey")), "{r:?}");
     assert_eq!(emails(acme.tenant).await, before);
-    let mut tx = k.db.system_tx().await.unwrap();
-    sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await.unwrap();
+    let mut tx = root.pool.begin().await.unwrap();
     sqlx::query("delete from support_access where grant_id = $1").bind(dangling).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+    root.pool.close().await;
 
     // A copy that does not match what is running goes no further.
     let older = database(&superuser(&copy), false).await;

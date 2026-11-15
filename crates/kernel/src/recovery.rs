@@ -74,8 +74,8 @@ pub(crate) async fn shape(db: &Db) -> Result<BTreeMap<String, Vec<(String, Strin
     Ok(tables)
 }
 
-/// Every reference a workspace's rows make, written out so that it can be checked by hand: the tables
-/// are filled with referential triggers off, because tables here refer to each other in circles.
+/// Every reference a workspace's rows make, written out so that each broken one can be named: the tables are filled
+/// with their foreign keys waiting for the commit (`copying`), because tables here refer to each other in circles.
 pub(crate) async fn dangling(tx: &mut crate::Tx, tenant: Uuid, tables: &BTreeMap<String, Vec<(String, String, bool)>>) -> Result<Vec<String>> {
     let references: Vec<(String, String, String, Vec<String>, Vec<String>)> = sqlx::query_as(
         "select c.conname::text, c.conrelid::regclass::text, c.confrelid::regclass::text, \
@@ -117,14 +117,47 @@ pub(crate) async fn workspace_columns(db: &Db, tx: &mut crate::Tx) -> Result<Vec
     Ok(columns)
 }
 
-/// Whether this connection may turn referential triggers off, which only extraction ever does.
+/// Whether a copy may run here as the server's own role (D7): every foreign key can wait for the commit, and every
+/// trigger stands aside while a copy runs, as a migrating server makes them (crate::ddl::copy_ready). Refused,
+/// naming what is not, otherwise. No grant on session_replication_role is needed any more.
 pub(crate) async fn may_copy(db: &Db) -> Result<()> {
-    let mut tx = db.system_tx().await?;
-    let granted = sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await;
-    tx.rollback().await?;
-    granted.map(|_| ()).map_err(|_| {
-        Error::Conflict("this role needs granting first, for as long as this takes: GRANT SET ON PARAMETER session_replication_role TO ferrum".into())
-    })
+    let mut conn = db.pool.acquire().await?;
+    let (keys, triggers) = crate::ddl::not_ready(&mut conn).await?;
+    if keys.is_empty() && triggers.is_empty() {
+        return Ok(());
+    }
+    let named: Vec<String> = keys.iter().chain(&triggers).take(5).cloned().collect();
+    Err(Error::Conflict(format!(
+        "this database is not ready for a copy as the server's own role: {} foreign keys cannot wait for the commit and {} triggers do not \
+         stand aside ({}). Start this build's server or run `ferrum task migrate`, which makes them so; the role must own those tables",
+        keys.len(),
+        triggers.len(),
+        named.join(", ")
+    )))
+}
+
+/// A copy's own setting, in its transaction, in place of `session_replication_role = replica` (D7): on, the server's
+/// triggers stand aside (each asks `ferrum.copy` in its WHEN) and foreign keys wait for the commit, where every one is
+/// checked and anything that would point at nothing rolls the whole transaction back. Off, the triggers act again; the
+/// foreign keys still wait for the commit. Nothing but a copy and its deletions sets it.
+pub(crate) async fn copying(tx: &mut crate::Tx, on: bool) -> Result<()> {
+    let sql = if on { "select set_config('ferrum.copy', 'on', true); set constraints all deferred" } else { "select set_config('ferrum.copy', 'off', true)" };
+    sqlx::raw_sql(sql).execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// Deletes every row `columns` (table, column) names for `tenant`, in one statement, inside a copy's transaction: a
+/// reference that refuses a deletion (ON DELETE RESTRICT, which cannot wait for the commit) is checked as the statement
+/// ends, when the rows on both sides are gone, so the tables can refer to each other in circles. How many rows went.
+pub(crate) async fn delete_rows(tx: &mut crate::Tx, columns: &[(String, String)], tenant: Uuid) -> Result<u64> {
+    if columns.is_empty() {
+        return Ok(0);
+    }
+    let each: Vec<String> = columns.iter().enumerate().map(|(i, (t, c))| format!("d{i} as (delete from \"{t}\" where \"{c}\" = $1 returning 1)")).collect();
+    let counted: Vec<String> = (0..columns.len()).map(|i| format!("(select count(*) from d{i})")).collect();
+    let n: i64 =
+        sqlx::query_scalar(AssertSqlSafe(format!("with {} select {}", each.join(", "), counted.join(" + ")))).bind(tenant).fetch_one(&mut **tx).await?;
+    Ok(n as u64)
 }
 
 /// What [`same_database`] found a copy to be, when it is no copy.
@@ -250,14 +283,13 @@ impl Kernel {
             return Err(Error::Unavailable(format!("{} files could not be deleted, so no row was: {}", failed.len(), failed.join("; "))));
         }
         let mut tx = self.db.system_tx().await?;
-        sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
+        sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
+        copying(&mut tx, true).await?;
         // Its slug stays retired, with those it gave up before (passed over above), and its addresses are kept from every
         // other workspace (crate::shell).
         crate::shell::retire_slug(&mut tx, tenant).await?;
         crate::shell::quarantine_hosts(&mut tx, tenant, false).await?;
-        for (table, column) in &columns {
-            sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?;
-        }
+        delete_rows(&mut tx, &columns, tenant).await?;
         sqlx::query("delete from tenant where id = $1").bind(tenant).execute(&mut *tx).await?;
         sqlx::query("insert into tenant_deletion (id, slug, closed_at, retained_until, rows, files, note) values ($1, $2, $3, $4, $5, $6, $7)")
             .bind(tenant)
@@ -400,6 +432,23 @@ impl Kernel {
         let kept: BTreeSet<&str> = KEPT.iter().copied().chain(self.hooks.restored().iter().flat_map(|app| app.kept().iter().copied())).collect();
         let back: Vec<&String> = here.keys().filter(|t| !kept.contains(t.as_str())).collect();
         may_copy(&self.db).await?;
+        // What stays may not refer to what goes back in a way that acts by itself (cascades, sets null, refuses): the
+        // deletion would change or stop what stays, which turning triggers off used to hide. The kernel's kept tables refer
+        // only to each other, and an app's must too (Restored::kept).
+        let acting: Vec<String> = sqlx::query_scalar(
+            "select format('%s.%I', conrelid::regclass, conname) from pg_constraint where contype = 'f' and conparentid = 0 \
+             and confdeltype in ('c', 'n', 'd', 'r') and conrelid::regclass::text = any($1) and confrelid::regclass::text = any($2) order by 1",
+        )
+        .bind(kept.iter().map(|t| t.to_string()).collect::<Vec<_>>())
+        .bind(back.iter().map(|t| t.to_string()).collect::<Vec<_>>())
+        .fetch_all(&self.db.pool)
+        .await?;
+        if !acting.is_empty() {
+            return Err(Error::Conflict(format!(
+                "what a workspace keeps refers to what goes back in a way that would change it, so nothing was changed: {}",
+                acting.join(", ")
+            )));
+        }
 
         // What is about to change, however far this goes.
         let mut tables = Vec::with_capacity(back.len());
@@ -455,7 +504,7 @@ impl Kernel {
         let mut from = source.system_tx().await?;
         sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
         sqlx::query("set local statement_timeout = 0").execute(&mut *from).await?;
-        sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
+        copying(&mut tx, true).await?;
         let people: Value = sqlx::query_scalar(
             "select coalesce(jsonb_agg(jsonb_build_object('id', id, 'password_hash', password_hash, 'totp_secret', totp_secret, \
              'totp_enabled_at', totp_enabled_at, 'is_active', is_active)), '[]') from app_user where tenant_id = $1",
@@ -467,9 +516,8 @@ impl Kernel {
             sqlx::query_scalar("select coalesce(max(token_version), 0) + 1 from app_user where tenant_id = $1").bind(tenant).fetch_one(&mut *tx).await?;
         let passkeys: Vec<Uuid> = sqlx::query_scalar("select id from passkey where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
 
-        for t in &back {
-            sqlx::query(AssertSqlSafe(format!("delete from \"{t}\" where tenant_id = $1"))).bind(tenant).execute(&mut *tx).await?;
-        }
+        let going: Vec<(String, String)> = back.iter().map(|t| (t.to_string(), "tenant_id".to_string())).collect();
+        delete_rows(&mut tx, &going, tenant).await?;
         for t in &back {
             let columns: Vec<String> = here[*t].iter().filter(|(_, _, generated)| !generated).map(|(c, _, _)| format!("\"{c}\"")).collect();
             let columns = columns.join(", ");
@@ -516,7 +564,7 @@ impl Kernel {
         self.set_aside(&mut tx, Some(tenant)).await?;
         // Erasures since the copy was taken stay done: each one this workspace made is erased again before
         // anyone sees what came back, with the triggers on again, so that what keeps derived copies sees it.
-        sqlx::query("set local session_replication_role = origin").execute(&mut *tx).await?;
+        copying(&mut tx, false).await?;
         sqlx::query("select set_config('ferrum.tenant_id', $1, true)").bind(tenant.to_string()).execute(&mut *tx).await?;
         let erasures: Vec<Value> =
             sqlx::query_scalar("select erasure from privacy_erasure where tenant_id = $1 order by id").bind(tenant).fetch_all(&mut *tx).await?;

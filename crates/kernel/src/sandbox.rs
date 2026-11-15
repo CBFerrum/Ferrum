@@ -14,7 +14,7 @@
 //! connections, channels and sign-in providers (new ids here). What people need to sign in travels: passwords, second
 //! factors (sealed again under the new id) and recovery codes.
 
-use crate::recovery::{may_copy, same_database, shape, workspace_columns};
+use crate::recovery::{copying, delete_rows, may_copy, same_database, shape, workspace_columns};
 use crate::secret::SecretKey;
 use crate::workspace_move::{EachRow, KNOWN_SEALED, LEFT_BEHIND, MoveSource, SEALED_FORM, Shape, copy_rows, named, renumber_events, system};
 use crate::{Ctx, Db, DbConfig, Error, Kernel, Result, audit};
@@ -424,7 +424,7 @@ impl Kernel {
         let taken_at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("select now()").fetch_one(&mut *src).await?;
         let mut tx = self.db.system_tx().await?;
         sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
-        sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
+        copying(&mut tx, true).await?;
         // New ids for what the outside world calls by id.
         let mut ids: HashMap<String, String> = HashMap::new();
         for t in NEW_IDS.iter().filter(|t| copied.contains_key(**t)) {
@@ -554,7 +554,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         }
-        sqlx::query("set local session_replication_role = origin").execute(&mut *tx).await?;
+        copying(&mut tx, false).await?;
         let rows: i64 = result.values().filter_map(|v| v["rows"].as_i64()).sum();
         let blanked: Vec<String> = blanked.into_iter().collect();
         let record = json!({
@@ -651,12 +651,9 @@ impl Kernel {
         // The floor goes with the last sandbox, in the transaction that deletes it, taken first as every floor change is
         // (crate::window). A crash before the commit leaves the sandbox and its floor.
         crate::window::release(&mut tx, &FLOOR, &tenant.to_string()).await?;
-        sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
-        let mut rows = 0;
-        for (table, column) in workspace_columns(&self.db, &mut tx).await? {
-            rows +=
-                sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?.rows_affected();
-        }
+        copying(&mut tx, true).await?;
+        let columns = workspace_columns(&self.db, &mut tx).await?;
+        let rows = delete_rows(&mut tx, &columns, tenant).await?;
         sqlx::query("delete from tenant where id = $1 and sandbox_of is not null").bind(tenant).execute(&mut *tx).await?;
         tx.commit().await?;
         self.hosts.clear();

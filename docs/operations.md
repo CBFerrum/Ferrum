@@ -2204,9 +2204,8 @@ installation. Both installations keep running. Use "Moving an installation" for 
 would ignore its freeze may not start on either installation (see "Protections an older build would not enforce").
 
 **What it takes.** Both installations run one build (the same image), with the same apps available; the
-workspace's apps at their versions are available at the target. The target's database role may turn
-referential triggers off for as long as it takes, as for `extract_tenant`
-(`GRANT SET ON PARAMETER session_replication_role TO ferrum`, taken back afterwards). The workspace has no
+workspace's apps at their versions are available at the target. No grant: the copy runs as the server's own role,
+as every copy of a workspace does (*Taking one workspace back*). The workspace has no
 process run open (they live in the source's workflow service). A workspace whose erased people's opt-outs are
 kept (as digests under the source's key) needs that key in the target's `FERRUM_RETIRED_SECRET_KEYS` first,
 or the move refuses: without it those people could be sent marketing again. Waiting work asked for in a zone
@@ -2384,8 +2383,8 @@ Run it on the installation that is to hold the sandbox. With `from:here` the sou
 workspaces. Without it, the source is another installation, given in the environment exactly as for
 `move_workspace` ("Moving one workspace": `FERRUM_MOVE_SOURCE_DATABASE_URL`, `FERRUM_MOVE_SOURCE_SECRET_KEYS`, and
 `FERRUM_MOVE_SOURCE_FILES` or `_FILES_DIR` or `_S3_BUCKET`); both run one build, with the source's apps at their
-versions here. Either way the role needs `GRANT SET ON PARAMETER session_replication_role TO ferrum` for as long as
-it takes, as for a move. `not_sealed:<table.column,...>` keeps text that looks like a sealed value (below).
+versions here. Either way it needs no grant, as for a move. `not_sealed:<table.column,...>` keeps text that looks
+like a sealed value (below).
 
 **The source is not stopped.** It is neither held nor frozen, and nothing of it changes: the copy reads it in one
 transaction at the isolation level `REPEATABLE READ`, so every table is read as it stood at one moment, while people
@@ -3913,14 +3912,17 @@ locks belong to one database). The identity is asked as well, but only to refuse
 database (in recovery, streaming, on the same timeline), which the lock cannot see and which no genuine copy is. The
 same check stands in front of `move_workspace` and `copy_workspace from:`.
 
-Tables here refer to each other in circles, so the rows go in with referential triggers off. That takes a grant,
-which is worth taking away again afterwards. As a superuser:
-
-```sql
-GRANT SET ON PARAMETER session_replication_role TO ferrum;
--- and when it is done
-REVOKE SET ON PARAMETER session_replication_role FROM ferrum;
-```
+Tables here refer to each other in circles, so the rows go in with the server's own triggers standing aside and the
+foreign keys checked at commit, not as each row arrives. That takes no grant (D7): every foreign key may wait for
+the commit (each is still checked at once unless a transaction asks otherwise), and every trigger has
+`current_setting('ferrum.copy', true) IS DISTINCT FROM 'on'` in its WHEN, which only a copy's own transaction sets. A
+migrating server makes them so as it starts, the kernel's, the schema sync's and packages' alike (`copy_ready`), and
+the schema sync makes new ones so. A copy refuses, naming them, while any is not. The deletions that go with a copy
+(an abort, `finish_move`, `delete_sandbox`, deleting a closed workspace) run in the same way, every table in one
+statement, so that references which refuse a deletion are checked when the rows on both sides are gone. Anything that
+would point at nothing still refuses the whole copy and changes nothing. A build before this one turned triggers off
+with `session_replication_role` instead, which needs `GRANT SET ON PARAMETER session_replication_role TO ferrum` from
+a superuser, or on a managed service from its administrator (*Any PostgreSQL*); give it only while such a build copies.
 
 It happens in one transaction, with the workspace suspended first so that nobody is writing to it. Every
 reference the workspace's rows make is checked before it commits, and one that would point at nothing stops it.
@@ -4002,8 +4004,7 @@ database. A hold, or anything outside, stops it: release each hold first (Admini
 recorded. The second deletes the workspace's files, then its private app bundles, then every row that names it, in one
 transaction, and records in `tenant_deletion` that it happened. In the same transaction its addresses are kept from every
 other workspace for a year (Addresses of a workspace), and its slugs stay retired. A file store failing part way leaves
-every row in place, so running it again finishes the job. Like extraction, it needs `GRANT SET ON PARAMETER
-session_replication_role TO ferrum` for as long as it runs.
+every row in place, so running it again finishes the job. Like extraction, it needs no grant.
 
 Backups taken before the deletion still hold the workspace until they expire. Say so to whoever asked for the deletion.
 

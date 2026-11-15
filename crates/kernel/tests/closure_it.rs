@@ -190,7 +190,8 @@ async fn scenario() {
     assert_eq!(deleting("acme", false).await.unwrap()["legal_holds"], json!(0));
 
     // The store fails part way: no row goes, and running it again finishes the job.
-    as_superuser(&url, "grant set on parameter session_replication_role to ferrum").await;
+    // Without the grant on session_replication_role (D7).
+    as_superuser(&url, "revoke set on parameter session_replication_role from ferrum").await;
     store.failing.store(true, Ordering::SeqCst);
     assert!(matches!(deleting("acme", true).await, Err(Error::Unavailable(m)) if m.contains("no row was")));
     assert!(left_of(&k, acme).await > 0, "everything is still there");

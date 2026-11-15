@@ -237,8 +237,9 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     let (hook_url, hits) = receiver().await;
     let a = installation(&a_url, &key_a, &seen, &mails, &dir_a, &hook_url).await;
     let b = installation(&b_url, &key_b, &seen, &mails, &dir_b, &hook_url).await;
+    // Without the grant on session_replication_role (D7): moves and copies run as the server's own role.
     for u in [&a_url, &b_url] {
-        as_superuser(u, "grant set on parameter session_replication_role to ferrum").await;
+        as_superuser(u, "revoke set on parameter session_replication_role from ferrum").await;
     }
 
     // Acme, live at A: records with lines, a file, sealed values of both kinds, a connection with tokens, a webhook, an

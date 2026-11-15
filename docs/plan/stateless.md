@@ -173,6 +173,19 @@ Decided while building it (15 November 2026):
   reach the store sends nothing (`holding()`) until a look does; one that has compared carries on through an outage.
   Guests (an older build on a newer database) do not look. Not noticed: database and store taken back together; a
   restore to less than about a minute before the store's last write; a database given a store without its marker.
+- **Copies as the ordinary role.** Every foreign key in `public` is DEFERRABLE INITIALLY IMMEDIATE, and every trigger
+  there has `current_setting('ferrum.copy', true) IS DISTINCT FROM 'on'` in its WHEN (with its own WHEN, if any): a
+  migrating start makes them so after the sync, a table at a time, the kernel's, the sync's and packages' alike
+  (`ddl::copy_ready`; idempotent; what it cannot change is logged, never fatal), and the sync makes new ones so. A
+  copy's transaction sets `ferrum.copy` and defers every constraint; its deletions run as one statement (a
+  data-modifying CTE a table), so the ON DELETE RESTRICT links between entity tables, which form circles (a company and
+  its letter head), are checked when both rows are gone. A copy refuses, naming them, while any key or trigger is not
+  ready, and taking a workspace back refuses when a kept table refers to one going back with a rule that acts by itself
+  (cascade, set null or default, restrict), which turning triggers off used to hide. Nobody else sees a difference
+  (checked at once, triggers as before), and the build before still copies with `session_replication_role` and its
+  grant. Ceiling: each copied row queues one check per foreign key in the copying session's memory until the commit
+  (some bytes each): tens of millions of rows take hundreds of MB there; the way past it is copying in dependency
+  order with checks at once, deferring only inside circles.
 
 ## D8. Git
 

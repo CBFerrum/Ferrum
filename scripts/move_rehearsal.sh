@@ -19,11 +19,10 @@
 #   scripts/move_rehearsal.sh [--grant] ferrum_moverehearsal_a ferrum_moverehearsal_b
 #
 # Both databases are created and dropped here, so each name must start with ferrum_moverehearsal_: it can never touch
-# another database. The second part turns referential triggers off while a move or a copy runs, so the servers' role
-# needs GRANT SET ON PARAMETER session_replication_role for that long. That grant is the whole PostgreSQL server's (other
-# test runs grant and revoke it too): with --grant the script grants it right before each move, finish or copy and
-# revokes it right after, and on exit whatever happened; without --grant it never grants it, and stops before the first
-# move unless the role holds it already. Settings: FERRUM_BIN (the server binary; default target/debug/ferrum, built with
+# another database. Moves and copies run as the servers' own role with no grant (D7): without --grant the script never
+# gives one. With --grant it still grants SET on session_replication_role right before each move, finish or copy and
+# revokes it right after, and on exit whatever happened, as a build before D7 needed (that grant is the whole
+# PostgreSQL server's: other test runs grant and revoke it too). Settings: FERRUM_BIN (the server binary; default target/debug/ferrum, built with
 # `cargo build -p ferrum-server --no-default-features --bin ferrum`), MOVE_ADMIN_URL (a superuser, for creating databases,
 # the grant and pg_dump, which row-level security would otherwise cut short; default postgres://$USER@localhost:5432),
 # MOVE_APP_URL (the servers' role; default postgres://ferrum:ferrum@localhost:5432), MOVE_PORT (default 5391; the second
@@ -78,9 +77,9 @@ trap cleanup EXIT
 # Interrupted, it still cleans up (and takes the grant back).
 trap 'exit 130' INT TERM HUP
 if [ "$GRANT" = yes ]; then
-  echo "The workspace's move and copy need GRANT SET ON PARAMETER session_replication_role TO $ROLE, a grant of the whole PostgreSQL server: with --grant it is given for each move, finish and copy alone, and taken back after each and on exit."
+  echo "With --grant, $ROLE is given SET on session_replication_role for each move, finish and copy alone (no build since D7 needs it), and it is taken back after each and on exit."
 else
-  echo "The workspace's move and copy need GRANT SET ON PARAMETER session_replication_role TO $ROLE, a grant of the whole PostgreSQL server: without --grant this script never gives it, and stops before the first move unless $ROLE holds it already."
+  echo "The workspace's move and copy run as $ROLE with no grant (D7): this script never gives one."
 fi
 
 # The same keys on both sides, as a move carries them.
@@ -279,8 +278,6 @@ wcontact() { local body; body=$(printf '{"first_name":"%s"}' "$4"); status "$1" 
 wnames() { at "$1" "$2" '/api/v1/Contact?limit=200' -H "authorization: Bearer $3" | json '" ".join(sorted(r["first_name"] for r in d["rows"]))'; }
 grant() {
   if [ "$GRANT" = yes ]; then sql postgres "grant set on parameter session_replication_role to $ROLE" >/dev/null; fi
-  [ "$(sql postgres "select has_parameter_privilege('$ROLE', 'session_replication_role', 'SET')")" = t ] \
-    || fail "$ROLE lacks GRANT SET ON PARAMETER session_replication_role (run with --grant to have it given for each step)"
 }
 # The receiver: each delivery's signature and body, one JSON line each.
 hooks() {

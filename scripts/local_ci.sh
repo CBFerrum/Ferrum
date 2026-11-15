@@ -15,10 +15,9 @@
 #           built from source); its OpenSSL is taken from it unless OPENSSL_DIR is set. When the xmlsec1 differs from
 #           the last run's, samael is built again: its bindings come from the headers, and nothing else tells cargo.
 #   audit   cargo audit (cargo install cargo-audit --locked) and the job's scripts (pyyaml, helm, node).
-#   move    the server without apps, and scripts/move_rehearsal.sh --grant on databases of its own: an installation
-#           moved, one workspace moved between two running servers and back, a sandbox (the script grants the role SET
-#           on session_replication_role for each move and revokes it; other test runs on this PostgreSQL that use the
-#           same grant can fail once meanwhile).
+#   move    the server without apps, and scripts/move_rehearsal.sh on databases of its own: an installation moved, one
+#           workspace moved between two running servers and back, a sandbox, all as the servers' own role with no grant
+#           on session_replication_role (D7).
 #   replica not in the workflow, and only when named: a private primary and standby (scripts/replica_pair.sh, PostgreSQL
 #           17's programs) and the kernel's replica_pair_it on them: real lag, a stopped standby, a cancelled query, a
 #           promotion.
@@ -201,7 +200,7 @@ job_audit() {
 
 job_move() {
   run "move build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
-  run "move rehearsal" scripts/move_rehearsal.sh --grant "ferrum_moverehearsal_a$SFX" "ferrum_moverehearsal_b$SFX"
+  run "move rehearsal" scripts/move_rehearsal.sh "ferrum_moverehearsal_a$SFX" "ferrum_moverehearsal_b$SFX"
 }
 
 job_replica() {
