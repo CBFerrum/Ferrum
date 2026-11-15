@@ -37,12 +37,12 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `cors_enabled` | `CORS_ENABLED` | bool | `false` | installation, next start | Answers browsers' cross-origin requests from `cors_origins`. Not needed when the web app and the API share an address. |
 | `cors_origins` | `CORS_ORIGINS` | text | `"https://example.invalid"` | installation, next start | The origins `cors_enabled` admits, each in double quotes, separated by commas (`"https://a.example", "https://b.example"`). |
 | `mailer_enabled` | `MAILER_ENABLED` | bool | `false` | installation, next start | SMTP for mail: notifications people chose to have by email (at once, or in a daily digest), and apps' mail. Without it, notifications stay in the bar and people cannot choose email. |
-| `mailer_host` | `MAILER_HOST` | text | `localhost` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment | The SMTP server. |
-| `mailer_port` | `MAILER_PORT` | int | `587` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment | The SMTP server's port. |
-| `mailer_secure` | `MAILER_SECURE` | bool | `true` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment | `true`: STARTTLS to the SMTP server; `false`: plain text, for a relay on the same machine only. |
+| `mailer_host` | `MAILER_HOST` | text | `localhost` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment; moving it takes that secret again or clears it | The SMTP server. |
+| `mailer_port` | `MAILER_PORT` | int | `587` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment; moving it takes that secret again or clears it | The SMTP server's port. |
+| `mailer_secure` | `MAILER_SECURE` | bool | `true` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment; moving it takes that secret again or clears it | `true`: STARTTLS to the SMTP server; `false`: plain text, for a relay on the same machine only. |
 | `mailer_user` | `MAILER_USER` | text |  | installation, next start | Who the server signs in to the SMTP server as. |
-| `mailer_password` | `MAILER_PASSWORD` | text |  | secret: the environment | The SMTP password. |
-| `jwt_secret` | `JWT_SECRET` | text |  | secret: the environment | Required. Base64, at least 32 random bytes: `openssl rand -base64 48`. Rotating it signs everyone out. |
+| `mailer_password` | `MAILER_PASSWORD` | text |  | secret: the environment, else the vault (library) | The SMTP password. |
+| `jwt_secret` | `JWT_SECRET` | text |  | secret: the environment, else the vault (session) | Base64, at least 32 random bytes: `openssl rand -base64 48`. Changing it signs everyone out. Without it the vault's keys sign sessions, each named by the tokens it signs and replaced without signing anyone out (*The key that signs sessions*); then it is required only while the vault is closed. |
 | `jwt_expiration_seconds` | `JWT_EXPIRATION_SECONDS` | int | `28800` | installation, at once | How long a bearer token from signing in lasts, in seconds (default 8 hours). |
 | `secret_key` | `FERRUM_SECRET_KEY` | text |  | secret: the environment | Required. Base64 of exactly 32 random bytes: `openssl rand -base64 32`, or that key as a key-management service's ciphertext (`vault:v1:…`, [below](#the-secret-key-from-a-key-management-service)). Seals secret fields (mail passwords, API keys) and plugins' settings (payment gateways' keys among them) with AES-256-GCM; every replica needs the same key. Back it up: values sealed with a lost key must be entered again. |
 | `secret_key_command` | `FERRUM_SECRET_KEY_COMMAND` | text |  | secret: the environment | In place of `FERRUM_SECRET_KEY`: a command (run with `sh -c`, 30 seconds at most) that prints the key, such as a KMS's own CLI. |
@@ -56,8 +56,8 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `kms_kubernetes_token_file` | `FERRUM_KMS_KUBERNETES_TOKEN_FILE` | text | `/var/run/secrets/kubernetes.io/serviceaccount/token` | the environment (the key-management client) | The service account's token file. |
 | `kms_ca_file` | `FERRUM_KMS_CA_FILE` | text |  | the environment (the key-management client) | A certificate authority (PEM) Transit's certificate is checked against, beside the usual ones. |
 | `kms_namespace` | `FERRUM_KMS_NAMESPACE` | text |  | the environment (the key-management client) | The Vault namespace of `FERRUM_KMS_TRANSIT`. |
-| `bootstrap_token` | `FERRUM_BOOTSTRAP_TOKEN` | text |  | secret: the environment | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it. |
-| `metrics_token` | `FERRUM_METRICS_TOKEN` | text |  | secret: the environment | `/metrics` then requires `Authorization: Bearer <token>`. Recommended. |
+| `bootstrap_token` | `FERRUM_BOOTSTRAP_TOKEN` | text |  | secret: the environment, else the vault (compared) | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it. |
+| `metrics_token` | `FERRUM_METRICS_TOKEN` | text |  | secret: the environment, else the vault (compared) | `/metrics` then requires `Authorization: Bearer <token>`. Recommended. |
 | `migrate_at_start` | `FERRUM_MIGRATE_AT_START` | bool | `true` | installation, next start | Default `true`: the server migrates the database, syncs the schema and runs the upgrade steps as it starts. `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe. Either way, on a database a newer build migrated, the server starts as a guest that changes nothing, or refuses (*Rolling back and the two-version window*). |
 | `db_max_connections` | `FERRUM_DB_MAX_CONNECTIONS` | int | `30` | each pool, next start | Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so. |
 | `database_direct_url` | `FERRUM_DATABASE_DIRECT_URL` | text |  | secret: the environment | With a pooler: PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler*. A secret while the address holds the password. |
@@ -72,16 +72,16 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `address_requests_per_minute` | `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | int | `6000` | installation, at once | Requests one client address may make per minute in a pool, counted for requests that came through the proxy (`X-Forwarded-For`); default 6000, `0` turns it off. Each replica allows this divided by the pool's live replicas. Health probes and in-cluster calls are not counted. |
 | `tenant_requests` | `FERRUM_TENANT_REQUESTS` | int |  | installation, next start | One workspace's API requests that run at once on each replica. The rest wait their turn, and one that waits five seconds is refused with `429`. A response that waited says how long in `X-Ferrum-Waited-Ms`. Default half of `FERRUM_DB_MAX_CONNECTIONS`, at least 2, so a workspace that floods the server holds at most half its database connections and everyone else has the others; `0` turns it off. |
 | `proxy_hops` | `FERRUM_PROXY_HOPS` | int | `1` | installation, at once | How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2 with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits is the entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their own (too high). |
-| `operator_token` | `FERRUM_OPERATOR_TOKEN` | text |  | secret: the environment | Enables the settings routes (`/api/operator/settings`, docs/api.md) with header `X-Ferrum-Operator-Token`; empty (the default) disables them. |
+| `operator_token` | `FERRUM_OPERATOR_TOKEN` | text |  | secret: the environment, else the vault (compared) | Enables the settings routes (`/api/operator/settings`, docs/api.md) with header `X-Ferrum-Operator-Token`; empty (the default) disables them. |
 | `packages_dir` | `FERRUM_PACKAGES_DIR` | text | `packages` | installation, next start | Where the platform's packages are (the image's). |
 | `files_dir` | `FERRUM_FILES_DIR` | text | `/var/lib/ferrum/files` | installation, next start | Local attachment directory (default `/var/lib/ferrum/files`). |
 | `require_object_storage` | `FERRUM_REQUIRE_OBJECT_STORAGE` | bool | `true` | installation, next start | Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false` only for single-server installs. |
 | `s3_bucket` | `FERRUM_S3_BUCKET` | text |  | installation, next start | Attachment storage on S3 (multi-replica); with `FERRUM_S3_REGION` (`auto` if empty), `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. |
 | `s3_region` | `FERRUM_S3_REGION` | text |  | installation, next start | The bucket's region (`auto` if empty). |
 | `s3_endpoint` | `FERRUM_S3_ENDPOINT` | text |  | installation, next start | Any S3-compatible store: MinIO, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean Spaces, GCS interoperability. |
-| `aws_access_key_id` | `AWS_ACCESS_KEY_ID` | text |  | secret: the environment | The object store's key id. |
-| `aws_secret_access_key` | `AWS_SECRET_ACCESS_KEY` | text |  | secret: the environment | The object store's secret key. |
-| `aws_session_token` | `AWS_SESSION_TOKEN` | text |  | secret: the environment | A session token with the object store's keys, when they are temporary. |
+| `aws_access_key_id` | `AWS_ACCESS_KEY_ID` | text |  | secret: the environment, else the vault (library) | The object store's key id. |
+| `aws_secret_access_key` | `AWS_SECRET_ACCESS_KEY` | text |  | secret: the environment, else the vault (library) | The object store's secret key. |
+| `aws_session_token` | `AWS_SESSION_TOKEN` | text |  | secret: the environment, else the vault (library) | A session token with the object store's keys, when they are temporary. |
 | `direct_upload_max_bytes` | `FERRUM_DIRECT_UPLOAD_MAX_BYTES` | int | `2147483648` | installation, at once | Largest file browsers upload straight to the bucket, or in parts through the server (default 2 GiB). Straight to the bucket needs the bucket CORS rule below. |
 | `clamav_addr` | `FERRUM_CLAMAV_ADDR` | text |  | installation, at once | Recommended: a ClamAV daemon uploads pass through, `host:3310`. What it finds is refused and audited; with it set, a scanner that cannot answer refuses uploads too. See *Malware scanning*. |
 | `clamav_max_mb` | `FERRUM_CLAMAV_MAX_MB` | int | `25` | installation, at once | With a scanner: its `StreamMaxLength` in MiB (default 25). Files past it are stored unscanned. |
@@ -94,7 +94,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `push_services` | `FERRUM_PUSH_SERVICES` | text |  | installation, at once | The push services notifications go to, comma-separated: hosts (their subdomains too, over https) or exact origins. Empty: the browsers' own, Chrome's and Edge's (`fcm.googleapis.com`), Firefox's (`push.services.mozilla.com`), Safari's (`push.apple.com`) and Windows' (`notify.windows.com`); see [Notifications on devices](#notifications-on-devices-web-push). |
 | `push_contact` | `FERRUM_PUSH_CONTACT` | text |  | installation, at once | Recommended: who push services may contact about this server's pushes, `mailto:ops@example.com` or an `https:` page; default `PUBLIC_URL` when it is https. Apple's service wants one. |
 | `audit_sink_url` | `FERRUM_AUDIT_SINK_URL` | text |  | installation, at once | Where every workspace's audit events are sent, in order, as they are written (`https://siem.example.com/ferrum`). Default none: nothing is sent. See [Sending the audit log elsewhere](#sending-the-audit-log-elsewhere). |
-| `audit_sink_secret` | `FERRUM_AUDIT_SINK_SECRET` | text |  | secret: the environment | With the sink: the key the batches are signed with (HMAC-SHA256), at least 16 characters; the receiver checks it. |
+| `audit_sink_secret` | `FERRUM_AUDIT_SINK_SECRET` | text |  | secret: the environment, else the vault (library) | With the sink: the key the batches are signed with (HMAC-SHA256), at least 16 characters; the receiver checks it. |
 | `default_workspace` | `FERRUM_DEFAULT_WORKSPACE` | text |  | installation, next start | The slug of the one workspace this server serves on every host (a single-workspace install): sign-in then asks for no workspace. Empty: a host registered for a workspace leads to it, and elsewhere the workspace is chosen at sign-in. |
 | `base_domain` | `FERRUM_BASE_DOMAIN` | text |  | installation, next start | Shapes B and C ([Many workspaces](#many-workspaces-subdomains-and-ferrum-accounts)): the domain under which each workspace is `{slug}.{base}`, people sign in at `accounts.{base}` and outside callers use `hooks.{base}`. Empty: one workspace (`FERRUM_DEFAULT_WORKSPACE`) or a shared host. |
 | `accounts_host` | `FERRUM_ACCOUNTS_HOST` | text |  | installation, next start | The host where people sign in once, with their Ferrum account (`id.example.com`), with or without a base domain: every host of every workspace sends sign-in there. Default `accounts.{base}` with `FERRUM_BASE_DOMAIN`, else none (each host signs in on its own). See [Names that should never change](#names-that-should-never-change). |
@@ -125,10 +125,10 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `signup_packages` | `FERRUM_SIGNUP_PACKAGES` | text |  | installation, at once | With sign-up: what a new workspace installs besides the core, comma-separated. |
 | `signup_plan` | `FERRUM_SIGNUP_PLAN` | text |  | installation, at once | With sign-up: the plan a new workspace starts on (one of `FERRUM_PLANS`). |
 | `signup_per_address` | `FERRUM_SIGNUP_PER_ADDRESS` | int | `3` | installation, at once | With sign-up: how many workspaces one address may make (default 3). |
-| `assistant_api_key` | `FERRUM_ASSISTANT_API_KEY` | text |  | secret: the environment | The model service's API key; without it there is no assistant. |
+| `assistant_api_key` | `FERRUM_ASSISTANT_API_KEY` | text |  | secret: the environment, else the vault (library) | The model service's API key; without it there is no assistant. |
 | `assistant_protocol` | `FERRUM_ASSISTANT_PROTOCOL` | empty, `anthropic`, `openai` |  | installation, next start | `anthropic` (default): Anthropic's Messages API, or a proxy that speaks it; `openai`: an OpenAI-compatible chat API. |
 | `assistant_model` | `FERRUM_ASSISTANT_MODEL` | text | `claude-opus-5-5` | installation, next start | The model the assistant uses. |
-| `assistant_url` | `FERRUM_ASSISTANT_URL` | text | `https://api.anthropic.com` | installation, next start; not from the table while `FERRUM_ASSISTANT_API_KEY` is in the environment | A proxy or gateway that speaks the same API, or the provider's regional endpoint. |
+| `assistant_url` | `FERRUM_ASSISTANT_URL` | text | `https://api.anthropic.com` | installation, next start; not from the table while `FERRUM_ASSISTANT_API_KEY` is in the environment; moving it takes that secret again or clears it | A proxy or gateway that speaks the same API, or the provider's regional endpoint. |
 | `assistant_effort` | `FERRUM_ASSISTANT_EFFORT` | empty, `low`, `medium`, `high`, `xhigh`, `max` |  | installation, next start | How hard the model thinks, and so its speed and cost: `low`, `medium` (default), `high`, `xhigh` or `max`. |
 | `assistant_fallbacks` | `FERRUM_ASSISTANT_FALLBACKS` | empty, `on`, `off` |  | installation, next start | `on`/`off`; on by default for Anthropic's API with a model that has them. |
 | `assistant_models` | `FERRUM_ASSISTANT_MODELS` | text |  | installation, next start | Other models a workspace may choose, comma-separated. |
@@ -970,8 +970,8 @@ schema `vault`. Its rows open only with the *installation key*, and that key is 
 the vault's *slots*: a dump of the database opens nothing without a slot's key. Below the installation key, each
 workspace has a key of its own (and the installation one more, for what belongs to no workspace), and each owner in it
 (the platform, each app, each plugin) a key of its own; each is random, versioned and stored wrapped by the one above.
-In this release nothing moves into the vault yet: what `FERRUM_SECRET_KEY` seals stays where it is (the next release
-moves it).
+The platform's own secrets are in it from this release (*The platform's secrets*, below); what `FERRUM_SECRET_KEY`
+seals stays where it is until the next one.
 
 **Slots.** Any one of them opens the installation key.
 
@@ -991,8 +991,8 @@ make one key between them.
 When none of the three is there (`DATABASE_URL` has no password, there is no key file, no key-management service is
 set), the vault has no slot to be made with: the server starts with it closed, one warning in the log says so and
 names the three ways to give it a root, the doctor says so too, and everything that asks the vault is refused with
-*the vault is closed*. In this release nothing depends on the vault yet. The first start that has one of them makes
-it.
+*the vault is closed*. The platform's secrets then come from the environment alone, exactly as before (`JWT_SECRET`
+is required then). The first start that has one of them makes it.
 
 Every other failure stops the start, and says why for each slot:
 
@@ -1055,7 +1055,7 @@ deletes, under the same cap on uses (a hundred an hour for each secret and verb,
 
 **What the doctor says**: whether the vault is open and with which slot; the slots and whether each opens the vault on
 this machine; whether there is a recovery key; the keys' ages; secrets still sealed with an older key a day after a
-rotation.
+rotation; which of the platform's secrets the environment still decides; and a warning while the vault is closed.
 
 ## Durable processes
 

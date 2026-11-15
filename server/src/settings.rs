@@ -48,6 +48,18 @@ pub enum Applies {
     Live,
 }
 
+/// How the vault keeps a platform secret (`vault:` in `settings.yaml`; crate::secrets).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Held {
+    /// The key that signs sessions (crate::sessions).
+    Session,
+    /// A token the server only compares: kept as its digest.
+    Compared,
+    /// What the server hands a library: revealed to the platform alone, at start.
+    Library,
+}
+
 /// One setting of the registry (`settings.yaml`, whose head says what each field means).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -72,6 +84,8 @@ pub struct Def {
     pub environment: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sends: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault: Option<Held>,
     pub doc: String,
 }
 
@@ -572,6 +586,11 @@ impl Live {
         }
     }
 
+    /// The configuration the start made.
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
     /// The values the readers take now.
     pub fn now(&self) -> Arc<Now> {
         self.now.read().unwrap_or_else(|e| e.into_inner()).clone()
@@ -1067,10 +1086,16 @@ impl Document {
 pub async fn listing(st: &AppState) -> ferrum_kernel::Result<Value> {
     let stored = read_with(&st.kernel.db.pool).await?;
     let now = st.live_settings.now();
+    // The platform's secrets: the environment's, the vault's (crate::secrets), or none.
+    let secrets = crate::secrets::sources(st).await;
     let settings: Vec<Value> = registry()
         .iter()
         .map(|d| {
             let (source, value) = now.snapshot.get(&d.key);
+            let (source, set) = match secrets.get(&d.key) {
+                Some((s, _)) => (json!(s), *s != "default"),
+                None => (json!(source), value.is_some()),
+            };
             let rows: BTreeMap<&str, Option<&str>> =
                 stored.rows.iter().filter(|r| r.key == d.key && r.scope == place(d, "").0).map(|r| (r.scope_name.as_str(), r.value.as_deref())).collect();
             json!({
@@ -1086,7 +1111,7 @@ pub async fn listing(st: &AppState) -> ferrum_kernel::Result<Value> {
                 "sends": d.sends,
                 "source": source,
                 "value": if d.secret { None } else { value },
-                "set": value.is_some(),
+                "set": set,
                 "stored": if d.scope == Scope::Installation { json!(rows.get("").copied().flatten()) } else { json!(rows) },
             })
         })
@@ -1101,12 +1126,17 @@ pub async fn listing(st: &AppState) -> ferrum_kernel::Result<Value> {
     let replicas: Vec<Value> = rows
         .into_iter()
         .map(|(id, pool, build, started, seen, version)| {
-            let older: Vec<&str> = stored
+            let mut older: Vec<&str> = stored
                 .rows
                 .iter()
                 .filter(|r| r.version > version && (r.scope == "installation" || (r.scope == "pool" && r.scope_name == pool)))
                 .filter_map(|r| find(&r.key).filter(|d| d.applies == Applies::Start).map(|d| d.key.as_str()))
                 .collect();
+            // A secret handed to a library is read at start: one the vault changed since, the replica runs the older of.
+            older.extend(secrets.iter().filter_map(|(k, (s, d))| {
+                let later = d.as_ref().is_some_and(|d| d.set_at > started);
+                (*s == "vault" && later && find(k).is_some_and(|d| d.vault == Some(Held::Library))).then_some(k.as_str())
+            }));
             json!({"id": id, "pool": pool, "build_date": build, "started_at": started, "seen_at": seen, "settings_version": version, "older": older})
         })
         .collect();
@@ -1155,6 +1185,7 @@ mod tests {
             let lower = d.env.to_ascii_lowercase();
             assert_eq!(d.key, lower.strip_prefix("ferrum_").unwrap_or(&lower), "the key is its variable's name in lower case without FERRUM_");
             assert!(!(d.secret && d.environment.is_some()), "{}: a secret or someone else's, not both", d.key);
+            assert!(d.vault.is_none() || d.secret, "{}: only a secret is the vault's", d.key);
             assert!(d.stored() || d.applies == Applies::Start, "{}: only what the table holds can apply at once", d.key);
             assert!(d.scope == Scope::Installation || d.stored(), "{}", d.key);
             assert!(!d.doc.trim().is_empty(), "{} says what it does", d.key);

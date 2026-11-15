@@ -241,6 +241,8 @@ pub struct HookRegistry {
     scope: Option<Arc<[String]>>,
     /// Apps registered with [`HookRegistry::app`], each with what its vault handles carry (crate::vault).
     vault_apps: HashMap<String, u128>,
+    /// What the platform's handle carries, once the server took it ([`HookRegistry::platform_vault`]).
+    platform_mint: Option<u128>,
     /// The app whose registration is running.
     app: Option<String>,
     /// What registering apps went wrong, said by [`HookRegistry::settle`], which stops the server.
@@ -359,9 +361,23 @@ impl HookRegistry {
         }
     }
 
-    /// What app `id`'s vault handles carry, when this registry registered it.
+    /// The platform's own vault handle, for the server's code (what signs its sessions, the tokens it compares, the
+    /// passwords it hands its mail and storage clients), as an app is given its own: taken once, by the server, before
+    /// any app registers. Asked again, inside an app's registration or after one, it is a handle nothing accepts, and the
+    /// server does not start.
+    pub fn platform_vault(&mut self) -> crate::vault::Vault {
+        if self.platform_mint.is_some() || self.app.is_some() || !self.vault_apps.is_empty() {
+            self.problems.push("the platform's vault handle was asked for again, or after an app registered".into());
+            return crate::vault::Vault::none();
+        }
+        let mint = crate::vault::mint();
+        self.platform_mint = Some(mint);
+        crate::vault::Vault::app("platform", mint)
+    }
+
+    /// What app `id`'s vault handles carry, when this registry registered it (the platform's, once the server took it).
     pub(crate) fn vault_mint(&self, id: &str) -> Option<u128> {
-        self.vault_apps.get(id).copied()
+        if id == "platform" { self.platform_mint } else { self.vault_apps.get(id).copied() }
     }
 
     /// Each document hook's entity and the packages it runs for (`None`: every tenant), in

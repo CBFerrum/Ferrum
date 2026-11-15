@@ -11,8 +11,11 @@
 #            shapes)
 #   applies  start (the default): at a replica's next start; live: every replica takes a change within seconds
 #   path     where the variable lands in config/<environment>.yaml, when it is read there
-#   secret   true: never stored in the database and never accepted by the tasks or routes; it stays in the
-#            environment until the vault holds it (D4, D5)
+#   secret   true: never stored in the `setting` table and never accepted by the tasks or routes that change settings
+#   vault    a secret the vault holds for the platform (D5; docs/operations.md, "The platform's secrets"): `session`
+#            (the key that signs sessions), `compared` (a token the server only compares: kept as its digest) or
+#            `library` (handed to a library: revealed to the platform alone, at start). The environment, when it sets
+#            one, still wins through R1; otherwise the vault. Without `vault:` a secret stays in the environment.
 #   environment  who still reads it from the environment itself: the database's value would not reach them, so it
 #            is neither stored nor accepted, and the environment keeps deciding it
 #   sends    the secret this address is given: while that secret is in the environment, the database's value is not
@@ -116,6 +119,7 @@
   env: MAILER_PASSWORD
   path: mailer.smtp.auth.password
   secret: true
+  vault: library
   doc: >-
     The SMTP password.
 
@@ -124,6 +128,7 @@
   env: JWT_SECRET
   path: auth.jwt.secret
   secret: true
+  vault: session
   doc: >-
     Required. Base64, at least 32 random bytes: `openssl rand -base64 48`. Rotating it signs everyone out.
 - key: jwt_expiration_seconds
@@ -211,12 +216,14 @@
   env: FERRUM_BOOTSTRAP_TOKEN
   path: settings.bootstrap_token
   secret: true
+  vault: compared
   doc: >-
     Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it.
 - key: metrics_token
   env: FERRUM_METRICS_TOKEN
   path: settings.metrics_token
   secret: true
+  vault: compared
   doc: >-
     `/metrics` then requires `Authorization: Bearer <token>`. Recommended.
 
@@ -346,6 +353,7 @@
   env: FERRUM_OPERATOR_TOKEN
   path: settings.operator_token
   secret: true
+  vault: compared
   doc: >-
     Enables the settings routes (`/api/operator/settings`, docs/api.md) with header `X-Ferrum-Operator-Token`; empty
     (the default) disables them.
@@ -391,16 +399,19 @@
 - key: aws_access_key_id
   env: AWS_ACCESS_KEY_ID
   secret: true
+  vault: library
   doc: >-
     The object store's key id.
 - key: aws_secret_access_key
   env: AWS_SECRET_ACCESS_KEY
   secret: true
+  vault: library
   doc: >-
     The object store's secret key.
 - key: aws_session_token
   env: AWS_SESSION_TOKEN
   secret: true
+  vault: library
   doc: >-
     A session token with the object store's keys, when they are temporary.
 - key: direct_upload_max_bytes
@@ -504,6 +515,7 @@
   env: FERRUM_AUDIT_SINK_SECRET
   path: settings.audit_sink_secret
   secret: true
+  vault: library
   doc: >-
     With the sink: the key the batches are signed with (HMAC-SHA256), at least 16 characters; the receiver checks it.
 
@@ -733,6 +745,7 @@
 - key: assistant_api_key
   env: FERRUM_ASSISTANT_API_KEY
   secret: true
+  vault: library
   doc: >-
     The model service's API key; without it there is no assistant.
 - key: assistant_protocol

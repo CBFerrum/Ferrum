@@ -22,6 +22,7 @@ pub mod process;
 pub mod request_log;
 pub mod request_metrics;
 pub mod search;
+pub mod secrets;
 pub mod settings;
 pub mod shell;
 pub mod shell_words;

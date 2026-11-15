@@ -9,7 +9,7 @@ use super::seal::{self, secret_place};
 use super::{Scope, Vault};
 use crate::controls::Proof;
 use crate::ctx::Ctx;
-use crate::db::{Tx, with_retry};
+use crate::db::{Db, Tx, with_retry};
 use crate::error::{Error, Result};
 use crate::jobs::{Job, JobHandler};
 use crate::{Kernel, audit};
@@ -157,6 +157,8 @@ pub struct Described {
 struct Who<'a> {
     actor: Option<Uuid>,
     request: &'a str,
+    /// What acted when no person did, said in the record: `operator`, `environment`, `sandbox`.
+    by: Option<&'a str>,
 }
 
 fn check_name(name: &str) -> Result<()> {
@@ -229,8 +231,8 @@ fn current<'a>(rows: &'a [Row], name: &str) -> Result<&'a Row> {
 }
 
 /// What a version holds, opened with the version of the owner key that sealed it.
-async fn opened(k: &Kernel, tx: &mut Tx, scope: Scope, owner: &str, name: &str, row: &Row) -> Result<Zeroizing<Vec<u8>>> {
-    let key = k.db.vault.owner_key(&k.db, tx, scope.id(), owner, row.key_version).await?;
+async fn opened(db: &Db, tx: &mut Tx, scope: Scope, owner: &str, name: &str, row: &Row) -> Result<Zeroizing<Vec<u8>>> {
+    let key = db.vault.owner_key(db, tx, scope.id(), owner, row.key_version).await?;
     key.open(&secret_place(scope.id(), owner, name, row.version, row.key_version), &row.sealed).ok_or_else(|| {
         Error::Internal(format!(
             "{owner}'s secret {name} (version {}) does not open: its row was changed or damaged; restore the vault's tables from a backup",
@@ -239,9 +241,15 @@ async fn opened(k: &Kernel, tx: &mut Tx, scope: Scope, owner: &str, name: &str, 
     })
 }
 
+/// Whether this transaction may write. A fenced database's are read only (db.rs): a secret is still used there, and
+/// its use is not recorded.
+async fn writable(tx: &mut Tx) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, String>("select current_setting('transaction_read_only')").fetch_one(&mut **tx).await? == "off")
+}
+
 /// Keeps, coarsely, the day a secret was last used: one write a day at most.
 async fn used(tx: &mut Tx, scope: Scope, owner: &str, name: &str, row: &Row) -> Result<()> {
-    if row.last_used != Some(Utc::now().date_naive()) {
+    if row.last_used != Some(Utc::now().date_naive()) && writable(tx).await? {
         sqlx::query(
             "update vault.secret set last_used = (now() at time zone 'utc')::date where scope = $1 and owner = $2 and name = $3 and version = $4 \
              and last_used is distinct from (now() at time zone 'utc')::date",
@@ -272,6 +280,9 @@ async fn event(tx: &mut Tx, scope: Scope, actor: Option<Uuid>, request: &str, ca
 /// counted, and the hours that are over get their summary ([`flush_uses`]).
 async fn audited(tx: &mut Tx, scope: Scope, owner: &str, name: &str, verb: &'static str, who: &Who<'_>, version: i32, capped: bool) -> Result<()> {
     if capped {
+        if !writable(tx).await? {
+            return Ok(());
+        }
         flush_uses(tx, Some((scope, owner, name, verb))).await?;
         // ponytail: one counter row per secret, verb and hour, so uses of one secret take turns on it; count in memory
         // per replica, flushed now and then, if one secret is ever used thousands of times a second.
@@ -290,7 +301,11 @@ async fn audited(tx: &mut Tx, scope: Scope, owner: &str, name: &str, verb: &'sta
         }
     }
     let category = if capped { audit::ACCESS } else { audit::ADMIN };
-    event(tx, scope, who.actor, who.request, category, verb, json!({"owner": owner, "name": name, "version": version})).await
+    let mut diff = json!({"owner": owner, "name": name, "version": version});
+    if let Some(by) = who.by {
+        diff["by"] = json!(by);
+    }
+    event(tx, scope, who.actor, who.request, category, verb, diff).await
 }
 
 /// Hours that are over, of one secret's verb or of all: a summary of each that held more uses than were recorded.
@@ -348,12 +363,28 @@ async fn write(
     rule: Option<Rule>,
     who: &Who<'_>,
 ) -> Result<(Described, Option<Zeroizing<String>>)> {
+    let made = make(value)?;
+    write_made(k, scope, owner, name, made, rule, who, false).await.map(|(d, shown, _)| (d, shown))
+}
+
+/// [`write`] of a value already made; with `only_new`, only where the secret has no current version (what is there is
+/// left as it is: `false`). Under the secret's lock, so that replicas doing it at once write it once.
+#[allow(clippy::too_many_arguments)]
+async fn write_made(
+    k: &Kernel,
+    scope: Scope,
+    owner: &str,
+    name: &str,
+    (kind, plain, public, shown): Made,
+    rule: Option<Rule>,
+    who: &Who<'_>,
+    only_new: bool,
+) -> Result<(Described, Option<Zeroizing<String>>, bool)> {
     check_name(name)?;
     if let Some(r) = &rule {
         r.check()?;
     }
-    let (kind, plain, public, shown) = make(value)?;
-    let described = with_retry(|| async {
+    let (described, wrote) = with_retry(|| async {
         let mut tx = k.db.vault_tx(scope.tenant()).await?;
         sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
             .bind(format!("ferrum.vault.secret {}/{owner}/{name}", scope.id()))
@@ -361,6 +392,10 @@ async fn write(
             .await?;
         let before = rows(&mut tx, scope, owner, name).await?;
         let replaced = before.iter().find(|r| r.valid_until.is_none());
+        if only_new && replaced.is_some() {
+            tx.commit().await?;
+            return described(scope, owner, name, &before).map(|d| (d, false)).ok_or_else(|| Error::Internal("a secret there is not".into()));
+        }
         let rule = match (&rule, replaced) {
             (Some(r), _) => r.clone(),
             (None, Some(r)) => r.rule.clone(),
@@ -414,13 +449,20 @@ async fn write(
         .execute(&mut *tx)
         .await
         .map_err(super::keys::raced)?;
-        audited(&mut tx, scope, owner, name, if replaced.is_some() { "rotate" } else { "set" }, who, version, false).await?;
+        let verb = if only_new {
+            "adopt"
+        } else if replaced.is_some() {
+            "rotate"
+        } else {
+            "set"
+        };
+        audited(&mut tx, scope, owner, name, verb, who, version, false).await?;
         let after = rows(&mut tx, scope, owner, name).await?;
         tx.commit().await?;
-        described(scope, owner, name, &after).ok_or_else(|| Error::Internal("a secret just set is not there".into()))
+        described(scope, owner, name, &after).map(|d| (d, true)).ok_or_else(|| Error::Internal("a secret just set is not there".into()))
     })
     .await?;
-    Ok((described, shown))
+    Ok((described, if wrote { shown } else { None }, wrote))
 }
 
 async fn remove(k: &Kernel, scope: Scope, owner: &str, name: &str, who: &Who<'_>) -> Result<bool> {
@@ -461,7 +503,7 @@ async fn list(k: &Kernel, scope: Scope, owner: Option<&str>) -> Result<Vec<Descr
 }
 
 /// Code's own changes and uses: nobody behind them but the owner.
-const CODE: Who<'static> = Who { actor: None, request: "" };
+const CODE: Who<'static> = Who { actor: None, request: "", by: None };
 
 impl Vault {
     /// Sets `name` in `scope` to `value` under `rule`: a new secret, or a new version of one (its rule replaced).
@@ -469,6 +511,16 @@ impl Vault {
     pub async fn set(&self, k: &Kernel, scope: Scope, name: &str, value: New, rule: Rule) -> Result<Described> {
         let owner = self.bound(k)?;
         write(k, scope, owner, name, value, Some(rule), &CODE).await.map(|(d, _)| d)
+    }
+
+    /// Sets `name` only where it has no current version: what a replica found in its environment, copied once, however
+    /// many replicas copy it at once (the secret's lock). Whether it was written; what was there is left as it was.
+    /// Recorded as `adopt` with `by` (`environment`), never the value.
+    pub async fn adopt(&self, k: &Kernel, scope: Scope, name: &str, value: New, rule: Rule, by: &str) -> Result<bool> {
+        let owner = self.bound(k)?;
+        let request = crate::db::Trace::operation().unwrap_or_default();
+        let who = Who { actor: None, request: &request, by: Some(by) };
+        write_made(k, scope, owner, name, make(value)?, Some(rule), &who, true).await.map(|(_, _, wrote)| wrote)
     }
 
     /// A new version of `name`, under its rule: what it signs from now on is signed with it, and the version before
@@ -511,7 +563,7 @@ impl Vault {
             if !row.rule.reveal {
                 return Err(Error::Forbidden(format!("{name}'s rule keeps its value in the vault: it is used, never revealed")));
             }
-            let value = opened(k, &mut tx, scope, owner, name, row).await?;
+            let value = opened(&k.db, &mut tx, scope, owner, name, row).await?;
             audited(&mut tx, scope, owner, name, "reveal", &CODE, row.version, true).await?;
             used(&mut tx, scope, owner, name, row).await?;
             tx.commit().await?;
@@ -528,7 +580,7 @@ impl Vault {
             let mut tx = k.db.vault_tx(scope.tenant()).await?;
             let rows = rows(&mut tx, scope, owner, name).await?;
             let row = current(&rows, name)?;
-            let value = opened(k, &mut tx, scope, owner, name, row).await?;
+            let value = opened(&k.db, &mut tx, scope, owner, name, row).await?;
             let signature = match row.kind {
                 Kind::Value => seal::hmac_sha256(&value, message),
                 Kind::Ed25519 => seal::ed25519_sign(&value, message)?,
@@ -554,7 +606,7 @@ impl Vault {
             for r in &rows {
                 good |= match (r.kind, &r.public_key) {
                     (Kind::Ed25519, Some(public)) => seal::ed25519_verify(public, message, signature),
-                    _ => seal::hmac_verify(&opened(k, &mut tx, scope, owner, name, r).await?, message, signature),
+                    _ => seal::hmac_verify(&opened(&k.db, &mut tx, scope, owner, name, r).await?, message, signature),
                 };
                 if good {
                     break;
@@ -563,6 +615,39 @@ impl Vault {
             used(&mut tx, scope, owner, name, row).await?;
             tx.commit().await?;
             Ok(good)
+        })
+        .await
+    }
+
+    /// The platform's secret `name` of the installation, with its rule, as [`Vault::reveal`] gives it, before the
+    /// kernel boots: what the server's start makes its mail sender and its audit sink with. Only the server's own handle
+    /// ([`crate::HookRegistry::platform_vault`]) asks, of the registry that gave it out. `None`: the vault is not open
+    /// (closed, or opened only once the kernel has migrated the database), or holds no such secret.
+    pub async fn reveal_at_start(&self, db: &Db, hooks: &crate::HookRegistry, name: &str) -> Result<Option<(Zeroizing<Vec<u8>>, Rule)>> {
+        let ours = self.owner() == "platform" && self.mint != 0 && hooks.vault_mint("platform") == Some(self.mint);
+        if !ours {
+            return Err(Error::Forbidden("only the server's own handle reads the platform's secrets as it starts".into()));
+        }
+        check_name(name)?;
+        if db.vault.installation().is_err() {
+            return Ok(None);
+        }
+        let (scope, owner) = (Scope::Installation, "platform");
+        with_retry(|| async {
+            let mut tx = db.vault_tx(None).await?;
+            let rows = rows(&mut tx, scope, owner, name).await?;
+            let row = match current(&rows, name) {
+                Err(Error::NotFound(_)) => return Ok(None),
+                other => other?,
+            };
+            if !row.rule.reveal {
+                return Err(Error::Forbidden(format!("{name}'s rule keeps its value in the vault: it is used, never revealed")));
+            }
+            let value = opened(db, &mut tx, scope, owner, name, row).await?;
+            audited(&mut tx, scope, owner, name, "reveal", &CODE, row.version, true).await?;
+            used(&mut tx, scope, owner, name, row).await?;
+            tx.commit().await?;
+            Ok(Some((value, row.rule.clone())))
         })
         .await
     }
@@ -796,7 +881,7 @@ impl Kernel {
     pub async fn vault_set(&self, ctx: &Ctx, owner: &str, name: &str, value: New, rule: Rule) -> Result<Changed> {
         may_manage(ctx, true)?;
         let v = of_owner(self, owner)?;
-        let who = Who { actor: Some(ctx.user), request: &ctx.request_id };
+        let who = Who { actor: Some(ctx.user), request: &ctx.request_id, by: None };
         let (secret, shown) = write(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name, value, Some(rule), &who).await?;
         Ok(Changed { secret, shown })
     }
@@ -805,7 +890,7 @@ impl Kernel {
     pub async fn vault_rotate(&self, ctx: &Ctx, owner: &str, name: &str, value: New) -> Result<Changed> {
         may_manage(ctx, true)?;
         let v = of_owner(self, owner)?;
-        let who = Who { actor: Some(ctx.user), request: &ctx.request_id };
+        let who = Who { actor: Some(ctx.user), request: &ctx.request_id, by: None };
         let (secret, shown) = write(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name, value, None, &who).await?;
         Ok(Changed { secret, shown })
     }
@@ -830,7 +915,7 @@ impl Kernel {
     pub async fn vault_remove(&self, ctx: &Ctx, owner: &str, name: &str) -> Result<bool> {
         may_manage(ctx, true)?;
         let v = of_owner(self, owner)?;
-        remove(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name, &Who { actor: Some(ctx.user), request: &ctx.request_id }).await
+        remove(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name, &Who { actor: Some(ctx.user), request: &ctx.request_id, by: None }).await
     }
 }
 
