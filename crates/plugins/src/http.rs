@@ -36,7 +36,7 @@ impl PluginHost {
     }
 
     pub async fn handle_http(&self, k: &Kernel, tenant: Uuid, plugin: &str, call: HttpCall, user: Option<Ctx>) -> Result<HttpReply> {
-        let p = self.plugin(&k.db, tenant, plugin).await?;
+        let p = self.plugin(k, tenant, plugin).await?;
         let route = p.manifest.route(&call.path).ok_or_else(|| Error::NotFound(format!("route {} of plugin {plugin}", call.path)))?;
         let (ctx, limit, who) = self.caller(k, tenant, &p, user, route.public).await?;
         let input =

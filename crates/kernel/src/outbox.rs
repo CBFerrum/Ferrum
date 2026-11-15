@@ -146,7 +146,7 @@ impl Kernel {
         // Secret values wait sealed, and only a placeholder shows where they go.
         if !mask.is_empty() {
             let plain = serde_json::json!({"subject": subject.trim(), "html": html, "mask": mask});
-            payload["sealed"] = Value::String(self.seal_message(tenant, &plain)?);
+            payload["sealed"] = Value::String(self.seal_message(tenant, &plain).await?);
             payload["subject"] = crate::messages::masked(&payload["subject"], mask);
             payload["html"] = crate::messages::masked(&payload["html"], mask);
         }
@@ -662,7 +662,7 @@ impl Kernel {
                 mailer.send_with(field("to"), field("subject"), field("html"), &attachments).await?;
                 return self.mail_settled(ev.tenant_id, send, "sent", None).await;
             };
-            let (open, _) = self.open_message(ev.tenant_id, sealed)?;
+            let (open, _) = self.open_message(ev.tenant_id, sealed).await?;
             let text = |k: &str| open[k].as_str().unwrap_or_default().to_string();
             mailer.send_with(field("to"), &text("subject"), &text("html"), &attachments).await?;
             // Handed over: what stays in the outbox is the placeholder alone.

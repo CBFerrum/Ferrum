@@ -152,13 +152,14 @@ impl Kernel {
     }
 
     /// What a receipt's digest is taken over for action `action` of `entity`: `params` with each secret parameter
-    /// as a fingerprint keyed with the server's secret key, so that the digest cannot be used to try values.
-    pub fn digestible_params(&self, ctx: &Ctx, entity: &str, action: &str, params: &Value) -> Result<Value> {
+    /// as a fingerprint keyed with the workspace's key for receipts (crate::vault::keyed), so that the digest cannot be
+    /// used to try values.
+    pub async fn digestible_params(&self, ctx: &Ctx, entity: &str, action: &str, params: &Value) -> Result<Value> {
         let mut out = params.clone();
         let (Some(def), Some(o)) = (action_def(ctx, entity, action), out.as_object_mut()) else { return Ok(out) };
         for p in def.params.iter().filter(|p| p.secret) {
             if let Some(v) = o.get_mut(&p.name).filter(|v| !v.is_null()) {
-                let key = self.keyed("receipt").ok_or_else(|| Error::Unavailable("a secret parameter needs the server's secret key".into()))?;
+                let (_, key) = self.making_key(crate::vault::Scope::Workspace(ctx.tenant), crate::vault::Keyed::Receipt).await?;
                 let text = v.as_str().map_or_else(|| v.to_string(), str::to_string);
                 *v = Value::String(key.fingerprint("action parameter", &format!("{}|{text}", ctx.tenant)));
             }

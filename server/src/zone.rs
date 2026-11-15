@@ -113,7 +113,7 @@ pub fn limited_to(ctx: &ferrum_kernel::Ctx) -> Option<&Vec<String>> {
 /// package's app endpoint is, unless an app the zone names installed it. A plugin no app installed is refused there.
 pub async fn plugin_admitted(st: &AppState, ctx: &ferrum_kernel::Ctx, plugin: &str) -> Result<(), crate::error::ApiError> {
     let Some(apps) = limited_to(ctx) else { return Ok(()) };
-    let p = st.plugins.plugin(&st.kernel.db, ctx.tenant, plugin).await?;
+    let p = st.plugins.plugin(&st.kernel, ctx.tenant, plugin).await?;
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
     let app: Option<String> = sqlx::query_scalar("select app_id from tenant_app where tenant_id = $1 and plugin_id = $2")
         .bind(ctx.tenant)

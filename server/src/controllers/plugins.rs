@@ -114,7 +114,7 @@ async fn socket(
     if status != "active" {
         return Err(ApiError(Error::NotFound("tenant".into())));
     }
-    let p = st.plugins.plugin(&st.kernel.db, tenant, &plugin).await?;
+    let p = st.plugins.plugin(&st.kernel, tenant, &plugin).await?;
     let path = format!("/{}", path.trim_start_matches('/'));
     let def = p.manifest.socket(&path).cloned().ok_or_else(|| ApiError(Error::NotFound(format!("socket {path} of plugin {plugin}"))))?;
     let user = if def.public {

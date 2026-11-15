@@ -419,7 +419,7 @@ impl Kernel {
             Some(f) => f.keys.clone(),
             None => self.secret_keys().cloned().collect(),
         };
-        let to = self.settings.secret_key.clone();
+        let to = self.env_key().cloned();
         let new = Uuid::now_v7();
         let mut src = source.pool.begin().await?;
         sqlx::query("set transaction isolation level repeatable read, read only").execute(&mut *src).await?;
@@ -530,7 +530,7 @@ impl Kernel {
                 "message_send" => null("pending"),
                 "plugin" => {
                     if let Some(Value::Object(config)) = row.get_mut("config") {
-                        for v in config.values_mut().filter(|v| v.get("$sealed").is_some()) {
+                        for v in config.values_mut().filter(|v| v.get("$sealed").is_some() || v.get(crate::vault::PLUGIN_VAULT).is_some()) {
                             *v = Value::Null;
                             emptied += 1;
                         }

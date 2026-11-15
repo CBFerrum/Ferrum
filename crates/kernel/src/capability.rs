@@ -580,7 +580,7 @@ impl Kernel {
         let digest = match (action, inv.input.get("params")) {
             (Some(a), Some(params)) if a.params.iter().any(|p| p.secret) => {
                 let mut input = inv.input.clone();
-                input["params"] = self.digestible_params(ctx, cap.entity.as_deref().unwrap_or_default(), &a.name, params)?;
+                input["params"] = self.digestible_params(ctx, cap.entity.as_deref().unwrap_or_default(), &a.name, params).await?;
                 cap.input_digest(&input)?
             }
             _ => cap.input_digest(&inv.input)?,

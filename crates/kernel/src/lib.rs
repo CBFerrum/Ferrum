@@ -160,10 +160,12 @@ pub struct KernelSettings {
     pub ctx_ttl: Duration,
     /// Processed outbox events and delivered webhooks are kept this long.
     pub event_retention_days: i32,
-    /// The old master key (`FERRUM_SECRET_KEY`). Deprecated for apps: what it sealed is each owner's in the vault
-    /// (docs/plan/stateless.md, D5), and an app reads its own with its vault handle. It still seals beside the vault
-    /// while it is configured, for the previous build, and keys what has not moved yet (`ferrum task legacy_key`); it
-    /// stops being public in the next release. Apps that still read it are listed by scripts/secret_paths.py.
+    /// The old master key (`FERRUM_SECRET_KEY`), as the server configures it. Deprecated for apps: what it sealed is
+    /// each owner's in the vault (docs/plan/stateless.md, D5), and an app reads its own with its vault handle. Once the
+    /// kernel has booted with the vault open, it holds what apps that still read it are given: the environment's key,
+    /// else the one adopted into the vault, else (an installation that never had one) a key of the platform's own; the
+    /// kernel's own code uses the vault's keys. It stops being public in the next release; scripts/secret_paths.py lists
+    /// the apps that still read it.
     pub secret_key: Option<secret::SecretKey>,
     /// The ClamAV daemon uploads pass through (`host:port`); without one they are stored unscanned.
     pub clamd: Option<String>,
@@ -330,6 +332,14 @@ pub struct Kernel {
     pub(crate) live: std::sync::RwLock<Arc<KernelSettings>>,
     /// When this process last wrote that a path used the old key (crate::vault::kept): (what, caller) → when.
     pub(crate) legacy_noted: DashMap<(String, String), Instant>,
+    /// The platform's keys from the vault for what it keys or seals outside it, as this process holds them
+    /// (crate::vault::keyed).
+    pub(crate) keyed: vault::Ring,
+    /// Every old key: the environment's (current, then retired), then those adopted into the vault (crate::vault::keyed).
+    pub(crate) old_keys: Vec<secret::SecretKey>,
+    /// The environment's old key (`FERRUM_SECRET_KEY`): what is still sealed with it beside the vault, for the previous
+    /// build. `settings.secret_key` is what apps are given (crate::vault::keyed::at_boot).
+    pub(crate) env_key: Option<secret::SecretKey>,
     /// What this process knows of the restore marker (recovery.rs).
     pub(crate) marker: recovery::Marker,
 }
@@ -466,6 +476,10 @@ impl Kernel {
         }
         // The vault, when it could not be opened before its tables were there (crate::vault::open).
         vault::finish(&db).await?;
+        // The old key's end (crate::vault::keyed): each key the environment configures adopted into the vault once, and
+        // what the apps that still read `secret_key` are given once it is gone from the environment.
+        let old = vault::at_boot(&db, &settings).await?;
+        let settings = KernelSettings { secret_key: old.for_apps.clone(), ..settings };
         if booted.guest.is_some() || !settings.migrate_at_start {
             ddl::words(&full)?;
         }
@@ -497,6 +511,9 @@ impl Kernel {
             zones: Default::default(),
             live,
             legacy_noted: DashMap::new(),
+            keyed: vault::Ring::new(old.retired),
+            old_keys: old.all,
+            env_key: old.env,
             marker: Default::default(),
         });
         kernel.notice_restore().await?;

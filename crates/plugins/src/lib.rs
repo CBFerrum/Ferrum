@@ -38,7 +38,6 @@ pub use hooks::PluginHook;
 pub use sockets::{Outgoing, Overflow, Sent, SocketHub};
 
 use dashmap::DashMap;
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::{Action, Ctx, Db, Error, FieldError, Kernel, Result};
 use ferrum_meta::{EntityDef, OverlayOp, PermissionDef};
 use runtime::HostApi;
@@ -312,41 +311,10 @@ pub struct PluginHost {
     tokens: DashMap<String, (String, Instant)>,
     pub sockets: Arc<SocketHub>,
     allow_private_http: bool,
-    /// Seals each configuration value at rest (gateways' API keys and webhook secrets among them);
-    /// without one (tests), configuration is stored as given.
-    sealing: std::sync::OnceLock<SecretKey>,
-    /// Keys being rotated out: what they sealed still opens, and is sealed again at the next start.
-    retired: std::sync::OnceLock<Vec<SecretKey>>,
-    /// The platform's vault handle, which makes each plugin's (`plugin:<name>`): a plugin's secrets in the vault go on
-    /// its requests, and to nobody else.
+    /// The platform's vault handle, which keeps each configuration value at rest (gateways' API keys and webhook secrets
+    /// among them), sealed under its plugin's own key, and makes each plugin's (`plugin:<name>`): a plugin's secrets in
+    /// the vault go on its requests, and to nobody else.
     vault: std::sync::OnceLock<ferrum_kernel::vault::Vault>,
-}
-
-/// How a sealed configuration value is stored: `{"$sealed": <AES-256-GCM, base64>, "$key": <key id>}`.
-const SEALED: &str = "$sealed";
-
-/// What a configuration value is bound to: its workspace, plugin and key (a sealed value cannot be
-/// moved to another plugin or setting).
-fn config_aad(tenant: Uuid, plugin: &str, key: &str) -> String {
-    format!("{tenant}/plugin/{plugin}/{key}")
-}
-
-/// `config` with every value sealed (values sealed already stay as they are).
-fn seal_config(key: &SecretKey, tenant: Uuid, plugin: &str, config: Map<String, Value>) -> Result<Map<String, Value>> {
-    config
-        .into_iter()
-        .map(|(k, v)| {
-            if is_sealed(&v) || v.is_null() {
-                return Ok((k, v));
-            }
-            let sealed = key.seal(&config_aad(tenant, plugin, &k), &v.to_string())?;
-            Ok((k, json!({ "$sealed": sealed, "$key": key.id })))
-        })
-        .collect()
-}
-
-fn is_sealed(v: &Value) -> bool {
-    v.get(SEALED).is_some_and(Value::is_string)
 }
 
 /// `config` divided into what the plugin reads and what only the host does.
@@ -354,34 +322,6 @@ fn split_credentials(m: &Manifest, config: Value) -> (Value, Map<String, Value>)
     let Value::Object(mut readable) = config else { return (config, Map::new()) };
     let held = m.credentials.iter().filter_map(|c| readable.remove_entry(&c.name)).collect();
     (Value::Object(readable), held)
-}
-
-/// A sealed value, opened with the first of `keys` that can.
-fn open_value<'k>(mut keys: impl Iterator<Item = &'k SecretKey>, tenant: Uuid, plugin: &str, name: &str, v: &Value) -> Option<Value> {
-    let aad = config_aad(tenant, plugin, name);
-    let plain = keys.find_map(|key| key.open(&aad, v[SEALED].as_str().unwrap_or_default()).ok())?;
-    serde_json::from_str(&plain).ok()
-}
-
-/// `config` as the plugin reads it: sealed values opened. One that cannot be opened (sealed with
-/// a key this server does not have, or tampered with) is left out and logged, so the plugin reports
-/// it as missing rather than every plugin of the workspace failing to load.
-fn open_config<'k>(keys: impl Iterator<Item = &'k SecretKey> + Clone, tenant: Uuid, plugin: &str, config: Value) -> Value {
-    let Value::Object(map) = config else { return config };
-    let mut out = Map::new();
-    for (k, v) in map {
-        if !is_sealed(&v) {
-            out.insert(k, v);
-            continue;
-        }
-        match open_value(keys.clone(), tenant, plugin, &k, &v) {
-            Some(value) => {
-                out.insert(k, value);
-            }
-            None => tracing::warn!(%tenant, plugin, setting = %k, "a plugin setting could not be opened; set it again"),
-        }
-    }
-    Value::Object(out)
 }
 
 /// Compiles a module and checks the contract: its only import may be `ferrum.host_call`.
@@ -457,8 +397,6 @@ impl PluginHost {
             tokens: DashMap::new(),
             sockets: SocketHub::new(),
             allow_private_http,
-            sealing: std::sync::OnceLock::new(),
-            retired: std::sync::OnceLock::new(),
             vault: std::sync::OnceLock::new(),
         });
         // The clock guests' deadlines run on; it stops with the host.
@@ -483,65 +421,49 @@ impl PluginHost {
         runtime::run(&self.engine, module, fuel, memory_mb, input.to_vec(), &mut runtime::NoHost).await
     }
 
-    /// Seals plugins' configuration with `key` from now on (the server's secret key; set once).
-    pub fn seal_with(&self, key: SecretKey) {
-        let _ = self.sealing.set(key);
-    }
-
-    /// The platform's vault handle (set once, by the server): each plugin's is made with it.
+    /// The platform's vault handle (set once, by the server): plugins' settings are kept with it, and each plugin's
+    /// handle is made with it.
     pub fn use_vault(&self, platform: ferrum_kernel::vault::Vault) {
         let _ = self.vault.set(platform);
     }
 
-    /// Opens what `keys` sealed too, while they are being rotated out (set once).
-    pub fn open_also_with(&self, keys: Vec<SecretKey>) {
-        let _ = self.retired.set(keys);
-    }
-
-    /// The key to seal with, then those being rotated out.
-    fn sealing_keys(&self) -> impl Iterator<Item = &SecretKey> + Clone {
-        self.sealing.get().into_iter().chain(self.retired.get().into_iter().flatten())
-    }
-
-    /// Seals configuration stored before values were sealed, and seals again what a retired key
-    /// sealed, in every workspace; returns how many plugins changed. Safe to run at every start: a
-    /// plugin whose configuration an administrator changes meanwhile is left for the next run.
-    pub async fn seal_stored(&self, db: &Db) -> Result<usize> {
-        let Some(key) = self.sealing.get() else { return Ok(0) };
-        let mut tx = db.system_tx().await?;
-        let rows: Vec<(Uuid, Uuid, String, Value)> = sqlx::query_as("select tenant_id, id, name, config from plugin").fetch_all(&mut *tx).await?;
-        let mut changed = 0;
-        for (tenant, id, name, config) in rows {
-            let Value::Object(map) = &config else { continue };
-            let current = |v: &Value| v.is_null() || (is_sealed(v) && v.get("$key").and_then(Value::as_str) == Some(key.id.as_str()));
-            if map.values().all(current) {
+    /// `config` with each value kept as the host keeps settings (sealed under the plugin's own key in the vault, and with
+    /// the old key beside while it is configured: ferrum_kernel::vault). Refused where nothing here seals them: a
+    /// setting is never stored plain.
+    async fn keep_config(&self, k: &Kernel, tenant: Uuid, plugin: &str, config: Map<String, Value>) -> Result<Map<String, Value>> {
+        let mut out = Map::new();
+        for (key, v) in config {
+            if v.is_null() {
+                out.insert(key, v);
                 continue;
             }
-            // Values of a retired key are opened, then sealed like new ones. One that no key opens
-            // stays as it is, for a key configured later.
-            let rotated: Map<String, Value> = map
-                .iter()
-                .map(|(k, v)| match (is_sealed(v) && !current(v)).then(|| open_value(self.sealing_keys(), tenant, &name, k, v)).flatten() {
-                    Some(opened) => (k.clone(), opened),
-                    None => (k.clone(), v.clone()),
-                })
-                .collect();
-            let sealed = Value::Object(seal_config(key, tenant, &name, rotated)?);
-            if sealed == config {
-                continue;
-            }
-            changed += sqlx::query("update plugin set config = $3 where tenant_id = $1 and id = $2 and config = $4")
-                .bind(tenant)
-                .bind(id)
-                .bind(&sealed)
-                .bind(&config)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected() as usize;
-            self.invalidate(tenant);
+            let vault = self.vault.get().ok_or_else(|| Error::Unavailable("this server keeps no plugin settings: it gives its plugins no vault".into()))?;
+            let kept = vault.keep_plugin_setting(k, tenant, plugin, &key, &v).await?;
+            out.insert(key, kept);
         }
-        tx.commit().await?;
-        Ok(changed)
+        Ok(out)
+    }
+
+    /// `config` as the plugin reads it: each value opened. One that does not open here (moved to another setting, or
+    /// sealed with a key this server does not have) is left out and logged, so the plugin reports it as missing rather
+    /// than every plugin of the workspace failing to load.
+    async fn open_config(&self, k: &Kernel, tenant: Uuid, plugin: &str, config: Value) -> Value {
+        let Value::Object(map) = config else { return config };
+        let mut out = Map::new();
+        for (key, v) in map {
+            let opened = match self.vault.get() {
+                Some(vault) => vault.plugin_setting(k, tenant, plugin, &key, &v).await,
+                None => Err(Error::Unavailable("this server gives its plugins no vault".into())),
+            };
+            match opened {
+                Ok(Some(value)) => {
+                    out.insert(key, value);
+                }
+                Ok(None) => tracing::warn!(%tenant, plugin, setting = %key, "a plugin setting could not be opened; set it again"),
+                Err(e) => tracing::warn!(%tenant, plugin, setting = %key, "a plugin setting could not be opened: {e}"),
+            }
+        }
+        Value::Object(out)
     }
 
     pub fn invalidate(&self, tenant: Uuid) {
@@ -550,13 +472,13 @@ impl PluginHost {
 
     /// The tenant's enabled plugins (cached briefly; read on the side pool so it never competes
     /// with the caller's own transaction for a connection).
-    pub async fn plugins(&self, db: &Db, tenant: Uuid) -> Result<Arc<Vec<Loaded>>> {
+    pub async fn plugins(&self, k: &Kernel, tenant: Uuid) -> Result<Arc<Vec<Loaded>>> {
         if let Some(entry) = self.loaded.get(&tenant)
             && entry.0.elapsed() < CACHE_TTL
         {
             return Ok(entry.1.clone());
         }
-        let mut tx = db.side_tenant_tx(tenant).await?;
+        let mut tx = k.db.side_tenant_tx(tenant).await?;
         let rows: Vec<(Uuid, String, String, Value, Value, Value, Option<Uuid>, i64, i32)> = sqlx::query_as(
             "select id, name, sha256, hooks, manifest, config, user_id, fuel_limit, memory_limit_mb from plugin \
              where tenant_id = $1 and enabled order by name",
@@ -565,34 +487,32 @@ impl PluginHost {
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
-        let list: Vec<Loaded> = rows
-            .into_iter()
-            .map(|(id, name, sha, hooks, manifest, config, user_id, fuel, mem)| {
-                let mut m: Manifest = serde_json::from_value(manifest).unwrap_or_default();
-                if m.hooks.is_empty() {
-                    m.hooks = serde_json::from_value(hooks).unwrap_or_default();
-                }
-                let (config, credentials) = split_credentials(&m, open_config(self.sealing_keys(), tenant, &name, config));
-                Loaded {
-                    id,
-                    name,
-                    sha,
-                    manifest: Arc::new(m),
-                    config: Arc::new(config),
-                    credentials: Arc::new(credentials),
-                    user_id,
-                    fuel: fuel.max(0) as u64,
-                    memory_mb: mem.max(1) as u32,
-                }
-            })
-            .collect();
+        let mut list: Vec<Loaded> = Vec::with_capacity(rows.len());
+        for (id, name, sha, hooks, manifest, config, user_id, fuel, mem) in rows {
+            let mut m: Manifest = serde_json::from_value(manifest).unwrap_or_default();
+            if m.hooks.is_empty() {
+                m.hooks = serde_json::from_value(hooks).unwrap_or_default();
+            }
+            let (config, credentials) = split_credentials(&m, self.open_config(k, tenant, &name, config).await);
+            list.push(Loaded {
+                id,
+                name,
+                sha,
+                manifest: Arc::new(m),
+                config: Arc::new(config),
+                credentials: Arc::new(credentials),
+                user_id,
+                fuel: fuel.max(0) as u64,
+                memory_mb: mem.max(1) as u32,
+            });
+        }
         let list = Arc::new(list);
         self.loaded.insert(tenant, (Instant::now(), list.clone()));
         Ok(list)
     }
 
-    pub async fn plugin(&self, db: &Db, tenant: Uuid, name: &str) -> Result<Loaded> {
-        self.plugins(db, tenant).await?.iter().find(|p| p.name == name).cloned().ok_or_else(|| Error::NotFound(format!("plugin {name}")))
+    pub async fn plugin(&self, k: &Kernel, tenant: Uuid, name: &str) -> Result<Loaded> {
+        self.plugins(k, tenant).await?.iter().find(|p| p.name == name).cloned().ok_or_else(|| Error::NotFound(format!("plugin {name}")))
     }
 
     async fn module(&self, db: &Db, tenant: Uuid, sha: &str) -> Result<Module> {
@@ -719,11 +639,7 @@ impl PluginHost {
         let sha = hex::encode(Sha256::digest(wasm));
         let manifest = serde_json::to_value(m).map_err(Error::internal)?;
         let hooks = serde_json::to_value(&m.hooks).map_err(Error::internal)?;
-        let config = p.config.clone().unwrap_or_default();
-        let config = Value::Object(match self.sealing.get() {
-            Some(key) => seal_config(key, ctx.tenant, &p.name, config)?,
-            None => config,
-        });
+        let config = Value::Object(self.keep_config(k, ctx.tenant, &p.name, p.config.clone().unwrap_or_default()).await?);
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
         let id: Uuid = sqlx::query_scalar(
             "insert into plugin (tenant_id, id, name, version, description, sha256, wasm, hooks, manifest, config, user_id, fuel_limit, memory_limit_mb, created_by) \
@@ -841,18 +757,13 @@ impl PluginHost {
         let (removed, set): (Vec<(&String, &Value)>, Vec<(&String, &Value)>) = config.iter().partition(|(_, v)| merge && v.is_null());
         let set: Map<String, Value> = set.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let removed: Vec<String> = removed.into_iter().map(|(k, _)| k.clone()).collect();
-        let set = match self.sealing.get() {
-            Some(key) => {
-                let name: String = sqlx::query_scalar("select name from plugin where tenant_id = $1 and id = $2")
-                    .bind(ctx.tenant)
-                    .bind(id)
-                    .fetch_optional(&mut *tx)
-                    .await?
-                    .ok_or_else(|| Error::NotFound("plugin".into()))?;
-                seal_config(key, ctx.tenant, &name, set)?
-            }
-            None => set,
-        };
+        let name: String = sqlx::query_scalar("select name from plugin where tenant_id = $1 and id = $2")
+            .bind(ctx.tenant)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound("plugin".into()))?;
+        let set = self.keep_config(k, ctx.tenant, &name, set).await?;
         let n = sqlx::query(
             "update plugin set config = case when $5 then (config || $3) - $4::text[] else $3 end, updated_at = now() \
              where tenant_id = $1 and id = $2",

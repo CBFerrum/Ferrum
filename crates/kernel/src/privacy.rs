@@ -778,7 +778,7 @@ impl Kernel {
         }
         // Their opt-outs keep stopping promotional messages, under a keyed digest of the address (BD-20).
         let choices = crate::messages::choices_of(&mut tx, ctx.tenant, &emails, phone.as_deref()).await?;
-        let opt_outs = crate::messages::erase_choices(&mut tx, ctx.tenant, self.keyed("erased_opt_out"), &choices).await?;
+        let opt_outs = crate::messages::erase_choices(self, &mut tx, ctx.tenant, &choices).await?;
         // Their addresses in the history's payloads (who did what, as apps write it) go as well.
         if !erased.is_empty() || account.is_some() {
             events += redact_addresses(&mut tx, ctx, &emails, reason).await?;
@@ -927,8 +927,13 @@ impl Kernel {
             .bind(tenant)
             .fetch_all(&mut **tx)
             .await?;
-            let back: Vec<_> = back.into_iter().filter(|(a, c, _)| self.erased_marks(tenant, c, a).iter().any(|m| marks.contains(m))).collect();
-            done += crate::messages::erase_choices(tx, tenant, self.keyed("erased_opt_out"), &back).await?.len();
+            let mut taken = Vec::new();
+            for (a, c, granted) in back {
+                if self.erased_marks(tenant, &c, &a).await?.iter().any(|m| marks.contains(m)) {
+                    taken.push((a, c, granted));
+                }
+            }
+            done += crate::messages::erase_choices(self, tx, tenant, &taken).await?.len();
         }
         let sends: Vec<Uuid> = erasure["messages"].as_array().into_iter().flatten().filter_map(|i| i.as_str()?.parse().ok()).collect();
         done +=

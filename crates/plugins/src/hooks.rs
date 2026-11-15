@@ -18,7 +18,7 @@ impl PluginHook {
         }
         let entity = hc.entity.def.name.clone();
         let (db, tenant) = (hc.kernel.db.clone(), hc.ctx.tenant);
-        let plugins = self.0.plugins(&db, tenant).await?;
+        let plugins = self.0.plugins(hc.kernel, tenant).await?;
         for p in plugins.iter().filter(|p| p.manifest.hooks.iter().any(|h| h.stage == stage && (h.entity == entity || h.entity == "*"))) {
             let input = json!({"kind": "hook", "entity": entity, "stage": stage, "doc": doc, "user": user_json(hc.ctx)});
             let reply = {

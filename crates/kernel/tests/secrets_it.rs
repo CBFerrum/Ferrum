@@ -219,7 +219,7 @@ async fn scenario() {
     // ── under a receipt: the digest is keyed, the code is not kept, a repeat is told ──
     let params = json!({"pin": PIN});
     let target = format!("POST Card/{id}/actions/redeem");
-    let digested = k.digestible_params(&admin, "Card", "redeem", &params).unwrap();
+    let digested = k.digestible_params(&admin, "Card", "redeem", &params).await.unwrap();
     assert_ne!(digested["pin"], json!(PIN));
     let digest = ferrum_kernel::receipt::digest(&target, None, &digested);
     assert_ne!(digest, ferrum_kernel::receipt::digest(&target, None, &params), "not the digest anyone could make by trying PINs");

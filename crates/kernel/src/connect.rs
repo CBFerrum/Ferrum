@@ -476,12 +476,19 @@ impl Kernel {
         if input.credentials.is_some() && !self.kept_here() {
             return Err(Error::Unavailable("connections need the vault or a configured secret key (FERRUM_SECRET_KEY)".into()));
         }
-        // The account they open, known by a fingerprint: connections on one account wait together (FEO-067).
-        let account_key = match (&input.credentials, if input.credentials.is_some() { self.keyed("connector_account") } else { None }) {
-            (Some(c), Some(key)) => {
-                Some(key.fingerprint("connection account", &format!("{}:{}", input.provider, String::from_utf8_lossy(&crate::value::canonical_json(c)))))
-            }
-            _ => None,
+        // The account they open, known by a fingerprint: connections on one account wait together (FEO-067). Without a
+        // key to make it with (crate::vault::keyed), they wait apart, as before.
+        let account_key = match &input.credentials {
+            Some(c) => match self.making_key(crate::vault::Scope::Workspace(ctx.tenant), crate::vault::Keyed::ConnectorAccount).await {
+                Ok((_, key)) => {
+                    Some(key.fingerprint("connection account", &format!("{}:{}", input.provider, String::from_utf8_lossy(&crate::value::canonical_json(c)))))
+                }
+                Err(e) => {
+                    tracing::warn!(tenant = %ctx.tenant, "a connector's account is not known by a fingerprint: {e}");
+                    None
+                }
+            },
+            None => None,
         };
         let mapping = serde_json::to_value(&input.mapping).map_err(Error::internal)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
