@@ -1200,6 +1200,7 @@ impl Task for SamlEncryptionKey {
 /// The vault's tasks, registered together.
 pub fn register_vault(tasks: &mut loco_rs::task::Tasks) {
     tasks.register(VaultStatus);
+    tasks.register(VaultEvents);
     tasks.register(VaultAddSlot);
     tasks.register(VaultRemoveSlot);
     tasks.register(VaultRecovery);
@@ -1271,6 +1272,35 @@ impl Task for VaultStatus {
         for r in &st.resealing {
             let at = r.workspace.map_or("the installation".to_string(), |w| w.to_string());
             println!("sealing again: {} secrets of {} in {at}, since {}", r.secrets, r.owner, r.since.format("%Y-%m-%d %H:%M"));
+        }
+        Ok(())
+    }
+}
+
+/// `vault_events [limit:<n>] [before:<id>] [format:json]`: the installation's own record of its vault, newest first: its
+/// slots, its installation key, and the installation's own secrets, each change and use (a workspace's are on its own
+/// audit trail). Never a value.
+pub struct VaultEvents;
+
+#[async_trait]
+impl Task for VaultEvents {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "vault_events".into(),
+            detail: "The installation's own record of its vault, newest first (limit:<n>, before:<id>, format:json); never a value".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let number = |name: &str| vars.cli_arg(name).ok().map(|v| v.parse::<i64>().map_err(|_| Error::Message(format!("{name}: a whole number")))).transpose();
+        let events = ferrum_kernel::vault::events(&k.db, number("before")?, number("limit")?.unwrap_or(50)).await.map_err(refused)?;
+        if vars.cli_arg("format").is_ok_and(|f| f == "json") {
+            println!("{}", serde_json::to_string_pretty(&events).map_err(refused)?);
+            return Ok(());
+        }
+        for e in &events {
+            let what = [e.owner.as_str(), e.name.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" ");
+            println!("{} {} {:<26} {what} {}", e.id, e.at.format("%Y-%m-%d %H:%M:%S"), e.action, e.details);
         }
         Ok(())
     }

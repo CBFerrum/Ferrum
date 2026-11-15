@@ -202,6 +202,9 @@ async fn scenario() {
     let why = refusal(vault::open(&replica().await, opener(None, &no_file, None), false).await);
     assert!(why.contains("recovery slot opens it only with the recovery key"), "{why}");
     assert!(!why.contains(printed.as_str()));
+    // The root's own events, in the installation's record: made, then each slot added.
+    let actions: Vec<String> = vault::events(&open_db, None, 50).await.unwrap().into_iter().map(|e| e.action).collect();
+    assert!(actions.contains(&"made".to_string()) && actions.iter().filter(|a| *a == "slot_added").count() == 3, "{actions:?}");
 
     // ── nothing that does not go through the vault's module sees its rows: not the system, not a workspace, not a bare query ──
     assert_eq!(as_vault(&db, "select count(*) from vault.root_slot").await, 4);
@@ -524,9 +527,28 @@ async fn secrets_and_people(no_file: &Path) {
     let summary = events.iter().find(|(a, d)| a == "reveal_summary" && d["name"] == "api").expect("a summary of the hour");
     assert_eq!(summary.1["count"], json!(5));
     assert_eq!(crm.describe(&k, ws, "api").await.unwrap().unwrap().last_used, Some(chrono::Utc::now().date_naive()), "kept coarsely");
-    crm.set(&k, Scope::Installation, "license", value("L-1"), Rule::default()).await.unwrap();
-    let first_trail = trail(&k, w).await;
-    assert!(first_trail.iter().any(|(a, d)| a == "set" && d["scope"] == json!("installation")), "the installation's, in the first workspace's trail");
+    // The installation's own: on no workspace's trail, in the installation's record, under the same cap.
+    crm.set(&k, Scope::Installation, "license", value("L-1122-installation"), Rule { reveal: true, ..Default::default() }).await.unwrap();
+    for _ in 0..vault::USES_PER_HOUR + 3 {
+        crm.reveal(&k, Scope::Installation, "license").await.unwrap();
+    }
+    assert!(!trail(&k, w).await.iter().any(|(_, d)| d["name"] == "license"), "the installation's are on no workspace's trail");
+    let record = vault::events(&k.db, None, 1000).await.unwrap();
+    assert!(record.iter().any(|e| e.action == "set" && e.owner == "crm" && e.name == "license" && e.details["version"] == json!(1)), "{record:?}");
+    assert_eq!(record.iter().filter(|e| e.action == "reveal" && e.name == "license").count(), vault::USES_PER_HOUR as usize, "the first of the hour");
+    assert!(!format!("{record:?}").contains("L-1122"), "never a value");
+    as_vault(&db, "with u as (update vault.use_count set hour = hour - interval '1 hour' where scope = '00000000-0000-0000-0000-000000000000' returning 1) select count(*) from u").await;
+    crm.reveal(&k, Scope::Installation, "license").await.unwrap();
+    let summary = vault::events(&k.db, None, 5).await.unwrap().into_iter().find(|e| e.action == "reveal_summary").expect("the hour's summary");
+    assert_eq!((summary.name.as_str(), summary.details["count"].clone()), ("license", json!(3)));
+    // Append-only, even for the vault's own transactions.
+    for sql in ["update vault.event set action = 'nothing'", "delete from vault.event", "truncate vault.event"] {
+        let mut tx = db.pool.begin().await.unwrap();
+        sqlx::query("select set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
+        let done = sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_string())).execute(&mut *tx).await;
+        tx.rollback().await.unwrap();
+        assert!(done.is_err(), "{sql}");
+    }
 
     // ── people: an administrator who has just confirmed it is them; a value the vault makes is shown once ──
     let session = k.login("initech", "admin@initech.test", "Correct-Horse-9").await.unwrap();
@@ -918,7 +940,7 @@ async fn moved_rows_do_not_open(no_file: &Path) {
     assert_eq!(&**crm.reveal(&k, ws, "api").await.unwrap(), b"moved-nowhere", "where it was sealed, it opens");
 
     // Nothing of any of the vault's tables is seen by a query that does not go through it.
-    for table in ["root_slot", "key", "secret", "use_count"] {
+    for table in ["root_slot", "key", "secret", "use_count", "event"] {
         assert!(count(&db, format!("select count(*) from vault.{table}")).await > 0 || table == "use_count", "{table} holds rows");
         for (who, tx) in [("the system", db.system_tx().await.unwrap()), ("a workspace", db.tenant_tx(w).await.unwrap())] {
             let mut tx = tx;

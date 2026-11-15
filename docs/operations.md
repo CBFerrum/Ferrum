@@ -1023,10 +1023,17 @@ one its password does not open.
 **When the password is lost** (or reset by the provider), run `ferrum task vault_rewrap with:recovery` and type the
 recovery key. Without the recovery key and without another slot's key, what the vault holds is lost.
 
+**Its record.** Every change and use of a workspace's secrets is on that workspace's audit trail (owner, name, verb;
+never a value). What belongs to the installation (its slots, its installation key, the secrets of the installation's
+own scope) is recorded in the vault's own table instead, `vault.event`, which no workspace sees and nothing changes or
+deletes, under the same cap on uses (a hundred an hour for each secret and verb, then one summary of the rest).
+`ferrum task vault_events` reads it.
+
 **Tasks.**
 
 * `vault_status [format:json]`: the slots, the keys' versions and ages, the secrets, what is being sealed again; never a
   key.
+* `vault_events [limit:<n>] [before:<id>] [format:json]`: the installation's own record, newest first; never a value.
 * `vault_add_slot kind:file|kms|credential|recovery`: adds a slot, or makes the one of that kind again with a new key.
 * `vault_remove_slot kind:…`: never the last one a server opens with (`file`, `kms` or `credential`).
 * `vault_recovery`: a new recovery key, printed once; the one before it opens nothing from then on.

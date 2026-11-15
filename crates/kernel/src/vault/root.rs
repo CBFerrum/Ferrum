@@ -291,8 +291,8 @@ pub(crate) async fn finish(db: &Db) -> Result<()> {
     }
 }
 
-/// The kernel's migration that makes the vault.
-const MIGRATION: i64 = 20261119000201;
+/// The kernel's last migration of the vault (its tables, then its record of the installation's own events).
+const MIGRATION: i64 = 20261119000202;
 
 /// Whether this database is migrated as far as the vault: its migration recorded, and with it every table it and the
 /// vault's module use (the workspaces', the audit trail's, the jobs'). A database not yet migrated (a new one, an
@@ -700,7 +700,7 @@ async fn initialize(db: &Db, opener: &Opener) -> Result<Init> {
         return Err(lost_slots());
     }
     write_slot(&mut tx, &row).await?;
-    super::audit_root(&mut tx, "made", json!({"slot": kind.as_str(), "installation_version": 1})).await?;
+    super::installation_event(&mut tx, "made", json!({"slot": kind.as_str(), "installation_version": 1})).await?;
     tx.commit().await?;
     tracing::warn!(slot = kind.as_str(), "the vault was made: its {kind} slot opens it. Keep a recovery key as well: `ferrum task vault_recovery`");
     Ok(Init::Made(installation, kind))
@@ -753,7 +753,7 @@ pub async fn put_slot(db: &Db, kind: SlotKind) -> Result<Printed> {
     let had: bool = sqlx::query_scalar("select exists (select 1 from vault.root_slot where kind = $1)").bind(kind.as_str()).fetch_one(&mut *tx).await?;
     write_slot(&mut tx, &row).await?;
     notify(&mut tx, "*").await?;
-    super::audit_root(&mut tx, if had { "slot_replaced" } else { "slot_added" }, json!({"slot": kind.as_str()})).await?;
+    super::installation_event(&mut tx, if had { "slot_replaced" } else { "slot_added" }, json!({"slot": kind.as_str()})).await?;
     tx.commit().await?;
     Ok(made.printed)
 }
@@ -773,7 +773,7 @@ pub async fn remove_slot(db: &Db, kind: SlotKind) -> Result<()> {
     }
     sqlx::query("delete from vault.root_slot where kind = $1").bind(kind.as_str()).execute(&mut *tx).await?;
     notify(&mut tx, "*").await?;
-    super::audit_root(&mut tx, "slot_removed", json!({"slot": kind.as_str()})).await?;
+    super::installation_event(&mut tx, "slot_removed", json!({"slot": kind.as_str()})).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -835,7 +835,7 @@ pub async fn rotate_installation_key(db: &Db, recovery: Option<RecoveryKey>) -> 
     }
     let rewrapped = rewrap_workspace_keys(&mut tx, &held, &new).await?;
     notify(&mut tx, "*").await?;
-    super::audit_root(&mut tx, "installation_key_rotated", json!({"installation_version": new.version, "workspace_keys": rewrapped})).await?;
+    super::installation_event(&mut tx, "installation_key_rotated", json!({"installation_version": new.version, "workspace_keys": rewrapped})).await?;
     tx.commit().await?;
     let by = root.opened().unwrap_or(SlotKind::Credential);
     root.set_open(new, opener, by);
@@ -925,7 +925,8 @@ pub async fn rewrap(db: &Db, with: Rewrap) -> Result<()> {
     }
     write_slot(&mut tx, &row).await?;
     notify(&mut tx, "*").await?;
-    super::audit_root(&mut tx, "credential_rewrapped", json!({"with": if slot.kind == SlotKind::Recovery { "recovery" } else { "old_password" }})).await?;
+    super::installation_event(&mut tx, "credential_rewrapped", json!({"with": if slot.kind == SlotKind::Recovery { "recovery" } else { "old_password" }}))
+        .await?;
     tx.commit().await?;
     root.set_open(installation, opener, SlotKind::Credential);
     Ok(())

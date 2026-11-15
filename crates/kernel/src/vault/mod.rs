@@ -55,9 +55,9 @@ pub(crate) use secrets::{handler, upkeep};
 /// What holds a key, a password or a secret's value, zeroed when dropped: the vault's own type, for its callers.
 pub use zeroize::Zeroizing;
 
+use crate::Kernel;
 use crate::db::{Tx, with_retry};
 use crate::error::{Error, Result};
-use crate::{Kernel, audit};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use serde_json::Value;
@@ -301,21 +301,53 @@ impl Vault {
     }
 }
 
-/// An event of the installation's vault (a slot, the installation key), in the first workspace's trail as the
-/// platform's own events are (`Kernel::record_move`); none before there is a workspace. `tx` is the vault's, as the
-/// system.
-pub(crate) async fn audit_root(tx: &mut Tx, action: &str, details: Value) -> Result<()> {
-    let first: Option<Uuid> = sqlx::query_scalar("select id from tenant order by created_at limit 1").fetch_optional(&mut **tx).await?;
-    match first {
-        Some(tenant) => {
-            let request = crate::db::Trace::operation().unwrap_or_default();
-            audit::record_as(tx, tenant, None, &request, audit::ADMIN, "Vault", Uuid::now_v7(), action, None, details).await
-        }
-        None => {
-            tracing::info!(%details, "the vault: {action} (no workspace's trail yet to record it in)");
-            Ok(())
-        }
-    }
+/// An event of the installation's root (a slot, the installation key), in the installation's own record.
+pub(crate) async fn installation_event(tx: &mut Tx, action: &str, details: Value) -> Result<()> {
+    let request = crate::db::Trace::operation().unwrap_or_default();
+    record(tx, action, "", "", details, None, &request).await
+}
+
+/// A row of the installation's own record of its vault (`vault.event`): never a value.
+pub(crate) async fn record(tx: &mut Tx, action: &str, owner: &str, name: &str, details: Value, actor: Option<Uuid>, request: &str) -> Result<()> {
+    sqlx::query("insert into vault.event (action, owner, name, details, actor, request_id) values ($1, $2, $3, $4, $5, $6)")
+        .bind(action)
+        .bind(owner)
+        .bind(name)
+        .bind(details)
+        .bind(actor)
+        .bind(request)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// An event of the installation's own vault, as `ferrum task vault_events` shows it.
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct Event {
+    pub id: i64,
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub action: String,
+    pub owner: String,
+    pub name: String,
+    pub details: Value,
+    pub actor: Option<Uuid>,
+    pub request_id: String,
+}
+
+/// The installation's own record of its vault, newest first: its slots, its installation key, and the secrets of the
+/// installation's own scope (a workspace's are on its own audit trail), `limit` of them from before `before` (an id).
+/// For operators: no workspace sees it, and it holds no value.
+pub async fn events(db: &crate::Db, before: Option<i64>, limit: i64) -> Result<Vec<Event>> {
+    let mut tx = db.vault_tx(None).await?;
+    let rows: Vec<Event> = sqlx::query_as(
+        "select id, at, action, owner, name, details, actor, request_id from vault.event where ($1::bigint is null or id < $1) order by id desc limit $2",
+    )
+    .bind(before)
+    .bind(limit.clamp(1, 1000))
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(rows)
 }
 
 #[cfg(test)]

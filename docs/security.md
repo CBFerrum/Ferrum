@@ -52,8 +52,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   operating system: it stops mistakes and casual misuse by an app's code, not hostile code compiled into the server.
   Code not trusted that far runs as a plugin or as a program of its own.
 * A value leaves the vault only where its secret's rule allows it (`reveal`); otherwise it is only used (to sign, to
-  check a signature). Every reveal, signature, setting, rotation and removal is on the audit trail (owner, name, verb,
-  workspace; never a value), the uses under a cap of a hundred an hour for each secret and verb, with a summary of the
+  check a signature). Every reveal, signature, setting, rotation and removal is recorded (owner, name, verb; never a
+  value): a workspace's on its own audit trail, the installation's own in the vault's record (`vault.event`, append-only,
+  which no workspace sees), the uses under a cap of a hundred an hour for each secret and verb, with a summary of the
   rest once the hour is over.
 * People set, rotate and remove secrets only as administrators of the workspace who have just confirmed it is them;
   nothing they are answered holds a value, except one the vault made for them, shown once.

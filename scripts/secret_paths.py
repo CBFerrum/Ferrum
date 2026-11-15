@@ -9,7 +9,7 @@ shape. It reads the sources (not the tests) of this repository's crates and serv
 in (`cargo metadata`, as scripts/mutation_paths.py reads them), and checks:
 
 * the vault's tables and its setting (`vault.root_slot`, `vault.key`, `vault.secret`, `vault.use_count`,
-  `ferrum.vault`) are named only by the kernel's vault module, its migration, and the transaction `Db::vault_tx`
+  `vault.event`, `ferrum.vault`) are named only by the kernel's vault module, its migration, and the transaction `Db::vault_tx`
   opens for it (packages' SQL is read too);
 * no app calls the ways into the vault that are not its own handle: opening it, and the functions for people and
   operators that name an owner (the platform's code, the kernel and the server, calls them);
@@ -30,13 +30,13 @@ ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "docs/registry/secret-paths.md"
 # The vault's own module, and the transaction the kernel's database layer opens for it.
 VAULT = ("crates/kernel/src/vault/",)
-VAULT_TX = ("crates/kernel/src/db.rs", "crates/kernel/migrations/20261119000201_vault.sql")
+VAULT_TX = ("crates/kernel/src/db.rs", "crates/kernel/migrations/20261119000201_vault.sql", "crates/kernel/migrations/20261119000202_vault_event.sql")
 # Apps in this workspace (the rest come from their own repositories): their packages are compiled in as apps.
 WORKSPACE_APPS = {"ferrum-studio", "ferrum-ops"}
 
-TABLES = re.compile(r"\bvault\.(root_slot|key|secret|use_count)\b|\bferrum\.vault\b")
+TABLES = re.compile(r"\bvault\.(root_slot|key|secret|use_count|event)\b|\bferrum\.vault\b")
 WAYS_IN = re.compile(
-    r"\bvault::(open|rewrap|put_slot|remove_slot|rotate_installation_key)\s*\(|\bvault::(\{[^}]*\b)?Opener\b"
+    r"\bvault::(open|rewrap|put_slot|remove_slot|rotate_installation_key|events)\s*\(|\bvault::(\{[^}]*\b)?Opener\b"
     r"|\.(vault_set|vault_rotate|vault_remove|vault_secrets|vault_regenerate|vault_reseal|rotate_owner_key|rotate_workspace_key)\s*\("
 )
 UNSAFE = re.compile(r"\bunsafe\s*(\{|fn\b|impl\b|trait\b|extern\b)")

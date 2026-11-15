@@ -256,24 +256,14 @@ async fn used(tx: &mut Tx, scope: Scope, owner: &str, name: &str, row: &Row) -> 
     Ok(())
 }
 
-/// The workspace whose trail a scope's events go into: its own, or for the installation the first workspace's, as the
-/// platform's own events are (none before there is one).
-async fn trail(tx: &mut Tx, scope: Scope) -> Result<Option<Uuid>> {
+/// Records an event of a scope: a workspace's on its own audit trail; the installation's in the installation's own
+/// record of its vault (`vault.event`), which no workspace sees.
+async fn event(tx: &mut Tx, scope: Scope, actor: Option<Uuid>, request: &str, category: &'static str, verb: &str, diff: Value) -> Result<()> {
     match scope {
-        Scope::Workspace(t) => Ok(Some(t)),
-        Scope::Installation => Ok(sqlx::query_scalar("select id from tenant order by created_at limit 1").fetch_optional(&mut **tx).await?),
-    }
-}
-
-async fn event(tx: &mut Tx, scope: Scope, actor: Option<Uuid>, request: &str, category: &'static str, verb: &str, mut diff: Value) -> Result<()> {
-    if scope == Scope::Installation {
-        diff["scope"] = json!("installation");
-    }
-    match trail(tx, scope).await? {
-        Some(tenant) => audit::record_as(tx, tenant, actor, request, category, "Vault", Uuid::now_v7(), verb, None, diff).await,
-        None => {
-            tracing::info!(%diff, "the vault: {verb} (no workspace's trail yet to record it in)");
-            Ok(())
+        Scope::Workspace(tenant) => audit::record_as(tx, tenant, actor, request, category, "Vault", Uuid::now_v7(), verb, None, diff).await,
+        Scope::Installation => {
+            let (owner, name) = (diff["owner"].as_str().unwrap_or_default().to_string(), diff["name"].as_str().unwrap_or_default().to_string());
+            super::record(tx, verb, &owner, &name, diff, actor, request).await
         }
     }
 }
