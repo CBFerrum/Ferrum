@@ -905,6 +905,22 @@ fn plain_pool(name: &str) -> Result<String, String> {
 /// announced to every replica. When one is refused nothing is written. A secret, or a setting someone else reads from
 /// the environment, is never accepted.
 pub async fn change(st: &AppState, changes: &[Change], by: &str) -> ferrum_kernel::Result<Vec<Done>> {
+    change_with(st, changes, &[], by).await.map(|(done, _)| done)
+}
+
+/// What a change did to the platform's secrets: each one's key, and `cleared` or `set`.
+pub type Tied = Vec<(String, &'static str)>;
+
+/// [`change`], with secrets given in the same change (`secrets`: the secret's key or variable, and its value). An
+/// address marked `sends:` that changes takes the secret it is given again, or that secret is cleared from the vault, so
+/// that it never goes to a host it was not set for: cleared before the address is written, and the one given set after
+/// it, bound to the new host. An interruption between them leaves no secret, never one bound to another host.
+pub async fn change_with(
+    st: &AppState,
+    changes: &[Change],
+    secrets: &[(String, ferrum_kernel::vault::Zeroizing<String>)],
+    by: &str,
+) -> ferrum_kernel::Result<(Vec<Done>, Tied)> {
     use ferrum_kernel::Error;
     let mut planned: Vec<(&'static Def, Option<String>, Option<String>)> = Vec::new();
     for c in changes {
@@ -937,6 +953,25 @@ pub async fn change(st: &AppState, changes: &[Change], by: &str) -> ferrum_kerne
     }
     // Together, as the replicas of each pool they reach would start with them.
     let mut would = read_with(&st.kernel.db.pool).await?;
+    // The secrets this change sends somewhere else (`sends:`): given again, or cleared.
+    let mut tied: Vec<&'static Def> = Vec::new();
+    for (def, pool, value) in &planned {
+        let was = would.row(def, pool.as_deref().unwrap_or(DEFAULT_POOL)).and_then(|r| r.value.clone());
+        if let Some(secret) = def.sends.as_deref().and_then(find).filter(|_| was != *value)
+            && !tied.iter().any(|t| t.key == secret.key)
+        {
+            tied.push(secret);
+        }
+    }
+    for (name, _) in secrets {
+        let def = crate::secrets::find(name).ok_or_else(|| Error::NotFound(format!("no platform secret is called {:?}", name.trim())))?;
+        if !tied.iter().any(|t| t.key == def.key) {
+            return Err(Error::Invalid(format!("{} is given with a change of the address it is sent to, and this change moves none", def.key)));
+        }
+    }
+    if !secrets.is_empty() && !st.vault_open {
+        return Err(Error::Unavailable("the vault is closed: a secret given with an address stays in the environment".into()));
+    }
     for (def, pool, value) in &planned {
         would.put(def, pool.as_deref().unwrap_or(DEFAULT_POOL), value.clone());
     }
@@ -946,6 +981,14 @@ pub async fn change(st: &AppState, changes: &[Change], by: &str) -> ferrum_kerne
     pools.dedup();
     for pool in pools {
         check(st, &Snapshot::resolve(&would, pool, &|name| std::env::var(name).ok())).await.map_err(Error::Invalid)?;
+    }
+    let mut said: Tied = Vec::new();
+    if st.vault_open {
+        for secret in &tied {
+            if st.vault.remove(&st.kernel, ferrum_kernel::vault::Scope::Installation, &secret.key).await? {
+                said.push((secret.key.clone(), "cleared"));
+            }
+        }
     }
     let mut tx = st.kernel.db.system_tx().await?;
     lock(&mut tx).await?;
@@ -983,7 +1026,14 @@ pub async fn change(st: &AppState, changes: &[Change], by: &str) -> ferrum_kerne
         sqlx::query("select pg_notify($1, '')").bind(CHANNEL).execute(&mut *tx).await?;
     }
     tx.commit().await?;
-    Ok(done)
+    for (name, value) in secrets {
+        if let Some(def) = crate::secrets::find(name) {
+            crate::secrets::set(st, def, crate::secrets::Given::Value(value.clone()), 0).await?;
+            said.retain(|(k, _)| *k != def.key);
+            said.push((def.key.clone(), "set"));
+        }
+    }
+    Ok((done, said))
 }
 
 /// What a replica's start checks of `snapshot`'s values, so that a change cannot write what would keep the next

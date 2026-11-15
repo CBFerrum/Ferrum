@@ -1461,6 +1461,72 @@ impl Task for VaultRotate {
     }
 }
 
+/// `secret_set name:<key> [file:<path>] [overlap:<secs>]`: one of the platform's secrets into the vault (docs/operations.md,
+/// "The platform's secrets"). A token the server compares is made here and shown once, the one before it still taken for
+/// `overlap` seconds while its callers change over; `jwt_secret` makes a new key that signs sessions, signing nobody out;
+/// a secret handed to a library is read from standard input, or from `file:`, never from the command line.
+pub struct SecretSet;
+
+#[async_trait]
+impl Task for SecretSet {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "secret_set".into(),
+            detail: "Puts one of the platform's secrets in the vault: name:<key> [file:<path>] [overlap:<secs>]; a value from standard input".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        use crate::secrets::Given;
+        use crate::settings::Held;
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let name = vars.cli_arg("name").map_err(|_| Error::Message("say which: name:<key> (ferrum task settings lists them)".into()))?;
+        let def = crate::secrets::find(name).ok_or_else(|| Error::Message(format!("{name} is not one of the platform's secrets in the vault")))?;
+        let overlap = match vars.cli_arg("overlap") {
+            Ok(v) => v.parse::<i64>().map_err(|_| Error::Message("overlap: seconds, a whole number".into()))?,
+            Err(_) => 0,
+        };
+        let given = match (def.vault, vars.cli_arg("file")) {
+            (Some(Held::Library), Ok(path)) => {
+                let text = ferrum_kernel::vault::Zeroizing::new(std::fs::read_to_string(path).map_err(|e| Error::Message(format!("{path}: {e}")))?);
+                Given::Value(ferrum_kernel::vault::Zeroizing::new(text.trim_end_matches(['\r', '\n']).to_string()))
+            }
+            (Some(Held::Library), Err(_)) => Given::Value(read_once(&format!("the value of {}", def.key))?),
+            _ => Given::Made,
+        };
+        let done = crate::secrets::set(&st, def, given, overlap).await.map_err(refused)?;
+        match done["shown"].as_str() {
+            Some(token) => println!(
+                "{} is this, shown this once:\n\n    {token}\n\nGive it to whoever calls with it. It works now, on every replica; the one before works for {overlap} s more.",
+                def.key
+            ),
+            None if def.vault == Some(Held::Session) => {
+                println!("a new key signs sessions, on every replica within 30 seconds; the keys before it verify what they signed until it runs out")
+            }
+            None => println!("{} is in the vault: each replica takes it at its next start (ferrum task settings lists those that run the older one)", def.key),
+        }
+        Ok(())
+    }
+}
+
+/// `secret_remove name:<key>`: one of the platform's secrets out of the vault (the environment's, where it sets one, still
+/// decides).
+pub struct SecretRemove;
+
+#[async_trait]
+impl Task for SecretRemove {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "secret_remove".into(), detail: "Takes one of the platform's secrets out of the vault: name:<key>".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let name = vars.cli_arg("name").map_err(|_| Error::Message("say which: name:<key>".into()))?;
+        let def = crate::secrets::find(name).ok_or_else(|| Error::Message(format!("{name} is not one of the platform's secrets in the vault")))?;
+        let gone = st.vault.remove(&st.kernel, ferrum_kernel::vault::Scope::Installation, &def.key).await.map_err(refused)?;
+        println!("{}", if gone { format!("{} is out of the vault", def.key) } else { format!("the vault holds no {}", def.key) });
+        Ok(())
+    }
+}
+
 /// `settings [format:json]`: every setting, where its value comes from (the environment, the database, the default),
 /// and the replicas running, with the settings each still runs an older value of. A secret's value is never shown.
 pub struct ListSettings;
@@ -1520,7 +1586,10 @@ pub struct SetSetting(pub bool);
 impl Task for SetSetting {
     fn task(&self) -> TaskInfo {
         if self.0 {
-            TaskInfo { name: "set".into(), detail: "Sets a setting in the database: key:<setting> value:<value> [pool:<name>]".into() }
+            TaskInfo {
+                name: "set".into(),
+                detail: "Sets a setting in the database: key:<setting> value:<value> [pool:<name>] [secret:stdin, for an address given a secret]".into(),
+            }
         } else {
             TaskInfo { name: "unset".into(), detail: "Unsets a setting in the database: key:<setting> [pool:<name>]".into() }
         }
@@ -1533,8 +1602,21 @@ impl Task for SetSetting {
             pool: vars.cli_arg("pool").ok().map(str::to_string),
             value,
         };
-        for d in crate::settings::change(&st, &[change], "task").await.map_err(refused)? {
+        // An address that is given a secret (`sends:`): the secret again, from standard input, or it is cleared.
+        let secret = match (vars.cli_arg("secret"), crate::settings::find(&change.name).and_then(|d| d.sends.as_deref())) {
+            (Ok("stdin"), Some(sends)) => vec![(sends.to_string(), read_once(&format!("{sends}, which this address is given"))?)],
+            (Ok(_), _) => return Err(Error::Message("secret:stdin, with an address that is given a secret (MAILER_HOST, FERRUM_ASSISTANT_URL, ...)".into())),
+            (Err(_), _) => Vec::new(),
+        };
+        let (done, tied) = crate::settings::change_with(&st, &[change], &secret, "task").await.map_err(refused)?;
+        for d in done {
             print_done(&d);
+        }
+        for (key, what) in tied {
+            println!(
+                "{key}: {}",
+                if what == "set" { "set in the vault for the new address" } else { "cleared from the vault: give it again with the address (secret:stdin)" }
+            );
         }
         Ok(())
     }

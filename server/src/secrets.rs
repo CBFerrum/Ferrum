@@ -200,6 +200,54 @@ pub async fn token(st: &AppState, key: &str, configured: &str, given: &str) -> T
     }
 }
 
+/// A new value of a platform secret, as a task or the operator gives it.
+pub enum Given {
+    /// Its value (a library secret's).
+    Value(Zeroizing<String>),
+    /// Made by the server: a token, shown once; a new key that signs sessions.
+    Made,
+}
+
+/// Sets the platform's secret `def` in the vault: a token made here (shown once) with `overlap_secs` for callers to
+/// change over; a new key that signs sessions (what signed before verifies for as long as its tokens last); or a library
+/// secret's value, bound to the host it is sent to now. What to answer: the secret described, and what is shown once.
+pub async fn set(st: &AppState, def: &Def, given: Given, overlap_secs: i64) -> Result<Value> {
+    if !st.vault_open {
+        return Err(Error::Unavailable("the vault is closed: the platform's secrets stay in the environment (ferrum task doctor)".into()));
+    }
+    let (k, vault) = (&st.kernel, &st.vault);
+    let described = |d: Option<Described>| json!({"secret": d});
+    match (def.vault, given) {
+        (Some(Held::Compared), Given::Made) => {
+            let mut bytes = Zeroizing::new([0u8; 32]);
+            ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut *bytes).map_err(|_| Error::Internal("no randomness for a token".into()))?;
+            let token = Zeroizing::new(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(*bytes));
+            let d = vault.set(k, Scope::Installation, &def.key, New::Value(digest(&token)), Rule { overlap_secs, ..Default::default() }).await?;
+            Ok(json!({"secret": d, "shown": token.as_str()}))
+        }
+        (Some(Held::Session), Given::Made) => {
+            let now = st.live_settings.now();
+            let horizon = crate::sessions::horizon(now.settings.session_days, now.jwt_expiration);
+            // The copy of the environment's secret gets an end too once the environment here no longer sets it: the same
+            // environment as the replicas'.
+            let n = crate::sessions::rotate(k, vault, horizon, st.sessions.configured().is_empty()).await?;
+            st.sessions.reload().await?;
+            Ok(described(vault.describe(k, Scope::Installation, &format!("session.{n}")).await?))
+        }
+        (Some(Held::Library), Given::Value(value)) => {
+            let stored = crate::settings::read_with(&k.db.pool).await?;
+            let snapshot = Snapshot::resolve(&stored, &st.live_settings.pool, &|n| std::env::var(n).ok());
+            let (new, rule) = kept(def, value.trim(), &snapshot);
+            Ok(described(Some(vault.set(k, Scope::Installation, &def.key, new, rule).await?)))
+        }
+        (Some(Held::Library), Given::Made) => {
+            Err(Error::field("value", format!("{} is given, never made: from standard input, a file or the request", def.key)))
+        }
+        (_, Given::Value(_)) => Err(Error::field("value", format!("{} is made by the server and shown once: give no value", def.key))),
+        (None, _) => Err(Error::NotFound(format!("platform secret {}", def.key))),
+    }
+}
+
 /// Where each of the platform's secrets comes from now: `environment`, `vault` or `default` (none), with the vault's
 /// description of it.
 pub async fn sources(st: &AppState) -> BTreeMap<String, (&'static str, Option<Described>)> {

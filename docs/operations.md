@@ -252,12 +252,15 @@ not copied; a setting an operator unset in the table is not copied again. `ferru
 environment still decides, and says where the table holds another value or none: the release after this one stops
 reading the environment, and then the table's value applies.
 
-A secret is never kept in the table and stays in the environment until the vault holds it. Neither is a setting
-that someone else reads from the environment itself (an app compiled into the server, the OpenTelemetry SDK, the
-key-management client, the move task): the table's value would not reach them. And an address that is given a
-secret (`MAILER_HOST` with `MAILER_PASSWORD`, `FERRUM_ASSISTANT_URL` with its key) takes no value from the table
-while that secret is in the environment, so that a row in the database never sends the environment's secret
-somewhere else.
+A secret is never kept in the table: the platform's own are in the vault (*The platform's secrets*), the rest stay in
+the environment. Neither is a setting that someone else reads from the environment itself (an app compiled into the
+server, the OpenTelemetry SDK, the key-management client, the move task): the table's value would not reach them. An
+address that is given a secret (`MAILER_HOST`, `MAILER_PORT` and `MAILER_SECURE` with `MAILER_PASSWORD`,
+`FERRUM_ASSISTANT_URL` with its key) takes no value from the table while that secret is in the environment, so that a
+row in the database never sends the environment's secret somewhere else. With the secret in the vault the address may
+come from the table, and the two move together: a change of the address gives the secret again
+(`ferrum task set key:mailer_host value:… secret:stdin`, or `secret` over HTTP) or clears it from the vault, and the
+vault gives it only to the host it was set for.
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
@@ -1052,10 +1055,53 @@ deletes, under the same cap on uses (a hundred an hour for each secret and verb,
     something it keeps outside the vault.
   * `level:secret workspace:… owner:<id> name:<name>`: a new value of a key code uses and nobody types (a random
     value, an Ed25519 pair), never shown. The version before still verifies for the secret's overlap.
+* `secret_set name:<key> [file:<path>] [overlap:<secs>]`, `secret_remove name:<key>`: the platform's own secrets
+  (*The platform's secrets*).
 
 **What the doctor says**: whether the vault is open and with which slot; the slots and whether each opens the vault on
 this machine; whether there is a recovery key; the keys' ages; secrets still sealed with an older key a day after a
 rotation; which of the platform's secrets the environment still decides; and a warning while the vault is closed.
+
+### The platform's secrets
+
+The server's own secrets are kept in the vault, each under the owner `platform` at the installation's scope, by its
+setting's key. Through this release the environment, when it sets one, still wins, so that rolling back behaves; with
+the vault closed nothing changes. `ferrum task settings` (and `GET /api/operator/settings`) says where each comes
+from: `environment`, `vault` or `default` (none).
+
+| Secret | Kept as | Used | A change applies |
+|---|---|---|---|
+| `JWT_SECRET` | a copy of the environment's, and the vault's own keys (*The key that signs sessions*) | signs sessions and API tokens | at once, within 30 seconds |
+| `FERRUM_BOOTSTRAP_TOKEN`, `FERRUM_METRICS_TOKEN`, `FERRUM_OPERATOR_TOKEN` | its SHA-256 digest, which is not the token | each caller's token is checked against it in the vault, in constant time, the version before too while a change's overlap lasts | at once: every check asks the vault |
+| `MAILER_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `FERRUM_ASSISTANT_API_KEY`, `FERRUM_AUDIT_SINK_SECRET` | as it is, revealed to the platform alone, never to a person | handed to the mail sender, the object store, the model provider, the audit sink as the server starts | at each replica's next start; `ferrum task settings` and the doctor list the replicas that still run the older one |
+
+**Copied once.** As a replica starts to serve, each of these its environment sets and the vault does not hold yet is
+stored there, once however many replicas start together, and recorded in the vault's record (`adopt`, `by`
+`environment`; never the value). What the vault holds stays when the environment later says something else: the
+environment wins while it sets it, and the doctor lists what it still decides. A token is stored as its digest; the
+mail password and the model provider's key are bound to the host they are sent to then.
+
+**Tied to where it goes.** `MAILER_PASSWORD` goes only to the mail server it was set for, `FERRUM_ASSISTANT_API_KEY`
+only to the model provider's host: a replica whose mail server (from the table) is another host leaves the password
+out, saying why in its log. Moving the address through the settings (`set`, `apply_settings`, the operator's route)
+clears the secret from the vault unless it is given again in the same change; the secret is cleared before the address
+is written and set after it, so an interruption leaves none, never one for another host.
+
+**Setting them.** Tasks, with the servers' environment:
+
+```bash
+ferrum task secret_set name:mailer_password                   # the value from standard input
+ferrum task secret_set name:aws_secret_access_key file:/run/secrets/key   # or from a file; never on the command line
+ferrum task secret_set name:operator_token overlap:86400      # made here and shown once; the one before works a day more
+ferrum task secret_set name:jwt_secret                        # a new key that signs sessions; nobody is signed out
+ferrum task secret_remove name:bootstrap_token
+ferrum task set key:mailer_host value:smtp.example.com secret:stdin   # an address and its secret together
+```
+
+A token made here (`bootstrap_token`, `metrics_token`, `operator_token`) is printed once: give it to whoever calls
+with it (Prometheus, the Operations screen). With `overlap:` the one before still works that long (at most 30 days),
+for callers to change over; without, it stops at once. The operator's routes do the same over HTTP
+(docs/api.md, *The vault and the installation's secrets*); no task or route ever shows a value it was given.
 
 ### The key that signs sessions
 

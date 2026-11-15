@@ -2221,14 +2221,18 @@ time); without it, or while the server has none, `403` with the same answer eith
   `bool`, `int`, `json` or `choice`, with `values`), `default`, `scope` (`installation` or `pool`), `applies` (`live`:
   at once; `start`: at a replica's next start), `secret`, `environment` (who still reads it from the environment
   itself; the table's value would not reach them), `sends` (the secret this address is given), `source` (where this
-  replica's value comes from: `environment`, `database` or `default`), `value` (this replica's; `null` for the default,
-  and always for a secret), `set` (whether anything sets it: for a secret, all that is said), and `stored` (the
-  table's own value: the installation's, or `{pool: value}` for a pool's own). Each replica seen in the last two
-  minutes: `id`, `pool`, `build_date`, `started_at`, `seen_at`, `settings_version`, and `older`: the settings that
-  apply at start and changed since, whose older value it runs until it starts again (unless its environment sets them).
-* `PUT /api/operator/settings/{key}` `{"value": "7", "pool": "web"}` (`value` text, a number or `true`/`false`; `pool`
-  for a pool's own setting, `default` for replicas whose address names none) → `{"changed": [{key, pool, old, new,
-  version}]}` (`version` `null`: it was so already). `{key}` is the setting's key or its variable. `404`: no such
+  replica's value comes from: `environment`, `database` or `default`; for a secret the vault holds, `environment`,
+  `vault` or `default`), `value` (this replica's; `null` for the default, and always for a secret), `set` (whether
+  anything sets it: for a secret, all that is said), and `stored` (the table's own value: the installation's, or
+  `{pool: value}` for a pool's own). Each replica seen in the last two minutes: `id`, `pool`, `build_date`, `started_at`, `seen_at`, `settings_version`, and
+  `older`: the settings that apply at start and changed since, and the secrets handed to a library that the vault
+  changed since it started, whose older value it runs until it starts again (unless its environment sets them).
+* `PUT /api/operator/settings/{key}` `{"value": "7", "pool": "web", "secret": "…"}` (`value` text, a number or
+  `true`/`false`; `pool` for a pool's own setting, `default` for replicas whose address names none; `secret` only for an
+  address that is given a secret, `sends` above) → `{"changed": [{key, pool, old, new, version}], "secrets": [{secret,
+  now}]}` (`version` `null`: it was so already). An address that is given a secret and changes takes that secret again
+  (`secret`: it is set in the vault for the new host, `now` `set`) or the vault's copy is cleared (`now` `cleared`), so
+  that it never goes to a host it was not set for. `{key}` is the setting's key or its variable. `404`: no such
   setting; `422`: a value not of its type, a secret (never accepted: it stays in the environment), a setting someone
   else reads from the environment, a pool's own without its pool (or an installation's with one), or a value a
   replica's start would refuse (host names, zones, the audit sink, plans and sign-up, how domains are proven, object

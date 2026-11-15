@@ -719,6 +719,8 @@ impl Hooks for App {
         tasks.register(crate::tasks::SetSetting(true));
         tasks.register(crate::tasks::SetSetting(false));
         tasks.register(crate::tasks::ApplySettings);
+        tasks.register(crate::tasks::SecretSet);
+        tasks.register(crate::tasks::SecretRemove);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

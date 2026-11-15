@@ -43,6 +43,9 @@ struct SetBody {
     value: Value,
     #[serde(default)]
     pool: Option<String>,
+    /// For an address that is given a secret (`sends:`): that secret again, else it is cleared from the vault.
+    #[serde(default)]
+    secret: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -51,9 +54,15 @@ struct PoolQuery {
     pool: Option<String>,
 }
 
-async fn changed(st: &AppState, change: crate::settings::Change) -> ApiResult<Response> {
-    let done = crate::settings::change(st, &[change], "operator").await?;
-    Ok(no_store(Json(json!({"changed": done})).into_response()))
+async fn changed(st: &AppState, change: crate::settings::Change, secret: Option<String>) -> ApiResult<Response> {
+    let secrets = match (secret, crate::settings::find(&change.name).and_then(|d| d.sends.clone())) {
+        (Some(value), Some(sends)) => vec![(sends, ferrum_kernel::vault::Zeroizing::new(value))],
+        (Some(_), None) => return Err(ApiError(Error::field("secret", "only an address that is given a secret takes one"))),
+        (None, _) => Vec::new(),
+    };
+    let (done, tied) = crate::settings::change_with(st, &[change], &secrets, "operator").await?;
+    let tied: Vec<Value> = tied.into_iter().map(|(key, what)| json!({"secret": key, "now": what})).collect();
+    Ok(no_store(Json(json!({"changed": done, "secrets": tied})).into_response()))
 }
 
 /// `PUT /api/operator/settings/{key}` `{"value": ..., "pool": ...}`: sets one setting.
@@ -66,14 +75,14 @@ async fn set(State(app): State<AppContext>, headers: HeaderMap, Path(key): Path<
         Value::Number(n) => n.to_string(),
         _ => return Err(ApiError(Error::Invalid("value is text, a number, or true or false; DELETE unsets a setting".into()))),
     };
-    changed(&st, crate::settings::Change { name: key, pool: body.pool, value: Some(value) }).await
+    changed(&st, crate::settings::Change { name: key, pool: body.pool, value: Some(value) }, body.secret).await
 }
 
 /// `DELETE /api/operator/settings/{key}[?pool=]`: unsets one setting (the environment's value or the default applies).
 async fn unset(State(app): State<AppContext>, headers: HeaderMap, Path(key): Path<String>, Query(q): Query<PoolQuery>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     operator(&st, &headers).await?;
-    changed(&st, crate::settings::Change { name: key, pool: q.pool, value: None }).await
+    changed(&st, crate::settings::Change { name: key, pool: q.pool, value: None }, None).await
 }
 
 pub fn routes() -> Routes {
