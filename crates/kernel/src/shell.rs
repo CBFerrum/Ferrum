@@ -55,11 +55,11 @@ impl DomainProof {
     }
 }
 
-/// Proof by record (`FERRUM_DOMAIN_PROOF=record`): an older build verifies a domain that only points here. Dated before
-/// the change's first commit, as every build that holds it is later; the merge's date may replace it.
+/// Proof by record (`FERRUM_DOMAIN_PROOF=record`): an older build verifies a domain that only points here. Dated right
+/// after main's last commit without it (fbfb38be, 2026-11-15T00:50:24Z) and before the merge that brought it.
 pub const PROOF_FLOOR: crate::window::Floor = crate::window::Floor {
     feature: "domain_proof",
-    since: "2026-11-14T21:00:00Z",
+    since: "2026-11-15T00:51:00Z",
     what: "domains of a workspace's own open only once their DNS record proves them",
     temporary: false,
 };
