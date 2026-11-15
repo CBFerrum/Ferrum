@@ -35,7 +35,8 @@ fn repairs_vault(args: impl IntoIterator<Item = String>) -> bool {
 /// Opens the vault (crates/kernel/src/vault): the one call a server makes as it starts, and a task before it runs. Its
 /// slots' keys come from where they are read today: `DATABASE_URL`'s password, the file at its fixed path,
 /// `FERRUM_SECRET_KEY_COMMAND` and `FERRUM_KMS_TRANSIT`. A vault that does not open stops the start, saying why; only a
-/// task that reports on it or repairs it runs with it closed.
+/// task that reports on it or repairs it runs with it closed. A vault that has no slot yet, with none of these here to
+/// make one, leaves the server to start with it closed (nothing depends on it in this release), and says so.
 pub async fn open_vault(
     db: &ferrum_kernel::Db,
     settings: &crate::state::Settings,
@@ -56,7 +57,8 @@ pub async fn open_vault(
             tracing::info!(%slot, "the vault is open");
             Ok(())
         }
-        Ok(Opened::Later) => Ok(()),
+        // Not yet migrated (opened once the kernel has), or no slot possible here (said, and the server starts).
+        Ok(Opened::Later | Opened::Closed) => Ok(()),
         Err(e) if tolerate => {
             tracing::error!("the vault is closed: {e}");
             Ok(())

@@ -86,11 +86,45 @@ async fn scenario() {
     let no_file = dir.join("absent.key");
     let db = replica().await;
 
-    // ── a fresh database with nothing to open it with: refused, saying so ──
+    // ── a fresh database with nothing here to make its first slot: a server starts with the vault closed, saying so ──
     reset(&db).await;
-    let why = refusal(vault::open(&db, opener(None, &no_file, None), false).await);
-    assert!(why.contains("nothing to open it with") && why.contains("DATABASE_URL has no password") && why.contains("absent.key"), "{why}");
+    let closed = replica().await;
+    assert_eq!(vault::open(&closed, opener(None, &no_file, None), false).await.unwrap(), Opened::Closed);
+    let e = vault::put_slot(&closed, SlotKind::Recovery).await.unwrap_err();
+    assert!(e.to_string().contains("the vault is closed: nothing here can make its first slot") && e.to_string().contains("absent.key"), "{e}");
     assert_eq!(as_vault(&db, "select count(*) from vault.root_slot").await, 0, "and nothing was made");
+    let mut hooks = HookRegistry::default();
+    let mut crm = None;
+    hooks.app("crm", &[], |h| crm = Some(h.vault()));
+    let k = Kernel::boot(closed, core(), hooks, KernelSettings::default(), None).await.expect("it starts all the same");
+    let crm = crm.unwrap();
+    let w = workspace(&k, "closed").await;
+    for e in [
+        crm.derive(&k, Scope::Workspace(w), "links").await.map(|_| ()).unwrap_err(),
+        crm.describe(&k, Scope::Workspace(w), "x").await.map(|_| ()).unwrap_err(),
+        crm.set(&k, Scope::Workspace(w), "x", value("y"), Rule::default()).await.map(|_| ()).unwrap_err(),
+        k.rotate_owner_key(Scope::Workspace(w), "crm").await.map(|_| ()).unwrap_err(),
+    ] {
+        assert!(e.to_string().starts_with("the vault is closed: nothing here can make its first slot"), "every use says so: {e}");
+    }
+    let found = k.vault_findings().await.unwrap();
+    assert!(
+        found.len() == 1 && found[0].level == ferrum_kernel::doctor::Level::Warning && found[0].detail.contains("first slot"),
+        "a finding, not a blocker: {found:?}"
+    );
+    // A later start with a key file makes it, once, though replicas start together; so does one with a key-management
+    // service, or with the database password (below).
+    let first = key_file(&dir, "first.key");
+    let (a, b) = (replica().await, replica().await);
+    let both = tokio::join!(vault::open(&a, opener(None, &first, None), false), vault::open(&b, opener(None, &first, None), false));
+    assert_eq!((both.0.unwrap(), both.1.unwrap()), (Opened::With(SlotKind::File), Opened::With(SlotKind::File)));
+    assert_eq!(as_vault(&db, "select count(*) from vault.root_slot").await, 1, "one slot, one installation key");
+    let why = refusal(vault::open(&replica().await, opener(None, &no_file, None), false).await);
+    assert!(why.contains("no slot opens the vault"), "once made, a start whose slot does not open here is refused: {why}");
+    reset(&db).await;
+    let printing_first = Some(format!("printf '%s' {}", ferrum_kernel::kms::new_key()));
+    assert_eq!(vault::open(&replica().await, opener(None, &no_file, printing_first), false).await.unwrap(), Opened::With(SlotKind::Kms));
+    reset(&db).await;
 
     // ── two replicas starting together on a fresh database make one installation key ──
     let (a, b) = (replica().await, replica().await);
@@ -122,6 +156,10 @@ async fn scenario() {
         sqlx::query("update vault.root_slot set wrapped = $1 where kind = 'credential'").bind(&wrapped).execute(&mut *tx).await.unwrap();
         tx.commit().await.unwrap();
     }
+    as_vault(&db, "with u as (update vault.root_slot set check_value = set_byte(check_value, 3, get_byte(check_value, 3) # 1) where kind = 'credential' returning 1) select count(*) from u").await;
+    let why = refusal(vault::open(&replica().await, opener(Some("ferrum"), &no_file, None), false).await);
+    assert!(why.contains("damaged") && why.contains("check value"), "an unreadable check value is refused, as damage, not as a wrong password: {why}");
+    as_vault(&db, "with u as (update vault.root_slot set check_value = set_byte(check_value, 3, get_byte(check_value, 3) # 1) where kind = 'credential' returning 1) select count(*) from u").await;
 
     // ── the file slot, added to the open vault: tried first; a file gone or replaced is said, and the next slot opens ──
     let file = key_file(&dir, "root.key");

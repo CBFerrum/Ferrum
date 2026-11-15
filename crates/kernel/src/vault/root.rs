@@ -103,6 +103,10 @@ pub enum Opened {
     With(SlotKind),
     /// The database is not migrated as far as the vault yet: it opens once the kernel has migrated it (`Kernel::boot`).
     Later,
+    /// The vault has no slot yet, and nothing here can make its first one: no password in `DATABASE_URL`, no key
+    /// file, no key-management service. It stays closed, saying so, and everything that asks it is refused; a later
+    /// start with one of them makes it. In this release nothing depends on the vault, so the server starts all the same.
+    Closed,
 }
 
 /// The installation key this process holds.
@@ -113,9 +117,23 @@ pub(crate) struct Installation {
 }
 
 enum State {
-    Closed { why: String, opener: Option<Opener> },
-    Pending { opener: Opener, tolerate: bool },
-    Open { installation: Arc<Installation>, opener: Opener, by: SlotKind },
+    Closed {
+        why: String,
+        opener: Option<Opener>,
+    },
+    /// No slot yet, and none possible here ([`Opened::Closed`]).
+    Rootless {
+        opener: Opener,
+    },
+    Pending {
+        opener: Opener,
+        tolerate: bool,
+    },
+    Open {
+        installation: Arc<Installation>,
+        opener: Opener,
+        by: SlotKind,
+    },
 }
 
 /// The vault of one database, as this process holds it (`Db::vault`): the installation key once opened, and the keys
@@ -137,6 +155,15 @@ impl Default for Root {
     }
 }
 
+/// Why a vault with no slot and nothing to make one with is closed, and the three ways to give it a root.
+fn rootless(opener: &Opener) -> String {
+    format!(
+        "nothing here can make its first slot: DATABASE_URL has no password, there is no key file at {}, and no key-management service is set \
+         (FERRUM_KMS_TRANSIT or FERRUM_SECRET_KEY_COMMAND). Give it one of these, and the next start makes it (docs/operations.md, \"The vault\")",
+        opener.file.display()
+    )
+}
+
 fn poisoned() -> Error {
     Error::Internal("the vault's state is unreadable (a panic held its lock)".into())
 }
@@ -147,14 +174,20 @@ impl Root {
         match &*self.state.read().map_err(|_| poisoned())? {
             State::Open { installation, .. } => Ok(installation.clone()),
             State::Closed { why, .. } => Err(Error::Unavailable(format!("the vault is closed: {why}"))),
+            State::Rootless { opener } => Err(Error::Unavailable(format!("the vault is closed: {}", rootless(opener)))),
             State::Pending { .. } => Err(Error::Unavailable("the vault opens once the database is migrated".into())),
         }
+    }
+
+    /// Whether it is closed only because nothing here can make its first slot ([`Opened::Closed`]).
+    pub(crate) fn rootless(&self) -> bool {
+        self.state.read().is_ok_and(|s| matches!(*s, State::Rootless { .. }))
     }
 
     /// How this process opens the vault, whatever it holds now.
     pub(crate) fn opener(&self) -> Option<Opener> {
         match &*self.state.read().ok()? {
-            State::Open { opener, .. } | State::Pending { opener, .. } => Some(opener.clone()),
+            State::Open { opener, .. } | State::Pending { opener, .. } | State::Rootless { opener } => Some(opener.clone()),
             State::Closed { opener, .. } => opener.clone(),
         }
     }
@@ -164,6 +197,7 @@ impl Root {
         match &*self.state.read().map_err(|_| "its state is unreadable".to_string())? {
             State::Open { by, .. } => Ok(*by),
             State::Closed { why, .. } => Err(why.clone()),
+            State::Rootless { opener } => Err(rootless(opener)),
             State::Pending { .. } => Err("it opens once the database is migrated".into()),
         }
     }
@@ -213,9 +247,14 @@ pub async fn open(db: &Db, opener: Opener, tolerate: bool) -> Result<Opened> {
         return Ok(Opened::Later);
     }
     match open_now(db, &opener).await {
-        Ok((installation, by)) => {
+        Ok(Some((installation, by))) => {
             root.set_open(installation, opener, by);
             Ok(Opened::With(by))
+        }
+        Ok(None) => {
+            tracing::warn!("the vault is closed: {}", rootless(&opener));
+            root.set(State::Rootless { opener });
+            Ok(Opened::Closed)
         }
         Err(e) => {
             root.set(State::Closed { why: e.to_string(), opener: Some(opener) });
@@ -236,6 +275,7 @@ pub(crate) async fn finish(db: &Db) -> Result<()> {
             tracing::info!(slot = by.as_str(), "the vault is open");
             return Ok(());
         }
+        Ok(Opened::Closed) => return Ok(()),
         Ok(Opened::Later) => {
             let e = Error::Unavailable("the database is not migrated as far as the vault: run `ferrum task migrate` with this build".into());
             db.vault.set(State::Closed { why: e.to_string(), opener: Some(opener) });
@@ -455,6 +495,10 @@ async fn unlock(slot: &SlotRow, opener: &Opener) -> std::result::Result<Key, Mis
 
 fn open_slot(slot: &SlotRow, kek: &Key, opener: &Opener) -> std::result::Result<Key, Miss> {
     if !kek.checks(&check_place(slot.kind.as_str()), &slot.check) {
+        // The key opens what the slot holds all the same: its check value is what is damaged (still refused).
+        if kek.unwrap(&root_place(slot.kind.as_str(), slot.version), &slot.wrapped).is_some() {
+            return Err(Miss::Damaged("its check value does not match, although its key opens it".into()));
+        }
         return Err(Miss::Wrong(wrong_key(slot.kind, opener)));
     }
     kek.unwrap(&root_place(slot.kind.as_str(), slot.version), &slot.wrapped)
@@ -575,23 +619,17 @@ async fn make_slot(kind: SlotKind, opener: &Opener) -> Result<Made> {
     }
 }
 
-/// The best slot available here for a new vault: a key file, then a key-management service, then the database password.
-async fn best_slot(opener: &Opener) -> Result<(SlotKind, Made)> {
+/// The best slot available here for a new vault: a key file, then a key-management service, then the database password;
+/// none when there is none of them.
+async fn best_slot(opener: &Opener) -> Result<Option<(SlotKind, Made)>> {
     // A key file that is there but cannot be used stops it: the operator meant it to be the root.
     if opener.file.exists() {
-        return Ok((SlotKind::File, file_slot(opener).await?));
+        return Ok(Some((SlotKind::File, file_slot(opener).await?)));
     }
     if let Some(made) = kms_slot(opener).await? {
-        return Ok((SlotKind::Kms, made));
+        return Ok(Some((SlotKind::Kms, made)));
     }
-    if let Some(made) = credential_slot(opener).await? {
-        return Ok((SlotKind::Credential, made));
-    }
-    Err(Error::Unavailable(format!(
-        "the vault has nothing to open it with: DATABASE_URL has no password, there is no key file at {}, and no key-management service is set \
-         (FERRUM_KMS_TRANSIT or FERRUM_SECRET_KEY_COMMAND). Give it one of these (docs/operations.md, \"The vault\")",
-        opener.file.display()
-    )))
+    Ok(credential_slot(opener).await?.map(|made| (SlotKind::Credential, made)))
 }
 
 async fn write_slot(tx: &mut Tx, row: &SlotRow) -> Result<()> {
@@ -614,15 +652,26 @@ async fn write_slot(tx: &mut Tx, row: &SlotRow) -> Result<()> {
     Ok(())
 }
 
-/// Opens the vault with its slots, or makes it when it has none.
-async fn open_now(db: &Db, opener: &Opener) -> Result<(Arc<Installation>, SlotKind)> {
+/// What making the vault's first slot came to.
+enum Init {
+    Made(Arc<Installation>, SlotKind),
+    /// Another replica made it meanwhile.
+    Exists,
+    /// Nothing here can make a slot.
+    Impossible,
+}
+
+/// Opens the vault with its slots, or makes it when it has none; none when it has none and nothing here can make one.
+async fn open_now(db: &Db, opener: &Opener) -> Result<Option<(Arc<Installation>, SlotKind)>> {
     for _ in 0..2 {
         let slots = read_slots(db).await?;
         if !slots.is_empty() {
-            return unlock_any(&slots, opener).await;
+            return unlock_any(&slots, opener).await.map(Some);
         }
-        if let Some(made) = initialize(db, opener).await? {
-            return Ok(made);
+        match initialize(db, opener).await? {
+            Init::Made(installation, by) => return Ok(Some((installation, by))),
+            Init::Impossible => return Ok(None),
+            Init::Exists => {}
         }
     }
     Err(Error::Unavailable("the vault's slots changed while it was being opened; start again".into()))
@@ -630,9 +679,13 @@ async fn open_now(db: &Db, opener: &Opener) -> Result<(Arc<Installation>, SlotKi
 
 /// A new installation key with the best slot here, once: replicas starting together wait on the root's lock, and all
 /// but the first find its slot and open with it (`None`).
-async fn initialize(db: &Db, opener: &Opener) -> Result<Option<(Arc<Installation>, SlotKind)>> {
+async fn initialize(db: &Db, opener: &Opener) -> Result<Init> {
+    // Keys without a slot are a vault whose slots were lost, never one to make again (nor to leave closed quietly).
+    if held_keys(db).await? {
+        return Err(lost_slots());
+    }
     // Made before the lock: a key-management service may take its time.
-    let (kind, made) = best_slot(opener).await?;
+    let Some((kind, made)) = best_slot(opener).await? else { return Ok(Init::Impossible) };
     let installation = Arc::new(Installation { version: 1, key: Key::random()?, made_at: Utc::now() });
     let row = made.row(kind, &installation)?;
     let mut tx = db.vault_tx(None).await?;
@@ -641,18 +694,29 @@ async fn initialize(db: &Db, opener: &Opener) -> Result<Option<(Arc<Installation
         sqlx::query_as("select (select count(*) from vault.root_slot), exists (select 1 from vault.key)").fetch_one(&mut *tx).await?;
     if slots > 0 {
         tx.rollback().await?;
-        return Ok(None);
+        return Ok(Init::Exists);
     }
     if keys {
-        return Err(Error::Unavailable(
-            "the vault holds keys and no slot to open them: restore vault.root_slot from the backup taken with them (a new installation key would open none of them)".into(),
-        ));
+        return Err(lost_slots());
     }
     write_slot(&mut tx, &row).await?;
     super::audit_root(&mut tx, "made", json!({"slot": kind.as_str(), "installation_version": 1})).await?;
     tx.commit().await?;
     tracing::warn!(slot = kind.as_str(), "the vault was made: its {kind} slot opens it. Keep a recovery key as well: `ferrum task vault_recovery`");
-    Ok(Some((installation, kind)))
+    Ok(Init::Made(installation, kind))
+}
+
+fn lost_slots() -> Error {
+    Error::Unavailable(
+        "the vault holds keys and no slot to open them: restore vault.root_slot from the backup taken with them (a new installation key would open none of them)".into(),
+    )
+}
+
+async fn held_keys(db: &Db) -> Result<bool> {
+    let mut tx = db.vault_tx(None).await?;
+    let keys: bool = sqlx::query_scalar("select exists (select 1 from vault.key)").fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(keys)
 }
 
 /// What the task that adds or replaces a slot prints: a recovery key, once.
@@ -997,6 +1061,14 @@ impl crate::Kernel {
         let mut out = Vec::new();
         match (&st.opened_with, &st.closed_because) {
             (Some(by), _) => out.push(Finding::ok("vault", format!("open: its {by} slot opened it"))),
+            (None, Some(why)) if self.db.vault.rootless() => {
+                out.push(Finding::warning(
+                    "vault",
+                    format!("the vault is closed: {why}"),
+                    "Give it a root: a password in DATABASE_URL, a key file at /run/ferrum/root.key, or a key-management service; the next start makes it.",
+                ));
+                return Ok(out);
+            }
             (None, _) if self.db.vault.opener().is_none() => {
                 out.push(Finding::off("vault", "this process did not open the vault"));
                 return Ok(out);

@@ -986,13 +986,21 @@ moves it).
 wins, and the log says why each one before it did not. The recovery key is never tried at start. On a database that
 has no vault yet, the first start (or `ferrum task migrate`) makes the installation key and one slot: the key file if
 one is mounted, else the key-management service if one is set, else the database password. Replicas starting together
-make one key between them. A server that cannot open the vault does not start, and says why for each slot:
+make one key between them.
 
-* *nothing to open it with*: `DATABASE_URL` has no password, there is no key file and no key-management service is
-  set. Give it one of these.
+When none of the three is there (`DATABASE_URL` has no password, there is no key file, no key-management service is
+set), the vault has no slot to be made with: the server starts with it closed, one warning in the log says so and
+names the three ways to give it a root, the doctor says so too, and everything that asks the vault is refused with
+*the vault is closed*. In this release nothing depends on the vault yet. The first start that has one of them makes
+it.
+
+Every other failure stops the start, and says why for each slot:
+
 * *the database password in DATABASE_URL is not the one it was made with*: the password changed (below).
-* *there is no key file at …*, *… is not set here*: this replica lacks what that slot needs.
-* *it is damaged*: the slot's key is right and what it holds does not open. Restore the vault's tables from a backup.
+* *there is no key file at …*, *… is not set here*, *the key-management service … cannot be reached*: this replica
+  lacks what that slot needs, or cannot reach it.
+* *it is damaged*: the slot's key is right and what it holds (or its check value) does not open. Restore the vault's
+  tables from a backup.
 
 `ferrum task doctor`, `vault_status` and `vault_rewrap` run with the vault closed, to say what is wrong or put it right.
 

@@ -162,8 +162,10 @@ impl Vault {
         }
     }
 
-    /// The owner, once `k` has checked that it gave this handle out.
+    /// The owner, once `k` has checked that it gave this handle out, and that its vault is open (closed, every verb
+    /// says so, and why).
     fn bound(&self, k: &Kernel) -> Result<&str> {
+        k.db.vault.installation()?;
         let ok = match &self.owner {
             Owner::App(id) => self.mint != 0 && k.hooks.vault_mint(id) == Some(self.mint),
             Owner::Kernel(o) => self.mint == 0 && (&**o == "platform" || o.strip_prefix("plugin:").is_some_and(plugin_name_ok)),

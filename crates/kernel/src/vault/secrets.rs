@@ -710,6 +710,7 @@ impl Kernel {
     /// Seals again, now, all that older versions of `owner`'s key in `scope` sealed (what the background does): how
     /// many are left, which another replica is sealing at this moment.
     pub async fn vault_reseal(&self, scope: Scope, owner: &str) -> Result<i64> {
+        self.db.vault.installation()?;
         loop {
             let (done, left) = reseal_some(self, scope, owner).await?;
             if left == 0 || done == 0 {

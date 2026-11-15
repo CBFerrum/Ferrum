@@ -253,6 +253,7 @@ impl Kernel {
     /// What other replicas hold of them they let go when told; until then it still opens what it did.
     pub async fn rotate_workspace_key(&self, scope: Scope) -> Result<i32> {
         let root = &self.db.vault;
+        root.installation()?;
         let version = with_retry(|| async {
             let mut tx = self.db.vault_tx(scope.tenant()).await?;
             let held: Vec<i32> = sqlx::query_scalar("select version from vault.key where scope = $1 and owner = '' order by version for update")
@@ -315,6 +316,7 @@ impl Kernel {
     pub async fn rotate_owner_key(&self, scope: Scope, owner: &str) -> Result<i32> {
         rotatable(self, owner)?;
         let root = &self.db.vault;
+        root.installation()?;
         let version = with_retry(|| async {
             let mut tx = self.db.vault_tx(scope.tenant()).await?;
             let (wv, wk) = root.current_workspace_key(&self.db, &mut tx, scope.id()).await?;
