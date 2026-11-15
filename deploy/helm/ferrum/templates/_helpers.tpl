@@ -69,6 +69,7 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{ include "ferrum.secretEnv" (list . "FERRUM_AUDIT_SINK_SECRET" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_BOOTSTRAP_TOKEN" false) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_METRICS_TOKEN" false) }}
+{{ include "ferrum.secretEnv" (list . "FERRUM_OPERATOR_TOKEN" true) }}
 {{ include "ferrum.secretEnv" (list . "AWS_ACCESS_KEY_ID" false) }}
 {{ include "ferrum.secretEnv" (list . "AWS_SECRET_ACCESS_KEY" false) }}
 - {name: FERRUM_S3_BUCKET, value: {{ .Values.storage.bucket | quote }}}
@@ -147,6 +148,75 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{- with .Values.extraEnv }}
 {{ toYaml . }}
 {{- end }}
+{{- end -}}
+
+{{/* The variables `environment: minimal` keeps besides the database's address and the secrets: what the address is
+made of, and what apps compiled into the server read from the environment themselves (server/src/settings.yaml). */}}
+{{- define "ferrum.envKept" -}}
+{{- toJson (list "FERRUM_DB_USER" "FERRUM_DB_PASSWORD" "FERRUM_DB_NAME" "FERRUM_DATABASE_DIRECT_URL" "FERRUM_DATABASE_READ_URL" "FERRUM_OFFICE_URL" "FERRUM_OFFICE_WOPI_URL" "FERRUM_EDITORS_URL" "FERRUM_METRICS_ENGINE_URL") -}}
+{{- end -}}
+
+{{/* A pool's environment with `environment: minimal` (values.yaml): the database's address naming the pool
+(`application_name=pool:<name>`; `default` with no pools), the secrets, the variables in ferrum.envKept, extraEnv, the
+pool's own `env` and, while the migrate Job runs, migrate.serverEnv. Call with (list . pool). */}}
+{{- define "ferrum.minimalEnv" -}}
+{{- $root := index . 0 -}}{{- $p := index . 1 -}}
+{{- $v := $root.Values -}}
+{{- $kept := include "ferrum.envKept" $root | fromJsonArray -}}
+{{- $extra := dict -}}{{- range $v.extraEnv }}{{ $_ := set $extra .name true }}{{ end -}}
+{{- $pool := printf "application_name=pool:%s" ($p.name | default "default") -}}
+{{- $env := list -}}
+{{- range (include "ferrum.env" $root | fromYamlArray) -}}
+{{- if and (eq .name "DATABASE_URL") (hasKey . "valueFrom") -}}
+{{- $sep := ternary "&" "?" (and (not $v.database.enabled) $v.database.urlHasQuery) -}}
+{{- $env = append $env (dict "name" "FERRUM_DATABASE_ADDRESS" "valueFrom" .valueFrom) -}}
+{{- $env = append $env (dict "name" "DATABASE_URL" "value" (printf "$(FERRUM_DATABASE_ADDRESS)%s%s" $sep $pool)) -}}
+{{- else if eq .name "DATABASE_URL" -}}
+{{- $env = append $env (dict "name" "DATABASE_URL" "value" (printf "%s?%s" .value $pool)) -}}
+{{- else if or (hasKey . "valueFrom") (has .name $kept) (hasKey $extra .name) -}}
+{{- $env = append $env . -}}
+{{- end -}}
+{{- end -}}
+{{- if eq (include "ferrum.migrateJob" $root) "true" }}{{ $env = concat $env $v.migrate.serverEnv }}{{ end -}}
+{{- $env = concat $env ($p.env | default list) -}}
+{{- toYaml $env -}}
+{{- end -}}
+
+{{/* The document the settings Job applies (values.yaml, `settings`): with `environment: minimal`, the values the
+full environment would have held, each under its setting's key (its variable in lower case, without FERRUM_), and
+each pool's own three; `settings` over them. */}}
+{{- define "ferrum.settingsDocument" -}}
+{{- $v := .Values -}}
+{{- $doc := dict -}}
+{{- if eq $v.environment "minimal" -}}
+{{- $skip := concat (include "ferrum.envKept" . | fromJsonArray) (list "DATABASE_URL" "FERRUM_DB_MAX_CONNECTIONS" "FERRUM_RUN_BACKGROUND" "FERRUM_ZONE") -}}
+{{- range $v.extraEnv }}{{ $skip = append $skip .name }}{{ end -}}
+{{- $installation := dict -}}
+{{- range (include "ferrum.env" . | fromYamlArray) -}}
+{{- if and (hasKey . "value") (not (has .name $skip)) -}}
+{{- $_ := set $installation (.name | lower | trimPrefix "ferrum_") (toString .value) -}}
+{{- end -}}
+{{- end -}}
+{{- $pools := dict -}}
+{{- range (include "ferrum.pools" . | fromJson).pools -}}
+{{- $_ := set $pools (.name | default "default") (dict "db_max_connections" (toString .dbMaxConnections) "run_background" (ternary "false" "true" (eq .background "off")) "zone" (.zone | default "")) -}}
+{{- end -}}
+{{- $doc = dict "installation" $installation "pools" $pools -}}
+{{- end -}}
+{{- toYaml (mergeOverwrite $doc (deepCopy ($v.settings | default dict))) -}}
+{{- end -}}
+
+{{/* "true" when the settings Job is rendered: a document to apply, and a database it can reach before the pods start
+(as ferrum.migrateJob). `environment: minimal` cannot do without it. */}}
+{{- define "ferrum.settingsJob" -}}
+{{- if not (has .Values.environment (list "full" "minimal")) -}}
+{{- fail (printf "environment is full or minimal, not %q" .Values.environment) -}}
+{{- end -}}
+{{- $reachable := or (not .Values.database.enabled) .Release.IsUpgrade -}}
+{{- if and (eq .Values.environment "minimal") (not $reachable) -}}
+{{- fail "environment: minimal takes the settings from the database, which the chart's own database cannot hold before its first install: install with environment: full, then switch" -}}
+{{- end -}}
+{{- if and $reachable (or .Values.settings (eq .Values.environment "minimal")) }}true{{ end -}}
 {{- end -}}
 
 {{/*

@@ -624,7 +624,7 @@ MUTANTS = [
     # Sign-up and plans (FERRUM-CLOUD-002).
     ("signup-on-a-closed-server", "crates/kernel/src/signup.rs", "        if !policy.open {", "        if false {", SIGNUP),
     ("signup-from-any-domain", "crates/kernel/src/signup.rs", "        if !policy.domains.is_empty() && !policy.domains.iter().any(|d| d.eq_ignore_ascii_case(domain)) {", "        if false {", SIGNUP),
-    ("signup-without-limit", "crates/kernel/src/signup.rs", "        if made >= self.settings.signup.per_address {", "        if false {", SIGNUP),
+    ("signup-without-limit", "crates/kernel/src/signup.rs", "        if made >= self.live().signup.per_address {", "        if false {", SIGNUP),
     ("signup-without-the-code", "crates/kernel/src/signup.rs", "        proof?;", "        let _ = proof;", SIGNUP),
     ("signup-spends-the-code-on-a-bad-form", "crates/kernel/src/signup.rs", "        new.check()?;", "", SIGNUP),
     ("signup-opens-an-existing-account", "crates/kernel/src/signup.rs", "let account = if has_account { None }", "let account = if false { None }", SIGNUP),

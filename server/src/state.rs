@@ -6,6 +6,7 @@ use ferrum_kernel::{Db, Error, Kernel};
 use loco_rs::app::AppContext;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
@@ -125,6 +126,10 @@ pub struct Settings {
     /// When set, `/metrics` requires `Authorization: Bearer <token>`.
     #[serde(default)]
     pub metrics_token: String,
+    /// `FERRUM_OPERATOR_TOKEN`: the settings routes (`/api/operator/settings`) require it as `X-Ferrum-Operator-Token`.
+    /// Empty: they answer nobody.
+    #[serde(default)]
+    pub operator_token: String,
     /// Base URL of a Gotenberg-compatible service that lays print formats out as PDFs.
     #[serde(default)]
     pub pdf_url: String,
@@ -346,7 +351,8 @@ impl Shares {
 pub struct RateLimiter {
     name: &'static str,
     window: Duration,
-    max: u32,
+    /// Changed while the server runs for the per-replica budgets ([`RateLimiter::set_max`]).
+    max: AtomicU32,
     hits: DashMap<String, (Instant, u32)>,
     /// Where the count is shared; without it the limit is the replica's own.
     db: Option<Db>,
@@ -355,30 +361,42 @@ pub struct RateLimiter {
 impl RateLimiter {
     /// `name` keeps this limiter's counts apart from other limiters'.
     pub fn shared(name: &'static str, window: Duration, max: u32, db: Db) -> Self {
-        RateLimiter { name, window, max, hits: DashMap::new(), db: Some(db) }
+        RateLimiter { name, window, max: AtomicU32::new(max), hits: DashMap::new(), db: Some(db) }
     }
 
     /// Counted on this replica only: cheap enough for every request.
     pub fn local_only(name: &'static str, window: Duration, max: u32) -> Self {
-        RateLimiter { name, window, max, hits: DashMap::new(), db: None }
+        RateLimiter { name, window, max: AtomicU32::new(max), hits: DashMap::new(), db: None }
+    }
+
+    /// A new budget, from the next request on (a setting changed, or the pool's replicas did).
+    pub fn set_max(&self, max: u32) {
+        self.max.store(max, Ordering::Relaxed);
+    }
+
+    /// The budget as it stands.
+    pub fn max(&self) -> u32 {
+        self.max.load(Ordering::Relaxed)
     }
 
     /// The replica's own count (`local_only` limiters).
     pub fn check_local(&self, key: &str) -> Result<(), Error> {
-        if self.max > 0 && self.local(key) > self.max {
-            return Err(Error::TooManyRequests(format!("more than {} requests a minute; slow down", self.max)));
+        let max = self.max();
+        if max > 0 && self.local(key) > max {
+            return Err(Error::TooManyRequests(format!("more than {max} requests a minute; slow down")));
         }
         Ok(())
     }
 
     pub async fn check(&self, key: &str) -> Result<(), Error> {
         let refused = || Err(Error::TooManyRequests("too many requests; slow down".into()));
-        if self.local(key) > self.max {
+        let max = self.max();
+        if self.local(key) > max {
             return refused();
         }
         let Some(db) = &self.db else { return Ok(()) };
         match db.count_hit(&format!("{}|{key}", self.name), self.window).await {
-            Ok(n) if n > i64::from(self.max) => refused(),
+            Ok(n) if n > i64::from(max) => refused(),
             Ok(_) => Ok(()),
             // The replica's own count still applies; a database hiccup must not lock everyone out.
             Err(e) => {
@@ -431,6 +449,9 @@ pub struct AppState {
     pub assistant: Arc<crate::assistant::Assistant>,
     /// The zone settings, checked at start (crate::zone).
     pub zones: Arc<ferrum_kernel::zones::Zones>,
+    /// The settings while the server runs (docs/operations.md, "Settings in the database"): `settings` is as at the start;
+    /// what applies at once is read from here.
+    pub live_settings: Arc<crate::settings::Live>,
 }
 
 pub fn app_state(ctx: &AppContext) -> Result<AppState, ApiError> {

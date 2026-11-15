@@ -148,7 +148,7 @@ impl Acts {
     /// Activities for this kernel, with the worker's budget worked out from its database pool, or from
     /// `FERRUM_PROCESS_STEPS` and `FERRUM_PROCESS_STEPS_PER_WORKSPACE`.
     pub fn new(k: Arc<Kernel>, main: tokio::runtime::Handle) -> Acts {
-        let set = |name: &str| std::env::var(name).ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| *n > 0);
+        let set = |name: &str| ferrum_kernel::env::var(name).and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| *n > 0);
         let limits = Limits::from_pool(k.db.pool.options().get_max_connections(), set("FERRUM_PROCESS_STEPS"), set("FERRUM_PROCESS_STEPS_PER_WORKSPACE"));
         let budget = budget::STEPS.get_or_init(|| Budget::new(limits)).clone();
         Acts { k, main, budget }

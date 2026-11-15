@@ -106,6 +106,10 @@ adds (ferrum.maxSurge). Checked with pools or the pooler on. */ -}}
 {{- $need = add $need (add (int $v.dbMaxConnections) 6) -}}
 {{- $parts = append $parts (printf "the migrate Job %d + 6" (int $v.dbMaxConnections)) -}}
 {{- end -}}
+{{- if eq (include "ferrum.settingsJob" .) "true" -}}
+{{- $need = add $need (add (int $v.dbMaxConnections) 6) -}}
+{{- $parts = append $parts (printf "the settings Job %d + 6" (int $v.dbMaxConnections)) -}}
+{{- end -}}
 {{- if gt (int $need) (int $v.database.connectionLimit) -}}
 {{- fail (printf "the pools may open %d database connections (%s, and 20 for other users of the role), more than database.connectionLimit %d: lower maxReplicas or dbMaxConnections%s" $need (join ", " $parts) (int $v.database.connectionLimit) (ternary ", or the pooler's instances or poolSize" "" (and $pl.enabled true))) -}}
 {{- end -}}

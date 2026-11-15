@@ -839,7 +839,7 @@ impl Task for PlanMove {
         if let Ok(witness) = std::env::var("FERRUM_AUTHORITY_WITNESS_URL")
             && !witness.trim().is_empty()
         {
-            let region = std::env::var("FERRUM_REGION").unwrap_or_default();
+            let region = ferrum_kernel::env::var("FERRUM_REGION").unwrap_or_default();
             let authority =
                 ferrum_kernel::recovery::Authority::connect(&witness, "ferrum", &region, std::time::Duration::from_secs(30)).await.map_err(refused)?;
             let holder = authority.holder().await.map_err(refused)?;
@@ -1429,6 +1429,123 @@ impl Task for VaultRotate {
     }
 }
 
+/// `settings [format:json]`: every setting, where its value comes from (the environment, the database, the default),
+/// and the replicas running, with the settings each still runs an older value of. A secret's value is never shown.
+pub struct ListSettings;
+
+#[async_trait]
+impl Task for ListSettings {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "settings".into(), detail: "Every setting, where its value comes from, and the replicas that still run an older one".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let all = crate::settings::listing(&st).await.map_err(refused)?;
+        if vars.cli_arg("format").is_ok_and(|f| f == "json") {
+            println!("{}", serde_json::to_string_pretty(&all).map_err(refused)?);
+            return Ok(());
+        }
+        let text = |v: &serde_json::Value| v.as_str().map(str::to_string);
+        for s in all["settings"].as_array().into_iter().flatten() {
+            let value = if s["secret"] == true {
+                (if s["set"] == true { "(set)" } else { "(not set)" }).to_string()
+            } else {
+                text(&s["value"])
+                    .unwrap_or_else(|| format!("(default{})", text(&s["default"]).filter(|d| !d.is_empty()).map(|d| format!(": {d}")).unwrap_or_default()))
+            };
+            let applies = match (s["scope"].as_str(), s["applies"].as_str()) {
+                (Some("pool"), Some(a)) => format!("pool, {a}"),
+                (_, Some(a)) => a.to_string(),
+                _ => String::new(),
+            };
+            println!("{:<36} {:<12} {:<12} {value}", text(&s["key"]).unwrap_or_default(), text(&s["source"]).unwrap_or_default(), applies);
+        }
+        println!("version {} of the table; this process is in the pool {}", all["version"], text(&all["pool"]).unwrap_or_default());
+        for r in all["replicas"].as_array().into_iter().flatten() {
+            let older: Vec<String> = r["older"].as_array().into_iter().flatten().filter_map(text).collect();
+            println!(
+                "replica {} (pool {}, started {}): {}",
+                text(&r["id"]).unwrap_or_default(),
+                text(&r["pool"]).unwrap_or_default(),
+                text(&r["started_at"]).unwrap_or_default(),
+                if older.is_empty() {
+                    "runs the current values".to_string()
+                } else {
+                    format!("runs older values of {}, until it starts again", older.join(", "))
+                }
+            );
+        }
+        Ok(())
+    }
+}
+
+/// `set key:<setting> value:<value> [pool:<name>]` and `unset key:<setting> [pool:<name>]`: one setting in the database,
+/// checked as a replica's start checks it and recorded with its value before and after (docs/operations.md, "Changing
+/// settings").
+pub struct SetSetting(pub bool);
+
+#[async_trait]
+impl Task for SetSetting {
+    fn task(&self) -> TaskInfo {
+        if self.0 {
+            TaskInfo { name: "set".into(), detail: "Sets a setting in the database: key:<setting> value:<value> [pool:<name>]".into() }
+        } else {
+            TaskInfo { name: "unset".into(), detail: "Unsets a setting in the database: key:<setting> [pool:<name>]".into() }
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let value = if self.0 { Some(vars.cli_arg("value").map_err(|_| Error::Message("say the value: value:<value>".into()))?.to_string()) } else { None };
+        let change = crate::settings::Change {
+            name: vars.cli_arg("key").map_err(|_| Error::Message("say which setting: key:<setting>".into()))?.to_string(),
+            pool: vars.cli_arg("pool").ok().map(str::to_string),
+            value,
+        };
+        for d in crate::settings::change(&st, &[change], "task").await.map_err(refused)? {
+            print_done(&d);
+        }
+        Ok(())
+    }
+}
+
+fn print_done(d: &crate::settings::Done) {
+    let pool = d.pool.as_deref().map(|p| format!(" (pool {p})")).unwrap_or_default();
+    let shown = |v: &Option<String>| v.clone().unwrap_or_else(|| "(unset)".into());
+    match d.version {
+        Some(v) => println!("{}{pool}: {} -> {} (version {v})", d.key, shown(&d.old), shown(&d.new)),
+        None => println!("{}{pool}: {} already", d.key, shown(&d.new)),
+    }
+}
+
+/// `apply_settings file:<path>`: a whole document of settings (crate::settings::Document), checked together and
+/// written in one transaction, or not at all. What the chart's settings Job runs.
+pub struct ApplySettings;
+
+#[async_trait]
+impl Task for ApplySettings {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "apply_settings".into(), detail: "Applies a document of settings to the database: file:<path> (YAML)".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let path = vars.cli_arg("file").map_err(|_| Error::Message("say which document: file:<path>".into()))?;
+        let text = std::fs::read_to_string(path).map_err(|e| Error::Message(format!("{path}: {e}")))?;
+        let doc: crate::settings::Document = if text.trim().is_empty() {
+            crate::settings::Document::default()
+        } else {
+            serde_yaml::from_str(&text).map_err(|e| Error::Message(format!("{path}: {e}")))?
+        };
+        let stored = crate::settings::read_with(&st.kernel.db.pool).await.map_err(refused)?;
+        let changes = doc.changes(&stored).map_err(Error::Message)?;
+        let done = crate::settings::change(&st, &changes, "document").await.map_err(refused)?;
+        for d in &done {
+            print_done(d);
+        }
+        println!("{} settings in the document, {} changed", done.len(), done.iter().filter(|d| d.version.is_some()).count());
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1473,11 +1590,11 @@ impl Task for LogicReplay {
                 results.push((path.to_string(), ferrum_process::replay(history, Some(keys.clone())).await));
             }
         } else {
-            let address = std::env::var("TEMPORAL_ADDRESS").map_err(|_| Error::Message("TEMPORAL_ADDRESS is not set".into()))?;
+            let address = ferrum_kernel::env::var("TEMPORAL_ADDRESS").ok_or_else(|| Error::Message("TEMPORAL_ADDRESS is not set".into()))?;
             let settings = ferrum_process::Settings {
                 address,
-                namespace: std::env::var("TEMPORAL_NAMESPACE").unwrap_or_else(|_| "ferrum".into()),
-                queue: std::env::var("TEMPORAL_TASK_QUEUE").unwrap_or_else(|_| ferrum_process::QUEUE.into()),
+                namespace: ferrum_kernel::env::var("TEMPORAL_NAMESPACE").unwrap_or_else(|| "ferrum".into()),
+                queue: ferrum_kernel::env::var("TEMPORAL_TASK_QUEUE").unwrap_or_else(|| ferrum_process::QUEUE.into()),
                 keys,
             };
             // Named runs, or every one not finished.

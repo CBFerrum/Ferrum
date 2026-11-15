@@ -1067,13 +1067,13 @@ impl Kernel {
     /// What one request may send of stored files (BD-71): 25 MB, or more where the operator raised
     /// `FERRUM_CONNECTION_UPLOAD_MB`.
     pub(crate) fn upload_ceiling(&self) -> u64 {
-        self.settings.connection_upload_bytes.max(MAX_FILE_BYTES)
+        self.live().connection_upload_bytes.max(MAX_FILE_BYTES)
     }
 
     /// Whether the operator named this host (`FERRUM_CONNECTION_HOSTS`): then a private address and plain http are
     /// allowed for it, and for it alone.
     fn operator_allows(&self, host: &str) -> bool {
-        self.settings.connection_hosts.iter().any(|h| h.eq_ignore_ascii_case(host))
+        self.live().connection_hosts.iter().any(|h| h.eq_ignore_ascii_case(host))
     }
 
     /// A client for one hop to `url`, its addresses checked and pinned; no redirects of its own.

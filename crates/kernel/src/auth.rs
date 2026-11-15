@@ -768,7 +768,7 @@ impl Kernel {
         if let Some((name, rule)) = entry.limit()
             && rule.apps.is_some()
         {
-            let report = entry.zones.mode == crate::zones::Mode::Report;
+            let report = entry.zones.mode() == crate::zones::Mode::Report;
             let limit = crate::ctx::Limit::of(name, rule, &ctx.schema, report);
             ctx.perms = Arc::new(ctx.perms.within(Some(Arc::new(limit))));
         }
@@ -879,7 +879,7 @@ impl Kernel {
         let (is_admin, roles, perms) = match zone.as_deref().and_then(|e| e.limit().map(|(n, r)| (e, n, r))) {
             Some((entry, name, rule)) => {
                 if crate::zones::is_staff(&core.kind) {
-                    self.narrowed(core, &schema, entry.zones.mode == crate::zones::Mode::Report, name, rule)
+                    self.narrowed(core, &schema, entry.zones.mode() == crate::zones::Mode::Report, name, rule)
                 } else {
                     (core.is_admin, core.roles.clone(), core.perms.clone())
                 }

@@ -186,7 +186,7 @@ impl Config {
     /// `FERRUM_ASSISTANT_API_KEY` (required), `_PROTOCOL` (`anthropic` or `openai`), `_MODEL`,
     /// `_URL`, `_EFFORT`, `_FALLBACKS` (`on`/`off`), `_CALLS_PER_HOUR`.
     pub fn from_env() -> Option<Config> {
-        let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let env = |k: &str| ferrum_kernel::env::var(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         let api_key = env("FERRUM_ASSISTANT_API_KEY")?;
         let protocol = if env("FERRUM_ASSISTANT_PROTOCOL").as_deref() == Some("openai") { Protocol::OpenAi } else { Protocol::Anthropic };
         let model = env("FERRUM_ASSISTANT_MODEL").unwrap_or_else(|| "claude-opus-5-5".into());

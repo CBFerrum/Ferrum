@@ -83,10 +83,72 @@ pub fn settings_findings(production: bool, jwt_secret: &str, st: &crate::state::
     out
 }
 
+/// Settings in the database (docs/operations.md): which of them the environment still decides (and where the
+/// database says otherwise, or nothing), and the replicas that still run an older value of one that applies at start.
+pub async fn database_settings_findings(st: &AppState) -> Vec<Finding> {
+    let all = match crate::settings::listing(st).await {
+        Ok(all) => all,
+        Err(e) => return vec![Finding::warning("settings.database", format!("the settings in the database cannot be read: {e}"), "Check the database.")],
+    };
+    let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    let (mut decided, mut differ) = (Vec::new(), Vec::new());
+    for s in all["settings"].as_array().into_iter().flatten() {
+        if s["secret"] == true || !s["environment"].is_null() || s["source"] != "environment" {
+            continue;
+        }
+        decided.push(text(&s["key"]));
+        let stored = if s["scope"] == "pool" { s["stored"][text(&all["pool"])].clone() } else { s["stored"].clone() };
+        if stored != s["value"] {
+            differ.push(text(&s["key"]));
+        }
+    }
+    let mut out = vec![if decided.is_empty() {
+        Finding::ok("settings.environment", "no setting comes from the environment but the secrets: the database decides the rest")
+    } else if differ.is_empty() {
+        Finding::ok(
+            "settings.environment",
+            format!("the environment decides {} settings, and the database holds the same: {}", decided.len(), decided.join(", ")),
+        )
+    } else {
+        Finding::warning(
+            "settings.environment",
+            format!(
+                "the environment decides {} settings ({}), and the database holds another value, or none, for {}",
+                decided.len(),
+                decided.join(", "),
+                differ.join(", ")
+            ),
+            "The environment wins until the release after this one stops reading it: make the database say the same (ferrum task set), or take the variable out of the environment.",
+        )
+    }];
+    let older: Vec<String> = all["replicas"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["older"].as_array().is_some_and(|o| !o.is_empty()))
+        .map(|r| {
+            let keys: Vec<String> = r["older"].as_array().into_iter().flatten().map(text).collect();
+            format!("{} (pool {}): {}", text(&r["id"]), text(&r["pool"]), keys.join(", "))
+        })
+        .collect();
+    let replicas = all["replicas"].as_array().map_or(0, Vec::len);
+    out.push(if older.is_empty() {
+        Finding::ok("settings.replicas", format!("{replicas} replicas seen in the last two minutes, each running the settings' current values"))
+    } else {
+        Finding::warning(
+            "settings.replicas",
+            format!("{} replicas run an older value of a setting that applies at start: {}", older.len(), older.join("; ")),
+            "Start them again (kubectl rollout restart deployment/ferrum): the new values apply at their next start.",
+        )
+    });
+    out
+}
+
 /// Everything, worst first.
 pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, ferrum_kernel::Error> {
     let production = ctx.environment == Environment::Production;
     let mut out = settings_findings(production, &st.jwt_secret, &st.settings, &ctx.config.server.host);
+    out.extend(database_settings_findings(st).await);
     out.extend(st.kernel.doctor(st.settings.db_max_connections).await?);
     out.extend(st.kernel.vault_findings().await?);
     // A planned move holds outward work too, and says so itself (`move_findings`).
@@ -274,7 +336,8 @@ pub async fn service_findings(st: &AppState) -> Vec<Finding> {
         }
     };
     let mut out = office_findings(&office, &wopi, discovery);
-    let pdf = st.settings.pdf_url.trim().trim_end_matches('/');
+    let now = st.live_settings.now();
+    let pdf = now.settings.pdf_url.trim().trim_end_matches('/');
     let health = if pdf.is_empty() { None } else { Some(client.get(format!("{pdf}/health")).send().await.map(|r| r.status().as_u16()).map_err(|_| ())) };
     out.push(pdf_finding(pdf, health));
     out

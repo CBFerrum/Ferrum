@@ -107,11 +107,19 @@ impl Hooks for App {
         Ok(())
     }
 
-    /// Loco's middleware, but our request log (queries are left out of the log).
+    /// Loco's middleware, but our request log (queries are left out of the log), and its request timeout reading the
+    /// setting at each request, so that a change applies at once.
     fn middlewares(ctx: &AppContext) -> Vec<Box<dyn loco_rs::controller::middleware::MiddlewareLayer>> {
+        let live = ctx.shared_store.get::<AppState>().map(|st| st.live_settings.clone());
         loco_rs::controller::middleware::default_middleware_stack(ctx)
             .into_iter()
-            .map(|m| if m.name() == "logger" { Box::new(crate::request_log::RequestLog::new(ctx)) } else { m })
+            .map(|m| -> Box<dyn loco_rs::controller::middleware::MiddlewareLayer> {
+                match (m.name(), &live) {
+                    ("logger", _) => Box::new(crate::request_log::RequestLog::new(ctx)),
+                    ("timeout_request", Some(live)) if m.is_enabled() => Box::new(crate::settings::LiveTimeout(live.clone())),
+                    _ => m,
+                }
+            })
             .collect()
     }
 
@@ -142,15 +150,37 @@ impl Hooks for App {
     }
 
     async fn after_context(ctx: AppContext) -> Result<AppContext> {
+        let mut ctx = ctx;
+        // The settings (docs/plan/stateless.md, D1 and D2): the table's, read over a pool of two before anything else
+        // connects, under the environment's, which still wins. They land where the file put the variables, so that
+        // everything below reads them as before; Loco's mail sender, made from the file before this runs, is made again
+        // when the table sets any of it.
+        // The address names the replica's pool (`application_name=pool:<name>`), whose rows hold its own settings.
+        let pool = crate::settings::pool_name(&ctx.config.database.uri).map_err(Error::Message)?;
+        let stored = crate::settings::read(&ctx.config.database.uri).await.map_err(Error::Message)?;
+        // (The installation's root, D3, is opened below, once the database's own pools are open: their sizes come from
+        // these settings, the vault's key cache and transactions belong to them, and on a database not migrated yet it
+        // can open only once the kernel has migrated it. No setting holds a secret, so nothing before reads the vault.)
+        let snapshot = crate::settings::Snapshot::resolve(&stored, &pool, &|name| std::env::var(name).ok());
+        crate::settings::Base::of(&ctx.config).apply(&snapshot, &mut ctx.config).map_err(Error::Message)?;
+        if snapshot.mailer_from_database() {
+            ctx.mailer = crate::settings::mailer(&ctx.config)?;
+        }
+        ferrum_kernel::env::set(snapshot.vars());
         let settings = Settings::from_ctx(&ctx)?;
+        // A secret the environment still holds: the file lets it be missing, so that the table is read; here it may not.
+        if ctx.environment == Environment::Production && ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).is_none_or(|j| j.secret.trim().is_empty()) {
+            return Err(Error::Message("JWT_SECRET is not set: give it `openssl rand -base64 48` (docs/operations.md, Configuration)".into()));
+        }
         // The hosts this server names for itself, checked before it connects to or writes anything, on every start
         // (a guest of a newer build's database too).
         crate::shell::check_names(&settings, &ctx.config.server.host).map_err(Error::Message)?;
         // Zones (docs/operations.md, "Zones"): anything not plainly right refuses to start.
         let zones = ferrum_kernel::zones::Zones::parse(&settings.zones, &settings.zone, &settings.zone_default, &settings.zone_mode).map_err(Error::Message)?;
         zones.check_background(settings.run_background).map_err(Error::Message)?;
-        // The audit sink (docs/operations.md, "Sending the audit log elsewhere"): checked before anything else too.
-        let audit_sink = ferrum_kernel::audit_sink::Sink::parse(&settings.audit_sink_url, &settings.audit_sink_secret).map_err(Error::Message)?;
+        // The kernel's settings that apply at once (the audit sink among them, docs/operations.md, "Sending the audit log
+        // elsewhere"), made as a change makes them: checked before anything else too.
+        let kernel_live = crate::settings::kernel_live(&settings, &ferrum_kernel::env::var).map_err(Error::Message)?;
         // `ferrum task migrate` is what brings the database up to date, whatever the setting says.
         let migrating = is_migrate_task(std::env::args());
         let migrate_now = settings.migrate_at_start || migrating;
@@ -224,49 +254,30 @@ impl Hooks for App {
         plugins.seal_with(secret_key.clone());
         plugins.open_also_with(retired.clone());
         let processes = crate::process::configure(&mut hooks, &secret_key, &retired).await.map_err(Error::Message)?;
-        let (plans, signup) = signup_settings(|name| std::env::var(name).ok(), crate::shell::base_domain(&settings).is_some()).map_err(Error::Message)?;
-        if signup.open && mailer.is_none() {
+        if kernel_live.signup.open && mailer.is_none() {
             return Err(Error::Message("FERRUM_SIGNUP=open needs mail (settings.mailer): sign-up proves addresses with emailed codes".into()));
         }
         let domain_proof =
             ferrum_kernel::shell::DomainProof::from_setting(&settings.domain_proof, crate::shell::base_domain(&settings).is_some()).map_err(Error::Message)?;
-        let dns_resolvers = ferrum_kernel::shell::dns_resolvers(&settings.dns_resolvers).map_err(Error::Message)?;
         let kernel = Kernel::boot(
             db,
             catalog,
             hooks,
             KernelSettings {
                 webhooks_allow_private: settings.webhooks_allow_private,
-                connection_hosts: std::env::var("FERRUM_CONNECTION_HOSTS")
-                    .unwrap_or_default()
-                    .split(',')
-                    .map(|h| h.trim().to_ascii_lowercase())
-                    .filter(|h| !h.is_empty())
-                    .collect(),
-                connection_upload_bytes: std::env::var("FERRUM_CONNECTION_UPLOAD_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(25) << 20,
                 sso_allow_private: settings.sso_allow_private,
                 secret_key: Some(secret_key),
                 retired_secret_keys: retired,
-                clamd: Some(settings.clamav_addr.trim().to_string()).filter(|a| !a.is_empty()),
-                clamd_max_bytes: settings.clamav_max_mb << 20,
-                pdf_url: Some(settings.pdf_url.trim().to_string()).filter(|u| !u.is_empty()),
                 public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
-                push_services: push_services(&settings.push_services),
-                push_contact: Some(settings.push_contact.trim().to_string()).filter(|c| c.starts_with("mailto:") || c.starts_with("https://")),
-                hold_on_timeline: std::env::var("FERRUM_HOLD_ON_TIMELINE").map_or(true, |v| v != "false"),
+                hold_on_timeline: ferrum_kernel::env::var("FERRUM_HOLD_ON_TIMELINE").is_none_or(|v| v != "false"),
                 accounts_host: crate::shell::accounts_host(&settings),
                 hooks_url: crate::shell::hooks_url(&settings, &ctx.config.server.host),
                 passkey_rp: crate::shell::host_setting("FERRUM_PASSKEY_RP", &settings.passkey_rp).ok().flatten(),
                 link_host: crate::shell::host_setting("FERRUM_LINK_HOST", &settings.link_host).ok().flatten(),
-                plans,
-                signup,
                 process_runtime: processes,
                 migrate_at_start: migrate_now,
-                audit_sink,
-                host_leaving_days: settings.host_leaving_days.min(365).into(),
                 domain_proof,
-                dns_resolvers,
-                ..Default::default()
+                ..kernel_live.onto(KernelSettings::default())
             },
             mailer,
         )
@@ -382,6 +393,7 @@ impl Hooks for App {
         let user_requests = settings.user_requests_per_minute;
         let address_requests = settings.address_requests_per_minute;
         let tenant_requests = settings.tenant_requests.unwrap_or((settings.db_max_connections / 2).max(2));
+        let settings_at_start = settings.clone();
         let state = AppState {
             kernel,
             plugins,
@@ -407,6 +419,7 @@ impl Hooks for App {
             shell,
             assistant: crate::assistant::Assistant::new(crate::assistant::Config::from_env()),
             zones,
+            live_settings: Arc::new(crate::settings::Live::new(&pool, &ctx.config, snapshot, settings_at_start)),
         };
         state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone(), state.objects.clone())));
         state.kernel.db.starting(false);
@@ -417,8 +430,23 @@ impl Hooks for App {
 
     async fn before_run(ctx: &AppContext) -> Result<()> {
         let Some(state) = ctx.shared_store.get::<AppState>() else { return Ok(()) };
+        // R1: what the environment sets and the table does not hold yet is copied there once, as a replica starts to
+        // serve (docs/operations.md, "Settings in the database"). A guest of a newer build's database writes nothing.
+        if state.kernel.booted.guest.is_none() {
+            match crate::settings::adopt(&state.kernel.db, &state.live_settings.pool, &|name| std::env::var(name).ok()).await {
+                Ok(written) if !written.is_empty() => {
+                    state.live_settings.saw(written.iter().map(|(_, v)| *v).max().unwrap_or_default());
+                    let keys: Vec<&str> = written.iter().map(|(k, _)| k.as_str()).collect();
+                    tracing::info!(settings = %keys.join(", "), "copied the settings the environment sets into the database");
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("copying the environment's settings into the database failed (the next start tries again): {e}"),
+            }
+        }
         // Every replica that serves requests: cache invalidation and delivery to the sockets it holds.
         let mut listeners = state.kernel.spawn_listeners(state.shutdown.subscribe());
+        // Changes of the settings, and this replica's row in `replica` (docs/operations.md, "Settings in the database").
+        listeners.push(crate::settings::spawn(state.clone(), state.shutdown.subscribe()));
         listeners.push(state.plugins.sockets.spawn_listener(state.kernel.db.clone(), state.shutdown.subscribe()));
         listeners.push(state.live.spawn_listener(state.kernel.clone(), state.shutdown.subscribe()));
         listeners.extend(state.docs.spawn(state.kernel.clone(), state.shutdown.subscribe()));
@@ -448,8 +476,8 @@ impl Hooks for App {
         if let Ok(witness) = std::env::var("FERRUM_AUTHORITY_WITNESS_URL")
             && !witness.trim().is_empty()
         {
-            let region = std::env::var("FERRUM_REGION").map_err(|_| Error::Message("FERRUM_AUTHORITY_WITNESS_URL needs FERRUM_REGION".into()))?;
-            let ttl = std::env::var("FERRUM_AUTHORITY_TTL_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+            let region = ferrum_kernel::env::var("FERRUM_REGION").ok_or_else(|| Error::Message("FERRUM_AUTHORITY_WITNESS_URL needs FERRUM_REGION".into()))?;
+            let ttl = ferrum_kernel::env::var("FERRUM_AUTHORITY_TTL_SECS").and_then(|v| v.parse().ok()).unwrap_or(30);
             let authority = ferrum_kernel::recovery::Authority::connect(&witness, "ferrum", &region, Duration::from_secs(ttl))
                 .await
                 .map_err(|e| Error::Message(e.to_string()))?;
@@ -607,6 +635,7 @@ impl Hooks for App {
             .add_route(controllers::cards::routes())
             .add_route(controllers::domains::routes())
             .add_route(controllers::shell::routes())
+            .add_route(controllers::operator::routes())
     }
 
     async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {
@@ -657,6 +686,10 @@ impl Hooks for App {
         tasks.register(crate::tasks::DeleteSandbox);
         tasks.register(crate::tasks::ReleaseHost);
         tasks.register(crate::tasks::SamlEncryptionKey);
+        tasks.register(crate::tasks::ListSettings);
+        tasks.register(crate::tasks::SetSetting(true));
+        tasks.register(crate::tasks::SetSetting(false));
+        tasks.register(crate::tasks::ApplySettings);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }
@@ -896,7 +929,7 @@ async fn speculation_csp(req: axum::extract::Request, next: axum::middleware::Ne
 /// and who may make a workspace (`FERRUM_SIGNUP=open`, with `FERRUM_SIGNUP_DOMAINS`,
 /// `FERRUM_SIGNUP_PACKAGES`, `FERRUM_SIGNUP_PLAN` and `FERRUM_SIGNUP_PER_ADDRESS`). Sign-up needs
 /// a base domain: its codes come from the accounts host, and each workspace gets its subdomain.
-fn signup_settings(
+pub(crate) fn signup_settings(
     env: impl Fn(&str) -> Option<String>,
     has_base: bool,
 ) -> std::result::Result<(serde_json::Map<String, serde_json::Value>, ferrum_kernel::signup::SignupPolicy), String> {
@@ -959,7 +992,17 @@ fn is_migrate_task(args: impl IntoIterator<Item = String>) -> bool {
     args.windows(2).any(|w| w[0] == "task" && w[1] == "migrate")
 }
 
-fn push_services(listed: &str) -> Vec<String> {
+/// `FERRUM_CONNECTION_HOSTS`: the hosts, lower-cased.
+pub(crate) fn connection_hosts(listed: Option<String>) -> Vec<String> {
+    listed.unwrap_or_default().split(',').map(|h| h.trim().to_ascii_lowercase()).filter(|h| !h.is_empty()).collect()
+}
+
+/// `FERRUM_CONNECTION_UPLOAD_MB`, in bytes: 25 MiB unless the operator says.
+pub(crate) fn connection_upload_bytes(mb: Option<String>) -> u64 {
+    mb.and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(25) << 20
+}
+
+pub(crate) fn push_services(listed: &str) -> Vec<String> {
     let listed: Vec<String> = listed.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
     if listed.is_empty() { ferrum_kernel::webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect() } else { listed }
 }

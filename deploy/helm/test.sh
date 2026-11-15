@@ -96,6 +96,75 @@ assert env.get("FERRUM_MIGRATE_AT_START") == "false", env
 PY
 ! tpl -f "$tmp/digest.yaml" | grep -q FERRUM_MIGRATE_AT_START
 
+echo "by default no settings Job, and the pods' environment as before"
+! tpl -f "$tmp/digest.yaml" --is-upgrade | grep -qE 'ferrum-settings|application_name|FERRUM_DATABASE_ADDRESS'
+
+echo "a settings document alone: a Job applies it after the migrate Job, and the pods keep their environment"
+tpl -f "$tmp/digest.yaml" --is-upgrade --set migrate.enabled=true --set-json 'settings={"installation":{"session_days":"7"},"others":"keep"}' > "$tmp/s.yaml"
+python3 - "$tmp/s.yaml" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+jobs = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Job"}
+weight = lambda j: int(j["metadata"]["annotations"]["helm.sh/hook-weight"])
+assert weight(jobs["ferrum-settings"]) > weight(jobs["ferrum-migrate"]), "after the migration"
+c = jobs["ferrum-settings"]["spec"]["template"]["spec"]["containers"][0]
+assert c["args"] == ["task", "apply_settings", "file:/etc/ferrum/settings/settings.yaml"], c["args"]
+cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "ferrum-settings")
+assert "helm.sh/hook" in cm["metadata"]["annotations"], "there before the Job runs"
+assert yaml.safe_load(cm["data"]["settings.yaml"]) == {"installation": {"session_days": "7"}, "others": "keep"}, cm["data"]
+dep = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ferrum")
+env = {e["name"] for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]}
+assert {"PUBLIC_URL", "FERRUM_S3_BUCKET", "LOG_LEVEL"} <= env, env
+PY
+! tpl -f "$tmp/digest.yaml" --set-json 'settings={"installation":{"session_days":"7"}}' | grep -q 'name: ferrum-settings'
+
+echo "environment: minimal: each pod has its database address naming its pool, the secrets and what apps read themselves"
+tpl -f "$tmp/digest.yaml" --is-upgrade --set environment=minimal --set-json 'settings={"installation":{"session_days":"7","log_level":"warn"}}' > "$tmp/min.yaml"
+# The preset fills the role's connection limit; the settings Job is counted in it too.
+tpl -f "$tmp/digest.yaml" --is-upgrade --set environment=minimal -f "$chart/presets/pools.yaml" --set dbMaxConnections=16 > "$tmp/minp.yaml"
+python3 - "$tmp/min.yaml" "$tmp/minp.yaml" <<'PY'
+import sys, yaml
+KEPT = {"FERRUM_DATABASE_ADDRESS", "FERRUM_DB_USER", "FERRUM_DB_PASSWORD", "FERRUM_DB_NAME", "FERRUM_DATABASE_DIRECT_URL",
+        "FERRUM_DATABASE_READ_URL", "FERRUM_OFFICE_URL", "FERRUM_OFFICE_WOPI_URL", "FERRUM_EDITORS_URL", "FERRUM_METRICS_ENGINE_URL"}
+def load(path):
+    docs = [d for d in yaml.safe_load_all(open(path)) if d]
+    servers = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Deployment" and any(
+        e["name"] == "DATABASE_URL" for e in d["spec"]["template"]["spec"]["containers"][0].get("env", []))}
+    cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "ferrum-settings")
+    return docs, servers, yaml.safe_load(cm["data"]["settings.yaml"])
+def check(dep, pool):
+    env = dep["spec"]["template"]["spec"]["containers"][0]["env"]
+    by = {e["name"]: e for e in env}
+    assert by["DATABASE_URL"]["value"] == f"$(FERRUM_DATABASE_ADDRESS)?application_name=pool:{pool}", by["DATABASE_URL"]
+    assert by["FERRUM_DATABASE_ADDRESS"]["valueFrom"]["secretKeyRef"] == {"name": "ferrum-db-app", "key": "uri"}
+    plain = {e["name"] for e in env if "value" in e} - {"DATABASE_URL"} - KEPT
+    assert not plain, f"{dep['metadata']['name']}: settings left in the environment: {plain}"
+    names = [e["name"] for e in env]
+    assert names.index("FERRUM_DATABASE_ADDRESS") < names.index("DATABASE_URL"), "defined before the address uses it"
+
+docs, servers, doc = load(sys.argv[1])
+check(servers["ferrum"], "default")
+inst = doc["installation"]
+assert inst["public_url"] == "https://erp.example.com" and inst["s3_bucket"] == "CHANGE-ME-files-bucket", inst
+assert inst["session_days"] == "7" and inst["log_level"] == "warn", "the document's own over the chart's"
+assert inst["pdf_url"].startswith("http://ferrum-pdf"), inst
+assert not {"database_url", "jwt_secret", "secret_key", "office_url", "db_max_connections", "zone"} & set(inst), inst
+assert doc["pools"] == {"default": {"db_max_connections": "30", "run_background": "true", "zone": ""}}, doc["pools"]
+assert any(d["kind"] == "Job" and d["metadata"]["name"] == "ferrum-settings" for d in docs)
+
+docs, servers, doc = load(sys.argv[2])
+pools = {"ferrum": "general", "ferrum-public": "public", "ferrum-finance": "finance", "ferrum-worker": "worker"}
+assert set(servers) == set(pools), set(servers)
+for name, pool in pools.items():
+    check(servers[name], pool)
+assert doc["pools"]["general"] == {"db_max_connections": "16", "run_background": "false", "zone": ""}, doc["pools"]
+assert doc["pools"]["worker"]["run_background"] == "true", doc["pools"]
+PY
+if err=$(tpl -f "$tmp/digest.yaml" --set environment=minimal 2>&1); then echo "rendered minimal on a first install with the chart's own database"; exit 1; fi
+grep -q 'install with environment: full' <<<"$err" || { echo "unexpected error: $err"; exit 1; }
+tpl -f "$tmp/digest.yaml" --set environment=minimal,database.enabled=false,database.urlSecret.name=db,database.urlHasQuery=true \
+  | grep -q 'value: $(FERRUM_DATABASE_ADDRESS)&application_name=pool:default'
+
 echo "an ExternalSecret makes the server's Secret only when asked, and needs its store"
 ! tpl -f "$tmp/digest.yaml" | grep -q 'kind: ExternalSecret'
 tpl -f "$tmp/digest.yaml" --set secrets.externalSecret.enabled=true --set secrets.externalSecret.secretStoreRef.name=vault \

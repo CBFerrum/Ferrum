@@ -169,7 +169,23 @@ pub struct Zones {
     rules: BTreeMap<String, Rule>,
     pin: Option<String>,
     default: Option<String>,
-    pub mode: Mode,
+    mode: LiveMode,
+}
+
+/// `FERRUM_ZONE_MODE`, which applies at once: a change turns it while the server runs ([`Zones::set_mode`]).
+#[derive(Debug, Default)]
+struct LiveMode(std::sync::atomic::AtomicBool);
+
+impl LiveMode {
+    fn of(mode: Mode) -> LiveMode {
+        LiveMode(std::sync::atomic::AtomicBool::new(mode == Mode::Report))
+    }
+}
+
+impl Clone for LiveMode {
+    fn clone(&self) -> LiveMode {
+        LiveMode(std::sync::atomic::AtomicBool::new(self.0.load(std::sync::atomic::Ordering::Relaxed)))
+    }
 }
 
 /// Where a request is.
@@ -256,12 +272,12 @@ impl Entry {
 
     /// Staff are refused here now (the rule refuses them and the mode enforces).
     pub fn refuses_staff(&self) -> bool {
-        !self.admits_staff() && self.zones.mode == Mode::Enforce
+        !self.admits_staff() && self.zones.mode() == Mode::Enforce
     }
 
     /// Whether this zone keeps administrators out (level 2, enforced): administration is refused here.
     pub fn keeps_admins_out(&self) -> bool {
-        self.zones.mode == Mode::Enforce && self.limit().is_some_and(|(_, r)| !r.admin)
+        self.zones.mode() == Mode::Enforce && self.limit().is_some_and(|(_, r)| !r.admin)
     }
 
     /// The zone's name, when it narrows staff (level 2) or asks them to step up: what work queued here is marked with.
@@ -272,7 +288,7 @@ impl Entry {
     /// Whether the zone's rule asks staff to step up here (`step_up: true`), and whether that is only reported.
     pub fn step_up(&self) -> Option<bool> {
         let name = self.name()?;
-        self.zones.rules.get(name).filter(|r| r.step_up).map(|_| self.zones.mode == Mode::Report)
+        self.zones.rules.get(name).filter(|r| r.step_up).map(|_| self.zones.mode() == Mode::Report)
     }
 
     /// The rule of the zone, when it narrows staff admitted here (level 2).
@@ -395,7 +411,17 @@ impl Zones {
         };
         let pin = named("FERRUM_ZONE", pin)?;
         let default = named("FERRUM_ZONE_DEFAULT", default)?;
-        Ok(Zones { rules, pin, default, mode })
+        Ok(Zones { rules, pin, default, mode: LiveMode::of(mode) })
+    }
+
+    /// `enforce` or `report`, as it stands now.
+    pub fn mode(&self) -> Mode {
+        if self.mode.0.load(std::sync::atomic::Ordering::Relaxed) { Mode::Report } else { Mode::Enforce }
+    }
+
+    /// A change of `FERRUM_ZONE_MODE`, while the server runs.
+    pub fn set_mode(&self, mode: Mode) {
+        self.mode.0.store(mode == Mode::Report, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Gives each rule that names apps their packages (`packages_of`: an app id → its manifest's
@@ -504,7 +530,7 @@ static REFUSALS: Mutex<BTreeMap<(String, &'static str, &'static str), u64>> = Mu
 /// Counts and logs a staff credential the zone does not admit (refused, or admitted in report mode).
 /// The log names the person, workspace, zone and kind of credential; never a secret.
 pub fn count_refusal(entry: &Entry, tenant: uuid::Uuid, user: uuid::Uuid) {
-    let mode = entry.zones.mode.as_str();
+    let mode = entry.zones.mode().as_str();
     *REFUSALS.lock().unwrap_or_else(|e| e.into_inner()).entry((entry.label().to_string(), mode, entry.credential.as_str())).or_default() += 1;
     tracing::warn!(
         person = %user, workspace = %tenant, zone = entry.label(), mode, credential = entry.credential.as_str(), address = %entry.address,
@@ -585,7 +611,9 @@ mod tests {
         assert!(Zones::parse("", "", "", "").unwrap().is_off(), "nothing set: no zones");
         assert!(Zones::parse("{}", "", "", "").unwrap().is_off());
         let z = Zones::parse(r#"{"public": {"staff": "none", "scim": true}, "office": {"networks": ["10.0.0.0/8"]}}"#, "public", "office", "report").unwrap();
-        assert_eq!(z.mode, Mode::Report);
+        assert_eq!(z.mode(), Mode::Report);
+        z.set_mode(Mode::Enforce);
+        assert_eq!(z.mode(), Mode::Enforce, "a change applies at once");
         assert_eq!(
             z.rule("public"),
             Some(&Rule { staff: false, apps: None, packages: BTreeSet::new(), admin: false, custom: false, scim: true, networks: vec![], step_up: false })

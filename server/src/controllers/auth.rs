@@ -117,17 +117,19 @@ async fn session_response_with(st: &AppState, s: &Session, headers: &HeaderMap, 
         if cookie_only {
             return Err(ApiError(Error::Forbidden("sign in from a page of this site".into())));
         }
-        return Ok(Json(json!({"token": token(st, s, st.jwt_expiration, None)?, "token_type": "Bearer", "expires_in": st.jwt_expiration})).into_response());
+        let expiration = st.live_settings.now().jwt_expiration;
+        return Ok(Json(json!({"token": token(st, s, expiration, None)?, "token_type": "Bearer", "expires_in": expiration})).into_response());
     }
     st.shell.check_host(headers, s.tenant).await?;
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
-    let ttl = st.shell.session_ttl;
+    let ttl = st.shell.session_ttl();
     let sid = st.kernel.open_session_with(s, ttl, ua, &client_ip(headers), None, entry.name(), saml).await?;
     let mut body = json!({"cookie": true, "session_expires_in": ttl.as_secs()});
     if !cookie_only {
-        body["token"] = json!(device_token(st, s, st.jwt_expiration, "bsid", sid)?);
+        let expiration = st.live_settings.now().jwt_expiration;
+        body["token"] = json!(device_token(st, s, expiration, "bsid", sid)?);
         body["token_type"] = json!("Bearer");
-        body["expires_in"] = json!(st.jwt_expiration);
+        body["expires_in"] = json!(expiration);
     }
     let mut res = Json(body).into_response();
     res.headers_mut().append(axum::http::header::SET_COOKIE, crate::shell::set_cookie(st.shell.secure, &device_token(st, s, ttl.as_secs(), "sid", sid)?, ttl));
@@ -537,8 +539,9 @@ async fn two_factor_enable(
     let codes = st.kernel.enable_two_factor(&ctx, &req.code).await?;
     let mut out = json!({"recovery_codes": codes});
     if let Some(s) = setup_only {
-        out["token"] = json!(token(&st, &s, st.jwt_expiration, None)?);
-        out["expires_in"] = json!(st.jwt_expiration);
+        let expiration = st.live_settings.now().jwt_expiration;
+        out["token"] = json!(token(&st, &s, expiration, None)?);
+        out["expires_in"] = json!(expiration);
     }
     Ok(Json(out).into_response())
 }
@@ -619,9 +622,9 @@ async fn page_token(BrowserSession(ctx, device): BrowserSession, State(app): Sta
     let s = Session { tenant: ctx.tenant, user: ctx.user, token_version: ctx_token_version(&st, &ctx).await? };
     let ws = st.shell.workspace(ctx.tenant).await?;
     Ok(Json(json!({
-        "token": device_token(&st, &s, st.jwt_expiration, "bsid", sid)?,
+        "token": device_token(&st, &s, st.live_settings.now().jwt_expiration, "bsid", sid)?,
         "token_type": "Bearer",
-        "expires_in": st.jwt_expiration,
+        "expires_in": st.live_settings.now().jwt_expiration,
         "tenant": ws.slug,
         "email": ctx.email,
     }))

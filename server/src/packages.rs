@@ -550,7 +550,7 @@ pub async fn round(pool: &PgPool, mut jobs: Vec<Upkeep>, concurrency: usize, eve
 
 /// How many apps' upkeep one replica runs at once (`FERRUM_UPKEEP_CONCURRENCY`): each holds a direct connection.
 pub fn upkeep_concurrency() -> usize {
-    std::env::var("FERRUM_UPKEEP_CONCURRENCY").ok().and_then(|v| v.trim().parse().ok()).filter(|n| *n > 0).unwrap_or(DEFAULT_CONCURRENCY)
+    ferrum_kernel::env::var("FERRUM_UPKEEP_CONCURRENCY").and_then(|v| v.trim().parse().ok()).filter(|n| *n > 0).unwrap_or(DEFAULT_CONCURRENCY)
 }
 
 pub fn spawn(k: Arc<Kernel>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {

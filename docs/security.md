@@ -328,9 +328,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 **Availability**
 * Rate limits held in the database (sign-in, public endpoints, mail) work across replicas and
   fail open if the database is briefly unreachable. Every client address has a request budget too
-  (6000 a minute on each replica by default), taken from the entry `FERRUM_PROXY_HOPS` from the
+  (6000 a minute in a pool of replicas by default, each replica allowing its share), taken from the entry `FERRUM_PROXY_HOPS` from the
   right of `X-Forwarded-For`: what a client writes there itself is never counted as its address.
-* Every user has a request budget (3000 a minute on each replica by default, across all their
+* Every user has a request budget (3000 a minute in a pool of replicas by default, across all their
   sessions and API keys): a runaway script with a valid token is slowed down to `429`s instead of
   slowing everyone down.
 * Replicas are stateless (PostgreSQL, S3), behind a pod disruption budget and an autoscaler;
