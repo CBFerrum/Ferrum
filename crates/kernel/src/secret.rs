@@ -57,6 +57,11 @@ impl SecretKey {
         LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &self.key).expect("32-byte AES key"))
     }
 
+    /// Its 32 bytes, for the vault's slots that a key-management service's key opens (crate::vault).
+    pub(crate) fn key_bytes(&self) -> &[u8; 32] {
+        &self.key
+    }
+
     /// A fingerprint of `data` under this key (HMAC-SHA256, hex), for telling equal secrets apart without
     /// keeping them: the same data gives the same fingerprint, and the fingerprint gives away nothing.
     pub fn fingerprint(&self, label: &str, data: &str) -> String {

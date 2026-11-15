@@ -224,6 +224,7 @@ impl Kernel {
             .or_else(|| crate::messages::handler(kind))
             .or_else(|| crate::connections::handler(kind))
             .or_else(|| crate::documents::handler(kind))
+            .or_else(|| crate::vault::handler(kind))
             .or_else(|| self.hooks.job_handler(kind).cloned())
     }
 

@@ -150,6 +150,7 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     let mut out = settings_findings(production, &st.jwt_secret, &st.settings, &ctx.config.server.host);
     out.extend(database_settings_findings(st).await);
     out.extend(st.kernel.doctor(st.settings.db_max_connections).await?);
+    out.extend(st.kernel.vault_findings().await?);
     // A planned move holds outward work too, and says so itself (`move_findings`).
     out.push(if st.kernel.restore_held().await? {
         Finding::blocker(
