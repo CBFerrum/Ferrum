@@ -306,7 +306,7 @@ async fn step_up(run: &Run, provider: Uuid, idp: &TestIdp) {
     let (_, other) = run.session(provider, idp, "persistent-pat", "pat@samlco.test", "idx-up-2").await;
     let who = StepUp { tenant: run.tenant, user: pat, session: sid, keys: (run.tenant, pat) };
     let from = Arrival { address: "192.0.2.1".into(), step_up: true, ..Default::default() };
-    let ways = k.step_up_ways(&who, "erp.samlco.test").await.unwrap();
+    let ways = k.step_up_ways(&who, "erp.samlco.test", None).await.unwrap();
     assert_eq!(ways, vec![json!({"way": "password", "code": false}), json!({"way": "provider", "name": "Contoso SAML"})]);
     let sql = |q: String| async move {
         let mut tx = k.db.system_tx().await.unwrap();
