@@ -92,11 +92,23 @@ async fn scenario() {
     assert!(e.contains("pre_child_parent_fkey"), "{e}");
     assert_eq!(count(db, "select count(*) from pre_parent where id = 3").await, 0, "nothing of it stayed");
 
+    // The doctor says what the role can and cannot do: an ordinary owner, copies with no grant, the grant it should not
+    // hold, its connection limit against the replicas.
+    let granted: bool = sqlx::query_scalar("select has_parameter_privilege('session_replication_role', 'SET')").fetch_one(&db.pool).await.unwrap();
+    let doctor = k.doctor(10).await.unwrap();
+    let said = |check: &str| doctor.iter().find(|f| f.check == check).cloned().unwrap_or_else(|| panic!("the doctor says nothing of {check}"));
+    assert_eq!(said("database.role").level, ferrum_kernel::doctor::Level::Ok, "{:?}", said("database.role"));
+    assert_eq!(said("database.copy").level, ferrum_kernel::doctor::Level::Ok, "{:?}", said("database.copy"));
+    assert_eq!(said("database.replication_role").level == ferrum_kernel::doctor::Level::Ok, !granted, "{:?}", said("database.replication_role"));
+    assert!(said("database.role_limit").detail.contains("replicas running"), "{:?}", said("database.role_limit"));
+
     // A trigger made afterwards without the condition is named, and a copy refuses until a start puts it right.
     sqlx::raw_sql("create trigger pre_late before update on pre_parent for each row execute function pre_forbid()").execute(&db.pool).await.unwrap();
     let mut conn = db.pool.acquire().await.unwrap();
     let (keys, triggers) = ferrum_kernel::ddl::not_ready(&mut conn).await.unwrap();
     drop(conn);
     assert!(keys.is_empty() && triggers == vec!["pre_late on pre_parent".to_string()], "{triggers:?}");
+    let copy = k.doctor(10).await.unwrap().into_iter().find(|f| f.check == "database.copy").unwrap();
+    assert!(copy.level == ferrum_kernel::doctor::Level::Warning && copy.detail.contains("pre_late on pre_parent"), "{copy:?}");
     k.db.close().await;
 }

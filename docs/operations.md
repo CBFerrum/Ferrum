@@ -964,6 +964,63 @@ journalled in object storage (`access-journal/`) by the person's id only, and on
 word counts. Keep that prefix as long as `privacy-journal/`; if it is gone, take departures since the
 backup from your identity provider.
 
+## Any PostgreSQL
+
+Ferrum runs on the chart's own PostgreSQL (CloudNativePG) or on one run by someone else: Amazon RDS or Aurora, Google
+Cloud SQL, Azure Database for PostgreSQL, Supabase, Neon, or your own. It needs no superuser anywhere, and nothing a
+managed service keeps for its administrator.
+
+**What it needs, on any of them.** `scripts/local_ci.sh managed` runs the server and the suites below against a private
+PostgreSQL that behaves like a managed service (`scripts/managed_pg.sh`: an ordinary role owning only its databases, no
+grant on `session_replication_role`, the extensions made by an administrator in a schema of their own, PgBouncer in
+transaction mode beside PostgreSQL, TLS with the service's own certificate authority), so this list is checked, not
+remembered:
+
+- PostgreSQL 17 is what CI and the rehearsal run; the doctor warns on anything older, which is not tested.
+- A role that logs in, is no superuser and has no `BYPASSRLS` (the server refuses to start otherwise), owns its
+  database (or at least the `public` schema), and has a connection limit 20 below `max_connections`.
+- `btree_gist`, `citext` and `pg_trgm`: the role makes them itself (they are trusted extensions, which a database's
+  owner may make), or an administrator has made them already, in `public` or a schema on the role's `search_path`.
+- No grant on `session_replication_role`: moves, sandboxes, taking a workspace back and deleting one run without it
+  since this release (a build before it asks for `GRANT SET ON PARAMETER session_replication_role`, which only the
+  service's administrator can give, for as long as each runs).
+- With a pooler in transaction mode in front (RDS Proxy, PgBouncer, Supabase's or Neon's pooled address): that address
+  as `DATABASE_URL`, and PostgreSQL itself as `FERRUM_DATABASE_DIRECT_HOST` (`host` or `host:port`) for the listeners,
+  session locks and migrations (*Connection pooler*). The direct address carries `DATABASE_URL`'s role, password,
+  database and TLS options. Where the two differ in more than the host, give `FERRUM_DATABASE_DIRECT_URL` whole.
+- The service's certificate authority at `/run/ferrum/db-ca.pem` (`database.external.caSecret` in the chart), so that
+  every connection checks the database's certificate (*Configuration*). Connecting by IP address, put
+  `sslmode=verify-ca` in the address: the certificate names a host, not the address.
+- A dump as the server's role: `deploy/dump.sh` (*Backups and restore*), from the direct address.
+
+**After the service restores, clones, branches or fails over.** Its own tools take the snapshots and the point-in-time
+restores. A restore into a new database or cluster has another identity, which the server notices; a snapshot, clone
+or branch may keep the identity, and is noticed by the restore marker in object storage (*After restoring a backup*).
+Either way: point the address at it (or let the service swap it in), start or restart the server, run
+`ferrum task reapply_erasures`, check what was set aside, then `ferrum task release_restore note:"..."`. To take one
+workspace back instead, restore to a database of its own and use `extract_tenant` (*Taking one workspace back*); a
+clone of this very database is a genuine copy there.
+
+**Failovers.** `hold_on_timeline` (applies at once) says whether a new timeline holds outward work as a restore.
+`true` (the default) is right wherever a failover can lose what was committed (asynchronous replication) or nobody
+knows; `false` where failover is synchronous and loses nothing. `ferrum task doctor` says which this installation has.
+Whatever it says, a failover that lost a committed write is noticed by the restore marker when the store had already
+seen it.
+
+**Each service.** None of what follows has been run against the real service: it is what their documentation said as
+remembered on 15 November 2026, every line marked *(from memory)*. Check it against the service, and run
+`ferrum task doctor` after the first start: it says what the role can and cannot do.
+
+| | What to make | Pooled address (`DATABASE_URL`) | Direct (`FERRUM_DATABASE_DIRECT_HOST`) | Backups and restore | Failover, and `hold_on_timeline` |
+|---|---|---|---|---|---|
+| Amazon RDS for PostgreSQL | As the master user: `CREATE ROLE ferrum LOGIN PASSWORD '…' CONNECTION LIMIT …; CREATE DATABASE ferrum OWNER ferrum;` (the master user is `rds_superuser`, no superuser; the three extensions are allowed) *(from memory)* | RDS Proxy's endpoint, if you use one (transaction pooling, with pinning on session state) *(from memory)* | The instance endpoint, port 5432 *(from memory)* | Automated snapshots and point-in-time restore make a new instance, which keeps the identity of the one it came from (a snapshot, clone or restore is noticed by the marker) *(from memory)* | Multi-AZ instance: synchronous standby, `false` is safe; Multi-AZ cluster (two readable standbys): semi-synchronous, `true` *(from memory)* |
+| Amazon Aurora PostgreSQL | As for RDS, on the cluster *(from memory)* | RDS Proxy *(from memory)* | The cluster (writer) endpoint *(from memory)* | Snapshots, point-in-time restore and fast clones make new clusters; whether `pg_control_system()` gives Aurora's storage a stable identity is unchecked, so count on the marker *(from memory)* | Storage is shared and replicated by quorum: a failover loses nothing committed, `false` *(from memory)* |
+| Google Cloud SQL | `CREATE ROLE`/`CREATE DATABASE` as `postgres` (`cloudsqlsuperuser`, no superuser) *(from memory)* | Managed connection pooling where your edition has it, or PgBouncer of your own *(from memory)* | The instance's private IP: use `sslmode=verify-ca` and the server CA from the console *(from memory)* | Backups and point-in-time recovery restore to the same or a new instance; clones are new instances *(from memory)* | Regional (HA) instances fail over on a synchronously replicated disk: `false` *(from memory)* |
+| Azure Database for PostgreSQL, Flexible Server | As the administrator (`azure_pg_admin`, no superuser); allow-list the three extensions in `azure.extensions` *(from memory)* | The built-in PgBouncer on port 6432 of the same host *(from memory)* | The same host, port 5432 *(from memory)* | Point-in-time restore makes a new server *(from memory)* | Zone-redundant high availability replicates synchronously: `false` *(from memory)* |
+| Supabase | A role of its own (`postgres` there has `BYPASSRLS`, which the server refuses): `CREATE ROLE ferrum LOGIN NOBYPASSRLS …` and a database it owns; the extensions are in the `extensions` schema already, as in the rehearsal *(from memory)* | Supavisor's transaction port (6543), user `ferrum.<project ref>` *(from memory)* | Supavisor's session port (5432) on the same host and user, since the database's own host takes another user name *(from memory)* | Daily backups and point-in-time recovery restore in place: the same identity, noticed by the marker *(from memory)* | Managed by Supabase; `true` unless they say a failover loses nothing *(from memory)* |
+| Neon | The project's role owns its database and is no superuser; whether a role made in Neon's console has `BYPASSRLS` is unchecked: make it with SQL (`CREATE ROLE ... NOBYPASSRLS`) if the server refuses it *(from memory)* | The `-pooler` host (PgBouncer, transaction mode) *(from memory)* | The same host without `-pooler` *(from memory)* | A branch or a restore to a point in time keeps the identity: noticed by the marker *(from memory)* | Compute is stateless over replicated storage: `false` *(from memory)* |
+| Your own, or CloudNativePG (the chart's) | `deploy/postgres-init` (Compose) or the chart do it | PgBouncer (`database.pooler`) | `-rw` (the chart sets it) | `pg_basebackup`, Barman, CloudNativePG's recovery (*Backups and restore*) | Synchronous replication: `false`; otherwise `true` |
+
 ## Rotating the secret key
 
 `FERRUM_SECRET_KEY` seals secret fields, authenticator secrets, single sign-on client secrets,
@@ -1209,7 +1266,9 @@ left as placeholders, TLS, DNS, memory, disk and ports. `--generate` fills in mi
 changes nothing else. Blockers exit non-zero; warnings do not.
 
 **Once it runs**, `ferrum task doctor` reports on the deployment itself, blockers apart from warnings,
-each with what to do. It connects to everything: PostgreSQL's version and connection limits, row-level
+each with what to do. It connects to everything: PostgreSQL's version and connection limits, what the database's role can
+and cannot do (*Any PostgreSQL*: its ownership, the extensions, copies without a grant, a grant it should not hold, its
+own connection limit against the replicas running), the restore marker and what a new timeline does, row-level
 security on every workspace table, the clock, object storage (a write, read and delete), the malware
 scanner, the PDF renderer, the online editor (set up, answering, offering docx, xlsx and pptx, signing its calls),
 the queues, and every workspace's customizations. It does not send mail. An administrator sees the editor's and the

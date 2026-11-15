@@ -191,6 +191,13 @@ Decided while building it (15 November 2026):
   is held (or, `false`, has its new timeline recorded) within a minute, as the setting says then. Skipped while the
   database is fenced or a planned move's mark is there (the move's own steps decide). The doctor says the value and
   where it comes from; the guide says what to choose for each kind of service.
+- **The doctor.** `database.role` (owner, or may create in the database and its public schema), `database.extensions`
+  (made by the role or an administrator), `database.copy` (keys and triggers ready for copies, named when not),
+  `database.replication_role` (a grant this build never needs: a warning while held), `database.role_limit` (the
+  role's own limit against what the replicas running now, from `replica`, may open to PostgreSQL), `restore.marker`
+  (this replica's last look, or that its outward work waits for the store) and `failover` (the setting's value and
+  where it comes from). The guide's *Any PostgreSQL* has a row per service; every line about a service is marked as
+  remembered, not run.
 
 ## D8. Git
 
