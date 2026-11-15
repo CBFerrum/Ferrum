@@ -205,6 +205,13 @@ pub(crate) fn print_recovery(key: &Key) -> Zeroizing<String> {
     Zeroizing::new(groups.join("-"))
 }
 
+/// A recovery key as a person types it back: case, spaces and dashes do not matter.
+pub(crate) fn read_recovery(typed: &str) -> Option<Key> {
+    let clean: Zeroizing<String> = Zeroizing::new(typed.chars().filter(|c| !c.is_whitespace() && *c != '-').map(|c| c.to_ascii_uppercase()).collect());
+    let bytes = Zeroizing::new(data_encoding::BASE32_NOPAD.decode(clean.as_bytes()).ok()?);
+    Key::from_slice(&bytes)
+}
+
 /// The file slot's key, as `openssl rand -base64 32` writes it.
 pub(crate) fn read_key_file(text: &str) -> Option<Key> {
     let bytes = Zeroizing::new(base64::engine::general_purpose::STANDARD.decode(text.trim()).ok()?);
@@ -302,6 +309,9 @@ mod tests {
         let recovery = Key::random().unwrap();
         let printed = print_recovery(&recovery);
         assert_eq!(printed.len(), 52 + 12, "52 characters in 13 groups");
+        assert_eq!(read_recovery(&printed).unwrap().bytes(), recovery.bytes());
+        assert_eq!(read_recovery(&printed.to_lowercase().replace('-', " ")).unwrap().bytes(), recovery.bytes(), "as a person types it");
+        assert!(read_recovery("ABCD-EFGH").is_none() && read_recovery("not a key at all!").is_none());
         let salt = random(16).unwrap();
         assert_eq!(recovery_slot_key(&recovery, &salt).bytes(), recovery_slot_key(&recovery, &salt).bytes());
         assert_ne!(recovery_slot_key(&recovery, &salt).bytes(), recovery.bytes());

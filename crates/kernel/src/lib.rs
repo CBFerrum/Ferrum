@@ -542,6 +542,9 @@ impl Kernel {
         if let Err(e) = self.start_backfills().await {
             tracing::warn!("starting backfills: {e}");
         }
+        if let Err(e) = vault::upkeep(self).await {
+            tracing::warn!("the vault's upkeep: {e}");
+        }
         let purged = self.purge_old_events(self.settings.event_retention_days).await?
             + self.oauth_purge().await?
             + self.purge_sessions().await?

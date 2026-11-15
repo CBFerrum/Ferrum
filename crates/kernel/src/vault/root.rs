@@ -13,7 +13,9 @@
 //! refused with the reason of each slot, and what a slot holds is checked before it is used, so that a wrong key (a
 //! changed password) is told from a damaged row.
 
-use super::seal::{Kdf, Key, check_place, key_base64, password_key, print_recovery, random, read_key_file, recovery_slot_key, root_place};
+use super::seal::{
+    Kdf, Key, check_place, key_base64, key_place, password_key, print_recovery, random, read_key_file, read_recovery, recovery_slot_key, root_place,
+};
 use crate::db::{Db, Tx};
 use crate::error::{Error, Result};
 use crate::kms;
@@ -22,6 +24,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
+use uuid::Uuid;
 use zeroize::Zeroizing;
 
 /// Where the file slot's key is mounted (the boot contract's fixed path).
@@ -112,7 +115,7 @@ pub(crate) struct Installation {
 enum State {
     Closed { why: String, opener: Option<Opener> },
     Pending { opener: Opener, tolerate: bool },
-    Open { installation: Arc<Installation>, opener: Opener },
+    Open { installation: Arc<Installation>, opener: Opener, by: SlotKind },
 }
 
 /// The vault of one database, as this process holds it (`Db::vault`): the installation key once opened, and the keys
@@ -156,15 +159,24 @@ impl Root {
         }
     }
 
+    /// The slot it was opened with; or why it is closed.
+    pub(crate) fn opened(&self) -> std::result::Result<SlotKind, String> {
+        match &*self.state.read().map_err(|_| "its state is unreadable".to_string())? {
+            State::Open { by, .. } => Ok(*by),
+            State::Closed { why, .. } => Err(why.clone()),
+            State::Pending { .. } => Err("it opens once the database is migrated".into()),
+        }
+    }
+
     fn set(&self, state: State) {
         if let Ok(mut s) = self.state.write() {
             *s = state;
         }
     }
 
-    fn set_open(&self, installation: Arc<Installation>, opener: Opener) {
+    fn set_open(&self, installation: Arc<Installation>, opener: Opener, by: SlotKind) {
         self.cache.forget(None, None);
-        self.set(State::Open { installation, opener });
+        self.set(State::Open { installation, opener, by });
     }
 
     /// Opens again with the slot it opened with, after another process changed the root: what it held keeps working
@@ -183,7 +195,7 @@ impl Root {
         if installation.version != now.version {
             tracing::info!(version = installation.version, slot = by.as_str(), "the vault's installation key changed: opened again");
         }
-        self.set_open(installation.clone(), opener);
+        self.set_open(installation.clone(), opener, by);
         Ok(installation)
     }
 }
@@ -202,7 +214,7 @@ pub async fn open(db: &Db, opener: Opener, tolerate: bool) -> Result<Opened> {
     }
     match open_now(db, &opener).await {
         Ok((installation, by)) => {
-            root.set_open(installation, opener);
+            root.set_open(installation, opener, by);
             Ok(Opened::With(by))
         }
         Err(e) => {
@@ -660,6 +672,179 @@ pub async fn put_slot(db: &Db, kind: SlotKind) -> Result<Printed> {
     super::audit_root(&mut tx, if had { "slot_replaced" } else { "slot_added" }, json!({"slot": kind.as_str()})).await?;
     tx.commit().await?;
     Ok(made.printed)
+}
+
+/// Removes the slot of `kind`; never the last one a server opens the vault with (file, kms or credential).
+pub async fn remove_slot(db: &Db, kind: SlotKind) -> Result<()> {
+    db.vault.installation()?;
+    let mut tx = db.vault_tx(None).await?;
+    lock(&mut tx, true).await?;
+    let kinds: Vec<String> = sqlx::query_scalar("select kind from vault.root_slot").fetch_all(&mut *tx).await?;
+    if !kinds.iter().any(|k| k == kind.as_str()) {
+        return Err(Error::NotFound(format!("{kind} slot")));
+    }
+    let left = kinds.iter().filter(|k| *k != kind.as_str()).filter_map(|k| SlotKind::parse(k)).filter(|k| SlotKind::AT_START.contains(k)).count();
+    if left == 0 {
+        return Err(Error::Conflict(format!("the {kind} slot is the last one a server opens the vault with: add another first (file, kms or credential)")));
+    }
+    sqlx::query("delete from vault.root_slot where kind = $1").bind(kind.as_str()).execute(&mut *tx).await?;
+    notify(&mut tx, "*").await?;
+    super::audit_root(&mut tx, "slot_removed", json!({"slot": kind.as_str()})).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// What becomes of the recovery slot when the installation key is rotated.
+pub enum RecoveryKey {
+    /// It is wrapped again with its key, given once.
+    Keep(Zeroizing<String>),
+    /// It is replaced by a new one, printed once.
+    New,
+}
+
+/// A new installation key: every slot is wrapped again with it (each slot's key had here, or nothing changes), and
+/// every workspace key wrapped again under it, in one transaction. Other replicas hear of it and open the vault again;
+/// what they hold keeps working meanwhile. A recovery slot needs `recovery`; a new recovery key is returned to print.
+pub async fn rotate_installation_key(db: &Db, recovery: Option<RecoveryKey>) -> Result<Printed> {
+    let root = &db.vault;
+    let held = root.installation()?;
+    let opener = root.opener().ok_or_else(|| Error::Unavailable("the vault is closed".into()))?;
+    let slots = read_slots(db).await?;
+    let mut made: Vec<(SlotKind, Made)> = Vec::new();
+    let mut printed = None;
+    for slot in &slots {
+        let m = match (slot.kind, &recovery) {
+            (SlotKind::Recovery, None) => {
+                return Err(Error::Invalid(
+                    "the recovery slot is wrapped again only with its key: give it (recovery:keep, then the key on standard input), or have a new one printed (recovery:new)".into(),
+                ));
+            }
+            (SlotKind::Recovery, Some(RecoveryKey::New)) => {
+                let m = recovery_slot()?;
+                printed = m.printed.clone();
+                m
+            }
+            (SlotKind::Recovery, Some(RecoveryKey::Keep(typed))) => {
+                let typed = read_recovery(typed).ok_or_else(|| Error::Invalid("that is not a recovery key".into()))?;
+                let salt = slot.salt.clone().ok_or_else(|| Error::Unavailable("the recovery slot is damaged: its row holds no salt".into()))?;
+                let kek = recovery_slot_key(&typed, &salt);
+                open_slot(slot, &kek, &opener).map_err(|m| Error::Invalid(m.to_string()))?;
+                Made { kek, salt: Some(salt), params: slot.params.clone(), kms_wrapped: None, printed: None }
+            }
+            (kind, _) => {
+                let kek = slot_key(slot, &opener).await.map_err(|m| Error::Unavailable(format!("the {kind} slot cannot be wrapped again here: {m}")))?;
+                open_slot(slot, &kek, &opener).map_err(|m| Error::Unavailable(format!("the {kind} slot: {m}")))?;
+                Made { kek, salt: slot.salt.clone(), params: slot.params.clone(), kms_wrapped: slot.kms_wrapped.clone(), printed: None }
+            }
+        };
+        made.push((slot.kind, m));
+    }
+    let new = Arc::new(Installation { version: held.version + 1, key: Key::random()?, made_at: Utc::now() });
+    let mut tx = db.vault_tx(None).await?;
+    lock(&mut tx, true).await?;
+    let kinds: Vec<String> = sqlx::query_scalar("select kind from vault.root_slot order by kind").fetch_all(&mut *tx).await?;
+    if current_version(&mut tx).await? != Some(held.version) || kinds != slots.iter().map(|s| s.kind.as_str().to_string()).collect::<Vec<_>>() {
+        return Err(Error::Conflict("the vault's slots changed since this task read them: run it again".into()));
+    }
+    for (kind, m) in &made {
+        write_slot(&mut tx, &m.row(*kind, &new)?).await?;
+    }
+    let rewrapped = rewrap_workspace_keys(&mut tx, &held, &new).await?;
+    notify(&mut tx, "*").await?;
+    super::audit_root(&mut tx, "installation_key_rotated", json!({"installation_version": new.version, "workspace_keys": rewrapped})).await?;
+    tx.commit().await?;
+    let by = root.opened().unwrap_or(SlotKind::Credential);
+    root.set_open(new, opener, by);
+    Ok(printed)
+}
+
+/// Every workspace key, wrapped by `new` instead of `held` (in the rotation's transaction).
+async fn rewrap_workspace_keys(tx: &mut Tx, held: &Installation, new: &Installation) -> Result<usize> {
+    let rows: Vec<(Uuid, i32, i32, Vec<u8>)> =
+        sqlx::query_as("select scope, version, parent_version, wrapped from vault.key where owner = '' order by scope, version for update")
+            .fetch_all(&mut **tx)
+            .await?;
+    for chunk in rows.chunks(1000) {
+        let (mut scopes, mut versions, mut wrapped) = (Vec::new(), Vec::new(), Vec::new());
+        for (scope, version, parent, w) in chunk {
+            if *parent != held.version {
+                return Err(Error::Internal(format!(
+                    "the workspace key of {scope} is wrapped by installation key version {parent}, not the current {}",
+                    held.version
+                )));
+            }
+            let key = held
+                .key
+                .unwrap(&key_place(*scope, "", *version, *parent), w)
+                .ok_or_else(|| Error::Internal(format!("the workspace key of {scope} (version {version}) does not open: its row was changed or damaged")))?;
+            scopes.push(*scope);
+            versions.push(*version);
+            wrapped.push(new.key.wrap(&key_place(*scope, "", *version, new.version), &key)?);
+        }
+        sqlx::query(
+            "update vault.key k set wrapped = u.w, parent_version = $1 from unnest($2::uuid[], $3::int[], $4::bytea[]) u(s, v, w) \
+             where k.scope = u.s and k.owner = '' and k.version = u.v",
+        )
+        .bind(new.version)
+        .bind(&scopes)
+        .bind(&versions)
+        .bind(&wrapped)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(rows.len())
+}
+
+/// How the credential slot is opened once more, after the database password changed: with the old password or the
+/// recovery key, each given once.
+pub enum Rewrap {
+    OldPassword(Zeroizing<String>),
+    Recovery(Zeroizing<String>),
+}
+
+/// Makes the credential slot again for this process's database password, opening the vault with the old password or
+/// the recovery key: what to do when the password changed or was lost. Leaves the vault open here.
+pub async fn rewrap(db: &Db, with: Rewrap) -> Result<()> {
+    let root = &db.vault;
+    let opener = root.opener().ok_or_else(|| Error::Unavailable("the vault was not opened by this process".into()))?;
+    let slots = read_slots(db).await?;
+    let find = |kind: SlotKind| slots.iter().find(|s| s.kind == kind).ok_or_else(|| Error::NotFound(format!("{kind} slot")));
+    let (slot, kek) = match with {
+        Rewrap::OldPassword(old) => {
+            let slot = find(SlotKind::Credential)?;
+            let salt = slot.salt.clone().ok_or_else(|| Error::Unavailable("the credential slot is damaged: its row holds no salt".into()))?;
+            let kdf: Kdf = serde_json::from_value(slot.params["kdf"].clone())
+                .map_err(|_| Error::Unavailable("the credential slot is damaged: its row does not say Argon2id's costs".into()))?;
+            (slot, blocking(move || password_key(old.as_bytes(), &salt, kdf)).await?)
+        }
+        Rewrap::Recovery(typed) => {
+            let slot = find(SlotKind::Recovery)?;
+            let typed = read_recovery(&typed).ok_or_else(|| Error::Invalid("that is not a recovery key".into()))?;
+            let salt = slot.salt.clone().ok_or_else(|| Error::Unavailable("the recovery slot is damaged: its row holds no salt".into()))?;
+            (slot, recovery_slot_key(&typed, &salt))
+        }
+    };
+    let key = match open_slot(slot, &kek, &opener) {
+        Ok(k) => k,
+        Err(Miss::Wrong(_)) if slot.kind == SlotKind::Credential => {
+            return Err(Error::Invalid("that is not the password the credential slot was made with".into()));
+        }
+        Err(m) => return Err(Error::Invalid(m.to_string())),
+    };
+    let installation = Arc::new(Installation { version: slot.version, key, made_at: slot.made_at });
+    let made = credential_slot(&opener).await?.ok_or_else(|| Error::Invalid("DATABASE_URL has no password, and the credential slot is made from it".into()))?;
+    let row = made.row(SlotKind::Credential, &installation)?;
+    let mut tx = db.vault_tx(None).await?;
+    lock(&mut tx, true).await?;
+    if current_version(&mut tx).await? != Some(installation.version) {
+        return Err(Error::Conflict("the installation key changed meanwhile: run it again".into()));
+    }
+    write_slot(&mut tx, &row).await?;
+    notify(&mut tx, "*").await?;
+    super::audit_root(&mut tx, "credential_rewrapped", json!({"with": if slot.kind == SlotKind::Recovery { "recovery" } else { "old_password" }})).await?;
+    tx.commit().await?;
+    root.set_open(installation, opener, SlotKind::Credential);
+    Ok(())
 }
 
 #[cfg(test)]

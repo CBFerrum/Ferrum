@@ -5,16 +5,19 @@
 //! by replicas at once; each owner has its own, a handle another registry gave out opens nothing, and a key's row
 //! copied to another place does not open. Secrets keep to their rules: a value is revealed only where its rule says,
 //! signatures verify through a rotation's overlap, every use is on the audit trail under its cap, and people change
-//! them only as administrators who have just confirmed it is them. Transit's part runs when `FERRUM_KMS_TEST_TRANSIT`
-//! is set (OpenBao, as kms_it.rs).
+//! them only as administrators who have just confirmed it is them. Every level rotates while two replicas keep using
+//! the secrets, a background re-seal stopped half way is taken up again by the other, and a changed database password is
+//! made good with the old one or the recovery key. Transit's part runs when `FERRUM_KMS_TEST_TRANSIT` is set (OpenBao,
+//! as kms_it.rs).
 
 use ferrum_kernel::controls::Proof;
-use ferrum_kernel::vault::{self, Kdf, New, Opened, Opener, Rule, Scope, SlotKind, Vault};
+use ferrum_kernel::vault::{self, Kdf, New, Opened, Opener, RecoveryKey, Rewrap, Rule, Scope, SlotKind, Vault};
 use ferrum_kernel::{Ctx, Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -193,6 +196,7 @@ async fn scenario() {
 
     keys_and_handles(&no_file).await;
     secrets_and_people(&no_file).await;
+    rotation_under_use(&dir, &no_file).await;
 
     if let Ok(base) = std::env::var("FERRUM_KMS_TEST_TRANSIT") {
         transit(&base, &no_file).await;
@@ -504,4 +508,206 @@ async fn secrets_and_people(no_file: &Path) {
     assert!(matches!(k.vault_secrets(&Ctx { is_admin: false, ..admin.clone() }).await, Err(Error::Forbidden(_))));
     assert!(k.vault_remove(&proved, "crm", "partner.token").await.unwrap());
     assert!(trail(&k, w).await.iter().any(|(a, d)| a == "remove" && d["name"] == "partner.token"));
+}
+
+/// Counts rows as the vault's module sees them.
+async fn count(db: &Db, sql: String) -> i64 {
+    as_vault(db, &sql).await
+}
+
+async fn rotation_under_use(dir: &Path, no_file: &Path) {
+    let db = replica().await;
+    reset(&db).await;
+    let (a, crm_a, hr_a) = kernel_with_apps(no_file).await;
+    let (b, crm_b, _) = kernel_with_apps(no_file).await;
+    let (_stop_listening, listening) = tokio::sync::watch::channel(false);
+    let _a_hears = a.spawn_listeners(listening.clone());
+    let _b_hears = b.spawn_listeners(listening.clone());
+    let w = workspace(&a, "rotor").await;
+    let ws = Scope::Workspace(w);
+    let printed = vault::put_slot(&a.db, SlotKind::Recovery).await.unwrap().unwrap().to_string();
+    const MANY: usize = 1500;
+    for i in 0..MANY {
+        crm_a.set(&a, ws, &format!("v{i}"), value(&format!("value-{i}")), Rule { reveal: true, ..Default::default() }).await.unwrap();
+    }
+    for i in 0..3 {
+        hr_a.set(&a, ws, &format!("h{i}"), value("hr's"), Rule::default()).await.unwrap();
+    }
+    crm_a.set(&a, ws, "hooks", New::Random(32), Rule { overlap_secs: 3600, ..Default::default() }).await.unwrap();
+    crm_a.set(&a, ws, "pair", New::Ed25519, Rule::default()).await.unwrap();
+    crm_a.set(&a, Scope::Installation, "license", value("L-42"), Rule { reveal: true, ..Default::default() }).await.unwrap();
+    let sealed = crm_a.seal(&a, ws, "doc/1", b"kept outside").await.unwrap();
+    let derived = crm_a.derive(&a, ws, "links").await.unwrap().bytes().to_vec();
+    let hook_sig = crm_a.sign(&a, ws, "hooks", b"event").await.unwrap();
+
+    // Two readers on each replica, using every kind of secret until told to stop: none of their uses may fail.
+    let stop = Arc::new(AtomicBool::new(false));
+    let failed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let uses = Arc::new(AtomicUsize::new(0));
+    let mut readers = Vec::new();
+    for (n, (k, v)) in [(a.clone(), crm_a.clone()), (a.clone(), crm_a.clone()), (b.clone(), crm_b.clone()), (b.clone(), crm_b.clone())].into_iter().enumerate()
+    {
+        let (stop, failed, uses, sealed, hook_sig, derived) = (stop.clone(), failed.clone(), uses.clone(), sealed.clone(), hook_sig.clone(), derived.clone());
+        readers.push(tokio::spawn(async move {
+            let mut i = n;
+            while !stop.load(Ordering::Relaxed) {
+                i = (i + 7) % MANY;
+                let checks: Vec<(&str, std::result::Result<bool, Error>)> = vec![
+                    ("reveal", v.reveal(&k, ws, &format!("v{i}")).await.map(|x| *x == *format!("value-{i}").as_bytes())),
+                    ("verify across the overlap", v.verify(&k, ws, "hooks", b"event", &hook_sig).await),
+                    (
+                        "sign and verify",
+                        match v.sign(&k, ws, "pair", b"m").await {
+                            Ok(sig) => v.verify(&k, ws, "pair", b"m", &sig).await,
+                            Err(e) => Err(e),
+                        },
+                    ),
+                    ("open what was sealed outside", v.open(&k, ws, "doc/1", &sealed).await.map(|x| &**x == b"kept outside")),
+                    ("derive", v.derive_at(&k, ws, "links", 1).await.map(|d| d.bytes() == derived.as_slice())),
+                    ("the installation's", v.reveal(&k, Scope::Installation, "license").await.map(|x| &**x == b"L-42")),
+                ];
+                for (what, r) in checks {
+                    match r {
+                        Ok(true) => {}
+                        Ok(false) => failed.lock().unwrap().push(format!("reader {n}: {what} gave something else")),
+                        Err(e) => failed.lock().unwrap().push(format!("reader {n}: {what}: {e}")),
+                    }
+                }
+                uses.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+    let used_by = |n: usize| {
+        let uses = uses.clone();
+        async move {
+            let start = uses.load(Ordering::Relaxed);
+            while uses.load(Ordering::Relaxed) < start + n {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+    };
+    used_by(8).await;
+
+    // ── a slot: made again with a new salt; one row changes ──
+    vault::put_slot(&a.db, SlotKind::Credential).await.unwrap();
+    used_by(8).await;
+
+    // ── the installation key: every slot and every workspace key wrapped again in one go ──
+    assert!(
+        matches!(vault::rotate_installation_key(&a.db, None).await, Err(Error::Invalid(m)) if m.contains("recovery")),
+        "a recovery slot asks what becomes of it"
+    );
+    let wrong = RecoveryKey::Keep(Zeroizing::new("AAAA-".repeat(13)));
+    assert!(vault::rotate_installation_key(&a.db, Some(wrong)).await.is_err(), "not this vault's recovery key");
+    assert_eq!(vault::rotate_installation_key(&a.db, Some(RecoveryKey::Keep(Zeroizing::new(printed.clone())))).await.unwrap().map(|p| p.to_string()), None);
+    assert_eq!(count(&db, "select count(*) from vault.root_slot where installation_version <> 2".into()).await, 0);
+    assert_eq!(count(&db, "select count(*) from vault.key where owner = '' and parent_version <> 2".into()).await, 0);
+    used_by(8).await;
+    let (c, crm_c, _) = kernel_with_apps(no_file).await;
+    assert_eq!(&**crm_c.reveal(&c, ws, "v3").await.unwrap(), b"value-3", "a replica started now opens with the new one");
+    let w2 = workspace(&b, "rotor-two").await;
+    crm_b.set(&b, Scope::Workspace(w2), "fresh", value("x"), Rule::default()).await.unwrap();
+    assert_eq!(
+        count(&db, format!("select count(*) from vault.key where scope = '{w2}' and owner = '' and parent_version = 2")).await,
+        1,
+        "one that held the old key makes new keys with the new"
+    );
+
+    // ── a workspace key: its owner keys wrapped again in the same transaction, the old version gone ──
+    assert_eq!(a.rotate_workspace_key(ws).await.unwrap(), 2);
+    assert_eq!(count(&db, format!("select count(*) from vault.key where scope = '{w}' and owner = ''")).await, 1);
+    assert_eq!(count(&db, format!("select count(*) from vault.key where scope = '{w}' and owner <> '' and parent_version <> 2")).await, 0);
+    used_by(8).await;
+
+    // ── an owner key: the re-seal in the background, stopped half way, taken up by the other replica ──
+    assert_eq!(a.rotate_owner_key(ws, "crm").await.unwrap(), 2);
+    let under = |v: i32| count(&db, format!("select count(*) from vault.secret where scope = '{w}' and owner = 'crm' and key_version = {v}"));
+    assert_eq!(under(2).await, 0, "nothing yet: it is the job's to do");
+    let worker = {
+        let b = b.clone();
+        tokio::spawn(async move { b.run_jobs_once(1).await })
+    };
+    while under(2).await == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    // The worker loses its job, as when its replica stops: it ends at its next batch.
+    let mut tx = a.db.system_tx().await.unwrap();
+    sqlx::query("update job set lease_token = gen_random_uuid() where tenant_id = $1 and kind = 'platform.vault_reseal'")
+        .bind(w)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    worker.await.unwrap().unwrap();
+    let (half, left) = (under(2).await, under(1).await);
+    assert!(half > 0 && left > 0, "stopped half way: {half} sealed again, {left} left");
+    used_by(8).await;
+    let mut tx = a.db.system_tx().await.unwrap();
+    sqlx::query("update job set lease_until = now() - interval '1 second' where tenant_id = $1 and kind = 'platform.vault_reseal'")
+        .bind(w)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(a.run_jobs_once(1).await.unwrap(), 1, "the job taken over");
+    assert_eq!((under(1).await, under(2).await), (0, MANY as i64 + 2));
+    assert_eq!(
+        count(&db, format!("select count(*) from vault.key where scope = '{w}' and owner = 'crm' and version = 1")).await,
+        1,
+        "kept: it sealed what is kept outside"
+    );
+    used_by(8).await;
+    // One with nothing outside: both replicas seal again at once, and the old version goes.
+    assert_eq!(a.rotate_owner_key(ws, "hr").await.unwrap(), 2);
+    let (x, y) = tokio::join!(a.vault_reseal(ws, "hr"), b.vault_reseal(ws, "hr"));
+    // Each skips the rows the other holds, and says how many it left to it.
+    assert!(x.unwrap() + y.unwrap() <= 3);
+    assert_eq!(a.vault_reseal(ws, "hr").await.unwrap(), 0);
+    assert_eq!(count(&db, format!("select count(*) from vault.secret where scope = '{w}' and owner = 'hr' and key_version = 2")).await, 3);
+    assert_eq!(count(&db, format!("select count(*) from vault.key where scope = '{w}' and owner = 'hr'")).await, 1, "the old version gone");
+    // The installation's scope: no job queue; the task (or the upkeep) seals again.
+    assert_eq!(a.rotate_owner_key(Scope::Installation, "crm").await.unwrap(), 2);
+    assert_eq!(a.vault_reseal(Scope::Installation, "crm").await.unwrap(), 0);
+    assert!(matches!(a.rotate_owner_key(ws, "nobody").await, Err(Error::NotFound(_))));
+
+    // ── one secret: a new version, the old signature still good through the overlap ──
+    crm_a.rotate(&a, ws, "hooks", New::Random(32)).await.unwrap();
+    used_by(8).await;
+    stop.store(true, Ordering::Relaxed);
+    for r in readers {
+        r.await.unwrap();
+    }
+    let failed = failed.lock().unwrap().clone();
+    assert!(failed.is_empty(), "{} uses failed during the rotations: {:?}", failed.len(), &failed[..failed.len().min(10)]);
+    assert!(uses.load(Ordering::Relaxed) > 40);
+    a.maintenance().await.unwrap();
+    assert_eq!(&**crm_b.reveal(&b, ws, "v9").await.unwrap(), b"value-9");
+
+    // ── slots: never the last a server opens with ──
+    assert!(matches!(vault::remove_slot(&a.db, SlotKind::Credential).await, Err(Error::Conflict(_))), "the recovery slot alone opens no server");
+    let file = key_file(dir, "rotor.key");
+    let with_file = replica().await;
+    vault::open(&with_file, opener(Some("ferrum"), &file, None), false).await.unwrap();
+    vault::put_slot(&with_file, SlotKind::File).await.unwrap();
+    vault::remove_slot(&with_file, SlotKind::Credential).await.unwrap();
+    assert!(matches!(vault::remove_slot(&with_file, SlotKind::File).await, Err(Error::Conflict(_))));
+    vault::put_slot(&with_file, SlotKind::Credential).await.unwrap();
+    vault::remove_slot(&with_file, SlotKind::File).await.unwrap();
+    assert!(matches!(vault::remove_slot(&with_file, SlotKind::File).await, Err(Error::NotFound(_))));
+
+    // ── the database password changed: made good with the old one, given once; then with the recovery key ──
+    let changed = replica().await;
+    assert!(vault::open(&changed, opener(Some("n3w-pass"), no_file, None), true).await.is_err(), "the new password does not open it yet");
+    let e = vault::rewrap(&changed, Rewrap::OldPassword(Zeroizing::new("not-it".into()))).await.unwrap_err();
+    assert!(e.to_string().contains("not the password"), "{e}");
+    vault::rewrap(&changed, Rewrap::OldPassword(Zeroizing::new("ferrum".into()))).await.unwrap();
+    assert_eq!(vault::open(&replica().await, opener(Some("n3w-pass"), no_file, None), false).await.unwrap(), Opened::With(SlotKind::Credential));
+    assert!(vault::open(&replica().await, opener(Some("ferrum"), no_file, None), false).await.is_err(), "the old one no longer does");
+    let lost = replica().await;
+    assert!(vault::open(&lost, opener(Some("ferrum"), no_file, None), true).await.is_err());
+    assert!(vault::rewrap(&lost, Rewrap::Recovery(Zeroizing::new("AAAA-".repeat(13)))).await.is_err(), "another recovery key");
+    vault::rewrap(&lost, Rewrap::Recovery(Zeroizing::new(printed.to_lowercase()))).await.unwrap();
+    assert_eq!(vault::open(&replica().await, opener(Some("ferrum"), no_file, None), false).await.unwrap(), Opened::With(SlotKind::Credential));
+    let (d, crm_d, _) = kernel_with_apps(no_file).await;
+    assert_eq!(&**crm_d.reveal(&d, ws, "v1").await.unwrap(), b"value-1", "and everything opens as before");
 }

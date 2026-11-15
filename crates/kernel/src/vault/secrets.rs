@@ -11,12 +11,15 @@ use crate::controls::Proof;
 use crate::ctx::Ctx;
 use crate::db::{Tx, with_retry};
 use crate::error::{Error, Result};
+use crate::jobs::{Job, JobHandler};
 use crate::{Kernel, audit};
+use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -571,6 +574,174 @@ impl Vault {
         })
         .await
     }
+}
+
+// Rotation of an owner key, in the background: what an older version sealed is sealed again with the newest, a batch
+// to a transaction, rows another replica is sealing skipped, so that it is safe beside traffic, on several replicas,
+// and to stop at any point: the next run starts from what is left. An older version goes once nothing names it.
+
+/// The job that seals again, in a workspace, what an older version of an owner's key sealed.
+pub(crate) const RESEAL: &str = "platform.vault_reseal";
+/// Secrets sealed again in one transaction.
+const RESEAL_BATCH: i64 = 200;
+
+pub(crate) fn handler(kind: &str) -> Option<Arc<dyn JobHandler>> {
+    (kind == RESEAL).then(|| Arc::new(Reseal) as Arc<dyn JobHandler>)
+}
+
+struct Reseal;
+
+#[async_trait]
+impl JobHandler for Reseal {
+    fn kind(&self) -> &'static str {
+        RESEAL
+    }
+
+    fn title(&self) -> &'static str {
+        "Sealing secrets again with a new key"
+    }
+
+    async fn run(&self, k: &Kernel, job: &Job) -> Result<Value> {
+        let owner = job.payload["owner"].as_str().ok_or_else(|| Error::Invalid("a re-seal names its owner".into()))?;
+        let scope = Scope::Workspace(job.tenant_id);
+        loop {
+            let (done, left) = reseal_some(k, scope, owner).await?;
+            // Done, or what is left is another worker's (the upkeep comes back for what anyone leaves).
+            if left == 0 || done == 0 || !job.progress(k, json!({"left": left})).await? {
+                return Ok(json!({"left": left}));
+            }
+        }
+    }
+}
+
+/// Seals again up to [`RESEAL_BATCH`] secrets of (`scope`, `owner`) that an older key version sealed: how many it did,
+/// and how many are left. With none left, the older versions go.
+async fn reseal_some(k: &Kernel, scope: Scope, owner: &str) -> Result<(usize, i64)> {
+    let root = &k.db.vault;
+    let (done, left) = with_retry(|| async {
+        let mut tx = k.db.vault_tx(scope.tenant()).await?;
+        let current: Option<i32> =
+            sqlx::query_scalar("select max(version) from vault.key where scope = $1 and owner = $2").bind(scope.id()).bind(owner).fetch_one(&mut *tx).await?;
+        let Some(current) = current else { return Ok((0, 0)) };
+        let rows: Vec<(String, i32, i32, Vec<u8>)> = sqlx::query_as(
+            "select name, version, key_version, sealed from vault.secret where scope = $1 and owner = $2 and key_version < $3 \
+             order by name, version limit $4 for update skip locked",
+        )
+        .bind(scope.id())
+        .bind(owner)
+        .bind(current)
+        .bind(RESEAL_BATCH)
+        .fetch_all(&mut *tx)
+        .await?;
+        if !rows.is_empty() {
+            let new = root.owner_key(&k.db, &mut tx, scope.id(), owner, current).await?;
+            for (name, version, key_version, sealed) in &rows {
+                let old = root.owner_key(&k.db, &mut tx, scope.id(), owner, *key_version).await?;
+                let plain = old.open(&secret_place(scope.id(), owner, name, *version, *key_version), sealed).ok_or_else(|| {
+                    Error::Internal(format!(
+                        "{owner}'s secret {name} (version {version}) does not open: its row was changed or damaged; restore the vault's tables from a backup"
+                    ))
+                })?;
+                sqlx::query("update vault.secret set sealed = $5, key_version = $6 where scope = $1 and owner = $2 and name = $3 and version = $4")
+                    .bind(scope.id())
+                    .bind(owner)
+                    .bind(name)
+                    .bind(version)
+                    .bind(new.seal(&secret_place(scope.id(), owner, name, *version, current), &plain)?)
+                    .bind(current)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        let left: i64 = sqlx::query_scalar("select count(*) from vault.secret where scope = $1 and owner = $2 and key_version < $3")
+            .bind(scope.id())
+            .bind(owner)
+            .bind(current)
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok((rows.len(), left))
+    })
+    .await?;
+    if left == 0 {
+        retire(k, scope, owner).await?;
+    }
+    Ok((done, left))
+}
+
+/// The older versions of an owner key that no secret names and that sealed or derived nothing kept outside: gone.
+async fn retire(k: &Kernel, scope: Scope, owner: &str) -> Result<u64> {
+    let mut tx = k.db.vault_tx(scope.tenant()).await?;
+    let gone = sqlx::query(
+        "delete from vault.key k where scope = $1 and owner = $2 and not outside \
+         and version < (select max(version) from vault.key x where x.scope = $1 and x.owner = $2) \
+         and not exists (select 1 from vault.secret s where s.scope = k.scope and s.owner = k.owner and s.key_version = k.version)",
+    )
+    .bind(scope.id())
+    .bind(owner)
+    .execute(&mut *tx)
+    .await;
+    let gone = match gone {
+        Ok(r) => r.rows_affected(),
+        // Something was sealed with it meanwhile, by a replica that had not yet seen the newer version: the next round.
+        Err(sqlx::Error::Database(d)) if d.code().as_deref() == Some("23503") => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    if gone > 0 {
+        super::root::notify(&mut tx, &format!("{}/{owner}", scope.id())).await?;
+    }
+    tx.commit().await?;
+    if gone > 0 {
+        k.db.vault.cache.forget(Some(scope.id()), Some(owner));
+    }
+    Ok(gone)
+}
+
+/// Records a new version of a key: a workspace key (owner `""`) or an owner key.
+pub(crate) async fn changed_key(tx: &mut Tx, scope: Scope, owner: &str, version: i32) -> Result<()> {
+    let what = if owner.is_empty() { "workspace_key_rotated" } else { "owner_key_rotated" };
+    let request = crate::db::Trace::operation().unwrap_or_default();
+    event(tx, scope, None, &request, audit::ADMIN, what, json!({"owner": owner, "version": version})).await
+}
+
+impl Kernel {
+    /// Seals again, now, all that older versions of `owner`'s key in `scope` sealed (what the background does): how
+    /// many are left, which another replica is sealing at this moment.
+    pub async fn vault_reseal(&self, scope: Scope, owner: &str) -> Result<i64> {
+        loop {
+            let (done, left) = reseal_some(self, scope, owner).await?;
+            if left == 0 || done == 0 {
+                return Ok(left);
+            }
+        }
+    }
+}
+
+/// The vault's part of the hourly upkeep (`Kernel::maintenance`): the summaries of hours of uses that are over, the
+/// versions whose overlap is over, and what older owner keys still seal, sealed again (the installation's scope has no
+/// job queue; in a workspace this finds what a job left).
+pub(crate) async fn upkeep(k: &Kernel) -> Result<()> {
+    if k.db.vault.installation().is_err() {
+        return Ok(());
+    }
+    let mut tx = k.db.vault_tx(None).await?;
+    flush_uses(&mut tx, None).await?;
+    sqlx::query("delete from vault.secret where valid_until <= now()").execute(&mut *tx).await?;
+    let pending: Vec<(Uuid, String)> = sqlx::query_as(
+        "select distinct s.scope, s.owner from vault.secret s \
+         where s.key_version < (select max(version) from vault.key k where k.scope = s.scope and k.owner = s.owner) \
+         union select scope, owner from vault.key where owner <> '' group by scope, owner having count(*) > 1",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    for (scope, owner) in pending {
+        let scope = if scope.is_nil() { Scope::Installation } else { Scope::Workspace(scope) };
+        if let Err(e) = k.vault_reseal(scope, &owner).await {
+            tracing::warn!(%owner, "sealing secrets again with a newer key: {e}");
+        }
+    }
+    Ok(())
 }
 
 // People: an administrator of a workspace sets, rotates and removes its owners' secrets, having just confirmed it is

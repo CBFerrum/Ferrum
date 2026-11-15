@@ -45,9 +45,10 @@ mod seal;
 mod secrets;
 
 pub(crate) use root::{CHANNEL, Root, finish};
-pub use root::{Opened, Opener, Printed, ROOT_FILE, SlotKind, open, put_slot};
+pub use root::{Opened, Opener, Printed, ROOT_FILE, RecoveryKey, Rewrap, SlotKind, open, put_slot, remove_slot, rewrap, rotate_installation_key};
 pub use seal::Kdf;
 pub use secrets::{Changed, Described, Kind, MAX_OVERLAP_SECS, New, Rule, Sandbox, USES_PER_HOUR};
+pub(crate) use secrets::{handler, upkeep};
 
 use crate::db::{Tx, with_retry};
 use crate::error::{Error, Result};

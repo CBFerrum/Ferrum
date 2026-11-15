@@ -4,9 +4,11 @@
 //! insert wins and the others read it. Unwrapped keys are held in a bounded cache, dropped in part or in whole when
 //! another replica says a key changed (`root::CHANNEL`). A key is cached only once it was read from a committed row.
 
+use super::Scope;
 use super::root::{Installation, Root};
 use super::seal::{Key, key_place};
-use crate::db::{Db, Tx};
+use crate::Kernel;
+use crate::db::{Db, Tx, with_retry};
 use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -228,6 +230,124 @@ impl Root {
             return Err(Error::Retryable("another replica made this workspace key at the same time".into()));
         }
         Ok((1, Arc::new(key)))
+    }
+}
+
+/// The owners a key may be rotated for, by an operator: the platform, an app this server registered, a plugin.
+fn rotatable(k: &Kernel, owner: &str) -> Result<()> {
+    if owner == "platform" || owner.strip_prefix("plugin:").is_some_and(super::plugin_name_ok) || k.hooks.vault_mint(owner).is_some() {
+        Ok(())
+    } else {
+        Err(Error::NotFound(format!("owner {owner}")))
+    }
+}
+
+impl Kernel {
+    /// A new version of `scope`'s workspace key (its first, when it has none): its owners' keys are wrapped again with
+    /// it in the same transaction and the versions before it go, so nothing is ever left that only an old one opens.
+    /// What other replicas hold of them they let go when told; until then it still opens what it did.
+    pub async fn rotate_workspace_key(&self, scope: Scope) -> Result<i32> {
+        let root = &self.db.vault;
+        let version = with_retry(|| async {
+            let mut tx = self.db.vault_tx(scope.tenant()).await?;
+            let held: Vec<i32> = sqlx::query_scalar("select version from vault.key where scope = $1 and owner = '' order by version for update")
+                .bind(scope.id())
+                .fetch_all(&mut *tx)
+                .await?;
+            let Some(&current) = held.last() else {
+                let (v, _) = root.current_workspace_key(&self.db, &mut tx, scope.id()).await?;
+                tx.commit().await?;
+                return Ok(v);
+            };
+            super::root::lock(&mut tx, false).await?;
+            let installation = root.installation()?;
+            if super::root::current_version(&mut tx).await? != Some(installation.version) {
+                root.reopen(&self.db).await?;
+                return Err(Error::Retryable("the installation key changed meanwhile".into()));
+            }
+            let version = current + 1;
+            let new = Key::random()?;
+            sqlx::query("insert into vault.key (scope, owner, version, parent_version, wrapped) values ($1, '', $2, $3, $4)")
+                .bind(scope.id())
+                .bind(version)
+                .bind(installation.version)
+                .bind(installation.key.wrap(&key_place(scope.id(), "", version, installation.version), &new)?)
+                .execute(&mut *tx)
+                .await?;
+            let owners: Vec<(String, i32, i32, Vec<u8>)> = sqlx::query_as(
+                "select owner, version, parent_version, wrapped from vault.key where scope = $1 and owner <> '' order by owner, version for update",
+            )
+            .bind(scope.id())
+            .fetch_all(&mut *tx)
+            .await?;
+            for (owner, v, parent, wrapped) in &owners {
+                let old = root.workspace_key(&self.db, &mut tx, scope.id(), *parent).await?;
+                let key = old.unwrap(&key_place(scope.id(), owner, *v, *parent), wrapped).ok_or_else(|| damaged(scope.id(), owner, *v))?;
+                sqlx::query("update vault.key set parent_version = $4, wrapped = $5 where scope = $1 and owner = $2 and version = $3")
+                    .bind(scope.id())
+                    .bind(owner)
+                    .bind(v)
+                    .bind(version)
+                    .bind(new.wrap(&key_place(scope.id(), owner, *v, version), &key)?)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            sqlx::query("delete from vault.key where scope = $1 and owner = '' and version < $2").bind(scope.id()).bind(version).execute(&mut *tx).await?;
+            super::root::notify(&mut tx, &scope.id().to_string()).await?;
+            super::secrets::changed_key(&mut tx, scope, "", version).await?;
+            tx.commit().await?;
+            Ok(version)
+        })
+        .await?;
+        root.cache.forget(Some(scope.id()), None);
+        Ok(version)
+    }
+
+    /// A new version of the key of `owner` in `scope`: what is sealed from now on is sealed with it; the secrets an
+    /// older version sealed are sealed again in the background (a job in a workspace; the upkeep, or
+    /// [`Kernel::vault_reseal`], for the installation's scope), and each older version goes once nothing names it, unless
+    /// something it sealed or derived is kept outside the vault.
+    pub async fn rotate_owner_key(&self, scope: Scope, owner: &str) -> Result<i32> {
+        rotatable(self, owner)?;
+        let root = &self.db.vault;
+        let version = with_retry(|| async {
+            let mut tx = self.db.vault_tx(scope.tenant()).await?;
+            let (wv, wk) = root.current_workspace_key(&self.db, &mut tx, scope.id()).await?;
+            let current: Option<i32> = sqlx::query_scalar("select max(version) from vault.key where scope = $1 and owner = $2")
+                .bind(scope.id())
+                .bind(owner)
+                .fetch_one(&mut *tx)
+                .await?;
+            let version = current.unwrap_or(0) + 1;
+            let key = Key::random()?;
+            let made = sqlx::query(
+                "insert into vault.key (scope, owner, version, parent_version, parent_owner, wrapped) values ($1, $2, $3, $4, '', $5) on conflict do nothing",
+            )
+            .bind(scope.id())
+            .bind(owner)
+            .bind(version)
+            .bind(wv)
+            .bind(wk.wrap(&key_place(scope.id(), owner, version, wv), &key)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(raced)?;
+            if made.rows_affected() == 0 {
+                return Err(Error::Retryable("another rotation of this key went first".into()));
+            }
+            if let Some(tenant) = scope.tenant() {
+                let mut job = crate::jobs::NewJob::new(super::secrets::RESEAL, serde_json::json!({"owner": owner}));
+                job.priority = crate::outbox::PRIORITY_BULK;
+                job.dedupe_key = Some(format!("vault/{owner}"));
+                crate::jobs::enqueue(&mut tx, tenant, None, job).await?;
+            }
+            super::root::notify(&mut tx, &format!("{}/{owner}", scope.id())).await?;
+            super::secrets::changed_key(&mut tx, scope, owner, version).await?;
+            tx.commit().await?;
+            Ok(version)
+        })
+        .await?;
+        root.cache.forget(Some(scope.id()), Some(owner));
+        Ok(version)
     }
 }
 
