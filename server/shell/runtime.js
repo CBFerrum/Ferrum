@@ -166,19 +166,29 @@ async function sendProof(send, path, body) {
 }
 
 /** What the dialog offers, in the server's order of preference (`ways` from the step-up refusal, or
- *  `GET /api/auth/step-up/ways`): a passkey only where this browser can use one (`webauthn`), the password (`code`: the
- *  code from an authenticator app is asked too), signing in again with the provider by its name. Anything else, and a
- *  way said twice, is left out. No list at all (an answer without `ways`): the password, as before. */
+ *  `GET /api/auth/step-up/ways`): a passkey only where this browser can use one (`webauthn`), and so a passkey of the
+ *  person's Ferrum account that only the accounts host may ask for (`accounts_passkey`, in a small window), the password
+ *  (`code`: the code from an authenticator app is asked too), signing in again with the provider by its name. Anything
+ *  else, and a way said twice, is left out. No list at all (an answer without `ways`): the password, as before. */
 function stepUpChoices(ways, webauthn) {
   if (!Array.isArray(ways)) return [{ way: "password", code: false }];
   const out = [];
   for (const w of ways) {
     if (out.some((o) => o.way === w?.way)) continue;
-    if (w?.way === "passkey" && webauthn) out.push({ way: "passkey" });
+    if ((w?.way === "passkey" || w?.way === "accounts_passkey") && webauthn) out.push({ way: w.way });
     else if (w?.way === "password") out.push({ way: "password", code: w.code === true });
     else if (w?.way === "provider" && typeof w.name === "string" && w.name.trim()) out.push({ way: "provider", name: w.name.trim() });
   }
   return out;
+}
+
+/** A way that opens a small window (`provider`, `accounts_passkey`): where it starts (`{dialog}` → `{url}`), where the
+ *  proof the window hands back is posted (`{state, code, dialog}`), and what the dialog says while it waits, when the
+ *  window was closed early, and when the proof was not taken (keys of the dialog's words). */
+function windowWay(way) {
+  return way === "accounts_passkey"
+    ? { start: "/api/auth/step-up/accounts", finish: "/api/auth/step-up/accounts/finish", waiting: "confirming", closed: "closedEarly", unfinished: "notConfirmed" }
+    : { start: "/api/auth/step-up/provider", finish: "/api/auth/step-up/provider/finish", waiting: "waiting", closed: "closed", unfinished: "unfinished" };
 }
 
 /** The proof the small window's last page (`/api/auth/step-up/provider/done`) hands over on the "ferrum-step-up"
@@ -3059,6 +3069,9 @@ const STEP_UP_SAYS = {
   waiting: tr("Finish signing in again in the window that opened."),
   closed: tr("If you closed the window before signing in again, try again."),
   unfinished: tr("Signing in again did not finish. Try again."),
+  confirming: tr("Confirm it is you in the window that opened."),
+  closedEarly: tr("If you closed the window before confirming it is you, try again."),
+  notConfirmed: tr("Confirming it is you did not finish. Try again."),
 };
 
 // A passkey's binary fields travel as base64url (as login.js sends them), and so does the dialog's own value.
@@ -3100,12 +3113,12 @@ async function passkeyStepUp() {
   return r.ok || r.say !== "wrong" ? r : { ok: false, say: "passkey" };
 }
 
-/** Starts signing in again with the identity provider, in a small window the click opens (the page behind keeps its
- *  unsaved work). The window is opened before anything is awaited, while the click still lets a page open one, and is
- *  cut off from this page before it goes anywhere. `wait(dialog, win)` is told the value only this dialog, the server
- *  and the window's last page know (the proof must carry it), and the window. What to say meanwhile, as [`sendProof`]
- *  says it. */
-async function providerStepUp(wait) {
+/** Starts a way that opens a small window the click opens (the page behind keeps its unsaved work): signing in again
+ *  with the identity provider, or a passkey of the person's Ferrum account at the accounts host (`windowWay`). The window
+ *  is opened before anything is awaited, while the click still lets a page open one, and is cut off from this page
+ *  before it goes anywhere. `wait(dialog, win, way)` is told the value only this dialog, the server and the window's
+ *  last page know (the proof must carry it), and the window. What to say meanwhile, as [`sendProof`] says it. */
+async function windowStepUp(way, wait) {
   const win = window.open("about:blank", "ferrum-step-up", "popup,width=520,height=680");
   if (!win) return { ok: false, say: "blocked" };
   try {
@@ -3115,7 +3128,7 @@ async function providerStepUp(wait) {
   let started = null;
   let status = 0;
   try {
-    const r = await pageFetch("/api/auth/step-up/provider", {
+    const r = await pageFetch(way.start, {
       method: "POST",
       credentials: "same-origin",
       headers: { "content-type": "application/json", accept: "application/json" },
@@ -3124,16 +3137,17 @@ async function providerStepUp(wait) {
     status = r.status;
     if (r.ok) started = await r.json();
   } catch {}
-  if (typeof started?.url !== "string") {
+  // Only a web address goes to the window: until then it is this page's own (about:blank), where another kind would run as it.
+  if (typeof started?.url !== "string" || !/^https?:\/\//i.test(started.url)) {
     try {
       win.close();
     } catch {}
     return { ok: false, say: status === 429 ? "busy" : "failed" };
   }
-  if (win.closed) return { ok: false, say: "closed" };
+  if (win.closed) return { ok: false, say: way.closed };
   win.location.replace(started.url);
-  wait(dialog, win);
-  return { ok: false, say: "waiting" };
+  wait(dialog, win, way);
+  return { ok: false, say: way.waiting };
 }
 
 // The bar's dialogs' look (theme.css `dialog[data-ferrum-dialog]`, the choice of app in `choose`), in a shadow root of
@@ -3219,14 +3233,15 @@ function askItsYou(refusal) {
       say(r.say);
       after?.(r);
     };
-    // Signing in again: the window of the latest try, and the value its proof must carry. The proof comes on this
-    // origin's channel (it works even where the provider's pages cut the window off from this page); waiting never
-    // holds the dialog, so the person can try again, or another way, at any time.
+    // A way that opens a window (signing in again, a passkey at the accounts host): the window of the latest try, and the
+    // value its proof must carry. The proof comes on this origin's channel (it works even where the provider's pages cut
+    // the window off from this page); waiting never holds the dialog, so the person can try again, or another way, at
+    // any time.
     let expected = null;
     let popup = null;
     let channel = null;
     let watching = 0;
-    const wait = (dialogValue, win) => {
+    const wait = (dialogValue, win, way) => {
       expected = dialogValue;
       popup = win;
       try {
@@ -3234,10 +3249,11 @@ function askItsYou(refusal) {
         channel.onmessage = (e) => {
           const proof = providerProof(e, location.origin, expected);
           if (!proof) return;
+          const asked = expected;
           expected = null;
           attempt(async () => {
-            const r = await sendProof(pageFetch, "/api/auth/step-up/provider/finish", proof);
-            return r.ok || r.say === "busy" ? r : { ok: false, say: "unfinished" };
+            const r = await sendProof(pageFetch, way.finish, { ...proof, dialog: asked });
+            return r.ok || r.say === "busy" ? r : { ok: false, say: way.unfinished };
           });
         };
       } catch {
@@ -3247,7 +3263,7 @@ function askItsYou(refusal) {
       watching = setInterval(() => {
         if (!popup?.closed) return;
         clearInterval(watching);
-        if (expected) say("closed");
+        if (expected) say(way.closed);
       }, 700);
     };
     const form = el("form", {
@@ -3282,9 +3298,9 @@ function askItsYou(refusal) {
       const b = el("button", {
         type: "button",
         class: ways.length ? "way" : "way primary",
-        text: c.way === "passkey" ? tr("Use a passkey") : tr("Sign in again with {provider}", { provider: c.name }),
+        text: c.way === "provider" ? tr("Sign in again with {provider}", { provider: c.name }) : tr("Use a passkey"),
         // Synchronous up to the window's opening: the click is what lets the page open it.
-        onclick: () => attempt(c.way === "passkey" ? passkeyStepUp : () => providerStepUp(wait)),
+        onclick: () => attempt(c.way === "passkey" ? passkeyStepUp : () => windowStepUp(windowWay(c.way), wait)),
       });
       buttons.push(b);
       ways.push(el("div", { class: "row" }, b));

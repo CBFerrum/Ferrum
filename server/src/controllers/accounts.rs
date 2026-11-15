@@ -125,6 +125,7 @@ pub(crate) async fn page(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &
             None => Redirect::to(&format!("/login{}", uri.query().map(|q| format!("?{q}")).unwrap_or_default())).into_response(),
         }),
         ("account", _) => Ok(Redirect::permanent("/").into_response()),
+        ("step-up", None) => step_up_page(st, headers, q).await,
         ("regions", Some("authorize")) => region_authorize(st, headers, uri, q).await,
         ("regions", Some("start")) => region_start(st, headers, q).await,
         ("regions", Some("callback")) => region_callback(st, headers, q).await,
@@ -553,6 +554,88 @@ async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req)
     Ok(Json(json!({"redirect": callback(&st, &host, &code, state)})).into_response())
 }
 
+// ───────────────────────── confirming it is you for a workspace's address ─────────────────────────
+
+/// The request to confirm it is you that `state` names (docs/operations.md, "Asking again before sensitive work"; the
+/// kernel's `accounts_step_up`), while its proof may still go back to where it was asked: a live address of its
+/// workspace. Anything else is the same refusal as an unknown or expired request.
+async fn step_up_flow(st: &AppState, state: &str) -> Result<(ferrum_kernel::shell::StepUp, String), ApiError> {
+    let (who, back) = st.kernel.accounts_step_up(state).await?;
+    let host =
+        reqwest::Url::parse(&back).ok().filter(|u| u.scheme() == if st.shell.secure { "https" } else { "http" }).and_then(|u| u.host_str().map(str::to_string));
+    match host {
+        Some(host) if super::auth::live_address(st, &host, who.tenant).await? => Ok((who, back)),
+        _ => Err(ApiError(Error::Unauthorized(ferrum_kernel::sso::ACCOUNTS_GONE.into()))),
+    }
+}
+
+/// `GET /step-up?state=…`: the window a workspace's dialog opened for someone to confirm it is them with a passkey of
+/// their Ferrum account, which the workspace's address may not use (the way `accounts_passkey`): which workspace asks,
+/// and a button that asks the device for the passkey, here, fresh (`step-up.js`); whoever is signed in here proves
+/// nothing. An unknown, used or expired request is a plain page saying so, the same for each. Framed by nothing.
+async fn step_up_page(st: &AppState, headers: &HeaderMap, q: &[(String, String)]) -> ApiResult<Response> {
+    st.login_limiter.check(&format!("{}|sso", client_ip(headers))).await?;
+    let flow = step_up_flow(st, query(q, "state").unwrap_or_default()).await;
+    let who = match flow {
+        Ok((who, _)) => who,
+        Err(ApiError(e @ (Error::Db(_) | Error::Internal(_)))) => return Err(ApiError(e)),
+        Err(_) => {
+            let mut page = status_page(
+                StatusCode::UNAUTHORIZED,
+                "Confirming it is you did not work",
+                "This request to confirm it is you has expired or was used already. Close this window and try again.",
+                &[],
+                None,
+            );
+            page.headers_mut().insert("content-security-policy", HeaderValue::from_static(shell::STEP_UP_CSP));
+            shell::unframed(&mut page);
+            return Ok(page);
+        }
+    };
+    Ok(shell::step_up_html(&st.shell.workspace(who.tenant).await?.name))
+}
+
+#[derive(Deserialize)]
+struct StepUpState {
+    state: String,
+}
+
+/// `POST /api/accounts/step-up/options {state}` → `{request, publicKey}` for `navigator.credentials.get`: a challenge for
+/// the session and person the request is for, allowing only their Ferrum account's passkeys for this host, the device
+/// to verify the person. Limited per address, as the page is.
+async fn step_up_options(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<StepUpState>) -> ApiResult<Response> {
+    let st = here(&app, &headers).await?;
+    st.login_limiter.check(&format!("{}|sso", client_ip(&headers))).await?;
+    let (who, _) = step_up_flow(&st, &req.state).await?;
+    let host = shell::request_host(&headers).unwrap_or_default().to_ascii_lowercase();
+    let mut res = Json(st.kernel.passkey_step_up_options(&who, &host).await?).into_response();
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(res)
+}
+
+#[derive(Deserialize)]
+struct StepUpAnswer {
+    state: String,
+    request: Uuid,
+    credential: Value,
+}
+
+/// `POST /api/accounts/step-up {state, request, credential}` → `{redirect}`: the device's answer, made on this page;
+/// accepted, the window goes back to the workspace's address that asked with a one-use proof for its dialog. Refused
+/// (another person's passkey, the person not verified, another site, a replay…), the request is used up and the Ferrum
+/// account's trail has a failed step-up. Counts toward the person's step-up limit, whichever way.
+async fn step_up_answer(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<StepUpAnswer>) -> ApiResult<Response> {
+    let st = here(&app, &headers).await?;
+    let (who, back) = step_up_flow(&st, &req.state).await?;
+    st.login_limiter.check(&format!("{}|step-up|{}", client_ip(&headers), who.user)).await?;
+    let (_, origins) = super::auth::relying_party(&st, &headers)?;
+    let from = super::auth::step_up_from(&st, &headers).await;
+    let next = st.kernel.accounts_step_up_answer(&req.state, &who, &back, req.request, &origins, &req.credential, &from).await?;
+    let mut res = Json(json!({"redirect": next})).into_response();
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(res)
+}
+
 // ───────────────────────── the signed-in account ─────────────────────────
 
 /// The signed-in account of a request to the accounts host's API.
@@ -849,6 +932,8 @@ pub fn routes() -> Routes {
         .add("/api/accounts/signup/code", post(signup_code))
         .add("/api/accounts/signup", post(sign_up))
         .add("/api/accounts/sso/finish", post(sso_finish))
+        .add("/api/accounts/step-up/options", post(step_up_options))
+        .add("/api/accounts/step-up", post(step_up_answer))
         .add("/api/accounts/me", get(me))
         .add("/api/accounts/continue", post(proceed))
         .add("/api/accounts/join", post(join))

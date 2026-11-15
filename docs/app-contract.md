@@ -12,7 +12,7 @@ compiles in; the rest is reviewed, and walked in a browser (docs/platform/eviden
 | A repository of its own | `ferrum-app-<name>`, under a licence Ferrum may ship (AGPL-3.0 or compatible) |
 | A manifest | `app.yaml` with its id, name, version, publisher, summary, categories, licence, homepage and where to ask for support |
 | A description | The manifest names its README, which the store and the install dialog show |
-| A history | `CHANGELOG.md` says what each version changed, the version in the manifest included, and the README's changelog table has that version's row |
+| A history | `CHANGELOG.md` says what each version changed, the version in the manifest included, and the README points at it (or lists that version in a changelog table of its own) |
 | A scenario test | At least one test under `tests/` that runs the app's flows against a real PostgreSQL |
 | An interface, when it has one | `ui/dist` built, with `.source` saying which sources and which Ferrum-Frontend it was built from |
 | A launcher icon the shell draws | Every `shell.app` contribution names an icon `server/shell/runtime.js` knows |

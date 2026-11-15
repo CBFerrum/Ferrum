@@ -2527,7 +2527,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-bookings"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-bookings?branch=main#0c396659ce0dffde34e542e49d64957d5b6bb0af"
+source = "git+https://github.com/CBFerrum/ferrum-app-bookings?branch=main#62de543d817e7980bc967b9f94ff3c269363bef0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2610,7 +2610,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-comms"
 version = "0.7.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#30a13f548ce53da7e93642bff2a1fc95b097b8f2"
+source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#4c21c6d31084c2c95fa89753b8c02137d114fa02"
 dependencies = [
  "ammonia",
  "async-imap",
@@ -3094,7 +3094,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-lms"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#dba663df72a796065dd108efb621dd7c7ae81c19"
+source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#50170e832e2152af3bacaef0eff6b8f5fd6425a2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3285,7 +3285,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-sign"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-sign?branch=main#68e25f7834bfae8214a48ba4a2e0a8f18974b4b8"
+source = "git+https://github.com/CBFerrum/ferrum-app-sign?branch=main#fb01b76539e7ff5cbc295cd7a86be6d820ed61f1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -9609,7 +9609,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

@@ -65,9 +65,13 @@ def lacks(app_dir: Path, shell_icons: set) -> list:
         out.append("no CHANGELOG.md")
     elif version and not re.search(rf"^## .*\b{re.escape(version)}\b", (home / "CHANGELOG.md").read_text(), re.M):
         out.append(f"CHANGELOG.md says nothing of {version}")
+    # The README either lists the version in a changelog table (the older form) or sends the reader to CHANGELOG.md,
+    # which the rule above holds to every version (the form every README has had since 13 November 2026).
     readme = (home or app_dir) / "README.md"
-    if readme.is_file() and version and not re.search(rf"\| \*\*[^*|]*\b{re.escape(version)}\b[^*|]*\*\* \|", readme.read_text()):
-        out.append(f"the README's changelog has no row for {version}")
+    if readme.is_file() and version:
+        text = readme.read_text()
+        if not re.search(rf"\| \*\*[^*|]*\b{re.escape(version)}\b[^*|]*\*\* \|", text) and "(CHANGELOG.md)" not in text:
+            out.append(f"the README neither lists {version} nor points at CHANGELOG.md")
     # An add-on's flows may run in its parent's scenario.
     if not any(any((d / "tests").glob("*_it.rs")) for d in [app_dir, parent_dir] if d):
         out.append("no scenario test (tests/*_it.rs)")

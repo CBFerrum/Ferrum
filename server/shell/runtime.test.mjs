@@ -8,9 +8,9 @@ import { readFileSync } from "node:fs";
 const src = readFileSync(new URL("./runtime.js", import.meta.url), "utf8");
 const block = src.slice(src.indexOf("// ── Pure helpers"), src.indexOf("// ── end of the pure helpers"));
 assert.ok(block.length > 100, "the block is where the markers say");
-const { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof, finderHint } =
+const { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, windowWay, providerProof, finderHint } =
   new Function(
-    `${block}; return { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, providerProof, finderHint };`,
+    `${block}; return { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, windowWay, providerProof, finderHint };`,
   )();
 
 test("the origin guard keeps a workspace's storage while its host is leaving, and wipes it for the next owner", () => {
@@ -81,7 +81,7 @@ test("each shell script parses as a module", async () => {
   const { fileURLToPath } = await import("node:url");
   const dir = mkdtempSync(join(tmpdir(), "ferrum-shell-"));
   try {
-    for (const name of ["runtime.js", "portal.js", "login.js", "assistant.js"]) {
+    for (const name of ["runtime.js", "portal.js", "login.js", "step-up.js", "assistant.js"]) {
       const copy = join(dir, name.replace(/\.js$/, ".mjs"));
       copyFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), copy);
       try {
@@ -221,6 +221,21 @@ test("the dialog offers the ways the server lists, in its order, and only what t
     [{ way: "password", code: false }],
     "unknown, nameless and repeated ways are left out",
   );
+});
+
+test("a passkey kept at the accounts host is offered where this browser can use passkeys, and opens a window there", () => {
+  const ways = [{ way: "accounts_passkey" }, { way: "password", code: false }, { way: "provider", name: "Okta" }];
+  assert.deepEqual(stepUpChoices(ways, true), [{ way: "accounts_passkey" }, { way: "password", code: false }, { way: "provider", name: "Okta" }]);
+  assert.deepEqual(stepUpChoices(ways, false), [{ way: "password", code: false }, { way: "provider", name: "Okta" }], "no WebAuthn: no button for it");
+  assert.deepEqual(stepUpChoices([{ way: "accounts_passkey" }, { way: "accounts_passkey" }], true), [{ way: "accounts_passkey" }], "said twice, offered once");
+  assert.deepEqual(stepUpChoices([{ way: "accounts_passkey" }], false), [], "its only way, which this browser cannot use: the plain message");
+  // Each way that opens a window starts and finishes on its own routes, and says its own words while it waits.
+  const accounts = windowWay("accounts_passkey");
+  assert.deepEqual([accounts.start, accounts.finish], ["/api/auth/step-up/accounts", "/api/auth/step-up/accounts/finish"]);
+  const provider = windowWay("provider");
+  assert.deepEqual([provider.start, provider.finish], ["/api/auth/step-up/provider", "/api/auth/step-up/provider/finish"]);
+  assert.notEqual(accounts.waiting, provider.waiting, "the accounts host asks for a passkey, not for signing in again");
+  for (const w of [accounts, provider]) assert.ok(w.waiting && w.closed && w.unfinished);
 });
 
 test("the proof is taken from the window only from this origin, and only for the request this dialog made", () => {

@@ -96,6 +96,8 @@ async fn public(
     if status != "active" {
         return Err(ApiError(Error::NotFound("tenant".into())));
     }
+    // A public endpoint's calls (webhooks in) are its workspace's load, whatever host they came to (crate::request_metrics).
+    crate::request_metrics::note_workspace(tenant);
     let reply = st.plugins.handle_http(&st.kernel, tenant, &plugin, call(method, path, query, &headers, body)?, None).await?;
     Ok(to_response(reply))
 }

@@ -78,6 +78,7 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
             })?),
         };
         st.user_limiter.check_local(&format!("{}|{}", s.tenant, s.user))?;
+        crate::request_metrics::note_workspace(s.tenant);
         return Ok(TokenSession {
             session: s,
             setup_only: false,
@@ -125,6 +126,7 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
     } else {
         Credential::Token
     };
+    crate::request_metrics::note_workspace(tenant);
     Ok(TokenSession {
         session: ferrum_kernel::auth::Session { tenant, user, token_version: tv },
         setup_only,
