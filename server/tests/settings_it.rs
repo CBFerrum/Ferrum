@@ -104,6 +104,127 @@ async fn scenario() {
     live().await;
 }
 
+/// Changing settings as the tasks do: refused by type, as a secret, as someone else's, unknown, out of scope, or as the
+/// start would refuse it, and then nothing is written; else recorded with the value before and after, announced, and
+/// taken by the other replica. A whole document, with what it leaves out unset.
+async fn changes(a: &AppState, b: &AppState) {
+    use ferrum_server::settings::{Change, change};
+    let one = |name: &str, value: Option<&str>| vec![Change { name: name.into(), pool: None, value: value.map(str::to_string) }];
+    let said = |r: ferrum_kernel::Result<Vec<ferrum_server::settings::Done>>| r.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(said(change(a, &one("session_days", Some("soon")), "task").await).contains("whole number"));
+    assert!(said(change(a, &one("FERRUM_METRICS_TOKEN", Some("x")), "task").await).contains("is a secret"));
+    assert!(said(change(a, &one("office_url", Some("http://o")), "task").await).contains("by Drive"));
+    assert!(matches!(change(a, &one("nonsense", Some("1")), "task").await, Err(ferrum_kernel::Error::NotFound(_))));
+    assert!(said(change(a, &one("db_max_connections", Some("8")), "task").await).contains("each pool's own"));
+    let zone = said(change(a, &one("zone_default", Some("nowhere")), "task").await);
+    assert!(zone.contains("FERRUM_ZONES does not name"), "as the start would refuse it: {zone}");
+    let both = [Change { name: "proxy_hops".into(), pool: None, value: Some("3".into()) }, one("session_days", Some("x")).remove(0)];
+    assert!(change(a, &both, "task").await.is_err());
+    let count = |st: &AppState| {
+        let db = st.kernel.db.clone();
+        async move {
+            let mut tx = db.system_tx().await.unwrap();
+            let n: i64 = sqlx::query_scalar("select count(*) from setting_change where updated_by = 'task'").fetch_one(&mut *tx).await.unwrap();
+            tx.commit().await.unwrap();
+            n
+        }
+    };
+    assert_eq!(count(a).await, 0, "refused: nothing written, not even the good one beside it");
+
+    let done = change(a, &one("FERRUM_PROXY_HOPS", Some("2")), "task").await.unwrap();
+    assert_eq!((done[0].key.as_str(), done[0].old.clone(), done[0].new.clone()), ("proxy_hops", None, Some("2".to_string())));
+    until("set: the other replica takes it", || b.live_settings.now().settings.proxy_hops == 2).await;
+    assert!(change(a, &one("proxy_hops", Some("2")), "task").await.unwrap()[0].version.is_none(), "so already: nothing written");
+    change(a, &one("proxy_hops", None), "task").await.unwrap();
+    until("unset: back to the default", || b.live_settings.now().settings.proxy_hops == 1).await;
+    let mut tx = a.kernel.db.system_tx().await.unwrap();
+    let record: Vec<(Option<serde_json::Value>, Option<serde_json::Value>, String)> =
+        sqlx::query_as("select old_value, new_value, updated_by from setting_change where key = 'proxy_hops' order by id").fetch_all(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(record, [(None, Some(json!("2")), "task".to_string()), (Some(json!("2")), None, "task".to_string())], "each change, before and after");
+    let pool = change(a, &[Change { name: "db_max_connections".into(), pool: Some("web".into()), value: Some("8".into()) }], "task").await.unwrap();
+    assert_eq!(pool[0].pool.as_deref(), Some("web"));
+
+    // A document: what it names, and with `others: unset` the installation's settings it leaves out.
+    let doc: ferrum_server::settings::Document =
+        serde_yaml::from_str("installation:\n  FERRUM_PDF_URL: http://pdf:3000\n  session_days: 4\nothers: unset\n").unwrap();
+    let stored = ferrum_server::settings::read_with(&a.kernel.db.pool).await.unwrap();
+    let changes = doc.changes(&stored).unwrap();
+    assert!(changes.iter().any(|c| c.name == "user_requests_per_minute" && c.value.is_none()), "left out: unset");
+    assert!(!changes.iter().any(|c| c.pool.is_some()), "a pool the document does not name is left alone");
+    change(a, &changes, "document").await.unwrap();
+    until("the document reaches the other replica", || {
+        let now = b.live_settings.now();
+        now.settings.user_requests_per_minute == 3000 && now.settings.session_days == 4 && now.settings.pdf_url == "http://pdf:3000"
+    })
+    .await;
+    assert_eq!(b.kernel.live().pdf_url.as_deref(), Some("http://pdf:3000"), "the kernel's too");
+}
+
+/// The operator's routes: refused without the operator's token, the same with a wrong one; the listing asked as a
+/// browser asks (compressed); a change and its refusal.
+async fn routes() {
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode, header};
+    use tower::ServiceExt;
+    let mut with_token = config(None);
+    with_token.settings.as_mut().unwrap()["operator_token"] = json!("an-operator-token-of-enough-length");
+    let ctx = replica(with_token).await;
+    let routes = <App as Hooks>::routes(&ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
+    let app = <App as Hooks>::after_routes(routes, &ctx).await.expect("layers");
+    let call = |method: Method, path: &str, token: Option<&str>, body: Option<serde_json::Value>, gzip: bool| {
+        let mut req = Request::builder().method(method).uri(path).header(header::HOST, "localhost");
+        if let Some(t) = token {
+            req = req.header("x-ferrum-operator-token", t);
+        }
+        if gzip {
+            req = req.header(header::ACCEPT_ENCODING, "gzip, br");
+        }
+        let req = match body {
+            Some(b) => req.header(header::CONTENT_TYPE, "application/json").body(Body::from(b.to_string())),
+            None => req.body(Body::empty()),
+        }
+        .unwrap();
+        let app = app.clone();
+        async move {
+            let res = app.oneshot(req).await.unwrap();
+            let (status, encoded) = (res.status(), res.headers().contains_key(header::CONTENT_ENCODING));
+            let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            (status, encoded, bytes)
+        }
+    };
+    let token = Some("an-operator-token-of-enough-length");
+    let (none, _, none_said) = call(Method::GET, "/api/operator/settings", None, None, false).await;
+    let (wrong, _, wrong_said) = call(Method::GET, "/api/operator/settings", Some("a-guess"), None, false).await;
+    assert_eq!((none, wrong), (StatusCode::FORBIDDEN, StatusCode::FORBIDDEN));
+    let said = |b: &[u8]| {
+        let mut v: serde_json::Value = serde_json::from_slice(b).unwrap();
+        v.as_object_mut().unwrap().remove("operation");
+        v
+    };
+    assert_eq!(said(&none_said), said(&wrong_said), "a refusal says the same, token or none");
+    let (status, encoded, _) = call(Method::GET, "/api/operator/settings", token, None, true).await;
+    assert!(status == StatusCode::OK && encoded, "answered, compressed for a browser as in production: {status}");
+    let (status, _, body) = call(Method::GET, "/api/operator/settings", token, None, false).await;
+    assert_eq!(status, StatusCode::OK);
+    let listed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let get = |key: &str| listed["settings"].as_array().unwrap().iter().find(|s| s["key"] == key).cloned().unwrap();
+    assert_eq!((get("session_days")["source"].clone(), get("session_days")["value"].clone()), (json!("database"), json!("4")));
+    assert_eq!(get("jwt_secret")["value"], json!(null), "a secret's value is never shown");
+    assert_eq!(get("db_max_connections")["stored"]["web"], json!("8"), "a pool's own, by pool");
+    let (status, _, body) = call(Method::PUT, "/api/operator/settings/session_days", token, Some(json!({"value": 5})), false).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let done: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!((done["changed"][0]["old"].clone(), done["changed"][0]["new"].clone()), (json!("4"), json!("5")));
+    let (status, _, _) = call(Method::PUT, "/api/operator/settings/jwt_secret", token, Some(json!({"value": "x"})), false).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a secret is never accepted");
+    let (status, _, _) = call(Method::PUT, "/api/operator/settings/session_days", None, Some(json!({"value": 6})), false).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, body) = call(Method::DELETE, "/api/operator/settings/session_days", token, None, false).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    state(&ctx).kernel.db.close().await;
+}
+
 /// Tells every replica that the table changed, as a change of it does.
 async fn notify(st: &AppState) {
     let mut tx = st.kernel.db.system_tx().await.unwrap();
@@ -163,6 +284,9 @@ async fn live() {
     notify(&a).await;
     until("unset: back to the default", || b.zones.mode() == ferrum_kernel::zones::Mode::Enforce).await;
 
+    changes(&a, &b).await;
+    routes().await;
+
     let ids = [a.live_settings.replica, b.live_settings.replica];
     let _ = a.shutdown.send(true);
     let _ = b.shutdown.send(true);
@@ -202,6 +326,8 @@ async fn pools(st: &AppState) {
     let at: (String, String) = sqlx::query_as("select scope, scope_name from setting where key = 'zone'").fetch_one(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!(at, ("pool".to_string(), "web".to_string()), "copied to the pool's own row");
+    // A zone FERRUM_ZONES does not name would keep the pool's next replica from starting: unset again.
+    row(st, "pool", "web", "zone", None).await;
 }
 
 /// What a variable says and the table does not hold is written once, however many replicas copy it at once; what the

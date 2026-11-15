@@ -169,14 +169,7 @@ pub const DEFAULT_POOL: &str = "default";
 pub fn pool_name(url: &str) -> Result<String, String> {
     let named = reqwest::Url::parse(url).ok().and_then(|u| u.query_pairs().find(|(k, _)| k == "application_name").map(|(_, v)| v.into_owned()));
     let Some(name) = named.as_deref().and_then(|a| a.strip_prefix("pool:")) else { return Ok(DEFAULT_POOL.into()) };
-    let plain = (1..=63).contains(&name.len())
-        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        && !name.starts_with('-')
-        && !name.ends_with('-');
-    if !plain {
-        return Err(format!("DATABASE_URL names the pool {name:?} (application_name=pool:...): a pool's name is lower-case letters, digits and dashes"));
-    }
-    Ok(name.to_string())
+    plain_pool(name).map_err(|e| format!("DATABASE_URL names {e} (application_name=pool:...)"))
 }
 
 /// Reads the table over a pool of two connections of its own, closed again before the server opens its real pools.
@@ -842,6 +835,282 @@ impl loco_rs::controller::middleware::MiddlewareLayer for LiveTimeout {
             }
         })))
     }
+}
+
+/// A change of one setting: `value` `None` unsets it (back to the environment's value or the default).
+#[derive(Debug, Clone, Default)]
+pub struct Change {
+    /// The setting's key, or its variable.
+    pub name: String,
+    /// The pool, for a pool's own setting.
+    pub pool: Option<String>,
+    pub value: Option<String>,
+}
+
+/// What a change did: the value before and after, and the table's version it made (`None`: it was so already).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Done {
+    pub key: String,
+    pub pool: Option<String>,
+    pub old: Option<String>,
+    pub new: Option<String>,
+    pub version: Option<i64>,
+}
+
+impl Stored {
+    /// The table as it would be with `value` for `def` (for a replica of `pool`).
+    fn put(&mut self, def: &Def, pool: &str, value: Option<String>) {
+        let (scope, name) = place(def, pool);
+        match self.rows.iter_mut().find(|r| r.key == def.key && r.scope == scope && r.scope_name == name) {
+            Some(r) => r.value = value,
+            None => self.rows.push(Row { scope: scope.into(), scope_name: name.into(), key: def.key.clone(), value, version: 0 }),
+        }
+    }
+}
+
+/// A pool's name: lower-case letters, digits and dashes.
+fn plain_pool(name: &str) -> Result<String, String> {
+    let plain = (1..=63).contains(&name.len())
+        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !name.starts_with('-')
+        && !name.ends_with('-');
+    if plain { Ok(name.to_string()) } else { Err(format!("the pool {name:?}: a pool's name is lower-case letters, digits and dashes")) }
+}
+
+/// Checks `changes` by the registry, then all together as a replica's start would check them, and writes them in one
+/// transaction under the table's lock, each recorded in `setting_change` with its value before and after and `by`,
+/// announced to every replica. When one is refused nothing is written. A secret, or a setting someone else reads from
+/// the environment, is never accepted.
+pub async fn change(st: &AppState, changes: &[Change], by: &str) -> ferrum_kernel::Result<Vec<Done>> {
+    use ferrum_kernel::Error;
+    let mut planned: Vec<(&'static Def, Option<String>, Option<String>)> = Vec::new();
+    for c in changes {
+        let def = find(&c.name).ok_or_else(|| Error::NotFound(format!("no setting is called {:?}", c.name.trim())))?;
+        if def.secret {
+            return Err(Error::Invalid(format!(
+                "{} is a secret: it stays in the environment ({}) until the vault holds it, and is never written to the database",
+                def.key, def.env
+            )));
+        }
+        if let Some(who) = &def.environment {
+            return Err(Error::Invalid(format!("{} is read from the environment by {who}: set {} there", def.key, def.env)));
+        }
+        let pool = match (def.scope, c.pool.as_deref().map(str::trim).filter(|p| !p.is_empty())) {
+            (Scope::Pool, Some(p)) => Some(plain_pool(p).map_err(Error::Invalid)?),
+            (Scope::Pool, None) => {
+                return Err(Error::Invalid(format!("{} is each pool's own: say which pool ({DEFAULT_POOL} for replicas whose address names none)", def.key)));
+            }
+            (Scope::Installation, Some(_)) => return Err(Error::Invalid(format!("{} is the installation's, not a pool's", def.key))),
+            (Scope::Installation, None) => None,
+        };
+        let value = c.value.as_deref().map(str::trim).map(str::to_string);
+        if let Some(v) = &value {
+            def.check(v).map_err(Error::Invalid)?;
+        }
+        if planned.iter().any(|(d, p, _)| d.key == def.key && *p == pool) {
+            return Err(Error::Invalid(format!("{} is named twice", def.key)));
+        }
+        planned.push((def, pool, value));
+    }
+    // Together, as the replicas of each pool they reach would start with them.
+    let mut would = read_with(&st.kernel.db.pool).await?;
+    for (def, pool, value) in &planned {
+        would.put(def, pool.as_deref().unwrap_or(DEFAULT_POOL), value.clone());
+    }
+    let mut pools: Vec<&str> = planned.iter().filter_map(|(_, p, _)| p.as_deref()).collect();
+    pools.push(DEFAULT_POOL);
+    pools.sort();
+    pools.dedup();
+    for pool in pools {
+        check(st, &Snapshot::resolve(&would, pool, &|name| std::env::var(name).ok())).await.map_err(Error::Invalid)?;
+    }
+    let mut tx = st.kernel.db.system_tx().await?;
+    lock(&mut tx).await?;
+    let mut done = Vec::new();
+    for (def, pool, value) in planned {
+        let at = place(def, pool.as_deref().unwrap_or(DEFAULT_POOL));
+        let old: Option<Option<Value>> = sqlx::query_scalar("select value from setting where scope = $1 and scope_name = $2 and key = $3 for update")
+            .bind(at.0)
+            .bind(at.1)
+            .bind(&def.key)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let old = old.flatten().as_ref().map(text_of);
+        let version = if old == value {
+            None
+        } else {
+            let version: i64 = sqlx::query_scalar(
+                "insert into setting (scope, scope_name, key, value, updated_by) values ($1, $2, $3, to_jsonb($4::text), $5) \
+                 on conflict (scope, scope_name, key) do update set value = excluded.value, version = nextval('setting_version'), \
+                 updated_at = now(), updated_by = excluded.updated_by returning version",
+            )
+            .bind(at.0)
+            .bind(at.1)
+            .bind(&def.key)
+            .bind(value.as_deref())
+            .bind(by)
+            .fetch_one(&mut *tx)
+            .await?;
+            record(&mut tx, at, &def.key, old.as_deref(), value.as_deref(), version, by).await?;
+            Some(version)
+        };
+        done.push(Done { key: def.key.clone(), pool, old, new: value, version });
+    }
+    if done.iter().any(|d| d.version.is_some()) {
+        sqlx::query("select pg_notify($1, '')").bind(CHANNEL).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(done)
+}
+
+/// What a replica's start checks of `snapshot`'s values, so that a change cannot write what would keep the next
+/// start from serving: the values' types, the host names, the zones, the audit sink, plans and sign-up, how domains
+/// are proven, the base domain, object storage and the mail server.
+async fn check(st: &AppState, snapshot: &Snapshot) -> Result<(), String> {
+    let mut config = st.live_settings.config.clone();
+    st.live_settings.base.apply(snapshot, &mut config)?;
+    let settings: Settings = serde_json::from_value(config.settings.clone().unwrap_or_else(|| json!({}))).map_err(|e| format!("invalid settings: {e}"))?;
+    crate::shell::check_names(&settings, &config.server.host)?;
+    let zones = ferrum_kernel::zones::Zones::parse(&settings.zones, &settings.zone, &settings.zone_default, &settings.zone_mode)?;
+    zones.check_background(settings.run_background)?;
+    crate::zone::resolve(zones, &st.kernel).await?;
+    let kernel = kernel_live(&settings, &|name| snapshot.var(name))?;
+    st.kernel.registry.catalog().closure(&kernel.signup.packages).map_err(|e| format!("FERRUM_SIGNUP_PACKAGES: {e}"))?;
+    let base = crate::shell::base_domain(&settings);
+    ferrum_kernel::shell::DomainProof::from_setting(&settings.domain_proof, base.is_some())?;
+    if let Some(base) = base
+        && ferrum_kernel::shell::normalize_host(&format!("{}.{base}", ferrum_kernel::identity::DIRECTORY)).is_none()
+    {
+        return Err(format!("settings.base_domain ({base}) is not a domain name"));
+    }
+    if settings.require_object_storage && settings.s3_bucket.is_empty() {
+        return Err(
+            "object storage is required (require_object_storage): set s3_bucket too, or require_object_storage false for a single-server install".into()
+        );
+    }
+    if let Some(smtp) = config.mailer.as_ref().and_then(|m| m.smtp.as_ref()).filter(|s| s.enable) {
+        crate::mailer::smtp_transport(smtp).map_err(|e| format!("the mail server: {e}"))?;
+    }
+    Ok(())
+}
+
+/// A whole document of settings (`ferrum task apply_settings file:`, which the chart's Job runs): `installation:` and
+/// `pools: {name: ...}`, each a map of settings (by key or variable) to a value (`null` unsets it), and `others`:
+/// `keep` (the default) leaves alone what the table holds and the document does not name; `unset` unsets it, in the
+/// installation and in each pool the document names.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Document {
+    #[serde(default)]
+    pub installation: BTreeMap<String, serde_yaml::Value>,
+    #[serde(default)]
+    pub pools: BTreeMap<String, BTreeMap<String, serde_yaml::Value>>,
+    #[serde(default)]
+    pub others: Others,
+}
+
+/// What a [`Document`] does with the settings it leaves out.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Others {
+    #[default]
+    Keep,
+    Unset,
+}
+
+impl Document {
+    /// Its changes, against what the table holds now.
+    pub fn changes(&self, stored: &Stored) -> Result<Vec<Change>, String> {
+        let text = |name: &str, v: &serde_yaml::Value| match v {
+            serde_yaml::Value::Null => Ok(None),
+            serde_yaml::Value::String(s) => Ok(Some(s.clone())),
+            serde_yaml::Value::Bool(b) => Ok(Some(b.to_string())),
+            serde_yaml::Value::Number(n) => Ok(Some(n.to_string())),
+            _ => Err(format!("{name}: a setting's value is text, a number, true or false, or null to unset it")),
+        };
+        let mut out = Vec::new();
+        for (name, v) in &self.installation {
+            out.push(Change { name: name.clone(), pool: None, value: text(name, v)? });
+        }
+        for (pool, settings) in &self.pools {
+            for (name, v) in settings {
+                out.push(Change { name: name.clone(), pool: Some(pool.clone()), value: text(name, v)? });
+            }
+        }
+        if self.others == Others::Unset {
+            let named: std::collections::BTreeSet<(Option<String>, &str)> =
+                out.iter().filter_map(|c| find(&c.name).map(|d| (c.pool.clone(), d.key.as_str()))).collect();
+            let mut left_out = Vec::new();
+            for r in stored.rows.iter().filter(|r| r.value.is_some()) {
+                let pool = match r.scope.as_str() {
+                    "installation" => None,
+                    "pool" if self.pools.contains_key(&r.scope_name) => Some(r.scope_name.clone()),
+                    _ => continue,
+                };
+                // A row of a setting this build does not know (a newer build's), or one at a scope its setting does not
+                // read, is left as it is.
+                let read = find(&r.key).is_some_and(|d| d.stored() && (d.scope == Scope::Pool) == pool.is_some());
+                if read && !named.contains(&(pool.clone(), r.key.as_str())) {
+                    left_out.push(Change { name: r.key.clone(), pool, value: None });
+                }
+            }
+            out.extend(left_out);
+        }
+        Ok(out)
+    }
+}
+
+/// Every setting as this replica has it (the environment's, the table's or the default), the table's own rows, and
+/// the replicas running, with the settings that apply at start each still runs an older value of: what
+/// `ferrum task settings` prints and `GET /api/operator/settings` answers. A secret's value is never in it, only
+/// whether the environment sets it.
+pub async fn listing(st: &AppState) -> ferrum_kernel::Result<Value> {
+    let stored = read_with(&st.kernel.db.pool).await?;
+    let now = st.live_settings.now();
+    let settings: Vec<Value> = registry()
+        .iter()
+        .map(|d| {
+            let (source, value) = now.snapshot.get(&d.key);
+            let rows: BTreeMap<&str, Option<&str>> =
+                stored.rows.iter().filter(|r| r.key == d.key && r.scope == place(d, "").0).map(|r| (r.scope_name.as_str(), r.value.as_deref())).collect();
+            json!({
+                "key": d.key,
+                "env": d.env,
+                "type": d.kind,
+                "values": d.values,
+                "default": d.default,
+                "scope": d.scope,
+                "applies": d.applies,
+                "secret": d.secret,
+                "environment": d.environment,
+                "sends": d.sends,
+                "source": source,
+                "value": if d.secret { None } else { value },
+                "set": value.is_some(),
+                "stored": if d.scope == Scope::Installation { json!(rows.get("").copied().flatten()) } else { json!(rows) },
+            })
+        })
+        .collect();
+    let mut tx = st.kernel.db.system_tx().await?;
+    let rows: Vec<(uuid::Uuid, String, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, i64)> = sqlx::query_as(
+        "select id, pool, build_date, started_at, seen_at, settings_version from replica where seen_at > now() - interval '2 minutes' order by pool, started_at",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let replicas: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, pool, build, started, seen, version)| {
+            let older: Vec<&str> = stored
+                .rows
+                .iter()
+                .filter(|r| r.version > version && (r.scope == "installation" || (r.scope == "pool" && r.scope_name == pool)))
+                .filter_map(|r| find(&r.key).filter(|d| d.applies == Applies::Start).map(|d| d.key.as_str()))
+                .collect();
+            json!({"id": id, "pool": pool, "build_date": build, "started_at": started, "seen_at": seen, "settings_version": version, "older": older})
+        })
+        .collect();
+    Ok(json!({"version": stored.version, "pool": st.live_settings.pool, "settings": settings, "replicas": replicas}))
 }
 
 /// The mail sender, made from `config` as Loco makes it before any of our code runs (its `create_mailer`): made again

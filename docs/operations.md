@@ -125,6 +125,34 @@ settings' version it runs), refreshed every 30 seconds, removed as it stops, and
 per-user and per-address request budgets are each pool's: every replica allows its share, the setting divided by its
 pool's live replicas, so that a person's budget holds however many replicas the pool has.
 
+**Changing settings.** Tasks, with the same environment as the replicas (`DATABASE_URL` at least):
+
+```bash
+ferrum task settings                     # every setting, where its value comes from, the replicas and what they wait for
+ferrum task settings format:json
+ferrum task set key:session_days value:7
+ferrum task set key:db_max_connections value:40 pool:web
+ferrum task unset key:session_days       # the environment's value, or the default
+ferrum task apply_settings file:settings.yaml
+```
+
+`key:` takes the setting's key or its variable (`FERRUM_SESSION_DAYS`). A document for `apply_settings` (what the
+chart's settings Job runs):
+
+```yaml
+installation: {session_days: "7", public_url: https://erp.example.com}
+pools: {web: {db_max_connections: "40"}}
+others: keep    # what the document leaves out: keep it (the default), or unset it, in the installation and each pool named
+```
+
+A value `null` unsets that setting. Each change is checked by its setting's type, then all of them together as a
+replica's start would check them (host names, zones, the audit sink, plans and sign-up, how domains are proven, object
+storage, the mail server); one refused, nothing is written. A secret is never accepted, nor a setting someone else
+reads from the environment (set those there). What is written is recorded in `setting_change`, with the value before
+and after and who wrote it (`task`, `document`, `operator` or `environment`), which no workspace sees, and announced
+to every replica. The Operations screen does the same over HTTP with the operator's token, `FERRUM_OPERATOR_TOKEN`
+(docs/api.md, *Settings*).
+
 **Copied once.** As a replica starts to serve, each setting its environment sets and the table does not hold yet is
 written to the table, once, as the environment's (`updated_by` is `environment`; replicas starting together write it
 once, under one lock). An installation configured by its environment so ends with its settings in the table, and

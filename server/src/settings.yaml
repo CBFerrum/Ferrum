@@ -342,6 +342,15 @@
     with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits is the
     entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their
     own (too high).
+- key: operator_token
+  env: FERRUM_OPERATOR_TOKEN
+  path: settings.operator_token
+  secret: true
+  doc: >-
+    Enables the settings routes (`/api/operator/settings`, docs/api.md) with header `X-Ferrum-Operator-Token`; empty
+    (the default) disables them.
+
+
 # Files.
 - key: packages_dir
   env: FERRUM_PACKAGES_DIR

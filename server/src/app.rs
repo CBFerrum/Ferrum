@@ -632,6 +632,7 @@ impl Hooks for App {
             .add_route(controllers::cards::routes())
             .add_route(controllers::domains::routes())
             .add_route(controllers::shell::routes())
+            .add_route(controllers::operator::routes())
     }
 
     async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {
@@ -681,6 +682,10 @@ impl Hooks for App {
         tasks.register(crate::tasks::DeleteSandbox);
         tasks.register(crate::tasks::ReleaseHost);
         tasks.register(crate::tasks::SamlEncryptionKey);
+        tasks.register(crate::tasks::ListSettings);
+        tasks.register(crate::tasks::SetSetting(true));
+        tasks.register(crate::tasks::SetSetting(false));
+        tasks.register(crate::tasks::ApplySettings);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

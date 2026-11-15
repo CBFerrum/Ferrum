@@ -21,6 +21,7 @@ pub mod messages;
 pub mod meta;
 pub mod notifications;
 pub mod oauth;
+pub mod operator;
 pub mod origins;
 pub mod plugins;
 pub mod prefs;

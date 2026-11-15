@@ -126,6 +126,10 @@ pub struct Settings {
     /// When set, `/metrics` requires `Authorization: Bearer <token>`.
     #[serde(default)]
     pub metrics_token: String,
+    /// `FERRUM_OPERATOR_TOKEN`: the settings routes (`/api/operator/settings`) require it as `X-Ferrum-Operator-Token`.
+    /// Empty: they answer nobody.
+    #[serde(default)]
+    pub operator_token: String,
     /// Base URL of a Gotenberg-compatible service that lays print formats out as PDFs.
     #[serde(default)]
     pub pdf_url: String,
