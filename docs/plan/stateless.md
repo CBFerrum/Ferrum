@@ -154,10 +154,14 @@ Decided while building it (15 November 2026):
   registry's mechanics are unchanged; a host from the environment is used as before. An authority shared by a
   provider's customers still vouches for all of them. The two settings stay in the environment in `minimal`, as the
   migrate Job needs the direct host before the settings Job has run.
-- **The certificate authority.** Read by the `ferrum` command before anything else: the three database addresses in
-  the environment get `sslrootcert`, and a mode that checks it (none or `prefer` becomes `verify-full`, `require`
-  becomes `verify-ca` as libpq does; an address's own `sslrootcert` is left alone; `disable` or `allow` refuses to
-  start). One connection is tried first, so that a certificate that does not verify refuses the start in those words.
+- **The certificate authority.** Applied as the configuration loads (Loco's `load_config` hook), before anything
+  connects: `DATABASE_URL` as the configuration holds it gets `sslrootcert` and a mode that checks it (none or `prefer`
+  becomes `verify-full`, `require` becomes `verify-ca` as libpq does; an address's own `sslrootcert` is left alone;
+  `disable` or `allow` refuses to start), and the two full addresses get the same where they are used; the process's
+  environment is never rewritten. One connection is tried first, so that a certificate that does not verify refuses
+  the start in those words. A debug build looks for `db-ca.pem` in `FERRUM_TEST_RUN_DIR` when that is set, so that
+  `server/tests/database_ca_it.rs` runs the whole start with the authority right, wrong and absent (the managed
+  rehearsal); a release build looks only at `/run/ferrum`.
 - **The dump.** `deploy/dump.sh`: pg_dump as the server's role with `ferrum.system` and `ferrum.vault` set for its
   session and `--enable-row-security`; the restore into an empty database in one transaction, without owners or
   grants, leaving out schemas the database has and comments on extensions. The chart's `import` mode passes the same

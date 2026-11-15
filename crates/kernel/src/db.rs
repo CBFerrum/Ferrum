@@ -698,6 +698,26 @@ fn pooler_refused(e: sqlx::Error) -> Error {
 /// Where an outside database's certificate authority is read from when it is there (docs/plan/stateless.md, D1).
 pub const DB_CA: &str = "/run/ferrum/db-ca.pem";
 
+/// The outside database's certificate authority, when its file is there: [`DB_CA`]. A debug build (tests, a developer's
+/// machine) looks in `FERRUM_TEST_RUN_DIR` instead when that is set, for `db-ca.pem`; a release build never reads it.
+pub fn database_ca() -> Option<String> {
+    let elsewhere = if cfg!(debug_assertions) { std::env::var("FERRUM_TEST_RUN_DIR").ok().filter(|d| !d.trim().is_empty()) } else { None };
+    let path = match elsewhere {
+        Some(dir) => std::path::Path::new(&dir).join("db-ca.pem"),
+        None => std::path::PathBuf::from(DB_CA),
+    };
+    path.is_file().then(|| path.to_string_lossy().into_owned())
+}
+
+/// `url` trusting the database's certificate authority when its file is there ([`database_ca`], [`with_ca`]); as it is
+/// otherwise.
+pub fn trusted(url: &str) -> Result<String> {
+    match database_ca() {
+        Some(ca) => with_ca(url, &ca),
+        None => Ok(url.trim().to_string()),
+    }
+}
+
 fn address(url: &str) -> Result<reqwest::Url> {
     reqwest::Url::parse(url.trim()).map_err(|e| Error::Invalid(format!("the database's address is not one: {e}")))
 }

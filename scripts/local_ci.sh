@@ -256,6 +256,9 @@ job_managed() {
     # Two running servers as the application's role on PostgreSQL itself: an installation moved, a workspace moved
     # between them and back, a sandbox; the role makes the extensions itself there.
     run "managed: move rehearsal (an installation, a workspace there and back, a sandbox) with no grant"       env MOVE_ADMIN_URL="${FERRUM_MANAGED_ADMIN_URL%/postgres}" MOVE_APP_URL="$FERRUM_MANAGED_BASE:$port"       scripts/move_rehearsal.sh "ferrum_moverehearsal_a$SFX" "ferrum_moverehearsal_b$SFX" || failed=1
+    # Last: its test binary builds the server with every app over target/debug/ferrum, which the steps above run
+    # without apps.
+    managed_tests "managed: the certificate authority through the server's whole start" -p ferrum-server --test database_ca_it
     exit $failed
   )
   [ $? = 0 ] || failed=1

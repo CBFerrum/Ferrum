@@ -76,6 +76,19 @@ const DRAIN: Duration = Duration::from_secs(20);
 
 #[async_trait]
 impl Hooks for App {
+    /// The configuration as its files and the environment make it, with an outside database's certificate authority
+    /// (D1: `/run/ferrum/db-ca.pem`, when it is there) trusted by the database's address before anything connects, Loco's
+    /// own connection and the settings' first read included (ferrum_kernel::db::with_ca says what changes). A certificate
+    /// that does not verify refuses the start here, saying so; anything else wrong with the address the start says itself.
+    async fn load_config(env: &Environment) -> Result<Config> {
+        let mut config = env.load()?;
+        if let Some(ca) = ferrum_kernel::db::database_ca() {
+            config.database.uri = ferrum_kernel::db::with_ca(&config.database.uri, &ca).map_err(|e| Error::Message(format!("DATABASE_URL: {e}")))?;
+            ferrum_kernel::db::check_certificate(&config.database.uri, &ca).await.map_err(|e| Error::Message(e.to_string()))?;
+        }
+        Ok(config)
+    }
+
     /// Loco's own `serve` runs `on_shutdown` the moment the signal comes, before the server has
     /// answered the requests in flight, so those met closed database pools (and failed with 503).
     /// Here the signal stops the background loops and live connections, the requests in flight
@@ -208,7 +221,7 @@ impl Hooks for App {
         // used, the log says so once and the doctor reports it. One from the environment is used as before.
         let at = |full: &str, host: &str, key: &str, name: &str| -> Result<Option<String>> {
             if !full.trim().is_empty() {
-                return Ok(Some(full.trim().to_string()));
+                return ferrum_kernel::db::trusted(full).map(Some).map_err(|e| Error::Message(format!("{}: {e}", name.replace("_HOST", "_URL"))));
             }
             if host.trim().is_empty() {
                 return Ok(None);
