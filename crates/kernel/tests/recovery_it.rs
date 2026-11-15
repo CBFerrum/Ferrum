@@ -150,7 +150,31 @@ fn restores_and_regions() {
         tokio::spawn(the_fence_falls_between_transactions()).await.unwrap();
         tokio::spawn(what_a_move_can_break()).await.unwrap();
         tokio::spawn(the_marker_notices_a_restore_the_identity_misses()).await.unwrap();
+        tokio::spawn(a_new_timeline_holds_as_the_setting_says_now()).await.unwrap();
     });
+}
+
+/// D7, failovers: a new timeline under a running server is noticed within a minute, and held or not as
+/// `hold_on_timeline` says at that moment (it applies at once).
+async fn a_new_timeline_holds_as_the_setting_says_now() {
+    let live = url("FERRUM_TEST_DATABASE_URL", "ferrum_test");
+    let k = kernel(database(&live, true).await, Arc::new(Sent::default()), Arc::new(App::default())).await;
+    let recorded = async || -> i32 { sqlx::query_scalar("select timeline from platform_incarnation").fetch_one(&k.db.pool).await.unwrap() };
+    let actual: i32 = sqlx::query_scalar("select timeline_id from pg_control_checkpoint()").fetch_one(&k.db.pool).await.unwrap();
+    let failover = async || sqlx::query("update platform_incarnation set timeline = timeline + 7").execute(&k.db.pool).await.unwrap();
+    // A failover to a synchronous standby: the operator said a new timeline loses nothing.
+    k.set_live(KernelSettings { hold_on_timeline: false, ..k.settings.clone() });
+    failover().await;
+    assert_eq!(k.look_again().await.unwrap(), ferrum_kernel::recovery::MarkerSaid::NoStore);
+    assert!(!k.restore_held().await.unwrap(), "not held");
+    assert_eq!(recorded().await, actual, "the timeline as it is now, recorded");
+    // Changed back, it applies at once: the next look holds.
+    k.set_live(KernelSettings { hold_on_timeline: true, ..k.settings.clone() });
+    failover().await;
+    k.look_again().await.unwrap();
+    assert!(k.restore_held().await.unwrap(), "held as after a restore");
+    let because: String = sqlx::query_scalar("select held_because from platform_incarnation").fetch_one(&k.db.pool).await.unwrap();
+    assert!(because.contains("new timeline"), "{because}");
 }
 
 /// Object storage that can be cut off, as an outage does.

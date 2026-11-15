@@ -186,6 +186,11 @@ Decided while building it (15 November 2026):
   grant. Ceiling: each copied row queues one check per foreign key in the copying session's memory until the commit
   (some bytes each): tens of millions of rows take hundreds of MB there; the way past it is copying in dependency
   order with checks at once, deferring only inside circles.
+- **Failovers.** `hold_on_timeline` applies at once. Every replica compares the database's identity with the one recorded
+  each minute, beside the marker, not only at its start, so a failover or a database swapped in under running servers
+  is held (or, `false`, has its new timeline recorded) within a minute, as the setting says then. Skipped while the
+  database is fenced or a planned move's mark is there (the move's own steps decide). The doctor says the value and
+  where it comes from; the guide says what to choose for each kind of service.
 
 ## D8. Git
 

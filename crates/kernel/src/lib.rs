@@ -179,7 +179,8 @@ pub struct KernelSettings {
     /// public address when it is https.
     pub push_contact: Option<String>,
     /// Treat a new timeline as a restore, which it can be. Turn off only where failover is synchronous,
-    /// so that promoting a replica loses nothing and a person need not look (docs/operations.md).
+    /// so that promoting a replica loses nothing and a person need not look (docs/operations.md, "Any PostgreSQL").
+    /// Applies at once ([`Kernel::live`]): the identity is looked at again every minute.
     pub hold_on_timeline: bool,
     /// The operator's audit sink (`FERRUM_AUDIT_SINK_URL`, crate::audit_sink); none: nothing is sent.
     pub audit_sink: Option<audit_sink::Sink>,

@@ -279,7 +279,6 @@ impl Hooks for App {
                 secret_key: Some(secret_key),
                 retired_secret_keys: retired,
                 public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
-                hold_on_timeline: ferrum_kernel::env::var("FERRUM_HOLD_ON_TIMELINE").is_none_or(|v| v != "false"),
                 accounts_host: crate::shell::accounts_host(&settings),
                 hooks_url: crate::shell::hooks_url(&settings, &ctx.config.server.host),
                 passkey_rp: crate::shell::host_setting("FERRUM_PASSKEY_RP", &settings.passkey_rp).ok().flatten(),

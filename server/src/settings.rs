@@ -656,6 +656,7 @@ pub struct KernelLive {
     pub signup: ferrum_kernel::signup::SignupPolicy,
     pub host_leaving_days: i64,
     pub dns_resolvers: Vec<std::net::SocketAddr>,
+    pub hold_on_timeline: bool,
 }
 
 pub fn kernel_live(settings: &Settings, var: &dyn Fn(&str) -> Option<String>) -> Result<KernelLive, String> {
@@ -673,6 +674,7 @@ pub fn kernel_live(settings: &Settings, var: &dyn Fn(&str) -> Option<String>) ->
         signup,
         host_leaving_days: settings.host_leaving_days.min(365).into(),
         dns_resolvers: ferrum_kernel::shell::dns_resolvers(&settings.dns_resolvers)?,
+        hold_on_timeline: var("FERRUM_HOLD_ON_TIMELINE").is_none_or(|v| v != "false"),
     })
 }
 
@@ -692,6 +694,7 @@ impl KernelLive {
             signup: self.signup,
             host_leaving_days: self.host_leaving_days,
             dns_resolvers: self.dns_resolvers,
+            hold_on_timeline: self.hold_on_timeline,
             ..settings
         }
     }

@@ -338,13 +338,58 @@ impl Kernel {
             tx.commit().await?;
             return Ok(());
         };
+        self.compare_identity(&mut tx, (was_system, was_timeline, was_oid), (system, timeline, oid)).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The identity looked at again while the server runs (D7): a failover, or a database swapped in under a running
+    /// server, is noticed within a minute as at a start, with `hold_on_timeline` as it is now (it applies at once). A
+    /// planned move's mark, or a database that takes no changes here, is left to the move's own steps.
+    pub(crate) async fn notice_identity(&self) -> Result<()> {
+        if self.db.fenced() {
+            return Ok(());
+        }
+        let (system, timeline, oid): (i64, i32, sqlx::postgres::types::Oid) = sqlx::query_as(
+            "select (select system_identifier from pg_control_system()), (select timeline_id from pg_control_checkpoint()), \
+             (select oid from pg_database where datname = current_database())",
+        )
+        .fetch_one(&self.db.pool)
+        .await?;
+        let mut tx = self.db.system_tx().await?;
+        let free: bool = sqlx::query_scalar("select current_setting('transaction_read_only') = 'off' and not exists (select 1 from platform_move)")
+            .fetch_one(&mut *tx)
+            .await?;
+        let known: Option<(i64, i32, sqlx::postgres::types::Oid)> = if free {
+            sqlx::query_as("select system_identifier, timeline, database_oid from platform_incarnation for update").fetch_optional(&mut *tx).await?
+        } else {
+            None
+        };
+        match known {
+            Some(was) => {
+                self.compare_identity(&mut tx, was, (system, timeline, oid)).await?;
+                tx.commit().await?;
+            }
+            None => tx.rollback().await?,
+        }
+        Ok(())
+    }
+
+    /// Holds as after a restore when the database is not the one recorded (`was`), or is on a new timeline and
+    /// `hold_on_timeline` says so; otherwise records a new timeline.
+    async fn compare_identity(
+        &self,
+        tx: &mut crate::Tx,
+        was: (i64, i32, sqlx::postgres::types::Oid),
+        now: (i64, i32, sqlx::postgres::types::Oid),
+    ) -> Result<()> {
+        let ((was_system, was_timeline, was_oid), (system, timeline, oid)) = (was, now);
         let moved = was_system != system || was_oid != oid;
-        let rewound = was_timeline != timeline && self.settings.hold_on_timeline;
+        let rewound = was_timeline != timeline && self.live().hold_on_timeline;
         if !moved && !rewound {
             if was_timeline != timeline {
-                sqlx::query("update platform_incarnation set timeline = $1").bind(timeline).execute(&mut *tx).await?;
+                sqlx::query("update platform_incarnation set timeline = $1").bind(timeline).execute(&mut **tx).await?;
             }
-            tx.commit().await?;
             return Ok(());
         }
         let because = if moved { "this is not the database this server knew" } else { "this database moved to a new timeline" };
@@ -357,10 +402,9 @@ impl Kernel {
         .bind(timeline)
         .bind(oid)
         .bind(because)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-        self.set_aside(&mut tx, None).await?;
-        tx.commit().await?;
+        self.set_aside(tx, None).await?;
         Ok(())
     }
 
@@ -900,7 +944,13 @@ impl Kernel {
         Ok(MarkerSaid::Level(at))
     }
 
-    /// Looks at the restore marker every [`MARKER_EVERY`], on every replica (the server, once it serves).
+    /// What a replica looks at again every minute: the identity (with `hold_on_timeline` as it is now), then the marker.
+    pub async fn look_again(&self) -> Result<MarkerSaid> {
+        self.notice_identity().await?;
+        self.restore_marker().await
+    }
+
+    /// Looks at the identity and the restore marker every [`MARKER_EVERY`], on every replica (the server, once it serves).
     pub fn spawn_restore_marker(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         let k = self.clone();
         tokio::spawn(async move {
@@ -909,7 +959,7 @@ impl Kernel {
                     _ = shutdown.changed() => return,
                     _ = tokio::time::sleep(MARKER_EVERY) => {}
                 }
-                match k.restore_marker().await {
+                match k.look_again().await {
                     Ok(MarkerSaid::StoreDown(e)) => {
                         tracing::warn!("the restore marker could not be read or written in object storage (tried again in a minute): {e}")
                     }

@@ -71,7 +71,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `database_read_host` | `FERRUM_DATABASE_READ_HOST` | text |  | installation, next start | A read replica as `host` or `host:port`, reached with `DATABASE_URL`'s role, password, database and TLS options: what `database_read_url` does, without a second password. Empty (the default): none. `FERRUM_DATABASE_READ_URL`, when set, wins. |
 | `database_read_max_lag_secs` | `FERRUM_DATABASE_READ_MAX_LAG_SECS` | int | `10` | installation, next start | The replay lag past which those reads go to the primary (default 10). |
 | `upkeep_concurrency` | `FERRUM_UPKEEP_CONCURRENCY` | int | `2` | installation, next start | How many apps' periodic upkeep one replica runs at once (default 2). Each app's upkeep has a lock of its own across replicas, so replicas share the apps between them; each running app holds one database connection. |
-| `hold_on_timeline` | `FERRUM_HOLD_ON_TIMELINE` | bool | `true` | installation, next start | `false`: a new timeline of the database (a promoted replica) is not held as a restore. Only where failover is synchronous; see *After restoring a backup*. |
+| `hold_on_timeline` | `FERRUM_HOLD_ON_TIMELINE` | bool | `true` | installation, at once | `false`: a new timeline of the database (a promoted replica) is not held as a restore. Only where failover is synchronous and loses nothing; `true` wherever it can lose what was committed, or nobody knows. Every replica looks at the database again each minute, with the value as it is then. See *Any PostgreSQL*, Failovers. |
 | `authority_witness_url` | `FERRUM_AUTHORITY_WITNESS_URL` | text |  | secret: the environment | The witness of regions that can fail over (another database's address); see *Regions*. Unset, this server writes without asking anyone, which is right for one region. |
 | `authority_ttl_secs` | `FERRUM_AUTHORITY_TTL_SECS` | int | `30` | installation, next start | How long a region holds the right to write between renewals (default 30). |
 | `run_background` | `FERRUM_RUN_BACKGROUND` | bool | `true` | each pool, next start | `false` turns a replica into API-only. |
@@ -908,8 +908,10 @@ here can tell. Mail and webhooks go to the dead events and deliveries, jobs fail
 and commands become unknown. `ferrum task doctor` says so.
 
 A failover to a synchronous replica is also a new timeline, and loses nothing. Set
-`FERRUM_HOLD_ON_TIMELINE=false` if that is the only way a timeline changes here. Then an in-place
-point-in-time restore is not noticed by the timeline, only by the marker below.
+`FERRUM_HOLD_ON_TIMELINE=false` if that is the only way a timeline changes here (*Any PostgreSQL* says which services
+fail over that way). Then an in-place point-in-time restore is not noticed by the timeline, only by the marker below.
+The setting applies at once: every replica looks at the database's identity again each minute, so a failover under
+running servers is noticed within a minute, held or not as the setting says then, and not only at the next start.
 
 *The restore marker.* A managed service's snapshot restore, clone or branch can keep the database's identity and
 timeline, so the server also keeps a counter that only moves forward, in the database (`platform_incarnation`) and in

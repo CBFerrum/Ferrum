@@ -291,9 +291,11 @@
   env: FERRUM_HOLD_ON_TIMELINE
   type: bool
   default: "true"
+  applies: live
   doc: >-
     `false`: a new timeline of the database (a promoted replica) is not held as a restore. Only where failover is
-    synchronous; see *After restoring a backup*.
+    synchronous and loses nothing; `true` wherever it can lose what was committed, or nobody knows. Every replica looks
+    at the database again each minute, with the value as it is then. See *Any PostgreSQL*, Failovers.
 - key: authority_witness_url
   env: FERRUM_AUTHORITY_WITNESS_URL
   secret: true
