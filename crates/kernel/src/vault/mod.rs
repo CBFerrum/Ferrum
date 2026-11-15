@@ -41,6 +41,7 @@
 
 mod keys;
 mod root;
+mod scope;
 mod seal;
 mod secrets;
 
@@ -49,9 +50,11 @@ pub use root::{
     Opened, Opener, Printed, ROOT_FILE, RecoveryKey, Resealing, Rewrap, SlotKind, SlotStatus, Status, open, put_slot, remove_slot, rewrap,
     rotate_installation_key, status,
 };
+pub use scope::transfer_out;
+pub(crate) use scope::{carry_in, digest, drop_scope, may_carry};
 pub use seal::Kdf;
 pub use secrets::{Carry, Changed, Described, Kind, MAX_OVERLAP_SECS, New, Rule, Sandbox, USES_PER_HOUR, carried};
-pub(crate) use secrets::{handler, upkeep};
+pub(crate) use secrets::{handler, sandbox as sandbox_secrets, upkeep};
 /// What holds a key, a password or a secret's value, zeroed when dropped: the vault's own type, for its callers.
 pub use zeroize::Zeroizing;
 

@@ -724,6 +724,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::ApplySettings);
         tasks.register(crate::tasks::SecretSet);
         tasks.register(crate::tasks::SecretRemove);
+        tasks.register(crate::tasks::VaultTransfer);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

@@ -1057,6 +1057,8 @@ deletes, under the same cap on uses (a hundred an hour for each secret and verb,
     value, an Ed25519 pair), never shown. The version before still verifies for the secret's overlap.
 * `secret_set name:<key> [file:<path>] [overlap:<secs>]`, `secret_remove name:<key>`: the platform's own secrets
   (*The platform's secrets*).
+* `vault_transfer workspace:<slug>`: at the source of a move, the workspace's vault made ready to move, its key printed
+  once (*Moving one workspace*).
 
 **What the doctor says**: whether the vault is open and with which slot; the slots and whether each opens the vault on
 this machine; whether there is a recovery key; the keys' ages; secrets still sealed with an older key a day after a
@@ -1123,6 +1125,13 @@ longer one.
 
 The copy of the environment's `JWT_SECRET` keeps verifying what that secret signed once the environment stops setting
 it. The first rotation run where `JWT_SECRET` is no longer set gives the copy an end too, as for any key before.
+
+### A workspace's vault
+
+Its keys and secrets follow the workspace. Deleting it (`delete_tenant`, `delete_sandbox`, and `finish_move` at the
+source of a move) removes them in the same transaction as its rows, and says so in the vault's record
+(`workspace_vault_removed`, with why, and how many keys and secrets). A sandbox has each secret as the secret's rule
+says (*A sandbox of a workspace*), with keys of its own. A move carries them (*Moving one workspace*).
 
 ## Durable processes
 
@@ -2324,7 +2333,7 @@ command line; none of it is printed):
 | Variable | What it is |
 |---|---|
 | `FERRUM_MOVE_SOURCE_DATABASE_URL` | The source's database, as its `DATABASE_URL` (the role it gives must be able to read every row) |
-| `FERRUM_MOVE_SOURCE_SECRET_KEYS` | The source's `FERRUM_SECRET_KEY`, then each of its `FERRUM_RETIRED_SECRET_KEYS`, comma-separated (plain, or wrapped by this installation's `FERRUM_KMS_TRANSIT`) |
+| `FERRUM_MOVE_SOURCE_SECRET_KEYS` | The source's `FERRUM_SECRET_KEY`, then each of its `FERRUM_RETIRED_SECRET_KEYS`, comma-separated (plain, or wrapped by this installation's `FERRUM_KMS_TRANSIT`); and the workspace's transfer key, when it has anything in the vault (below) |
 | `FERRUM_MOVE_SOURCE_FILES` | `same` when both installations use one bucket or directory; otherwise one of the two below |
 | `FERRUM_MOVE_SOURCE_FILES_DIR` | The source's files directory, mounted here |
 | `FERRUM_MOVE_SOURCE_S3_BUCKET`, `_S3_REGION`, `_S3_ENDPOINT` | The source's bucket, read with this installation's `AWS_*` credentials |
@@ -2337,6 +2346,22 @@ ferrum task move_workspace tenant:acme abort:yes       # undo, until the point o
 ferrum task move_workspace tenant:acme status:yes      # what this side records, changing nothing
 ferrum task finish_move tenant:acme note:"checked at eu-2"   # at the source, later: delete what it left there
 ```
+
+**Its vault.** Neither installation can open the other's vault. A workspace with keys or secrets in the source's vault
+needs a transfer first, made at the source with the source's environment:
+
+```bash
+ferrum task vault_transfer workspace:acme      # at the source: prints the transfer key once
+```
+
+It wraps every version of the workspace's key with a key made for this transfer alone, kept in the source's database
+only wrapped; the transfer key is printed once and stored nowhere. Add it to `FERRUM_MOVE_SOURCE_SECRET_KEYS` where the
+move runs. The move refuses before anything is frozen without a transfer, with a key that is not the transfer's, or
+when the workspace's key changed at the source after the transfer was made (make it again). Step 4 opens the
+workspace's keys with it, wraps them with this installation's key, and copies the owner keys and secrets below them as
+they are; step 6 also compares the source's vault with what was copied. An abort removes the vault's copy here with
+the rest; `finish_move` removes the source's keys, secrets and transfer, so that the source's copy opens nothing.
+Moving it back takes a transfer made where it is then.
 
 **The steps**, each recorded on both sides (`workspace_move`), so that running it again carries on:
 
@@ -2534,6 +2559,12 @@ again under the new id. Everything else sealed is blanked, so the sandbox cannot
 
 A connection, channel or provider stays in the list, blank: entering credentials there makes it work inside the
 sandbox, and still nothing goes out.
+
+**Its vault.** The sandbox gets keys of its own, never the live workspace's, and each of the live workspace's secrets as
+the secret's rule says: `blank` (the default) leaves it out, `regenerate` makes a value of its own of the same kind
+(a random value, or an Ed25519 pair) that nobody is shown, and `keep` copies the value, sealed with the sandbox's keys.
+`resume:yes` makes only what is not there yet. A sandbox of a workspace of another installation starts with an empty
+vault: the source's secrets open only with the source's keys.
 
 **Why nothing can leave.** The mark (`sandbox_of`, `sandbox_from`, `sandbox_until` on the workspace) is written with
 the sandbox's own row, in the transaction that copies every other row: there is never a copy without it. No setting

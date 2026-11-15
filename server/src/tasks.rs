@@ -1527,6 +1527,32 @@ impl Task for SecretRemove {
     }
 }
 
+/// `vault_transfer workspace:<slug>`, at the source of a move: the workspace's keys made ready to move, wrapped by a key
+/// made for this transfer and shown once, never stored (docs/operations.md, "Moving one workspace"). The move takes it
+/// among the source's keys, `FERRUM_MOVE_SOURCE_SECRET_KEYS`.
+pub struct VaultTransfer;
+
+#[async_trait]
+impl Task for VaultTransfer {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "vault_transfer".into(),
+            detail: "At the source of a move: the workspace's vault made ready to move, its key shown once: workspace:<slug>".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let slug = vars.cli_arg("workspace").map_err(|_| Error::Message("say which: workspace:<slug>".into()))?;
+        let (id, _) = k.tenant_by_slug(slug).await.map_err(refused)?;
+        let key = ferrum_kernel::vault::transfer_out(&k, id).await.map_err(refused)?;
+        println!(
+            "The transfer key of {slug}, shown this once:\n\n    {}\n\nAdd it to FERRUM_MOVE_SOURCE_SECRET_KEYS where the move runs, after this installation's keys. It opens nothing but this transfer; a new one replaces it.",
+            key.as_str()
+        );
+        Ok(())
+    }
+}
+
 /// `settings [format:json]`: every setting, where its value comes from (the environment, the database, the default),
 /// and the replicas running, with the settings each still runs an older value of. A secret's value is never shown.
 pub struct ListSettings;

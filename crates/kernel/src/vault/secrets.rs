@@ -1024,6 +1024,46 @@ impl Vault {
     }
 }
 
+/// A sandbox's secrets (sandbox.rs): each current secret of the workspace `from`, in this installation, made in the
+/// sandbox `to` as its rule says: `blank` (none), `regenerate` (a value of its own of the same kind, made here and shown
+/// to nobody) or `keep` (the same value). Each is sealed with the sandbox's own keys, made for it here, never the live
+/// workspace's. Run again, it makes only what is not there yet.
+pub(crate) async fn sandbox(k: &Kernel, from: Uuid, to: Uuid) -> Result<Value> {
+    if k.db.vault.installation().is_err() {
+        return Ok(json!({"kept": 0, "regenerated": 0, "blank": 0, "closed": true}));
+    }
+    let (source, sandbox) = (Scope::Workspace(from), Scope::Workspace(to));
+    let mut tx = k.db.vault_tx(Some(from)).await?;
+    let names: Vec<(String, String)> = sqlx::query_as("select distinct owner, name from vault.secret where scope = $1 and valid_until is null order by 1, 2")
+        .bind(from)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    let who = Who { actor: None, request: "", by: Some("sandbox") };
+    let (mut kept, mut made, mut blank) = (0, 0, 0);
+    for (owner, name) in names {
+        let mut tx = k.db.vault_tx(Some(from)).await?;
+        let rows = rows(&mut tx, source, &owner, &name).await?;
+        let Some(row) = rows.iter().find(|r| r.valid_until.is_none()) else { continue };
+        let expired = row.rule.expires_at.is_some_and(|at| at <= Utc::now());
+        let value = match row.rule.sandbox {
+            _ if expired => None,
+            super::Sandbox::Blank => None,
+            super::Sandbox::Keep => Some((row.kind, opened(&k.db, &mut tx, source, &owner, &name, row).await?, row.public_key.clone(), None)),
+            super::Sandbox::Regenerate => Some(make(if row.kind == Kind::Ed25519 { New::Ed25519 } else { New::Random(32) })?),
+        };
+        tx.commit().await?;
+        let Some(value) = value else {
+            blank += 1;
+            continue;
+        };
+        let keep = row.rule.sandbox == super::Sandbox::Keep;
+        write_made(k, sandbox, &owner, &name, value, Some(row.rule.clone()), &who, true).await?;
+        if keep { kept += 1 } else { made += 1 }
+    }
+    Ok(json!({"kept": kept, "regenerated": made, "blank": blank}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
