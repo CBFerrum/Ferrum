@@ -291,6 +291,7 @@ impl Kernel {
         crate::shell::quarantine_hosts(&mut tx, tenant, false).await?;
         delete_rows(&mut tx, &columns, tenant).await?;
         sqlx::query("delete from tenant where id = $1").bind(tenant).execute(&mut *tx).await?;
+        crate::vault::drop_scope(&mut tx, tenant, "deleted").await?;
         sqlx::query("insert into tenant_deletion (id, slug, closed_at, retained_until, rows, files, note) values ($1, $2, $3, $4, $5, $6, $7)")
             .bind(tenant)
             .bind(slug)

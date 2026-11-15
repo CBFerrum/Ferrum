@@ -9,7 +9,6 @@ use axum::http::{HeaderMap, HeaderValue};
 use ferrum_kernel::zones::{Credential, Entry};
 use ferrum_kernel::{Ctx, Error};
 use loco_rs::app::AppContext;
-use loco_rs::auth::jwt::JWT;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -90,13 +89,12 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
             step_up_at: None,
         });
     }
-    let data =
-        JWT::new(&st.jwt_secret).validate(token).map_err(|_| ApiError(Error::Unauthorized("session expired or invalid; please sign in again".into())))?;
-    let claims = &data.claims.claims;
+    let data = st.sessions.validate(token).await.ok_or_else(|| ApiError(Error::Unauthorized("session expired or invalid; please sign in again".into())))?;
+    let claims = &data.claims;
     if claims.contains_key("mfa") {
         return Err(ApiError(Error::Unauthorized("finish signing in first".into())));
     }
-    let user: Uuid = data.claims.pid.parse().map_err(|_| ApiError(Error::Unauthorized("invalid session".into())))?;
+    let user: Uuid = data.pid.parse().map_err(|_| ApiError(Error::Unauthorized("invalid session".into())))?;
     let tenant: Uuid =
         claims.get("tenant").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).ok_or_else(|| ApiError(Error::Unauthorized("invalid session".into())))?;
     let tv = claims.get("tv").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
@@ -147,14 +145,14 @@ pub(crate) fn token_person(st: &crate::state::AppState, headers: &HeaderMap) -> 
     if token.starts_with("fk_") {
         return None;
     }
-    let data = JWT::new(&st.jwt_secret).validate(&token).ok()?;
-    let claims = &data.claims.claims;
+    let data = st.sessions.validate_held(&token)?;
+    let claims = &data.claims;
     if claims.contains_key("mfa") {
         return None;
     }
     let tenant = claims.get("tenant")?.as_str()?.parse().ok()?;
     let device = ["sid", "bsid"].iter().find_map(|k| claims.get(*k)?.as_str()?.parse().ok());
-    Some((tenant, data.claims.pid.parse().ok()?, device))
+    Some((tenant, data.pid.parse().ok()?, device))
 }
 
 /// App tokens work only for their app's calls to the API ([`Auth`]), and records keys only for

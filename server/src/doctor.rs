@@ -206,7 +206,8 @@ pub fn marker_findings(st: &AppState) -> Vec<Finding> {
 /// Everything, worst first.
 pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, ferrum_kernel::Error> {
     let production = ctx.environment == Environment::Production;
-    let mut out = settings_findings(production, &st.jwt_secret, &st.settings, &ctx.config.server.host);
+    let mut out = settings_findings(production, st.sessions.configured(), &st.settings, &ctx.config.server.host);
+    crate::secrets::findings(st, &mut out).await;
     out.extend(database_settings_findings(st).await);
     out.extend(st.kernel.doctor(st.settings.db_max_connections).await?);
     out.extend(st.kernel.vault_findings().await?);

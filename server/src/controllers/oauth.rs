@@ -15,7 +15,6 @@ use axum::response::{IntoResponse, Redirect, Response};
 use ferrum_kernel::Error;
 use ferrum_kernel::oauth::{Grant, SCOPE};
 use loco_rs::app::AppContext;
-use loco_rs::auth::jwt::JWT;
 use loco_rs::controller::Routes;
 use serde::Deserialize;
 use serde_json::{Map, json};
@@ -434,8 +433,8 @@ async fn token(State(app): State<AppContext>, headers: HeaderMap, Form(req): For
     let Ok(entry) = crate::zone::sign_in(&st, &headers, g.tenant, g.user).await else { return invalid() };
     // An app's own page (shape D) gets app tokens: narrowed to the app, a few minutes long.
     let (minted, ttl) = match client_id.strip_prefix("app:").and_then(|r| r.split_once(':')) {
-        Some((app, _)) => (app_access_token(&st.jwt_secret, &g, client_id, app), super::auth::APP_TOKEN_SECS),
-        None => (access_token(&st.jwt_secret, &g, client_id), ACCESS_TTL_SECS),
+        Some((app, _)) => (app_access_token(&st.sessions, &g, client_id, app), super::auth::APP_TOKEN_SECS),
+        None => (access_token(&st.sessions, &g, client_id), ACCESS_TTL_SECS),
     };
     let mut answer = match minted {
         Ok(access) => json!({
@@ -466,22 +465,22 @@ async fn token(State(app): State<AppContext>, headers: HeaderMap, Form(req): For
 
 /// An app token for an app's own page (shape D): its claims say which app, so the server narrows
 /// every call to it (extract.rs), and it lasts minutes; the refresh token renews it.
-fn app_access_token(secret: &str, g: &Grant, client_id: &str, app: &str) -> Result<String, Error> {
+fn app_access_token(sessions: &crate::sessions::Sessions, g: &Grant, client_id: &str, app: &str) -> Result<String, Error> {
     let mut claims = Map::new();
     claims.insert("tenant".into(), json!(g.tenant.to_string()));
     claims.insert("tv".into(), json!(g.token_version));
     claims.insert("client_id".into(), json!(client_id));
     claims.insert("app".into(), json!(app));
-    JWT::new(secret).generate_token(super::auth::APP_TOKEN_SECS, g.user.to_string(), claims).map_err(|e| Error::Internal(format!("token: {e}")))
+    sessions.sign(super::auth::APP_TOKEN_SECS, g.user.to_string(), claims)
 }
 
-fn access_token(secret: &str, g: &Grant, client_id: &str) -> Result<String, Error> {
+fn access_token(sessions: &crate::sessions::Sessions, g: &Grant, client_id: &str) -> Result<String, Error> {
     let mut claims = Map::new();
     claims.insert("tenant".into(), json!(g.tenant.to_string()));
     claims.insert("tv".into(), json!(g.token_version));
     claims.insert("client_id".into(), json!(client_id));
     claims.insert("scope".into(), json!(g.scope));
-    JWT::new(secret).generate_token(ACCESS_TTL_SECS, g.user.to_string(), claims).map_err(|e| Error::Internal(format!("token: {e}")))
+    sessions.sign(ACCESS_TTL_SECS, g.user.to_string(), claims)
 }
 
 #[derive(Deserialize)]

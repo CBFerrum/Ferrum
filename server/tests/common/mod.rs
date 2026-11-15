@@ -9,5 +9,5 @@ pub async fn reset(pool: &sqlx::PgPool) {
     for chunk in tables.chunks(50) {
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!("drop table if exists {} cascade", chunk.join(", ")))).execute(pool).await.expect("reset");
     }
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(pool).await.expect("reset");
 }

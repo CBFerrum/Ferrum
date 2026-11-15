@@ -38,7 +38,7 @@ struct T {
 
 async fn boot() -> Arc<Kernel> {
     let k = start().await;
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&k.db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&k.db.pool).await.expect("reset");
     start().await
 }
 

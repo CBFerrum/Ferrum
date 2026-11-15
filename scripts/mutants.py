@@ -97,6 +97,9 @@ SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 EXPORT_UNIT = ("-p", "ferrum-server", "--lib", "controllers::docs::tests")
 EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
 VAULT = ("-p", "ferrum-kernel", "--test", "vault_it")
+VAULT_FOLLOWS = ("-p", "ferrum-kernel", "--test", "vault_follows_it")
+SESSIONS_UNIT = ("-p", "ferrum-server", "--lib", "sessions::tests")
+PLATFORM_SECRETS = ("-p", "ferrum-server", "--test", "secrets_it")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
 PUBLISHED = ("-p", "ferrum-server", "--test", "published_lists_it")
 META_PUBLISHED = ("-p", "ferrum-meta", "--lib", "published")
@@ -984,6 +987,20 @@ MUTANTS = [
     ("vault-value-not-bound-to-its-name", "crates/kernel/src/vault/seal.rs", 'format!("ferrum-vault/secret/{scope}/{owner}/{name}/{version}/{key_version}")', 'format!("ferrum-vault/secret/{scope}/{owner}/{version}/{key_version}")', VAULT),
     ("vault-wrong-key-looks-damaged", "crates/kernel/src/vault/root.rs", "    if !kek.checks(&check_place(slot.kind.as_str()), &slot.check) {\n", "    if false {\n", VAULT),
     ("vault-retires-what-is-kept-outside", "crates/kernel/src/vault/secrets.rs", "where scope = $1 and owner = $2 and not outside", "where scope = $1 and owner = $2", VAULT),
+    # The platform's secrets (docs/operations.md, "The platform's secrets"): a plugin's never shown, a credential only to
+    # the hosts it names, the start's read only by the server's own handle, a transfer opened only by its own key, a
+    # workspace's secrets gone with it; a session key verifies its own tokens and only until its end; a token checked
+    # as the vault keeps it; a library secret only to the host it was set for, and cleared when that address moves.
+    ("vault-plugin-reveals", "crates/kernel/src/vault/secrets.rs", '        if owner.starts_with("plugin:") {\n', "        if false {\n", VAULT_FOLLOWS),
+    ("vault-credential-to-any-host", "crates/kernel/src/vault/secrets.rs", "    if !named {\n", "    if false {\n", VAULT_FOLLOWS),
+    ("vault-start-read-by-anyone", "crates/kernel/src/vault/secrets.rs", 'let ours = self.owner() == "platform" && self.mint != 0 && hooks.vault_mint("platform") == Some(self.mint);', "let ours = true;", VAULT_FOLLOWS),
+    ("vault-transfer-any-key", "crates/kernel/src/vault/scope.rs", ".find(|k| k.checks(&transfer_check(tenant, *id), check))", ".next()", VAULT_FOLLOWS),
+    ("vault-outlives-its-workspace", "crates/kernel/src/vault/scope.rs", 'let secrets = sqlx::query("delete from vault.secret where scope = $1")', 'let secrets = sqlx::query("delete from vault.secret where false and scope = $1")', VAULT_FOLLOWS),
+    ("session-unsigned-verifies", "server/src/sessions.rs", "    ring::hmac::verify(&ring::hmac::Key::new(ring::hmac::HMAC_SHA512, key), signed.as_bytes(), &signature).ok()?;\n", "", SESSIONS_UNIT),
+    ("session-key-past-its-end", "server/src/sessions.rs", "self.0.get(&n).filter(|h| h.until.is_none_or(|t| t > Utc::now()))", "self.0.get(&n)", SESSIONS_UNIT),
+    ("compared-token-any", "server/src/secrets.rs", "        Ok(false) => Token::Bad,\n", "        Ok(false) => Token::Good,\n", PLATFORM_SECRETS),
+    ("library-secret-any-host", "server/src/secrets.rs", "            && !rule.hosts.contains(&host)\n", "            && false\n", PLATFORM_SECRETS),
+    ("moved-address-keeps-secret", "server/src/settings.rs", "            tied.push(secret);\n", "", PLATFORM_SECRETS),
     # The whole router builds: no path and method mounted twice.
     ("hub-on-connections-path", "server/src/controllers/connect.rs", ".add(\"/admin/connector-instances\", get(list).post(create))", ".add(\"/admin/connections\", get(list).post(create))", ROUTES),
 

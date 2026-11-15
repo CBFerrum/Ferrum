@@ -13,7 +13,6 @@ use ferrum_kernel::portal_signup::SignupRequest;
 use ferrum_kernel::shell::StepUp;
 use ferrum_kernel::{Error, Kernel};
 use loco_rs::app::AppContext;
-use loco_rs::auth::jwt::JWT;
 use loco_rs::controller::Routes;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -53,7 +52,7 @@ pub(crate) fn signed(st: &AppState, s: &Session, ttl: u64, extra: Option<(&str, 
     if let Some((k, v)) = extra {
         claims.insert(k.into(), v);
     }
-    JWT::new(&st.jwt_secret).generate_token(ttl, s.user.to_string(), claims).map_err(|e| ApiError(Error::Internal(format!("token: {e}"))))
+    st.sessions.sign(ttl, s.user.to_string(), claims).map_err(ApiError)
 }
 
 /// How long an app token lasts (docs/plan/apps-ui.md §12.3): its page asks for another before then.
@@ -67,7 +66,7 @@ pub(crate) fn app_token(st: &AppState, s: &Session, device: Uuid, app: &str) -> 
     claims.insert("tv".into(), json!(s.token_version));
     claims.insert("bsid".into(), json!(device.to_string()));
     claims.insert("app".into(), json!(app));
-    JWT::new(&st.jwt_secret).generate_token(APP_TOKEN_SECS, s.user.to_string(), claims).map_err(|e| ApiError(Error::Internal(format!("token: {e}"))))
+    st.sessions.sign(APP_TOKEN_SECS, s.user.to_string(), claims).map_err(ApiError)
 }
 
 /// A request made by a page of this site in a browser (Fetch Metadata), as opposed to an API
@@ -177,12 +176,12 @@ async fn login_second_factor(State(app): State<AppContext>, headers: HeaderMap, 
     if req.code.len() > 64 {
         return Err(ApiError(Error::field("code", "is too long")));
     }
-    let data = JWT::new(&st.jwt_secret).validate(&req.ticket).map_err(|_| again())?;
-    let claims = &data.claims.claims;
+    let data = st.sessions.validate(&req.ticket).await.ok_or_else(again)?;
+    let claims = &data.claims;
     if claims.get("mfa").and_then(Value::as_bool) != Some(true) {
         return Err(again());
     }
-    let user: Uuid = data.claims.pid.parse().map_err(|_| again())?;
+    let user: Uuid = data.pid.parse().map_err(|_| again())?;
     let tenant: Uuid = claims.get("tenant").and_then(Value::as_str).and_then(|s| s.parse().ok()).ok_or_else(again)?;
     let tv = claims.get("tv").and_then(Value::as_i64).ok_or_else(again)? as i32;
     // A ticket made where staff are admitted, brought here: refused before its code is checked.

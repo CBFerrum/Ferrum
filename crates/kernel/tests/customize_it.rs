@@ -138,7 +138,7 @@ async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let connect = || async { Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect") };
     let db = connect().await;
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let k = Kernel::boot(db, catalog(V1, W1), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {

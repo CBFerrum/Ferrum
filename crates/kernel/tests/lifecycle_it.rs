@@ -75,7 +75,7 @@ fn people_come_and_go_through_the_provider() {
 
 async fn scenario() {
     let db = connect().await;
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let k = replica().await;
     let files = Arc::new(MemFiles::default());
     k.set_file_store(files.clone());

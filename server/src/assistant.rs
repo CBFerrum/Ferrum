@@ -186,8 +186,13 @@ impl Config {
     /// `FERRUM_ASSISTANT_API_KEY` (required), `_PROTOCOL` (`anthropic` or `openai`), `_MODEL`,
     /// `_URL`, `_EFFORT`, `_FALLBACKS` (`on`/`off`), `_CALLS_PER_HOUR`.
     pub fn from_env() -> Option<Config> {
+        Config::from_env_or(None)
+    }
+
+    /// [`Config::from_env`], with the key the vault holds where the environment sets none (crate::secrets).
+    pub fn from_env_or(vault_key: Option<&str>) -> Option<Config> {
         let env = |k: &str| ferrum_kernel::env::var(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-        let api_key = env("FERRUM_ASSISTANT_API_KEY")?;
+        let api_key = env("FERRUM_ASSISTANT_API_KEY").or_else(|| vault_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()))?;
         let protocol = if env("FERRUM_ASSISTANT_PROTOCOL").as_deref() == Some("openai") { Protocol::OpenAi } else { Protocol::Anthropic };
         let model = env("FERRUM_ASSISTANT_MODEL").unwrap_or_else(|| "claude-opus-5-5".into());
         let base_url = env("FERRUM_ASSISTANT_URL").unwrap_or_else(|| "https://api.anthropic.com".into()).trim_end_matches('/').to_string();

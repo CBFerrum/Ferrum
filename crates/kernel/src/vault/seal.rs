@@ -257,6 +257,16 @@ pub(crate) fn derive_info(scope: Uuid, owner: &str, key_version: i32, purpose: &
     format!("ferrum-vault/derived/{scope}/{owner}/{key_version}/{purpose}")
 }
 
+/// A version of a workspace key, wrapped by the transfer key of one transfer of that workspace.
+pub(crate) fn transfer_place(scope: Uuid, transfer: Uuid, version: i32) -> String {
+    format!("ferrum-vault/transfer/{scope}/{transfer}/{version}")
+}
+
+/// What a transfer's check value is of.
+pub(crate) fn transfer_check(scope: Uuid, transfer: Uuid) -> String {
+    format!("ferrum-vault/transfer-check/{scope}/{transfer}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

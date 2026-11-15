@@ -24,7 +24,7 @@ async fn count(db: &Db, sql: &str) -> i64 {
 
 async fn scenario() {
     let db = Db::connect(DbConfig { url: url(), max_connections: 6, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     // A trigger and a foreign key made by plain SQL before the start, as an older migration or a package's SQL makes them.
     sqlx::raw_sql(
         "create table pre_parent (id int primary key); \

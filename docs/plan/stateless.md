@@ -121,6 +121,42 @@ Status: being built (started 15 November 2026). The plan and its reasons: `STATE
 - Apps: sealed columns of their own become vault secrets of that app; unsealed per-workspace keys become derived
   keys; country add-ons' credentials become connections.
 
+### D5, first half: the environment's secrets (built)
+
+- **Which.** The registry marks each with `vault:` and its kind: `session` (`JWT_SECRET`), `compared` (bootstrap,
+  metrics and operator tokens) or `library` (mail password, object store keys, model provider key, audit sink key).
+  Each belongs to `platform` at the installation's scope, under its setting's key. Not in this half: `FERRUM_SECRET_KEY`
+  and what it seals, the KMS options, the database addresses, and secrets an app crate reads itself (Meet's, the mail
+  administrator's, Metrics' engine token, the Portugal signing key): declared, not moved.
+- **Precedence in R1**: the configuration (the environment, or the file in development and tests) over the vault; the
+  vault closed, everything as before. A replica starting to serve stores what its environment sets and the vault lacks,
+  once (`Vault::adopt`: set only where no current version is, under the secret's lock), recorded as `adopt`.
+- **The server's handle**: `HookRegistry::platform_vault()`, once, before any app registers (else the server does not
+  start). It reads the library secrets before the kernel boots (`Vault::reveal_at_start`, with the registry that gave it
+  out), which the mail sender and the audit sink need; acts for the operator on the installation's scope
+  (`operator_set`/`_rotate`/`_remove`, `installation_secrets`); and makes plugins' handles (`Vault::plugin`).
+- **Sessions: a secret key with an id, not a key pair.** Only this server verifies these tokens, so a pair adds a key
+  format and nothing else; HS512 as before. The vault's keys are secrets `session.<n>`; a token names its key (`kid`).
+  A rotation makes the next and gives each key before it an end (`expires_at`): the longest token lifetime then, plus
+  five minutes. Replicas read the keys every 30 seconds and at once (at most once a second) on a key they do not hold.
+  `JWT_SECRET`, where set, still signs without a `kid` (an older build reads those); its copy verifies them after.
+- **Compared tokens** are kept as SHA-256 digests and checked with `Vault::verify` (an HMAC under the digest), so they
+  are never revealed and a dump's form is not the token; a rotation's overlap lets callers change over.
+- **Library secrets** are revealed to the platform alone, at start. One sent to an address (`sends:`) is bound by its
+  rule's `hosts` to the host it was set for; moving that address takes it again or clears it (cleared, address
+  written, set: an interruption leaves none). They apply at the next start, listed as settings that apply at start are.
+- **The outbound verb**: `vault::carried(hosts, host, how, secret)` builds the header for one request; `Vault::carry`
+  uses it for a vault secret (recorded as `send`), the plugin host for its declared credentials and for `vault:<name>`,
+  and connections for theirs (their reach still checked at every hop). A plugin's handle never reveals.
+- **A workspace's vault**: removed in the transaction that deletes the workspace (`delete_tenant`, `delete_sandbox`,
+  `finish_move`, a move's dropped copy). A sandbox from this installation gets keys of its own and each secret by its
+  rule; one from another installation starts empty. A move carries the vault with a **transfer**: at the source,
+  `vault_transfer` wraps each version of the workspace key with a key made for it (`vault.transfer`), shown once and
+  never stored; the operator gives it in `FERRUM_MOVE_SOURCE_SECRET_KEYS`. The copy's transaction opens the workspace
+  keys with it, wraps them with the target's installation key and copies owner keys and secrets as they are (bound to
+  the workspace id a move keeps); the point of no return compares a digest of the source's vault.
+- **A fenced database** (read-only transactions) still answers the vault's uses; it records none of them.
+
 ## D6. Object storage only
 
 The local directory is refused outside development and tests. Docker Compose bundles an S3-compatible store. The

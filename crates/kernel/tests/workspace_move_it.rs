@@ -88,7 +88,7 @@ fn catalog() -> Catalog {
 
 async fn installation(url: &str, key: &SecretKey, seen: &Arc<Seen>, files: &Path) -> Arc<Kernel> {
     let db = Db::connect(DbConfig { url: url.to_string(), max_connections: 8, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let mut hooks = HookRegistry::default();
     hooks.add_event_sink(Arc::new(Sink(seen.clone())));
     hooks.add_job_handler(Arc::new(Counted(seen.clone())));

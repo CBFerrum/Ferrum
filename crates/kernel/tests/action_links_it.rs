@@ -115,7 +115,7 @@ fn a_link_does_one_thing_to_one_record() {
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 12, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let settings = KernelSettings {
         secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])),
         public_url: Some("https://ferrum.test".into()),

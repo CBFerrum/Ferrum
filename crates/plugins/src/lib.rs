@@ -317,6 +317,9 @@ pub struct PluginHost {
     sealing: std::sync::OnceLock<SecretKey>,
     /// Keys being rotated out: what they sealed still opens, and is sealed again at the next start.
     retired: std::sync::OnceLock<Vec<SecretKey>>,
+    /// The platform's vault handle, which makes each plugin's (`plugin:<name>`): a plugin's secrets in the vault go on
+    /// its requests, and to nobody else.
+    vault: std::sync::OnceLock<ferrum_kernel::vault::Vault>,
 }
 
 /// How a sealed configuration value is stored: `{"$sealed": <AES-256-GCM, base64>, "$key": <key id>}`.
@@ -456,6 +459,7 @@ impl PluginHost {
             allow_private_http,
             sealing: std::sync::OnceLock::new(),
             retired: std::sync::OnceLock::new(),
+            vault: std::sync::OnceLock::new(),
         });
         // The clock guests' deadlines run on; it stops with the host.
         let ticking = Arc::downgrade(&host);
@@ -482,6 +486,11 @@ impl PluginHost {
     /// Seals plugins' configuration with `key` from now on (the server's secret key; set once).
     pub fn seal_with(&self, key: SecretKey) {
         let _ = self.sealing.set(key);
+    }
+
+    /// The platform's vault handle (set once, by the server): each plugin's is made with it.
+    pub fn use_vault(&self, platform: ferrum_kernel::vault::Vault) {
+        let _ = self.vault.set(platform);
     }
 
     /// Opens what `keys` sealed too, while they are being rotated out (set once).

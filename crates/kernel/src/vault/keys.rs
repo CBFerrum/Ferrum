@@ -69,7 +69,7 @@ pub(crate) fn heard(payload: &str) -> Option<(Option<Uuid>, Option<&str>)> {
     }
 }
 
-fn damaged(scope: Uuid, owner: &str, version: i32) -> Error {
+pub(super) fn damaged(scope: Uuid, owner: &str, version: i32) -> Error {
     let which = if owner.is_empty() { format!("the workspace key of {scope}") } else { format!("{owner}'s key in {scope}") };
     Error::Internal(format!("{which} (version {version}) does not open: its row was changed or damaged; restore the vault's tables from a backup"))
 }
@@ -121,7 +121,7 @@ impl Root {
         Err(Error::Retryable(format!("the vault's installation key is at version {}, a key named version {version}", held.version)))
     }
 
-    async fn workspace_key_from(&self, db: &Db, scope: Uuid, version: i32, parent: i32, wrapped: &[u8]) -> Result<Arc<Key>> {
+    pub(super) async fn workspace_key_from(&self, db: &Db, scope: Uuid, version: i32, parent: i32, wrapped: &[u8]) -> Result<Arc<Key>> {
         if let Some(k) = self.cache.get(scope, "", version) {
             return Ok(k);
         }

@@ -695,6 +695,7 @@ impl Kernel {
             return Err(Error::Conflict(format!("the name {slug} belonged to another workspace here, and is never used again here")));
         }
         let opened = self.prove_keys(source, tenant, from, &here).await?;
+        crate::vault::may_carry(source, tenant, &from.keys).await?;
         let unknown: Vec<String> = self.unknown_sealed(source, tenant, &here).await?.into_iter().filter(|c| !from.not_sealed.contains(c)).collect();
         if !unknown.is_empty() {
             return Err(Error::Conflict(format!(
@@ -1071,7 +1072,8 @@ impl Kernel {
             sealed += reseal_row(t, tenant, row, &from.keys, to)?;
             Ok(())
         };
-        let copied = Box::pin(copy_rows(&mut src, &mut tx, (tenant, tenant), &tables, LEFT_BEHIND, true, &mut each)).await?;
+        let mut copied = Box::pin(copy_rows(&mut src, &mut tx, (tenant, tenant), &tables, LEFT_BEHIND, true, &mut each)).await?;
+        copied.insert("vault".into(), crate::vault::carry_in(self, &mut src, &mut tx, tenant, &from.keys).await?);
         // An address this installation keeps from all but the workspace that left it (crate::shell::quarantine_hosts) is
         // no other's that moves in. Read here, after the copy's addresses and in its transaction, so a workspace leaving
         // meanwhile is seen: its rows, which the copy meets, or (committed) what it left kept.
@@ -1198,6 +1200,9 @@ impl Kernel {
             if rows != was.and_then(|c| c["rows"].as_i64()).unwrap_or(0) || (rows > 0 && Some(print.as_str()) != was.and_then(|c| c["digest"].as_str())) {
                 changed.push(t.clone());
             }
+        }
+        if crate::vault::digest(&mut src, tenant).await? != copied.get("vault").cloned().unwrap_or_else(|| json!({"rows": 0, "digest": ""})) {
+            changed.push("its vault".to_string());
         }
         if !changed.is_empty() {
             src.rollback().await?;
@@ -1336,6 +1341,7 @@ impl Kernel {
         let rows = delete_rows(&mut tx, &columns, tenant).await?;
         sqlx::query("delete from tenant where id = $1").bind(tenant).execute(&mut *tx).await?;
         sqlx::query("delete from workspace_move where workspace = $1 and side = 'target'").bind(tenant).execute(&mut *tx).await?;
+        crate::vault::drop_scope(&mut tx, tenant, "move_undone").await?;
         tx.commit().await?;
         self.registry.invalidate(tenant);
         self.invalidate_tenant_users(tenant);
@@ -1424,6 +1430,7 @@ impl Kernel {
         let columns: Vec<_> = workspace_columns(&self.db, &mut tx).await?.into_iter().filter(|(t, _)| t != "tenant_slug_retired").collect();
         let rows = delete_rows(&mut tx, &columns, tenant).await?;
         sqlx::query("delete from tenant where id = $1").bind(tenant).execute(&mut *tx).await?;
+        crate::vault::drop_scope(&mut tx, tenant, "moved_away").await?;
         sqlx::query("update workspace_move set finished_at = now(), updated_at = now(), peer = peer || ' — ' || $2 where workspace = $1")
             .bind(tenant)
             .bind(note)
