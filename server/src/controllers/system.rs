@@ -502,9 +502,52 @@ async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path
     tx.commit().await.map_err(Error::from)?;
     let (name, ctype, key, entity, record, by, shared) = row.ok_or_else(|| ApiError(Error::NotFound("file".into())))?;
     st.kernel.may_download_file(&ctx, id, entity.as_deref(), record, by, shared).await?;
+    if let Some(link) = direct_link(&st, &ctx, &key, &ctype, &name, entity.as_deref()).await? {
+        return Ok(link);
+    }
     let mut resp = streamed(&st, &key, &headers).await?;
     file_headers(resp.headers_mut(), &ctype, &name, false);
     Ok(resp)
+}
+
+/// The longest a direct link works, whatever `files_direct_link_seconds` says.
+pub const DIRECT_LINK_MAX_SECS: u64 = 300;
+
+/// Whether a download may be answered with a direct link: the setting on, a store that signs links and holds every file
+/// (not while files move), a member (not an outside person), an entity whose reads are not recorded, and a type a
+/// browser would not run.
+pub fn may_link(on: bool, store_signs: bool, outside: bool, recorded: bool, content_type: &str) -> bool {
+    on && store_signs && !outside && !recorded && !ferrum_kernel::files::runs_in_browser(content_type)
+}
+
+/// A download answered with a short-lived link the object store honours (`files_direct_links`, off by default), which
+/// the browser follows (307), where nothing needs the server to see the bytes go: never for an outside person (what a
+/// portal rule shows them is decided at each download), a file of an entity whose reads are recorded (each read must
+/// reach the audit trail), a type a browser would run (it would run on the store's address), or while files move (the
+/// store may not hold it yet). `None`: through the server, as by default.
+async fn direct_link(
+    st: &crate::state::AppState,
+    ctx: &ferrum_kernel::Ctx,
+    key: &str,
+    ctype: &str,
+    name: &str,
+    entity: Option<&str>,
+) -> ApiResult<Option<Response>> {
+    let now = st.live_settings.now();
+    let recorded = entity.is_some_and(|e| ctx.reads_recorded(e).is_some());
+    if !may_link(now.settings.files_direct_links, st.objects.direct_uploads() && !st.objects.reads_directory(), ctx.outside, recorded, ctype) {
+        return Ok(None);
+    }
+    let ttl = std::time::Duration::from_secs(now.settings.files_direct_link_seconds.clamp(1, DIRECT_LINK_MAX_SECS));
+    let ctype = if ctype.trim().is_empty() { "application/octet-stream" } else { ctype };
+    let disposition = format!("attachment; filename=\"{}\"", name.replace(['"', '\\'], ""));
+    let url = st.objects.presign_download(key, ttl, ctype, &disposition).await?;
+    let mut resp = StatusCode::TEMPORARY_REDIRECT.into_response();
+    let h = resp.headers_mut();
+    h.insert(header::LOCATION, HeaderValue::from_str(&url).map_err(|e| ApiError(Error::internal(e)))?);
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    Ok(Some(resp))
 }
 
 pub fn routes() -> Routes {
@@ -531,6 +574,18 @@ pub fn routes() -> Routes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_direct_link_only_where_nothing_needs_the_server() {
+        assert!(may_link(true, true, false, false, "application/pdf"));
+        assert!(!may_link(false, true, false, false, "application/pdf"), "off by default");
+        assert!(!may_link(true, false, false, false, "application/pdf"), "a store that cannot sign, or files still moving");
+        assert!(!may_link(true, true, true, false, "application/pdf"), "an outside person: a rule decides at each download");
+        assert!(!may_link(true, true, false, true, "application/pdf"), "a recorded entity: each read must reach the audit trail");
+        for active in ["text/html", "image/svg+xml", "application/xml", "text/javascript; charset=utf-8"] {
+            assert!(!may_link(true, true, false, false, active), "{active} would run on the store's address");
+        }
+    }
 
     #[test]
     fn failures_are_counters_with_quoted_labels() {
