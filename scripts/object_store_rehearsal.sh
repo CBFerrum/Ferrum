@@ -79,12 +79,14 @@ PASSWORD='Rehearsal-Passw0rd'
 mkdir -p "$work/files" "$work/run"
 STORE=(FERRUM_S3_BUCKET=ferrum FERRUM_S3_ENDPOINT="http://127.0.0.1:$S3_PORT" FERRUM_S3_REGION=us-east-1 FERRUM_TEST_RUN_DIR="$work/run")
 
-# Runs the binary on a database (production settings unless LOCO_ENV says otherwise), from the server's directory.
+# Runs the binary on a database (production settings unless LOCO_ENV says otherwise), from the server's directory. Its
+# process is the subshell's own (exec), so that a background one's $! is the server, which `end` then stops.
 on() { local db=$1; shift; (cd "$ROOT/server" && exec env LOCO_ENV="${LOCO_ENV:-production}" DATABASE_URL="$APP/$db" FERRUM_FILES_DIR="$work/files" "$@"); }
 # Starts a server on a database and port with more settings, and waits until it answers, or until it ends: 0 when it answers.
 serve() {
   local db=$1 port=$2 log=$3; shift 3
-  on "$db" PORT="$port" BINDING=127.0.0.1 PUBLIC_URL="http://127.0.0.1:$port" "$@" "$BIN" start >"$work/$log.log" 2>&1 &
+  (cd "$ROOT/server" && exec env LOCO_ENV="${LOCO_ENV:-production}" DATABASE_URL="$APP/$db" FERRUM_FILES_DIR="$work/files" PORT="$port" \
+    BINDING=127.0.0.1 PUBLIC_URL="http://127.0.0.1:$port" "$@" "$BIN" start) >"$work/$log.log" 2>&1 &
   SERVED=$!
   for _ in $(seq 1 120); do
     curl -fsS "http://127.0.0.1:$port/api/ready" >/dev/null 2>&1 && return 0
@@ -160,7 +162,8 @@ read -r idb shab < <(upload "$B" "$TB" 80000 b.bin)
   fail "a file written while files move went to the directory"
 
 step "files_move, killed partway, then run again"
-on "${NAME}_live" "${STORE[@]}" "$BIN" task files_move >"$work/move1.log" 2>&1 &
+(cd "$ROOT/server" && exec env LOCO_ENV=production DATABASE_URL="$APP/${NAME}_live" FERRUM_FILES_DIR="$work/files" "${STORE[@]}" \
+  "$BIN" task files_move) >"$work/move1.log" 2>&1 &
 MOVE=$!
 copied=0
 for _ in $(seq 1 400); do
