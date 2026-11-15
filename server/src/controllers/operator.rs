@@ -15,11 +15,11 @@ use loco_rs::controller::Routes;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// The operator, or a refusal that says the same whether a token is set or not.
-fn operator(st: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+/// The operator, or a refusal that says the same whether a token is set or not: the environment's token, else the
+/// vault's (crate::secrets).
+pub(crate) async fn operator(st: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
     let given = headers.get("x-ferrum-operator-token").and_then(|v| v.to_str().ok()).unwrap_or_default();
-    let expected = st.settings.operator_token.as_str();
-    if expected.is_empty() || !super::system::same_secret(given, expected) {
+    if crate::secrets::token(st, "operator_token", &st.settings.operator_token, given).await != crate::secrets::Token::Good {
         return Err(ApiError(Error::Forbidden("the settings need the operator's token".into())));
     }
     Ok(())
@@ -33,7 +33,7 @@ fn no_store(mut res: Response) -> Response {
 /// `GET /api/operator/settings`: every setting as this replica has it, the table's rows, and the replicas running.
 async fn list(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    operator(&st, &headers)?;
+    operator(&st, &headers).await?;
     Ok(no_store(Json(crate::settings::listing(&st).await?).into_response()))
 }
 
@@ -59,7 +59,7 @@ async fn changed(st: &AppState, change: crate::settings::Change) -> ApiResult<Re
 /// `PUT /api/operator/settings/{key}` `{"value": ..., "pool": ...}`: sets one setting.
 async fn set(State(app): State<AppContext>, headers: HeaderMap, Path(key): Path<String>, Json(body): Json<SetBody>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    operator(&st, &headers)?;
+    operator(&st, &headers).await?;
     let value = match body.value {
         Value::String(s) => s,
         Value::Bool(b) => b.to_string(),
@@ -72,7 +72,7 @@ async fn set(State(app): State<AppContext>, headers: HeaderMap, Path(key): Path<
 /// `DELETE /api/operator/settings/{key}[?pool=]`: unsets one setting (the environment's value or the default applies).
 async fn unset(State(app): State<AppContext>, headers: HeaderMap, Path(key): Path<String>, Query(q): Query<PoolQuery>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    operator(&st, &headers)?;
+    operator(&st, &headers).await?;
     changed(&st, crate::settings::Change { name: key, pool: q.pool, value: None }).await
 }
 

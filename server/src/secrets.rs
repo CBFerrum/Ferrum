@@ -162,6 +162,44 @@ fn digest(token: &str) -> Zeroizing<Vec<u8>> {
     Zeroizing::new(ring::digest::digest(&ring::digest::SHA256, token.as_bytes()).as_ref().to_vec())
 }
 
+/// What the vault checks a given token by: an HMAC of a fixed message under the token's digest, which matches the one it
+/// keeps only for the same token.
+const PROOF: &[u8] = b"ferrum: a token the server compares";
+
+fn proof(given: &str) -> Vec<u8> {
+    ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &digest(given)), PROOF).as_ref().to_vec()
+}
+
+/// What a caller's token is to the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Token {
+    /// Neither the configuration nor the vault holds one: the route answers as it does without one.
+    NotSet,
+    Good,
+    Bad,
+}
+
+/// Whether `given` is the platform's token `key` (`bootstrap_token`, `metrics_token`, `operator_token`): the
+/// configuration's, when it sets one, compared in constant time; else the vault's, its current version or the one before
+/// while a rotation's overlap lasts. A vault that cannot be asked refuses.
+pub async fn token(st: &AppState, key: &str, configured: &str, given: &str) -> Token {
+    if !configured.is_empty() {
+        return if crate::controllers::system::same_secret(given, configured) { Token::Good } else { Token::Bad };
+    }
+    if !st.vault_open {
+        return Token::NotSet;
+    }
+    match st.vault.verify(&st.kernel, Scope::Installation, key, PROOF, &proof(given)).await {
+        Ok(true) => Token::Good,
+        Ok(false) => Token::Bad,
+        Err(Error::NotFound(_)) => Token::NotSet,
+        Err(e) => {
+            tracing::warn!(token = key, "checking a token against the vault: {e}");
+            Token::Bad
+        }
+    }
+}
+
 /// Where each of the platform's secrets comes from now: `environment`, `vault` or `default` (none), with the vault's
 /// description of it.
 pub async fn sources(st: &AppState) -> BTreeMap<String, (&'static str, Option<Described>)> {

@@ -2211,9 +2211,10 @@ Public files (`public=true`; images and PDFs only — logos, product photos, bro
 ## Settings — `/api/operator/settings` (the installation's operator)
 
 The installation's settings in the database ([operations](operations.md#settings-in-the-database)), for the
-Operations screen. Every call needs the operator's token in `X-Ferrum-Operator-Token` (the secret
-`FERRUM_OPERATOR_TOKEN`, compared in constant time); without it, or while the server has none, `403` with the same
-answer either way. Answers are never cached (`Cache-Control: no-store`).
+Operations screen. Every call needs the operator's token in `X-Ferrum-Operator-Token` (`FERRUM_OPERATOR_TOKEN` where
+the environment sets it, else the vault's, [operations](operations.md#the-platforms-secrets); compared in constant
+time); without it, or while the server has none, `403` with the same answer either way. Answers are never cached
+(`Cache-Control: no-store`).
 
 * `GET /api/operator/settings` → `{version, pool, settings: [...], replicas: [...]}`. `version`: the table's highest
   version; `pool`: the pool of the replica that answered. Each setting: `key`, `env` (its variable), `type` (`text`,

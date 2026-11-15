@@ -89,12 +89,10 @@ async fn zone(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Re
 
 async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    let expected = st.settings.metrics_token.as_str();
-    if !expected.is_empty() {
-        let given = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or_default();
-        if !same_secret(given, expected) {
-            return Err(ApiError(Error::Unauthorized("metrics require the metrics token".into())));
-        }
+    // The environment's token, else the vault's (crate::secrets); none at all: open, as before.
+    let given = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or_default();
+    if crate::secrets::token(&st, "metrics_token", &st.settings.metrics_token, given).await == crate::secrets::Token::Bad {
+        return Err(ApiError(Error::Unauthorized("metrics require the metrics token".into())));
     }
     LazyLock::force(&STARTED);
     let mut tx = st.kernel.db.system_tx().await?;
@@ -249,8 +247,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
 async fn create_tenant(State(app): State<AppContext>, headers: HeaderMap, Json(t): Json<NewTenant>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let given = headers.get("x-ferrum-bootstrap-token").and_then(|v| v.to_str().ok()).unwrap_or_default();
-    let expected = st.settings.bootstrap_token.as_str();
-    let ok = !expected.is_empty() && same_secret(given, expected);
+    let ok = crate::secrets::token(&st, "bootstrap_token", &st.settings.bootstrap_token, given).await == crate::secrets::Token::Good;
     if !ok {
         return Err(ApiError(Error::Forbidden("tenant creation requires the bootstrap token".into())));
     }
