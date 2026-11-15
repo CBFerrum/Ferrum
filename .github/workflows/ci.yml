@@ -159,8 +159,8 @@ jobs:
 
   # Moves rehearsed with PostgreSQL and the server binary alone (scripts/move_rehearsal.sh): a planned move of a whole
   # installation carries waiting work across without the restore hold, and an unplanned copy is held; then one workspace
-  # moves between two running servers and back, and a sandbox of it sends nothing (--grant: the script grants the role
-  # SET on session_replication_role for each move and copy, and revokes it). It cannot fail the workflow until it has
+  # moves between two running servers and back, and a sandbox of it sends nothing, all as the server's own role with no
+  # grant on session_replication_role (D7). It cannot fail the workflow until it has
   # passed here once; then remove continue-on-error and add it to promote's needs.
   move:
     runs-on: ubuntu-latest
@@ -193,7 +193,7 @@ jobs:
         run: psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 -c "create role ferrum login password 'ferrum'"
       # The core packages only: no app is compiled in, which keeps the build small.
       - run: cargo build -p ferrum-server --no-default-features --bin ferrum --locked
-      - run: scripts/move_rehearsal.sh --grant ferrum_moverehearsal_a ferrum_moverehearsal_b
+      - run: scripts/move_rehearsal.sh ferrum_moverehearsal_a ferrum_moverehearsal_b
         env:
           MOVE_ADMIN_URL: postgres://postgres:postgres@localhost:5432
 

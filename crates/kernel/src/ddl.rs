@@ -275,7 +275,7 @@ impl Ddl<'_> {
                 OnDelete::Cascade => "cascade".to_string(),
             };
             self.exec(format!(
-                "alter table {} add constraint {} foreign key (tenant_id, {}) references {} (tenant_id, id) on delete {on_delete}",
+                "alter table {} add constraint {} foreign key (tenant_id, {}) references {} (tenant_id, id) on delete {on_delete} deferrable initially immediate",
                 q(table),
                 q(&name),
                 q(&f.name),
@@ -306,7 +306,7 @@ impl Ddl<'_> {
 }
 
 const SYSTEM_COLUMNS: &str = "\
-  tenant_id uuid not null references tenant(id) on delete cascade,
+  tenant_id uuid not null references tenant(id) on delete cascade deferrable initially immediate,
   id uuid not null,
   number text,
   docstatus smallint not null default 0 check (docstatus between 0 and 2),
@@ -362,7 +362,7 @@ async fn tables_and_columns(ddl: &mut Ddl<'_>, schema: &Schema, managed: &[&EffE
                     "create table if not exists {ct} (\n  tenant_id uuid not null,\n  id uuid not null,\n  parent_id uuid not null,\n  \
                      idx int not null check (idx >= 0),\n  created_at timestamptz not null default now(),\n  \
                      updated_at timestamptz not null default now(),\n  ext jsonb not null default '{{}}'::jsonb,\n  \
-                     primary key (tenant_id, id),\n  foreign key (tenant_id, parent_id) references {pt} (tenant_id, id) on delete cascade\n)",
+                     primary key (tenant_id, id),\n  foreign key (tenant_id, parent_id) references {pt} (tenant_id, id) on delete cascade deferrable initially immediate\n)",
                     ct = q(&child.table),
                     pt = q(&ent.table)
                 ))
@@ -402,6 +402,114 @@ pub async fn lacks(db: &Db, catalog: &Catalog) -> Result<Vec<String>> {
         }
     }
     Ok(out)
+}
+
+/// In every trigger's WHEN (D7): a transaction that sets `ferrum.copy` (only a copy of a workspace does, and the deletions
+/// that go with one: recovery.rs, `copying`) runs with the server's triggers standing aside, in place of
+/// `session_replication_role = replica`, which takes a grant only an administrator can give.
+pub const STANDS_ASIDE: &str = "current_setting('ferrum.copy'::text, true) IS DISTINCT FROM 'on'::text";
+
+/// `def`, a trigger as `pg_get_triggerdef` writes it, made again to stand aside while a copy runs: [`STANDS_ASIDE`] added
+/// to its WHEN, or made its WHEN, the rest as it was. `None` when it stands aside already, or is not written as expected.
+pub fn stand_aside(def: &str) -> Option<String> {
+    if def.contains("ferrum.copy") {
+        return None;
+    }
+    let at = def.rfind(" EXECUTE FUNCTION ").or_else(|| def.rfind(" EXECUTE PROCEDURE "))?;
+    let (head, tail) = def.split_at(at);
+    let each = head.find(" FOR EACH ROW").or_else(|| head.find(" FOR EACH STATEMENT"))?;
+    let head = match head[each..].find(" WHEN (") {
+        Some(w) => {
+            let w = each + w;
+            let cond = head[w + " WHEN (".len()..].strip_suffix(')')?;
+            format!("{} WHEN (({cond}) AND ({STANDS_ASIDE}))", &head[..w])
+        }
+        None => format!("{head} WHEN ({STANDS_ASIDE})"),
+    };
+    let head = match head.strip_prefix("CREATE TRIGGER ") {
+        Some(rest) => format!("CREATE OR REPLACE TRIGGER {rest}"),
+        None if head.starts_with("CREATE CONSTRAINT TRIGGER ") => head,
+        None => return None,
+    };
+    Some(format!("{head}{tail}"))
+}
+
+/// What keeps a copy from running as the server's own role: foreign keys that cannot wait for the commit, and triggers
+/// that do not stand aside ([`copy_ready`] makes them so), each named.
+pub async fn not_ready(conn: &mut PgConnection) -> Result<(Vec<String>, Vec<String>)> {
+    let keys: Vec<String> = sqlx::query_scalar(
+        "select format('%s.%I', conrelid::regclass, conname) from pg_constraint \
+         where contype = 'f' and not condeferrable and connamespace = 'public'::regnamespace and conparentid = 0 order by 1",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let triggers: Vec<String> = sqlx::query_scalar(
+        "select format('%I on %s', t.tgname, t.tgrelid::regclass) from pg_trigger t join pg_class c on c.oid = t.tgrelid \
+         where not t.tgisinternal and t.tgparentid = 0 and c.relnamespace = 'public'::regnamespace \
+           and pg_get_triggerdef(t.oid) not like '%ferrum.copy%' order by 1",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok((keys, triggers))
+}
+
+/// Makes every foreign key of the schema able to wait for the commit (still checked at once unless a transaction asks
+/// otherwise, so nothing changes for anyone else) and every trigger stand aside while a copy runs: what lets a copy of a
+/// workspace run as the server's own role (D7). The kernel's migrations, packages' SQL and older syncs made them
+/// otherwise; what the sync makes from now on is made so. Run as a migrating server starts, after the sync, a table at a
+/// time; with nothing to do it costs two queries. What it could not change is returned (a copy then refuses, naming
+/// it), never fatal to the start: a role that does not own a table, say.
+pub async fn copy_ready(db: &Db) -> Result<Vec<String>> {
+    let mut conn = db.direct.acquire().await?;
+    let mut problems = Vec::new();
+    let keys: Vec<(String, String)> = sqlx::query_as(
+        "select conrelid::regclass::text, quote_ident(conname) from pg_constraint \
+         where contype = 'f' and not condeferrable and connamespace = 'public'::regnamespace and conparentid = 0 order by 1, 2",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut by_table: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (table, key) in keys {
+        by_table.entry(table).or_default().push(key);
+    }
+    for (table, keys) in &by_table {
+        let each: Vec<String> = keys.iter().map(|k| format!("alter constraint {k} deferrable initially immediate")).collect();
+        if let Err(e) = sqlx::raw_sql(AssertSqlSafe(format!("alter table {table} {}", each.join(", ")))).execute(&mut *conn).await {
+            problems.push(format!("{table}'s foreign keys: {e}"));
+        }
+    }
+    let triggers: Vec<(String, String, String, bool, String)> = sqlx::query_as(
+        "select quote_ident(t.tgname), t.tgrelid::regclass::text, pg_get_triggerdef(t.oid), t.tgconstraint <> 0, t.tgenabled::text \
+         from pg_trigger t join pg_class c on c.oid = t.tgrelid \
+         where not t.tgisinternal and t.tgparentid = 0 and c.relnamespace = 'public'::regnamespace \
+           and pg_get_triggerdef(t.oid) not like '%ferrum.copy%' order by 2, 1",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for (name, table, def, constraint, enabled) in triggers {
+        let Some(again) = stand_aside(&def) else {
+            problems.push(format!("trigger {name} on {table}: not written as expected ({def})"));
+            continue;
+        };
+        // A constraint trigger cannot be replaced in place: dropped and made again, in one transaction.
+        let mut sql = if constraint { format!("begin; drop trigger {name} on {table}; {again}; ") } else { format!("begin; {again}; ") };
+        match enabled.as_str() {
+            "D" => sql.push_str(&format!("alter table {table} disable trigger {name}; ")),
+            "A" => sql.push_str(&format!("alter table {table} enable always trigger {name}; ")),
+            "R" => sql.push_str(&format!("alter table {table} enable replica trigger {name}; ")),
+            _ => {}
+        }
+        sql.push_str("commit");
+        if let Err(e) = sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut *conn).await {
+            let _ = sqlx::raw_sql("rollback").execute(&mut *conn).await;
+            problems.push(format!("trigger {name} on {table}: {e}"));
+        }
+    }
+    if by_table.is_empty() && problems.is_empty() {
+        return Ok(problems);
+    }
+    tracing::info!(tables = by_table.len(), "foreign keys may wait for the commit, and triggers stand aside, while a copy runs");
+    Ok(problems)
 }
 
 pub async fn sync(db: &Db, catalog: &Catalog, force: bool) -> Result<SyncReport> {
@@ -502,10 +610,16 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
         // A held record is not deleted, whoever's SQL asks (migration 20261105000006), and the row as it
         // was before each change to it is kept while it is held (20261109000002).
         let named = ent.def.name.replace('\'', "''");
-        ddl.exec(format!("create or replace trigger ferrum_held before delete on {} for each row execute function ferrum_held_guard('{named}')", q(&t)))
-            .await?;
-        ddl.exec(format!("create or replace trigger ferrum_held_keep before update on {} for each row execute function ferrum_held_keep('{named}')", q(&t)))
-            .await?;
+        ddl.exec(format!(
+            "create or replace trigger ferrum_held before delete on {} for each row when ({STANDS_ASIDE}) execute function ferrum_held_guard('{named}')",
+            q(&t)
+        ))
+        .await?;
+        ddl.exec(format!(
+            "create or replace trigger ferrum_held_keep before update on {} for each row when ({STANDS_ASIDE}) execute function ferrum_held_keep('{named}')",
+            q(&t)
+        ))
+        .await?;
         for child in ent.children.values() {
             if let Some(cent) = schema.entity(&child.entity) {
                 ddl.links(&child.table, cent, &schema).await?;
@@ -562,4 +676,53 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
         tracing::warn!("schema sync: {w}");
     }
     Ok(ddl.report)
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::{STANDS_ASIDE, stand_aside};
+
+    #[test]
+    fn every_kind_of_trigger_stands_aside_with_the_rest_as_it_was() {
+        let s = |d: &str| stand_aside(d).unwrap();
+        assert_eq!(
+            s("CREATE TRIGGER ferrum_held BEFORE DELETE ON public.e_item FOR EACH ROW EXECUTE FUNCTION ferrum_held_guard('Item')"),
+            format!(
+                "CREATE OR REPLACE TRIGGER ferrum_held BEFORE DELETE ON public.e_item FOR EACH ROW WHEN ({STANDS_ASIDE}) EXECUTE FUNCTION ferrum_held_guard('Item')"
+            )
+        );
+        assert_eq!(
+            s(
+                "CREATE TRIGGER app_user_email_history AFTER UPDATE OF email ON public.app_user FOR EACH ROW WHEN ((old.email IS DISTINCT FROM new.email)) EXECUTE FUNCTION ferrum_person_identifier()"
+            ),
+            format!(
+                "CREATE OR REPLACE TRIGGER app_user_email_history AFTER UPDATE OF email ON public.app_user FOR EACH ROW WHEN (((old.email IS DISTINCT FROM new.email)) AND ({STANDS_ASIDE})) EXECUTE FUNCTION ferrum_person_identifier()"
+            ),
+            "its own WHEN kept"
+        );
+        assert_eq!(
+            s(
+                "CREATE CONSTRAINT TRIGGER journal_entry_balanced AFTER INSERT ON public.journal_entry DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION ferrum_check_journal_balance()"
+            ),
+            format!(
+                "CREATE CONSTRAINT TRIGGER journal_entry_balanced AFTER INSERT ON public.journal_entry DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ({STANDS_ASIDE}) EXECUTE FUNCTION ferrum_check_journal_balance()"
+            ),
+            "made again, not replaced in place"
+        );
+        assert_eq!(
+            s(
+                "CREATE TRIGGER custom_record_lines_cascade AFTER DELETE ON public.custom_record REFERENCING OLD TABLE AS gone FOR EACH STATEMENT EXECUTE FUNCTION ferrum_custom_lines_cascade()"
+            ),
+            format!(
+                "CREATE OR REPLACE TRIGGER custom_record_lines_cascade AFTER DELETE ON public.custom_record REFERENCING OLD TABLE AS gone FOR EACH STATEMENT WHEN ({STANDS_ASIDE}) EXECUTE FUNCTION ferrum_custom_lines_cascade()"
+            )
+        );
+        assert!(
+            s("CREATE TRIGGER audit_event_no_truncate BEFORE TRUNCATE ON public.audit_event FOR EACH STATEMENT EXECUTE FUNCTION ferrum_forbid_change()")
+                .contains("STATEMENT WHEN (")
+        );
+        let once = s("CREATE TRIGGER t BEFORE UPDATE ON public.x FOR EACH ROW EXECUTE FUNCTION f()").replace("CREATE OR REPLACE", "CREATE");
+        assert_eq!(stand_aside(&once), None, "once is enough");
+        assert_eq!(stand_aside("something else"), None);
+    }
 }

@@ -108,7 +108,78 @@ impl Kernel {
             Finding::blocker(
                 "database.extensions",
                 format!("missing: {}", extensions.join(", ")),
-                "Give the database's role ownership of it, so it can create these trusted extensions.",
+                "Give the database's role ownership of it, so it can create these trusted extensions, or have the service's administrator create them (CREATE EXTENSION btree_gist; and citext, pg_trgm).",
+            )
+        });
+        // What the role can and cannot do, as running on any PostgreSQL needs (docs/operations.md, "Any PostgreSQL").
+        let (owner, in_database, in_public): (bool, bool, bool) = sqlx::query_as(
+            "select datdba = (select oid from pg_roles where rolname = current_user), has_database_privilege(current_database(), 'CREATE'), \
+             has_schema_privilege('public', 'CREATE') from pg_database where datname = current_database()",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        out.push(match (owner, in_database && in_public) {
+            (true, _) => Finding::ok("database.role", "an ordinary role (no superuser, no BYPASSRLS) that owns its database"),
+            (false, true) => Finding::ok("database.role", "an ordinary role that does not own the database, and may create in it and in its public schema"),
+            (false, false) => Finding::blocker(
+                "database.role",
+                format!(
+                    "this role may not create {}: it cannot make its tables or the extensions",
+                    if in_public { "in the database" } else { "in the public schema" }
+                ),
+                "As the service's administrator: ALTER DATABASE <name> OWNER TO <this role> (docs/operations.md, Any PostgreSQL).",
+            ),
+        });
+        let mut conn = self.db.pool.acquire().await?;
+        let (keys, triggers) = crate::ddl::not_ready(&mut conn).await?;
+        drop(conn);
+        out.push(if keys.is_empty() && triggers.is_empty() {
+            Finding::ok("database.copy", "moves, sandboxes, taking a workspace back and deleting one run as this role: no grant needed")
+        } else {
+            Finding::warning(
+                "database.copy",
+                format!(
+                    "{} foreign keys cannot wait for the commit and {} triggers do not stand aside, so copies of a workspace refuse: {}",
+                    keys.len(),
+                    triggers.len(),
+                    keys.iter().chain(&triggers).take(5).cloned().collect::<Vec<_>>().join(", ")
+                ),
+                "Start this build's server or run ferrum task migrate, which makes them so; the role must own those tables.",
+            )
+        });
+        if version >= 150000 {
+            let granted: bool = sqlx::query_scalar("select has_parameter_privilege('session_replication_role', 'SET')").fetch_one(&mut *tx).await?;
+            out.push(if granted {
+                Finding::warning(
+                    "database.replication_role",
+                    "this role may set session_replication_role, which this build never needs, and which turns off every trigger and foreign key",
+                    "REVOKE SET ON PARAMETER session_replication_role FROM <this role>, unless a build before this one still copies workspaces here.",
+                )
+            } else {
+                Finding::ok("database.replication_role", "this role holds no grant on session_replication_role, and needs none")
+            });
+        }
+        // The role's own connection limit against what the replicas running now may open.
+        let running: i64 = sqlx::query_scalar("select count(*) from replica where seen_at > now() - interval '2 minutes'").fetch_one(&mut *tx).await?;
+        let each = if self.db.pooled() { self.db.config.direct_connections } else { pool_size + BESIDE_POOL };
+        let may = running.max(1) * i64::from(each);
+        out.push(if limit < 0 || may + i64::from(RESERVED_CONNECTIONS) <= i64::from(limit) {
+            Finding::ok(
+                "database.role_limit",
+                format!(
+                    "{} replicas running open at most {may} connections to PostgreSQL{}",
+                    running.max(1),
+                    if self.db.pooled() { " beside the pooler's own" } else { "" }
+                ),
+            )
+        } else {
+            Finding::warning(
+                "database.role_limit",
+                format!(
+                    "{} replicas running may open {may} connections to PostgreSQL, and the role may hold {limit}, 20 of them kept for repairs",
+                    running.max(1)
+                ),
+                "Raise the role's limit (ALTER ROLE ... CONNECTION LIMIT, below max_connections), or lower FERRUM_DB_MAX_CONNECTIONS or the replicas.",
             )
         });
         let exposed: Vec<String> = sqlx::query_scalar(

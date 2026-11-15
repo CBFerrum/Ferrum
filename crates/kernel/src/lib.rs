@@ -183,7 +183,8 @@ pub struct KernelSettings {
     /// public address when it is https.
     pub push_contact: Option<String>,
     /// Treat a new timeline as a restore, which it can be. Turn off only where failover is synchronous,
-    /// so that promoting a replica loses nothing and a person need not look (docs/operations.md).
+    /// so that promoting a replica loses nothing and a person need not look (docs/operations.md, "Any PostgreSQL").
+    /// Applies at once ([`Kernel::live`]): the identity is looked at again every minute.
     pub hold_on_timeline: bool,
     /// The operator's audit sink (`FERRUM_AUDIT_SINK_URL`, crate::audit_sink); none: nothing is sent.
     pub audit_sink: Option<audit_sink::Sink>,
@@ -329,6 +330,8 @@ pub struct Kernel {
     pub(crate) live: std::sync::RwLock<Arc<KernelSettings>>,
     /// When this process last wrote that a path used the old key (crate::vault::kept): (what, caller) → when.
     pub(crate) legacy_noted: DashMap<(String, String), Instant>,
+    /// What this process knows of the restore marker (recovery.rs).
+    pub(crate) marker: recovery::Marker,
 }
 
 impl Kernel {
@@ -422,6 +425,10 @@ impl Kernel {
                         if !booted.schema.skipped {
                             tracing::info!(statements = booted.schema.statements, sql = ?booted.schema.sql_files_applied, warnings = booted.schema.warnings.len(), "schema synced");
                         }
+                        // What lets a copy of a workspace run as this ordinary role (D7; ddl::copy_ready).
+                        for problem in ddl::copy_ready(&db).await? {
+                            tracing::warn!("a copy of a workspace could not be made ready here: {problem}");
+                        }
                         Ok(full)
                     }
                 }
@@ -490,6 +497,7 @@ impl Kernel {
             zones: Default::default(),
             live,
             legacy_noted: DashMap::new(),
+            marker: Default::default(),
         });
         kernel.notice_restore().await?;
         // From this build's packages: a guest's are older than the database's (window.rs).

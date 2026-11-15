@@ -224,6 +224,88 @@ settings holding a host; the credential is the one in `DATABASE_URL`. A full dum
 "same database" check uses a lock. A restore is noticed through a marker in the object store. Moves and sandboxes
 run with an ordinary role. A rehearsal behaves like a managed service on this machine.
 
+Decided while building it (15 November 2026):
+
+- **The chart.** `database.external`: `urlSecret` (the older `database.urlSecret` still read), `directHost`, `readHost`,
+  `caSecret` (a projected volume at `/run/ferrum`, so D3's `root.key` can join it there), `egress` (`cidrs`, `ports`).
+  With an outside database the chart runs no Cluster, backups, pooler, read service or bootstrap; the migrate and
+  settings Jobs get the direct host and the certificate authority, never the read host.
+- **Hosts.** `database_direct_host` and `database_read_host` are stored settings (`host`, `host:port`; 5432 without a
+  port), applied at start; the address is `DATABASE_URL` with its host replaced and any `host`, `hostaddr` or `port`
+  in its query dropped. The old full addresses still win. A row in `setting` would otherwise choose where the server
+  sends `DATABASE_URL`'s credential, which D2's rule for addresses given a secret keeps every other secret from (that
+  rule cannot say it here: `DATABASE_URL` is no setting, and it would refuse every stored host). So a host from the
+  table is used only on `DATABASE_URL`'s own host, any port, or when the address says `verify-full` with an
+  `sslrootcert` (the mounted authority, or the address's own; the program's built-in roots certify anyone's names).
+  Otherwise it is not used and never connected to: one error in the log at start, and a doctor warning
+  (`database.direct_host`, `database.read_host`). The check is at the point of use (`server/src/app.rs`), so the
+  registry's mechanics are unchanged; a host from the environment is used as before. An authority shared by a
+  provider's customers still vouches for all of them. The two settings stay in the environment in `minimal`, as the
+  migrate Job needs the direct host before the settings Job has run.
+- **The certificate authority.** Applied as the configuration loads (Loco's `load_config` hook), before anything
+  connects: `DATABASE_URL` as the configuration holds it gets `sslrootcert` and a mode that checks it (none or `prefer`
+  becomes `verify-full`, `require` becomes `verify-ca` as libpq does; an address's own `sslrootcert` is left alone;
+  `disable` or `allow` refuses to start), and the two full addresses get the same where they are used; the process's
+  environment is never rewritten. One connection is tried first, so that a certificate that does not verify refuses
+  the start in those words. A debug build looks for `db-ca.pem` in `FERRUM_TEST_RUN_DIR` when that is set, so that
+  `server/tests/database_ca_it.rs` runs the whole start with the authority right, wrong and absent (the managed
+  rehearsal); a release build looks only at `/run/ferrum`.
+- **The dump.** `deploy/dump.sh`: pg_dump as the server's role with `ferrum.system` and `ferrum.vault` set for its
+  session and `--enable-row-security`; the restore into an empty database in one transaction, without owners or
+  grants, leaving out schemas the database has and comments on extensions. The chart's `import` mode passes the same
+  setting as the `options` connection parameter and `--enable-row-security` as `pgDumpExtraOptions`. The vault's
+  schema (D3) travels whole, its guards with it; where the copy's role has another password its credential slot does
+  not open, and the operator runs `vault_rewrap` (old password or recovery key) or opens with a `file` or `kms` slot
+  and makes the credential slot again (docs/operations.md, "The vault").
+- **"Is this the same database?"** A transaction lock (a random key) taken on the live database and tried through the
+  copy's connection: only the same database refuses it, whatever the address or pooler. The identity stays as a second
+  opinion only for a standby in recovery, streaming, on the live timeline (the lock does not see it, and no genuine
+  copy is one): proven on a real streaming standby, refused while it follows and taken once promoted with the same
+  identity. Used by extraction, `move_workspace` and `copy_workspace from:`. A logical replica of the live database is
+  not seen by either: it is taken as a copy.
+- **The restore marker.** `platform_incarnation.restore_marker` (NULL: from before the marker; 0: born with it, so it
+  adopts whatever the store has) and `restore_marker_at`; in the store `restore-marker/<system identifier>-<database
+  oid>.json`, keyed by identity so that a snapshot, clone or branch reads its original's counter and two databases
+  sharing a store never meet. Every replica looks as it starts (after the store is set, before it serves) and every
+  minute; the store is read first, then the database under its row's lock; behind the store, or behind what the
+  process saw itself, is held as a restore is today (same columns, same setting aside). One replica moves it on at
+  most every 30 seconds, database first. A fenced or held database moves nothing. A replica whose first look cannot
+  reach the store sends nothing (`holding()`) until a look does; one that has compared carries on through an outage.
+  Guests (an older build on a newer database) do not look. Not noticed: database and store taken back together; a
+  restore to less than about a minute before the store's last write; a database given a store without its marker.
+- **Copies as the ordinary role.** Every foreign key in `public` is DEFERRABLE INITIALLY IMMEDIATE, and every trigger
+  there has `current_setting('ferrum.copy', true) IS DISTINCT FROM 'on'` in its WHEN (with its own WHEN, if any): a
+  migrating start makes them so after the sync, a table at a time, the kernel's, the sync's and packages' alike
+  (`ddl::copy_ready`; idempotent; what it cannot change is logged, never fatal), and the sync makes new ones so. A
+  copy's transaction sets `ferrum.copy` and defers every constraint; its deletions run as one statement (a
+  data-modifying CTE a table), so the ON DELETE RESTRICT links between entity tables, which form circles (a company and
+  its letter head), are checked when both rows are gone. A copy refuses, naming them, while any key or trigger is not
+  ready, and taking a workspace back refuses when a kept table refers to one going back with a rule that acts by itself
+  (cascade, set null or default, restrict), which turning triggers off used to hide. Nobody else sees a difference
+  (checked at once, triggers as before), and the build before still copies with `session_replication_role` and its
+  grant. Ceiling: each copied row queues one check per foreign key in the copying session's memory until the commit
+  (some bytes each): tens of millions of rows take hundreds of MB there; the way past it is copying in dependency
+  order with checks at once, deferring only inside circles.
+- **Failovers.** `hold_on_timeline` applies at once. Every replica compares the database's identity with the one recorded
+  each minute, beside the marker, not only at its start, so a failover or a database swapped in under running servers
+  is held (or, `false`, has its new timeline recorded) within a minute, as the setting says then. Skipped while the
+  database is fenced or a planned move's mark is there (the move's own steps decide). The doctor says the value and
+  where it comes from; the guide says what to choose for each kind of service.
+- **The doctor.** `database.role` (owner, or may create in the database and its public schema), `database.extensions`
+  (made by the role or an administrator), `database.copy` (keys and triggers ready for copies, named when not),
+  `database.replication_role` (a grant this build never needs: a warning while held), `database.role_limit` (the
+  role's own limit against what the replicas running now, from `replica`, may open to PostgreSQL), `restore.marker`
+  (this replica's last look, or that its outward work waits for the store) and `failover` (the setting's value and
+  where it comes from). The guide's *Any PostgreSQL* has a row per service; every line about a service is marked as
+  remembered, not run.
+- **The rehearsal.** `scripts/managed_pg.sh` (a private PostgreSQL 17 with PgBouncer 1.21 or later in transaction mode
+  beside it, an ordinary role owning only its databases, no grant, the extensions an administrator made in their own
+  schema, TLS with its own certificate authority) and `scripts/local_ci.sh managed`, run only when named. Suites reach
+  each database through the pooler, with each one's direct address by host (`FERRUM_TEST_DATABASE_DIRECT_HOST`, a
+  test's own variable). It found that a source given as a pooler's address (a move's, a sandbox's, an extraction's,
+  which start with session settings and a move holds a session lock on) failed in PgBouncer's words: such an address,
+  and a `DATABASE_URL` that is a pooler without a direct address, is now refused saying to give PostgreSQL's own.
+
 ## D8. Git
 
 The forge keeps its database in PostgreSQL, its eight kinds of objects in the object store, its sessions and issue

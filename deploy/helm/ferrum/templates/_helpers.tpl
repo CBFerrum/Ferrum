@@ -54,8 +54,19 @@ generates is letters and digits only, so it needs no escaping in the address. */
       name: {{ include "ferrum.fullname" . }}-db-app
       key: uri
 {{- else }}
-      name: {{ required "database.urlSecret.name is required when database.enabled is false" .Values.database.urlSecret.name }}
-      key: {{ .Values.database.urlSecret.key }}
+{{- $s := include "ferrum.externalUrl" . | fromJson }}
+      name: {{ $s.name }}
+      key: {{ $s.key }}
+{{- end }}
+{{- end }}
+{{- if not .Values.database.enabled }}
+{{- with .Values.database.external.directHost }}
+- {name: FERRUM_DATABASE_DIRECT_HOST, value: {{ . | quote }}}
+{{- end }}
+{{- if not .direct }}
+{{- with .Values.database.external.readHost }}
+- {name: FERRUM_DATABASE_READ_HOST, value: {{ . | quote }}}
+{{- end }}
 {{- end }}
 {{- end }}
 {{ include "ferrum.secretEnv" (list . "JWT_SECRET" false) }}
@@ -150,10 +161,40 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{- end }}
 {{- end -}}
 
+{{/* The Secret holding an outside database's address (database.external.urlSecret, or the older database.urlSecret),
+as JSON {name, key}. */}}
+{{- define "ferrum.externalUrl" -}}
+{{- $e := .Values.database.external.urlSecret | default dict -}}
+{{- $old := .Values.database.urlSecret | default dict -}}
+{{- $name := required "database.enabled is false: set database.external.urlSecret.name, the Secret holding the database's address" ($e.name | default $old.name) -}}
+{{- toJson (dict "name" $name "key" (ternary ($e.key | default "uri") ($old.key | default "uri") (not (empty $e.name)))) -}}
+{{- end -}}
+
+{{/* /run/ferrum, the files at fixed paths a pod reads when they are there (docs/plan/stateless.md, D1): the outside
+database's certificate authority as db-ca.pem. Nothing without one. `ferrum.runVolume` goes in a pod's volumes,
+`ferrum.runMount` in its container's volumeMounts. */}}
+{{- define "ferrum.runVolume" -}}
+{{- $ca := .Values.database.external.caSecret | default dict -}}
+{{- if and (not .Values.database.enabled) $ca.name }}
+- name: run
+  projected:
+    sources:
+      - secret: {name: {{ $ca.name }}, items: [{key: {{ $ca.key | default "ca.crt" }}, path: db-ca.pem}]}
+{{- end }}
+{{- end -}}
+
+{{- define "ferrum.runMount" -}}
+{{- $ca := .Values.database.external.caSecret | default dict -}}
+{{- if and (not .Values.database.enabled) $ca.name }}
+- {name: run, mountPath: /run/ferrum, readOnly: true}
+{{- end }}
+{{- end -}}
+
 {{/* The variables `environment: minimal` keeps besides the database's address and the secrets: what the address is
-made of, and what apps compiled into the server read from the environment themselves (server/src/settings.yaml). */}}
+made of (the migrate Job needs the direct host before the settings Job has written anything), and what apps compiled
+into the server read from the environment themselves (server/src/settings.yaml). */}}
 {{- define "ferrum.envKept" -}}
-{{- toJson (list "FERRUM_DB_USER" "FERRUM_DB_PASSWORD" "FERRUM_DB_NAME" "FERRUM_DATABASE_DIRECT_URL" "FERRUM_DATABASE_READ_URL" "FERRUM_OFFICE_URL" "FERRUM_OFFICE_WOPI_URL" "FERRUM_EDITORS_URL" "FERRUM_METRICS_ENGINE_URL") -}}
+{{- toJson (list "FERRUM_DB_USER" "FERRUM_DB_PASSWORD" "FERRUM_DB_NAME" "FERRUM_DATABASE_DIRECT_URL" "FERRUM_DATABASE_READ_URL" "FERRUM_DATABASE_DIRECT_HOST" "FERRUM_DATABASE_READ_HOST" "FERRUM_OFFICE_URL" "FERRUM_OFFICE_WOPI_URL" "FERRUM_EDITORS_URL" "FERRUM_METRICS_ENGINE_URL") -}}
 {{- end -}}
 
 {{/* A pool's environment with `environment: minimal` (values.yaml): the database's address naming the pool
@@ -225,7 +266,10 @@ reads another server or a backup, its `externalClusters`. CloudNativePG reads th
 Cluster. Fields checked against CloudNativePG 1.30 (docs/src/bootstrap.md, database_import.md,
 recovery.md) and the Barman Cloud plugin 0.16 (web/docs/usage.md).
   empty     initdb: a new, empty database (today's).
-  import    initdb.import, type microservice: pg_dump of one database from a running server, restored here.
+  import    initdb.import, type microservice: pg_dump of one database from a running server, restored here, read
+            through row-level security as the system's own session, so the source's own role will do.
+            pgDumpExtraOptions is in CloudNativePG's main branch (the release that added it is not checked), and the
+            `options` connection parameter is passed to libpq as given (from memory, not checked against the operator).
             The server sees a database it never knew and holds outbound work ("After restoring a backup").
   copy      pg_basebackup: a physical copy of a running server, same PostgreSQL major version. It keeps the
             database's identity, but the copy starts on a new timeline, which the server also holds for
@@ -245,7 +289,7 @@ bootstrap:
     owner: ferrum
 {{- else if or (eq $mode "import") (eq $mode "copy") -}}
 {{- $host := required (printf "database.bootstrap.mode %s copies from another server: set database.bootstrap.source.host" $mode) $src.host -}}
-{{- $user := required (printf "database.bootstrap.mode %s: set database.bootstrap.source.user (%s)" $mode (ternary "a superuser: row-level security hides every workspace's rows from any other role" "a role with REPLICATION and LOGIN" (eq $mode "import"))) $src.user -}}
+{{- $user := required (printf "database.bootstrap.mode %s: set database.bootstrap.source.user (%s)" $mode (ternary "the role the server runs as there, which owns the database, or a superuser" "a role with REPLICATION and LOGIN" (eq $mode "import"))) $src.user -}}
 {{- $pw := $src.passwordSecret | default dict -}}
 {{- $pwName := required (printf "database.bootstrap.mode %s: set database.bootstrap.source.passwordSecret.name, a Secret holding that role's password" $mode) $pw.name -}}
 bootstrap:
@@ -257,6 +301,10 @@ bootstrap:
       type: microservice
       databases: [{{ $src.database | default "ferrum" }}]
       source: {externalCluster: origin}
+      # Through row-level security as the system's own session and the vault's (`options` below), so the source's
+      # ordinary role reads every workspace's rows and the vault's (docs/operations.md, "Backups and restore");
+      # harmless for a superuser.
+      pgDumpExtraOptions: ["--enable-row-security"]
   {{- else }}
   pg_basebackup:
     source: origin
@@ -271,6 +319,9 @@ externalClusters:
       user: {{ $user | quote }}
       dbname: {{ $src.database | default "ferrum" | quote }}
       sslmode: {{ $src.sslmode | default "prefer" | quote }}
+      {{- if eq $mode "import" }}
+      options: "-c ferrum.system=on -c ferrum.vault=on"
+      {{- end }}
     password: {name: {{ $pwName }}, key: {{ $pw.key | default "password" }}}
 {{- else if eq $mode "recovery" -}}
 {{- $r := $b.recovery | default dict -}}

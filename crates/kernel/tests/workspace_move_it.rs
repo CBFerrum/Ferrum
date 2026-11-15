@@ -131,6 +131,15 @@ fn superuser(address: &str) -> String {
     format!("{base}/{}", address.rsplit('/').next().unwrap())
 }
 
+/// A database's own address, as a move's, a sandbox's or an extraction's source must be: where the suites run through a
+/// pooler (scripts/local_ci.sh managed), the direct host stands in.
+fn direct(url: &str) -> String {
+    match std::env::var("FERRUM_TEST_DATABASE_DIRECT_HOST") {
+        Ok(host) => ferrum_kernel::db::with_host(url, &host).expect("a direct address"),
+        Err(_) => url.to_string(),
+    }
+}
+
 async fn as_superuser(address: &str, sql: &str) {
     let db = Db::connect(DbConfig { url: superuser(address), max_connections: 1, ..Default::default() }).await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(sql.to_string())).execute(&db.pool).await.unwrap();
@@ -227,8 +236,9 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let seen = Arc::new(Seen::default());
     let a = installation(&a_url, &key_a, &seen, &dir_a).await;
     let b = installation(&b_url, &key_b, &seen, &dir_b).await;
+    // Without the grant on session_replication_role (D7): moves and copies run as the server's own role.
     for u in [&a_url, &b_url] {
-        as_superuser(u, "grant set on parameter session_replication_role to ferrum").await;
+        as_superuser(u, "do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
     }
 
     // B holds a workspace of its own, with events whose numbers the moving one's would take.
@@ -332,7 +342,7 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let bravo_before = rows_of(&b, bravo.tenant).await;
 
     let from = |stop: Option<Stop>| MoveSource {
-        url: a_url.clone(),
+        url: direct(&a_url),
         keys: vec![key_a.clone()],
         files: Some(Arc::new(DirFiles(dir_a.clone())) as Arc<dyn ferrum_kernel::files::FileStore>),
         regions: Some(("eu".into(), "us".into())),
@@ -407,7 +417,8 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     assert_eq!(a.move_status("acme").await.unwrap()["state"], json!("leaving"));
     assert_eq!(b.move_status("acme").await.unwrap()["state"], Value::Null);
     refused(b.move_workspace("acme", &from(None), Run::Start, &quiet).await, "under way");
-    let held = Db::connect(DbConfig { url: a_url.clone(), max_connections: 1, ..Default::default() }).await.unwrap();
+    // A session lock, so on PostgreSQL's own address: through a pooler in transaction mode it would outlive its client.
+    let held = Db::connect(DbConfig { url: direct(&a_url), max_connections: 1, ..Default::default() }).await.unwrap();
     let mut lock = held.pool.acquire().await.unwrap();
     sqlx::query("select pg_advisory_lock($1, hashtext($2))").bind(0x0FE2_2079_i32).bind(t.to_string()).execute(&mut *lock).await.unwrap();
     refused(b.move_workspace("acme", &from(None), Run::Resume, &quiet).await, "another move_workspace run");
@@ -503,7 +514,7 @@ async fn a_workspace_moves_to_another_installation_and_back() {
 
     // And back to A, once A lets go of what it kept.
     let back = MoveSource {
-        url: b_url.clone(),
+        url: direct(&b_url),
         keys: vec![key_b.clone()],
         files: Some(Arc::new(DirFiles(dir_b.clone()))),
         regions: Some(("us".into(), "eu".into())),
@@ -623,7 +634,7 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     b.create_user(&bravo, "after@bravo.test", "After", Some(PASSWORD), &[], false).await.expect("bravo works on at B");
 
     for u in [&a_url, &b_url] {
-        as_superuser(u, "revoke set on parameter session_replication_role from ferrum").await;
+        as_superuser(u, "do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
     }
     let _ = std::fs::remove_dir_all(dirs);
 }

@@ -166,6 +166,65 @@ fn apps_in(baseline: &str, heading: &str) -> Vec<String> {
     apps
 }
 
+/// A direct or read host from the settings table that this replica does not use, because it could draw the database's
+/// password elsewhere (docs/operations.md, "Any PostgreSQL").
+pub fn stored_host_findings(st: &AppState, database_url: &str) -> Vec<Finding> {
+    let now = st.live_settings.start.clone();
+    ["database_direct_host", "database_read_host"]
+        .into_iter()
+        .filter_map(|key| {
+            crate::settings::stored_host_refused(&now.snapshot, key, database_url).err().map(|why| {
+                Finding::warning(
+                    if key == "database_direct_host" { "database.direct_host" } else { "database.read_host" },
+                    format!("the setting {key} from the database is not used: {why}"),
+                    "Give the host in the environment (FERRUM_DATABASE_DIRECT_HOST, FERRUM_DATABASE_READ_HOST), mount the database's certificate authority, or remove the setting.",
+                )
+            })
+        })
+        .collect()
+}
+
+/// The restore marker as this replica last saw it, and what a new timeline does here (docs/operations.md, "After
+/// restoring a backup" and "Any PostgreSQL").
+pub fn marker_findings(st: &AppState) -> Vec<Finding> {
+    let (waiting, last) = st.kernel.restore_marker_state();
+    let marker = match (waiting, last) {
+        (true, _) => Finding::blocker(
+            "restore.marker",
+            "this replica has not compared the database with the restore marker in object storage, which does not answer: nothing reaches outside from it until it can",
+            "Check object storage (its address, keys and network): the next look, within a minute, carries on by itself.",
+        ),
+        (false, Some((at, counter))) => {
+            Finding::ok("restore.marker", format!("compared with object storage {} s ago, at {counter}", (chrono::Utc::now() - at).num_seconds().max(0)))
+        }
+        (false, None) => Finding::off("restore.marker", "not compared with object storage by this replica"),
+    };
+    let now = st.live_settings.now();
+    let (source, value) = now.snapshot.get("hold_on_timeline");
+    let held = value.is_none_or(|v| v != "false");
+    let from = match source {
+        crate::settings::Source::Environment => "the environment",
+        crate::settings::Source::Database => "the database",
+        _ => "the default",
+    };
+    let timeline = if held {
+        Finding::ok(
+            "failover",
+            format!(
+                "a new timeline of the database is held as a restore (hold_on_timeline true, from {from}): right wherever a failover can lose what was committed"
+            ),
+        )
+    } else {
+        Finding::ok(
+            "failover",
+            format!(
+                "a new timeline of the database is not held (hold_on_timeline false, from {from}): right only where failover is synchronous and loses nothing"
+            ),
+        )
+    };
+    vec![marker, timeline]
+}
+
 /// Everything, worst first.
 pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, ferrum_kernel::Error> {
     let production = ctx.environment == Environment::Production;
@@ -185,6 +244,8 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     } else {
         Finding::ok("restore", "no restore is waiting for anyone")
     });
+    out.extend(marker_findings(st));
+    out.extend(stored_host_findings(st, &ctx.config.database.uri));
     if st.kernel.db.fenced() {
         out.push(Finding::blocker("authority", "this region does not hold the right to write", "See docs/operations.md, Regions."));
     }
