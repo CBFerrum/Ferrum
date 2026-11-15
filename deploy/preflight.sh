@@ -16,7 +16,8 @@ placeholder() { case "$1" in "" | *[Cc][Hh][Aa][Nn][Gg][Ee]* | *example* | *repl
 
 if [ "${1:-}" = "--generate" ]; then
   [ -f .env ] || cp .env.example .env
-  for pair in JWT_SECRET:48 FERRUM_SECRET_KEY:32 POSTGRES_PASSWORD:24 FERRUM_DB_PASSWORD:24 FERRUM_METRICS_TOKEN:32; do
+  # No FERRUM_SECRET_KEY: a new installation needs none (the vault keeps and keys everything).
+  for pair in JWT_SECRET:48 POSTGRES_PASSWORD:24 FERRUM_DB_PASSWORD:24 FERRUM_METRICS_TOKEN:32; do
     name=${pair%:*} bytes=${pair#*:}
     if placeholder "$(value "$name")"; then
       generated=$(openssl rand -base64 "$bytes" | tr -d '\n')
@@ -47,13 +48,14 @@ else
     ------) ok "deploy/.env is readable only by its owner" ;;
     *) warning "deploy/.env can be read by others" "chmod 600 deploy/.env" ;;
   esac
-  for name in JWT_SECRET FERRUM_SECRET_KEY POSTGRES_PASSWORD FERRUM_DB_PASSWORD; do
+  for name in JWT_SECRET POSTGRES_PASSWORD FERRUM_DB_PASSWORD; do
     if placeholder "$(value "$name")"; then
       blocker "$name is missing, or a placeholder" "Run deploy/preflight.sh --generate."
     else
       ok "$name is set"
     fi
   done
+  # The old master key, where an installation still has one (docs/operations.md, "Retiring the old key").
   secret=$(value FERRUM_SECRET_KEY)
   if [ -n "$secret" ] && [ "$(printf %s "$secret" | openssl base64 -d -A 2>/dev/null | wc -c | tr -d ' ')" != 32 ]; then
     blocker "FERRUM_SECRET_KEY is not 32 bytes of base64" "openssl rand -base64 32"

@@ -1,6 +1,7 @@
 # Production: every setting here comes from the environment when it sets the variable, else from the database's
 # `setting` table (docs/operations.md, "Settings in the database"), else the default below. Only DATABASE_URL is needed
-# to start reading them; the secrets (JWT_SECRET, FERRUM_SECRET_KEY, ...) still come from the environment.
+# to start reading them; the secrets (JWT_SECRET, ...) still come from the environment, and so does FERRUM_SECRET_KEY,
+# the old master key, which a new installation leaves out (docs/operations.md, "Retiring the old key").
 logger:
   enable: true
   pretty_backtrace: false
