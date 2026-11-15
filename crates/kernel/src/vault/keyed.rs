@@ -439,7 +439,7 @@ impl Kernel {
                 out[PLUGIN_VAULT] = Value::String(sealed);
             }
             Err(e) if self.env_key().is_none() => {
-                return Err(Error::Unavailable(format!("a plugin's settings are kept sealed, with the vault, and {e}")));
+                return Err(Error::Unavailable(format!("a plugin's setting needs the vault (it is never stored plain), and {e}")));
             }
             Err(_) => {}
         }
@@ -524,8 +524,8 @@ impl Kernel {
 impl Vault {
     /// The platform's handle only (what the server alone holds), the vault open or not: what works as before with the
     /// vault closed asks this, and the verbs it reaches check the vault where they need it.
-    fn platform_handle(&self) -> Result<()> {
-        if self.owner() != "platform" || self.mint != 0 {
+    fn platform_handle(&self, k: &Kernel) -> Result<()> {
+        if self.given(k)? != "platform" {
             return Err(Error::Forbidden("only the platform's handle does this".into()));
         }
         Ok(())
@@ -534,28 +534,28 @@ impl Vault {
     /// Plugin `plugin`'s setting `key` holding `value`, as the plugin host stores it (in `config`): sealed under the
     /// plugin's own key, and with the old key beside while it is configured. Only the platform's handle (the host's).
     pub async fn keep_plugin_setting(&self, k: &Kernel, tenant: Uuid, plugin: &str, key: &str, value: &Value) -> Result<Value> {
-        self.platform_handle()?;
+        self.platform_handle(k)?;
         k.keep_setting(tenant, plugin, key, value).await
     }
 
     /// Plugin `plugin`'s setting `key` as the host gives it to the plugin, from what `config` stores; `None` when it
     /// does not open here. Only the platform's handle (the host's).
     pub async fn plugin_setting(&self, k: &Kernel, tenant: Uuid, plugin: &str, key: &str, stored: &Value) -> Result<Option<Value>> {
-        self.platform_handle()?;
+        self.platform_handle(k)?;
         k.setting(tenant, plugin, key, stored).await
     }
 
     /// A durable process's payload sealed for `aad` (crates/process), and the version of the platform's key of the
     /// installation that sealed it (none: the old key, while it seals them). Only the platform's handle.
     pub async fn seal_process(&self, k: &Kernel, aad: &str, plain: &str) -> Result<(Option<i32>, String)> {
-        self.platform_handle()?;
+        self.platform_handle(k)?;
         let (version, key) = k.making_key(Scope::Installation, Keyed::Process).await?;
         Ok((version, key.seal(aad, plain)?))
     }
 
     /// What [`Vault::seal_process`] sealed with `version`, or (none) what the old key sealed. Only the platform's handle.
     pub async fn open_process(&self, k: &Kernel, aad: &str, version: Option<i32>, sealed: &str) -> Result<String> {
-        self.platform_handle()?;
+        self.platform_handle(k)?;
         let refused = || Error::Unavailable("no key here opens this payload: the old key it was sealed with is neither configured nor adopted".into());
         match version {
             Some(v) => {
