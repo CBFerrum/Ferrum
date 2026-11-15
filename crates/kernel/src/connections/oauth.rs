@@ -214,6 +214,11 @@ fn digest(s: &str) -> String {
     hex::encode(Sha256::digest(s.as_bytes()))
 }
 
+/// Where `user`'s tokens of a connection are kept (the workspace's: the nil id): the platform's, in the workspace.
+pub(crate) fn token_place(tenant: Uuid, conn: Uuid, user: Uuid) -> crate::vault::kept::Place {
+    crate::vault::kept::Place::platform(crate::vault::kept::Store::ConnToken, tenant, format!("{conn}/{user}"), token_label(tenant, conn, user))
+}
+
 pub(crate) fn token_label(tenant: Uuid, conn: Uuid, user: Uuid) -> String {
     format!("conn_token:{tenant}:{conn}:{user}")
 }
@@ -344,7 +349,7 @@ impl Kernel {
             }
         };
         let redirect = self.connection_callback()?;
-        let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("signing in to an account needs the server's secret key".into()))?;
+        let key = self.keyed("account_sign_in").ok_or_else(|| Error::Unavailable("signing in to an account needs the server's secret key".into()))?;
         // A provider that registers its clients: registered once, the first time anyone connects.
         let conn = if provider.client_id.trim().is_empty() { self.register_client(&conn, &redirect).await? } else { conn };
         let (provider, _) = oauth(&conn)?;
@@ -387,7 +392,7 @@ impl Kernel {
     /// The workspace and the host a sign-in started on, when its `state` names them under this
     /// server's key ([`Kernel::connect_start_on`]); nothing for any other state.
     pub fn connection_state_host(&self, state: &str) -> Option<(Uuid, String)> {
-        state_names(self.settings.secret_key.as_ref()?, state)
+        state_names(self.keyed("account_sign_in")?, state)
     }
 
     /// The provider sent the browser back: the sign-in `state` started must be this person's, in this browser session,
@@ -413,6 +418,7 @@ impl Kernel {
             return Err(Error::invalid(format!("the provider did not connect the account: {said}")));
         }
         let code = code.filter(|c| !c.is_empty() && c.len() <= 2048).ok_or_else(|| Error::invalid("the provider sent no code"))?;
+        self.note_old_key("keyed:account_sign_in");
         let verifier = self.open_sealed(&signin_label(ctx.tenant, &state_digest), &sealed)?;
         let conn = self.load_connection(ctx.tenant, &conn_id.to_string()).await?;
         let (provider, _) = oauth(&conn)?;
@@ -653,7 +659,9 @@ impl Kernel {
             _ => None,
         };
         let account = super::at(&seen, account_at).map(|a| a.chars().take(200).collect::<String>());
-        let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("tokens are sealed with the server's secret key".into()))?;
+        if !self.kept_here() {
+            return Err(Error::Unavailable("tokens are kept in the vault or sealed with the server's secret key, and this server has neither".into()));
+        }
         // What the sign-in keeps (`auth.<name>`): this answer's, else what was kept before.
         let names: &[String] = match &conn.desc.auth {
             Auth::Oauth { provider, .. } => &provider.keep,
@@ -666,8 +674,9 @@ impl Kernel {
                 kept[n.as_str()] = v.clone();
             }
         }
-        let sealed =
-            key.seal(&token_label(conn.tenant, conn.id, owner), &json!({"access_token": access, "refresh_token": refresh, "kept": kept}).to_string())?;
+        let sealed = self
+            .keep(tx, &token_place(conn.tenant, conn.id, owner), &json!({"access_token": access, "refresh_token": refresh, "kept": kept}).to_string())
+            .await?;
         sqlx::query(
             "insert into conn_token (tenant_id, conn_id, user_id, sealed, expires_at, account, status, told, connected_by) values ($1, $2, $3, $4, $5, $6, 'connected', false, $7) \
              on conflict (tenant_id, conn_id, user_id) do update set sealed = excluded.sealed, expires_at = excluded.expires_at, \
@@ -713,9 +722,9 @@ impl Kernel {
                 .bind(owner)
                 .fetch_optional(&mut *tx)
                 .await?;
-        tx.commit().await?;
         let Some((account, sealed)) = row else { return Ok((Value::Null, json!({}))) };
-        let open: Value = serde_json::from_str(&self.open_sealed(&token_label(conn.tenant, conn.id, owner), &sealed)?).map_err(Error::internal)?;
+        let open: Value = serde_json::from_str(&self.kept(&mut tx, &token_place(conn.tenant, conn.id, owner), &sealed).await?).map_err(Error::internal)?;
+        tx.commit().await?;
         Ok((json!(account), open.get("kept").cloned().unwrap_or_else(|| json!({}))))
     }
 
@@ -743,7 +752,7 @@ impl Kernel {
         if force || expires.is_some_and(|e| e < Utc::now() + chrono::Duration::seconds(CALL_AHEAD_SECS)) {
             return self.refresh_tokens(conn, owner, force.then_some(sealed.as_str())).await;
         }
-        let open: Value = serde_json::from_str(&self.open_sealed(&token_label(conn.tenant, conn.id, owner), &sealed)?).map_err(Error::internal)?;
+        let open: Value = serde_json::from_str(&self.kept_alone(&token_place(conn.tenant, conn.id, owner), &sealed).await?).map_err(Error::internal)?;
         Ok(open["access_token"].as_str().unwrap_or_default().to_string())
     }
 
@@ -763,7 +772,7 @@ impl Kernel {
         if status != "connected" {
             return Err(Error::invalid(format!("{} needs reconnecting", conn.name)));
         }
-        let open: Value = serde_json::from_str(&self.open_sealed(&token_label(conn.tenant, conn.id, owner), &sealed)?).map_err(Error::internal)?;
+        let open: Value = serde_json::from_str(&self.kept(&mut tx, &token_place(conn.tenant, conn.id, owner), &sealed).await?).map_err(Error::internal)?;
         let fresh = expires.is_none_or(|e| e > Utc::now() + chrono::Duration::seconds(CALL_AHEAD_SECS));
         if fresh && stale.is_none_or(|s| s != sealed) {
             return Ok(open["access_token"].as_str().unwrap_or_default().to_string());
@@ -858,16 +867,20 @@ impl Kernel {
             .fetch_optional(&mut *tx)
             .await?;
         let Some(sealed) = sealed else { return Err(Error::NotFound("a connected account".into())) };
+        // Opened before they go from the vault with the row, to be revoked at the provider.
+        let place = token_place(ctx.tenant, id, owner);
+        let tokens = self.kept(&mut tx, &place, &sealed).await?;
+        crate::vault::kept::forget(&mut tx, &place).await?;
         audit::record_admin(&mut tx, ctx, "Connection", id, "disconnect", None, json!({"owner": if owner.is_nil() { "workspace" } else { "person" }})).await?;
         tx.commit().await?;
-        self.revoke_tokens(&conn, provider, owner, &sealed).await
+        self.revoke_tokens(&conn, provider, &tokens).await
     }
 
-    /// Revokes the tokens `sealed` (of `owner`'s sign-in) at the provider, where it gives a revoke address: the refresh
-    /// token, else the access token. Whether it confirmed.
-    async fn revoke_tokens(&self, conn: &Loaded, provider: &Provider, owner: Uuid, sealed: &str) -> Result<bool> {
+    /// Revokes `tokens` (a sign-in's, opened) at the provider, where it gives a revoke address: the refresh token, else
+    /// the access token. Whether it confirmed.
+    async fn revoke_tokens(&self, conn: &Loaded, provider: &Provider, tokens: &str) -> Result<bool> {
         let Some(url) = &provider.revoke_url else { return Ok(false) };
-        let open: Value = serde_json::from_str(&self.open_sealed(&token_label(conn.tenant, conn.id, owner), sealed)?).map_err(Error::internal)?;
+        let open: Value = serde_json::from_str(tokens).map_err(Error::internal)?;
         let (token, hint) = match open["refresh_token"].as_str() {
             Some(r) => (r.to_string(), "refresh_token"),
             None => (open["access_token"].as_str().unwrap_or_default().to_string(), "access_token"),
@@ -875,19 +888,20 @@ impl Kernel {
         Ok(matches!(self.token_request(conn, provider, url, &[("token", &token), ("token_type_hint", hint)]).await?, Granted::Tokens(_)))
     }
 
-    /// After an erasure took a person's own sign-ins (their tokens destroyed here, `taken`: connection and sealed
-    /// tokens): each revoked at its provider where it gives a revoke address, best effort, and what came of it in the
+    /// After an erasure took a person's own sign-ins (their tokens destroyed here, `taken`: connection and its tokens,
+    /// opened before they went): each revoked at its provider where it gives a revoke address, best effort, and what came of it in the
     /// connection's history. What came of each: `{connection, revoked}` (`revoked` null without a revoke address).
-    pub(crate) async fn revoke_erased(&self, ctx: &Ctx, person: Uuid, taken: Vec<(Uuid, String)>) -> Vec<Value> {
+    pub(crate) async fn revoke_erased(&self, ctx: &Ctx, taken: Vec<(Uuid, Option<zeroize::Zeroizing<String>>)>) -> Vec<Value> {
         let mut out = Vec::new();
-        for (id, sealed) in taken {
+        for (id, tokens) in taken {
             let tried = async {
+                let tokens = tokens.ok_or_else(|| Error::Unavailable("its tokens could not be opened, so they were not revoked".into()))?;
                 let conn = self.load_connection(ctx.tenant, &id.to_string()).await?;
                 let (provider, _) = oauth(&conn)?;
                 if provider.revoke_url.is_none() {
                     return Ok(None);
                 }
-                self.revoke_tokens(&conn, provider, person, &sealed).await.map(Some)
+                self.revoke_tokens(&conn, provider, &tokens).await.map(Some)
             }
             .await;
             let said = match &tried {
@@ -984,11 +998,12 @@ impl Kernel {
             .fetch_optional(&mut *tx)
             .await?;
         if let Some((sealed, status)) = here {
-            tx.commit().await?;
             if status != "connected" {
                 return Err(Error::invalid(format!("{} needs reconnecting: the service no longer accepts its sign-in", conn.name)));
             }
-            let open: Value = serde_json::from_str(&self.open_sealed(&token_label(conn.tenant, conn.id, Uuid::nil()), &sealed)?).map_err(Error::internal)?;
+            let open: Value =
+                serde_json::from_str(&self.kept(&mut tx, &token_place(conn.tenant, conn.id, Uuid::nil()), &sealed).await?).map_err(Error::internal)?;
+            tx.commit().await?;
             return Ok(open["access_token"].as_str().unwrap_or_default().to_string());
         }
         let by = (!ctx.user.is_nil()).then_some(ctx.user);
@@ -1000,14 +1015,14 @@ impl Kernel {
             }
             Granted::Later(why) => Err(Error::Unavailable(format!("{} did not sign in: {why}", conn.name))),
             Granted::Refused(why) => {
-                let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("tokens are sealed with the server's secret key".into()))?;
+                let stored = self.keep(&mut tx, &token_place(conn.tenant, conn.id, Uuid::nil()), "{}").await?;
                 sqlx::query(
                     "insert into conn_token (tenant_id, conn_id, user_id, sealed, status, told, connected_by) values ($1, $2, $3, $4, 'connected', false, $5)",
                 )
                 .bind(conn.tenant)
                 .bind(conn.id)
                 .bind(Uuid::nil())
-                .bind(key.seal(&token_label(conn.tenant, conn.id, Uuid::nil()), "{}")?)
+                .bind(stored)
                 .bind(by)
                 .execute(&mut *tx)
                 .await?;
@@ -1028,6 +1043,7 @@ impl Kernel {
             .bind(Uuid::nil())
             .execute(&mut *tx)
             .await?;
+        crate::vault::kept::forget(&mut tx, &token_place(ctx.tenant, id, Uuid::nil())).await?;
         tx.commit().await?;
         Ok(())
     }

@@ -160,7 +160,10 @@ pub struct KernelSettings {
     pub ctx_ttl: Duration,
     /// Processed outbox events and delivered webhooks are kept this long.
     pub event_retention_days: i32,
-    /// Seals secret fields; without it they cannot be set or read.
+    /// The old master key (`FERRUM_SECRET_KEY`). Deprecated for apps: what it sealed is each owner's in the vault
+    /// (docs/plan/stateless.md, D5), and an app reads its own with its vault handle. It still seals beside the vault
+    /// while it is configured, for the previous build, and keys what has not moved yet (`ferrum task legacy_key`); it
+    /// stops being public in the next release. Apps that still read it are listed by scripts/secret_paths.py.
     pub secret_key: Option<secret::SecretKey>,
     /// The ClamAV daemon uploads pass through (`host:port`); without one they are stored unscanned.
     pub clamd: Option<String>,
@@ -325,6 +328,8 @@ pub struct Kernel {
     pub(crate) zones: std::sync::RwLock<Arc<zones::Zones>>,
     /// The settings as they are now ([`Kernel::live`]): `settings` with those that apply at once changed since the start.
     pub(crate) live: std::sync::RwLock<Arc<KernelSettings>>,
+    /// When this process last wrote that a path used the old key (crate::vault::kept): (what, caller) → when.
+    pub(crate) legacy_noted: DashMap<(String, String), Instant>,
     /// What this process knows of the restore marker (recovery.rs).
     pub(crate) marker: recovery::Marker,
 }
@@ -491,6 +496,7 @@ impl Kernel {
             clock: Default::default(),
             zones: Default::default(),
             live,
+            legacy_noted: DashMap::new(),
             marker: Default::default(),
         });
         kernel.notice_restore().await?;

@@ -233,6 +233,11 @@ fn admin_only(ctx: &Ctx) -> Result<()> {
     if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("connections are for administrators".into())) }
 }
 
+/// Where a connector's credentials are kept: the platform's, in the workspace.
+pub(crate) fn connector_place(tenant: Uuid, id: Uuid) -> crate::vault::kept::Place {
+    crate::vault::kept::Place::platform(crate::vault::kept::Store::Connector, tenant, id, sealed_label(tenant, id))
+}
+
 pub(crate) fn sealed_label(tenant: Uuid, connection: Uuid) -> String {
     format!("connection:{tenant}:{connection}")
 }
@@ -342,7 +347,7 @@ impl Kernel {
     pub async fn connection_schema(&self, ctx: &Ctx, id: Uuid) -> Result<Vec<StreamSchema>> {
         admin_only(ctx)?;
         let row = self.row(ctx.tenant, id).await?;
-        let connection = self.opened(ctx.tenant, &row)?;
+        let connection = self.opened(ctx.tenant, &row).await?;
         let connector = self.connector(ctx.tenant, &row.provider).await?;
         self.calling(ctx.tenant, id, connector.discover(self, &connection)).await
     }
@@ -425,11 +430,6 @@ impl Kernel {
         Ok(())
     }
 
-    fn seal(&self, tenant: Uuid, id: Uuid, credentials: &Value) -> Result<String> {
-        let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("connections need a configured secret key (FERRUM_SECRET_KEY)".into()))?;
-        key.seal(&sealed_label(tenant, id), &credentials.to_string())
-    }
-
     async fn row(&self, tenant: Uuid, id: Uuid) -> Result<Row> {
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         let row: Option<Row> = sqlx::query_as("select id, provider, config, mapping, sealed, enabled from connection where tenant_id = $1 and id = $2")
@@ -441,9 +441,9 @@ impl Kernel {
         row.ok_or_else(|| Error::NotFound("connection".into()))
     }
 
-    fn opened(&self, tenant: Uuid, row: &Row) -> Result<Connection> {
+    async fn opened(&self, tenant: Uuid, row: &Row) -> Result<Connection> {
         let credentials = match &row.sealed {
-            Some(sealed) => serde_json::from_str(&self.open_sealed(&sealed_label(tenant, row.id), sealed)?).map_err(Error::internal)?,
+            Some(sealed) => serde_json::from_str(&self.kept_alone(&connector_place(tenant, row.id), sealed).await?).map_err(Error::internal)?,
             None => Value::Null,
         };
         Ok(Connection { id: row.id, tenant, provider: row.provider.clone(), config: row.config.clone(), credentials })
@@ -473,9 +473,11 @@ impl Kernel {
             }
         }
         let connection = id.unwrap_or_else(Uuid::now_v7);
-        let sealed = input.credentials.as_ref().map(|c| self.seal(ctx.tenant, connection, c)).transpose()?;
+        if input.credentials.is_some() && !self.kept_here() {
+            return Err(Error::Unavailable("connections need the vault or a configured secret key (FERRUM_SECRET_KEY)".into()));
+        }
         // The account they open, known by a fingerprint: connections on one account wait together (FEO-067).
-        let account_key = match (&input.credentials, self.settings.secret_key.as_ref()) {
+        let account_key = match (&input.credentials, if input.credentials.is_some() { self.keyed("connector_account") } else { None }) {
             (Some(c), Some(key)) => {
                 Some(key.fingerprint("connection account", &format!("{}:{}", input.provider, String::from_utf8_lossy(&crate::value::canonical_json(c)))))
             }
@@ -483,6 +485,11 @@ impl Kernel {
         };
         let mapping = serde_json::to_value(&input.mapping).map_err(Error::internal)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // Kept in the transaction that saves the connection.
+        let sealed = match &input.credentials {
+            Some(c) => Some(self.keep(&mut tx, &connector_place(ctx.tenant, connection), &c.to_string()).await?),
+            None => None,
+        };
         let n = sqlx::query(
             "insert into connection (tenant_id, id, provider, name, config, mapping, sealed, created_by, account_key) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              on conflict (tenant_id, id) do update set name = excluded.name, config = excluded.config, mapping = excluded.mapping, \
@@ -521,7 +528,7 @@ impl Kernel {
     pub async fn test_connection(&self, ctx: &Ctx, id: Uuid) -> Result<String> {
         admin_only(ctx)?;
         let row = self.row(ctx.tenant, id).await?;
-        let connection = self.opened(ctx.tenant, &row)?;
+        let connection = self.opened(ctx.tenant, &row).await?;
         let connector = self.connector(ctx.tenant, &row.provider).await?;
         self.outward(ctx.tenant).await?;
         let outcome = connector.check(self, &connection).await;
@@ -802,7 +809,7 @@ impl Kernel {
         if !row.enabled {
             return Err(Error::invalid("this connection is off"));
         }
-        let conn = self.opened(job.tenant_id, &row)?;
+        let conn = self.opened(job.tenant_id, &row).await?;
         let connector = self.connector(job.tenant_id, &row.provider).await?;
         let maps: BTreeMap<String, StreamMap> =
             serde_json::from_value(row.mapping.clone()).map_err(|e| Error::invalid(format!("this connection's mapping: {e}")))?;
@@ -886,7 +893,7 @@ impl Kernel {
         if !row.enabled {
             return Err(Error::invalid("this connection is off"));
         }
-        let conn = self.opened(job.tenant_id, &row)?;
+        let conn = self.opened(job.tenant_id, &row).await?;
         let maps: BTreeMap<String, StreamMap> = serde_json::from_value(row.mapping.clone()).map_err(|e| Error::invalid(e.to_string()))?;
         let map = maps.get(stream).ok_or_else(|| Error::invalid(format!("this connection no longer maps {stream}")))?;
         let sys = Ctx::system(job.tenant_id, self.registry.schema(job.tenant_id).await?);
@@ -935,7 +942,7 @@ impl Kernel {
         let connection: Uuid =
             job.payload["connection"].as_str().and_then(|s| s.parse().ok()).ok_or_else(|| Error::invalid("a reconciliation names its connection"))?;
         let row = self.row(job.tenant_id, connection).await?;
-        let conn = self.opened(job.tenant_id, &row)?;
+        let conn = self.opened(job.tenant_id, &row).await?;
         let connector = self.connector(job.tenant_id, &row.provider).await?;
         let maps: BTreeMap<String, StreamMap> = serde_json::from_value(row.mapping.clone()).map_err(|e| Error::invalid(e.to_string()))?;
         let (mut compared, mut drift) = (0u64, 0usize);
@@ -993,7 +1000,7 @@ impl Kernel {
         tx.commit().await?;
         let tenant = tenant.ok_or_else(|| Error::NotFound("connection".into()))?;
         let row = self.row(tenant, connection).await?;
-        let conn = self.opened(tenant, &row)?;
+        let conn = self.opened(tenant, &row).await?;
         let hooks = self.connector(tenant, &row.provider).await?.webhook(self, &conn, headers, body).await?;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         let mut queued = 0;

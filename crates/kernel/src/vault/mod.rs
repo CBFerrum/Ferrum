@@ -38,13 +38,29 @@
 //! // A secret's value is not in what describes it.
 //! fn peek(d: ferrum_kernel::vault::Described) -> Vec<u8> { d.value }
 //! ```
+//! ```compile_fail
+//! // The kernel's stores are read through an owner's own handle (`Vault::field`): the way the kernel reads a field's
+//! // value for an owner it has checked takes no owner from outside it ...
+//! async fn read(k: &ferrum_kernel::Kernel, tx: &mut ferrum_kernel::Tx) {
+//!     let _ = k.field_value(tx, uuid::Uuid::nil(), "Lead", uuid::Uuid::nil(), "api_key", "crm").await;
+//! }
+//! ```
+//! ```compile_fail
+//! // ... nor is a store's place in the vault made, or read, outside the kernel.
+//! async fn read(k: &ferrum_kernel::Kernel, tx: &mut ferrum_kernel::Tx) {
+//!     let place = ferrum_kernel::vault::kept::Place::webhook(uuid::Uuid::nil(), uuid::Uuid::nil());
+//!     let _ = k.kept(tx, &place, "sealed:vault").await;
+//! }
+//! ```
 
+pub(crate) mod kept;
 mod keys;
 mod root;
 mod scope;
 mod seal;
 mod secrets;
 
+pub use kept::{LegacyKey, Moved};
 pub(crate) use root::{CHANNEL, Root, finish};
 pub use root::{
     Opened, Opener, Printed, ROOT_FILE, RecoveryKey, Resealing, Rewrap, SlotKind, SlotStatus, Status, open, put_slot, remove_slot, rewrap,

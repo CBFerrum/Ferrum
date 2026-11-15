@@ -81,9 +81,7 @@ fn same(a: &str, b: &str) -> bool {
 impl Kernel {
     fn address_signature(&self, id: Uuid) -> Result<String> {
         let key = self
-            .settings
-            .secret_key
-            .as_ref()
+            .keyed("file_address")
             .ok_or_else(|| Error::Unavailable("a public address of a file needs the server's secret key (FERRUM_SECRET_KEY)".into()))?;
         Ok(key.fingerprint("pulled-file", &id.to_string()))
     }

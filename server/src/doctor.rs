@@ -144,6 +144,28 @@ pub async fn database_settings_findings(st: &AppState) -> Vec<Finding> {
     out
 }
 
+/// The apps this build compiles in that read the old key (`settings.secret_key`) themselves, as scripts/secret_paths.py
+/// found them when the build was made (docs/registry/secret-paths.md): until each moves onto its own vault handle, the
+/// old key cannot go (docs/operations.md, Retiring the old key).
+pub fn apps_reading_the_old_key() -> Vec<String> {
+    apps_in(include_str!("../../docs/registry/secret-paths.md"), "## Apps that read the old key")
+}
+
+/// The apps (`package:path` rows) listed under `heading` in the secret paths' baseline, once each.
+fn apps_in(baseline: &str, heading: &str) -> Vec<String> {
+    let mut apps: Vec<String> = baseline
+        .split(heading)
+        .nth(1)
+        .unwrap_or_default()
+        .lines()
+        .skip(1)
+        .take_while(|l| !l.starts_with("## "))
+        .filter_map(|l| l.strip_prefix("| `")?.split_once(':').map(|(app, _)| app.to_string()))
+        .collect();
+    apps.dedup();
+    apps
+}
+
 /// A direct or read host from the settings table that this replica does not use, because it could draw the database's
 /// password elsewhere (docs/operations.md, "Any PostgreSQL").
 pub fn stored_host_findings(st: &AppState, database_url: &str) -> Vec<Finding> {
@@ -211,6 +233,7 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     out.extend(database_settings_findings(st).await);
     out.extend(st.kernel.doctor(st.settings.db_max_connections).await?);
     out.extend(st.kernel.vault_findings().await?);
+    out.extend(st.kernel.legacy_key_findings(apps_reading_the_old_key()).await?);
     // A planned move holds outward work too, and says so itself (`move_findings`).
     out.push(if st.kernel.restore_held().await? {
         Finding::blocker(
@@ -628,6 +651,15 @@ pub fn render(findings: &[Finding]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_apps_that_read_the_old_key_come_from_the_baseline() {
+        let doc = "## Apps that read secret fields past the vault\n\n| Where | Calls |\n|---|---|\n| `crm:src/a.rs` | 1 |\n\n\
+                   ## Apps that read the old key\n\n| Where | Uses |\n|---|---|\n| `ferrum-app-pos:src/a.rs` | 1 |\n| `ferrum-app-pos:src/b.rs` | 2 |\n\
+                   | `ferrum-app-commerce:src/c.rs` | 1 |\n";
+        assert_eq!(super::apps_in(doc, "## Apps that read the old key"), ["ferrum-app-pos", "ferrum-app-commerce"]);
+        assert!(super::apps_in("| (none) | |", "## Apps that read the old key").is_empty());
+    }
+
     #[tokio::test]
     async fn the_doctor_checks_public_addresses_through_zone() {
         assert!(super::zone_findings(&[]).await.is_empty(), "no addresses: no calls");

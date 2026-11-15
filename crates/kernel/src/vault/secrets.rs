@@ -161,7 +161,8 @@ struct Who<'a> {
     by: Option<&'a str>,
 }
 
-fn check_name(name: &str) -> Result<()> {
+/// A secret's name in its shape: lowercase letters, digits, and _ . -, up to 100.
+fn valid_name(name: &str) -> Result<()> {
     let b = name.as_bytes();
     let ok = (1..=100).contains(&b.len())
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
@@ -169,15 +170,25 @@ fn check_name(name: &str) -> Result<()> {
     if ok { Ok(()) } else { Err(Error::field("name", "lowercase letters, digits, and _ . -, up to 100")) }
 }
 
+/// A name the verbs take: in its shape, and not one of a value the kernel's stores keep.
+fn check_name(name: &str) -> Result<()> {
+    valid_name(name)?;
+    // What the kernel's own stores keep (kept.rs) changes where it is set, never through these verbs.
+    if super::kept::Store::ALL.iter().any(|s| name.strip_prefix(s.kind()).is_some_and(|rest| rest.starts_with('.'))) {
+        return Err(Error::field("name", "this name is one the kernel's stores keep: change the value where it is set"));
+    }
+    Ok(())
+}
+
 /// A version of a secret as stored.
-struct Row {
-    version: i32,
+pub(super) struct Row {
+    pub(super) version: i32,
     key_version: i32,
     kind: Kind,
     sealed: Vec<u8>,
     public_key: Option<Vec<u8>>,
-    rule: Rule,
-    valid_until: Option<DateTime<Utc>>,
+    pub(super) rule: Rule,
+    pub(super) valid_until: Option<DateTime<Utc>>,
     set_at: DateTime<Utc>,
     set_by: Option<Uuid>,
     last_used: Option<NaiveDate>,
@@ -186,7 +197,7 @@ struct Row {
 type RowTuple = (i32, i32, String, Vec<u8>, Option<Vec<u8>>, Value, Option<DateTime<Utc>>, DateTime<Utc>, Option<Uuid>, Option<NaiveDate>);
 
 /// The current version of a secret first, then the version before it while it still verifies.
-async fn rows(tx: &mut Tx, scope: Scope, owner: &str, name: &str) -> Result<Vec<Row>> {
+pub(super) async fn rows(tx: &mut Tx, scope: Scope, owner: &str, name: &str) -> Result<Vec<Row>> {
     let rows: Vec<RowTuple> = sqlx::query_as(
         "select version, key_version, kind, sealed, public_key, rule, valid_until, created_at, created_by, last_used from vault.secret \
          where scope = $1 and owner = $2 and name = $3 and (valid_until is null or valid_until > now()) order by valid_until is not null, version desc",
@@ -231,7 +242,7 @@ fn current<'a>(rows: &'a [Row], name: &str) -> Result<&'a Row> {
 }
 
 /// What a version holds, opened with the version of the owner key that sealed it.
-async fn opened(db: &Db, tx: &mut Tx, scope: Scope, owner: &str, name: &str, row: &Row) -> Result<Zeroizing<Vec<u8>>> {
+pub(super) async fn opened(db: &Db, tx: &mut Tx, scope: Scope, owner: &str, name: &str, row: &Row) -> Result<Zeroizing<Vec<u8>>> {
     let key = db.vault.owner_key(db, tx, scope.id(), owner, row.key_version).await?;
     key.open(&secret_place(scope.id(), owner, name, row.version, row.key_version), &row.sealed).ok_or_else(|| {
         Error::Internal(format!(
@@ -308,6 +319,15 @@ async fn audited(tx: &mut Tx, scope: Scope, owner: &str, name: &str, verb: &'sta
     event(tx, scope, who.actor, who.request, category, verb, diff).await
 }
 
+/// Records a reveal the kernel made of `name` for its owner, in `tx` (the vault's tables seen): as [`Vault::reveal`]
+/// records its own (kept.rs, a secret field's value read by its app).
+pub(super) async fn revealed(tx: &mut Tx, scope: Scope, owner: &str, name: &str) -> Result<()> {
+    let rows = rows(tx, scope, owner, name).await?;
+    let Some(row) = rows.iter().find(|r| r.valid_until.is_none()) else { return Ok(()) };
+    audited(tx, scope, owner, name, "reveal", &CODE, row.version, true).await?;
+    used(tx, scope, owner, name, row).await
+}
+
 /// Hours that are over, of one secret's verb or of all: a summary of each that held more uses than were recorded.
 pub(crate) async fn flush_uses(tx: &mut Tx, which: Option<(Scope, &str, &str, &str)>) -> Result<u64> {
     let done: Vec<(Uuid, String, String, String, DateTime<Utc>, i32)> = sqlx::query_as(
@@ -363,6 +383,7 @@ async fn write(
     rule: Option<Rule>,
     who: &Who<'_>,
 ) -> Result<(Described, Option<Zeroizing<String>>)> {
+    check_name(name)?;
     let made = make(value)?;
     write_made(k, scope, owner, name, made, rule, who, false).await.map(|(d, shown, _)| (d, shown))
 }
@@ -380,7 +401,8 @@ async fn write_made(
     who: &Who<'_>,
     only_new: bool,
 ) -> Result<(Described, Option<Zeroizing<String>>, bool)> {
-    check_name(name)?;
+    // The shape alone: a sandbox makes the stores' values by their rules here too (the verbs check the rest first).
+    valid_name(name)?;
     if let Some(r) = &rule {
         r.check()?;
     }
@@ -518,6 +540,7 @@ impl Vault {
     /// Recorded as `adopt` with `by` (`environment`), never the value.
     pub async fn adopt(&self, k: &Kernel, scope: Scope, name: &str, value: New, rule: Rule, by: &str) -> Result<bool> {
         let owner = self.bound(k)?;
+        check_name(name)?;
         let request = crate::db::Trace::operation().unwrap_or_default();
         let who = Who { actor: None, request: &request, by: Some(by) };
         write_made(k, scope, owner, name, make(value)?, Some(rule), &who, true).await.map(|(_, _, wrote)| wrote)
@@ -856,8 +879,8 @@ impl Kernel {
 }
 
 /// The vault's part of the hourly upkeep (`Kernel::maintenance`): the summaries of hours of uses that are over, the
-/// versions whose overlap is over, and what older owner keys still seal, sealed again (the installation's scope has no
-/// job queue; in a workspace this finds what a job left).
+/// versions whose overlap is over, what older owner keys still seal, sealed again (the installation's scope has no job
+/// queue; in a workspace this finds what a job left), and the old stores' values moved in (kept.rs).
 pub(crate) async fn upkeep(k: &Kernel) -> Result<()> {
     if k.db.vault.installation().is_err() {
         return Ok(());
@@ -878,6 +901,14 @@ pub(crate) async fn upkeep(k: &Kernel) -> Result<()> {
         if let Err(e) = k.vault_reseal(scope, &owner).await {
             tracing::warn!(%owner, "sealing secrets again with a newer key: {e}");
         }
+    }
+    // What the kernel's old stores hold that the vault does not yet (kept.rs): moved, and what they no longer hold, gone.
+    match k.vault_move().await {
+        Ok(m) if m.moved + m.removed > 0 || !m.unopened.is_empty() => {
+            tracing::info!(moved = m.moved, removed = m.removed, left = m.left, "the old stores' values moved into the vault")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("moving the old stores' values into the vault: {e}"),
     }
     Ok(())
 }

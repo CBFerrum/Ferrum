@@ -1092,8 +1092,8 @@ schema `vault`. Its rows open only with the *installation key*, and that key is 
 the vault's *slots*: a dump of the database opens nothing without a slot's key. Below the installation key, each
 workspace has a key of its own (and the installation one more, for what belongs to no workspace), and each owner in it
 (the platform, each app, each plugin) a key of its own; each is random, versioned and stored wrapped by the one above.
-The platform's own secrets are in it from this release (*The platform's secrets*, below); what `FERRUM_SECRET_KEY`
-seals stays where it is until the next one.
+The platform's own secrets are in it (*The platform's secrets*, below), and so is what `FERRUM_SECRET_KEY` sealed in
+stores of its own (*The old key's stores in the vault*, below).
 
 **Slots.** Any one of them opens the installation key.
 
@@ -1298,6 +1298,51 @@ them (the vault shows a value to nobody): the mail and storage passwords and the
 new `JWT_SECRET` (the older build cannot read what the vault's keys signed, so people sign in again; the old secret, if
 you still have it, keeps the sessions it signed); the tokens your callers hold. The older build ignores the vault, and
 this build, started again later, takes the environment's values while they are set.
+
+### The old key's stores in the vault
+
+What `FERRUM_SECRET_KEY` sealed in stores of its own is in the vault from this release, each value a secret of its
+owner: secret fields (the app whose package declares the field; a field one app adds to another's entity is the
+adder's), connections' secrets and sign-in tokens, connectors' credentials, message channels' secrets, single sign-on
+client secrets, SAML keys, second factors, webhook signing secrets, approvals' secret parameters (the platform's), and the
+push key (the installation's). An app reads only its own secret fields, through its own vault handle; the platform
+uses the rest to sign, to check, or to put on a request, and shows none of them. Plugins' settings are not in the vault
+yet: the plugin host still seals them with the key.
+
+- **What exists moves by itself.** The hourly upkeep moves every value the vault does not hold yet, on any number of
+  replicas at once: each value in a transaction of its own, checked in the vault before it commits, and one that a
+  person or another replica holds at that moment is left for the next round. `ferrum task vault_move` does it now and
+  says how many moved and how many were left. Until a value has moved it is read where it was.
+- **The previous build keeps working.** While `FERRUM_SECRET_KEY` is set, every value is still sealed with it beside the
+  vault, where a build before this one reads it, so a rollback reads every value as it is now. A value the older build
+  changes is read from where it changed it, and the next move takes it again. Nothing is deleted from the old stores in
+  this release. Keep `FERRUM_SECRET_KEY` (and `FERRUM_RETIRED_SECRET_KEYS`) as they are while you might roll back.
+- **Without the key** (an installation that never had one: development, or the vault alone): the old stores hold only
+  the vault's mark `vault`, which opens nothing, and a webhook's secret is never kept plain again. A build before this one
+  refuses each of those values, and in production does not start without the key. In this release production still
+  requires the key: what it still keys (below) has not moved yet.
+- **Changing a connection's hosts asks for its secrets again**: they were given for the hosts its description reached
+  then, and are not sent anywhere else.
+
+### Retiring the old key
+
+`ferrum task legacy_key` (and the doctor's `legacy_key` findings) says what still depends on `FERRUM_SECRET_KEY`:
+
+- values the old stores hold that the vault does not hold as they are, by store (`ferrum task vault_move` takes them;
+  one that stays names a value no configured key opens: `secrets.unopened` names it);
+- each path that used the key since nothing was left to move, with when it last did: `open:<store>` (a value read where
+  it was), and what this release still keys or seals with it: opt-out links, erased opt-outs' marks, sign-ins to
+  accounts and their state, public addresses of files, connectors' account fingerprints, receipts' secret parameters,
+  messages waiting with secret values, processes' payloads, plugins' settings;
+- the apps compiled in that still read it themselves (`settings.secret_key`) or read secret fields past the vault
+  (`Kernel::secret`, with the file that called it): each moves in its own repository.
+
+The key can go when it says `retirable: true`: nothing waits to move, no path used the key since, and no app compiled
+in reads it. Then, once you will not roll back to a build before this one (it needs the key): remove
+`FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS` from every replica's environment, start them again, and run
+`ferrum task legacy_key` once more. Keep the key itself, offline, as long as you keep backups taken before: they need
+it. In this release the paths named above still use the key, so it stays; the release that moves them makes it
+retirable.
 
 ### A workspace's vault
 

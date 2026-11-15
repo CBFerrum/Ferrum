@@ -81,7 +81,8 @@ macro_rules! apps {
         /// Registers every compiled app's hooks, reports and endpoints: ERP's first, so the apps
         /// that build on its documents see their totals, postings and open items.
         pub fn register(hooks: &mut HookRegistry) -> Result<(), String> {
-            // Each app registers as itself, so that it can take its own vault handle (crates/kernel/src/vault).
+            // Each app registers as itself, so that it can take its own vault handle (crates/kernel/src/vault), and owns its
+            // packages: a secret field one of them declares is its own, which no other app reads.
             hooks.app("erp", &[], ferrum_app_erp::register);
             let mut sources: Vec<(String, std::sync::Arc<dyn ferrum_domain::reports::ReportSource>)> = Vec::new();
             // Which packages give each report (zones, level 2): its app's own.
@@ -92,6 +93,7 @@ macro_rules! apps {
                 }
             };
             let erp: Vec<String> = ferrum_app_erp::packages().map(|ps| ps.iter().map(|p| p.name().to_string()).collect()).unwrap_or_default();
+            hooks.own("erp", &erp);
             own(&erp, &ferrum_app_erp::reports());
             sources.extend(ferrum_app_erp::reports().into_iter().map(|s| ("erp".to_string(), s)));
             $(
@@ -100,6 +102,7 @@ macro_rules! apps {
                     // An app's document hooks run only for workspaces that installed one of its packages.
                     let packages: Vec<String> = $nkrate::packages().map(|ps| ps.iter().map(|p| p.name().to_string()).collect()).unwrap_or_default();
                     hooks.app($nfeature, &packages, |h| $nkrate::register(h));
+                    hooks.own($nfeature, &packages);
                     own(&packages, &$nkrate::reports());
                     sources.extend($nkrate::reports().into_iter().map(|s| ($nfeature.to_string(), s)));
                 }
@@ -117,6 +120,7 @@ macro_rules! apps {
                 hooks.app(app.id, &[], |h| {
                     h.scoped(&packages, |h| (app.register)(h));
                 });
+                hooks.own(app.id, &packages);
                 own(&packages, &(app.reports)());
                 sources.extend((app.reports)().into_iter().map(|s| (app.id.to_string(), s)));
             }
@@ -720,6 +724,8 @@ mod tests {
         super::register(&mut hooks).unwrap();
         let everywhere: Vec<String> = hooks.scopes().into_iter().filter(|(entity, scope)| scope.is_none() && entity != "*").map(|(e, _)| e).collect();
         assert!(everywhere.is_empty(), "hooks for every workspace on {everywhere:?}");
+        // Each compiled app owns its packages, and no package is claimed by two (its secret fields are one app's).
+        assert_eq!(hooks.settle(), Ok(()));
     }
 
     /// Loco runs `after_context` twice on `ferrum start` (once in `cli::main`, once in `create_app`), so the apps

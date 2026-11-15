@@ -243,6 +243,8 @@ pub struct HookRegistry {
     vault_apps: HashMap<String, u128>,
     /// What the platform's handle carries, once the server took it ([`HookRegistry::platform_vault`]).
     platform_mint: Option<u128>,
+    /// Which app owns each package compiled in ([`HookRegistry::own`]): whose the package's secret fields are.
+    package_owners: HashMap<String, String>,
     /// The app whose registration is running.
     app: Option<String>,
     /// What registering apps went wrong, said by [`HookRegistry::settle`], which stops the server.
@@ -378,6 +380,35 @@ impl HookRegistry {
     /// What app `id`'s vault handles carry, when this registry registered it (the platform's, once the server took it).
     pub(crate) fn vault_mint(&self, id: &str) -> Option<u128> {
         if id == "platform" { self.platform_mint } else { self.vault_apps.get(id).copied() }
+    }
+
+    /// Says that app `id` owns `packages`: a secret field one of them declares is that app's, read only with its own
+    /// handle (crates/kernel/src/vault, "Who owns what"). The server's to say, for every app it compiles in, outside any
+    /// app's registration; a package two apps claim, or a claim made inside an app's registration, stops the server
+    /// ([`HookRegistry::settle`]). A package no app claims is the platform's, or that of the app installed with it.
+    pub fn own(&mut self, id: &str, packages: &[String]) -> &mut Self {
+        if let Some(inside) = &self.app {
+            self.problems.push(format!("app {inside} claimed packages for {id} inside its registration"));
+            return self;
+        }
+        if !crate::vault::app_id_ok(id) {
+            self.problems.push(format!("{id:?} is not an app's id, and owns no package"));
+            return self;
+        }
+        for p in packages {
+            match self.package_owners.get(p) {
+                Some(other) if other != id => self.problems.push(format!("package {p} is claimed by both {other} and {id}")),
+                _ => {
+                    self.package_owners.insert(p.clone(), id.to_string());
+                }
+            }
+        }
+        self
+    }
+
+    /// The app that owns `package`, when one claimed it ([`HookRegistry::own`]).
+    pub(crate) fn package_owner(&self, package: &str) -> Option<&str> {
+        self.package_owners.get(package).map(String::as_str)
     }
 
     /// Each document hook's entity and the packages it runs for (`None`: every tenant), in
@@ -653,6 +684,24 @@ mod tests {
 
     struct Noop;
     impl DocHook for Noop {}
+
+    #[test]
+    fn the_server_says_which_app_owns_each_package_once() {
+        let mut r = HookRegistry::default();
+        r.own("crm", &["selling".to_string(), "crm".to_string()]).own("crm", &["crm".to_string()]);
+        assert_eq!((r.package_owner("selling"), r.package_owner("hr")), (Some("crm"), None));
+        assert!(r.settle().is_ok(), "claiming its own again is no problem");
+        r.own("hr", &["crm".to_string()]);
+        assert!(r.settle().unwrap_err().join("; ").contains("claimed by both crm and hr"));
+        let mut r = HookRegistry::default();
+        r.app("hr", &[], |h| {
+            h.own("hr", &["selling".to_string()]);
+        });
+        r.own("platform", &["core".to_string()]);
+        let problems = r.settle().unwrap_err().join("; ");
+        assert!(problems.contains("inside its registration") && problems.contains("not an app's id"), "{problems}");
+        assert_eq!(r.package_owner("selling"), None);
+    }
 
     #[test]
     fn an_app_gets_its_own_vault_handle_and_nothing_else_does() {
