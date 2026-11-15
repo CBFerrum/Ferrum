@@ -196,6 +196,7 @@ job_audit() {
   run "audit licenses" python3 scripts/licenses.py check
   run "audit app contract" python3 scripts/check_apps.py
   run "audit direct writes reviewed" python3 scripts/mutation_paths.py
+  run "audit secret paths" sh -c 'python3 scripts/test_secret_paths.py && python3 scripts/secret_paths.py'
 }
 
 job_move() {
