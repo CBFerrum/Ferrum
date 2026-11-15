@@ -172,7 +172,9 @@ guest false
 guest true
 
 step "this build takes its waiting work"
-start new new-again || fail "this build did not start again"
+# Background work on again by name: the quiet start's FERRUM_RUN_BACKGROUND=false was copied into the settings table
+# (R1, docs/operations.md "Settings in the database"), and only the environment wins over it.
+start new new-again FERRUM_RUN_BACKGROUND=true || fail "this build did not start again"
 for _ in $(seq 1 30); do [ "$(waiting)" = "0 0" ] && break; sleep 1; done
 [ "$(waiting)" = "0 0" ] || fail "this build did not take its own waiting work: $(waiting)"
 T=$(token)
