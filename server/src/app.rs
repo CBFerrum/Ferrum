@@ -247,6 +247,8 @@ impl Hooks for App {
         ferrum_domain::register(&mut hooks);
         crate::packages::register(&mut hooks).map_err(|e| Error::Message(format!("apps: {e}")))?;
         let plugins = ferrum_plugins::PluginHost::new(settings.webhooks_allow_private).map_err(|e| Error::Message(format!("plugins: {e}")))?;
+        // Each plugin's handle is made with the platform's: its secrets go on its requests, to nobody else.
+        plugins.use_vault(platform.clone());
         hooks.register("*", Arc::new(ferrum_plugins::PluginHook(plugins.clone())));
         hooks.add_event_sink(Arc::new(ferrum_plugins::PluginEvents(plugins.clone())));
         hooks.set_connector_source(Arc::new(ferrum_plugins::connect::PluginConnectors(plugins.clone())));

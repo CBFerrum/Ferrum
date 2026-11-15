@@ -50,7 +50,7 @@ pub use root::{
     rotate_installation_key, status,
 };
 pub use seal::Kdf;
-pub use secrets::{Changed, Described, Kind, MAX_OVERLAP_SECS, New, Rule, Sandbox, USES_PER_HOUR};
+pub use secrets::{Carry, Changed, Described, Kind, MAX_OVERLAP_SECS, New, Rule, Sandbox, USES_PER_HOUR, carried};
 pub(crate) use secrets::{handler, upkeep};
 /// What holds a key, a password or a secret's value, zeroed when dropped: the vault's own type, for its callers.
 pub use zeroize::Zeroizing;
@@ -160,6 +160,19 @@ impl Vault {
         match &self.owner {
             Owner::App(o) | Owner::Kernel(o) => o,
         }
+    }
+
+    /// A plugin's handle, made with the platform's (the plugin host acts for its plugins): it adds the plugin's secrets
+    /// to requests for the hosts each names ([`Vault::carry`]), and shows none ([`Vault::reveal`] refuses it). Refused
+    /// to any other handle.
+    pub fn plugin(&self, name: &str) -> Result<Vault> {
+        if self.owner() != "platform" {
+            return Err(Error::Forbidden("only the platform's handle makes a plugin's".into()));
+        }
+        if !plugin_name_ok(name) {
+            return Err(Error::field("plugin", "lowercase letters, digits, and _ . -, up to 100"));
+        }
+        Ok(Vault::kernel(&format!("plugin:{name}")))
     }
 
     /// The owner, once `k` has checked that it gave this handle out, and that its vault is open (closed, every verb

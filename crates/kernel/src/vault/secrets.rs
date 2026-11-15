@@ -552,9 +552,13 @@ impl Vault {
         list(k, scope, Some(owner)).await
     }
 
-    /// The raw value of `name`, only when its rule lets it out (for a library that must have it); recorded each time.
+    /// The raw value of `name`, only when its rule lets it out (for a library that must have it), and never to a
+    /// plugin's handle; recorded each time.
     pub async fn reveal(&self, k: &Kernel, scope: Scope, name: &str) -> Result<Zeroizing<Vec<u8>>> {
         let owner = self.bound(k)?;
+        if owner.starts_with("plugin:") {
+            return Err(Error::Forbidden("a plugin's secrets are used, never revealed: the host adds them to its requests".into()));
+        }
         check_name(name)?;
         with_retry(|| async {
             let mut tx = k.db.vault_tx(scope.tenant()).await?;
@@ -619,6 +623,28 @@ impl Vault {
         .await
     }
 
+    /// The header that carries `name` to `url`'s host as `how` says ([`carried`]): only to a host the secret's rule
+    /// names, and only a secret of this handle's owner. Recorded as a use (`send`), never the value. What a plugin's
+    /// handle does in place of revealing: the value goes on the request and to nobody else.
+    pub async fn carry(&self, k: &Kernel, scope: Scope, name: &str, url: &reqwest::Url, how: &Carry) -> Result<(String, Zeroizing<String>)> {
+        let owner = self.bound(k)?;
+        check_name(name)?;
+        let host = url.host_str().ok_or_else(|| Error::invalid("the address has no host"))?;
+        with_retry(|| async {
+            let mut tx = k.db.vault_tx(scope.tenant()).await?;
+            let rows = rows(&mut tx, scope, owner, name).await?;
+            let row = current(&rows, name)?;
+            let value = opened(&k.db, &mut tx, scope, owner, name, row).await?;
+            let text = std::str::from_utf8(&value).map_err(|_| Error::invalid(format!("{name} is not text: it goes on no request")))?;
+            let header = carried(&row.rule.hosts, host, how, text)?;
+            audited(&mut tx, scope, owner, name, "send", &CODE, row.version, true).await?;
+            used(&mut tx, scope, owner, name, row).await?;
+            tx.commit().await?;
+            Ok(header)
+        })
+        .await
+    }
+
     /// The platform's secret `name` of the installation, with its rule, as [`Vault::reveal`] gives it, before the
     /// kernel boots: what the server's start makes its mail sender and its audit sink with. Only the server's own handle
     /// ([`crate::HookRegistry::platform_vault`]) asks, of the registry that gave it out. `None`: the vault is not open
@@ -651,6 +677,40 @@ impl Vault {
         })
         .await
     }
+}
+
+/// How a credential goes on an outbound request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Carry {
+    /// `Authorization: Bearer <secret>`.
+    Bearer,
+    /// `Authorization: Basic <base64 of user:secret>`, with this user.
+    Basic(String),
+    /// `<name>: <prefix><secret>`.
+    Header { name: String, prefix: String },
+}
+
+/// The one way a credential goes on an outbound request, wherever it is kept (the vault's [`Vault::carry`], a
+/// plugin's credentials, a connection's): the header that carries `secret` to `host` as `how` says, and only when
+/// `hosts` names that host (`api.example.com`, or `*.example.com` for its subdomains). Zeroed when dropped.
+pub fn carried(hosts: &[String], host: &str, how: &Carry, secret: &str) -> Result<(String, Zeroizing<String>)> {
+    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    let named =
+        hosts.iter().map(|h| h.trim().to_ascii_lowercase()).any(|h| h == host || h.strip_prefix("*.").is_some_and(|d| host.ends_with(&format!(".{d}"))));
+    if !named {
+        return Err(Error::Forbidden(format!("this credential may not be sent to {host}")));
+    }
+    if secret.is_empty() || secret.contains(['\r', '\n']) {
+        return Err(Error::invalid("a credential is text on one line"));
+    }
+    Ok(match how {
+        Carry::Bearer => ("authorization".into(), Zeroizing::new(format!("Bearer {secret}"))),
+        Carry::Basic(user) => {
+            let pair = Zeroizing::new(format!("{user}:{secret}"));
+            ("authorization".into(), Zeroizing::new(format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(pair.as_bytes()))))
+        }
+        Carry::Header { name, prefix } => (name.clone(), Zeroizing::new(format!("{prefix}{secret}"))),
+    })
 }
 
 // Rotation of an owner key, in the background: what an older version sealed is sealed again with the newest, a batch
