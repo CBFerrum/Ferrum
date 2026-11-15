@@ -225,6 +225,25 @@ async fn routes() {
     state(&ctx).kernel.db.close().await;
 }
 
+/// The doctor: what the environment decides, and the replicas still running an older value of a setting that applies
+/// at start, until they start again.
+async fn doctor(a: &AppState) {
+    use ferrum_kernel::doctor::Level;
+    let found = |all: &[ferrum_kernel::doctor::Finding], check: &str| all.iter().find(|f| f.check == check).cloned().expect(check);
+    let all = ferrum_server::doctor::database_settings_findings(a).await;
+    let replicas = found(&all, "settings.replicas");
+    assert!(replicas.level == Level::Warning && replicas.detail.starts_with("2 replicas"), "{replicas:?}");
+    assert!(replicas.detail.contains("default_workspace") && !replicas.detail.contains("ui_source"), "changed since they started: {replicas:?}");
+    assert_eq!(found(&all, "settings.environment").level, Level::Ok, "this test's environment sets none");
+    let start = [ferrum_server::settings::Change { name: "ui_source".into(), pool: None, value: Some("http://web:8080/_releases/".into()) }];
+    ferrum_server::settings::change(a, &start, "task").await.unwrap();
+    let replicas = found(&ferrum_server::doctor::database_settings_findings(a).await, "settings.replicas");
+    assert!(replicas.level == Level::Warning && replicas.detail.contains("ui_source"), "both run the older value until they start again: {replicas:?}");
+    assert!(replicas.detail.contains(&a.live_settings.replica.to_string()));
+    let unset = [ferrum_server::settings::Change { name: "ui_source".into(), pool: None, value: None }];
+    ferrum_server::settings::change(a, &unset, "task").await.unwrap();
+}
+
 /// Tells every replica that the table changed, as a change of it does.
 async fn notify(st: &AppState) {
     let mut tx = st.kernel.db.system_tx().await.unwrap();
@@ -286,6 +305,7 @@ async fn live() {
 
     changes(&a, &b).await;
     routes().await;
+    doctor(&a).await;
 
     let ids = [a.live_settings.replica, b.live_settings.replica];
     let _ = a.shutdown.send(true);
