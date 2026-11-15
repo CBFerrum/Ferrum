@@ -174,7 +174,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 # Documents edited together (coedit.rs): Yjs in Rust. Patched in the workspace (third_party/yrs/FERRUM.md).
 yrs = { version = "=0.28.0", features = ["sync"] }
 migration = { path = "migration", package = "ferrum-migration" }
-loco-rs = { version = "1.2", default-features = false, features = ["auth", "cli", "with-db", "cache_inmem", "worker", "storage_aws_s3"] }
+loco-rs = { version = "~1.2", default-features = false, features = ["auth", "cli", "with-db", "cache_inmem", "worker", "storage_aws_s3"] }
 sea-orm = { version = "2.0", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros"] }
 axum = { version = "0.8", features = ["multipart", "ws"] }
 tokio = { workspace = true }
@@ -209,7 +209,7 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = ["
 
 [dev-dependencies]
 rust_decimal.workspace = true
-loco-rs = { version = "1.2", default-features = false, features = ["auth", "cli", "with-db", "cache_inmem", "worker", "testing"] }
+loco-rs = { version = "~1.2", default-features = false, features = ["auth", "cli", "with-db", "cache_inmem", "worker", "testing"] }
 serial_test = "3"
 wat = "1"
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }

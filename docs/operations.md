@@ -3450,8 +3450,11 @@ setting; each defaults to what the server did before the setting existed.
   * *Why*: a mailed link outlives the host it names. With a link host, a workspace can move to a new
     host, or get a separate public host, and every link sent before still leads to it.
   * *Changing it later* breaks every link sent before; it should be the steadiest name you have.
-  * *Not covered yet*: the addresses apps keep of their own (Sign, Bookings, Comms, LMS) and links
-    printed into exported documents still name a host directly.
+  * Apps that had an address setting of their own (Sign, Bookings, Comms, Learn) take these names when
+    that setting is empty, from Sign 0.3.2, Bookings 0.7.3, Comms 0.20.1 and Learn 0.9.2: links people
+    follow go through the link host, and what other services call uses the callbacks host. A filled
+    setting still wins.
+  * *Not covered yet*: links printed into exported documents still name a host directly.
 
 **A shared base domain.** In the cloud, where many organisations' workspaces are hosts under one base
 domain, leave `FERRUM_ACCOUNTS_HOST` and `FERRUM_HOOKS_HOST` at their defaults (`accounts.{base}`,
