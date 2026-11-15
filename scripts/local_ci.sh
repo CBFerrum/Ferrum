@@ -152,10 +152,17 @@ for p in json.load(sys.stdin)["packages"]:
 job_saml() {
   if [ -n "${XMLSEC_PREFIX:-}" ]; then
     export PATH="$XMLSEC_PREFIX/bin:$PATH" PKG_CONFIG_PATH="$XMLSEC_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-    if [ -z "${OPENSSL_DIR:-}" ]; then
-      OPENSSL_DIR=$(xmlsec1-config --libs | tr ' ' '\n' | sed -n 's#^-L\(.*openssl[^/]*\)/lib$#\1#p' | head -1)
-      [ -n "$OPENSSL_DIR" ] && export OPENSSL_DIR
-    fi
+  fi
+  # The Rust crates must link the very libraries this xmlsec1 was built against: two copies of libxml2 or of OpenSSL in
+  # one process crash (seen on macOS, where pkg-config finds the system's libxml2 and Homebrew's xmlsec1 uses its own).
+  # xmlsec1-config names their folders.
+  local dir
+  for dir in $(xmlsec1-config --libs 2>/dev/null | tr ' ' '\n' | sed -n 's#^-L##p'); do
+    [ -d "$dir/pkgconfig" ] && export PKG_CONFIG_PATH="$dir/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+  done
+  if [ -z "${OPENSSL_DIR:-}" ]; then
+    OPENSSL_DIR=$(xmlsec1-config --libs 2>/dev/null | tr ' ' '\n' | sed -n 's#^-L\(.*openssl[^/]*\)/lib$#\1#p' | head -1)
+    [ -n "$OPENSSL_DIR" ] && export OPENSSL_DIR
   fi
   local version stamp="$TARGET/.localci-xmlsec"
   version=$(xmlsec1-config --version 2>/dev/null) || { report "saml xmlsec1" 1 0 /dev/null "no xmlsec1-config on PATH"; return; }
