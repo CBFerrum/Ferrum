@@ -44,7 +44,7 @@ async fn scenario() {
     assert!(e.to_string().contains("notes: backfill orphan"), "{e}");
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let k = Kernel::boot(db, catalog("ok", NOTES, &format!("{SEEN}{BROKEN}")).expect("catalog"), HookRegistry::default(), KernelSettings::default(), None)
         .await
         .expect("boot");

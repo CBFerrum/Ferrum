@@ -1208,6 +1208,12 @@ pub(crate) fn at(v: &Value, pointer: Option<&str>) -> Option<String> {
     }
 }
 
+/// A connection's credential as a header for the request to `url` (crate::vault::carried).
+fn carried_to(url: &reqwest::Url, how: &crate::vault::Carry, secret: &str) -> Result<(String, String)> {
+    let host = url.host_str().unwrap_or_default();
+    crate::vault::carried(&[host.to_string()], host, how, secret).map(|(h, v)| (h, v.to_string()))
+}
+
 /// The token in `Authorization` sent under `scheme` in place of the one the auth gave (BD-73): empty, the token alone.
 fn rescheme(headers: &mut [(String, String)], scheme: Option<&str>) {
     let Some(scheme) = scheme else { return };
@@ -2097,11 +2103,17 @@ impl Kernel {
                 headers.push((header.to_string(), format!("{prefix}{token}")));
                 return Ok(vec![token]);
             }
-            Auth::Header { header, secret, prefix } => headers.push((header.clone(), format!("{prefix}{}", conn.secret(secret)?))),
-            Auth::Bearer { secret } => headers.push(("authorization".into(), format!("Bearer {}", conn.secret(secret)?))),
+            // The one way a credential goes on a request (crate::vault::carried). Where it may go is the connection's
+            // reach, which every hop of the request is held to (`vet`): the request's own host here.
+            Auth::Header { header, secret, prefix } => {
+                let how = crate::vault::Carry::Header { name: header.clone(), prefix: prefix.clone() };
+                headers.push(carried_to(url, &how, conn.secret(secret)?)?);
+            }
+            Auth::Bearer { secret } => headers.push(carried_to(url, &crate::vault::Carry::Bearer, conn.secret(secret)?)?),
             Auth::Basic { username, secret } => {
-                let pair = base64::engine::general_purpose::STANDARD.encode(format!("{username}:{}", conn.secret(secret)?));
-                headers.push(("authorization".into(), format!("Basic {pair}")));
+                let (h, v) = carried_to(url, &crate::vault::Carry::Basic(username.clone()), conn.secret(secret)?)?;
+                let pair = v.strip_prefix("Basic ").unwrap_or_default().to_string();
+                headers.push((h, v));
                 return Ok(vec![pair]);
             }
             Auth::Signed { header, secret, timestamp_header, encoding, prefix } => {

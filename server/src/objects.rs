@@ -81,15 +81,19 @@ impl Objects {
         opendal::install_default();
         let region = if settings.s3_region.is_empty() { "auto" } else { settings.s3_region.as_str() };
         let mut s3 = S3::default().bucket(&settings.s3_bucket).region(region);
+        // The environment's keys, else the vault's (crate::secrets); AWS itself finds the environment's on its own.
+        let given = |k: &str| {
+            let env = std::env::var(k).ok().filter(|v| !v.is_empty() && !settings.s3_endpoint.is_empty());
+            env.or_else(|| settings.revealed.get(&k.to_ascii_lowercase()).map(str::to_string))
+        };
         if !settings.s3_endpoint.is_empty() {
-            let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
             s3 = s3.endpoint(&settings.s3_endpoint);
-            if let (Some(id), Some(secret)) = (env("AWS_ACCESS_KEY_ID"), env("AWS_SECRET_ACCESS_KEY")) {
-                s3 = s3.access_key_id(&id).secret_access_key(&secret);
-            }
-            if let Some(token) = env("AWS_SESSION_TOKEN") {
-                s3 = s3.session_token(&token);
-            }
+        }
+        if let (Some(id), Some(secret)) = (given("AWS_ACCESS_KEY_ID"), given("AWS_SECRET_ACCESS_KEY")) {
+            s3 = s3.access_key_id(&id).secret_access_key(&secret);
+        }
+        if let Some(token) = given("AWS_SESSION_TOKEN") {
+            s3 = s3.session_token(&token);
         }
         Ok(Objects { op: Operator::new(s3).map_err(|e| e.to_string())?, presigns: true })
     }

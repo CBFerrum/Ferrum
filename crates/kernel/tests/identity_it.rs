@@ -123,7 +123,7 @@ fn one_person_many_workspaces() {
 
 async fn scenario() {
     let db = Db::connect(DbConfig { url: url(), max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let k = boot(db.clone(), true).await;
     let acme = k.create_tenant(tenant("acme")).await.unwrap();
     let globex = k.create_tenant(tenant("globex")).await.unwrap();

@@ -48,7 +48,7 @@ fn opener(password: Option<&str>, file: &Path, command: Option<String>) -> Opene
 }
 
 async fn reset(db: &Db) {
-    sqlx::raw_sql("drop schema if exists vault cascade; drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     db.migrate().await.expect("migrate");
 }
 
@@ -230,7 +230,7 @@ async fn scenario() {
 
     // ── a database not migrated yet: the vault opens once the kernel has migrated it ──
     let fresh = replica().await;
-    sqlx::raw_sql("drop schema if exists vault cascade; drop schema if exists public cascade; create schema public;").execute(&fresh.pool).await.unwrap();
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&fresh.pool).await.unwrap();
     assert_eq!(vault::open(&fresh, opener(Some("ferrum"), &no_file, None), false).await.unwrap(), Opened::Later);
     let k = Kernel::boot(fresh, core(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
     assert!(vault::put_slot(&k.db, SlotKind::Recovery).await.unwrap().is_some(), "open once booted");
@@ -238,7 +238,7 @@ async fn scenario() {
     // The public schema made again under a vault that is there (a test's reset, a restore of the public schema alone):
     // opened once migrated, as before, never before the tables its first steps write to are there.
     let again = replica().await;
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&again.pool).await.unwrap();
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&again.pool).await.unwrap();
     assert_eq!(vault::open(&again, opener(Some("ferrum"), &no_file, None), false).await.unwrap(), Opened::Later);
     let k = Kernel::boot(again, core(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
     assert!(vault::put_slot(&k.db, SlotKind::Recovery).await.unwrap().is_some(), "opened with the slots it had");
@@ -261,7 +261,7 @@ async fn scenario() {
     }
 
     // Left as the next suite expects a database: nothing of the vault, and nothing that says it was made.
-    sqlx::raw_sql("drop schema if exists vault cascade; drop schema if exists public cascade; create schema public;").execute(&db.pool).await.unwrap();
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
 

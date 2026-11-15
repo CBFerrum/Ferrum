@@ -37,12 +37,12 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `cors_enabled` | `CORS_ENABLED` | bool | `false` | installation, next start | Answers browsers' cross-origin requests from `cors_origins`. Not needed when the web app and the API share an address. |
 | `cors_origins` | `CORS_ORIGINS` | text | `"https://example.invalid"` | installation, next start | The origins `cors_enabled` admits, each in double quotes, separated by commas (`"https://a.example", "https://b.example"`). |
 | `mailer_enabled` | `MAILER_ENABLED` | bool | `false` | installation, next start | SMTP for mail: notifications people chose to have by email (at once, or in a daily digest), and apps' mail. Without it, notifications stay in the bar and people cannot choose email. |
-| `mailer_host` | `MAILER_HOST` | text | `localhost` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment | The SMTP server. |
-| `mailer_port` | `MAILER_PORT` | int | `587` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment | The SMTP server's port. |
-| `mailer_secure` | `MAILER_SECURE` | bool | `true` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment | `true`: STARTTLS to the SMTP server; `false`: plain text, for a relay on the same machine only. |
+| `mailer_host` | `MAILER_HOST` | text | `localhost` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment; moving it takes that secret again or clears it | The SMTP server. |
+| `mailer_port` | `MAILER_PORT` | int | `587` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment; moving it takes that secret again or clears it | The SMTP server's port. |
+| `mailer_secure` | `MAILER_SECURE` | bool | `true` | installation, next start; not from the table while `MAILER_PASSWORD` is in the environment; moving it takes that secret again or clears it | `true`: STARTTLS to the SMTP server; `false`: plain text, for a relay on the same machine only. |
 | `mailer_user` | `MAILER_USER` | text |  | installation, next start | Who the server signs in to the SMTP server as. |
-| `mailer_password` | `MAILER_PASSWORD` | text |  | secret: the environment | The SMTP password. |
-| `jwt_secret` | `JWT_SECRET` | text |  | secret: the environment | Required. Base64, at least 32 random bytes: `openssl rand -base64 48`. Rotating it signs everyone out. |
+| `mailer_password` | `MAILER_PASSWORD` | text |  | secret: the environment, else the vault (library) | The SMTP password. |
+| `jwt_secret` | `JWT_SECRET` | text |  | secret: the environment, else the vault (session) | Base64, at least 32 random bytes: `openssl rand -base64 48`. Changing it signs everyone out. Without it the vault's keys sign sessions, each named by the tokens it signs and replaced without signing anyone out (*The key that signs sessions*); then it is required only while the vault is closed. |
 | `jwt_expiration_seconds` | `JWT_EXPIRATION_SECONDS` | int | `28800` | installation, at once | How long a bearer token from signing in lasts, in seconds (default 8 hours). |
 | `secret_key` | `FERRUM_SECRET_KEY` | text |  | secret: the environment | Required. Base64 of exactly 32 random bytes: `openssl rand -base64 32`, or that key as a key-management service's ciphertext (`vault:v1:…`, [below](#the-secret-key-from-a-key-management-service)). Seals secret fields (mail passwords, API keys) and plugins' settings (payment gateways' keys among them) with AES-256-GCM; every replica needs the same key. Back it up: values sealed with a lost key must be entered again. |
 | `secret_key_command` | `FERRUM_SECRET_KEY_COMMAND` | text |  | secret: the environment | In place of `FERRUM_SECRET_KEY`: a command (run with `sh -c`, 30 seconds at most) that prints the key, such as a KMS's own CLI. |
@@ -56,8 +56,8 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `kms_kubernetes_token_file` | `FERRUM_KMS_KUBERNETES_TOKEN_FILE` | text | `/var/run/secrets/kubernetes.io/serviceaccount/token` | the environment (the key-management client) | The service account's token file. |
 | `kms_ca_file` | `FERRUM_KMS_CA_FILE` | text |  | the environment (the key-management client) | A certificate authority (PEM) Transit's certificate is checked against, beside the usual ones. |
 | `kms_namespace` | `FERRUM_KMS_NAMESPACE` | text |  | the environment (the key-management client) | The Vault namespace of `FERRUM_KMS_TRANSIT`. |
-| `bootstrap_token` | `FERRUM_BOOTSTRAP_TOKEN` | text |  | secret: the environment | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it. |
-| `metrics_token` | `FERRUM_METRICS_TOKEN` | text |  | secret: the environment | `/metrics` then requires `Authorization: Bearer <token>`. Recommended. |
+| `bootstrap_token` | `FERRUM_BOOTSTRAP_TOKEN` | text |  | secret: the environment, else the vault (compared) | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it. |
+| `metrics_token` | `FERRUM_METRICS_TOKEN` | text |  | secret: the environment, else the vault (compared) | `/metrics` then requires `Authorization: Bearer <token>`. Recommended. |
 | `migrate_at_start` | `FERRUM_MIGRATE_AT_START` | bool | `true` | installation, next start | Default `true`: the server migrates the database, syncs the schema and runs the upgrade steps as it starts. `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe. Either way, on a database a newer build migrated, the server starts as a guest that changes nothing, or refuses (*Rolling back and the two-version window*). |
 | `db_max_connections` | `FERRUM_DB_MAX_CONNECTIONS` | int | `30` | each pool, next start | Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so. |
 | `database_direct_url` | `FERRUM_DATABASE_DIRECT_URL` | text |  | secret: the environment | With a pooler: PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler*. A secret while the address holds the password. |
@@ -72,16 +72,16 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `address_requests_per_minute` | `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | int | `6000` | installation, at once | Requests one client address may make per minute in a pool, counted for requests that came through the proxy (`X-Forwarded-For`); default 6000, `0` turns it off. Each replica allows this divided by the pool's live replicas. Health probes and in-cluster calls are not counted. |
 | `tenant_requests` | `FERRUM_TENANT_REQUESTS` | int |  | installation, next start | One workspace's API requests that run at once on each replica. The rest wait their turn, and one that waits five seconds is refused with `429`. A response that waited says how long in `X-Ferrum-Waited-Ms`. Default half of `FERRUM_DB_MAX_CONNECTIONS`, at least 2, so a workspace that floods the server holds at most half its database connections and everyone else has the others; `0` turns it off. |
 | `proxy_hops` | `FERRUM_PROXY_HOPS` | int | `1` | installation, at once | How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2 with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits is the entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their own (too high). |
-| `operator_token` | `FERRUM_OPERATOR_TOKEN` | text |  | secret: the environment | Enables the settings routes (`/api/operator/settings`, docs/api.md) with header `X-Ferrum-Operator-Token`; empty (the default) disables them. |
+| `operator_token` | `FERRUM_OPERATOR_TOKEN` | text |  | secret: the environment, else the vault (compared) | Enables the settings routes (`/api/operator/settings`, docs/api.md) with header `X-Ferrum-Operator-Token`; empty (the default) disables them. |
 | `packages_dir` | `FERRUM_PACKAGES_DIR` | text | `packages` | installation, next start | Where the platform's packages are (the image's). |
 | `files_dir` | `FERRUM_FILES_DIR` | text | `/var/lib/ferrum/files` | installation, next start | Local attachment directory (default `/var/lib/ferrum/files`). |
 | `require_object_storage` | `FERRUM_REQUIRE_OBJECT_STORAGE` | bool | `true` | installation, next start | Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false` only for single-server installs. |
 | `s3_bucket` | `FERRUM_S3_BUCKET` | text |  | installation, next start | Attachment storage on S3 (multi-replica); with `FERRUM_S3_REGION` (`auto` if empty), `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. |
 | `s3_region` | `FERRUM_S3_REGION` | text |  | installation, next start | The bucket's region (`auto` if empty). |
 | `s3_endpoint` | `FERRUM_S3_ENDPOINT` | text |  | installation, next start | Any S3-compatible store: MinIO, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean Spaces, GCS interoperability. |
-| `aws_access_key_id` | `AWS_ACCESS_KEY_ID` | text |  | secret: the environment | The object store's key id. |
-| `aws_secret_access_key` | `AWS_SECRET_ACCESS_KEY` | text |  | secret: the environment | The object store's secret key. |
-| `aws_session_token` | `AWS_SESSION_TOKEN` | text |  | secret: the environment | A session token with the object store's keys, when they are temporary. |
+| `aws_access_key_id` | `AWS_ACCESS_KEY_ID` | text |  | secret: the environment, else the vault (library) | The object store's key id. |
+| `aws_secret_access_key` | `AWS_SECRET_ACCESS_KEY` | text |  | secret: the environment, else the vault (library) | The object store's secret key. |
+| `aws_session_token` | `AWS_SESSION_TOKEN` | text |  | secret: the environment, else the vault (library) | A session token with the object store's keys, when they are temporary. |
 | `direct_upload_max_bytes` | `FERRUM_DIRECT_UPLOAD_MAX_BYTES` | int | `2147483648` | installation, at once | Largest file browsers upload straight to the bucket, or in parts through the server (default 2 GiB). Straight to the bucket needs the bucket CORS rule below. |
 | `clamav_addr` | `FERRUM_CLAMAV_ADDR` | text |  | installation, at once | Recommended: a ClamAV daemon uploads pass through, `host:3310`. What it finds is refused and audited; with it set, a scanner that cannot answer refuses uploads too. See *Malware scanning*. |
 | `clamav_max_mb` | `FERRUM_CLAMAV_MAX_MB` | int | `25` | installation, at once | With a scanner: its `StreamMaxLength` in MiB (default 25). Files past it are stored unscanned. |
@@ -94,7 +94,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `push_services` | `FERRUM_PUSH_SERVICES` | text |  | installation, at once | The push services notifications go to, comma-separated: hosts (their subdomains too, over https) or exact origins. Empty: the browsers' own, Chrome's and Edge's (`fcm.googleapis.com`), Firefox's (`push.services.mozilla.com`), Safari's (`push.apple.com`) and Windows' (`notify.windows.com`); see [Notifications on devices](#notifications-on-devices-web-push). |
 | `push_contact` | `FERRUM_PUSH_CONTACT` | text |  | installation, at once | Recommended: who push services may contact about this server's pushes, `mailto:ops@example.com` or an `https:` page; default `PUBLIC_URL` when it is https. Apple's service wants one. |
 | `audit_sink_url` | `FERRUM_AUDIT_SINK_URL` | text |  | installation, at once | Where every workspace's audit events are sent, in order, as they are written (`https://siem.example.com/ferrum`). Default none: nothing is sent. See [Sending the audit log elsewhere](#sending-the-audit-log-elsewhere). |
-| `audit_sink_secret` | `FERRUM_AUDIT_SINK_SECRET` | text |  | secret: the environment | With the sink: the key the batches are signed with (HMAC-SHA256), at least 16 characters; the receiver checks it. |
+| `audit_sink_secret` | `FERRUM_AUDIT_SINK_SECRET` | text |  | secret: the environment, else the vault (library) | With the sink: the key the batches are signed with (HMAC-SHA256), at least 16 characters; the receiver checks it. |
 | `default_workspace` | `FERRUM_DEFAULT_WORKSPACE` | text |  | installation, next start | The slug of the one workspace this server serves on every host (a single-workspace install): sign-in then asks for no workspace. Empty: a host registered for a workspace leads to it, and elsewhere the workspace is chosen at sign-in. |
 | `base_domain` | `FERRUM_BASE_DOMAIN` | text |  | installation, next start | Shapes B and C ([Many workspaces](#many-workspaces-subdomains-and-ferrum-accounts)): the domain under which each workspace is `{slug}.{base}`, people sign in at `accounts.{base}` and outside callers use `hooks.{base}`. Empty: one workspace (`FERRUM_DEFAULT_WORKSPACE`) or a shared host. |
 | `accounts_host` | `FERRUM_ACCOUNTS_HOST` | text |  | installation, next start | The host where people sign in once, with their Ferrum account (`id.example.com`), with or without a base domain: every host of every workspace sends sign-in there. Default `accounts.{base}` with `FERRUM_BASE_DOMAIN`, else none (each host signs in on its own). See [Names that should never change](#names-that-should-never-change). |
@@ -125,10 +125,10 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `signup_packages` | `FERRUM_SIGNUP_PACKAGES` | text |  | installation, at once | With sign-up: what a new workspace installs besides the core, comma-separated. |
 | `signup_plan` | `FERRUM_SIGNUP_PLAN` | text |  | installation, at once | With sign-up: the plan a new workspace starts on (one of `FERRUM_PLANS`). |
 | `signup_per_address` | `FERRUM_SIGNUP_PER_ADDRESS` | int | `3` | installation, at once | With sign-up: how many workspaces one address may make (default 3). |
-| `assistant_api_key` | `FERRUM_ASSISTANT_API_KEY` | text |  | secret: the environment | The model service's API key; without it there is no assistant. |
+| `assistant_api_key` | `FERRUM_ASSISTANT_API_KEY` | text |  | secret: the environment, else the vault (library) | The model service's API key; without it there is no assistant. |
 | `assistant_protocol` | `FERRUM_ASSISTANT_PROTOCOL` | empty, `anthropic`, `openai` |  | installation, next start | `anthropic` (default): Anthropic's Messages API, or a proxy that speaks it; `openai`: an OpenAI-compatible chat API. |
 | `assistant_model` | `FERRUM_ASSISTANT_MODEL` | text | `claude-opus-5-5` | installation, next start | The model the assistant uses. |
-| `assistant_url` | `FERRUM_ASSISTANT_URL` | text | `https://api.anthropic.com` | installation, next start; not from the table while `FERRUM_ASSISTANT_API_KEY` is in the environment | A proxy or gateway that speaks the same API, or the provider's regional endpoint. |
+| `assistant_url` | `FERRUM_ASSISTANT_URL` | text | `https://api.anthropic.com` | installation, next start; not from the table while `FERRUM_ASSISTANT_API_KEY` is in the environment; moving it takes that secret again or clears it | A proxy or gateway that speaks the same API, or the provider's regional endpoint. |
 | `assistant_effort` | `FERRUM_ASSISTANT_EFFORT` | empty, `low`, `medium`, `high`, `xhigh`, `max` |  | installation, next start | How hard the model thinks, and so its speed and cost: `low`, `medium` (default), `high`, `xhigh` or `max`. |
 | `assistant_fallbacks` | `FERRUM_ASSISTANT_FALLBACKS` | empty, `on`, `off` |  | installation, next start | `on`/`off`; on by default for Anthropic's API with a model that has them. |
 | `assistant_models` | `FERRUM_ASSISTANT_MODELS` | text |  | installation, next start | Other models a workspace may choose, comma-separated. |
@@ -252,12 +252,15 @@ not copied; a setting an operator unset in the table is not copied again. `ferru
 environment still decides, and says where the table holds another value or none: the release after this one stops
 reading the environment, and then the table's value applies.
 
-A secret is never kept in the table and stays in the environment until the vault holds it. Neither is a setting
-that someone else reads from the environment itself (an app compiled into the server, the OpenTelemetry SDK, the
-key-management client, the move task): the table's value would not reach them. And an address that is given a
-secret (`MAILER_HOST` with `MAILER_PASSWORD`, `FERRUM_ASSISTANT_URL` with its key) takes no value from the table
-while that secret is in the environment, so that a row in the database never sends the environment's secret
-somewhere else.
+A secret is never kept in the table: the platform's own are in the vault (*The platform's secrets*), the rest stay in
+the environment. Neither is a setting that someone else reads from the environment itself (an app compiled into the
+server, the OpenTelemetry SDK, the key-management client, the move task): the table's value would not reach them. An
+address that is given a secret (`MAILER_HOST`, `MAILER_PORT` and `MAILER_SECURE` with `MAILER_PASSWORD`,
+`FERRUM_ASSISTANT_URL` with its key) takes no value from the table while that secret is in the environment, so that a
+row in the database never sends the environment's secret somewhere else. With the secret in the vault the address may
+come from the table, and the two move together: a change of the address gives the secret again
+(`ferrum task set key:mailer_host value:… secret:stdin`, or `secret` over HTTP) or clears it from the vault, and the
+vault gives it only to the host it was set for.
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
@@ -970,8 +973,8 @@ schema `vault`. Its rows open only with the *installation key*, and that key is 
 the vault's *slots*: a dump of the database opens nothing without a slot's key. Below the installation key, each
 workspace has a key of its own (and the installation one more, for what belongs to no workspace), and each owner in it
 (the platform, each app, each plugin) a key of its own; each is random, versioned and stored wrapped by the one above.
-In this release nothing moves into the vault yet: what `FERRUM_SECRET_KEY` seals stays where it is (the next release
-moves it).
+The platform's own secrets are in it from this release (*The platform's secrets*, below); what `FERRUM_SECRET_KEY`
+seals stays where it is until the next one.
 
 **Slots.** Any one of them opens the installation key.
 
@@ -991,8 +994,8 @@ make one key between them.
 When none of the three is there (`DATABASE_URL` has no password, there is no key file, no key-management service is
 set), the vault has no slot to be made with: the server starts with it closed, one warning in the log says so and
 names the three ways to give it a root, the doctor says so too, and everything that asks the vault is refused with
-*the vault is closed*. In this release nothing depends on the vault yet. The first start that has one of them makes
-it.
+*the vault is closed*. The platform's secrets then come from the environment alone, exactly as before (`JWT_SECRET`
+is required then). The first start that has one of them makes it.
 
 Every other failure stops the start, and says why for each slot:
 
@@ -1052,10 +1055,111 @@ deletes, under the same cap on uses (a hundred an hour for each secret and verb,
     something it keeps outside the vault.
   * `level:secret workspace:… owner:<id> name:<name>`: a new value of a key code uses and nobody types (a random
     value, an Ed25519 pair), never shown. The version before still verifies for the secret's overlap.
+* `secret_set name:<key> [file:<path>] [overlap:<secs>]`, `secret_remove name:<key>`: the platform's own secrets
+  (*The platform's secrets*).
+* `vault_transfer workspace:<slug>`: at the source of a move, the workspace's vault made ready to move, its key printed
+  once (*Moving one workspace*).
 
 **What the doctor says**: whether the vault is open and with which slot; the slots and whether each opens the vault on
 this machine; whether there is a recovery key; the keys' ages; secrets still sealed with an older key a day after a
-rotation.
+rotation; which of the platform's secrets the environment still decides; and a warning while the vault is closed.
+
+### The platform's secrets
+
+The server's own secrets are kept in the vault, each under the owner `platform` at the installation's scope, by its
+setting's key. Through this release the environment, when it sets one, still wins, so that rolling back behaves; with
+the vault closed nothing changes. `ferrum task settings` (and `GET /api/operator/settings`) says where each comes
+from: `environment`, `vault` or `default` (none).
+
+| Secret | Kept as | Used | A change applies |
+|---|---|---|---|
+| `JWT_SECRET` | a copy of the environment's, and the vault's own keys (*The key that signs sessions*) | signs sessions and API tokens | at once, within 30 seconds |
+| `FERRUM_BOOTSTRAP_TOKEN`, `FERRUM_METRICS_TOKEN`, `FERRUM_OPERATOR_TOKEN` | its SHA-256 digest, which is not the token | each caller's token is checked against it in the vault, in constant time, the version before too while a change's overlap lasts | at once: every check asks the vault |
+| `MAILER_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `FERRUM_ASSISTANT_API_KEY`, `FERRUM_AUDIT_SINK_SECRET` | as it is, revealed to the platform alone, never to a person | handed to the mail sender, the object store, the model provider, the audit sink as the server starts | at each replica's next start; `ferrum task settings` and the doctor list the replicas that still run the older one |
+
+**Copied once.** As a replica starts to serve, each of these its environment sets and the vault does not hold yet is
+stored there, once however many replicas start together, and recorded in the vault's record (`adopt`, `by`
+`environment`; never the value). What the vault holds stays when the environment later says something else: the
+environment wins while it sets it, and the doctor lists what it still decides. A token is stored as its digest; the
+mail password and the model provider's key are bound to the host they are sent to then.
+
+**Tied to where it goes.** `MAILER_PASSWORD` goes only to the mail server it was set for, `FERRUM_ASSISTANT_API_KEY`
+only to the model provider's host: a replica whose mail server (from the table) is another host leaves the password
+out, saying why in its log. Moving the address through the settings (`set`, `apply_settings`, the operator's route)
+clears the secret from the vault unless it is given again in the same change; the secret is cleared before the address
+is written and set after it, so an interruption leaves none, never one for another host.
+
+**Setting them.** Tasks, with the servers' environment:
+
+```bash
+ferrum task secret_set name:mailer_password                   # the value from standard input
+ferrum task secret_set name:aws_secret_access_key file:/run/secrets/key   # or from a file; never on the command line
+ferrum task secret_set name:operator_token overlap:86400      # made here and shown once; the one before works a day more
+ferrum task secret_set name:jwt_secret                        # a new key that signs sessions; nobody is signed out
+ferrum task secret_remove name:bootstrap_token
+ferrum task set key:mailer_host value:smtp.example.com secret:stdin   # an address and its secret together
+```
+
+A token made here (`bootstrap_token`, `metrics_token`, `operator_token`) is printed once: give it to whoever calls
+with it (Prometheus, the Operations screen). With `overlap:` the one before still works that long (at most 30 days),
+for callers to change over; without, it stops at once. The operator's routes do the same over HTTP
+(docs/api.md, *The vault and the installation's secrets*); no task or route ever shows a value it was given.
+
+### The key that signs sessions
+
+Every session, browser cookie, API token, app token and OAuth access token is a token the server signs and only the
+server checks. With `JWT_SECRET` set, it signs as before, and its tokens name no key, so that an older build reads
+them. Without it, the vault's keys sign (`session.1`, `session.2`, …), and each token names the key that signed it.
+Only this server verifies them, so a secret key with a name does all that a key pair would; there is nothing to
+publish. An installation with nothing in its environment gets its first key at its first start, one between replicas
+starting together.
+
+`ferrum task secret_set name:jwt_secret` replaces it without signing anyone out: the next key signs from then on, and
+every key before it verifies what it signed until the longest token it could have signed has run out (the longest of
+`session_days` and `jwt_expiration_seconds` as they are then, and five minutes more), then it is gone. Each replica
+reads the keys again every 30 seconds, and at once when a token names one it does not hold: so a token one replica
+signs with the new key is taken by every other at once, and every replica signs with it within half a minute. A token
+naming a key that is not there, or over, or signed otherwise, is refused. The end is set at the rotation, from the
+settings then: a rotation made just after `session_days` was lowered ends sooner the browsers that signed in under the
+longer one.
+
+The copy of the environment's `JWT_SECRET` keeps verifying what that secret signed once the environment stops setting
+it. The first rotation run where `JWT_SECRET` is no longer set gives the copy an end too, as for any key before.
+
+### Taking the secrets out of the environment
+
+1. Start every replica with this release, its environment as before. Each secret the environment sets is copied into
+   the vault (`ferrum task vault_events` shows each `adopt`; `ferrum task settings` shows each from `environment`).
+   Keep a recovery key (`ferrum task vault_recovery`): from now on the vault holds what the environment did.
+2. Take the variables out of the environment (the chart's or Compose's secret, the Deployment) and start the replicas
+   again. Each then comes from the vault (`ferrum task settings`: `vault`). People stay signed in: the copy of
+   `JWT_SECRET` verifies the tokens it signed.
+3. Run `ferrum task secret_set name:jwt_secret` once every replica runs without `JWT_SECRET`: the vault's keys sign
+   from then on, and the copy of the old secret stops verifying once its tokens have run out. Replace the tokens
+   callers hold if they were ever seen elsewhere (`secret_set name:metrics_token overlap:…`, and so on).
+4. `ferrum task doctor` says which secrets the environment still decides, and warns while the vault is closed.
+
+The environment keeps working through this release; the release after it stops reading these variables. The chart and
+Compose still require `JWT_SECRET` in this release (they let it go with that release): with them, leave it set, and
+the vault holds its copy meanwhile.
+
+### Rolling back with the secrets in the vault
+
+A build before this one reads its secrets from the environment alone. On a database whose secrets are in the vault and
+with an environment emptied, it does not work: it refuses to start in production (*JWT_SECRET is not set*), its
+operator routes and `/api/tenants` answer nobody, `/metrics` asks no token, mail is sent without its password and
+object storage without its keys. Before rolling back, put the variables back into the environment, from where you keep
+them (the vault shows a value to nobody): the mail and storage passwords and the model provider's key as they were; a
+new `JWT_SECRET` (the older build cannot read what the vault's keys signed, so people sign in again; the old secret, if
+you still have it, keeps the sessions it signed); the tokens your callers hold. The older build ignores the vault, and
+this build, started again later, takes the environment's values while they are set.
+
+### A workspace's vault
+
+Its keys and secrets follow the workspace. Deleting it (`delete_tenant`, `delete_sandbox`, and `finish_move` at the
+source of a move) removes them in the same transaction as its rows, and says so in the vault's record
+(`workspace_vault_removed`, with why, and how many keys and secrets). A sandbox has each secret as the secret's rule
+says (*A sandbox of a workspace*), with keys of its own. A move carries them (*Moving one workspace*).
 
 ## Durable processes
 
@@ -2257,7 +2361,7 @@ command line; none of it is printed):
 | Variable | What it is |
 |---|---|
 | `FERRUM_MOVE_SOURCE_DATABASE_URL` | The source's database, as its `DATABASE_URL` (the role it gives must be able to read every row) |
-| `FERRUM_MOVE_SOURCE_SECRET_KEYS` | The source's `FERRUM_SECRET_KEY`, then each of its `FERRUM_RETIRED_SECRET_KEYS`, comma-separated (plain, or wrapped by this installation's `FERRUM_KMS_TRANSIT`) |
+| `FERRUM_MOVE_SOURCE_SECRET_KEYS` | The source's `FERRUM_SECRET_KEY`, then each of its `FERRUM_RETIRED_SECRET_KEYS`, comma-separated (plain, or wrapped by this installation's `FERRUM_KMS_TRANSIT`); and the workspace's transfer key, when it has anything in the vault (below) |
 | `FERRUM_MOVE_SOURCE_FILES` | `same` when both installations use one bucket or directory; otherwise one of the two below |
 | `FERRUM_MOVE_SOURCE_FILES_DIR` | The source's files directory, mounted here |
 | `FERRUM_MOVE_SOURCE_S3_BUCKET`, `_S3_REGION`, `_S3_ENDPOINT` | The source's bucket, read with this installation's `AWS_*` credentials |
@@ -2270,6 +2374,22 @@ ferrum task move_workspace tenant:acme abort:yes       # undo, until the point o
 ferrum task move_workspace tenant:acme status:yes      # what this side records, changing nothing
 ferrum task finish_move tenant:acme note:"checked at eu-2"   # at the source, later: delete what it left there
 ```
+
+**Its vault.** Neither installation can open the other's vault. A workspace with keys or secrets in the source's vault
+needs a transfer first, made at the source with the source's environment:
+
+```bash
+ferrum task vault_transfer workspace:acme      # at the source: prints the transfer key once
+```
+
+It wraps every version of the workspace's key with a key made for this transfer alone, kept in the source's database
+only wrapped; the transfer key is printed once and stored nowhere. Add it to `FERRUM_MOVE_SOURCE_SECRET_KEYS` where the
+move runs. The move refuses before anything is frozen without a transfer, with a key that is not the transfer's, or
+when the workspace's key changed at the source after the transfer was made (make it again). Step 4 opens the
+workspace's keys with it, wraps them with this installation's key, and copies the owner keys and secrets below them as
+they are; step 6 also compares the source's vault with what was copied. An abort removes the vault's copy here with
+the rest; `finish_move` removes the source's keys, secrets and transfer, so that the source's copy opens nothing.
+Moving it back takes a transfer made where it is then.
 
 **The steps**, each recorded on both sides (`workspace_move`), so that running it again carries on:
 
@@ -2467,6 +2587,12 @@ again under the new id. Everything else sealed is blanked, so the sandbox cannot
 
 A connection, channel or provider stays in the list, blank: entering credentials there makes it work inside the
 sandbox, and still nothing goes out.
+
+**Its vault.** The sandbox gets keys of its own, never the live workspace's, and each of the live workspace's secrets as
+the secret's rule says: `blank` (the default) leaves it out, `regenerate` makes a value of its own of the same kind
+(a random value, or an Ed25519 pair) that nobody is shown, and `keep` copies the value, sealed with the sandbox's keys.
+`resume:yes` makes only what is not there yet. A sandbox of a workspace of another installation starts with an empty
+vault: the source's secrets open only with the source's keys.
 
 **Why nothing can leave.** The mark (`sandbox_of`, `sandbox_from`, `sandbox_until` on the workspace) is written with
 the sandbox's own row, in the transaction that copies every other row: there is never a copy without it. No setting

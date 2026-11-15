@@ -29,16 +29,26 @@ pub(crate) fn build_storage(settings: &Settings) -> Result<Storage> {
         // OpenDAL talks HTTP through a process-wide transport that must be installed first.
         opendal::install_default();
         let region = if settings.s3_region.is_empty() { "auto" } else { settings.s3_region.as_str() };
-        let driver = if settings.s3_endpoint.is_empty() {
+        // The environment's keys, else the vault's (crate::secrets). AWS itself (no endpoint) finds the environment's on
+        // its own, and is given the vault's when the environment has none.
+        let aws = settings.s3_endpoint.is_empty();
+        let key = |k: &str| {
+            let env = std::env::var(k).ok().filter(|v| !v.is_empty() && !aws);
+            env.or_else(|| settings.revealed.get(&k.to_ascii_lowercase()).map(str::to_string))
+        };
+        let driver = if aws && (key("AWS_ACCESS_KEY_ID").is_none() || key("AWS_SECRET_ACCESS_KEY").is_none()) {
             storage::drivers::aws::new(&settings.s3_bucket, region)
         } else {
-            let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
             let credential = storage::drivers::aws::Credential {
-                key_id: env("AWS_ACCESS_KEY_ID").ok_or_else(|| Error::Message("AWS_ACCESS_KEY_ID is required with FERRUM_S3_ENDPOINT".into()))?,
-                secret_key: env("AWS_SECRET_ACCESS_KEY").ok_or_else(|| Error::Message("AWS_SECRET_ACCESS_KEY is required with FERRUM_S3_ENDPOINT".into()))?,
-                token: env("AWS_SESSION_TOKEN"),
+                key_id: key("AWS_ACCESS_KEY_ID").ok_or_else(|| Error::Message("AWS_ACCESS_KEY_ID is required with FERRUM_S3_ENDPOINT".into()))?,
+                secret_key: key("AWS_SECRET_ACCESS_KEY").ok_or_else(|| Error::Message("AWS_SECRET_ACCESS_KEY is required with FERRUM_S3_ENDPOINT".into()))?,
+                token: key("AWS_SESSION_TOKEN"),
             };
-            storage::drivers::aws::with_credentials_and_endpoint(&settings.s3_bucket, region, &settings.s3_endpoint, credential)
+            if aws {
+                storage::drivers::aws::with_credentials(&settings.s3_bucket, region, credential)
+            } else {
+                storage::drivers::aws::with_credentials_and_endpoint(&settings.s3_bucket, region, &settings.s3_endpoint, credential)
+            }
         }
         .map_err(|e| Error::Message(format!("object storage: {e}")))?;
         return Ok(Storage::single(driver));
@@ -168,19 +178,12 @@ impl Hooks for App {
         }
         ferrum_kernel::env::set(snapshot.vars());
         let settings = Settings::from_ctx(&ctx)?;
-        // A secret the environment still holds: the file lets it be missing, so that the table is read; here it may not.
-        if ctx.environment == Environment::Production && ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).is_none_or(|j| j.secret.trim().is_empty()) {
-            return Err(Error::Message("JWT_SECRET is not set: give it `openssl rand -base64 48` (docs/operations.md, Configuration)".into()));
-        }
         // The hosts this server names for itself, checked before it connects to or writes anything, on every start
         // (a guest of a newer build's database too).
         crate::shell::check_names(&settings, &ctx.config.server.host).map_err(Error::Message)?;
         // Zones (docs/operations.md, "Zones"): anything not plainly right refuses to start.
         let zones = ferrum_kernel::zones::Zones::parse(&settings.zones, &settings.zone, &settings.zone_default, &settings.zone_mode).map_err(Error::Message)?;
         zones.check_background(settings.run_background).map_err(Error::Message)?;
-        // The kernel's settings that apply at once (the audit sink among them, docs/operations.md, "Sending the audit log
-        // elsewhere"), made as a change makes them: checked before anything else too.
-        let kernel_live = crate::settings::kernel_live(&settings, &ferrum_kernel::env::var).map_err(Error::Message)?;
         // `ferrum task migrate` is what brings the database up to date, whatever the setting says.
         let migrating = is_migrate_task(std::env::args());
         let migrate_now = settings.migrate_at_start || migrating;
@@ -216,6 +219,22 @@ impl Hooks for App {
         .map_err(|e| Error::Message(format!("database: {e}")))?;
         // A database fenced for a planned move: the server starts (its start-up steps write), then serves read-only.
         db.starting(true);
+        // The vault (D3), opened as the database is; the server's own handle on it taken before any app registers; and
+        // the platform's secrets the configuration does not set, read from it into the places the environment's would be
+        // (crate::secrets): the mail password, the audit sink's key, the object store's and the model provider's keys.
+        let transit = kms_transit(&settings)?;
+        crate::tasks::open_vault(&db, &settings, &ctx.config.database.uri, transit.as_ref()).await?;
+        let mut hooks = HookRegistry::default();
+        let platform = hooks.platform_vault();
+        let revealed = crate::secrets::at_start(&db, &hooks, &platform, &mut ctx.config, &snapshot).await.map_err(Error::Message)?;
+        if revealed.mail {
+            ctx.mailer = crate::settings::mailer(&ctx.config)?;
+        }
+        let mut settings = Settings::from_ctx(&ctx)?;
+        settings.revealed = revealed;
+        // The kernel's settings that apply at once (the audit sink among them, docs/operations.md, "Sending the audit log
+        // elsewhere"), made as a change makes them: checked before anything is written.
+        let kernel_live = crate::settings::kernel_live(&settings, &ferrum_kernel::env::var).map_err(Error::Message)?;
         let catalog = crate::packages::base_catalog(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
         let missing = crate::packages::missing_logic(&catalog);
         if !missing.is_empty() {
@@ -225,10 +244,11 @@ impl Hooks for App {
                 settings.packages_dir
             )));
         }
-        let mut hooks = HookRegistry::default();
         ferrum_domain::register(&mut hooks);
         crate::packages::register(&mut hooks).map_err(|e| Error::Message(format!("apps: {e}")))?;
         let plugins = ferrum_plugins::PluginHost::new(settings.webhooks_allow_private).map_err(|e| Error::Message(format!("plugins: {e}")))?;
+        // Each plugin's handle is made with the platform's: its secrets go on its requests, to nobody else.
+        plugins.use_vault(platform.clone());
         hooks.register("*", Arc::new(ferrum_plugins::PluginHook(plugins.clone())));
         hooks.add_event_sink(Arc::new(ferrum_plugins::PluginEvents(plugins.clone())));
         hooks.set_connector_source(Arc::new(ferrum_plugins::connect::PluginConnectors(plugins.clone())));
@@ -244,9 +264,7 @@ impl Hooks for App {
             .map_err(Error::Message)?;
         let mailer: Option<Arc<dyn Mailer>> = ctx.mailer.clone().map(|sender| Arc::new(LocoMailer { sender, from: None, smtp }) as Arc<dyn Mailer>);
         let jwt = ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).ok_or_else(|| Error::Message("auth.jwt is not configured".into()))?;
-        let transit = kms_transit(&settings)?;
         let secret_key = secret_key(&settings, transit.as_ref(), &jwt.secret, &ctx.environment).await?;
-        crate::tasks::open_vault(&db, &settings, &ctx.config.database.uri, transit.as_ref()).await?;
         let mut retired = Vec::new();
         for k in settings.retired_secret_keys.split(',').map(str::trim).filter(|k| !k.is_empty()) {
             retired.push(ferrum_kernel::kms::resolve(k, transit.as_ref()).await.map_err(|e| Error::Message(format!("settings.retired_secret_keys: {e}")))?);
@@ -312,12 +330,18 @@ impl Hooks for App {
             Err(e) => tracing::warn!("resealing stored secrets: {e}"),
         }
         // Loco signs with the base64-decoded secret: reject anything that is not valid base64 at boot.
-        if loco_rs::auth::jwt::JWT::new(&jwt.secret).generate_token(60, "probe".into(), serde_json::Map::new()).is_err() {
-            return Err(Error::Message("auth.jwt.secret must be base64 (generate one with `openssl rand -base64 48`)".into()));
+        if !jwt.secret.trim().is_empty() {
+            if loco_rs::auth::jwt::JWT::new(&jwt.secret).generate_token(60, "probe".into(), serde_json::Map::new()).is_err() {
+                return Err(Error::Message("auth.jwt.secret must be base64 (generate one with `openssl rand -base64 48`)".into()));
+            }
+            if jwt.secret.len() < 44 && ctx.environment == Environment::Production {
+                return Err(Error::Message("auth.jwt.secret must encode at least 32 random bytes in production".into()));
+            }
         }
-        if jwt.secret.len() < 44 && ctx.environment == Environment::Production {
-            return Err(Error::Message("auth.jwt.secret must encode at least 32 random bytes in production".into()));
-        }
+        // What signs sessions (crate::sessions): JWT_SECRET where it is set, else the vault's keys (its first made now);
+        // refused when neither is there.
+        let vault_open = ferrum_kernel::vault::status(&kernel.db).await.is_ok_and(|s| s.open);
+        let sessions = crate::sessions::Sessions::start(&jwt.secret, vault_open.then(|| (kernel.clone(), platform.clone()))).await.map_err(Error::Message)?;
         let storage = build_storage(&settings)?;
         probe_storage(&storage).await;
         let objects = Arc::new(crate::objects::Objects::new(&settings).map_err(|e| Error::Message(format!("object storage: {e}")))?);
@@ -402,8 +426,10 @@ impl Hooks for App {
             settings,
             shutdown: Arc::new(tx),
             background: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-            jwt_secret: jwt.secret.clone(),
+            sessions: Arc::new(sessions),
             jwt_expiration: jwt.expiration,
+            vault: platform,
+            vault_open,
             login_limiter: Arc::new(RateLimiter::shared("login", Duration::from_secs(60), 20, db.clone())),
             mail_limiter: Arc::new(RateLimiter::shared("mail", Duration::from_secs(60), 30, db.clone())),
             // Public endpoints are open to the internet: a generous per-address budget stops floods.
@@ -417,7 +443,7 @@ impl Hooks for App {
             apps: Arc::new(apps),
             objects,
             shell,
-            assistant: crate::assistant::Assistant::new(crate::assistant::Config::from_env()),
+            assistant: crate::assistant::Assistant::new(crate::assistant::Config::from_env_or(settings_at_start.revealed.get("assistant_api_key"))),
             zones,
             live_settings: Arc::new(crate::settings::Live::new(&pool, &ctx.config, snapshot, settings_at_start)),
         };
@@ -441,6 +467,11 @@ impl Hooks for App {
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("copying the environment's settings into the database failed (the next start tries again): {e}"),
+            }
+            // The platform's secrets the environment sets and the vault lacks, stored there once (crate::secrets).
+            let stored = crate::secrets::adopt(&state, &|name| std::env::var(name).ok()).await;
+            if !stored.is_empty() {
+                tracing::info!(secrets = %stored.join(", "), "stored the secrets the environment sets in the vault");
             }
         }
         // Every replica that serves requests: cache invalidation and delivery to the sockets it holds.
@@ -636,6 +667,7 @@ impl Hooks for App {
             .add_route(controllers::domains::routes())
             .add_route(controllers::shell::routes())
             .add_route(controllers::operator::routes())
+            .add_route(controllers::secrets::routes())
     }
 
     async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {
@@ -690,6 +722,9 @@ impl Hooks for App {
         tasks.register(crate::tasks::SetSetting(true));
         tasks.register(crate::tasks::SetSetting(false));
         tasks.register(crate::tasks::ApplySettings);
+        tasks.register(crate::tasks::SecretSet);
+        tasks.register(crate::tasks::SecretRemove);
+        tasks.register(crate::tasks::VaultTransfer);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

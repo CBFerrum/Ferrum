@@ -86,7 +86,7 @@ fn keeping_and_using_data_are_separate_decisions() {
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     // Three records a rule reaches in a day, so a scan's progress across days can be seen.
     let settings = KernelSettings { retention_daily_records: 3, ..Default::default() };
     let k = Kernel::boot(db, catalog(), HookRegistry::default(), settings, None).await.expect("boot");

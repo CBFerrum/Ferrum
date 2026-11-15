@@ -61,7 +61,7 @@ async fn cut(db: &Db, channel: &str) -> i64 {
 async fn scenario(main: String) {
     let db = connect(&main).await;
     assert!(db.pooled());
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.direct).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.direct).await.expect("reset");
 
     // The main pool starts no session settings (a pooler refuses them); each transaction sets its own, a direct
     // connection starts with them.

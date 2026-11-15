@@ -69,7 +69,7 @@ fn sign_up_and_plans() {
 
 async fn scenario() {
     let db = Db::connect(DbConfig { url: url(), max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
 
     // The operator's plans are checked before the server starts.
     assert!(plans::validate(json!({"free": {"people": 2}}).as_object().unwrap()).is_ok());

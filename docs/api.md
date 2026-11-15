@@ -2211,23 +2211,28 @@ Public files (`public=true`; images and PDFs only — logos, product photos, bro
 ## Settings — `/api/operator/settings` (the installation's operator)
 
 The installation's settings in the database ([operations](operations.md#settings-in-the-database)), for the
-Operations screen. Every call needs the operator's token in `X-Ferrum-Operator-Token` (the secret
-`FERRUM_OPERATOR_TOKEN`, compared in constant time); without it, or while the server has none, `403` with the same
-answer either way. Answers are never cached (`Cache-Control: no-store`).
+Operations screen. Every call needs the operator's token in `X-Ferrum-Operator-Token` (`FERRUM_OPERATOR_TOKEN` where
+the environment sets it, else the vault's, [operations](operations.md#the-platforms-secrets); compared in constant
+time); without it, or while the server has none, `403` with the same answer either way. Answers are never cached
+(`Cache-Control: no-store`).
 
 * `GET /api/operator/settings` → `{version, pool, settings: [...], replicas: [...]}`. `version`: the table's highest
   version; `pool`: the pool of the replica that answered. Each setting: `key`, `env` (its variable), `type` (`text`,
   `bool`, `int`, `json` or `choice`, with `values`), `default`, `scope` (`installation` or `pool`), `applies` (`live`:
   at once; `start`: at a replica's next start), `secret`, `environment` (who still reads it from the environment
   itself; the table's value would not reach them), `sends` (the secret this address is given), `source` (where this
-  replica's value comes from: `environment`, `database` or `default`), `value` (this replica's; `null` for the default,
-  and always for a secret), `set` (whether anything sets it: for a secret, all that is said), and `stored` (the
-  table's own value: the installation's, or `{pool: value}` for a pool's own). Each replica seen in the last two
-  minutes: `id`, `pool`, `build_date`, `started_at`, `seen_at`, `settings_version`, and `older`: the settings that
-  apply at start and changed since, whose older value it runs until it starts again (unless its environment sets them).
-* `PUT /api/operator/settings/{key}` `{"value": "7", "pool": "web"}` (`value` text, a number or `true`/`false`; `pool`
-  for a pool's own setting, `default` for replicas whose address names none) → `{"changed": [{key, pool, old, new,
-  version}]}` (`version` `null`: it was so already). `{key}` is the setting's key or its variable. `404`: no such
+  replica's value comes from: `environment`, `database` or `default`; for a secret the vault holds, `environment`,
+  `vault` or `default`), `value` (this replica's; `null` for the default, and always for a secret), `set` (whether
+  anything sets it: for a secret, all that is said), and `stored` (the table's own value: the installation's, or
+  `{pool: value}` for a pool's own). Each replica seen in the last two minutes: `id`, `pool`, `build_date`, `started_at`, `seen_at`, `settings_version`, and
+  `older`: the settings that apply at start and changed since, and the secrets handed to a library that the vault
+  changed since it started, whose older value it runs until it starts again (unless its environment sets them).
+* `PUT /api/operator/settings/{key}` `{"value": "7", "pool": "web", "secret": "…"}` (`value` text, a number or
+  `true`/`false`; `pool` for a pool's own setting, `default` for replicas whose address names none; `secret` only for an
+  address that is given a secret, `sends` above) → `{"changed": [{key, pool, old, new, version}], "secrets": [{secret,
+  now}]}` (`version` `null`: it was so already). An address that is given a secret and changes takes that secret again
+  (`secret`: it is set in the vault for the new host, `now` `set`) or the vault's copy is cleared (`now` `cleared`), so
+  that it never goes to a host it was not set for. `{key}` is the setting's key or its variable. `404`: no such
   setting; `422`: a value not of its type, a secret (never accepted: it stays in the environment), a setting someone
   else reads from the environment, a pool's own without its pool (or an installation's with one), or a value a
   replica's start would refuse (host names, zones, the audit sink, plans and sign-up, how domains are proven, object
@@ -2237,6 +2242,53 @@ answer either way. Answers are never cached (`Cache-Control: no-store`).
 
 Each change is recorded in `setting_change` with its value before and after (`updated_by` `operator`) and announced to
 every replica.
+
+## The vault and the installation's secrets — `/api/operator/vault`, `/api/operator/secrets` (the operator)
+
+The installation's own scope of the vault ([operations](operations.md#the-vault)), behind the operator's token as the
+settings are, never cached. No answer holds a value; one the vault or the server makes is shown once, in the answer
+that made it (`shown`).
+
+* `GET /api/operator/vault` → the vault as `ferrum task vault_status` shows it: `open`, `closed_because`,
+  `opened_with`, `installation_version`, `slots` (`kind`, `made_at`, `how`), the keys and secrets counted, what is
+  being sealed again. Never a key.
+* `GET /api/operator/secrets` → `{owners: [{owner, secrets: [...]}], platform: [...]}`. Each secret: `owner`,
+  `workspace` (`null`), `name`, `kind` (`value` or `ed25519`), `version`, `rule` (`reveal`, `hosts`, `sandbox`,
+  `overlap_secs`, `expires_at`), `set_at`, `set_by`, `last_used` (a day), `public_key` (an Ed25519 pair's), and
+  `previous_until` (until when the version before still verifies). `platform`: each of the platform's own secrets
+  (the registry's `vault:`): `key`, `env`, `held` (`session`, `compared` or `library`), `source` (`environment`,
+  `vault` or `default`: none), `applies` (`live`: at once on every replica; `start`: at each replica's next start).
+* `PUT /api/operator/secrets/{owner}/{name}` (and `POST /api/operator/secrets/{owner}/{name}/rotate`). For the owner
+  `platform`, `{name}` is the registry's key, and what happens is its kind's: a token the server compares (`{}`, or
+  `{"overlap_secs": 3600}` for how long the one before still works) is made and shown once → `{secret, shown}`;
+  `jwt_secret` (`{}`) makes a new key that signs sessions → `{secret}` (`session.<n>`); a secret handed to a library
+  takes `{"value": "…"}`, bound to the host it is sent to now → `{secret}`. For any other owner (an app's id,
+  `plugin:<name>`): exactly one of `{"value": "…"}`, `{"random": 32}` (bytes; shown once) or `{"ed25519": true}`, with
+  `{"rule": {...}}` to set it (without one, a rotation under its rule) → `{secret, shown?}`. `404`: no such owner or
+  platform secret; `422`: a value where none is taken, none where one is needed, a rule that is not one; `503`: the
+  vault is closed.
+* `DELETE /api/operator/secrets/{owner}/{name}` → `{"removed": true|false}`.
+
+Each change is on the vault's own record (`ferrum task vault_events`), `by` `operator`, never a value.
+
+## Secrets — `/api/admin/secrets` (a workspace's administrators)
+
+A workspace's secrets in the vault, every owner's, for the Administration screen ([operations](operations.md#the-vault)).
+An administrator of the workspace reads them; setting, rotating and removing one also needs a confirmed identity:
+without one, `403` with error `step_up` and the ways to confirm it (*Confirming it is you*). No answer holds a value;
+one the vault makes is shown once, in the answer that made it. Never cached.
+
+* `GET /api/admin/secrets` → `{owners: [{owner, secrets: [...]}]}`, each secret described as above (`workspace` its
+  id). `403`: not an administrator of it.
+* `PUT /api/admin/secrets/{owner}/{name}` with exactly one of `{"value": "…"}`, `{"random": 32}` (bytes, 16 to 64; shown
+  once) or `{"ed25519": true}`, and `{"rule": {"reveal": false, "hosts": ["api.example.com"], "sandbox": "blank|regenerate|keep",
+  "overlap_secs": 0, "expires_at": null}}` (absent: used, never revealed, blank in a sandbox) → `{secret, shown?}`.
+  `{owner}`: `platform`, an app's id, or `plugin:<name>`. `{name}`: lowercase letters, digits and `_ . -`.
+* `POST /api/admin/secrets/{owner}/{name}/rotate` with one of `value`, `random`, `ed25519` → `{secret, shown?}`: a new
+  version under its rule; the one before verifies for its rule's overlap. `404`: no such secret.
+* `DELETE /api/admin/secrets/{owner}/{name}` → `{"removed": true|false}`.
+
+Each change is on the workspace's audit trail (owner, name, verb, version; never a value).
 
 ## ERPNext compatibility
 

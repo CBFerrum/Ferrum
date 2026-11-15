@@ -24,7 +24,6 @@ use ferrum_kernel::shell::{HostRoute, normalize_host};
 use ferrum_kernel::signup::SignUp;
 use ferrum_kernel::{Ctx, Error};
 use loco_rs::app::AppContext;
-use loco_rs::auth::jwt::JWT;
 use loco_rs::controller::Routes;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -401,17 +400,17 @@ fn ticket(st: &AppState, s: &Session, kind: &str) -> Result<String, ApiError> {
 }
 
 /// The session a ticket of `kind` is for.
-fn from_ticket(st: &AppState, ticket: &str, kind: &str) -> Result<Session, ApiError> {
+async fn from_ticket(st: &AppState, ticket: &str, kind: &str) -> Result<Session, ApiError> {
     let again = || ApiError(Error::Unauthorized("sign in again".into()));
     if ticket.len() > 4096 {
         return Err(again());
     }
-    let data = JWT::new(&st.jwt_secret).validate(ticket).map_err(|_| again())?;
-    let claims = &data.claims.claims;
+    let data = st.sessions.validate(ticket).await.ok_or_else(again)?;
+    let claims = &data.claims;
     if claims.get("acct").and_then(Value::as_str) != Some(kind) {
         return Err(again());
     }
-    let user: Uuid = data.claims.pid.parse().map_err(|_| again())?;
+    let user: Uuid = data.pid.parse().map_err(|_| again())?;
     let tenant: Uuid = claims.get("tenant").and_then(Value::as_str).and_then(|s| s.parse().ok()).ok_or_else(again)?;
     let token_version = i32::try_from(claims.get("tv").and_then(Value::as_i64).ok_or_else(again)?).map_err(|_| again())?;
     Ok(Session { tenant, user, token_version })
@@ -459,11 +458,11 @@ async fn second_factor(State(app): State<AppContext>, headers: HeaderMap, Json(r
     if req.code.len() > 64 {
         return Err(ApiError(Error::field("code", "is too long")));
     }
-    if let Ok(s) = from_ticket(&st, &req.ticket, "found") {
+    if let Ok(s) = from_ticket(&st, &req.ticket, "found").await {
         let outcome = st.kernel.account_found_second_factor(s.tenant, s.user, s.token_version, &req.code).await?;
         return answer(&st, &headers, outcome).await;
     }
-    let s = from_ticket(&st, &req.ticket, "mfa")?;
+    let s = from_ticket(&st, &req.ticket, "mfa").await?;
     let s = st.kernel.second_factor(s.tenant, s.user, s.token_version, &req.code).await?;
     answer(&st, &headers, AccountSignIn::Signed(s)).await
 }
@@ -472,7 +471,7 @@ async fn second_factor(State(app): State<AppContext>, headers: HeaderMap, Json(r
 async fn verify(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<StepReq>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
     st.login_limiter.check(&format!("{}|accounts|verify", client_ip(&headers))).await?;
-    let m = from_ticket(&st, &req.ticket, "verify")?;
+    let m = from_ticket(&st, &req.ticket, "verify").await?;
     let s = st.kernel.account_verify(&m, &req.code).await?;
     answer(&st, &headers, AccountSignIn::Signed(s)).await
 }

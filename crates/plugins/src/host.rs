@@ -223,7 +223,7 @@ impl Host<'_, '_> {
             "http.fetch" => {
                 // Nothing reaches outside for a sandbox (ferrum_kernel::sandbox).
                 self.kernel().outward(self.ctx().tenant).await?;
-                self.host.fetch(self.plugin, &a).await
+                self.host.fetch_as(self.plugin, &a, Some((self.kernel(), self.ctx().tenant))).await
             }
             "crypto.verify_hmac_sha256" => {
                 let secret = self.plugin.credential(s(&a, "credential")?)?;
@@ -454,10 +454,18 @@ impl PluginHost {
         Ok((token.to_string(), key))
     }
 
+    /// [`PluginHost::fetch_as`] with the plugin's declared credentials alone.
+    #[cfg(test)]
+    pub(crate) async fn fetch(&self, plugin: &Loaded, a: &Value) -> Result<Value> {
+        self.fetch_as(plugin, a, None).await
+    }
+
     /// Outbound HTTP for plugins: only hosts the plugin declared, never private addresses (unless
     /// allowed for development), DNS pinned between the check and the connection, no redirects.
-    /// With `auth`, the host signs the request in with a credential the plugin never sees.
-    pub(crate) async fn fetch(&self, plugin: &Loaded, a: &Value) -> Result<Value> {
+    /// With `auth`, the host signs the request in with a credential the plugin never sees: one it
+    /// declared, or `vault:<name>`, its secret in the vault for the workspace `held` names, which goes
+    /// only to the hosts the secret's rule names (ferrum_kernel::vault::Vault::carry).
+    pub async fn fetch_as(&self, plugin: &Loaded, a: &Value, held: Option<(&Kernel, Uuid)>) -> Result<Value> {
         let url = reqwest::Url::parse(s(a, "url")?).map_err(|e| Error::field("url", e.to_string()))?;
         let host = url.host_str().ok_or_else(|| Error::field("url", "has no host"))?.to_ascii_lowercase();
         if url.scheme() != "https" && !(url.scheme() == "http" && self.allow_private_http) {
@@ -496,7 +504,19 @@ impl PluginHost {
             }
         }
         let mut token = None;
-        if let Some(name) = auth {
+        // The one way a credential goes on a request (ferrum_kernel::vault::carried): a header marked sensitive.
+        let sensitive = |(h, v): (String, ferrum_kernel::vault::Zeroizing<String>)| -> Result<(String, reqwest::header::HeaderValue)> {
+            let mut value = reqwest::header::HeaderValue::from_str(&v).map_err(|_| Error::invalid("a credential is text on one line"))?;
+            value.set_sensitive(true);
+            Ok((h, value))
+        };
+        if let Some(name) = auth.and_then(|a| a.strip_prefix("vault:")) {
+            let (k, tenant) = held.ok_or_else(|| Error::invalid("a secret in the vault goes only on a workspace's call"))?;
+            let vault = self.vault.get().ok_or_else(|| Error::Unavailable("this server gives its plugins no vault".into()))?.plugin(&plugin.name)?;
+            let how = ferrum_kernel::vault::Carry::Bearer;
+            let (h, v) = sensitive(vault.carry(k, ferrum_kernel::vault::Scope::Workspace(tenant), name, &url, &how).await?)?;
+            req = req.header(h, v);
+        } else if let Some(name) = auth {
             let (c, secret) = plugin.declared_for(name, &host)?;
             req = match c.scheme.as_str() {
                 "oauth2" => {
@@ -504,8 +524,12 @@ impl PluginHost {
                     token = Some(key);
                     req.bearer_auth(value)
                 }
-                "basic" => req.basic_auth(plugin.user_of(c), Some(secret)),
-                _ => req.bearer_auth(secret),
+                scheme => {
+                    let how =
+                        if scheme == "basic" { ferrum_kernel::vault::Carry::Basic(plugin.user_of(c).to_string()) } else { ferrum_kernel::vault::Carry::Bearer };
+                    let (h, v) = sensitive(ferrum_kernel::vault::carried(&c.hosts, &host, &how, secret)?)?;
+                    req.header(h, v)
+                }
             };
         }
         if let Some(body) = a.get("body") {

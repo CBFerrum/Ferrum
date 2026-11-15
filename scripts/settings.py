@@ -12,7 +12,7 @@ What it checks:
   and the readers' own `env("X")`, `var("X")`, `some("X")`, `set("X")`, `env!`, `option_env!`) is declared, or on the
   allow-list below: the boot contract, tests' own, and what the build bakes in;
 * the registry itself: each key and variable once, a known type, a choice with its values, a secret neither stored nor
-  live, and the three settings a pool has of its own;
+  live, a vault's kind only on a secret, and the three settings a pool has of its own;
 * the table in docs/operations.md between its markers is the one this registry makes.
 """
 
@@ -49,6 +49,8 @@ GET_ENV = re.compile(r'get_env\(name="([A-Z0-9_]+)"')
 # A whole `<%= get_env(...) %>` tag, so that a file can be read as YAML with each tag in its variable's place.
 TAG = re.compile(r'<%=\s*get_env\(name="([A-Z0-9_]+)"(?:,\s*default="(?:[^"\\]|\\.)*")?\)\s*%>')
 TYPES = {"text", "bool", "int", "json", "choice"}
+# How the vault holds a platform secret (server/src/secrets.rs).
+HELD = {"session", "compared", "library"}
 POOL = ["db_max_connections", "run_background", "zone"]
 
 
@@ -82,6 +84,8 @@ def registry_findings(entries):
             found.append(f"{where}: only what the table holds applies at once or per pool")
         if e.get("sends") and not any(x.get("env") == e["sends"] and x.get("secret") for x in entries):
             found.append(f"{where}: sends {e['sends']}, which is not a secret of the registry")
+        if e.get("vault") is not None and (not e.get("secret") or e["vault"] not in HELD):
+            found.append(f"{where}: vault is one of {sorted(HELD)}, and only on a secret")
     pools = [e.get("key") for e in entries if e.get("scope") == "pool"]
     if pools != POOL:
         found.append(f"a pool's own settings are {POOL}, not {pools}")
@@ -155,7 +159,9 @@ def table(entries):
         if kind == "choice":
             kind = ", ".join(f"`{v}`" if v else "empty" for v in e["values"])
         default = e.get("default", "")
-        if e.get("secret"):
+        if e.get("secret") and e.get("vault"):
+            where = f"secret: the environment, else the vault ({e['vault']})"
+        elif e.get("secret"):
             where = "secret: the environment"
         elif e.get("environment"):
             where = f"the environment ({e['environment'].split(',')[0]})"
@@ -163,7 +169,7 @@ def table(entries):
             when = "at once" if e.get("applies") == "live" else "next start"
             where = f"{'each pool' if e.get('scope') == 'pool' else 'installation'}, {when}"
             if e.get("sends"):
-                where += f"; not from the table while `{e['sends']}` is in the environment"
+                where += f"; not from the table while `{e['sends']}` is in the environment; moving it takes that secret again or clears it"
         rows.append(f"| `{e['key']}` | `{e['env']}` | {kind} | {f'`{cell(default)}`' if default else ''} | {where} | {cell(e.get('doc', ''))} |")
     return "\n".join(rows)
 
@@ -191,8 +197,9 @@ def main():
         print(f)
     live = sum(1 for e in entries if e.get("applies") == "live")
     secret = sum(1 for e in entries if e.get("secret"))
+    held = sum(1 for e in entries if e.get("vault"))
     elsewhere = sum(1 for e in entries if e.get("environment"))
-    print(f"{len(entries)} settings: {live} apply at once, {secret} secrets, {elsewhere} read from the environment by others; {len(found)} findings")
+    print(f"{len(entries)} settings: {live} apply at once, {secret} secrets ({held} in the vault), {elsewhere} read from the environment by others; {len(found)} findings")
     return 1 if found else 0
 
 

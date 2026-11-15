@@ -377,6 +377,9 @@ impl Kernel {
         tx.commit().await?;
         match (here, c.resume) {
             (Some((id, Some(of))), true) if of == tenant => {
+                if from_here {
+                    crate::vault::sandbox_secrets(self, tenant, id).await?;
+                }
                 self.carry_files(id, store.as_ref(), Some(tenant), say).await?;
                 say(&format!("{new_slug} is whole: every file it names is here"));
                 return Ok(json!({"workspace": new_slug, "sandbox": id, "of": slug, "resumed": true}));
@@ -594,6 +597,15 @@ impl Kernel {
             Some(h) => format!("it answers at {h}; nothing it does reaches outside"),
             None => format!("it has no address of its own: sign in with the workspace name {new_slug}; nothing it does reaches outside"),
         });
+        if from_here {
+            let s = crate::vault::sandbox_secrets(self, tenant, new).await?;
+            say(&format!(
+                "its vault, with keys of its own: {} secrets kept, {} made anew, {} left blank, as each one's rule says",
+                s["kept"], s["regenerated"], s["blank"]
+            ));
+        } else {
+            say("its vault is empty: the source's secrets open only with the source's keys, so set them here again");
+        }
         if c.halt == Some(Halt::BeforeFiles) {
             return Ok(json!({"workspace": new_slug, "sandbox": new, "halted": "before files"}));
         }
@@ -658,6 +670,7 @@ impl Kernel {
                 sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?.rows_affected();
         }
         sqlx::query("delete from tenant where id = $1 and sandbox_of is not null").bind(tenant).execute(&mut *tx).await?;
+        crate::vault::drop_scope(&mut tx, tenant, "sandbox_deleted").await?;
         tx.commit().await?;
         self.hosts.clear();
         self.registry.invalidate(tenant);

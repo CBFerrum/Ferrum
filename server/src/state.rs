@@ -220,9 +220,13 @@ pub struct Settings {
     /// audit log elsewhere"). Empty: nothing is sent.
     #[serde(default)]
     pub audit_sink_url: String,
-    /// The key its batches are signed with (`FERRUM_AUDIT_SINK_SECRET`).
+    /// The key its batches are signed with (`FERRUM_AUDIT_SINK_SECRET`, else the vault's).
     #[serde(default)]
     pub audit_sink_secret: String,
+    /// What the vault gave the start where the environment sets nothing: the object store's keys, the model provider's
+    /// key (crate::secrets). Never shown.
+    #[serde(skip)]
+    pub revealed: crate::secrets::Revealed,
     /// `FERRUM_DATABASE_DIRECT_URL`: PostgreSQL itself, for LISTEN, session locks and migrations, when `DATABASE_URL` is
     /// a pooler in transaction mode. Empty: `DATABASE_URL`.
     #[serde(default)]
@@ -430,8 +434,13 @@ pub struct AppState {
     pub settings: Settings,
     pub shutdown: Arc<watch::Sender<bool>>,
     pub background: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
-    pub jwt_secret: String,
+    /// The keys that sign sessions and API tokens (crate::sessions).
+    pub sessions: Arc<crate::sessions::Sessions>,
     pub jwt_expiration: u64,
+    /// The platform's own vault handle, as the registry gave it to the server (crate::secrets).
+    pub vault: ferrum_kernel::vault::Vault,
+    /// Whether the vault was open as the server started: without it, the platform's secrets are the environment's alone.
+    pub vault_open: bool,
     pub login_limiter: Arc<RateLimiter>,
     /// Documents a user may email per minute.
     pub mail_limiter: Arc<RateLimiter>,

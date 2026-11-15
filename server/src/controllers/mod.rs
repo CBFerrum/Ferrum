@@ -27,6 +27,7 @@ pub mod plugins;
 pub mod prefs;
 pub mod scim;
 pub mod search;
+pub mod secrets;
 pub mod shell;
 pub mod sites;
 pub mod system;
