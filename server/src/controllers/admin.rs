@@ -722,12 +722,13 @@ async fn create_webhook(Auth(ctx): Auth, State(app): State<AppContext>, Json(w):
     let id = Uuid::now_v7();
     let secret: String = hex::encode(uuid::Uuid::new_v4().as_bytes()) + &hex::encode(uuid::Uuid::new_v4().as_bytes());
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
+    let stored = st.kernel.keep_webhook_secret(&mut tx, ctx.tenant, id, &secret).await?;
     sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics, created_by) values ($1, $2, $3, $4, $5, $6, $7)")
         .bind(ctx.tenant)
         .bind(id)
         .bind(w.name.trim())
         .bind(&w.url)
-        .bind(st.kernel.seal_webhook_secret(ctx.tenant, id, &secret)?)
+        .bind(stored)
         .bind(&w.topics)
         .bind(ctx.user)
         .execute(&mut *tx)
@@ -758,6 +759,8 @@ async fn delete_webhook(Auth(ctx): Auth, State(app): State<AppContext>, Path(id)
         return Err(ApiError(Error::invalid(format!("this webhook is how the {app} app hears of events; turn the app off or remove it instead"))));
     }
     sqlx::query("delete from webhook where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await.map_err(Error::from)?;
+    // Its signing secret goes from the vault with it.
+    st.kernel.forget_webhook_secret(&mut tx, ctx.tenant, id).await?;
     ferrum_kernel::registry::Registry::bump_version(&mut tx, ctx.tenant).await?;
     tx.commit().await.map_err(Error::from)?;
     st.kernel.registry.invalidate(ctx.tenant);

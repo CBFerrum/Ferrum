@@ -777,7 +777,7 @@ impl Kernel {
             // Nothing goes out for a sandbox (sandbox.rs).
             self.outward(d.tenant_id).await.map_err(|e| (None, e.to_string()))?;
             // One whose secret cannot be opened is not sent unsigned: it fails, and says why.
-            let secret = self.webhook_secret(d.tenant_id, d.webhook_id, &d.secret).map_err(|e| (None, e.to_string()))?;
+            let secret = self.webhook_secret(d.tenant_id, d.webhook_id, &d.secret).await.map_err(|e| (None, e.to_string()))?;
             self.post_webhook(&d.url, &secret, &d.topic, d.id, &d.payload).await
         }))
         .await;

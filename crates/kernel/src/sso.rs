@@ -42,6 +42,7 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::oauth::{hash, random_secret};
 use crate::shell::StepUp;
+use crate::vault::kept::Place;
 use crate::{Kernel, audit};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -446,44 +447,63 @@ impl Kernel {
             rows = read().await?;
         }
         let unreadable = |_| Error::Internal("the workspace's SAML encryption key is not base64".into());
-        rows.into_iter()
-            .map(|(id, private, cert, _)| {
-                let private_der = STANDARD.decode(self.open_sealed(&saml_enc_label(tenant, id), &private)?).map_err(unreadable)?;
-                Ok(ferrum_saml::SpKey { private_der, certificate_der: STANDARD.decode(cert).map_err(unreadable)? })
-            })
-            .collect()
+        let mut keys = Vec::with_capacity(rows.len());
+        for (id, private, cert, _) in rows {
+            let private_der = STANDARD.decode(self.kept_alone(&Place::saml_enc(tenant, id), &private).await?.as_bytes()).map_err(unreadable)?;
+            keys.push(ferrum_saml::SpKey { private_der, certificate_der: STANDARD.decode(cert).map_err(unreadable)? });
+        }
+        Ok(keys)
     }
 
     /// Makes the workspace a new encryption key; `replace`: the current one stays published and
     /// accepted for 30 days more, else none is replaced (and a key made at the same time elsewhere
     /// wins). Two replacements at once: one fails, on the one current key the database allows.
     async fn add_saml_enc_key(&self, tenant: Uuid, replace: bool) -> Result<Uuid> {
-        let key = self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("SAML needs the server's secret key (FERRUM_SECRET_KEY)".into()))?;
+        if !self.kept_here() {
+            return Err(Error::Unavailable("SAML needs the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
+        }
         let made = tokio::task::spawn_blocking(move || ferrum_saml::new_sp_key(&format!("Ferrum {tenant} encryption")))
             .await
             .map_err(|e| Error::Unavailable(format!("making the workspace's SAML key stopped: {e}")))?
             .map_err(Error::Unavailable)?;
         let id = Uuid::now_v7();
-        let sealed = key.seal(&saml_enc_label(tenant, id), &STANDARD.encode(&made.private_der))?;
         let mut tx = self.db.system_tx().await?;
         if replace {
-            sqlx::query("delete from saml_enc_key where tenant_id = $1 and retires_at < now()").bind(tenant).execute(&mut *tx).await?;
+            let gone: Vec<Uuid> = sqlx::query_scalar("delete from saml_enc_key where tenant_id = $1 and retires_at < now() returning id")
+                .bind(tenant)
+                .fetch_all(&mut *tx)
+                .await?;
+            for old in gone {
+                crate::vault::kept::forget(&mut tx, &Place::saml_enc(tenant, old)).await?;
+            }
             sqlx::query("update saml_enc_key set retires_at = now() + make_interval(days => $2) where tenant_id = $1 and retires_at is null")
                 .bind(tenant)
                 .bind(ENC_KEY_OVERLAP_DAYS)
                 .execute(&mut *tx)
                 .await?;
         }
-        sqlx::query(
+        // The row first: a key made at the same time elsewhere wins, and only the one made here is kept.
+        let made_here = sqlx::query(
             "insert into saml_enc_key (tenant_id, id, private_key, certificate) values ($1, $2, $3, $4) \
              on conflict (tenant_id) where retires_at is null do nothing",
         )
         .bind(tenant)
         .bind(id)
-        .bind(sealed)
+        .bind(crate::vault::kept::MARKER)
         .bind(STANDARD.encode(&made.certificate_der))
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected()
+            == 1;
+        if made_here {
+            let stored = self.keep(&mut tx, &Place::saml_enc(tenant, id), &STANDARD.encode(&made.private_der)).await?;
+            sqlx::query("update saml_enc_key set private_key = $3 where tenant_id = $1 and id = $2")
+                .bind(tenant)
+                .bind(id)
+                .bind(stored)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await?;
         Ok(id)
     }
@@ -506,7 +526,7 @@ impl Kernel {
     /// The workspace's own SAML key, made the first time it is wanted (by whichever replica gets
     /// there first), its private half sealed by the server key.
     pub(crate) async fn saml_key(&self, tenant: Uuid) -> Result<ferrum_saml::SpKey> {
-        let label = saml_key_label(tenant);
+        let place = Place::saml_sp(tenant);
         let read = || async {
             let mut tx = self.db.system_tx().await?;
             let row: Option<(String, String)> =
@@ -517,26 +537,34 @@ impl Kernel {
         let row = match read().await? {
             Some(row) => row,
             None => {
-                let key =
-                    self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("SAML needs the server's secret key (FERRUM_SECRET_KEY)".into()))?;
+                if !self.kept_here() {
+                    return Err(Error::Unavailable("SAML needs the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
+                }
                 let made = tokio::task::spawn_blocking(move || ferrum_saml::new_sp_key(&format!("Ferrum {tenant}")))
                     .await
                     .map_err(|e| Error::Unavailable(format!("making the workspace's SAML key stopped: {e}")))?
                     .map_err(Error::Unavailable)?;
-                let sealed = key.seal(&label, &STANDARD.encode(&made.private_der))?;
                 let mut tx = self.db.system_tx().await?;
-                sqlx::query("insert into saml_sp_key (tenant_id, private_key, certificate) values ($1, $2, $3) on conflict (tenant_id) do nothing")
-                    .bind(tenant)
-                    .bind(sealed)
-                    .bind(STANDARD.encode(&made.certificate_der))
-                    .execute(&mut *tx)
-                    .await?;
+                // The row first: the replica whose row it is keeps its key; any other's is dropped.
+                let made_here =
+                    sqlx::query("insert into saml_sp_key (tenant_id, private_key, certificate) values ($1, $2, $3) on conflict (tenant_id) do nothing")
+                        .bind(tenant)
+                        .bind(crate::vault::kept::MARKER)
+                        .bind(STANDARD.encode(&made.certificate_der))
+                        .execute(&mut *tx)
+                        .await?
+                        .rows_affected()
+                        == 1;
+                if made_here {
+                    let stored = self.keep(&mut tx, &place, &STANDARD.encode(&made.private_der)).await?;
+                    sqlx::query("update saml_sp_key set private_key = $2 where tenant_id = $1").bind(tenant).bind(stored).execute(&mut *tx).await?;
+                }
                 tx.commit().await?;
                 read().await?.ok_or_else(|| Error::Retryable("the workspace's SAML key is being made".into()))?
             }
         };
         let unreadable = |_| Error::Internal("the workspace's SAML key is not base64".into());
-        let private_der = STANDARD.decode(self.open_sealed(&label, &row.0)?).map_err(unreadable)?;
+        let private_der = STANDARD.decode(self.kept_alone(&place, &row.0).await?.as_bytes()).map_err(unreadable)?;
         Ok(ferrum_saml::SpKey { private_der, certificate_der: STANDARD.decode(&row.1).map_err(unreadable)? })
     }
 
@@ -717,16 +745,26 @@ impl Kernel {
                 (idp.entity_id, String::new(), Some(source.to_string()))
             }
         };
-        let key =
-            self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("single sign-on needs the server's secret key (FERRUM_SECRET_KEY)".into()))?;
-        let secret = match input.client_secret.as_deref().map(str::trim) {
+        if !self.kept_here() {
+            return Err(Error::Unavailable("single sign-on needs the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
+        }
+        let given: Option<Option<&str>> = match input.client_secret.as_deref().map(str::trim) {
             _ if input.protocol == Protocol::Saml => Some(None),
             Some("") => Some(None),
             Some(s) if s.len() > 1000 => return Err(Error::field("client_secret", "is too long")),
-            Some(s) => Some(Some(key.seal(&sealed_label(ctx.tenant, id), s)?)),
+            Some(s) => Some(Some(s)),
             None => None,
         };
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // Kept in the transaction that saves the provider: neither goes without the other.
+        let secret: Option<Option<String>> = match given {
+            Some(Some(s)) => Some(Some(self.keep(&mut tx, &Place::sso(ctx.tenant, id), s).await?)),
+            Some(None) => {
+                crate::vault::kept::forget(&mut tx, &Place::sso(ctx.tenant, id)).await?;
+                Some(None)
+            }
+            None => None,
+        };
         if !new
             && sqlx::query_scalar::<_, i64>("select count(*) from sso_provider where tenant_id = $1 and id = $2 and protocol = $3")
                 .bind(ctx.tenant)
@@ -815,6 +853,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         let done = sqlx::query("delete from sso_provider where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?;
+        crate::vault::kept::forget(&mut tx, &Place::sso(ctx.tenant, id)).await?;
         if done.rows_affected() == 0 {
             return Err(Error::NotFound("single sign-on provider".into()));
         }
@@ -887,7 +926,7 @@ impl Kernel {
         // Every sign-in through a provider reaches it: never from a sandbox (sandbox.rs).
         self.outward(p.tenant_id).await?;
         let client_secret = match p.client_secret {
-            Some(sealed) => Some(self.open_sealed(&sealed_label(p.tenant_id, id), &sealed)?),
+            Some(stored) => Some(self.kept(tx, &Place::sso(p.tenant_id, id), &stored).await?.to_string()),
             None => None,
         };
         let provider = Provider {

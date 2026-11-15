@@ -457,6 +457,8 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
     .bind(format!("Erased user {}", tag(id)))
     .execute(&mut **tx)
     .await?;
+    // Their second factor goes from the vault with it.
+    crate::vault::kept::forget(tx, &crate::vault::kept::Place::totp(tenant, id)).await?;
     // A passkey's name ("Pat's phone") went into its history when they added it, also for one
     // removed since; it goes from there too.
     let passkeys: Vec<Uuid> =
@@ -770,7 +772,7 @@ impl Kernel {
         }
         // What connections keep of them; their own sign-ins' tokens go here, and are revoked once this commits.
         let records: Vec<(String, Uuid)> = erased.iter().filter_map(|e| Some((e["entity"].as_str()?.to_string(), e["id"].as_str()?.parse().ok()?))).collect();
-        let conns = crate::connections::personal::erase_held(&mut tx, ctx.tenant, account, &emails, &records).await?;
+        let conns = crate::connections::personal::erase_held(self, &mut tx, ctx.tenant, account, &emails, &records).await?;
         if conns.calls + conns.inbound > 0 || !conns.sign_ins.is_empty() {
             apps.push(json!({"app": "connections", "erased": conns.calls + conns.inbound + conns.sign_ins.len() as u64}));
         }
@@ -795,7 +797,7 @@ impl Kernel {
             self.invalidate_user(ctx.tenant, id);
         }
         let revoked = match account {
-            Some(id) if !conns.sign_ins.is_empty() => self.revoke_erased(ctx, id, conns.sign_ins).await,
+            Some(_) if !conns.sign_ins.is_empty() => self.revoke_erased(ctx, conns.sign_ins).await,
             _ => vec![],
         };
         // What this did not reach: the sandboxes of this workspace still hold their copy, to delete or make again.
@@ -911,7 +913,7 @@ impl Kernel {
             .flatten()
             .filter_map(|r| Some((r["entity"].as_str()?.to_string(), r["id"].as_str()?.parse().ok()?)))
             .collect();
-        let conns = crate::connections::personal::erase_held(tx, tenant, account, &addresses, &records).await?;
+        let conns = crate::connections::personal::erase_held(self, tx, tenant, account, &addresses, &records).await?;
         done += (conns.calls + conns.inbound) as usize + conns.sign_ins.len();
         if !addresses.is_empty() {
             redact_addresses(tx, ctx, &addresses, reason).await?;

@@ -8,6 +8,7 @@
 use crate::auth::Session;
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
+use crate::vault::kept::Place;
 use crate::{Kernel, audit};
 use data_encoding::BASE32_NOPAD;
 use hmac::{Hmac, Mac};
@@ -88,19 +89,24 @@ fn qr_svg(data: &str) -> Result<String> {
 }
 
 impl Kernel {
-    fn totp_key(&self) -> Result<&crate::secret::SecretKey> {
-        self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("two-factor sign-in needs the server's secret key (FERRUM_SECRET_KEY)".into()))
+    /// Whether this server can keep authenticator secrets: in the vault, or sealed with the old key.
+    fn totp_kept(&self) -> Result<()> {
+        if !self.kept_here() {
+            return Err(Error::Unavailable("two-factor sign-in needs the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
+        }
+        Ok(())
     }
 
-    /// An authenticator secret sealed for one person, sealed again for another (an identity taking
-    /// the credentials of the membership it was made from).
-    pub(crate) fn reseal_totp(&self, from: (Uuid, Uuid), to: (Uuid, Uuid), sealed: &str) -> Result<String> {
-        let key = self.totp_key()?;
-        key.seal(&sealed_label(to.0, to.1), &self.open_sealed(&sealed_label(from.0, from.1), sealed)?)
+    /// An authenticator secret kept for one person, kept again for another (an identity taking the credentials of the
+    /// membership it was made from), in `tx`: what the other's row holds.
+    pub(crate) async fn copy_totp(&self, tx: &mut crate::db::Tx, from: (Uuid, Uuid), to: (Uuid, Uuid), stored: &str) -> Result<String> {
+        self.totp_kept()?;
+        let secret = self.kept(tx, &Place::totp(from.0, from.1), stored).await?;
+        self.keep(tx, &Place::totp(to.0, to.1), &secret).await
     }
 
-    fn open_secret(&self, tenant: Uuid, user: Uuid, sealed: &str) -> Result<Vec<u8>> {
-        let b32 = self.open_sealed(&sealed_label(tenant, user), sealed)?;
+    async fn open_secret(&self, tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid, stored: &str) -> Result<Vec<u8>> {
+        let b32 = self.kept(tx, &Place::totp(tenant, user), stored).await?;
         BASE32_NOPAD.decode(b32.as_bytes()).map_err(|_| Error::Internal("corrupt two-factor secret".into()))
     }
 
@@ -132,7 +138,7 @@ impl Kernel {
     /// an `otpauth://` link and a QR code (SVG). It takes effect once a code confirms it; until then
     /// asking again gives the same secret (a page shown twice must not show two).
     pub async fn begin_two_factor(&self, ctx: &Ctx) -> Result<Value> {
-        let key = self.totp_key()?;
+        self.totp_kept()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let (email, enabled, pending, workspace): (String, bool, Option<String>, String) = sqlx::query_as(
             "select u.email::text, u.totp_enabled_at is not null, u.totp_secret, t.name from app_user u join tenant t on t.id = u.tenant_id \
@@ -145,17 +151,22 @@ impl Kernel {
         if enabled {
             return Err(Error::invalid("two-factor sign-in is already on; turn it off first to change the device"));
         }
-        let label = sealed_label(ctx.tenant, ctx.user);
-        let secret = match pending.map(|sealed| self.open_sealed(&label, &sealed)) {
-            Some(Ok(secret)) => secret,
-            _ => {
+        let place = Place::totp(ctx.tenant, ctx.user);
+        let shown = match pending {
+            Some(stored) => self.kept(&mut tx, &place, &stored).await.ok().map(|s| s.to_string()),
+            None => None,
+        };
+        let secret = match shown {
+            Some(secret) => secret,
+            None => {
                 let mut raw = [0u8; 20];
                 rand::rng().fill(&mut raw);
                 let secret = BASE32_NOPAD.encode(&raw);
+                let stored = self.keep(&mut tx, &place, &secret).await?;
                 sqlx::query("update app_user set totp_secret = $3, totp_last_step = null, updated_at = now() where tenant_id = $1 and id = $2")
                     .bind(ctx.tenant)
                     .bind(ctx.user)
-                    .bind(key.seal(&label, &secret)?)
+                    .bind(stored)
                     .execute(&mut *tx)
                     .await?;
                 secret
@@ -180,7 +191,7 @@ impl Kernel {
             return Err(Error::invalid("two-factor sign-in is already on"));
         }
         let sealed = sealed.ok_or_else(|| Error::invalid("start the setup first"))?;
-        let secret = self.open_secret(ctx.tenant, ctx.user, &sealed)?;
+        let secret = self.open_secret(&mut tx, ctx.tenant, ctx.user, &sealed).await?;
         let step = matching_step(&secret, code, now_seconds()).ok_or_else(|| Error::field("code", "not the code your app shows now"))?;
         sqlx::query("update app_user set totp_enabled_at = now(), totp_last_step = $3, updated_at = now() where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)
@@ -217,7 +228,7 @@ impl Kernel {
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or_else(|| Error::invalid("two-factor sign-in is off"))?;
-        let secret = self.open_secret(ctx.tenant, ctx.user, &sealed.unwrap_or_default())?;
+        let secret = self.open_secret(&mut tx, ctx.tenant, ctx.user, &sealed.unwrap_or_default()).await?;
         let step = matching_step(&secret, code, now_seconds())
             .filter(|s| last.is_none_or(|l| *s as i64 > l))
             .ok_or_else(|| Error::field("code", "not the code your app shows now"))?;
@@ -247,7 +258,7 @@ impl Kernel {
         let confirmed = match (password, code) {
             (Some(p), _) if !p.is_empty() => crate::auth::verify_password(p.to_string(), hash.unwrap_or_default()).await,
             (_, Some(c)) => {
-                let secret = self.open_secret(ctx.tenant, ctx.user, &sealed.unwrap_or_default())?;
+                let secret = self.open_secret(&mut tx, ctx.tenant, ctx.user, &sealed.unwrap_or_default()).await?;
                 matching_step(&secret, c, now_seconds()).is_some_and(|s| last.is_none_or(|l| s as i64 > l))
             }
             _ => false,
@@ -298,6 +309,7 @@ impl Kernel {
         if done.rows_affected() == 0 {
             return Err(Error::NotFound("user".into()));
         }
+        crate::vault::kept::forget(tx, &Place::totp(tenant, user)).await?;
         sqlx::query("delete from user_recovery_code where tenant_id = $1 and user_id = $2").bind(tenant).bind(user).execute(&mut **tx).await?;
         Ok(())
     }
@@ -339,7 +351,7 @@ impl Kernel {
         if u.locked {
             return Err(Error::TooManyRequests(format!("too many failed attempts; try again in {} minutes", crate::auth::LOCK_MINUTES)));
         }
-        let secret = self.open_secret(tenant, user, u.totp_secret.as_deref().unwrap_or_default())?;
+        let secret = self.open_secret(&mut tx, tenant, user, u.totp_secret.as_deref().unwrap_or_default()).await?;
         let step = matching_step(&secret, code, now_seconds()).filter(|s| u.last_step.is_none_or(|l| *s as i64 > l));
         let ok = match step {
             Some(s) => {

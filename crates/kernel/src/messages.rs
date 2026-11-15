@@ -1322,6 +1322,11 @@ impl ChannelDesc {
     }
 }
 
+/// Where a channel's secrets are kept: the platform's, in the workspace.
+pub(crate) fn channel_place(tenant: Uuid, id: Uuid) -> crate::vault::kept::Place {
+    crate::vault::kept::Place::platform(crate::vault::kept::Store::Channel, tenant, id, sealed_label(tenant, id))
+}
+
 pub(crate) fn sealed_label(tenant: Uuid, id: Uuid) -> String {
     format!("message_channel:{tenant}:{id}")
 }
@@ -1480,7 +1485,7 @@ impl Kernel {
             return Ok(json!({"delivered": "test"}));
         }
         let secrets: Value = match sealed {
-            Some(s) => serde_json::from_str(&self.open_sealed(&sealed_label(tenant, channel_id.unwrap_or_default()), &s)?).map_err(Error::internal)?,
+            Some(s) => serde_json::from_str(&self.kept_alone(&channel_place(tenant, channel_id.unwrap_or_default()), &s).await?).map_err(Error::internal)?,
             None => json!({}),
         };
         let vars = json!({"to": to, "text": message["text"], "template_name": message["template_name"], "values": message["values"],
@@ -1548,17 +1553,14 @@ impl Kernel {
         }
         let id = id.unwrap_or_else(Uuid::now_v7);
         let sealed = match &input.secrets {
-            Some(s) => {
-                let key = self
-                    .settings
-                    .secret_key
-                    .as_ref()
-                    .ok_or_else(|| Error::Unavailable("channel secrets need a configured secret key (FERRUM_SECRET_KEY)".into()))?;
-                Some(key.seal(&sealed_label(ctx.tenant, id), &serde_json::to_string(s).map_err(Error::internal)?)?)
-            }
+        if input.secrets.is_some() && !self.kept_here() {
+            return Err(Error::Unavailable("channel secrets need the vault or a configured secret key (FERRUM_SECRET_KEY)".into()));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // Kept in the transaction that saves the channel.
+            Some(s) => Some(self.keep(&mut tx, &channel_place(ctx.tenant, id), &serde_json::to_string(s).map_err(Error::internal)?).await?),
             None => None,
         };
-        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         if input.enabled {
             sqlx::query("update message_channel set enabled = false where tenant_id = $1 and kind = $2 and id <> $3")
                 .bind(ctx.tenant)
@@ -1608,6 +1610,7 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let n = sqlx::query("delete from message_channel where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?;
         if n.rows_affected() == 0 {
+        crate::vault::kept::forget(&mut tx, &channel_place(ctx.tenant, id)).await?;
             return Err(Error::NotFound("message channel".into()));
         }
         audit::record_admin(&mut tx, ctx, "MessageChannel", id, "delete", None, json!({})).await?;
@@ -1631,7 +1634,8 @@ impl Kernel {
             REFUSED_UNKNOWN.fetch_add(1, Ordering::Relaxed);
             return Err(Error::NotFound("channel".into()));
         };
-        let secrets: BTreeMap<String, String> = serde_json::from_str(&self.open_sealed(&sealed_label(tenant, channel), &sealed)?).map_err(Error::internal)?;
+        let secrets: BTreeMap<String, String> =
+            serde_json::from_str(&self.kept_alone(&channel_place(tenant, channel), &sealed).await?).map_err(Error::internal)?;
         let header = |h: &str| headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(h)).map(|(_, v)| v.trim().to_string());
         let secret = secrets.get(&inbound.secret).cloned().unwrap_or_default();
         let ok = !secret.is_empty()

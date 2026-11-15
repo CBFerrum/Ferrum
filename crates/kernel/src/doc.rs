@@ -608,6 +608,11 @@ impl Kernel {
         }
         self.refuse_if_linked_in_ext(ctx, tx, &ent, id).await?;
         store::delete_row(tx, &ent, ctx.tenant, id).await?;
+        // Its secret fields' values go from the vault with their rows.
+        for f in ent.secret_fields() {
+            let owner = self.field_owner(&ent.def.name, &f.name).await?;
+            crate::vault::kept::forget(tx, &crate::vault::kept::Place::field(ctx.tenant, &owner, &ent.def.name, id, &f.name)).await?;
+        }
         // Collaboration on the record goes with it (followers are told by the deleted event first).
         for table in ["record_comment", "record_assignment", "record_tag", "record_secret", "record_target"] {
             sqlx::query(AssertSqlSafe(format!("delete from {table} where tenant_id = $1 and entity = $2 and record_id = $3")))

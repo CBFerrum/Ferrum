@@ -490,7 +490,8 @@ impl Kernel {
                 // What signing in needs: the second factor, sealed again under the new id. Ferrum accounts stay behind.
                 "app_user" => {
                     null("identity_id");
-                    if let Some(sealed) = text_opt(row, "totp_secret") {
+                    // One only the vault keeps stays its mark: the sandbox's vault has it by its rule (crate::vault::kept).
+                    if let Some(sealed) = text_opt(row, "totp_secret").filter(|s| *s != crate::vault::kept::MARKER) {
                         let user = row
                             .get("id")
                             .and_then(Value::as_str)
