@@ -106,6 +106,13 @@ the text the variable would hold), and the server reads them as each replica sta
    empty behaves exactly as one configured by the environment alone.
 4. Only then does it check its host names and zones and open its real pools, sized by those settings.
 
+**Copied once.** As a replica starts to serve, each setting its environment sets and the table does not hold yet is
+written to the table, once, as the environment's (`updated_by` is `environment`; replicas starting together write it
+once, under one lock). An installation configured by its environment so ends with its settings in the table, and
+behaves exactly as before. Once there, a setting stays when its variable is later removed from the environment: then
+the table's value applies, so unset it there (*Changing settings*). A variable set to nothing says the default and is
+not copied; a setting an operator unset in the table is not copied again.
+
 A secret is never kept in the table and stays in the environment until the vault holds it. Neither is a setting
 that someone else reads from the environment itself (an app compiled into the server, the OpenTelemetry SDK, the
 key-management client, the move task): the table's value would not reach them. And an address that is given a

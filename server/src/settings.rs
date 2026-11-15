@@ -190,6 +190,84 @@ fn text_of(v: &Value) -> String {
     v.as_str().map_or_else(|| v.to_string(), str::to_string)
 }
 
+/// The channel a change of the table is announced on: every replica listens (crates/kernel/src/registry.rs).
+pub const CHANNEL: &str = ferrum_kernel::registry::SETTINGS_CHANNEL;
+
+/// The lock every write of the table holds until it commits: writes one at a time, so that versions follow the order of
+/// the commits and two replicas copying their environment at once copy each setting once.
+async fn lock(tx: &mut ferrum_kernel::Tx) -> Result<(), sqlx::Error> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('ferrum_settings', 0))").execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// Where `def`'s row is for a replica of `pool`: `(scope, scope_name)`.
+fn place<'a>(def: &Def, pool: &'a str) -> (&'static str, &'a str) {
+    match def.scope {
+        Scope::Pool => ("pool", pool),
+        Scope::Installation => ("installation", ""),
+    }
+}
+
+/// Records a change of the table in the transaction that makes it: the value before and after (`None`: unset).
+#[allow(clippy::too_many_arguments)]
+async fn record(
+    tx: &mut ferrum_kernel::Tx,
+    (scope, name): (&str, &str),
+    key: &str,
+    old: Option<&str>,
+    new: Option<&str>,
+    version: i64,
+    by: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into setting_change (scope, scope_name, key, old_value, new_value, version, updated_by) \
+         values ($1, $2, $3, to_jsonb($4::text), to_jsonb($5::text), $6, $7)",
+    )
+    .bind(scope)
+    .bind(name)
+    .bind(key)
+    .bind(old)
+    .bind(new)
+    .bind(version)
+    .bind(by)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// R1: each setting the environment (`env`) sets and the table does not hold yet is written there once, as the
+/// environment's, so that an installation configured by its environment ends with its settings in the table. A row the
+/// table holds, even one an operator unset, is left as it is; a variable set to nothing says the default, and is not
+/// copied. Returns the keys written.
+pub async fn adopt(db: &ferrum_kernel::Db, pool: &str, env: &(dyn Fn(&str) -> Option<String> + Sync)) -> ferrum_kernel::Result<Vec<String>> {
+    let mut tx = db.system_tx().await?;
+    lock(&mut tx).await?;
+    let mut written = Vec::new();
+    for def in registry().iter().filter(|d| d.stored()) {
+        let Some(text) = env(&def.env).filter(|v| !v.trim().is_empty()) else { continue };
+        let at = place(def, pool);
+        let version: Option<i64> = sqlx::query_scalar(
+            "insert into setting (scope, scope_name, key, value, updated_by) values ($1, $2, $3, to_jsonb($4::text), 'environment') \
+             on conflict do nothing returning version",
+        )
+        .bind(at.0)
+        .bind(at.1)
+        .bind(&def.key)
+        .bind(&text)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(version) = version {
+            record(&mut tx, at, &def.key, None, Some(&text), version, "environment").await?;
+            written.push(def.key.clone());
+        }
+    }
+    if !written.is_empty() {
+        sqlx::query("select pg_notify($1, '')").bind(CHANNEL).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(written)
+}
+
 /// What every setting is for one replica, and where each comes from.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -465,6 +543,8 @@ mod tests {
             assert!(keys.insert(d.key.as_str()), "{} twice", d.key);
             assert!(envs.insert(d.env.as_str()), "{} twice", d.env);
             assert!(d.key.len() <= 63 && d.key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'), "{}", d.key);
+            let lower = d.env.to_ascii_lowercase();
+            assert_eq!(d.key, lower.strip_prefix("ferrum_").unwrap_or(&lower), "the key is its variable's name in lower case without FERRUM_");
             assert!(!(d.secret && d.environment.is_some()), "{}: a secret or someone else's, not both", d.key);
             assert!(d.stored() || d.applies == Applies::Start, "{}: only what the table holds can apply at once", d.key);
             assert!(d.scope == Scope::Installation || d.stored(), "{}", d.key);

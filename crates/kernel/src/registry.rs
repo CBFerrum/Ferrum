@@ -12,6 +12,9 @@ use uuid::Uuid;
 
 pub const META_CHANNEL: &str = "ferrum_meta";
 
+/// The channel a change of the server's settings is announced on (server/src/settings.rs).
+pub const SETTINGS_CHANNEL: &str = "ferrum_settings";
+
 struct Cached {
     schema: Arc<Schema>,
     checked_at: Instant,

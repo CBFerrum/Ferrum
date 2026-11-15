@@ -428,6 +428,17 @@ impl Hooks for App {
 
     async fn before_run(ctx: &AppContext) -> Result<()> {
         let Some(state) = ctx.shared_store.get::<AppState>() else { return Ok(()) };
+        // R1: what the environment sets and the table does not hold yet is copied there once, as a replica starts to
+        // serve (docs/operations.md, "Settings in the database"). A guest of a newer build's database writes nothing.
+        if state.kernel.booted.guest.is_none() {
+            match crate::settings::adopt(&state.kernel.db, "default", &|name| std::env::var(name).ok()).await {
+                Ok(written) if !written.is_empty() => {
+                    tracing::info!(settings = %written.join(", "), "copied the settings the environment sets into the database")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("copying the environment's settings into the database failed (the next start tries again): {e}"),
+            }
+        }
         // Every replica that serves requests: cache invalidation and delivery to the sockets it holds.
         let mut listeners = state.kernel.spawn_listeners(state.shutdown.subscribe());
         listeners.push(state.plugins.sockets.spawn_listener(state.kernel.db.clone(), state.shutdown.subscribe()));

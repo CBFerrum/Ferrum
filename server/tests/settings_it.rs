@@ -97,5 +97,41 @@ async fn scenario() {
     st.kernel.db.close().await;
     let third = state(&replica(config(None)).await);
     assert_eq!(third.settings.metrics_token, "", "a secret stays the environment's");
+
+    adopted_once(&third).await;
     third.kernel.db.close().await;
+}
+
+/// What a variable says and the table does not hold is written once, however many replicas copy it at once; what the
+/// table holds, unset or not, stays.
+async fn adopted_once(st: &AppState) {
+    let env = |value: &'static str| {
+        move |name: &str| match name {
+            "FERRUM_PDF_URL" => Some(value.to_string()),
+            "FERRUM_SESSION_DAYS" => Some("21".to_string()),
+            "FERRUM_ZONE_DEFAULT" => Some(String::new()),
+            "FERRUM_METRICS_TOKEN" => Some("a-secret".to_string()),
+            "FERRUM_OFFICE_URL" => Some("http://office".to_string()),
+            _ => None,
+        }
+    };
+    let (a, b) = (env("http://pdf:3000"), env("http://pdf:3000"));
+    let db = &st.kernel.db;
+    let (one, two) = tokio::join!(ferrum_server::settings::adopt(db, "default", &a), ferrum_server::settings::adopt(db, "default", &b));
+    let mut written = [one.unwrap(), two.unwrap()].concat();
+    written.sort();
+    assert_eq!(written, ["pdf_url"], "once, by one of them: session_days is the table's already, and the rest are not kept there");
+    let later = ferrum_server::settings::adopt(db, "default", &env("http://elsewhere")).await.unwrap();
+    assert!(later.is_empty(), "the table holds it now: {later:?}");
+    row(st, "installation", "", "host_leaving_days", None).await;
+    let host = |name: &str| (name == "FERRUM_HOST_LEAVING_DAYS").then(|| "30".to_string());
+    assert!(ferrum_server::settings::adopt(db, "default", &host).await.unwrap().is_empty(), "an operator unset it: it stays unset");
+    let mut tx = db.system_tx().await.unwrap();
+    let rows: Vec<(String, serde_json::Value, String)> =
+        sqlx::query_as("select key, value, updated_by from setting where updated_by = 'environment' order by key").fetch_all(&mut *tx).await.unwrap();
+    let changes: Vec<(String, Option<serde_json::Value>, serde_json::Value, String)> =
+        sqlx::query_as("select key, old_value, new_value, updated_by from setting_change where key = 'pdf_url'").fetch_all(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(rows, [("pdf_url".to_string(), json!("http://pdf:3000"), "environment".to_string())]);
+    assert_eq!(changes, [("pdf_url".to_string(), None, json!("http://pdf:3000"), "environment".to_string())], "recorded once");
 }
