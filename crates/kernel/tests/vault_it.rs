@@ -3,15 +3,20 @@
 //! reason; replicas starting together make one installation key; nothing that does not go through the vault's module
 //! sees a row of it; and the vault's settings never outlive their transaction. Its keys are made on first use, once,
 //! by replicas at once; each owner has its own, a handle another registry gave out opens nothing, and a key's row
-//! copied to another place does not open. Transit's part runs when `FERRUM_KMS_TEST_TRANSIT` is set (OpenBao, as
-//! kms_it.rs).
+//! copied to another place does not open. Secrets keep to their rules: a value is revealed only where its rule says,
+//! signatures verify through a rotation's overlap, every use is on the audit trail under its cap, and people change
+//! them only as administrators who have just confirmed it is them. Transit's part runs when `FERRUM_KMS_TEST_TRANSIT`
+//! is set (OpenBao, as kms_it.rs).
 
-use ferrum_kernel::vault::{self, Kdf, Opened, Opener, Scope, SlotKind, Vault};
-use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
+use ferrum_kernel::controls::Proof;
+use ferrum_kernel::vault::{self, Kdf, New, Opened, Opener, Rule, Scope, SlotKind, Vault};
+use ferrum_kernel::{Ctx, Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 fn url() -> String {
     std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into())
@@ -98,7 +103,10 @@ async fn scenario() {
     let wrapped: Vec<u8> = {
         let mut tx = db.pool.begin().await.unwrap();
         sqlx::query("select set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
-        sqlx::query_scalar("select wrapped from vault.root_slot where kind = 'credential'").fetch_one(&mut *tx).await.unwrap()
+        let w = sqlx::query_scalar("select wrapped from vault.root_slot where kind = 'credential'").fetch_one(&mut *tx).await.unwrap();
+        // Ended here: a transaction only dropped stays open, with its locks, until its connection is used again.
+        tx.commit().await.unwrap();
+        w
     };
     as_vault(&db, "with u as (update vault.root_slot set wrapped = set_byte(wrapped, 20, get_byte(wrapped, 20) # 1) where kind = 'credential' returning 1) select count(*) from u").await;
     let why = refusal(vault::open(&replica().await, opener(Some("ferrum"), &no_file, None), false).await);
@@ -184,6 +192,7 @@ async fn scenario() {
     assert_eq!(as_vault(&db, "select count(*) from vault.root_slot").await, 2, "made then: credential and recovery");
 
     keys_and_handles(&no_file).await;
+    secrets_and_people(&no_file).await;
 
     if let Ok(base) = std::env::var("FERRUM_KMS_TEST_TRANSIT") {
         transit(&base, &no_file).await;
@@ -367,4 +376,132 @@ async fn keys_and_handles(no_file: &Path) {
     let (c, crm_c, hr_c) = kernel_with_apps(no_file).await;
     assert_eq!(crm_c.derive(&c, Scope::Workspace(w2), "links").await.unwrap().bytes(), first.as_slice(), "put back, they open again");
     assert_eq!(hr_c.derive(&c, ws, "links").await.unwrap().bytes(), hr_x.bytes());
+}
+
+fn value(s: &str) -> New {
+    New::Value(Zeroizing::new(s.as_bytes().to_vec()))
+}
+
+/// The workspace's vault events, as its trail holds them: (action, what it says).
+async fn trail(k: &Kernel, tenant: Uuid) -> Vec<(String, Value)> {
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let rows: Vec<(String, Value)> = sqlx::query_as("select action, diff from audit_event where tenant_id = $1 and entity = 'Vault' order by id")
+        .bind(tenant)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    rows
+}
+
+async fn secrets_and_people(no_file: &Path) {
+    let db = replica().await;
+    reset(&db).await;
+    let (k, crm, hr) = kernel_with_apps(no_file).await;
+    let w = workspace(&k, "initech").await;
+    let ws = Scope::Workspace(w);
+
+    // ── a value is revealed only where its rule says so; an owner sees only its own ──
+    let d = crm.set(&k, ws, "stripe.key", value("sk_live_51Hx"), Rule::default()).await.unwrap();
+    assert_eq!((d.version, d.owner.as_str(), d.workspace), (1, "crm", Some(w)));
+    assert!(!serde_json::to_string(&d).unwrap().contains("sk_live"), "a description holds no value");
+    let e = crm.reveal(&k, ws, "stripe.key").await.unwrap_err();
+    assert!(matches!(&e, Error::Forbidden(m) if m.contains("used, never revealed")), "{e}");
+    crm.set(&k, ws, "smtp.password", value("p4ss-w0rd"), Rule { reveal: true, ..Default::default() }).await.unwrap();
+    assert_eq!(&**crm.reveal(&k, ws, "smtp.password").await.unwrap(), b"p4ss-w0rd");
+    assert!(matches!(hr.reveal(&k, ws, "smtp.password").await, Err(Error::NotFound(_))), "hr has none of crm's");
+    assert!(matches!(hr.sign(&k, ws, "stripe.key", b"m").await, Err(Error::NotFound(_))));
+    assert!(hr.list(&k, ws).await.unwrap().is_empty() && crm.list(&k, ws).await.unwrap().len() == 2);
+    assert!(hr.describe(&k, ws, "smtp.password").await.unwrap().is_none());
+    assert!(matches!(crm.reveal(&k, Scope::Workspace(Uuid::now_v7()), "smtp.password").await, Err(Error::NotFound(_))), "nor another workspace's");
+
+    // ── HMAC: a signature verifies through a rotation's overlap, and not past it; a rotation without one ends it ──
+    crm.set(&k, ws, "hooks", New::Random(32), Rule { overlap_secs: 3600, ..Default::default() }).await.unwrap();
+    let first = crm.sign(&k, ws, "hooks", b"payload").await.unwrap();
+    assert!(crm.verify(&k, ws, "hooks", b"payload", &first).await.unwrap());
+    assert!(!crm.verify(&k, ws, "hooks", b"other", &first).await.unwrap());
+    let d = crm.rotate(&k, ws, "hooks", New::Random(32)).await.unwrap();
+    assert!(d.version == 2 && d.previous_until.is_some(), "{d:?}");
+    let second = crm.sign(&k, ws, "hooks", b"payload").await.unwrap();
+    assert_ne!(first, second);
+    assert!(crm.verify(&k, ws, "hooks", b"payload", &first).await.unwrap(), "the version before, within the overlap");
+    assert!(crm.verify(&k, ws, "hooks", b"payload", &second).await.unwrap());
+    as_vault(&db, &format!("with u as (update vault.secret set valid_until = now() - interval '1 second' where scope = '{w}' and name = 'hooks' and version = 1 returning 1) select count(*) from u")).await;
+    assert!(!crm.verify(&k, ws, "hooks", b"payload", &first).await.unwrap(), "past the overlap");
+    crm.set(&k, ws, "plain", New::Random(32), Rule::default()).await.unwrap();
+    let before = crm.sign(&k, ws, "plain", b"x").await.unwrap();
+    crm.rotate(&k, ws, "plain", New::Random(32)).await.unwrap();
+    assert!(!crm.verify(&k, ws, "plain", b"x", &before).await.unwrap(), "no overlap: the version before is gone");
+    assert!(matches!(crm.rotate(&k, ws, "missing", New::Random(32)).await, Err(Error::NotFound(_))));
+
+    // ── Ed25519: the vault makes the pair, signs, and anyone checks with the public half ──
+    let d = crm.set(&k, ws, "signing", New::Ed25519, Rule::default()).await.unwrap();
+    let public = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, d.public_key.unwrap()).unwrap();
+    let sig = crm.sign(&k, ws, "signing", b"document").await.unwrap();
+    assert!(ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &public).verify(b"document", &sig).is_ok());
+    assert!(crm.verify(&k, ws, "signing", b"document", &sig).await.unwrap() && !crm.verify(&k, ws, "signing", b"other", &sig).await.unwrap());
+    assert!(matches!(crm.rotate(&k, ws, "signing", value("not a key pair")).await, Err(Error::Invalid(_))), "another kind under its name");
+    assert!(matches!(crm.reveal(&k, ws, "signing").await, Err(Error::Forbidden(_))), "its private half stays");
+
+    // ── an expired secret is used no more; a removed one is gone ──
+    as_vault(&db, &format!("with u as (update vault.secret set rule = rule || '{{\"expires_at\": \"2020-01-01T00:00:00Z\"}}' where scope = '{w}' and name = 'smtp.password' returning 1) select count(*) from u")).await;
+    assert!(matches!(crm.reveal(&k, ws, "smtp.password").await, Err(Error::Forbidden(m)) if m.contains("expired on 2020-01-01")));
+    assert!(crm.remove(&k, ws, "smtp.password").await.unwrap() && !crm.remove(&k, ws, "smtp.password").await.unwrap());
+    assert!(matches!(crm.reveal(&k, ws, "smtp.password").await, Err(Error::NotFound(_))));
+
+    // ── every use is on the trail, never a value, under the cap: past it counted, and summed up once the hour is over ──
+    crm.set(&k, ws, "api", value("Zx-2468-secret"), Rule { reveal: true, ..Default::default() }).await.unwrap();
+    for _ in 0..vault::USES_PER_HOUR + 5 {
+        crm.reveal(&k, ws, "api").await.unwrap();
+    }
+    let events = trail(&k, w).await;
+    let reveals = events.iter().filter(|(a, d)| a == "reveal" && d["name"] == "api").count();
+    assert_eq!(reveals, vault::USES_PER_HOUR as usize, "the first of the hour, one by one");
+    assert!(!format!("{events:?}").contains("Zx-2468") && !format!("{events:?}").contains("sk_live"), "never a value");
+    assert!(events.iter().any(|(a, d)| a == "set" && d == &json!({"owner": "crm", "name": "api", "version": 1})));
+    assert!(events.iter().any(|(a, d)| a == "rotate" && d["name"] == "hooks") && events.iter().any(|(a, d)| a == "remove" && d["name"] == "smtp.password"));
+    assert!(events.iter().any(|(a, d)| a == "sign" && d["name"] == "signing"));
+    as_vault(&db, "with u as (update vault.use_count set hour = hour - interval '1 hour' returning 1) select count(*) from u").await;
+    crm.reveal(&k, ws, "api").await.unwrap();
+    let events = trail(&k, w).await;
+    let summary = events.iter().find(|(a, d)| a == "reveal_summary" && d["name"] == "api").expect("a summary of the hour");
+    assert_eq!(summary.1["count"], json!(5));
+    assert_eq!(crm.describe(&k, ws, "api").await.unwrap().unwrap().last_used, Some(chrono::Utc::now().date_naive()), "kept coarsely");
+    crm.set(&k, Scope::Installation, "license", value("L-1"), Rule::default()).await.unwrap();
+    let first_trail = trail(&k, w).await;
+    assert!(first_trail.iter().any(|(a, d)| a == "set" && d["scope"] == json!("installation")), "the installation's, in the first workspace's trail");
+
+    // ── people: an administrator who has just confirmed it is them; a value the vault makes is shown once ──
+    let session = k.login("initech", "admin@initech.test", "Correct-Horse-9").await.unwrap();
+    // As a request from a person's browser session makes it: a staff member, not yet confirmed lately.
+    let admin = Ctx { proof: Proof::Person { at: None, staff: true }, ..k.load_ctx(w, session.user, None, "it".into()).await.unwrap() };
+    let e = k.vault_set(&admin, "crm", "partner.token", New::Random(32), Rule::default()).await.unwrap_err();
+    assert_eq!(e.code(), "step_up", "not confirmed lately: {e}");
+    let proved = admin.clone().proved(Some(chrono::Utc::now()));
+    let changed = k.vault_set(&proved, "crm", "partner.token", New::Random(32), Rule { reveal: true, ..Default::default() }).await.unwrap();
+    let shown = changed.shown.as_ref().expect("shown once").to_string();
+    assert_eq!(shown.len(), 43);
+    assert!(!format!("{changed:?}").contains(&shown), "what is shown never shows in a description of it");
+    assert_eq!(&**crm.reveal(&k, ws, "partner.token").await.unwrap(), shown.as_bytes(), "the value shown is the one kept");
+    assert!(k.vault_rotate(&proved, "crm", "partner.token", New::Random(32)).await.unwrap().shown.is_some());
+    assert!(k.vault_set(&proved, "platform", "smtp.password", value("relay-pw"), Rule::default()).await.is_ok());
+    assert!(k.vault_set(&proved, "plugin:mail", "token", value("t"), Rule::default()).await.is_ok());
+    assert!(matches!(k.vault_set(&proved, "nobody", "x", value("y"), Rule::default()).await, Err(Error::NotFound(_))), "an owner this server has not");
+    let listed = k.vault_secrets(&admin).await.unwrap();
+    assert!(listed.iter().any(|d| d.owner == "platform" && d.name == "smtp.password") && listed.iter().any(|d| d.owner == "crm" && d.name == "partner.token"));
+    assert!(!serde_json::to_string(&listed).unwrap().contains(&shown) && !serde_json::to_string(&listed).unwrap().contains("relay-pw"));
+    let set_by_person = trail(&k, w).await.into_iter().filter(|(a, d)| a == "set" && d["name"] == "partner.token").count();
+    assert_eq!(set_by_person, 1);
+    for (who, why) in [
+        (Ctx { is_admin: false, ..proved.clone() }, "not an administrator"),
+        (Ctx { outside: true, ..proved.clone() }, "from outside"),
+        (Ctx { proof: Proof::Machine, ..proved.clone() }, "a key, which cannot confirm it is anyone"),
+        (Ctx { read_only: true, ..proved.clone() }, "a restricted workspace"),
+    ] {
+        assert!(matches!(k.vault_set(&who, "crm", "x", value("y"), Rule::default()).await, Err(Error::Forbidden(_))), "{why}");
+        assert!(matches!(k.vault_remove(&who, "crm", "partner.token").await, Err(Error::Forbidden(_))), "{why}");
+    }
+    assert!(matches!(k.vault_secrets(&Ctx { is_admin: false, ..admin.clone() }).await, Err(Error::Forbidden(_))));
+    assert!(k.vault_remove(&proved, "crm", "partner.token").await.unwrap());
+    assert!(trail(&k, w).await.iter().any(|(a, d)| a == "remove" && d["name"] == "partner.token"));
 }

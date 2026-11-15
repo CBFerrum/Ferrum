@@ -113,6 +113,40 @@ impl Key {
     }
 }
 
+/// HMAC-SHA256 of `message` under `key` (a secret's value, of any length).
+pub(crate) fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
+    ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key), message).as_ref().to_vec()
+}
+
+/// Whether `tag` is [`hmac_sha256`] of `message` under `key` (compared in constant time).
+pub(crate) fn hmac_verify(key: &[u8], message: &[u8], tag: &[u8]) -> bool {
+    ring::hmac::verify(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key), message, tag).is_ok()
+}
+
+/// A new Ed25519 key pair: its private half (PKCS#8, zeroed when dropped) and its public half.
+pub(crate) fn ed25519_new() -> Result<(Zeroizing<Vec<u8>>, Vec<u8>)> {
+    use ring::signature::KeyPair as _;
+    let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).map_err(|_| Error::Internal("no randomness for a key pair".into()))?;
+    let private = Zeroizing::new(pkcs8.as_ref().to_vec());
+    let public = ring::signature::Ed25519KeyPair::from_pkcs8(&private)
+        .map_err(|_| Error::Internal("a key pair just made does not read back".into()))?
+        .public_key()
+        .as_ref()
+        .to_vec();
+    Ok((private, public))
+}
+
+/// `message` signed with an Ed25519 key pair's private half.
+pub(crate) fn ed25519_sign(private: &[u8], message: &[u8]) -> Result<Vec<u8>> {
+    let pair = ring::signature::Ed25519KeyPair::from_pkcs8(private).map_err(|_| Error::Internal("an Ed25519 secret does not hold a key pair".into()))?;
+    Ok(pair.sign(message).as_ref().to_vec())
+}
+
+/// Whether `signature` is `message` signed with the private half of `public`.
+pub(crate) fn ed25519_verify(public: &[u8], message: &[u8], signature: &[u8]) -> bool {
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public).verify(message, signature).is_ok()
+}
+
 /// HKDF-SHA256 of `ikm` with `salt`, for `info`.
 fn derive_from(salt: &[u8], ikm: &[u8], info: &str) -> Key {
     struct Len;
@@ -206,6 +240,11 @@ pub(crate) fn sealed_place(scope: Uuid, owner: &str, key_version: i32, context: 
     format!("ferrum-vault/sealed/{scope}/{owner}/{key_version}/{context}")
 }
 
+/// A version of a secret, under a version of its owner's key.
+pub(crate) fn secret_place(scope: Uuid, owner: &str, name: &str, version: i32, key_version: i32) -> String {
+    format!("ferrum-vault/secret/{scope}/{owner}/{name}/{version}/{key_version}")
+}
+
 /// A key an owner derived for a purpose.
 pub(crate) fn derive_info(scope: Uuid, owner: &str, key_version: i32, purpose: &str) -> String {
     format!("ferrum-vault/derived/{scope}/{owner}/{key_version}/{purpose}")
@@ -272,8 +311,31 @@ mod tests {
     }
 
     #[test]
+    fn secrets_sign_and_verify() {
+        let tag = hmac_sha256(b"any length of key", b"message");
+        assert!(hmac_verify(b"any length of key", b"message", &tag));
+        assert!(!hmac_verify(b"another key", b"message", &tag) && !hmac_verify(b"any length of key", b"massage", &tag));
+        let (private, public) = ed25519_new().unwrap();
+        let sig = ed25519_sign(&private, b"message").unwrap();
+        assert!(ed25519_verify(&public, b"message", &sig));
+        assert!(!ed25519_verify(&public, b"massage", &sig));
+        assert!(!ed25519_verify(&ed25519_new().unwrap().1, b"message", &sig), "another key's");
+        assert!(ed25519_sign(b"not a key", b"m").is_err());
+    }
+
+    #[test]
     fn every_part_of_a_place_is_in_it() {
         let (s, t) = (Uuid::now_v7(), Uuid::now_v7());
+        let secret = secret_place(s, "crm", "api", 2, 1);
+        for other in [
+            secret_place(t, "crm", "api", 2, 1),
+            secret_place(s, "hr", "api", 2, 1),
+            secret_place(s, "crm", "api2", 2, 1),
+            secret_place(s, "crm", "api", 3, 1),
+            secret_place(s, "crm", "api", 2, 2),
+        ] {
+            assert_ne!(secret, other);
+        }
         let key = key_place(s, "crm", 1, 1);
         for other in [key_place(t, "crm", 1, 1), key_place(s, "", 1, 1), key_place(s, "hr", 1, 1), key_place(s, "crm", 2, 1), key_place(s, "crm", 1, 2)] {
             assert_ne!(key, other);

@@ -15,8 +15,8 @@
 //! gives back what is its.
 //!
 //! ```compile_fail
-//! // A handle cannot be made outside the kernel ...
-//! let v = ferrum_kernel::vault::Vault { owner: "hr".into(), mint: 1 };
+//! // A handle cannot be made outside the kernel, not even as a copy of one with another field ...
+//! fn copy(v: ferrum_kernel::vault::Vault) -> ferrum_kernel::vault::Vault { ferrum_kernel::vault::Vault { ..v } }
 //! ```
 //! ```compile_fail
 //! // ... nor asked of it for an owner ...
@@ -27,17 +27,27 @@
 //! fn take(h: &mut ferrum_kernel::HookRegistry) -> ferrum_kernel::vault::Vault { h.vault_of("hr") }
 //! ```
 //! ```compile_fail
-//! // ... nor turned into another owner's.
+//! // ... nor turned into another owner's ...
 //! fn turn(v: ferrum_kernel::vault::Vault) -> ferrum_kernel::vault::Vault { v.for_owner("hr") }
+//! ```
+//! ```compile_fail
+//! // ... and the handles the kernel keeps for itself (the platform's, a plugin's) stay inside it.
+//! let v = ferrum_kernel::vault::Vault::kernel("platform");
+//! ```
+//! ```compile_fail
+//! // A secret's value is not in what describes it.
+//! fn peek(d: ferrum_kernel::vault::Described) -> Vec<u8> { d.value }
 //! ```
 
 mod keys;
 mod root;
 mod seal;
+mod secrets;
 
 pub(crate) use root::{CHANNEL, Root, finish};
 pub use root::{Opened, Opener, Printed, ROOT_FILE, SlotKind, open, put_slot};
 pub use seal::Kdf;
+pub use secrets::{Changed, Described, Kind, MAX_OVERLAP_SECS, New, Rule, Sandbox, USES_PER_HOUR};
 
 use crate::db::{Tx, with_retry};
 use crate::error::{Error, Result};
@@ -79,9 +89,17 @@ impl Scope {
 /// gave it out, and with no other.
 #[derive(Clone)]
 pub struct Vault {
-    owner: Arc<str>,
+    owner: Owner,
     /// What the registry that gave it out noted for it ([`crate::HookRegistry::app`]), checked at each use.
     mint: u128,
+}
+
+#[derive(Clone)]
+enum Owner {
+    /// An app, whose handle a registry gave out.
+    App(Arc<str>),
+    /// An owner whose handle the kernel never gives out: the platform, a plugin (its host acts for it).
+    Kernel(Arc<str>),
 }
 
 impl std::fmt::Debug for Vault {
@@ -109,28 +127,43 @@ pub(crate) fn app_id_ok(id: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
+/// Whether `name` can be a plugin's, as an owner (`plugin:<name>`).
+pub(crate) fn plugin_name_ok(name: &str) -> bool {
+    let b = name.as_bytes();
+    (1..=100).contains(&b.len())
+        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(c))
+}
+
 impl Vault {
     pub(crate) fn app(id: &str, mint: u128) -> Vault {
-        Vault { owner: id.into(), mint }
+        Vault { owner: Owner::App(id.into()), mint }
+    }
+
+    /// The handle of the platform or of a plugin, for the kernel's own use: never handed out.
+    pub(crate) fn kernel(owner: &str) -> Vault {
+        Vault { owner: Owner::Kernel(owner.into()), mint: 0 }
     }
 
     /// A handle nothing accepts: what is asked for outside an app's registration.
     pub(crate) fn none() -> Vault {
-        Vault { owner: "".into(), mint: 0 }
+        Vault::app("", 0)
     }
 
-    /// Whose it is: an app's id.
+    /// Whose it is: `platform`, an app's id, or `plugin:<name>`.
     pub fn owner(&self) -> &str {
-        &self.owner
+        match &self.owner {
+            Owner::App(o) | Owner::Kernel(o) => o,
+        }
     }
 
     /// The owner, once `k` has checked that it gave this handle out.
     fn bound(&self, k: &Kernel) -> Result<&str> {
-        if self.mint != 0 && k.hooks.vault_mint(&self.owner) == Some(self.mint) {
-            Ok(&self.owner)
-        } else {
-            Err(Error::Forbidden("this vault handle was not given out by this server".into()))
-        }
+        let ok = match &self.owner {
+            Owner::App(id) => self.mint != 0 && k.hooks.vault_mint(id) == Some(self.mint),
+            Owner::Kernel(o) => self.mint == 0 && (&**o == "platform" || o.strip_prefix("plugin:").is_some_and(plugin_name_ok)),
+        };
+        if ok { Ok(self.owner()) } else { Err(Error::Forbidden("this vault handle was not given out by this server".into())) }
     }
 }
 
@@ -292,6 +325,7 @@ mod tests {
         }
         assert_ne!(mint(), 0);
         assert_eq!(format!("{:?}", Vault::app("crm", 7)), "Vault(crm)");
+        assert!(plugin_name_ok("mail.smtp") && !plugin_name_ok("Mail") && !plugin_name_ok(""));
         assert!(check_purpose("share-links").is_ok() && check_purpose("Share").is_err() && check_purpose("").is_err());
         assert!(check_context("drive.share/9f").is_ok() && check_context("a\nb").is_err() && check_context("").is_err());
     }
