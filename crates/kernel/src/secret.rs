@@ -1,11 +1,12 @@
-//! Secret fields: write-only values (passwords, API keys) sealed with AES-256-GCM and bound to
-//! their tenant, entity, record and field (so a sealed value cannot be moved to another record).
-//! Documents, lists, events, the audit trail and exports only ever show whether one is set
-//! (`true`); server code reads the value with [`Kernel::secret`].
+//! Secret fields: write-only values (passwords, API keys), each a secret of the app whose package declares the field, in
+//! the vault (crate::vault::kept), and bound to their tenant, entity, record and field (so a value cannot be moved to
+//! another record). Documents, lists, events, the audit trail and exports only ever show whether one is set (`true`); an
+//! app reads the value of its own with its vault handle ([`crate::vault::Vault::field`]).
 //!
-//! Rotating the server's key: set the new key as `FERRUM_SECRET_KEY` and the old one in
-//! `FERRUM_RETIRED_SECRET_KEYS`. Values open with either, and [`Kernel::reseal_secrets`] moves them
-//! all to the new key. Losing a key loses what it sealed: docs/operations.md says what that means.
+//! The old master key (`FERRUM_SECRET_KEY`) still seals each value beside the vault while it is configured, for the
+//! previous build. Rotating it: set the new key as `FERRUM_SECRET_KEY` and the old one in `FERRUM_RETIRED_SECRET_KEYS`.
+//! Values open with either, and [`Kernel::reseal_secrets`] moves them all to the new key. Losing a key loses what only it
+//! sealed: docs/operations.md says what that means.
 
 use crate::db::Tx;
 use crate::error::{Error, Result};
@@ -18,6 +19,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 /// Longest secret accepted (certificates and service-account JSON fit).
 pub const MAX_SECRET: usize = 16 * 1024;
@@ -153,14 +155,15 @@ impl Kernel {
         }
         let entity = &ent.def.name;
         for (field, value) in changes {
+            let place = crate::vault::kept::Place::field(ctx.tenant, &self.field_owner(entity, field).await?, entity, record, field);
             match value {
                 Some(plain) => {
-                    let key = self
-                        .settings
-                        .secret_key
-                        .as_ref()
-                        .ok_or_else(|| Error::Unavailable("secret fields need a configured secret key (FERRUM_SECRET_KEY)".into()))?;
-                    let sealed = key.seal(&aad(ctx.tenant, entity, record, field), plain)?;
+                    if !self.kept_here() {
+                        return Err(Error::Unavailable("secret fields need the vault or a configured secret key (FERRUM_SECRET_KEY)".into()));
+                    }
+                    let sealed = self.keep(tx, &place, plain).await?;
+                    // The key that sealed it beside the vault, or the vault's mark where the vault alone keeps it.
+                    let key_id = self.settings.secret_key.as_ref().map_or(crate::vault::kept::MARKER, |k| k.id.as_str());
                     sqlx::query(
                         "insert into record_secret (tenant_id, entity, record_id, field, sealed, key_id, updated_by) values ($1, $2, $3, $4, $5, $6, $7) \
                          on conflict (tenant_id, entity, record_id, field) do update set sealed = excluded.sealed, key_id = excluded.key_id, \
@@ -171,7 +174,7 @@ impl Kernel {
                     .bind(record)
                     .bind(field)
                     .bind(sealed)
-                    .bind(&key.id)
+                    .bind(key_id)
                     .bind((!ctx.user.is_nil()).then_some(ctx.user))
                     .execute(&mut **tx)
                     .await?;
@@ -184,6 +187,7 @@ impl Kernel {
                         .bind(field)
                         .execute(&mut **tx)
                         .await?;
+                    self.unkeep(tx, &place).await?;
                 }
             }
         }
@@ -210,26 +214,25 @@ impl Kernel {
         Ok(())
     }
 
-    /// A secret's value, for server-side use only (sending mail, calling a provider). Never return
-    /// it to a client or put it in a document, event or log.
-    pub async fn secret(&self, tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid, field: &str) -> Result<Option<String>> {
-        let row: Option<(String, String)> =
-            sqlx::query_as("select sealed, key_id from record_secret where tenant_id = $1 and entity = $2 and record_id = $3 and field = $4")
-                .bind(tenant)
-                .bind(entity)
-                .bind(record)
-                .bind(field)
-                .fetch_optional(&mut **tx)
-                .await?;
-        let Some((sealed, key_id)) = row else { return Ok(None) };
-        if self.settings.secret_key.is_none() {
-            return Err(Error::Unavailable("secret fields need a configured secret key (FERRUM_SECRET_KEY)".into()));
+    /// A secret field's value, whichever app declares the field: what apps read before each read its own through its
+    /// vault handle. It still works in this release, and notes the code that called it (`ferrum task legacy_key`, the
+    /// doctor); it goes in the release after. Never return a value to a client or put it in a document, event or log.
+    #[deprecated(note = "read your app's own secret fields with its vault handle: `Vault::field` (docs/plan/stateless.md, D5)")]
+    #[track_caller]
+    pub fn secret<'a>(
+        &'a self,
+        tx: &'a mut Tx,
+        tenant: Uuid,
+        entity: &'a str,
+        record: Uuid,
+        field: &'a str,
+    ) -> impl std::future::Future<Output = Result<Option<String>>> + Send + 'a {
+        let caller = caller_of(std::panic::Location::caller());
+        async move {
+            self.note_old_key_by("reader:Kernel::secret", &caller);
+            let owner = self.field_owner(entity, field).await?;
+            self.field_value(tx, tenant, entity, record, field, &owner).await
         }
-        let key = self.secret_keys().find(|k| k.id == key_id);
-        let key = key.ok_or_else(|| {
-            Error::Unavailable(format!("{entity}.{field} was sealed with another key ({key_id}); configure that key or set the secret again"))
-        })?;
-        key.open(&aad(tenant, entity, record, field), &sealed).map(Some)
     }
 
     /// The server's key, then those being rotated out.
@@ -254,7 +257,8 @@ impl Kernel {
     /// A value no key opens is counted and left as it is: it may yet open with a key configured later.
     fn moved(&self, aad: &str, sealed: &str, unopened: &mut u64) -> Result<Option<String>> {
         let Some(current) = self.settings.secret_key.as_ref() else { return Ok(None) };
-        if current.open(aad, sealed).is_ok() {
+        // Only the vault keeps it: nothing here to seal again.
+        if sealed == crate::vault::kept::MARKER || current.open(aad, sealed).is_ok() {
             return Ok(None);
         }
         match self.open_sealed(aad, sealed) {
@@ -266,21 +270,35 @@ impl Kernel {
         }
     }
 
-    /// What is stored for a webhook's signing secret: sealed, when the server has a key.
+    /// What is stored for a webhook's signing secret, with nothing kept in the vault: sealed with the old key when the
+    /// server has one; else the vault's mark with the vault open (a sandbox's, which the vault makes by its rule), or the
+    /// secret itself with neither, as before the vault. [`Kernel::keep_webhook_secret`] is what keeps a new one.
     pub fn seal_webhook_secret(&self, tenant: Uuid, webhook: Uuid, secret: &str) -> Result<String> {
         match &self.settings.secret_key {
             Some(key) => Ok(format!("{SEALED_WEBHOOK}{}", key.seal(&webhook_label(tenant, webhook), secret)?)),
+            None if self.db.vault.installation().is_ok() => Ok(crate::vault::kept::Store::Webhook.marker().to_string()),
             None => Ok(secret.to_string()),
         }
     }
 
-    /// A webhook's signing secret, from what is stored. A secret from before they were sealed reads
-    /// as it is, until [`Kernel::reseal_secrets`] has reached it.
-    pub(crate) fn webhook_secret(&self, tenant: Uuid, webhook: Uuid, stored: &str) -> Result<String> {
-        match stored.strip_prefix(SEALED_WEBHOOK) {
-            Some(sealed) => self.open_sealed(&webhook_label(tenant, webhook), sealed),
-            None => Ok(stored.to_string()),
-        }
+    /// Keeps a webhook's new signing secret in the vault (the platform's, in the workspace), in the transaction that
+    /// stores the webhook, and returns what its row holds (docs/plan/stateless.md, D5).
+    pub async fn keep_webhook_secret(&self, tx: &mut Tx, tenant: Uuid, webhook: Uuid, secret: &str) -> Result<String> {
+        self.keep(tx, &crate::vault::kept::Place::webhook(tenant, webhook), secret).await
+    }
+
+    /// Removes a webhook's signing secret from the vault, in the transaction that deletes the webhook.
+    pub async fn forget_webhook_secret(&self, tx: &mut Tx, tenant: Uuid, webhook: Uuid) -> Result<()> {
+        crate::vault::kept::forget(tx, &crate::vault::kept::Place::webhook(tenant, webhook)).await
+    }
+
+    /// A webhook's signing secret, from what its row holds: the vault's, or the row's (sealed, or plain from before
+    /// they were sealed) until the move has taken it.
+    pub(crate) async fn webhook_secret(&self, tenant: Uuid, webhook: Uuid, stored: &str) -> Result<Zeroizing<String>> {
+        let mut tx = self.db.system_tx().await?;
+        let secret = self.kept(&mut tx, &crate::vault::kept::Place::webhook(tenant, webhook), stored).await?;
+        tx.commit().await?;
+        Ok(secret)
     }
 
     /// Moves everything sealed with a retired key to the current one, and seals webhook secrets
@@ -505,6 +523,23 @@ mod tests {
     }
 }
 
+/// Where a call came from, as `ferrum task legacy_key` names it: an app's repository and file (a dependency checked out
+/// by cargo), or the path in this workspace.
+pub(crate) fn caller_of(at: &std::panic::Location<'_>) -> String {
+    let file = at.file().replace('\\', "/");
+    let named = match file.split_once("/checkouts/") {
+        Some((_, rest)) => {
+            let mut parts = rest.splitn(3, '/');
+            let repo = parts.next().unwrap_or_default();
+            // `<repository>-<16 hex>/<revision>/<path>`
+            let repo = repo.rsplit_once('-').filter(|(_, h)| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit())).map_or(repo, |(r, _)| r);
+            format!("{repo} {}", parts.nth(1).unwrap_or_default())
+        }
+        None => file,
+    };
+    format!("{named}:{}", at.line()).chars().take(300).collect()
+}
+
 /// Sealed values of one kind that no configured key opens ([`Kernel::unopened_secrets`]): never the values.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Unopened {
@@ -561,7 +596,7 @@ impl Kernel {
         let fields: Vec<(String, String, i64, Vec<String>)> = sqlx::query_as(
             "select s.entity, s.field, count(*), (select array_agg(e.record_id::text) from (select record_id from record_secret x \
                where x.entity = s.entity and x.field = s.field and not (x.key_id = any($1)) order by record_id limit 3) e) \
-             from record_secret s where not (s.key_id = any($1)) group by s.entity, s.field order by 1, 2",
+             from record_secret s where not (s.key_id = any($1)) and s.sealed <> 'vault' group by s.entity, s.field order by 1, 2",
         )
         .bind(&ids)
         .fetch_all(&mut *tx)
@@ -582,7 +617,8 @@ impl Kernel {
             budget -= take;
             let mut found = Unopened { what: what.to_string(), count: 0, examples: Vec::new() };
             for (ids, name, sealed) in rows.iter().take(take as usize) {
-                if self.open_sealed(&label(ids, name), sealed).is_err() {
+                // What only the vault keeps is not the old store's to open.
+                if sealed != crate::vault::kept::MARKER && self.open_sealed(&label(ids, name), sealed).is_err() {
                     found.count += 1;
                     if found.examples.len() < 3 {
                         found.examples.push(ids.last().map(Uuid::to_string).unwrap_or_default());

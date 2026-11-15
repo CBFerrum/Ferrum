@@ -462,7 +462,9 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     assert_eq!((doc["emails"].as_array().unwrap().len(), doc["phones"].as_array().unwrap().len()), (1, 1), "{doc:?}");
     assert_eq!(std::fs::read(dir_b.join(&file_key)).unwrap(), b"kept with the workspace");
     let mut tx = b.db.system_tx().await.unwrap();
-    assert_eq!(b.secret(&mut tx, t, "Contact", contact, "token").await.unwrap().as_deref(), Some("s3cret"));
+    #[allow(deprecated)]
+    let token = b.secret(&mut tx, t, "Contact", contact, "token").await.unwrap();
+    assert_eq!(token.as_deref(), Some("s3cret"));
     tx.commit().await.unwrap();
     assert!(b.unopened_secrets().await.unwrap().0.is_empty(), "every sealed value opens with B's key");
     let kept: Vec<(i64, i64)> =

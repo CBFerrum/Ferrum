@@ -6,7 +6,7 @@
 //! (`/sw.js`) shows them and opens what they are about.
 
 use crate::error::{Error, Result};
-use crate::secret::SecretKey;
+use crate::vault::kept::Place;
 use crate::{Ctx, Kernel};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
@@ -165,37 +165,50 @@ pub struct PushStatus {
 }
 
 impl Kernel {
-    /// The server's VAPID key, made the first time a replica needs it; `None` without the
-    /// server's secret key (nothing to seal it with): then there is no Web Push.
+    /// The server's VAPID key, made the first time a replica needs it; `None` with neither the vault nor the server's
+    /// secret key (nothing to keep it with): then there is no Web Push.
     pub async fn vapid(&self) -> Result<Option<Arc<Vapid>>> {
-        let Some(key) = self.settings.secret_key.as_ref() else { return Ok(None) };
-        let v = self.vapid.get_or_try_init(|| async { self.load_vapid(key).await.map(Arc::new) }).await?;
+        if !self.kept_here() {
+            return Ok(None);
+        }
+        let v = self.vapid.get_or_try_init(|| async { self.load_vapid().await.map(Arc::new) }).await?;
         Ok(Some(v.clone()))
     }
 
-    /// Reads the stored key, storing a new one when there is none. One that this secret key
-    /// cannot open (the secret key was replaced) is replaced too: devices subscribed with it
-    /// subscribe again on their next visit.
-    async fn load_vapid(&self, key: &SecretKey) -> Result<Vapid> {
+    /// Reads the stored key (the platform's, in the vault, of the installation), storing a new one when there is none.
+    /// One that cannot be opened (the secret key was replaced, the vault lost it) is replaced too: devices subscribed
+    /// with it subscribe again on their next visit.
+    async fn load_vapid(&self) -> Result<Vapid> {
+        let place = Place::push();
         let (der, fresh) = Vapid::generate()?;
-        let sealed = key.seal(VAPID_LABEL, &B64URL.encode(&der))?;
         let mut tx = self.db.system_tx().await?;
-        sqlx::query("insert into server_key (name, public, sealed) values ('vapid', $1, $2) on conflict (name) do nothing")
+        // The row first: the replica whose row it is keeps its key.
+        let made_here = sqlx::query("insert into server_key (name, public, sealed) values ('vapid', $1, $2) on conflict (name) do nothing")
             .bind(&fresh.public)
-            .bind(&sealed)
+            .bind(crate::vault::kept::MARKER)
             .execute(&mut *tx)
-            .await?;
+            .await?
+            .rows_affected()
+            == 1;
+        if made_here {
+            let stored = self.keep(&mut tx, &place, &B64URL.encode(&der)).await?;
+            sqlx::query("update server_key set sealed = $1 where name = 'vapid'").bind(stored).execute(&mut *tx).await?;
+        }
         let stored: String = sqlx::query_scalar("select sealed from server_key where name = 'vapid' for update").fetch_one(&mut *tx).await?;
-        let opened = self.open_sealed(VAPID_LABEL, &stored).ok().and_then(|b| B64URL.decode(b).ok()).and_then(|der| Vapid::from_pkcs8(&der).ok());
+        let opened = match self.kept(&mut tx, &place, &stored).await {
+            Ok(b) => B64URL.decode(b.as_bytes()).ok().and_then(|der| Vapid::from_pkcs8(&der).ok()),
+            Err(_) => None,
+        };
         let vapid = match opened {
             Some(v) => v,
             None => {
                 tracing::error!(
-                    "the stored VAPID key cannot be opened with this secret key (was FERRUM_SECRET_KEY replaced?); made a new one, devices subscribe again"
+                    "the stored VAPID key cannot be opened (was FERRUM_SECRET_KEY replaced, or the vault's rows lost?); made a new one, devices subscribe again"
                 );
+                let stored = self.keep(&mut tx, &place, &B64URL.encode(&der)).await?;
                 sqlx::query("update server_key set public = $1, sealed = $2, created_at = now() where name = 'vapid'")
                     .bind(&fresh.public)
-                    .bind(&sealed)
+                    .bind(stored)
                     .execute(&mut *tx)
                     .await?;
                 fresh

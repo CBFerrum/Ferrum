@@ -10,6 +10,7 @@
 use crate::ctx::Ctx;
 use crate::db::{Tx, with_retry};
 use crate::error::{Error, FieldError, Result};
+use crate::vault::kept::Place;
 use crate::{Doc, Kernel};
 use chrono::{DateTime, Utc};
 use ferrum_logic::approval::{Decided, Plan};
@@ -160,26 +161,28 @@ pub(crate) fn sealed_label(tenant: Uuid, request: Uuid, name: &str) -> String {
 }
 
 /// `params` of action `def` as a request keeps them: each secret parameter given shown as `[redacted]`, and its value
-/// sealed with the server's key apart (`{name: sealed}`), which only completing the request opens. Refused without
-/// the server's key when a secret was given: it is never kept in the clear.
-fn seal_secrets(k: &Kernel, tenant: Uuid, request: Uuid, def: &ferrum_meta::ActionDef, params: &Value) -> Result<(Value, Value)> {
+/// kept apart (`{name: what its old store holds}`): in the vault, and sealed with the old key while one is configured,
+/// which only completing the request opens. Refused when neither can keep it: it is never kept in the clear.
+async fn seal_secrets(k: &Kernel, tx: &mut Tx, tenant: Uuid, request: Uuid, def: &ferrum_meta::ActionDef, params: &Value) -> Result<(Value, Value)> {
     let mut sealed = serde_json::Map::new();
     for p in def.params.iter().filter(|p| p.secret) {
         let Some(v) = params.get(&p.name).filter(|v| !v.is_null()) else { continue };
-        let key = k.settings.secret_key.as_ref().ok_or_else(|| {
-            Error::Unavailable("an action with a secret parameter waits for approval only where the server has its secret key (FERRUM_SECRET_KEY)".into())
-        })?;
-        sealed.insert(p.name.clone(), json!(key.seal(&sealed_label(tenant, request, &p.name), &v.to_string())?));
+        if !k.kept_here() {
+            return Err(Error::Unavailable(
+                "an action with a secret parameter waits for approval only where the server has the vault or its secret key (FERRUM_SECRET_KEY)".into(),
+            ));
+        }
+        sealed.insert(p.name.clone(), json!(k.keep(tx, &Place::approval(tenant, request, &p.name), &v.to_string()).await?));
     }
     Ok((def.redacted(params), Value::Object(sealed)))
 }
 
 /// The parameters request `r` was asked with, its secret ones opened again.
-fn unsealed(k: &Kernel, tenant: Uuid, r: &Request) -> Result<Value> {
+async fn unsealed(k: &Kernel, tx: &mut Tx, tenant: Uuid, r: &Request) -> Result<Value> {
     let mut params = r.params.clone();
     if let (Some(Value::Object(sealed)), Some(out)) = (&r.sealed, params.as_object_mut()) {
         for (name, s) in sealed {
-            let plain = k.open_sealed(&sealed_label(tenant, r.id, name), s.as_str().unwrap_or_default())?;
+            let plain = k.kept(tx, &Place::approval(tenant, r.id, name), s.as_str().unwrap_or_default()).await?;
             out.insert(name.clone(), serde_json::from_str(&plain).map_err(|e| Error::internal(format!("sealed parameter {name}: {e}")))?);
         }
     }
@@ -496,7 +499,7 @@ impl Kernel {
         let params = if params.is_null() { &json!({}) } else { params };
         let (params, sealed) = match on_action {
             Some(def) => {
-                let (shown, sealed) = seal_secrets(self, ctx.tenant, request, def, params)?;
+                let (shown, sealed) = seal_secrets(self, tx, ctx.tenant, request, def, params).await?;
                 (shown, Some(sealed))
             }
             None => (params.clone(), None),
@@ -712,7 +715,7 @@ impl Kernel {
             Ok(mut who) => {
                 who.depth = ctx.depth;
                 if req.on_action {
-                    match unsealed(self, ctx.tenant, req) {
+                    match unsealed(self, tx, ctx.tenant, req).await {
                         Ok(params) => {
                             let def = self.entity(&who, entity).ok().and_then(|e| e.def.actions.iter().find(|a| a.name == req.action).cloned());
                             let secrets = def.map(|a| a.secret_values(&params));

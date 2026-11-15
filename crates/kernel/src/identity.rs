@@ -397,7 +397,7 @@ impl Kernel {
             sqlx::query("update app_user set totp_secret = $3, totp_enabled_at = now(), totp_last_step = $4 where tenant_id = $1 and id = $2")
                 .bind(dir)
                 .bind(id)
-                .bind(self.reseal_totp((m.tenant, m.user), (dir, id), sealed)?)
+                .bind(self.copy_totp(tx, (m.tenant, m.user), (dir, id), sealed).await?)
                 .bind(u.totp_last_step)
                 .execute(&mut **tx)
                 .await?;

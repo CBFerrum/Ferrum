@@ -53,14 +53,22 @@ pub(crate) async fn held_report(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>
 pub(crate) struct Erased {
     pub calls: u64,
     pub inbound: u64,
-    /// Their own sign-ins taken, for revoking at the provider once the erasure commits: connection, sealed tokens.
-    pub sign_ins: Vec<(Uuid, String)>,
+    /// Their own sign-ins taken, for revoking at the provider once the erasure commits: the connection, and its tokens
+    /// opened before they went from the vault (none: they could not be opened, and are not revoked).
+    pub sign_ins: Vec<(Uuid, Option<zeroize::Zeroizing<String>>)>,
 }
 
 /// Erases what connections hold of a person: their calls and those about their (erased) `records` lose who made them,
 /// their errors, kept results and captures; deliveries carrying an address lose their payload and error; their own
 /// sign-ins and sign-ins under way go, the tokens with them.
-pub(crate) async fn erase_held(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, emails: &[String], records: &[(String, Uuid)]) -> Result<Erased> {
+pub(crate) async fn erase_held(
+    k: &crate::Kernel,
+    tx: &mut Tx,
+    tenant: Uuid,
+    account: Option<Uuid>,
+    emails: &[String],
+    records: &[(String, Uuid)],
+) -> Result<Erased> {
     let (entities, ids) = split(records);
     let calls = sqlx::query(sqlx::AssertSqlSafe(format!(
         "update conn_call l set user_id = null, error = null, result = null, debug = null, input_digest = null where {CALL_THEIRS}"
@@ -82,11 +90,18 @@ pub(crate) async fn erase_held(tx: &mut Tx, tenant: Uuid, account: Option<Uuid>,
     let mut sign_ins = Vec::new();
     if let Some(person) = account {
         sqlx::query("delete from conn_signin where tenant_id = $1 and user_id = $2").bind(tenant).bind(person).execute(&mut **tx).await?;
-        sign_ins = sqlx::query_as("delete from conn_token where tenant_id = $1 and user_id = $2 returning conn_id, sealed")
+        let taken: Vec<(Uuid, String)> = sqlx::query_as("delete from conn_token where tenant_id = $1 and user_id = $2 returning conn_id, sealed")
             .bind(tenant)
             .bind(person)
             .fetch_all(&mut **tx)
             .await?;
+        for (conn, sealed) in taken {
+            // Opened for the revocation that follows, and gone from the vault with the row.
+            let place = super::oauth::token_place(tenant, conn, person);
+            let tokens = k.kept(tx, &place, &sealed).await.ok();
+            crate::vault::kept::forget(tx, &place).await?;
+            sign_ins.push((conn, tokens));
+        }
     }
     Ok(Erased { calls, inbound, sign_ins })
 }

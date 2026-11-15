@@ -157,6 +157,58 @@ Status: being built (started 15 November 2026). The plan and its reasons: `STATE
   the workspace id a move keeps); the point of no return compares a digest of the source's vault.
 - **A fenced database** (read-only transactions) still answers the vault's uses; it records none of them.
 
+### D5, second half: the kernel's stores (built)
+
+- **Who owns what.** A secret field is the app's whose package declares it; a field one package adds to another's entity
+  is the adder's. The server says which app owns each package it compiles in (`HookRegistry::own`, outside any app's
+  registration; a package claimed by two stops the server). A package installed at run time, with no code of its own,
+  is the app's it came with (`app_release`): no code holds that app's handle, so its values are set and cleared by people
+  and read by nobody. The platform's own packages, and those an operator adds from a directory, are the platform's.
+  Everything else in these stores is the platform's: connections' credentials and tokens (used on a caller's behalf,
+  never read back), message channels', single sign-on's, SAML's, second factors, webhooks', approvals' secret
+  parameters, the push key.
+- **Where.** Each value is a secret of its owner in its workspace's scope (the push key in the installation's), named
+  `<store>.<40 hex of SHA-256 of its place without the workspace>`, so that a move and a sandbox keep the name. Its rule:
+  a field's value is revealed to its app's code; no other is revealed. A sandbox: webhooks `regenerate`, second factors
+  `keep`, the rest `blank`. A connection's: the hosts its description reached when its secrets were given.
+- **Writes** go to the vault in the transaction that writes the store's row. While `FERRUM_SECRET_KEY` is configured the
+  old column is sealed with it as well, as the previous build reads it; with none it holds `vault` (`sealed:vault` for
+  a webhook), which opens with no key. With the vault closed, as before it (sealed with the old key, refused without
+  one). Never plain where the vault is open: a webhook's secret was, without a key.
+- **Reads.** `vault.kept` holds, for each version, a SHA-256 of the old column as it was written beside it. The vault's
+  value is read when the old column still holds that (or the mark); otherwise the old column, with the old keys: a value
+  not moved yet, or one the previous build changed since. Each such read is noted (`legacy_key_use`, `open:<store>`).
+- **The move**: `Kernel::vault_move`, in the hourly upkeep and `ferrum task vault_move`. Each waiting value is taken in a
+  transaction of its own, under its secret's lock and its row's, both only tried (a value a person or another replica
+  holds is left for the next round, so nothing is moved twice), and read back from the vault before it commits. A plain
+  webhook secret is sealed (or marked) in its row as it moves. What the vault keeps for a row that is gone (deleted by
+  either build, an approval decided) is removed. `vault_waiting` counts what waits, by store.
+- **The previous build** reads the old columns with `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS`: kept current
+  for as long as a key is configured, since every write seals there too and `reseal_secrets` still rotates them. With no
+  old key it finds marks and refuses each, as it refuses a value sealed with a key it lacks (in production it does not
+  start without the key at all). Nothing is deleted from the old stores; a plain webhook secret is replaced by its seal.
+- **Readers.** `Vault::field` reads a secret field of the handle's own owner, and refuses any other, set or not.
+  `Kernel::secret` and `KernelSettings::secret_key` keep working in this release, deprecated: the function carries the
+  attribute and notes each caller's file at run time; the field is documented so (the attribute would warn in every
+  test that configures a key). `scripts/secret_paths.py` lists every compiled app that names either, and the doctor
+  names the callers seen. Both go private in R2.
+- **Use, not reveal.** These values are opened only by kernel code that puts them on a request, signs or checks with
+  them. A connection's secrets are had only while its description reaches the hosts they were given for, so changing
+  its hosts asks for them again; each request still goes through the connection's guard and `vault::carried`.
+- **Rotation.** Owner, workspace and installation keys rotate these secrets as any other. `reseal_secrets` and the
+  retired keys keep rotating what the old columns hold (each then reads from there until the move takes it again).
+- **The old key's end.** `Kernel::legacy_key` (`ferrum task legacy_key`, the doctor) says it can go once nothing waits to
+  move and no path used it since the move first found nothing waiting; reads of the deprecated readers do not count,
+  apps that name `secret_key` do (the server's list of them).
+- **Moves, sandboxes, deletion, dumps.** A workspace's values travel with its vault rows (the first half); old columns
+  holding the mark pass a move as they are, and the source's old keys still open the rest. A sandbox has each by its
+  rule; a deleted workspace's go with its vault; a deleted record's, channel's, connection's, provider's, token's or
+  person's second factor go in the transaction that deletes it. A dump holds sealed rows and wrapped keys only.
+- **Not in this half**: plugins' settings, which the plugin host still seals with the old key; and what the old key
+  still keys or seals for a while (opt-out links, erased opt-outs' marks, OAuth state and sign-in verifiers, public file
+  addresses, connector account fingerprints, receipts' secret parameters, messages waiting with secret values, process
+  payloads). So `FERRUM_SECRET_KEY` stays required in production in this release.
+
 ## D6. Object storage only
 
 The local directory is refused outside development and tests. Docker Compose bundles an S3-compatible store. The

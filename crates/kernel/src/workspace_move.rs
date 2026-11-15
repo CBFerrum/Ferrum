@@ -171,8 +171,12 @@ fn uuid(row: &Map<String, Value>, k: &str) -> Result<Uuid> {
     text(row, k).and_then(|s| s.parse().ok()).ok_or_else(|| Error::Internal(format!("a row without {k}")))
 }
 
-/// Opens `sealed` with the source's keys and seals it again with this installation's.
+/// Opens `sealed` with the source's keys and seals it again with this installation's. The vault's mark (a value only the
+/// vault keeps, which travels with the workspace's vault rows) passes as it is.
 fn reseal(from: &[SecretKey], to: Option<&SecretKey>, label: &str, sealed: &str, at: &str) -> Result<String> {
+    if sealed == crate::vault::kept::MARKER {
+        return Ok(sealed.to_string());
+    }
     let plain = from
         .iter()
         .find_map(|k| k.open(label, sealed).ok())
@@ -215,7 +219,7 @@ fn reseal_row(table: &str, tenant: Uuid, row: &mut Map<String, Value>, from: &[S
             let label = crate::connect::sealed_label(tenant, uuid(row, "id")?);
             let n = again(row, "sealed", label.clone())?;
             // The account a connection opens is known by a fingerprint under the key: made again with this one's.
-            if let (Some(_), Some(sealed), Some(key)) = (text(row, "account_key"), text(row, "sealed"), to) {
+            if let (Some(_), Some(sealed), Some(key)) = (text(row, "account_key"), text(row, "sealed").filter(|s| *s != crate::vault::kept::MARKER), to) {
                 let credentials: Value = serde_json::from_str(&key.open(&label, sealed)?).map_err(Error::internal)?;
                 let provider = text(row, "provider").unwrap_or_default();
                 let print =

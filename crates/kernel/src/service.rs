@@ -108,7 +108,7 @@ impl Kernel {
             .bind(hook)
             .bind(format!("App: {}", s.app))
             .bind(&events_url)
-            .bind(self.seal_webhook_secret(ctx.tenant, hook, &secret)?)
+            .bind(self.keep_webhook_secret(&mut tx, ctx.tenant, hook, &secret).await?)
             .bind(s.events)
             .bind(s.app)
             .bind((!ctx.user.is_nil()).then_some(ctx.user))
@@ -162,6 +162,16 @@ impl Kernel {
             .await?;
         let hook: Option<(Uuid, String)> =
             sqlx::query_as("select id, secret from webhook where tenant_id = $1 and app = $2").bind(ctx.tenant).bind(app).fetch_optional(&mut *tx).await?;
+        // Its signing secret, opened for the last call below: it goes from the vault with the webhook.
+        let secret = match &hook {
+            Some((id, stored)) => {
+                let place = crate::vault::kept::Place::webhook(ctx.tenant, *id);
+                let opened = self.kept(&mut tx, &place, stored).await;
+                crate::vault::kept::forget(&mut tx, &place).await?;
+                Some(opened)
+            }
+            None => None,
+        };
         sqlx::query("delete from webhook where tenant_id = $1 and app = $2").bind(ctx.tenant).bind(app).execute(&mut *tx).await?;
         sqlx::query("delete from role_permission where tenant_id = $1 and role = $2").bind(ctx.tenant).bind(role_of(app)).execute(&mut *tx).await?;
         if let Some(user) = user {
@@ -178,10 +188,10 @@ impl Kernel {
         if let Some(user) = user {
             self.set_user_active(ctx, user, false).await?;
         }
-        if let (Some(url), Some((id, stored))) = (url, hook) {
-            let secret = self.webhook_secret(ctx.tenant, id, &stored)?;
+        if let (Some(url), Some(secret)) = (url, secret) {
+            let secret = secret?;
             let body = json!({"event": "uninstalled", "app": app, "workspace": ctx.tenant});
-            if let Err(e) = self.call_service(ctx.tenant, url, "uninstall", &body, Some(&secret)).await {
+            if let Err(e) = self.call_service(ctx.tenant, url, "uninstall", &body, Some(secret.as_str())).await {
                 tracing::warn!(tenant = %ctx.tenant, %app, "the service was not told it was removed: {e}");
             }
         }

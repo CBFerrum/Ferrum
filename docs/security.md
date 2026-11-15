@@ -39,8 +39,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 **The vault** ([operations](operations.md#the-vault))
 * It keeps the keys and passwords of the platform and of every app, sealed with AES-256-GCM in the server (never by
   SQL). Each value's associated data names its workspace, owner, name and version and the version of the key that
-  sealed it, so a value copied to any other place does not open. In this release the existing stores stay where they
-  are; the next one moves them in.
+  sealed it, so a value copied to any other place does not open. What `FERRUM_SECRET_KEY` sealed in stores of its own
+  is in it too, each value its owner's: a secret field the declaring app's, the rest the platform's. While the key is
+  configured those stores still hold each value sealed with it as well, for a rollback; the release after drops them.
 * Keys form a hierarchy: a slot's key, the installation key, a workspace key, an owner key (`platform`, an app, a
   plugin), the secret. Every key below a slot is random, versioned and stored only wrapped: a dump holds no key that
   opens anything without a slot's key. Key material is zeroed when dropped and never formatted, logged or serialised.
@@ -269,8 +270,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 
 **Data**
 * Secrets (secret fields such as mail passwords, two-factor secrets, single sign-on client
-  secrets) are sealed with AES-256-GCM under `FERRUM_SECRET_KEY`, bound to their record, and never
-  appear in events, the audit log, exports or webhooks.
+  secrets) are kept in the vault, each its owner's, bound to their record, and never appear in
+  events, the audit log, exports or webhooks. An app reads only the secret fields its own packages
+  declare (`Vault::field`).
 * The audit trail is a hash chain the database only appends to; personal-data erasure redacts
   values in it while keeping each event's place and hash.
 * API responses carry `Cache-Control: no-store`, so browsers keep neither stale nor private copies.

@@ -44,6 +44,8 @@ async fn kernel(key: Option<SecretKey>, reset: bool) -> Arc<Kernel> {
     Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings { secret_key: key, ..Default::default() }, None).await.expect("boot")
 }
 
+/// Through the reader apps used before each read its own with its vault handle: deprecated, still working in this release.
+#[allow(deprecated)]
 async fn reveal(k: &Kernel, tenant: Uuid, id: Uuid) -> ferrum_kernel::Result<Option<String>> {
     let mut tx = k.db.tenant_tx(tenant).await?;
     let v = k.secret(&mut tx, tenant, "Integration", id, "api_key").await;
