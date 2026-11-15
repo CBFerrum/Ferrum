@@ -288,6 +288,19 @@ async fn reads_on_a_real_standby() {
         assert_eq!(a.port, on_standby, "back on the standby once it runs again: {:?}", reads.counts());
     }
 
+    // "Is this the same database?" (D7): the primary under its own address is, by the lock; its standby, which the lock
+    // cannot see, is by its identity while it follows; promoted, it is a genuine copy with the same identity (as a managed
+    // service's snapshot, clone or branch is), which the identity alone would have refused.
+    use ferrum_kernel::recovery::{Same, same_database};
+    let other = |u: &str| Db::connect(DbConfig { url: u.to_string(), direct_url: Some(u.to_string()), max_connections: 2, ..Default::default() });
+    let (again, follower) = (other(&primary).await.unwrap(), other(&standby).await.unwrap());
+    assert_eq!(same_database(&db, &again).await.unwrap(), Some(Same::This));
+    assert_eq!(same_database(&db, &follower).await.unwrap(), Some(Same::Following));
+    let identity =
+        "select (select system_identifier from pg_control_system())::text || '-' || (select oid from pg_database where datname = current_database())";
+    let ids: (String, String) =
+        (sqlx::query_scalar(identity).fetch_one(&db.pool).await.unwrap(), sqlx::query_scalar(identity).fetch_one(&follower.pool).await.unwrap());
+
     // Promoted, it is no replica: never read from as one, even before the next look at it, and a write made on the
     // primary since is never missed.
     let sb = reach().await;
@@ -308,6 +321,13 @@ async fn reads_on_a_real_standby() {
     let (a, _) = read(&db, tenant).await;
     assert_eq!(a.port, on_primary);
     assert_eq!(n(Served::NotReplica), not_replica + 3, "{:?}", reads.counts());
+    let promoted = other(&standby).await.unwrap();
+    assert_eq!(ids.0, sqlx::query_scalar::<_, String>(identity).fetch_one(&promoted.pool).await.unwrap(), "the same identity as before: {ids:?}");
+    assert_eq!(ids.0, ids.1);
+    assert_eq!(same_database(&db, &promoted).await.unwrap(), None, "a genuine copy, which the identity alone would have refused");
+    for d in [again, follower, promoted] {
+        d.close().await;
+    }
     eprintln!("the standby is promoted: make the pair again (scripts/replica_pair.sh down, then up) before the next run");
 }
 

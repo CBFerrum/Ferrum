@@ -5,7 +5,8 @@
 #    a workspace, a record, a file and a webhook whose delivery is still waiting; `ferrum task plan_move`; pg_dump,
 #    pg_restore into a second database, the files copied; a server on the copy with the same keys. It checks: no restore
 #    hold on the copy, the fence lifted there and still on the source, the waiting delivery made once, sealed values open,
-#    the doctor's move checks fine. Then the same without plan_move, which must end in the hold.
+#    the vault (made by the source's first start) open on the copy with the role's password, the doctor's move checks
+#    fine. Then the same without plan_move, which must end in the hold.
 # 2. One workspace between two running servers, and back (docs/operations.md, Moving one workspace), then a sandbox of it
 #    (A sandbox of a workspace): two servers, each on its own database, files directory and secret key, as two regions
 #    that trust each other. `move_workspace` on the second against the first, then `finish_move` on the first and the
@@ -19,11 +20,10 @@
 #   scripts/move_rehearsal.sh [--grant] ferrum_moverehearsal_a ferrum_moverehearsal_b
 #
 # Both databases are created and dropped here, so each name must start with ferrum_moverehearsal_: it can never touch
-# another database. The second part turns referential triggers off while a move or a copy runs, so the servers' role
-# needs GRANT SET ON PARAMETER session_replication_role for that long. That grant is the whole PostgreSQL server's (other
-# test runs grant and revoke it too): with --grant the script grants it right before each move, finish or copy and
-# revokes it right after, and on exit whatever happened; without --grant it never grants it, and stops before the first
-# move unless the role holds it already. Settings: FERRUM_BIN (the server binary; default target/debug/ferrum, built with
+# another database. Moves and copies run as the servers' own role with no grant (D7): without --grant the script never
+# gives one. With --grant it still grants SET on session_replication_role right before each move, finish or copy and
+# revokes it right after, and on exit whatever happened, as a build before D7 needed (that grant is the whole
+# PostgreSQL server's: other test runs grant and revoke it too). Settings: FERRUM_BIN (the server binary; default target/debug/ferrum, built with
 # `cargo build -p ferrum-server --no-default-features --bin ferrum`), MOVE_ADMIN_URL (a superuser, for creating databases,
 # the grant and pg_dump, which row-level security would otherwise cut short; default postgres://$USER@localhost:5432),
 # MOVE_APP_URL (the servers' role; default postgres://ferrum:ferrum@localhost:5432), MOVE_PORT (default 5391; the second
@@ -78,9 +78,9 @@ trap cleanup EXIT
 # Interrupted, it still cleans up (and takes the grant back).
 trap 'exit 130' INT TERM HUP
 if [ "$GRANT" = yes ]; then
-  echo "The workspace's move and copy need GRANT SET ON PARAMETER session_replication_role TO $ROLE, a grant of the whole PostgreSQL server: with --grant it is given for each move, finish and copy alone, and taken back after each and on exit."
+  echo "With --grant, $ROLE is given SET on session_replication_role for each move, finish and copy alone (no build since D7 needs it), and it is taken back after each and on exit."
 else
-  echo "The workspace's move and copy need GRANT SET ON PARAMETER session_replication_role TO $ROLE, a grant of the whole PostgreSQL server: without --grant this script never gives it, and stops before the first move unless $ROLE holds it already."
+  echo "The workspace's move and copy run as $ROLE with no grant (D7): this script never gives one."
 fi
 
 # The same keys on both sides, as a move carries them.
@@ -191,7 +191,7 @@ python3 - "$work/doctor.json" <<'PY'
 import json, sys
 text = open(sys.argv[1]).read()
 found = {f["check"]: f["level"] for f in json.loads(text[text.index("\n[") + 1 if not text.startswith("[") else 0:])}
-for check in ["secrets.unopened", "files.missing", "restore"]:
+for check in ["secrets.unopened", "files.missing", "restore", "vault", "vault.slot.credential"]:
     assert found.get(check) == "ok", (check, found.get(check))
 assert "move" not in found, found["move"]
 PY
@@ -279,8 +279,6 @@ wcontact() { local body; body=$(printf '{"first_name":"%s"}' "$4"); status "$1" 
 wnames() { at "$1" "$2" '/api/v1/Contact?limit=200' -H "authorization: Bearer $3" | json '" ".join(sorted(r["first_name"] for r in d["rows"]))'; }
 grant() {
   if [ "$GRANT" = yes ]; then sql postgres "grant set on parameter session_replication_role to $ROLE" >/dev/null; fi
-  [ "$(sql postgres "select has_parameter_privilege('$ROLE', 'session_replication_role', 'SET')")" = t ] \
-    || fail "$ROLE lacks GRANT SET ON PARAMETER session_replication_role (run with --grant to have it given for each step)"
 }
 # The receiver: each delivery's signature and body, one JSON line each.
 hooks() {

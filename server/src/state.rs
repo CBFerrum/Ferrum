@@ -234,6 +234,13 @@ pub struct Settings {
     /// `FERRUM_DATABASE_READ_URL`: a replica reports and exports may read from. Empty: none.
     #[serde(default)]
     pub database_read_url: String,
+    /// `FERRUM_DATABASE_DIRECT_HOST`: PostgreSQL itself as `host[:port]`, reached with `DATABASE_URL`'s role, password,
+    /// database and TLS options (D7). `database_direct_url`, when set, wins.
+    #[serde(default)]
+    pub database_direct_host: String,
+    /// `FERRUM_DATABASE_READ_HOST`: a read replica as `host[:port]`, as the direct host. `database_read_url` wins.
+    #[serde(default)]
+    pub database_read_host: String,
     /// `FERRUM_DATABASE_READ_MAX_LAG_SECS`: past this replay lag, they read from the primary.
     #[serde(default = "default_read_max_lag")]
     pub database_read_max_lag_secs: u64,

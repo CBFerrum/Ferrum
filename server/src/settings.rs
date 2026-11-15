@@ -675,6 +675,7 @@ pub struct KernelLive {
     pub signup: ferrum_kernel::signup::SignupPolicy,
     pub host_leaving_days: i64,
     pub dns_resolvers: Vec<std::net::SocketAddr>,
+    pub hold_on_timeline: bool,
 }
 
 pub fn kernel_live(settings: &Settings, var: &dyn Fn(&str) -> Option<String>) -> Result<KernelLive, String> {
@@ -692,6 +693,7 @@ pub fn kernel_live(settings: &Settings, var: &dyn Fn(&str) -> Option<String>) ->
         signup,
         host_leaving_days: settings.host_leaving_days.min(365).into(),
         dns_resolvers: ferrum_kernel::shell::dns_resolvers(&settings.dns_resolvers)?,
+        hold_on_timeline: var("FERRUM_HOLD_ON_TIMELINE").is_none_or(|v| v != "false"),
     })
 }
 
@@ -711,8 +713,19 @@ impl KernelLive {
             signup: self.signup,
             host_leaving_days: self.host_leaving_days,
             dns_resolvers: self.dns_resolvers,
+            hold_on_timeline: self.hold_on_timeline,
             ..settings
         }
+    }
+}
+
+/// Whether the host setting `key` (`database_direct_host`, `database_read_host`) may not be used: only when it comes from
+/// the table and could draw `database_url`'s password to a machine of someone else's (ferrum_kernel::db::may_send_password).
+/// Why, when it may not.
+pub fn stored_host_refused(snapshot: &Snapshot, key: &str, database_url: &str) -> Result<(), String> {
+    match snapshot.get(key) {
+        (Source::Database, Some(host)) if !host.trim().is_empty() => ferrum_kernel::db::may_send_password(database_url, host),
+        _ => Ok(()),
     }
 }
 

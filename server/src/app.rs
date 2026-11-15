@@ -86,6 +86,19 @@ const DRAIN: Duration = Duration::from_secs(20);
 
 #[async_trait]
 impl Hooks for App {
+    /// The configuration as its files and the environment make it, with an outside database's certificate authority
+    /// (D1: `/run/ferrum/db-ca.pem`, when it is there) trusted by the database's address before anything connects, Loco's
+    /// own connection and the settings' first read included (ferrum_kernel::db::with_ca says what changes). A certificate
+    /// that does not verify refuses the start here, saying so; anything else wrong with the address the start says itself.
+    async fn load_config(env: &Environment) -> Result<Config> {
+        let mut config = env.load()?;
+        if let Some(ca) = ferrum_kernel::db::database_ca() {
+            config.database.uri = ferrum_kernel::db::with_ca(&config.database.uri, &ca).map_err(|e| Error::Message(format!("DATABASE_URL: {e}")))?;
+            ferrum_kernel::db::check_certificate(&config.database.uri, &ca).await.map_err(|e| Error::Message(e.to_string()))?;
+        }
+        Ok(config)
+    }
+
     /// Loco's own `serve` runs `on_shutdown` the moment the signal comes, before the server has
     /// answered the requests in flight, so those met closed database pools (and failed with 503).
     /// Here the signal stops the background loops and live connections, the requests in flight
@@ -205,13 +218,32 @@ impl Hooks for App {
                 ferrum_kernel::doctor::POOL_FLOOR
             );
         }
+        // The direct and read addresses: the old full address when set (it wins in R1), else DATABASE_URL at the host a
+        // setting names (D7), else none. A host from the settings table is given DATABASE_URL's password, so it is used
+        // only where that cannot draw the password elsewhere (ferrum_kernel::db::may_send_password); otherwise it is not
+        // used, the log says so once and the doctor reports it. One from the environment is used as before.
+        let at = |full: &str, host: &str, key: &str, name: &str| -> Result<Option<String>> {
+            if !full.trim().is_empty() {
+                return ferrum_kernel::db::trusted(full).map(Some).map_err(|e| Error::Message(format!("{}: {e}", name.replace("_HOST", "_URL"))));
+            }
+            if host.trim().is_empty() {
+                return Ok(None);
+            }
+            if let Err(why) = crate::settings::stored_host_refused(&snapshot, key, &ctx.config.database.uri) {
+                tracing::error!("the setting {key} from the database is not used: {why}");
+                return Ok(None);
+            }
+            ferrum_kernel::db::with_host(&ctx.config.database.uri, host).map(Some).map_err(|e| Error::Message(format!("{name}: {e}")))
+        };
+        let direct = at(&settings.database_direct_url, &settings.database_direct_host, "database_direct_host", "FERRUM_DATABASE_DIRECT_HOST")?;
+        let read = at(&settings.database_read_url, &settings.database_read_host, "database_read_host", "FERRUM_DATABASE_READ_HOST")?;
         let db = Db::connect(DbConfig {
             url: ctx.config.database.uri.clone(),
             max_connections: settings.db_max_connections,
             // Unset: the same address as DATABASE_URL, one pool for everything as before.
-            direct_url: Some(Some(settings.database_direct_url.trim()).filter(|u| !u.is_empty()).unwrap_or(&ctx.config.database.uri).to_string()),
+            direct_url: Some(direct.unwrap_or_else(|| ctx.config.database.uri.clone())),
             direct_connections: ferrum_kernel::db::LISTENERS + ferrum_kernel::db::DIRECT_LOCKS + crate::packages::upkeep_concurrency() as u32,
-            read_url: Some(settings.database_read_url.trim().to_string()).filter(|u| !u.is_empty()),
+            read_url: read,
             read_max_lag: Duration::from_secs(settings.database_read_max_lag_secs),
             ..Default::default()
         })
@@ -287,7 +319,6 @@ impl Hooks for App {
                 secret_key: Some(secret_key),
                 retired_secret_keys: retired,
                 public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
-                hold_on_timeline: ferrum_kernel::env::var("FERRUM_HOLD_ON_TIMELINE").is_none_or(|v| v != "false"),
                 accounts_host: crate::shell::accounts_host(&settings),
                 hooks_url: crate::shell::hooks_url(&settings, &ctx.config.server.host),
                 passkey_rp: crate::shell::host_setting("FERRUM_PASSKEY_RP", &settings.passkey_rp).ok().flatten(),
@@ -448,6 +479,18 @@ impl Hooks for App {
             live_settings: Arc::new(crate::settings::Live::new(&pool, &ctx.config, snapshot, settings_at_start)),
         };
         state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone(), state.objects.clone())));
+        // A restore that keeps the database's identity is noticed by the marker in object storage (docs/operations.md,
+        // "After restoring a backup"): one look before this replica serves or sends anything; until a look reaches the
+        // store, what reaches outside waits. A guest of a newer build's database writes nothing.
+        if state.kernel.booted.guest.is_none() {
+            match state.kernel.watch_restore_marker().await {
+                Ok(ferrum_kernel::recovery::MarkerSaid::StoreDown(e)) => {
+                    tracing::warn!("the restore marker could not be compared with object storage: nothing reaches outside from this replica until it can ({e})")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("looking at the restore marker failed (tried again in a minute): {e}"),
+            }
+        }
         state.kernel.db.starting(false);
         let ctx = ctx.into_builder().storage(storage).build();
         ctx.shared_store.insert(state);
@@ -478,6 +521,10 @@ impl Hooks for App {
         let mut listeners = state.kernel.spawn_listeners(state.shutdown.subscribe());
         // Changes of the settings, and this replica's row in `replica` (docs/operations.md, "Settings in the database").
         listeners.push(crate::settings::spawn(state.clone(), state.shutdown.subscribe()));
+        // The restore marker, every minute (docs/operations.md, "After restoring a backup").
+        if state.kernel.booted.guest.is_none() {
+            listeners.push(state.kernel.spawn_restore_marker(state.shutdown.subscribe()));
+        }
         listeners.push(state.plugins.sockets.spawn_listener(state.kernel.db.clone(), state.shutdown.subscribe()));
         listeners.push(state.live.spawn_listener(state.kernel.clone(), state.shutdown.subscribe()));
         listeners.extend(state.docs.spawn(state.kernel.clone(), state.shutdown.subscribe()));

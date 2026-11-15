@@ -142,6 +142,15 @@ fn superuser(address: &str) -> String {
     format!("{base}/{}", address.rsplit('/').next().unwrap())
 }
 
+/// A database's own address, as a move's, a sandbox's or an extraction's source must be: where the suites run through a
+/// pooler (scripts/local_ci.sh managed), the direct host stands in.
+fn direct(url: &str) -> String {
+    match std::env::var("FERRUM_TEST_DATABASE_DIRECT_HOST") {
+        Ok(host) => ferrum_kernel::db::with_host(url, &host).expect("a direct address"),
+        Err(_) => url.to_string(),
+    }
+}
+
 async fn as_superuser(address: &str, sql: &str) {
     let db = Db::connect(DbConfig { url: superuser(address), max_connections: 1, ..Default::default() }).await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(sql.to_string())).execute(&db.pool).await.unwrap();
@@ -237,8 +246,9 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     let (hook_url, hits) = receiver().await;
     let a = installation(&a_url, &key_a, &seen, &mails, &dir_a, &hook_url).await;
     let b = installation(&b_url, &key_b, &seen, &mails, &dir_b, &hook_url).await;
+    // Without the grant on session_replication_role (D7): moves and copies run as the server's own role.
     for u in [&a_url, &b_url] {
-        as_superuser(u, "grant set on parameter session_replication_role to ferrum").await;
+        as_superuser(u, "do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
     }
 
     // Acme, live at A: records with lines, a file, sealed values of both kinds, a connection with tokens, a webhook, an
@@ -326,7 +336,7 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     refused(a.copy_workspace("acme", "acme-try", &here(None, false), &quiet).await, "moving");
     run(&a, "delete from workspace_move where workspace = $1", t).await;
     let same = MoveSource {
-        url: a_url.clone(),
+        url: direct(&a_url),
         keys: vec![key_a.clone()],
         files: None,
         regions: None,
@@ -372,7 +382,7 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
 
     // And one at B, from A.
     let from_a = MoveSource {
-        url: a_url.clone(),
+        url: direct(&a_url),
         keys: vec![key_a.clone()],
         files: Some(Arc::new(DirFiles(dir_a.clone()))),
         regions: None,
@@ -607,7 +617,7 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     assert!(floor_holders(&a).await.is_empty(), "the last sandbox deleted, the floor goes");
 
     for u in [&a_url, &b_url] {
-        as_superuser(u, "revoke set on parameter session_replication_role from ferrum").await;
+        as_superuser(u, "do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
     }
     let _ = std::fs::remove_dir_all(dirs);
 }

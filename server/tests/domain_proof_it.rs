@@ -256,9 +256,10 @@ async fn scenario() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     k.close_account(victim, chrono::Utc::now().date_naive() + chrono::Duration::days(30), "the customer left").await.unwrap();
     sql(&k, &format!("update tenant set retain_until = current_date - 1 where id = '{victim}'")).await;
-    as_superuser(&url, "grant set on parameter session_replication_role to ferrum").await;
+    // Without the grant on session_replication_role (D7).
+    as_superuser(&url, "do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
     let deleted = k.delete_tenant("victim", "victim", true, "kept as long as agreed").await;
-    as_superuser(&url, "revoke set on parameter session_replication_role from ferrum").await;
+    as_superuser(&url, "do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
     assert_eq!(deleted.expect("deleted")["deleted"], json!(true));
     assert_eq!(k.route_host("erp.victim.test").await.unwrap(), HostRoute::Unknown, "nothing is left to serve");
     let (status, body) = add(&taker_token, at_taker, "erp.victim.test").await;

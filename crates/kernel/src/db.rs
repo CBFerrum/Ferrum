@@ -180,7 +180,8 @@ pub struct DbConfig {
     pub report_timeout_ms: u64,
     /// `FERRUM_DATABASE_DIRECT_URL`: where whatever needs one session for longer than a transaction connects (LISTEN,
     /// session advisory locks, migrations and the schema sync), when `url` is a connection pooler in transaction mode.
-    /// `None`: `FERRUM_TEST_DATABASE_DIRECT_URL` when a test sets it, else `url` itself (the server always says).
+    /// `None`: `FERRUM_TEST_DATABASE_DIRECT_URL` when a test sets it, else `url` at `FERRUM_TEST_DATABASE_DIRECT_HOST`
+    /// when a test sets that, else `url` itself (the server always says).
     pub direct_url: Option<String>,
     /// The most connections the direct side opens when it is a pool of its own:
     /// [`LISTENERS`] + [`DIRECT_LOCKS`] + apps' upkeep at once (`FERRUM_UPKEEP_CONCURRENCY`, default 2).
@@ -280,6 +281,8 @@ impl Db {
             .direct_url
             .clone()
             .or_else(|| std::env::var("FERRUM_TEST_DATABASE_DIRECT_URL").ok())
+            // Suites on several databases through a pooler (scripts/local_ci.sh managed): each one's own, by host.
+            .or_else(|| std::env::var("FERRUM_TEST_DATABASE_DIRECT_HOST").ok().and_then(|h| with_host(&config.url, &h).ok()))
             .map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty() && *u != config.url);
         let main = url(&config.url, "database url")?;
@@ -301,7 +304,8 @@ impl Db {
             .max_lifetime(Some(Duration::from_secs(1800)))
             .test_before_acquire(true)
             .connect_with(main)
-            .await?;
+            .await
+            .map_err(pooler_refused)?;
         let direct = match &direct_url {
             None => pool.clone(),
             Some(d) => PgPoolOptions::new()
@@ -312,9 +316,11 @@ impl Db {
                 .max_lifetime(Some(Duration::from_secs(1800)))
                 .test_before_acquire(true)
                 // Connected now, so a start with a direct address that does not answer fails at once, saying which.
-                .connect_with(session(url(d, "direct database url (FERRUM_DATABASE_DIRECT_URL)")?))
+                .connect_with(session(url(d, "direct database address (FERRUM_DATABASE_DIRECT_URL or FERRUM_DATABASE_DIRECT_HOST)")?))
                 .await
-                .map_err(|e| Error::Internal(format!("the direct database address (FERRUM_DATABASE_DIRECT_URL) does not answer: {e}")))?,
+                .map_err(|e| {
+                    Error::Internal(format!("the direct database address (FERRUM_DATABASE_DIRECT_URL or FERRUM_DATABASE_DIRECT_HOST) does not answer: {e}"))
+                })?,
         };
         // Connected when first used: a read address that does not answer sends reads to the primary, it stops nothing.
         let read = match config.read_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
@@ -328,7 +334,7 @@ impl Db {
                     .max_lifetime(Some(Duration::from_secs(1800)))
                     .test_before_acquire(true)
                     // Like the main pool through a pooler: each transaction sets what it needs.
-                    .connect_lazy_with(url(r, "read database url (FERRUM_DATABASE_READ_URL)")?.extra_float_digits(None)),
+                    .connect_lazy_with(url(r, "read database address (FERRUM_DATABASE_READ_URL or FERRUM_DATABASE_READ_HOST)")?.extra_float_digits(None)),
                 config.read_max_lag,
             ))),
         };
@@ -673,6 +679,239 @@ where
             }
             other => return other,
         }
+    }
+}
+
+/// A connection pooler in transaction mode refuses the settings a session starts with, which an address given as
+/// PostgreSQL's own sends (DATABASE_URL without a direct address; a move's, a sandbox's or an extraction's source,
+/// which needs one session there): said plainly.
+fn pooler_refused(e: sqlx::Error) -> Error {
+    if e.to_string().contains("unsupported startup parameter") {
+        return Error::Invalid(format!(
+            "this address is a connection pooler, which refuses a session's settings ({e}): give PostgreSQL's own address here; \
+             a server takes the pooler's in DATABASE_URL and PostgreSQL's in FERRUM_DATABASE_DIRECT_HOST"
+        ));
+    }
+    e.into()
+}
+
+/// Where an outside database's certificate authority is read from when it is there (docs/plan/stateless.md, D1).
+pub const DB_CA: &str = "/run/ferrum/db-ca.pem";
+
+/// The outside database's certificate authority, when its file is there: [`DB_CA`]. A debug build (tests, a developer's
+/// machine) looks in `FERRUM_TEST_RUN_DIR` instead when that is set, for `db-ca.pem`; a release build never reads it.
+pub fn database_ca() -> Option<String> {
+    let elsewhere = if cfg!(debug_assertions) { std::env::var("FERRUM_TEST_RUN_DIR").ok().filter(|d| !d.trim().is_empty()) } else { None };
+    let path = match elsewhere {
+        Some(dir) => std::path::Path::new(&dir).join("db-ca.pem"),
+        None => std::path::PathBuf::from(DB_CA),
+    };
+    path.is_file().then(|| path.to_string_lossy().into_owned())
+}
+
+/// `url` trusting the database's certificate authority when its file is there ([`database_ca`], [`with_ca`]); as it is
+/// otherwise.
+pub fn trusted(url: &str) -> Result<String> {
+    match database_ca() {
+        Some(ca) => with_ca(url, &ca),
+        None => Ok(url.trim().to_string()),
+    }
+}
+
+fn address(url: &str) -> Result<reqwest::Url> {
+    reqwest::Url::parse(url.trim()).map_err(|e| Error::Invalid(format!("the database's address is not one: {e}")))
+}
+
+/// `url` (`DATABASE_URL`) at another host: the direct or read address made from a host setting (`host`, `host:port`,
+/// `[v6]` or `[v6]:port`; without a port, PostgreSQL's own 5432), keeping the address's role, password, database and
+/// TLS options (D7). A `host`, `hostaddr` or `port` in its query would win over the host, so they go.
+pub fn with_host(url: &str, host: &str) -> Result<String> {
+    let h = host.trim();
+    let bad = || Error::Invalid(format!("{h:?} is not a host, or a host and port (db.example.com, db.example.com:5432, [2001:db8::1]:5432)"));
+    let (name, port) = match h.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) && (!name.contains(':') || name.starts_with('[')) => {
+            (name, Some(port.parse::<u16>().map_err(|_| bad())?))
+        }
+        _ => (h, None),
+    };
+    let plain = !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_');
+    let v6 = name.len() > 2 && name.starts_with('[') && name.ends_with(']') && name[1..name.len() - 1].bytes().all(|b| b.is_ascii_hexdigit() || b == b':');
+    if !plain && !v6 {
+        return Err(bad());
+    }
+    let mut u = address(url)?;
+    u.set_host(Some(name)).map_err(|_| bad())?;
+    u.set_port(port).map_err(|_| bad())?;
+    let kept: Vec<(String, String)> = u.query_pairs().into_owned().filter(|(k, _)| !matches!(k.as_str(), "host" | "hostaddr" | "port")).collect();
+    if kept.is_empty() {
+        u.set_query(None);
+    } else {
+        u.query_pairs_mut().clear().extend_pairs(kept);
+    }
+    Ok(u.to_string())
+}
+
+/// Whether a host taken from the settings table may be given `url`'s password (D7): only `url`'s own host (another port is
+/// fine: several services put their pooler and their direct port on one name), or any host when the connection checks
+/// the server's certificate and its name against an authority given here (`sslmode=verify-full` with `sslrootcert`:
+/// the mounted one, which [`with_ca`] names, or the address's own). The authorities built into the program are not
+/// enough (nor `sslrootcert=system`, libpq's word for them): anyone can have a certificate from one for a name of their own. A host from the environment is not asked.
+/// Why not, in plain words, otherwise.
+pub fn may_send_password(url: &str, host: &str) -> std::result::Result<(), String> {
+    let u = address(url).map_err(|e| e.to_string())?;
+    let h = host.trim();
+    let name = match h.rsplit_once(':') {
+        Some((name, port)) if port.bytes().all(|b| b.is_ascii_digit()) && (!name.contains(':') || name.starts_with('[')) => name,
+        _ => h,
+    };
+    if u.host_str().is_some_and(|own| own.eq_ignore_ascii_case(name)) {
+        return Ok(());
+    }
+    let query: Vec<(String, String)> = u.query_pairs().into_owned().collect();
+    let says = |k: &str| query.iter().find(|(q, _)| q == k).map(|(_, v)| v.to_ascii_lowercase());
+    if says("sslmode").as_deref() == Some("verify-full") && says("sslrootcert").is_some_and(|f| !f.is_empty() && f != "system") {
+        return Ok(());
+    }
+    Err(format!(
+        "{h} is not DATABASE_URL's host, and the connection to it would not check the server's certificate and name against an authority \
+         given here, so it would be given the database's password: set it in the environment, or mount the database's certificate \
+         authority at {DB_CA} (or give sslmode=verify-full and sslrootcert in DATABASE_URL)"
+    ))
+}
+
+/// `url` trusting the certificate authority at `ca` (D1): the address's own `sslrootcert`, when it names one, wins and
+/// nothing changes; otherwise `ca` becomes it, and the TLS mode is raised so that the certificate is checked: none or
+/// `prefer` becomes `verify-full`, `require` becomes `verify-ca` (as libpq treats `require` with a root certificate).
+/// A mode that turns TLS off with a certificate authority there is refused: one of the two is a mistake.
+pub fn with_ca(url: &str, ca: &str) -> Result<String> {
+    let mut u = address(url)?;
+    let pairs: Vec<(String, String)> = u.query_pairs().into_owned().collect();
+    if pairs.iter().any(|(k, _)| k == "sslrootcert") {
+        return Ok(url.trim().to_string());
+    }
+    let mode = pairs.iter().find(|(k, _)| k == "sslmode").map(|(_, v)| v.to_ascii_lowercase());
+    let mode = match mode.as_deref() {
+        None | Some("prefer") => "verify-full",
+        Some("require") => "verify-ca",
+        Some("verify-ca") => "verify-ca",
+        Some("verify-full") => "verify-full",
+        Some(other) => {
+            return Err(Error::Invalid(format!(
+                "a certificate authority is at {ca}, and the database's address says sslmode={other}, which checks no certificate: \
+                 remove the file, or ask for TLS in the address (sslmode=verify-full)"
+            )));
+        }
+    };
+    let rest = pairs.into_iter().filter(|(k, _)| k != "sslmode");
+    u.query_pairs_mut().clear().extend_pairs(rest).append_pair("sslmode", mode).append_pair("sslrootcert", ca);
+    Ok(u.to_string())
+}
+
+/// Connects once to `url` (made by [`with_ca`]) and refuses, naming the cause, when the database's certificate does not
+/// verify against `ca`. Any other failure is not this check's to say: the start that follows says it.
+pub async fn check_certificate(url: &str, ca: &str) -> Result<()> {
+    let Ok(options) = url.parse::<PgConnectOptions>() else { return Ok(()) };
+    let tried = tokio::time::timeout(Duration::from_secs(10), sqlx::ConnectOptions::connect(&options)).await;
+    match tried {
+        Ok(Ok(c)) => {
+            let _ = sqlx::Connection::close(c).await;
+            Ok(())
+        }
+        Ok(Err(e)) if matches!(e, sqlx::Error::Tls(_)) || e.to_string().to_ascii_lowercase().contains("certificate") => Err(Error::Invalid(format!(
+            "the database's certificate does not verify against the certificate authority in {ca} ({e}): check that the file holds \
+             the authority that signed it, and that the address names a host the certificate names (sslmode=verify-ca checks the \
+             certificate without its name)"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::*;
+
+    /// Against a PostgreSQL with TLS whose certificate `FERRUM_TEST_TLS_CA` signed (scripts/managed_pg.sh makes one):
+    /// trusted, it connects with the name checked; another authority is refused, saying why. Skipped without it.
+    #[tokio::test]
+    async fn a_certificate_that_does_not_verify_is_refused_saying_why() {
+        let (Ok(url), Ok(ca), Ok(other)) =
+            (std::env::var("FERRUM_TEST_TLS_URL"), std::env::var("FERRUM_TEST_TLS_CA"), std::env::var("FERRUM_TEST_TLS_OTHER_CA"))
+        else {
+            return eprintln!("skipped: set FERRUM_TEST_TLS_URL, FERRUM_TEST_TLS_CA and FERRUM_TEST_TLS_OTHER_CA (scripts/managed_pg.sh)");
+        };
+        let trusted = with_ca(&url, &ca).unwrap();
+        assert!(trusted.contains("sslmode=verify-full"), "{trusted}");
+        check_certificate(&trusted, &ca).await.expect("its own authority");
+        let c = sqlx::ConnectOptions::connect(&trusted.parse::<PgConnectOptions>().unwrap()).await.expect("connects verified");
+        sqlx::Connection::close(c).await.unwrap();
+        let e = check_certificate(&with_ca(&url, &other).unwrap(), &other).await.unwrap_err().to_string();
+        assert!(e.contains("does not verify") && e.contains(&other), "{e}");
+    }
+
+    #[test]
+    fn a_host_setting_keeps_the_addresss_role_password_database_and_tls() {
+        let url = "postgres://ferrum:p%40ss@pooler.example.com:6543/ferrum?sslmode=require&application_name=pool:web";
+        assert_eq!(with_host(url, "db.example.com").unwrap(), "postgres://ferrum:p%40ss@db.example.com/ferrum?sslmode=require&application_name=pool%3Aweb");
+        assert_eq!(
+            with_host(url, " db.example.com:5433 ").unwrap(),
+            "postgres://ferrum:p%40ss@db.example.com:5433/ferrum?sslmode=require&application_name=pool%3Aweb"
+        );
+        assert_eq!(with_host("postgres://u:p@a:1/d", "[2001:db8::1]:5432").unwrap(), "postgres://u:p@[2001:db8::1]:5432/d");
+        assert_eq!(
+            with_host("postgres://u:p@a/d?host=b&port=7&sslmode=verify-full", "c").unwrap(),
+            "postgres://u:p@c/d?sslmode=verify-full",
+            "the query's host would win"
+        );
+        for bad in ["", "db.example.com:", "db example.com", "2001:db8::1", "db.example.com:99999", "user@db", "db/x"] {
+            assert!(matches!(with_host(url, bad), Err(Error::Invalid(_))), "{bad:?}");
+        }
+        assert!(with_host("not an address", "db").is_err());
+    }
+
+    #[test]
+    fn a_stored_host_gets_the_password_only_where_it_cannot_be_drawn_elsewhere() {
+        let plain = "postgres://u:p@db.example.com:6543/d";
+        assert_eq!(may_send_password(plain, "db.example.com:5432"), Ok(()), "the same host, another port");
+        assert_eq!(may_send_password(plain, "DB.Example.com"), Ok(()), "names are not case-sensitive");
+        assert_eq!(may_send_password("postgres://u:p@[2001:db8::1]:6432/d", "[2001:db8::1]:5432"), Ok(()));
+        for other in ["evil.example.com", "evil.example.com:5432", "db.example.com.evil.net", "[2001:db8::2]:5432", "127.0.0.1:5432"] {
+            let e = may_send_password(plain, other).unwrap_err();
+            assert!(e.contains(other.trim()) && e.contains("password"), "{other}: {e}");
+        }
+        let checked = "postgres://u:p@db.example.com/d?sslmode=verify-full&sslrootcert=/run/ferrum/db-ca.pem";
+        assert_eq!(may_send_password(checked, "replica.example.com:5432"), Ok(()), "verified against an authority given here, name and all");
+        assert_eq!(may_send_password(&with_ca(plain, DB_CA).unwrap(), "replica.example.com"), Ok(()), "the mounted one");
+        for weaker in [
+            "postgres://u:p@db.example.com/d?sslmode=verify-full",
+            "postgres://u:p@db.example.com/d?sslmode=verify-full&sslrootcert=system",
+            "postgres://u:p@db.example.com/d?sslmode=verify-ca&sslrootcert=/ca.pem",
+            "postgres://u:p@db.example.com/d?sslmode=require&sslrootcert=/ca.pem",
+        ] {
+            assert!(may_send_password(weaker, "replica.example.com").is_err(), "{weaker}: built-in authorities, or no name checked");
+        }
+        assert!(may_send_password(&with_ca("postgres://u:p@h/d?sslmode=require", DB_CA).unwrap(), "elsewhere").is_err(), "require: no name checked");
+    }
+
+    #[test]
+    fn a_certificate_authority_is_trusted_and_checked_against() {
+        let ca = "/run/ferrum/db-ca.pem";
+        let q = |url: &str| with_ca(url, ca).unwrap().split_once('?').map(|(_, q)| q.to_string()).unwrap_or_default();
+        assert_eq!(q("postgres://u:p@h/d"), "sslmode=verify-full&sslrootcert=%2Frun%2Fferrum%2Fdb-ca.pem");
+        assert_eq!(q("postgres://u:p@h/d?sslmode=prefer&application_name=x"), "application_name=x&sslmode=verify-full&sslrootcert=%2Frun%2Fferrum%2Fdb-ca.pem");
+        assert_eq!(q("postgres://u:p@h/d?sslmode=require"), "sslmode=verify-ca&sslrootcert=%2Frun%2Fferrum%2Fdb-ca.pem", "as libpq does");
+        assert_eq!(q("postgres://u:p@h/d?sslmode=verify-ca"), "sslmode=verify-ca&sslrootcert=%2Frun%2Fferrum%2Fdb-ca.pem");
+        assert_eq!(
+            with_ca("postgres://u:p@h/d?sslrootcert=/etc/mine.pem", ca).unwrap(),
+            "postgres://u:p@h/d?sslrootcert=/etc/mine.pem",
+            "the address's own wins"
+        );
+        for off in ["disable", "allow"] {
+            let e = with_ca(&format!("postgres://u:p@h/d?sslmode={off}"), ca).unwrap_err().to_string();
+            assert!(e.contains(ca) && e.contains(off), "{e}");
+        }
+        // What sqlx makes of it: the file and the mode.
+        let o: sqlx::postgres::PgConnectOptions = with_ca("postgres://u:p@h/d?sslmode=require", ca).unwrap().parse().unwrap();
+        assert!(matches!(o.get_ssl_mode(), sqlx::postgres::PgSslMode::VerifyCa));
     }
 }
 

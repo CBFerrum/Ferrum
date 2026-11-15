@@ -26,6 +26,7 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -73,8 +74,8 @@ pub(crate) async fn shape(db: &Db) -> Result<BTreeMap<String, Vec<(String, Strin
     Ok(tables)
 }
 
-/// Every reference a workspace's rows make, written out so that it can be checked by hand: the tables
-/// are filled with referential triggers off, because tables here refer to each other in circles.
+/// Every reference a workspace's rows make, written out so that each broken one can be named: the tables are filled
+/// with their foreign keys waiting for the commit (`copying`), because tables here refer to each other in circles.
 pub(crate) async fn dangling(tx: &mut crate::Tx, tenant: Uuid, tables: &BTreeMap<String, Vec<(String, String, bool)>>) -> Result<Vec<String>> {
     let references: Vec<(String, String, String, Vec<String>, Vec<String>)> = sqlx::query_as(
         "select c.conname::text, c.conrelid::regclass::text, c.confrelid::regclass::text, \
@@ -116,21 +117,100 @@ pub(crate) async fn workspace_columns(db: &Db, tx: &mut crate::Tx) -> Result<Vec
     Ok(columns)
 }
 
-/// Whether this connection may turn referential triggers off, which only extraction ever does.
+/// Whether a copy may run here as the server's own role (D7): every foreign key can wait for the commit, and every
+/// trigger stands aside while a copy runs, as a migrating server makes them (crate::ddl::copy_ready). Refused,
+/// naming what is not, otherwise. No grant on session_replication_role is needed any more.
 pub(crate) async fn may_copy(db: &Db) -> Result<()> {
-    let mut tx = db.system_tx().await?;
-    let granted = sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await;
-    tx.rollback().await?;
-    granted.map(|_| ()).map_err(|_| {
-        Error::Conflict("this role needs granting first, for as long as this takes: GRANT SET ON PARAMETER session_replication_role TO ferrum".into())
+    let mut conn = db.pool.acquire().await?;
+    let (keys, triggers) = crate::ddl::not_ready(&mut conn).await?;
+    if keys.is_empty() && triggers.is_empty() {
+        return Ok(());
+    }
+    let named: Vec<String> = keys.iter().chain(&triggers).take(5).cloned().collect();
+    Err(Error::Conflict(format!(
+        "this database is not ready for a copy as the server's own role: {} foreign keys cannot wait for the commit and {} triggers do not \
+         stand aside ({}). Start this build's server or run `ferrum task migrate`, which makes them so; the role must own those tables",
+        keys.len(),
+        triggers.len(),
+        named.join(", ")
+    )))
+}
+
+/// A copy's own setting, in its transaction, in place of `session_replication_role = replica` (D7): on, the server's
+/// triggers stand aside (each asks `ferrum.copy` in its WHEN) and foreign keys wait for the commit, where every one is
+/// checked and anything that would point at nothing rolls the whole transaction back. Off, the triggers act again; the
+/// foreign keys still wait for the commit. Nothing but a copy and its deletions sets it.
+pub(crate) async fn copying(tx: &mut crate::Tx, on: bool) -> Result<()> {
+    let sql = if on { "select set_config('ferrum.copy', 'on', true); set constraints all deferred" } else { "select set_config('ferrum.copy', 'off', true)" };
+    sqlx::raw_sql(sql).execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// Deletes every row `columns` (table, column) names for `tenant`, in one statement, inside a copy's transaction: a
+/// reference that refuses a deletion (ON DELETE RESTRICT, which cannot wait for the commit) is checked as the statement
+/// ends, when the rows on both sides are gone, so the tables can refer to each other in circles. How many rows went.
+pub(crate) async fn delete_rows(tx: &mut crate::Tx, columns: &[(String, String)], tenant: Uuid) -> Result<u64> {
+    if columns.is_empty() {
+        return Ok(0);
+    }
+    let each: Vec<String> = columns.iter().enumerate().map(|(i, (t, c))| format!("d{i} as (delete from \"{t}\" where \"{c}\" = $1 returning 1)")).collect();
+    let counted: Vec<String> = (0..columns.len()).map(|i| format!("(select count(*) from d{i})")).collect();
+    let n: i64 =
+        sqlx::query_scalar(AssertSqlSafe(format!("with {} select {}", each.join(", "), counted.join(" + ")))).bind(tenant).fetch_one(&mut **tx).await?;
+    Ok(n as u64)
+}
+
+/// What [`same_database`] found a copy to be, when it is no copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Same {
+    /// The database the server runs on, under whatever address.
+    This,
+    /// A standby still following it.
+    Following,
+}
+
+impl std::fmt::Display for Same {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Same::This => "this database",
+            Same::Following => "a standby still following this database",
+        })
+    }
+}
+
+/// Whether `copy` is `live` itself (D7). A lock is taken on `live` and tried through `copy`'s connection: advisory locks
+/// belong to one database, so only the same database refuses it, whatever its address and however it is reached (both
+/// are a transaction's, so a pooler in between changes nothing). A snapshot, clone or branch of this database keeps
+/// its identity (system identifier and database oid) and is still another database, so the identity is a second
+/// opinion only where no copy can be: a standby in recovery, streaming, on this database's timeline ([`following`]),
+/// which the lock does not see. When either side cannot say its identity, the lock alone decides.
+pub async fn same_database(live: &Db, copy: &Db) -> Result<Option<Same>> {
+    let key: i64 = rand::random();
+    let mut held = live.pool.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock($1)").bind(key).execute(&mut *held).await?;
+    let mut tried = copy.pool.begin().await?;
+    let free: bool = sqlx::query_scalar("select pg_try_advisory_xact_lock($1)").bind(key).fetch_one(&mut *tried).await?;
+    tried.rollback().await?;
+    held.rollback().await?;
+    if !free {
+        return Ok(Some(Same::This));
+    }
+    type Seen = (i64, i32, sqlx::postgres::types::Oid, bool, bool);
+    let ask = "select (select system_identifier from pg_control_system()), (select timeline_id from pg_control_checkpoint()), \
+               (select oid from pg_database where datname = current_database()), pg_is_in_recovery(), pg_last_wal_receive_lsn() is not null";
+    let here: std::result::Result<Seen, _> = sqlx::query_as(ask).fetch_one(&live.pool).await;
+    let there: std::result::Result<Seen, _> = sqlx::query_as(ask).fetch_one(&copy.pool).await;
+    Ok(match (here, there) {
+        (Ok(h), Ok(t)) if following((h.0, h.1, h.2.0), (t.0, t.1, t.2.0), t.3, t.4) => Some(Same::Following),
+        _ => None,
     })
 }
 
-/// Which database this is: a copy can have the same name in another cluster, or another name in this one.
-pub(crate) async fn which(db: &Db) -> Result<(i64, sqlx::postgres::types::Oid)> {
-    Ok(sqlx::query_as("select (select system_identifier from pg_control_system()), (select oid from pg_database where datname = current_database())")
-        .fetch_one(&db.pool)
-        .await?)
+/// The identity's second opinion: a copy with this database's identity and timeline, in recovery and streaming, is a
+/// standby following it. A copy restored from a backup or a snapshot is promoted (or replays from an archive, not a
+/// stream), so it is never this.
+pub(crate) fn following(live: crate::moves::Identity, copy: crate::moves::Identity, recovering: bool, streaming: bool) -> bool {
+    live == copy && recovering && streaming
 }
 
 impl Kernel {
@@ -203,14 +283,13 @@ impl Kernel {
             return Err(Error::Unavailable(format!("{} files could not be deleted, so no row was: {}", failed.len(), failed.join("; "))));
         }
         let mut tx = self.db.system_tx().await?;
-        sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
+        sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
+        copying(&mut tx, true).await?;
         // Its slug stays retired, with those it gave up before (passed over above), and its addresses are kept from every
         // other workspace (crate::shell).
         crate::shell::retire_slug(&mut tx, tenant).await?;
         crate::shell::quarantine_hosts(&mut tx, tenant, false).await?;
-        for (table, column) in &columns {
-            sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?;
-        }
+        delete_rows(&mut tx, &columns, tenant).await?;
         sqlx::query("delete from tenant where id = $1").bind(tenant).execute(&mut *tx).await?;
         crate::vault::drop_scope(&mut tx, tenant, "deleted").await?;
         sqlx::query("insert into tenant_deletion (id, slug, closed_at, retained_until, rows, files, note) values ($1, $2, $3, $4, $5, $6, $7)")
@@ -248,22 +327,70 @@ impl Kernel {
             return Ok(());
         }
         let Some((was_system, was_timeline, was_oid)) = known else {
-            sqlx::query("insert into platform_incarnation (system_identifier, timeline, database_oid) values ($1, $2, $3) on conflict do nothing")
-                .bind(system)
-                .bind(timeline)
-                .bind(oid)
-                .execute(&mut *tx)
-                .await?;
+            // Born with the restore marker (0): there is nothing it could be behind yet.
+            sqlx::query(
+                "insert into platform_incarnation (system_identifier, timeline, database_oid, restore_marker) values ($1, $2, $3, 0) on conflict do nothing",
+            )
+            .bind(system)
+            .bind(timeline)
+            .bind(oid)
+            .execute(&mut *tx)
+            .await?;
             tx.commit().await?;
             return Ok(());
         };
+        self.compare_identity(&mut tx, (was_system, was_timeline, was_oid), (system, timeline, oid)).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The identity looked at again while the server runs (D7): a failover, or a database swapped in under a running
+    /// server, is noticed within a minute as at a start, with `hold_on_timeline` as it is now (it applies at once). A
+    /// planned move's mark, or a database that takes no changes here, is left to the move's own steps.
+    pub(crate) async fn notice_identity(&self) -> Result<()> {
+        if self.db.fenced() {
+            return Ok(());
+        }
+        let (system, timeline, oid): (i64, i32, sqlx::postgres::types::Oid) = sqlx::query_as(
+            "select (select system_identifier from pg_control_system()), (select timeline_id from pg_control_checkpoint()), \
+             (select oid from pg_database where datname = current_database())",
+        )
+        .fetch_one(&self.db.pool)
+        .await?;
+        let mut tx = self.db.system_tx().await?;
+        let free: bool = sqlx::query_scalar("select current_setting('transaction_read_only') = 'off' and not exists (select 1 from platform_move)")
+            .fetch_one(&mut *tx)
+            .await?;
+        let known: Option<(i64, i32, sqlx::postgres::types::Oid)> = if free {
+            sqlx::query_as("select system_identifier, timeline, database_oid from platform_incarnation for update").fetch_optional(&mut *tx).await?
+        } else {
+            None
+        };
+        match known {
+            Some(was) => {
+                self.compare_identity(&mut tx, was, (system, timeline, oid)).await?;
+                tx.commit().await?;
+            }
+            None => tx.rollback().await?,
+        }
+        Ok(())
+    }
+
+    /// Holds as after a restore when the database is not the one recorded (`was`), or is on a new timeline and
+    /// `hold_on_timeline` says so; otherwise records a new timeline.
+    async fn compare_identity(
+        &self,
+        tx: &mut crate::Tx,
+        was: (i64, i32, sqlx::postgres::types::Oid),
+        now: (i64, i32, sqlx::postgres::types::Oid),
+    ) -> Result<()> {
+        let ((was_system, was_timeline, was_oid), (system, timeline, oid)) = (was, now);
         let moved = was_system != system || was_oid != oid;
-        let rewound = was_timeline != timeline && self.settings.hold_on_timeline;
+        let rewound = was_timeline != timeline && self.live().hold_on_timeline;
         if !moved && !rewound {
             if was_timeline != timeline {
-                sqlx::query("update platform_incarnation set timeline = $1").bind(timeline).execute(&mut *tx).await?;
+                sqlx::query("update platform_incarnation set timeline = $1").bind(timeline).execute(&mut **tx).await?;
             }
-            tx.commit().await?;
             return Ok(());
         }
         let because = if moved { "this is not the database this server knew" } else { "this database moved to a new timeline" };
@@ -276,10 +403,9 @@ impl Kernel {
         .bind(timeline)
         .bind(oid)
         .bind(because)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-        self.set_aside(&mut tx, None).await?;
-        tx.commit().await?;
+        self.set_aside(tx, None).await?;
         Ok(())
     }
 
@@ -334,8 +460,8 @@ impl Kernel {
         let tenant = ctx.tenant;
         let source =
             Db::connect(DbConfig { url: source_url.to_string(), max_connections: 2, direct_url: Some(source_url.to_string()), ..Default::default() }).await?;
-        if which(&source).await? == which(&self.db).await? {
-            return Err(Error::Conflict("that is this database, not a copy of it".into()));
+        if let Some(same) = same_database(&self.db, &source).await? {
+            return Err(Error::Conflict(format!("that is {same}, not a copy of it")));
         }
         let mut tx = source.system_tx().await?;
         let there: Option<Uuid> = sqlx::query_scalar("select id from tenant where id = $1").bind(tenant).fetch_optional(&mut *tx).await?;
@@ -351,6 +477,23 @@ impl Kernel {
         let kept: BTreeSet<&str> = KEPT.iter().copied().chain(self.hooks.restored().iter().flat_map(|app| app.kept().iter().copied())).collect();
         let back: Vec<&String> = here.keys().filter(|t| !kept.contains(t.as_str())).collect();
         may_copy(&self.db).await?;
+        // What stays may not refer to what goes back in a way that acts by itself (cascades, sets null, refuses): the
+        // deletion would change or stop what stays, which turning triggers off used to hide. The kernel's kept tables refer
+        // only to each other, and an app's must too (Restored::kept).
+        let acting: Vec<String> = sqlx::query_scalar(
+            "select format('%s.%I', conrelid::regclass, conname) from pg_constraint where contype = 'f' and conparentid = 0 \
+             and confdeltype in ('c', 'n', 'd', 'r') and conrelid::regclass::text = any($1) and confrelid::regclass::text = any($2) order by 1",
+        )
+        .bind(kept.iter().map(|t| t.to_string()).collect::<Vec<_>>())
+        .bind(back.iter().map(|t| t.to_string()).collect::<Vec<_>>())
+        .fetch_all(&self.db.pool)
+        .await?;
+        if !acting.is_empty() {
+            return Err(Error::Conflict(format!(
+                "what a workspace keeps refers to what goes back in a way that would change it, so nothing was changed: {}",
+                acting.join(", ")
+            )));
+        }
 
         // What is about to change, however far this goes.
         let mut tables = Vec::with_capacity(back.len());
@@ -406,7 +549,7 @@ impl Kernel {
         let mut from = source.system_tx().await?;
         sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
         sqlx::query("set local statement_timeout = 0").execute(&mut *from).await?;
-        sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
+        copying(&mut tx, true).await?;
         let people: Value = sqlx::query_scalar(
             "select coalesce(jsonb_agg(jsonb_build_object('id', id, 'password_hash', password_hash, 'totp_secret', totp_secret, \
              'totp_enabled_at', totp_enabled_at, 'is_active', is_active)), '[]') from app_user where tenant_id = $1",
@@ -418,9 +561,8 @@ impl Kernel {
             sqlx::query_scalar("select coalesce(max(token_version), 0) + 1 from app_user where tenant_id = $1").bind(tenant).fetch_one(&mut *tx).await?;
         let passkeys: Vec<Uuid> = sqlx::query_scalar("select id from passkey where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
 
-        for t in &back {
-            sqlx::query(AssertSqlSafe(format!("delete from \"{t}\" where tenant_id = $1"))).bind(tenant).execute(&mut *tx).await?;
-        }
+        let going: Vec<(String, String)> = back.iter().map(|t| (t.to_string(), "tenant_id".to_string())).collect();
+        delete_rows(&mut tx, &going, tenant).await?;
         for t in &back {
             let columns: Vec<String> = here[*t].iter().filter(|(_, _, generated)| !generated).map(|(c, _, _)| format!("\"{c}\"")).collect();
             let columns = columns.join(", ");
@@ -467,7 +609,7 @@ impl Kernel {
         self.set_aside(&mut tx, Some(tenant)).await?;
         // Erasures since the copy was taken stay done: each one this workspace made is erased again before
         // anyone sees what came back, with the triggers on again, so that what keeps derived copies sees it.
-        sqlx::query("set local session_replication_role = origin").execute(&mut *tx).await?;
+        copying(&mut tx, false).await?;
         sqlx::query("select set_config('ferrum.tenant_id', $1, true)").bind(tenant.to_string()).execute(&mut *tx).await?;
         let erasures: Vec<Value> =
             sqlx::query_scalar("select erasure from privacy_erasure where tenant_id = $1 order by id").bind(tenant).fetch_all(&mut *tx).await?;
@@ -575,9 +717,13 @@ impl Kernel {
         Ok(sqlx::query_scalar("select exists (select 1 from platform_incarnation where held_since is not null)").fetch_one(&self.db.pool).await?)
     }
 
-    /// Whether a restore is waiting for a person, or a move is planned (moves.rs). Everything that reaches outside asks
-    /// this first.
+    /// Whether a restore is waiting for a person, or a move is planned (moves.rs), or this replica started and has not yet
+    /// compared the database with the restore marker in a store that answers. Everything that reaches outside asks this
+    /// first.
     pub async fn holding(&self) -> Result<bool> {
+        if self.marker.waiting.load(Ordering::SeqCst) {
+            return Ok(true);
+        }
         Ok(sqlx::query_scalar("select exists (select 1 from platform_incarnation where held_since is not null) or exists (select 1 from platform_move)")
             .fetch_one(&self.db.pool)
             .await?)
@@ -633,6 +779,197 @@ async fn absent<T>(store: &Arc<dyn crate::files::FileStore>, files: Vec<(T, Stri
     let found: Vec<Result<Option<T>>> =
         futures::stream::iter(files).map(|(t, key)| async move { Ok(if store.exists(&key).await? { None } else { Some(t) }) }).buffered(16).collect().await;
     found.into_iter().filter_map(Result::transpose).collect()
+}
+
+/// Where the restore marker is kept in object storage, beside the journals (privacy.rs, lifecycle.rs): one object for
+/// each database identity (system identifier and database oid). A snapshot, clone or branch keeps its original's
+/// identity, so it reads the counter its original wrote; two databases sharing a store never read each other's.
+pub const MARKER_PREFIX: &str = "restore-marker/";
+
+/// How often a replica looks at the restore marker ([`Kernel::spawn_restore_marker`]). The counter moves on at most every
+/// 30 seconds, whichever replica looks: a restore to less than a minute or so before the store's last write is not
+/// seen by the marker (the identity and the timeline still see most of those).
+pub const MARKER_EVERY: Duration = Duration::from_secs(60);
+
+/// What this process knows of the restore marker (D7).
+pub(crate) struct Marker {
+    /// The highest counter this process has seen in the database (-1: none yet): one below it went back in time.
+    seen: AtomicI64,
+    /// The server asked for a look as it started, and the store has not answered one since: outward work waits
+    /// ([`Kernel::holding`]) rather than go out from a database nobody has compared yet.
+    waiting: AtomicBool,
+    /// When the store last answered, and the counter then.
+    last: std::sync::Mutex<Option<(chrono::DateTime<chrono::Utc>, i64)>>,
+}
+
+impl Default for Marker {
+    fn default() -> Self {
+        Marker { seen: AtomicI64::new(-1), waiting: AtomicBool::new(false), last: Default::default() }
+    }
+}
+
+/// What one look at the restore marker found.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "marker", content = "detail")]
+pub enum MarkerSaid {
+    /// No object store (development, tests): nothing to compare with; the identity alone notices restores.
+    NoStore,
+    /// The database takes no changes here (a region without the right to write, a planned move's fence): nothing moves.
+    Fenced,
+    /// The store did not answer: nothing was compared this time, and nothing is held for it.
+    StoreDown(String),
+    /// The database is level with the store, or ahead of it: its counter now.
+    Level(i64),
+    /// The database came up behind: held, as a restore is, until a person releases it.
+    Held(String),
+}
+
+/// Why `now` (the database's counter; None before the marker) is behind, if it is: behind what this process saw while it
+/// ran, or behind the store's (`stored`). A database born with the marker (0) is behind no store: it adopts its counter.
+pub(crate) fn behind(now: Option<i64>, seen: i64, stored: Option<i64>) -> Option<String> {
+    let n = now.unwrap_or(-1);
+    let said = |c: Option<i64>| c.map_or_else(|| "missing (a database from before the marker)".to_string(), |c| c.to_string());
+    if n < seen {
+        return Some(format!("this database's restore marker is {}, and this server saw {seen} while it ran: it went back in time", said(now)));
+    }
+    match stored {
+        Some(v) if n < v && now != Some(0) => {
+            Some(format!("this database's restore marker is {}, and object storage's is {v}: it was taken back in time", said(now)))
+        }
+        _ => None,
+    }
+}
+
+impl Kernel {
+    /// The server, as it starts: one look at the restore marker; until a look has reached the store, outward work waits.
+    pub async fn watch_restore_marker(&self) -> Result<MarkerSaid> {
+        let said = self.restore_marker().await?;
+        self.marker.waiting.store(matches!(said, MarkerSaid::StoreDown(_)), Ordering::SeqCst);
+        Ok(said)
+    }
+
+    /// Whether outward work waits for the store to answer a first look, and the store's last answer (when, and the
+    /// counter): for the doctor.
+    pub fn restore_marker_state(&self) -> (bool, Option<(chrono::DateTime<chrono::Utc>, i64)>) {
+        (self.marker.waiting.load(Ordering::SeqCst), self.marker.last.lock().ok().and_then(|l| *l))
+    }
+
+    /// One look at the restore marker: the store's counter read first, then the database's under its row's lock, so that
+    /// a healthy database is never found behind (it is always written first, and only moves forward). Behind the store,
+    /// or behind what this process saw, it is held exactly as a restore its identity gives away is. Otherwise, at most
+    /// every 30 seconds, it moves on: the database's counter first (committed), then the store's. Safe on every replica
+    /// at once: the row's lock puts them one after another, and a store write that lands late only leaves the store
+    /// behind, which holds nothing.
+    pub async fn restore_marker(&self) -> Result<MarkerSaid> {
+        let Some(store) = self.files.get() else { return Ok(MarkerSaid::NoStore) };
+        if self.db.fenced() {
+            return Ok(MarkerSaid::Fenced);
+        }
+        let (system, oid): (i64, sqlx::postgres::types::Oid) =
+            sqlx::query_as("select (select system_identifier from pg_control_system()), (select oid from pg_database where datname = current_database())")
+                .fetch_one(&self.db.pool)
+                .await?;
+        let key = format!("{MARKER_PREFIX}{system}-{}.json", oid.0);
+        let stored = match store.get(&key).await {
+            Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|v| v["counter"].as_i64())
+                .map(Some)
+                .ok_or_else(|| Error::Conflict(format!("{key} in object storage is not a restore marker this server wrote"))),
+            Err(Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        };
+        let mut tx = self.db.system_tx().await?;
+        let read_only: bool = sqlx::query_scalar("select current_setting('transaction_read_only') = 'on'").fetch_one(&mut *tx).await?;
+        let row: Option<(Option<i64>, bool, bool)> = if read_only {
+            None
+        } else {
+            sqlx::query_as(
+                "select restore_marker, restore_marker_at is null or restore_marker_at < now() - interval '30 seconds', held_since is not null \
+                 from platform_incarnation for update",
+            )
+            .fetch_optional(&mut *tx)
+            .await?
+        };
+        let Some((now, due, held)) = row else {
+            tx.rollback().await?;
+            return Ok(MarkerSaid::Fenced);
+        };
+        let seen = self.marker.seen.load(Ordering::SeqCst);
+        if let Some(why) = behind(now, seen, stored.as_ref().ok().copied().flatten()) {
+            let to = now.unwrap_or(0).max(seen).max(stored.as_ref().ok().copied().flatten().unwrap_or(0));
+            tracing::error!(because = %why, "a restore was noticed: everything that reaches outside is held until a person releases it");
+            sqlx::query(
+                "update platform_incarnation set held_since = now(), held_because = $1, released_at = null, released_by = null, released_note = null, \
+                 restore_marker = $2",
+            )
+            .bind(&why)
+            .bind(to)
+            .execute(&mut *tx)
+            .await?;
+            self.set_aside(&mut tx, None).await?;
+            tx.commit().await?;
+            self.marker.seen.fetch_max(to, Ordering::SeqCst);
+            return Ok(MarkerSaid::Held(why));
+        }
+        let n = now.unwrap_or(0);
+        let stored = match stored {
+            Ok(v) => v,
+            Err(e) => {
+                tx.commit().await?;
+                self.marker.seen.fetch_max(n, Ordering::SeqCst);
+                return Ok(MarkerSaid::StoreDown(e.to_string()));
+            }
+        };
+        // A held database does not move it on: a restored copy started beside the live one must not push the live one's
+        // marker past it.
+        let at = if !held && (due || stored.is_none() || now.is_none() || now == Some(0)) {
+            let next = n.max(stored.unwrap_or(0)).max(seen) + 1;
+            sqlx::query("update platform_incarnation set restore_marker = $1, restore_marker_at = now()").bind(next).execute(&mut *tx).await?;
+            tx.commit().await?;
+            self.marker.seen.fetch_max(next, Ordering::SeqCst);
+            let body = json!({"counter": next, "at": chrono::Utc::now(), "database": format!("{system}-{}", oid.0)});
+            if let Err(e) = store.put(&key, &serde_json::to_vec(&body).map_err(Error::internal)?).await {
+                return Ok(MarkerSaid::StoreDown(e.to_string()));
+            }
+            next
+        } else {
+            tx.commit().await?;
+            self.marker.seen.fetch_max(n, Ordering::SeqCst);
+            n
+        };
+        if let Ok(mut last) = self.marker.last.lock() {
+            *last = Some((chrono::Utc::now(), at));
+        }
+        self.marker.waiting.store(false, Ordering::SeqCst);
+        Ok(MarkerSaid::Level(at))
+    }
+
+    /// What a replica looks at again every minute: the identity (with `hold_on_timeline` as it is now), then the marker.
+    pub async fn look_again(&self) -> Result<MarkerSaid> {
+        self.notice_identity().await?;
+        self.restore_marker().await
+    }
+
+    /// Looks at the identity and the restore marker every [`MARKER_EVERY`], on every replica (the server, once it serves).
+    pub fn spawn_restore_marker(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+        let k = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    _ = tokio::time::sleep(MARKER_EVERY) => {}
+                }
+                match k.look_again().await {
+                    Ok(MarkerSaid::StoreDown(e)) => {
+                        tracing::warn!("the restore marker could not be read or written in object storage (tried again in a minute): {e}")
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("looking at the restore marker failed (tried again in a minute): {e}"),
+                }
+            }
+        })
+    }
 }
 
 /// Who holds the right to write, as a witness has it.
@@ -738,5 +1075,38 @@ impl Kernel {
         }
         sqlx::query("update platform_incarnation set authority_epoch = 0").execute(&self.db.pool).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod same_tests {
+    use super::following;
+
+    #[test]
+    fn only_a_standby_streaming_on_this_timeline_is_this_database_by_its_identity() {
+        let here = (7, 2, 16384);
+        assert!(following(here, here, true, true), "a standby following this database");
+        assert!(!following(here, here, false, false), "a snapshot, clone or branch, promoted: a genuine copy");
+        assert!(!following(here, here, true, false), "a backup still replaying from the archive, paused: a genuine copy");
+        assert!(!following(here, (7, 3, 16384), true, true), "a standby of a copy promoted onto another timeline");
+        assert!(!following(here, (8, 2, 16384), true, true), "another cluster's standby");
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::behind;
+
+    #[test]
+    fn behind_the_store_or_what_was_seen_and_nothing_else() {
+        assert_eq!(behind(Some(5), 5, Some(5)), None, "level");
+        assert_eq!(behind(Some(6), 5, Some(5)), None, "ahead: written first");
+        assert_eq!(behind(None, -1, None), None, "from before the marker, nothing written yet: the first look writes it");
+        assert_eq!(behind(Some(0), -1, Some(9)), None, "born with it on a store that had one: it adopts it");
+        assert!(behind(Some(4), -1, Some(5)).unwrap().contains("object storage's is 5"));
+        assert!(behind(None, -1, Some(5)).unwrap().contains("from before the marker"), "a backup older than the marker");
+        assert!(behind(Some(3), 7, None).unwrap().contains("saw 7"), "the store gone and the database swapped under a running server");
+        assert!(behind(Some(0), 7, Some(9)).unwrap().contains("saw 7"), "born again under a running server");
+        assert!(behind(None, 2, None).is_some());
     }
 }

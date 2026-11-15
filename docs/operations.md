@@ -21,7 +21,12 @@ needs only `DATABASE_URL` to start reading them; the secrets (`JWT_SECRET`, `FER
 so) still come from the environment.
 
 `DATABASE_URL` (required): `postgres://user:pass@host:5432/db`, the database's address; its `application_name`
-names the replica's pool (*Pools*, below). Below, every setting as `server/src/settings.yaml` declares it (`python3
+names the replica's pool (*Pools*, below). `/run/ferrum/db-ca.pem`, when the file is there (the Helm chart mounts
+`database.external.caSecret` there): the certificate authority every connection to the database checks its
+certificate against. The addresses then ask for TLS with the certificate checked: no `sslmode` (or `prefer`) becomes
+`verify-full`, `require` becomes `verify-ca` (as libpq does with a root certificate), an address's own `sslrootcert`
+is left as it is, and `disable` or `allow` refuses to start. A certificate that does not verify refuses the start too,
+saying so (*Any PostgreSQL*). Below, every setting as `server/src/settings.yaml` declares it (`python3
 scripts/settings.py --write` writes this table; a setting's key is its variable in lower case, without `FERRUM_`).
 *Where it lives*: the installation's or each pool's, and whether a change applies at once or at a replica's next
 start; a secret, or a setting read from the environment by someone else, lives in the environment.
@@ -62,9 +67,11 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `db_max_connections` | `FERRUM_DB_MAX_CONNECTIONS` | int | `30` | each pool, next start | Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so. |
 | `database_direct_url` | `FERRUM_DATABASE_DIRECT_URL` | text |  | secret: the environment | With a pooler: PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler*. A secret while the address holds the password. |
 | `database_read_url` | `FERRUM_DATABASE_READ_URL` | text |  | secret: the environment | A replica that reports and the reading of exports may use, while it is within the lag limit and has replayed what the primary had committed when the read began; otherwise they read from the primary. Empty (the default): none. See "Deployment shapes", *Read address*. A secret while the address holds the password. |
+| `database_direct_host` | `FERRUM_DATABASE_DIRECT_HOST` | text |  | installation, next start | With a pooler: PostgreSQL itself as `host` or `host:port` (5432 when no port is given), when `DATABASE_URL` is a connection pooler in transaction mode. What needs one session goes there, with `DATABASE_URL`'s role, password, database and TLS options. Empty (the default): `DATABASE_URL`. `FERRUM_DATABASE_DIRECT_URL`, when set, wins. Kept in the table, it is used only on `DATABASE_URL`'s own host or with the certificate and name checked (*Connection pooler*). See *Any PostgreSQL*. |
+| `database_read_host` | `FERRUM_DATABASE_READ_HOST` | text |  | installation, next start | A read replica as `host` or `host:port`, reached with `DATABASE_URL`'s role, password, database and TLS options: what `database_read_url` does, without a second password. Empty (the default): none. `FERRUM_DATABASE_READ_URL`, when set, wins. Kept in the table, it is used only on `DATABASE_URL`'s own host or with the certificate and name checked (*Connection pooler*). |
 | `database_read_max_lag_secs` | `FERRUM_DATABASE_READ_MAX_LAG_SECS` | int | `10` | installation, next start | The replay lag past which those reads go to the primary (default 10). |
 | `upkeep_concurrency` | `FERRUM_UPKEEP_CONCURRENCY` | int | `2` | installation, next start | How many apps' periodic upkeep one replica runs at once (default 2). Each app's upkeep has a lock of its own across replicas, so replicas share the apps between them; each running app holds one database connection. |
-| `hold_on_timeline` | `FERRUM_HOLD_ON_TIMELINE` | bool | `true` | installation, next start | `false`: a new timeline of the database (a promoted replica) is not held as a restore. Only where failover is synchronous; see *After restoring a backup*. |
+| `hold_on_timeline` | `FERRUM_HOLD_ON_TIMELINE` | bool | `true` | installation, at once | `false`: a new timeline of the database (a promoted replica) is not held as a restore. Only where failover is synchronous and loses nothing; `true` wherever it can lose what was committed, or nobody knows. Every replica looks at the database again each minute, with the value as it is then. See *Any PostgreSQL*, Failovers. |
 | `authority_witness_url` | `FERRUM_AUTHORITY_WITNESS_URL` | text |  | secret: the environment | The witness of regions that can fail over (another database's address); see *Regions*. Unset, this server writes without asking anyone, which is right for one region. |
 | `authority_ttl_secs` | `FERRUM_AUTHORITY_TTL_SECS` | int | `30` | installation, next start | How long a region holds the right to write between renewals (default 30). |
 | `run_background` | `FERRUM_RUN_BACKGROUND` | bool | `true` | each pool, next start | `false` turns a replica into API-only. |
@@ -375,8 +382,19 @@ helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
   with the keys of `deploy/k8s/secret.example.yaml`, and the backups' Secret `ferrum-backup-s3`.
 * *The image.* Set `image.digest` (a digest wins) or `image.tag` (a commit's full SHA). With neither, the chart refuses to
   render; there is no default and never `latest`. The same holds for the optional parts' images.
-* *Settings.* `values.yaml` lists them with the environment variable each becomes; `extraEnv` adds any other. With
-  `database.enabled=false` the chart makes no database: name the Secret holding your connection URI in `database.urlSecret`.
+* *Settings.* `values.yaml` lists them with the environment variable each becomes; `extraEnv` adds any other.
+* *An outside database.* With `database.enabled=false` the chart runs no PostgreSQL: no Cluster, backups, pooler,
+  read service, database PodMonitor or bootstrap (the service's own tools back up, restore and fail over; *Any
+  PostgreSQL*). `database.external` says where it is: `urlSecret`, the Secret holding `DATABASE_URL` (the ordinary
+  role's address, the pooler's if there is one; the older `database.urlSecret` still works); `directHost`, PostgreSQL
+  itself as `host` or `host:port` when that address is a pooler in transaction mode (`FERRUM_DATABASE_DIRECT_HOST`:
+  listeners, session locks, migrations and the schema sync go there, with the address's role, password, database and
+  TLS options; the migrate and settings Jobs get it too); `readHost`, a read replica (`FERRUM_DATABASE_READ_HOST`, the
+  server's pods only); `caSecret`, a Secret whose key holds the certificate authority the database's certificate is
+  checked against, mounted at `/run/ferrum/db-ca.pem` in the pods and both Jobs; `egress`, the address ranges and
+  ports of the database and its pooler, which the network policy lets the server reach (without them, and with
+  `networkPolicy.enabled`, the pods cannot reach it). The chart still runs the migrate and settings Jobs and applies
+  the network policy.
 * *The online editor.* `office.enabled` (on by default): Collabora in the namespace `office.namespace`, on the host
   `office.host` with its own certificate, with its limits, probes and network policy; see *Online editing*. The image
   is an exact tag (`office.image`; a digest wins), pinned like the PDF renderer's.
@@ -808,12 +826,23 @@ before a floor is refused at start, the older ones included.
 * Clusters set up with the earlier manifests (`spec.backup.barmanObjectStore`, removed in
   CloudNativePG 1.31): install the plugin, then apply the new `database.yaml`. The `ObjectStore`
   takes the same `destinationPath`, so earlier backups and WAL stay usable for recovery.
-* Docker Compose (commands run in `deploy/`): schedule a dump of the database as its superuser —
-  as `ferrum` it fails, since that role is held to the workspaces' row-level security, and
-  leaves a truncated file — and an archive of the attachments volume, and copy both off the host:
+* A whole database as the server's own role, on any PostgreSQL: `deploy/dump.sh dump <address> <file>` and
+  `deploy/dump.sh restore <address> <file>`, with PostgreSQL's direct address (never a pooler in transaction mode)
+  and the role the server runs as. That role is held to the workspaces' row-level security: a plain `pg_dump` as
+  it fails, and one with `--enable-row-security` alone writes every workspace's table empty without a word. The
+  script sets `ferrum.system` (and `ferrum.vault`) for pg_dump's session alone, which the policies let through, with
+  `--enable-row-security`, and checks that the session took it. The restore goes into an empty database the role
+  owns, in one transaction, without owners or grants, leaving out a schema the database already has (an
+  administrator's `extensions`) and comments on extensions (only their owner may write them). It is proven by
+  `crates/kernel/tests/dump_it.rs`: every row of every table and every sequence came back, the vault's included (its
+  row-level security and its append-only record with them), and the server started on the copy with its vault open and
+  its secrets as they were. Restored where the role has another password, see *The vault* (After a restore, a copy or a
+  move). By hand: `PGOPTIONS='-c ferrum.system=on -c ferrum.vault=on' pg_dump --enable-row-security -Fc`.
+* Docker Compose (commands run in `deploy/`): schedule a dump of the database (as `ferrum`, as above, or as the
+  `postgres` superuser) and an archive of the attachments volume, and copy both off the host:
 
   ```bash
-  docker compose exec -T db pg_dump -U postgres -Fc ferrum > ferrum-$(date +%F).dump
+  docker compose exec -T -e PGOPTIONS='-c ferrum.system=on -c ferrum.vault=on' db pg_dump -U ferrum --enable-row-security -Fc ferrum > ferrum-$(date +%F).dump
   docker compose exec -T ferrum tar -C /var/lib/ferrum/files --warning=no-file-changed -czf - . > files-$(date +%F).tgz
   ```
 
@@ -884,8 +913,34 @@ here can tell. Mail and webhooks go to the dead events and deliveries, jobs fail
 and commands become unknown. `ferrum task doctor` says so.
 
 A failover to a synchronous replica is also a new timeline, and loses nothing. Set
-`FERRUM_HOLD_ON_TIMELINE=false` if that is the only way a timeline changes here. Then an in-place
-point-in-time restore is not noticed, so run the steps below by hand after one.
+`FERRUM_HOLD_ON_TIMELINE=false` if that is the only way a timeline changes here (*Any PostgreSQL* says which services
+fail over that way). Then an in-place point-in-time restore is not noticed by the timeline, only by the marker below.
+The setting applies at once: every replica looks at the database's identity again each minute, so a failover under
+running servers is noticed within a minute, held or not as the setting says then, and not only at the next start.
+
+*The restore marker.* A managed service's snapshot restore, clone or branch can keep the database's identity and
+timeline, so the server also keeps a counter that only moves forward, in the database (`platform_incarnation`) and in
+object storage beside the journals (`restore-marker/<system identifier>-<database oid>.json`, one per database
+identity). Every replica looks at it as it starts and then every minute: the store's counter is read first, then the
+database's, under its row's lock; the database is always written first, so a healthy one is never behind. A database
+behind the store's counter, or behind what a running replica saw in it, has been taken back in time, and is held exactly
+as above. Otherwise one replica moves both on, at most every 30 seconds: the database first, then the store. So:
+
+- *Two replicas at once* take turns on the row; a store write that lands late only leaves the store behind, which
+  holds nothing.
+- *The store briefly unreachable* holds nothing: a replica that has compared once carries on. A replica that starts
+  meanwhile sends nothing until one of its looks reaches the store (the doctor says so), then carries on by itself.
+  A database swapped under a running replica meanwhile is still noticed, from what that replica saw.
+- *A first install* (born with the marker) takes the counter the store has for its identity, if any, and moves on.
+  A database from before the marker, on a store that has one for its identity, is a backup older than the marker:
+  held.
+- *Without object storage* (development) there is no marker; the identity alone notices restores, as before.
+- *A planned move* fences the source, and a fenced database moves nothing, so its copy starts level with the store
+  and carries on; a *sandbox* lives in the same database and changes nothing of it. A held database moves nothing
+  either, so a stale copy started on the same storage cannot push the live one's marker past it.
+- *Not noticed*: the database and the store taken back together to one moment (a full site restore, or the bucket's
+  object versions rolled back); a restore to less than about a minute before the store's last write; a database
+  given another store that lacks its marker. The identity and the timeline still notice what they can.
 
 A database the Helm chart starts from another one (`database.bootstrap.mode`, "Moving from one shape to
 another") is held the same way unless the move was planned: `import` makes a database this server never
@@ -913,6 +968,70 @@ off is out again, with every session, key and grant ended, and who came back is 
 journalled in object storage (`access-journal/`) by the person's id only, and only each person's last
 word counts. Keep that prefix as long as `privacy-journal/`; if it is gone, take departures since the
 backup from your identity provider.
+
+## Any PostgreSQL
+
+Ferrum runs on the chart's own PostgreSQL (CloudNativePG) or on one run by someone else: Amazon RDS or Aurora, Google
+Cloud SQL, Azure Database for PostgreSQL, Supabase, Neon, or your own. It needs no superuser anywhere, and nothing a
+managed service keeps for its administrator.
+
+**What it needs, on any of them.** `scripts/local_ci.sh managed` runs the server and the suites below against a private
+PostgreSQL that behaves like a managed service (`scripts/managed_pg.sh`: an ordinary role owning only its databases, no
+grant on `session_replication_role`, the extensions made by an administrator in a schema of their own, PgBouncer in
+transaction mode beside PostgreSQL, TLS with the service's own certificate authority), so this list is checked, not
+remembered:
+
+- PostgreSQL 17 is what CI and the rehearsal run; the doctor warns on anything older, which is not tested.
+- A role that logs in, is no superuser and has no `BYPASSRLS` (the server refuses to start otherwise), owns its
+  database (or at least the `public` schema), and has a connection limit 20 below `max_connections`.
+- `btree_gist`, `citext` and `pg_trgm`: the role makes them itself (they are trusted extensions, which a database's
+  owner may make), or an administrator has made them already, in `public` or a schema on the role's `search_path`.
+- No grant on `session_replication_role`: moves, sandboxes, taking a workspace back and deleting one run without it
+  since this release (a build before it asks for `GRANT SET ON PARAMETER session_replication_role`, which only the
+  service's administrator can give, for as long as each runs).
+- With a pooler in transaction mode in front (RDS Proxy, PgBouncer, Supabase's or Neon's pooled address): that address
+  as `DATABASE_URL`, and PostgreSQL itself as `FERRUM_DATABASE_DIRECT_HOST` (`host` or `host:port`) for the listeners,
+  session locks and migrations (*Connection pooler*). The direct address carries `DATABASE_URL`'s role, password,
+  database and TLS options. Where the two differ in more than the host, give `FERRUM_DATABASE_DIRECT_URL` whole.
+- The service's certificate authority at `/run/ferrum/db-ca.pem` (`database.external.caSecret` in the chart), so that
+  every connection checks the database's certificate (*Configuration*). Connecting by IP address, put
+  `sslmode=verify-ca` in the address: the certificate names a host, not the address.
+- A dump as the server's role: `deploy/dump.sh` (*Backups and restore*), from the direct address.
+- The address given to `move_workspace`, `copy_workspace from:` and `extract_tenant` is PostgreSQL's own (direct): a
+  move holds a session lock there, and each starts with session settings, which a pooler in transaction mode refuses.
+  A pooler's address is refused, saying so.
+
+**After the service restores, clones, branches or fails over.** Its own tools take the snapshots and the point-in-time
+restores. A restore into a new database or cluster has another identity, which the server notices; a snapshot, clone
+or branch may keep the identity, and is noticed by the restore marker in object storage (*After restoring a backup*).
+Either way: point the address at it (or let the service swap it in), start or restart the server, run
+`ferrum task reapply_erasures`, check what was set aside, then `ferrum task release_restore note:"..."`. The vault
+comes back inside the database and opens as it did while the role keeps the password its credential slot was made
+with, which a service's restore, clone or branch does (the table says so for each, from memory). Where the role has
+another password, the start stops saying *the database password in DATABASE_URL is not the one it was made with*: then
+*The vault*, After a restore, a copy or a move. To take one
+workspace back instead, restore to a database of its own and use `extract_tenant` (*Taking one workspace back*); a
+clone of this very database is a genuine copy there.
+
+**Failovers.** `hold_on_timeline` (applies at once) says whether a new timeline holds outward work as a restore.
+`true` (the default) is right wherever a failover can lose what was committed (asynchronous replication) or nobody
+knows; `false` where failover is synchronous and loses nothing. `ferrum task doctor` says which this installation has.
+Whatever it says, a failover that lost a committed write is noticed by the restore marker when the store had already
+seen it.
+
+**Each service.** None of what follows has been run against the real service: it is what their documentation said as
+remembered on 15 November 2026, every line marked *(from memory)*. Check it against the service, and run
+`ferrum task doctor` after the first start: it says what the role can and cannot do.
+
+| | What to make | Pooled address (`DATABASE_URL`) | Direct (`FERRUM_DATABASE_DIRECT_HOST`) | Backups and restore | Failover, and `hold_on_timeline` |
+|---|---|---|---|---|---|
+| Amazon RDS for PostgreSQL | As the master user: `CREATE ROLE ferrum LOGIN PASSWORD '…' CONNECTION LIMIT …; CREATE DATABASE ferrum OWNER ferrum;` (the master user is `rds_superuser`, no superuser; the three extensions are allowed) *(from memory)* | RDS Proxy's endpoint, if you use one (transaction pooling, with pinning on session state) *(from memory)* | The instance endpoint, port 5432 *(from memory)* | Automated snapshots and point-in-time restore make a new instance, which keeps the identity of the one it came from (a snapshot, clone or restore is noticed by the marker); roles keep their passwords, so the vault opens as before *(from memory)* | Multi-AZ instance: synchronous standby, `false` is safe; Multi-AZ cluster (two readable standbys): semi-synchronous, `true` *(from memory)* |
+| Amazon Aurora PostgreSQL | As for RDS, on the cluster *(from memory)* | RDS Proxy *(from memory)* | The cluster (writer) endpoint *(from memory)* | Snapshots, point-in-time restore and fast clones make new clusters; whether `pg_control_system()` gives Aurora's storage a stable identity is unchecked, so count on the marker; roles keep their passwords *(from memory)* | Storage is shared and replicated by quorum: a failover loses nothing committed, `false` *(from memory)* |
+| Google Cloud SQL | `CREATE ROLE`/`CREATE DATABASE` as `postgres` (`cloudsqlsuperuser`, no superuser) *(from memory)* | Managed connection pooling where your edition has it, or PgBouncer of your own *(from memory)* | The instance's private IP: use `sslmode=verify-ca` and the server CA from the console *(from memory)* | Backups and point-in-time recovery restore to the same or a new instance; clones are new instances; users keep their passwords *(from memory)* | Regional (HA) instances fail over on a synchronously replicated disk: `false` *(from memory)* |
+| Azure Database for PostgreSQL, Flexible Server | As the administrator (`azure_pg_admin`, no superuser); allow-list the three extensions in `azure.extensions` *(from memory)* | The built-in PgBouncer on port 6432 of the same host *(from memory)* | The same host, port 5432 *(from memory)* | Point-in-time restore makes a new server, with the roles and passwords it had *(from memory)* | Zone-redundant high availability replicates synchronously: `false` *(from memory)* |
+| Supabase | A role of its own (`postgres` there has `BYPASSRLS`, which the server refuses): `CREATE ROLE ferrum LOGIN NOBYPASSRLS …` and a database it owns; the extensions are in the `extensions` schema already, as in the rehearsal *(from memory)* | Supavisor's transaction port (6543), user `ferrum.<project ref>` *(from memory)* | Supavisor's session port (5432) on the same host and user, since the database's own host takes another user name *(from memory)* | Daily backups and point-in-time recovery restore in place: the same identity, noticed by the marker, and the same passwords *(from memory)* | Managed by Supabase; `true` unless they say a failover loses nothing *(from memory)* |
+| Neon | The project's role owns its database and is no superuser; whether a role made in Neon's console has `BYPASSRLS` is unchecked: make it with SQL (`CREATE ROLE ... NOBYPASSRLS`) if the server refuses it *(from memory)* | The `-pooler` host (PgBouncer, transaction mode) *(from memory)* | The same host without `-pooler` *(from memory)* | A branch or a restore to a point in time keeps the identity: noticed by the marker; a branch's roles keep their passwords *(from memory)* | Compute is stateless over replicated storage: `false` *(from memory)* |
+| Your own, or CloudNativePG (the chart's) | `deploy/postgres-init` (Compose) or the chart do it | PgBouncer (`database.pooler`) | `-rw` (the chart sets it) | `pg_basebackup`, Barman, CloudNativePG's recovery (*Backups and restore*); a new cluster's role has a password of its own, so `vault_rewrap` (*The vault*) | Synchronous replication: `false`; otherwise `true` |
 
 ## Rotating the secret key
 
@@ -1015,7 +1134,7 @@ Compose; CloudNativePG's backups), never the public schema alone. Keep each slot
 key file, the key-management service, the recovery key and, with the credential slot, the database password. A
 backup and the password together open everything. That is the price of the credential slot, and the reason a cluster
 should also have a `kms` or `file` slot. A restored backup brings back its vault as it was then, and the slots that
-opened it then open it again.
+opened it then open it again: the credential slot only with the password it was made with (below).
 
 **When the database password changes**, give every replica the new password, then run, with the new `DATABASE_URL`,
 `ferrum task vault_rewrap` and type the old password once (it is read from standard input, never from the command
@@ -1025,6 +1144,32 @@ one its password does not open.
 
 **When the password is lost** (or reset by the provider), run `ferrum task vault_rewrap with:recovery` and type the
 recovery key. Without the recovery key and without another slot's key, what the vault holds is lost.
+
+**After a restore, a copy or a move.** The vault is inside the database, so whatever carries the database carries it
+whole: `deploy/dump.sh`, the chart's `import`, `pg_dump` of the whole database, a service's snapshot or clone. Where the
+role has the password it had, it opens as before. A new cluster or server often gives the role a new one:
+CloudNativePG does for `import` (and from memory for `copy` and `recovery`, setting the new cluster's own), and a role
+made anew by hand for `deploy/dump.sh restore` has whatever it was given. The credential slot then does not open, and
+unless another slot opens the vault the server stops, saying *the database password in DATABASE_URL is not the one it
+was made with*, as does every task but `doctor`, `vault_status` and `vault_rewrap`. With the new `DATABASE_URL`, do one
+of these:
+
+1. With the old password at hand (the old installation's `DATABASE_URL`, or its `ferrum-db-app` Secret):
+   `ferrum task vault_rewrap`, and type it.
+2. With the recovery key: `ferrum task vault_rewrap with:recovery`, and type it.
+3. With a `file` slot (its key file mounted where this server runs) or a `kms` slot (the same service set here): the
+   vault opens with it and the server starts. Make the credential slot again for the new password:
+   `ferrum task vault_remove_slot kind:credential`, then `ferrum task vault_add_slot kind:credential`. A task does
+   not replace a credential slot its own password does not open, so the old one goes first; until then the doctor
+   warns that it does not open here.
+
+Then start the servers. `crates/kernel/tests/dump_it.rs` restores a vault with every kind of slot through
+`deploy/dump.sh` and takes each way, the key-management service's too; the planned move and the restore marker run on
+a database with a vault in `crates/kernel/tests/recovery_it.rs` and `scripts/move_rehearsal.sh`. In Kubernetes the pods
+and the migrate Job stop until it is done: run the task once from the server's image with the migrate Job's
+environment and `task vault_rewrap` as its arguments, attached to its standard input (not rehearsed on a cluster).
+Before a move that changes the password, keep the old one, or add a `kms` slot at the source the new place can also
+reach.
 
 **Its record.** Every change and use of a workspace's secrets is on that workspace's audit trail (owner, name, verb;
 never a value). What belongs to the installation (its slots, its installation key, the secrets of the installation's
@@ -1354,7 +1499,9 @@ left as placeholders, TLS, DNS, memory, disk and ports. `--generate` fills in mi
 changes nothing else. Blockers exit non-zero; warnings do not.
 
 **Once it runs**, `ferrum task doctor` reports on the deployment itself, blockers apart from warnings,
-each with what to do. It connects to everything: PostgreSQL's version and connection limits, row-level
+each with what to do. It connects to everything: PostgreSQL's version and connection limits, what the database's role can
+and cannot do (*Any PostgreSQL*: its ownership, the extensions, copies without a grant, a grant it should not hold, its
+own connection limit against the replicas running), the restore marker and what a new timeline does, row-level
 security on every workspace table, the clock, object storage (a write, read and delete), the malware
 scanner, the PDF renderer, the online editor (set up, answering, offering docx, xlsx and pptx, signing its calls),
 the queues, and every workspace's customizations. It does not send mail. An administrator sees the editor's and the
@@ -1548,8 +1695,24 @@ parameters it does not track), so PgBouncer needs no `ignore_startup_parameters`
 later, `pool_mode = transaction`, `max_prepared_statements` above 0 (sqlx prepares every statement), and
 the server's role and database. Checked with PgBouncer 1.26.1 on 14 November 2026 (README, *Testing*).
 
+*Only the hosts.* `FERRUM_DATABASE_DIRECT_HOST` and `FERRUM_DATABASE_READ_HOST` (`host` or `host:port`, 5432 without
+a port) say the same without a second password: the server reaches them with `DATABASE_URL`'s role, password, database
+and TLS options. `FERRUM_DATABASE_DIRECT_URL` and `FERRUM_DATABASE_READ_URL`, when set, still win. Where the pooled and
+direct addresses differ in more than their host (a role name the pooler adds something to), give the full address.
+
+*A host kept in the settings table* rather than the environment is given `DATABASE_URL`'s password like any other, so
+it is used only where it cannot draw that password to someone else's machine: on `DATABASE_URL`'s own host (another
+port is fine: most services put the pooler and PostgreSQL on one name), or where the address checks the server's
+certificate and its name against an authority given here (`sslmode=verify-full` with `sslrootcert`: a mounted
+`/run/ferrum/db-ca.pem` gives both, or the address's own). Otherwise the server does not use it and connects to
+`DATABASE_URL` alone; the log says so once at start, and `ferrum task doctor` warns (`database.direct_host`,
+`database.read_host`). The authorities built into the program do not count, since anyone can get a certificate from one
+for a name of their own. An authority is only as narrow as what it signs: one a provider uses for every customer's
+instances (Amazon RDS's regional bundle, from memory) vouches for any of them, so with such a one keep the hosts in the
+environment. A host from the environment is used as given.
+
 *When a connection fails.* A direct address that does not answer at start stops the start, saying
-`FERRUM_DATABASE_DIRECT_URL`; Kubernetes starts the pod again. One that drops later: each listener notices
+`FERRUM_DATABASE_DIRECT_URL` or `FERRUM_DATABASE_DIRECT_HOST`; Kubernetes starts the pod again. One that drops later: each listener notices
 (it is never quietly reconnected), connects again with a back-off (metadata from 250 ms doubling to 10 s,
 the others every 2 s) and recovers as before: metadata and users drop every cached copy, co-editing reads every
 open document again, and live updates and plugin sockets are best effort (a page refreshes later). A session
@@ -2188,13 +2351,14 @@ slightly different moments.
 
 **How the database starts.** `database.bootstrap.mode` is read once, when CloudNativePG creates the cluster;
 keep it in your values afterwards. Every mode but `empty` needs the server's settings (`FERRUM_SECRET_KEY`
-above all: sealed values open only with the key that sealed them) and the files (object storage) of the
-installation it comes from.
+above all: sealed values open only with the key that sealed them), the files (object storage) of the
+installation it comes from, and a way into its vault: the new cluster's role has a password of its own, which the
+vault's credential slot was not made with (*The vault*, After a restore, a copy or a move).
 
 | Mode | What it does | Use it when you come from | Needs | After it |
 |---|---|---|---|---|
 | `empty` (default) | A new database | nothing: a new installation | | |
-| `import` | `pg_dump` of one database from a running PostgreSQL, restored here (`source`) | a Docker Compose installation, or any PostgreSQL up to the cluster's version (17), when an hour of downtime is acceptable: stop the server first, so nothing is written after the dump starts | the source reachable from the cluster; a superuser in `source.user` (row-level security hides every workspace's rows from any other role) and its password in a Secret | after `plan_move` at the source: nothing to do, the copy carries on. Without it: held as after a restore ("After restoring a backup") |
+| `import` | `pg_dump` of one database from a running PostgreSQL, restored here (`source`) | a Docker Compose installation, or any PostgreSQL up to the cluster's version (17), when an hour of downtime is acceptable: stop the server first, so nothing is written after the dump starts | the source reachable from the cluster; in `source.user` the role the server runs as there (it reads every row through row-level security as the system's own session: `pgDumpExtraOptions` and the `options` connection parameter, which CloudNativePG passes on; not yet run against a cluster) or a superuser, and its password in a Secret | after `plan_move` at the source: nothing to do, the copy carries on. Without it: held as after a restore ("After restoring a backup") |
 | `copy` | `pg_basebackup`: a physical copy of a running PostgreSQL (`source`) | another cluster or server on the same PostgreSQL major version, when the database is too large to dump | the same major version, architecture and tablespaces; a role with `REPLICATION` and `LOGIN` that `pg_hba.conf` admits from the cluster; two free `max_wal_senders`. Stop writes to the source before: the copy does not follow it | after `plan_move`: fenced until `ferrum task adopt_move` on the copy (the same database on a new timeline could also be the source's own standby). Without it: held unless `FERRUM_HOLD_ON_TIMELINE=false` |
 | `recovery` | the newest state, or `recovery.targetTime`, from backups in object storage (`recovery.objectStore`, `recovery.serverName`) | a lost cluster, or another cluster that backs up the way this chart does | the `ObjectStore` (this chart's own by default) and, when it is this chart's own, a new `database.backup.serverName` so the new cluster does not write over the backups it reads | after `plan_move`, from a backup taken once the source was fenced: as `copy`. Otherwise held as after any restore |
 
@@ -2276,7 +2440,9 @@ The two-version window is not closed for this: it matters only while a move is b
 events, deliveries and failed jobs, and `ferrum task release_restore` and a replay by hand follow ("After
 restoring a backup"). People's changes made at the source after the copy was taken are lost to the copy.
 
-**What moves with it.** The database; the files, byte for byte under the same keys (`tenants/`, `uploads/`,
+**What moves with it.** The database, the vault inside it (it opens on the copy with the slots it had; the
+credential slot only where the role kept its password, so after the chart's `import` see *The vault*, After a restore,
+a copy or a move); the files, byte for byte under the same keys (`tenants/`, `uploads/`,
 `ui/`, `apps/`, `privacy-journal/`, `access-journal/`, the same in a directory and in a bucket, so a plain
 copy of the whole tree or bucket does it); and the keys: `JWT_SECRET` (sessions), `FERRUM_SECRET_KEY` and
 every key in `FERRUM_RETIRED_SECRET_KEYS` (sealed values open only with the key that sealed them), with
@@ -2298,8 +2464,10 @@ newest 200 files and every app bundle the database names that storage lacks (`fi
    `docker compose run --rm --no-deps -T --entrypoint tar ferrum -C /var/lib/ferrum/files -cf - . | tar -C files -xf -`
    then `aws s3 sync files/ s3://<bucket>/` (or `rclone copy`). Compare the object count with the number
    of files.
-4. `helm install` with those values. CloudNativePG imports the fenced database; the server starts, adopts
-   the move and logs `THIS INSTALLATION MOVED HERE`.
+4. `helm install` with those values. CloudNativePG imports the fenced database, and the cluster's role has a new
+   password: the migrate Job stops on the vault's credential slot until `ferrum task vault_rewrap` has run once with
+   the cluster's `DATABASE_URL` and the Compose database's password (*The vault*, After a restore, a copy or a move).
+   Then the server starts, adopts the move and logs `THIS INSTALLATION MOVED HERE`.
 5. `kubectl -n ferrum exec deploy/ferrum -- ferrum task doctor`: no `move`, `secrets.unopened` and
    `files.missing` fine; then `ferrum task check_files`.
 6. Point the names at the cluster (the accounts, callbacks and link hosts first: "Names that should never
@@ -2313,9 +2481,9 @@ mark's time runs out would still carry on as moved, and send what the source the
 ### Kubernetes to Compose
 
 1. `kubectl -n ferrum exec deploy/ferrum -- ferrum task plan_move reason:"to Compose"`.
-2. Dump the database as its superuser (`kubectl -n ferrum cnpg psql` gives the address; `pg_dump -Fc`), and
-   restore it into the Compose database as in "Backups and restore" (an empty database, then
-   `pg_restore`).
+2. Dump the database (`deploy/dump.sh dump`, as the server's role, or as its superuser; `kubectl -n ferrum cnpg psql`
+   gives the address), and restore it into the Compose database as in "Backups and restore" (an empty database,
+   then `deploy/dump.sh restore` or `pg_restore`).
 3. Copy the bucket into the files volume (`aws s3 sync s3://<bucket>/ files/`, then `tar` into the volume).
 4. Start Compose with the cluster's `JWT_SECRET`, `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS`; run
    the doctor and `check_files`; point the names; scale the cluster's Deployments to 0.
@@ -2346,9 +2514,8 @@ installation. Both installations keep running. Use "Moving an installation" for 
 would ignore its freeze may not start on either installation (see "Protections an older build would not enforce").
 
 **What it takes.** Both installations run one build (the same image), with the same apps available; the
-workspace's apps at their versions are available at the target. The target's database role may turn
-referential triggers off for as long as it takes, as for `extract_tenant`
-(`GRANT SET ON PARAMETER session_replication_role TO ferrum`, taken back afterwards). The workspace has no
+workspace's apps at their versions are available at the target. No grant: the copy runs as the server's own role,
+as every copy of a workspace does (*Taking one workspace back*). The workspace has no
 process run open (they live in the source's workflow service). A workspace whose erased people's opt-outs are
 kept (as digests under the source's key) needs that key in the target's `FERRUM_RETIRED_SECRET_KEYS` first,
 or the move refuses: without it those people could be sent marketing again. Waiting work asked for in a zone
@@ -2542,8 +2709,8 @@ Run it on the installation that is to hold the sandbox. With `from:here` the sou
 workspaces. Without it, the source is another installation, given in the environment exactly as for
 `move_workspace` ("Moving one workspace": `FERRUM_MOVE_SOURCE_DATABASE_URL`, `FERRUM_MOVE_SOURCE_SECRET_KEYS`, and
 `FERRUM_MOVE_SOURCE_FILES` or `_FILES_DIR` or `_S3_BUCKET`); both run one build, with the source's apps at their
-versions here. Either way the role needs `GRANT SET ON PARAMETER session_replication_role TO ferrum` for as long as
-it takes, as for a move. `not_sealed:<table.column,...>` keeps text that looks like a sealed value (below).
+versions here. Either way it needs no grant, as for a move. `not_sealed:<table.column,...>` keeps text that looks
+like a sealed value (below).
 
 **The source is not stopped.** It is neither held nor frozen, and nothing of it changes: the copy reads it in one
 transaction at the isolation level `REPEATABLE READ`, so every table is read as it stood at one moment, while people
@@ -4070,14 +4237,40 @@ made, as far back as the outbox keeps them, `outbox_keep_days`). Add `apply:yes`
 workspace has made is done again in the same transaction, before anyone sees the copy, so what was erased since
 it was taken stays erased without a task of its own.
 
-Tables here refer to each other in circles, so the rows go in with referential triggers off. That takes a grant,
-which is worth taking away again afterwards. As a superuser:
+The copy may be a managed service's snapshot, clone or branch of this very database, which keeps its identity (the
+system identifier and the database's oid). So "is this the same database?" is asked with a lock: one is taken on the
+database the server runs on and tried through the copy's address, and only the same database refuses it (advisory
+locks belong to one database). The identity is asked as well, but only to refuse a standby still following this
+database (in recovery, streaming, on the same timeline), which the lock cannot see and which no genuine copy is. The
+same check stands in front of `move_workspace` and `copy_workspace from:`.
+
+Tables here refer to each other in circles, so the rows go in with the server's own triggers standing aside and the
+foreign keys checked at commit, not as each row arrives. That takes no grant (D7): every foreign key may wait for
+the commit (each is still checked at once unless a transaction asks otherwise), and every trigger has
+`current_setting('ferrum.copy', true) IS DISTINCT FROM 'on'` in its WHEN, which only a copy's own transaction sets. A
+migrating server makes them so as it starts, the kernel's, the schema sync's and packages' alike (`copy_ready`), and
+the schema sync makes new ones so. A copy refuses, naming them, while any is not. The deletions that go with a copy
+(an abort, `finish_move`, `delete_sandbox`, deleting a closed workspace) run in the same way, every table in one
+statement, so that references which refuse a deletion are checked when the rows on both sides are gone. Anything that
+would point at nothing still refuses the whole copy and changes nothing. A build before this one turned triggers off
+with `session_replication_role` instead, which needs `GRANT SET ON PARAMETER session_replication_role TO ferrum` from
+a superuser, or on a managed service from its administrator (*Any PostgreSQL*); give it only while such a build copies.
+
+*What a copy holds in memory.* Each check that waits for the commit is kept by the copying session on the database
+server until it commits: about 12 bytes for each foreign key of each row copied in, and for each foreign key that can
+point at a row deleted. Measured on PostgreSQL 17.9: a million rows with one key took 12.6 MB, a million more with two
+keys 24 MB more. That memory is outside `work_mem` and `shared_buffers` and never goes to disk, so plan the database
+server's free memory for it: a workspace of 100 million rows whose tables average two keys needs about 2.4 GB in that
+one session while it copies. At commit the waiting checks run one after another (here 3 million in 19 seconds, about
+6 µs each; slower on a busy or distant server), so that copy also spends some 20 minutes committing, with the
+workspace suspended. The most any copy here can need, every workspace at once (as of the last `ANALYZE`):
 
 ```sql
-GRANT SET ON PARAMETER session_replication_role TO ferrum;
--- and when it is done
-REVOKE SET ON PARAMETER session_replication_role FROM ferrum;
+select pg_size_pretty(sum(greatest(c.reltuples, 0)::bigint * k.n) * 12) from pg_class c
+  join (select conrelid, count(*) n from pg_constraint where contype = 'f' group by conrelid) k on k.conrelid = c.oid;
 ```
+
+One workspace needs its share of that.
 
 It happens in one transaction, with the workspace suspended first so that nobody is writing to it. Every
 reference the workspace's rows make is checked before it commits, and one that would point at nothing stops it.
@@ -4159,8 +4352,7 @@ database. A hold, or anything outside, stops it: release each hold first (Admini
 recorded. The second deletes the workspace's files, then its private app bundles, then every row that names it, in one
 transaction, and records in `tenant_deletion` that it happened. In the same transaction its addresses are kept from every
 other workspace for a year (Addresses of a workspace), and its slugs stay retired. A file store failing part way leaves
-every row in place, so running it again finishes the job. Like extraction, it needs `GRANT SET ON PARAMETER
-session_replication_role TO ferrum` for as long as it runs.
+every row in place, so running it again finishes the job. Like extraction, it needs no grant.
 
 Backups taken before the deletion still hold the workspace until they expire. Say so to whoever asked for the deletion.
 

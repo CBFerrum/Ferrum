@@ -148,8 +148,12 @@ def cluster(mode):
 assert cluster("empty")["bootstrap"] == {"initdb": {"database": "ferrum", "owner": "ferrum"}}
 assert "externalClusters" not in cluster("empty")
 c = cluster("import")
-assert c["bootstrap"]["initdb"]["import"] == {"type": "microservice", "databases": ["ferrum"], "source": {"externalCluster": "origin"}}, c
+assert c["bootstrap"]["initdb"]["import"] == {"type": "microservice", "databases": ["ferrum"], "source": {"externalCluster": "origin"},
+                                              "pgDumpExtraOptions": ["--enable-row-security"]}, c
 assert c["externalClusters"][0]["connectionParameters"]["host"] == "old.example.com"
+# The source's own role reads every workspace's rows: through the policies, as the system's own session.
+assert c["externalClusters"][0]["connectionParameters"]["options"] == "-c ferrum.system=on -c ferrum.vault=on", c
+assert "options" not in cluster("copy")["externalClusters"][0]["connectionParameters"]
 assert c["externalClusters"][0]["password"] == {"name": "old-db", "key": "password"}
 c = cluster("copy")
 assert c["bootstrap"] == {"pg_basebackup": {"source": "origin", "database": "ferrum", "owner": "ferrum"}}, c
@@ -162,7 +166,7 @@ assert c["plugins"][0]["parameters"] == {"barmanObjectName": "ferrum-backups", "
 assert "serverName" not in cluster("empty")["plugins"][0]["parameters"]
 PY2
 refuses "set database.bootstrap.source.host" --set database.bootstrap.mode=import
-refuses "a superuser: row-level security" --set database.bootstrap.mode=import --set database.bootstrap.source.host=h
+refuses "the role the server runs as there" --set database.bootstrap.mode=import --set database.bootstrap.source.host=h
 refuses "REPLICATION and LOGIN" --set database.bootstrap.mode=copy --set database.bootstrap.source.host=h
 refuses "source.passwordSecret.name" --set database.bootstrap.mode=copy --set database.bootstrap.source.host=h --set database.bootstrap.source.user=r
 refuses "set database.backup.serverName to a new name" --set database.bootstrap.mode=recovery

@@ -17,7 +17,7 @@
 //! frozen for good, and running again only finishes 5. At no moment do both take changes.
 
 use crate::files::FileStore;
-use crate::recovery::{dangling, may_copy, shape, which, workspace_columns};
+use crate::recovery::{copying, dangling, delete_rows, may_copy, same_database, shape, workspace_columns};
 use crate::secret::SecretKey;
 use crate::{Ctx, Db, DbConfig, Error, Kernel, Result, Tx, audit};
 use futures::TryStreamExt;
@@ -334,7 +334,8 @@ pub(crate) type EachRow<'a> = dyn FnMut(&str, &mut Map<String, Value>) -> Result
 
 /// The copier a move and a sandbox share: every row the workspace `ids.0` has in `tables` (but those in `left`), read in
 /// `src` (one snapshot), changed by `each` (which gives it the workspace `ids.1`), and written in `tx` a thousand at a
-/// time, with referential triggers off. Each table is counted at both ends, and with `digests` a digest of what was read
+/// time, inside a copy's transaction (`copying`: the server's triggers aside, foreign keys waiting for the commit). Each
+/// table is counted at both ends, and with `digests` a digest of what was read
 /// is kept for a later comparison. Then each counter of the copied tables goes on from past the highest value that
 /// arrived, and every reference the copy makes is checked. What it read, table by table.
 pub(crate) async fn copy_rows(
@@ -492,8 +493,8 @@ impl Kernel {
     }
 
     async fn moving(&self, source: &Db, slug: &str, from: &MoveSource, run: Run, say: &(dyn Fn(&str) + Send + Sync)) -> Result<Value> {
-        if which(source).await? == which(&self.db).await? {
-            return Err(Error::Conflict("that is this database: a move needs the source's database, and runs where the workspace is going".into()));
+        if let Some(same) = same_database(&self.db, source).await? {
+            return Err(Error::Conflict(format!("that is {same}: a move needs the source's database, and runs where the workspace is going")));
         }
         let peer = named(&from.url);
         let mut tx = system(source).await?;
@@ -1015,8 +1016,8 @@ impl Kernel {
     }
 
     /// Step 2: the target's copy, in one transaction with the target's `arriving` mark, read from one snapshot of the
-    /// source. Referential triggers are off (tables refer to each other in circles); every reference is checked before
-    /// it commits. What the copy read is kept with the mark, for step 4 to compare with.
+    /// source. The server's triggers stand aside and foreign keys wait for the commit (tables refer to each other in
+    /// circles); every reference is checked before it commits. What the copy read is kept with the mark, for step 4 to compare with.
     async fn copy_arriving(&self, source: &Db, tenant: Uuid, move_id: Uuid, peer: &str, from: &MoveSource, say: &(dyn Fn(&str) + Send + Sync)) -> Result<()> {
         let tables = shape(&self.db).await?;
         let people = self.identities(source, tenant, from, say).await?;
@@ -1026,7 +1027,7 @@ impl Kernel {
         sqlx::query("select set_config('ferrum.system', 'on', true), set_config('statement_timeout', '0', true)").execute(&mut *src).await?;
         let mut tx = self.db.system_tx().await?;
         sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
-        sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
+        copying(&mut tx, true).await?;
         let workspace: Value = sqlx::query_scalar("select to_jsonb(t) from tenant t where id = $1").bind(tenant).fetch_one(&mut *src).await?;
         sqlx::query("insert into tenant select * from jsonb_populate_record(null::tenant, $1)").bind(&workspace).execute(&mut *tx).await?;
         let marked: Option<Uuid> = sqlx::query_scalar(
@@ -1334,13 +1335,10 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
-        sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
-        let mut rows = 0;
+        copying(&mut tx, true).await?;
         // The slugs retired here are this installation's, never the copy's (LEFT_BEHIND).
-        for (table, column) in workspace_columns(&self.db, &mut tx).await?.into_iter().filter(|(t, _)| t != "tenant_slug_retired") {
-            rows +=
-                sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?.rows_affected();
-        }
+        let columns: Vec<_> = workspace_columns(&self.db, &mut tx).await?.into_iter().filter(|(t, _)| t != "tenant_slug_retired").collect();
+        let rows = delete_rows(&mut tx, &columns, tenant).await?;
         sqlx::query("delete from tenant where id = $1").bind(tenant).execute(&mut *tx).await?;
         sqlx::query("delete from workspace_move where workspace = $1 and side = 'target'").bind(tenant).execute(&mut *tx).await?;
         crate::vault::drop_scope(&mut tx, tenant, "move_undone").await?;
@@ -1423,17 +1421,14 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
-        sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
+        copying(&mut tx, true).await?;
         crate::window::release(&mut tx, &FLOOR, &tenant.to_string()).await?;
         // Its addresses may still point here, and its slug named them and its apps' origins: none is another workspace's
         // here; the workspace itself, coming back with its id, takes them back (crate::shell).
         crate::shell::retire_slug(&mut tx, tenant).await?;
         crate::shell::quarantine_hosts(&mut tx, tenant, true).await?;
-        let mut rows = 0;
-        for (table, column) in workspace_columns(&self.db, &mut tx).await?.into_iter().filter(|(t, _)| t != "tenant_slug_retired") {
-            rows +=
-                sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?.rows_affected();
-        }
+        let columns: Vec<_> = workspace_columns(&self.db, &mut tx).await?.into_iter().filter(|(t, _)| t != "tenant_slug_retired").collect();
+        let rows = delete_rows(&mut tx, &columns, tenant).await?;
         sqlx::query("delete from tenant where id = $1").bind(tenant).execute(&mut *tx).await?;
         crate::vault::drop_scope(&mut tx, tenant, "moved_away").await?;
         sqlx::query("update workspace_move set finished_at = now(), updated_at = now(), peer = peer || ' — ' || $2 where workspace = $1")
