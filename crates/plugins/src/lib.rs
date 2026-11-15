@@ -453,6 +453,8 @@ impl PluginHost {
         for (key, v) in map {
             let opened = match self.vault.get() {
                 Some(vault) => vault.plugin_setting(k, tenant, plugin, &key, &v).await,
+                // A host given no handle reads only what was never sealed.
+                None if v.get("$vault").is_none() && v.get("$sealed").is_none() => Ok(Some(v.clone())),
                 None => Err(Error::Unavailable("this server gives its plugins no vault".into())),
             };
             match opened {

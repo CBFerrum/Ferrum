@@ -473,7 +473,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let rows: Vec<(Uuid, Uuid, String, Value)> = sqlx::query_as(
             "select tenant_id, id, name, config from plugin where jsonb_typeof(config) = 'object' and exists (select 1 from jsonb_each(config) c \
-               where c.value <> 'null'::jsonb and not (jsonb_typeof(c.value) = 'object' and jsonb_typeof(c.value->'$vault') = 'string'))",
+               where c.value <> 'null'::jsonb and coalesce(jsonb_typeof(c.value->'$vault'), '') <> 'string')",
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -514,7 +514,7 @@ impl Kernel {
     pub(crate) async fn plugin_settings_waiting(&self, tx: &mut crate::Tx) -> Result<i64> {
         Ok(sqlx::query_scalar(
             "select count(*) from plugin, jsonb_each(case when jsonb_typeof(config) = 'object' then config else '{}' end) c \
-             where c.value <> 'null'::jsonb and not (jsonb_typeof(c.value) = 'object' and jsonb_typeof(c.value->'$vault') = 'string')",
+             where c.value <> 'null'::jsonb and coalesce(jsonb_typeof(c.value->'$vault'), '') <> 'string'",
         )
         .fetch_one(&mut **tx)
         .await?)

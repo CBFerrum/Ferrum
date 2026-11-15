@@ -533,11 +533,11 @@ const CODE: Who<'static> = Who { actor: None, request: "", by: None };
 
 /// Sets `name` of `owner` in `scope` only where it has no current version, as [`Vault::adopt`] does, before the kernel
 /// has booted (keyed.rs: the old keys adopted into the vault as the kernel boots); whether this wrote it. Recorded as
-/// `adopt` by the environment.
+/// `adopt` by `old key`.
 pub(super) async fn adopt_at_boot(db: &Db, scope: Scope, owner: &str, name: &str, value: New, rule: Rule) -> Result<bool> {
     valid_name(name)?;
     let request = crate::db::Trace::operation().unwrap_or_default();
-    let who = Who { actor: None, request: &request, by: Some("environment") };
+    let who = Who { actor: None, request: &request, by: Some("old key") };
     write_made(db, scope, owner, name, make(value)?, Some(rule), &who, true).await.map(|(_, _, wrote)| wrote)
 }
 

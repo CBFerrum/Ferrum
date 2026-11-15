@@ -464,6 +464,8 @@ async fn upgraded(port: u16) {
     // ── upgraded, the key still set: two replicas start together, the key is adopted once ──
     let (a, b) = tokio::join!(replica(Some(&old), true), replica(Some(&old), true));
     assert_eq!(adopted_rows(&a.k).await, 1, "adopted once");
+    let events = vault::events(&a.k.db, None, 500).await.unwrap();
+    assert_eq!(events.iter().filter(|e| e.action == "adopt" && e.details["by"] == "old key").count(), 1, "and recorded once, never its value");
     let l = a.k.legacy_key(vec![]).await.unwrap();
     assert_eq!(
         (l.configured, l.adopted.clone(), l.not_adopted.is_empty(), l.older_builds_refused, l.retirable),
