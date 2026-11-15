@@ -143,9 +143,10 @@ async fn restore(dump: &Path, address: &str) {
     let db = database(address, true).await;
     db.pool.close().await;
     // A schema of the extensions an administrator made there (as on a managed service, scripts/managed_pg.sh) is in
-    // the dump too: the database is emptied of it first, as an administrator restoring a whole database would.
+    // the dump too, and so is the vault's (crates/kernel/src/vault): the database is emptied of them first, as an
+    // administrator restoring a whole database would.
     let root = database(&superuser(address), false).await;
-    sqlx::query("drop schema if exists extensions cascade").execute(&root.pool).await.unwrap();
+    sqlx::raw_sql("drop schema if exists extensions cascade; drop schema if exists vault cascade").execute(&root.pool).await.unwrap();
     root.pool.close().await;
     let done = Command::new("pg_restore").args(["--exit-on-error", "-d", &superuser(address), dump.to_str().unwrap()]).status().expect("pg_restore");
     assert!(done.success());

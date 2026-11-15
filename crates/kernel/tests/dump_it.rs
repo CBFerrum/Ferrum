@@ -24,7 +24,11 @@ fn catalog() -> Catalog {
 async fn database(url: &str, reset: bool) -> Db {
     let db = Db::connect(DbConfig { url: url.to_string(), max_connections: 4, ..Default::default() }).await.expect("connect");
     if reset {
-        sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+        // The vault's schema too: it lives beside public (crates/kernel/src/vault), and a restore goes into an empty database.
+        sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;")
+            .execute(&db.pool)
+            .await
+            .expect("reset");
     }
     db
 }

@@ -158,7 +158,9 @@ impl Hooks for App {
         // The address names the replica's pool (`application_name=pool:<name>`), whose rows hold its own settings.
         let pool = crate::settings::pool_name(&ctx.config.database.uri).map_err(Error::Message)?;
         let stored = crate::settings::read(&ctx.config.database.uri).await.map_err(Error::Message)?;
-        // (The installation's root, D3, is opened here: after the table is read, before its values are used.)
+        // (The installation's root, D3, is opened below, once the database's own pools are open: their sizes come from
+        // these settings, the vault's key cache and transactions belong to them, and on a database not migrated yet it
+        // can open only once the kernel has migrated it. No setting holds a secret, so nothing before reads the vault.)
         let snapshot = crate::settings::Snapshot::resolve(&stored, &pool, &|name| std::env::var(name).ok());
         crate::settings::Base::of(&ctx.config).apply(&snapshot, &mut ctx.config).map_err(Error::Message)?;
         if snapshot.mailer_from_database() {
@@ -257,6 +259,7 @@ impl Hooks for App {
         let jwt = ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).ok_or_else(|| Error::Message("auth.jwt is not configured".into()))?;
         let transit = kms_transit(&settings)?;
         let secret_key = secret_key(&settings, transit.as_ref(), &jwt.secret, &ctx.environment).await?;
+        crate::tasks::open_vault(&db, &settings, &ctx.config.database.uri, transit.as_ref()).await?;
         let mut retired = Vec::new();
         for k in settings.retired_secret_keys.split(',').map(str::trim).filter(|k| !k.is_empty()) {
             retired.push(ferrum_kernel::kms::resolve(k, transit.as_ref()).await.map_err(|e| Error::Message(format!("settings.retired_secret_keys: {e}")))?);
@@ -673,6 +676,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::LogicReplay);
         tasks.register(crate::tasks::Doctor);
         tasks.register(crate::tasks::KmsWrap);
+        crate::tasks::register_vault(tasks);
         tasks.register(crate::tasks::AccountState);
         tasks.register(crate::tasks::SetPlan);
         tasks.register(crate::tasks::ReapplyErasures);

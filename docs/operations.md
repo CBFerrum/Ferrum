@@ -1064,9 +1064,9 @@ key then living only in the server's memory:
   not logged.
 
 A server that cannot get its key does not start, and says why (`ferrum task doctor` says where the
-key comes from). The service is then part of starting: run it, and back it up, accordingly. Keep a
-copy of the key itself where your recovery plan says: without the service and without that copy,
-what the key sealed is lost.
+key comes from). The vault's `kms` slot is reached the same way (The vault, below). The service is
+then part of starting: run it, and back it up, accordingly. Keep a copy of the key itself where your
+recovery plan says: without the service and without that copy, what the key sealed is lost.
 
 **If a key is lost**, what it sealed cannot be recovered: nothing else holds those values. Secret
 fields answer that they were sealed with another key. People with an authenticator app cannot use
@@ -1075,6 +1075,100 @@ secret is entered again. Plugins start with those settings missing, so re-enter 
 rather than go out unsigned, so make new ones. The Web Push key is replaced, and devices subscribe
 again. Passwords, sessions and business data are not affected. Restoring a backup without its key
 leaves the same state.
+
+## The vault
+
+The vault keeps the keys and passwords of the platform and of every app in the database, sealed. It is the database's
+schema `vault`. Its rows open only with the *installation key*, and that key is stored only wrapped, once for each of
+the vault's *slots*: a dump of the database opens nothing without a slot's key. Below the installation key, each
+workspace has a key of its own (and the installation one more, for what belongs to no workspace), and each owner in it
+(the platform, each app, each plugin) a key of its own; each is random, versioned and stored wrapped by the one above.
+In this release nothing moves into the vault yet: what `FERRUM_SECRET_KEY` seals stays where it is (the next release
+moves it).
+
+**Slots.** Any one of them opens the installation key.
+
+| Slot | Its key comes from | It protects against | It does not protect against |
+|---|---|---|---|
+| `credential` | the database password in `DATABASE_URL` (through Argon2id) | a dump or a backup alone | someone with a dump *and* the password |
+| `file` | `/run/ferrum/root.key`, mounted where the server runs (`openssl rand -base64 32`) | a dump together with the password | whoever can read that file |
+| `kms` | the key-management service set for the secret key: `FERRUM_SECRET_KEY_COMMAND` first, else `FERRUM_KMS_TRANSIT` | a dump with the password; the service can refuse, and records each use | whoever can ask the service as the server does |
+| `recovery` | a key `ferrum task vault_recovery` prints once | the other slots' keys being lost (a password reset by the provider, a key file gone) | whoever finds the printed key |
+
+**At start** a server opens the vault with its `file` slot, then `kms`, then `credential`: the first that opens it
+wins, and the log says why each one before it did not. The recovery key is never tried at start. On a database that
+has no vault yet, the first start (or `ferrum task migrate`) makes the installation key and one slot: the key file if
+one is mounted, else the key-management service if one is set, else the database password. Replicas starting together
+make one key between them.
+
+When none of the three is there (`DATABASE_URL` has no password, there is no key file, no key-management service is
+set), the vault has no slot to be made with: the server starts with it closed, one warning in the log says so and
+names the three ways to give it a root, the doctor says so too, and everything that asks the vault is refused with
+*the vault is closed*. In this release nothing depends on the vault yet. The first start that has one of them makes
+it.
+
+Every other failure stops the start, and says why for each slot:
+
+* *the database password in DATABASE_URL is not the one it was made with*: the password changed (below).
+* *there is no key file at …*, *… is not set here*, *the key-management service … cannot be reached*: this replica
+  lacks what that slot needs, or cannot reach it.
+* *it is damaged*: the slot's key is right and what it holds (or its check value) does not open. Restore the vault's
+  tables from a backup.
+
+`ferrum task doctor`, `vault_status` and `vault_rewrap` run with the vault closed, to say what is wrong or put it right.
+
+**After the first start**, run `ferrum task vault_recovery` and keep what it prints offline, apart from the database
+and its backups. The doctor warns until there is a recovery key.
+
+**Backing it up.** The vault is part of the database: back up the whole database, as above (as the superuser with
+Compose; CloudNativePG's backups), never the public schema alone. Keep each slot's key apart from those backups: the
+key file, the key-management service, the recovery key and, with the credential slot, the database password. A
+backup and the password together open everything. That is the price of the credential slot, and the reason a cluster
+should also have a `kms` or `file` slot. A restored backup brings back its vault as it was then, and the slots that
+opened it then open it again.
+
+**When the database password changes**, give every replica the new password, then run, with the new `DATABASE_URL`,
+`ferrum task vault_rewrap` and type the old password once (it is read from standard input, never from the command
+line). The credential slot is made again for the new password; restart the servers with it. Run every vault task with
+the servers' `DATABASE_URL`: a task makes the credential slot from its own address's password, and refuses to replace
+one its password does not open.
+
+**When the password is lost** (or reset by the provider), run `ferrum task vault_rewrap with:recovery` and type the
+recovery key. Without the recovery key and without another slot's key, what the vault holds is lost.
+
+**Its record.** Every change and use of a workspace's secrets is on that workspace's audit trail (owner, name, verb;
+never a value). What belongs to the installation (its slots, its installation key, the secrets of the installation's
+own scope) is recorded in the vault's own table instead, `vault.event`, which no workspace sees and nothing changes or
+deletes, under the same cap on uses (a hundred an hour for each secret and verb, then one summary of the rest).
+`ferrum task vault_events` reads it.
+
+**Tasks.**
+
+* `vault_status [format:json]`: the slots, the keys' versions and ages, the secrets, what is being sealed again; never a
+  key.
+* `vault_events [limit:<n>] [before:<id>] [format:json]`: the installation's own record, newest first; never a value.
+* `vault_add_slot kind:file|kms|credential|recovery`: adds a slot, or makes the one of that kind again with a new key.
+* `vault_remove_slot kind:…`: never the last one a server opens with (`file`, `kms` or `credential`).
+* `vault_recovery`: a new recovery key, printed once; the one before it opens nothing from then on.
+* `vault_rewrap [with:password|recovery]`: above.
+* `vault_rotate level:…`: a new key at one level, with no moment at which anything cannot be opened.
+  * `level:slot kind:…`: one slot with a new key (one row changes).
+  * `level:installation [recovery:keep|new]`: a new installation key. Every slot and every workspace key is wrapped
+    again with it, in one transaction, so run it where each slot's key is at hand. A recovery slot needs
+    `recovery:keep` (type the recovery key) or `recovery:new` (a new one is printed). Other replicas hear of it and
+    open the vault again; what they hold keeps working meanwhile.
+  * `level:workspace workspace:<slug>|installation`: a new workspace key; its owners' keys are wrapped again with it.
+  * `level:owner workspace:… owner:<id> [wait:yes]`: a new owner key. Its secrets are sealed again in the
+    background (the job `platform.vault_reseal` in a workspace; the hourly upkeep, or this task, for the
+    installation's own), a batch at a time: safe beside traffic, on several replicas, and to stop, since what is left
+    is taken up again. The older version goes once nothing names it, unless an app sealed or derived with it
+    something it keeps outside the vault.
+  * `level:secret workspace:… owner:<id> name:<name>`: a new value of a key code uses and nobody types (a random
+    value, an Ed25519 pair), never shown. The version before still verifies for the secret's overlap.
+
+**What the doctor says**: whether the vault is open and with which slot; the slots and whether each opens the vault on
+this machine; whether there is a recovery key; the keys' ages; secrets still sealed with an older key a day after a
+rotation.
 
 ## Durable processes
 

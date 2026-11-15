@@ -237,6 +237,8 @@ pub struct Db {
     /// a task runs on it) and then serves read-only. Off unless the server says so.
     starting: Arc<AtomicBool>,
     pooled: bool,
+    /// This database's vault as this process holds it (crate::vault): closed until [`crate::vault::open`] opens it.
+    pub(crate) vault: Arc<crate::vault::Root>,
 }
 
 impl Db {
@@ -347,6 +349,7 @@ impl Db {
             moves: Arc::default(),
             frozen: Arc::default(),
             starting: Arc::default(),
+            vault: Arc::default(),
         })
     }
 
@@ -518,6 +521,32 @@ impl Db {
         }
         let mut tx = self.tenant_tx_with_timeout(tenant, timeout_ms).await?;
         sqlx::query("set transaction read only").execute(&mut *tx).await?;
+        Ok(tx)
+    }
+
+    /// A transaction of the vault's own module (crate::vault): the vault's tables are seen in it and in nothing else
+    /// (`ferrum.vault`, transaction-local as every setting here). On the side pool: the vault is often asked inside a
+    /// request's own transaction. `tenant`: the workspace whose trail it writes; none: the installation's scope, which
+    /// writes as the system does.
+    pub(crate) async fn vault_tx(&self, tenant: Option<Uuid>) -> Result<Tx> {
+        let mut tx = self.side.begin().await?;
+        let row = match tenant {
+            Some(t) => carrying(
+                "set_config('ferrum.vault', 'on', true), set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)",
+                self.moves(),
+                false,
+            )
+            .bind(t.to_string()),
+            None => carrying(
+                "set_config('ferrum.vault', 'on', true), set_config('ferrum.system', 'on', true), set_config('statement_timeout', $5, true)",
+                self.moves(),
+                false,
+            ),
+        }
+        .bind(self.config.statement_timeout_ms.to_string())
+        .fetch_one(&mut *tx)
+        .await?;
+        self.stay_fenced(&mut tx, row).await?;
         Ok(tx)
     }
 

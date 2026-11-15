@@ -42,6 +42,8 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 base64 = "0.22"
 ring = "0.17"
+# Key material zeroed when it is dropped (vault/). The version the workspace already locks.
+zeroize = "1"
 # Passkeys' attestation objects and public keys (passkey.rs).
 ciborium = "0.2"
 chrono-tz = { version = "0.10", default-features = false }

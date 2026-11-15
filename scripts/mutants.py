@@ -96,6 +96,7 @@ AGGREGATES = ("-p", "ferrum-kernel", "--test", "logic_aggregates_it")
 SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 EXPORT_UNIT = ("-p", "ferrum-server", "--lib", "controllers::docs::tests")
 EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
+VAULT = ("-p", "ferrum-kernel", "--test", "vault_it")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
 PUBLISHED = ("-p", "ferrum-server", "--test", "published_lists_it")
 META_PUBLISHED = ("-p", "ferrum-meta", "--lib", "published")
@@ -322,7 +323,7 @@ MUTANTS = [
     ("service-hears-what-it-cannot-read", "crates/apps/src/manifest.rs", "            if !reads(entity) {\n", "            if false {\n", MANIFEST_UNIT),
     ("service-off-still-hears", "crates/kernel/src/service.rs", "update webhook set is_active = $3 where tenant_id = $1 and app = $2", "update webhook set is_active = $3 or true where tenant_id = $1 and app = $2", SERVICES),
     # An app built in elsewhere.
-    ("extension-hooks-for-everyone", "server/src/packages.rs", "                hooks.scoped(&packages, |h| (app.register)(h));", "                (app.register)(hooks);", EXTENSIONS),
+    ("extension-hooks-for-everyone", "server/src/packages.rs", "                    h.scoped(&packages, |h| (app.register)(h));", "                    (app.register)(h);", EXTENSIONS),
     ("extension-tasks-left-out", "server/src/app.rs", "            (app.tasks)(tasks);", "            let _ = app;", EXTENSIONS),
     # A workspace's share of a replica.
     ("share-is-no-limit", "server/src/state.rs", "        if self.each == 0 || place.0.get().is_some() {\n            return Ok(());", "        if true {\n            return Ok(());", SHARES_UNIT),
@@ -976,6 +977,13 @@ MUTANTS = [
     ("key-two-workers", "crates/kernel/src/connections/steps.rs", "Ok(held.then_some(tx))", "Ok(Some(tx))", STEPS),
     ("limit-not-counted", "crates/kernel/src/connections/mod.rs", "if n as u32 > per {", "if false {", STEPS),
     ("mapping-always-system", "crates/kernel/src/connections/inbound.rs", "if map.run_as == Some(RunAs::System) {", "if true {", STEPS),
+    # The vault: a value only where its rule lets it out, a handle only from the server that gave it out, a value bound
+    # to its place, a wrong key told from a damaged row, a key version kept while what it sealed is kept outside.
+    ("vault-reveal-ignores-rule", "crates/kernel/src/vault/secrets.rs", "            if !row.rule.reveal {\n", "            if false {\n", VAULT),
+    ("vault-any-handle-will-do", "crates/kernel/src/vault/mod.rs", "Owner::App(id) => self.mint != 0 && k.hooks.vault_mint(id) == Some(self.mint),", "Owner::App(_) => true,", VAULT),
+    ("vault-value-not-bound-to-its-name", "crates/kernel/src/vault/seal.rs", 'format!("ferrum-vault/secret/{scope}/{owner}/{name}/{version}/{key_version}")', 'format!("ferrum-vault/secret/{scope}/{owner}/{version}/{key_version}")', VAULT),
+    ("vault-wrong-key-looks-damaged", "crates/kernel/src/vault/root.rs", "    if !kek.checks(&check_place(slot.kind.as_str()), &slot.check) {\n", "    if false {\n", VAULT),
+    ("vault-retires-what-is-kept-outside", "crates/kernel/src/vault/secrets.rs", "where scope = $1 and owner = $2 and not outside", "where scope = $1 and owner = $2", VAULT),
     # The whole router builds: no path and method mounted twice.
     ("hub-on-connections-path", "server/src/controllers/connect.rs", ".add(\"/admin/connector-instances\", get(list).post(create))", ".add(\"/admin/connections\", get(list).post(create))", ROUTES),
 

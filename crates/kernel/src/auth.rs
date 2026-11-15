@@ -1001,14 +1001,21 @@ impl Kernel {
         let k = self.clone();
         tokio::spawn(async move {
             loop {
-                match k.db.listen(USERS_CHANNEL).await {
+                // The vault's changes come on the same connection (crate::vault): one held connection for both.
+                let listening = match k.db.listen(USERS_CHANNEL).await {
+                    Ok(mut l) => l.listen(crate::vault::CHANNEL).await.map(|_| l).map_err(Error::from),
+                    Err(e) => Err(e),
+                };
+                match listening {
                     Ok(mut listener) => {
                         // Anything may have changed while we were not listening.
                         k.users.clear();
+                        k.db.vault.cache.forget(None, None);
                         loop {
                             tokio::select! {
                                 _ = shutdown.changed() => return,
                                 msg = crate::db::notification(&mut listener) => match msg {
+                                    Ok(n) if n.channel() == crate::vault::CHANNEL => k.db.vault.heard(&k.db, n.payload()),
                                     Ok(n) => match n.payload().split_once(':') {
                                         Some((t, u)) => {
                                             if let (Ok(t), Ok(u)) = (t.parse(), u.parse()) {

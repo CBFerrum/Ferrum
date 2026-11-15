@@ -36,6 +36,31 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 
 ## Controls
 
+**The vault** ([operations](operations.md#the-vault))
+* It keeps the keys and passwords of the platform and of every app, sealed with AES-256-GCM in the server (never by
+  SQL). Each value's associated data names its workspace, owner, name and version and the version of the key that
+  sealed it, so a value copied to any other place does not open. In this release the existing stores stay where they
+  are; the next one moves them in.
+* Keys form a hierarchy: a slot's key, the installation key, a workspace key, an owner key (`platform`, an app, a
+  plugin), the secret. Every key below a slot is random, versioned and stored only wrapped: a dump holds no key that
+  opens anything without a slot's key. Key material is zeroed when dropped and never formatted, logged or serialised.
+* Its tables are behind row-level security that only the vault's own transactions satisfy (a transaction-local
+  setting): the system's transactions, a workspace's and any other query see no row of it.
+* An app reaches only its own: it is given a handle bound to its id as it registers, which only the kernel makes and
+  which works only with the server that gave it out; no function takes an owner and gives back what is its. Inside one
+  process this rests on the shape of the code and on a check in the build (`scripts/secret_paths.py`), not on the
+  operating system: it stops mistakes and casual misuse by an app's code, not hostile code compiled into the server.
+  Code not trusted that far runs as a plugin or as a program of its own.
+* A value leaves the vault only where its secret's rule allows it (`reveal`); otherwise it is only used (to sign, to
+  check a signature). Every reveal, signature, setting, rotation and removal is recorded (owner, name, verb; never a
+  value): a workspace's on its own audit trail, the installation's own in the vault's record (`vault.event`, append-only,
+  which no workspace sees), the uses under a cap of a hundred an hour for each secret and verb, with a summary of the
+  rest once the hour is over.
+* People set, rotate and remove secrets only as administrators of the workspace who have just confirmed it is them;
+  nothing they are answered holds a value, except one the vault made for them, shown once.
+* It does not protect against a compromised replica, which holds the installation key while it runs, nor, with the
+  credential slot alone, against someone who has both a dump and the database password.
+
 **Zones** ([operations](operations.md#zones))
 * Where a zone admits no staff, a staff credential of any kind is refused where the request's context is
   built, on every request, and the decision is never cached by person. The zone comes from the replica's
