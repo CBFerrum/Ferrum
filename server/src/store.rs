@@ -314,9 +314,12 @@ async fn moving(db: &Db, objects: &Objects, dir: &str, stop_after: Option<u64>) 
     // Passes until one copies nothing new; the confirmation needs one that began after the check for writers. Files that
     // keep arriving after it (something still writes to the directory that no replica row shows) stop it unconfirmed.
     let mut checked_writers = false;
+    // What was there before this run: the first pass's count (a later pass finds every file it copied as done).
+    let mut already = None;
     for _ in 0..8 {
         let before = out.copied;
         pass(db, &source, &objects.op, &mut out, stop_after).await?;
+        out.already = *already.get_or_insert(out.already);
         if stop_after.is_some_and(|n| out.copied >= n) || !out.failed.is_empty() {
             return Ok(out);
         }

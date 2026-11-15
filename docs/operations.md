@@ -873,8 +873,8 @@ directory).
 `storage` (a write, a read and a delete), `storage.directory` and `storage.moving`, `storage.deletions` (below), and,
 asking the bucket with the same keys or identity: `storage.versioning` (versions kept, so that what is deleted or
 written over outside Ferrum can be taken back), `storage.lifecycle` (a rule over the whole bucket ending old versions,
-no sooner than `backup_reach_days`), `storage.encryption` (default encryption at rest), `storage.public` (a request
-without keys is refused, and the bucket's policy does not make it public) and `storage.clock` (a request signed more
+no sooner than `backup_reach_days`), `storage.encryption` (default encryption at rest), `storage.public` (a listing
+and a probe file asked for without keys are refused, and the bucket's policy does not make it public) and `storage.clock` (a request signed more
 than 15 minutes off the store's time is refused). Each says what to do. `s3_set_up_bucket` makes the bucket where it
 is missing and turns on versioning, the lifecycle rules (old versions after `backup_reach_days`, 30 when it is not
 set; the restore marker's after a day; unfinished uploads after a day) and default encryption where the bucket has
