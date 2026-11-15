@@ -36,13 +36,14 @@ fn repairs_vault(args: impl IntoIterator<Item = String>) -> bool {
 /// slots' keys come from where they are read today: `DATABASE_URL`'s password, the file at its fixed path,
 /// `FERRUM_SECRET_KEY_COMMAND` and `FERRUM_KMS_TRANSIT`. A vault that does not open stops the start, saying why; only a
 /// task that reports on it or repairs it runs with it closed. A vault that has no slot yet, with none of these here to
-/// make one, leaves the server to start with it closed (nothing depends on it in this release), and says so.
+/// make one, leaves the server to start with it closed, and says so: what needs it is refused, and production needs
+/// FERRUM_SECRET_KEY. Whether it opens (now, or once the kernel has migrated the database).
 pub async fn open_vault(
     db: &ferrum_kernel::Db,
     settings: &crate::state::Settings,
     database_url: &str,
     transit: Option<&ferrum_kernel::kms::Transit>,
-) -> Result<()> {
+) -> Result<bool> {
     use ferrum_kernel::vault::{Opened, Opener};
     let opener = Opener {
         database_url: database_url.to_string(),
@@ -55,13 +56,15 @@ pub async fn open_vault(
     match ferrum_kernel::vault::open(db, opener, tolerate).await {
         Ok(Opened::With(slot)) => {
             tracing::info!(%slot, "the vault is open");
-            Ok(())
+            Ok(true)
         }
-        // Not yet migrated (opened once the kernel has), or no slot possible here (said, and the server starts).
-        Ok(Opened::Later | Opened::Closed) => Ok(()),
+        // Not yet migrated: opened once the kernel has (or the start fails, saying why).
+        Ok(Opened::Later) => Ok(true),
+        // No slot possible here: said, and the server starts with the vault closed.
+        Ok(Opened::Closed) => Ok(false),
         Err(e) if tolerate => {
             tracing::error!("the vault is closed: {e}");
-            Ok(())
+            Ok(false)
         }
         Err(e) => Err(Error::Message(format!("the vault: {e}"))),
     }
@@ -1234,35 +1237,55 @@ impl Task for VaultMove {
     }
 }
 
-/// `legacy_key [format:json]`: what still depends on the old key (FERRUM_SECRET_KEY), and whether it can go
-/// (docs/operations.md, Retiring the old key).
+/// `legacy_key [retire:yes] [format:json]`: where the old key's end stands (FERRUM_SECRET_KEY): adopted into the vault,
+/// what waits to move, whether builds that check with it only are refused, and whether it can go; with `retire:yes`,
+/// those builds are refused from now on, once every key is adopted and every value moved (docs/operations.md, Retiring
+/// the old key).
 pub struct LegacyKey;
 
 #[async_trait]
 impl Task for LegacyKey {
     fn task(&self) -> TaskInfo {
-        TaskInfo { name: "legacy_key".into(), detail: "What still depends on the old master key, and whether it can go (format:json)".into() }
+        TaskInfo {
+            name: "legacy_key".into(),
+            detail: "Where the old master key's end stands; retire:yes refuses the builds that need it from now on (format:json)".into(),
+        }
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        let l = k.legacy_key(crate::doctor::apps_reading_the_old_key()).await.map_err(refused)?;
+        let l = match vars.cli_arg("retire") {
+            Ok("yes") => k.retire_old_key().await.map_err(refused)?,
+            Ok(other) => return Err(Error::Message(format!("retire:{other}: say retire:yes"))),
+            Err(_) => k.legacy_key(crate::doctor::apps_reading_the_old_key()).await.map_err(refused)?,
+        };
         if vars.cli_arg("format").is_ok_and(|f| f == "json") {
             println!("{}", serde_json::to_string_pretty(&l).map_err(refused)?);
             return Ok(());
         }
         println!("the old master key {}; the vault {}", if l.configured { "is set" } else { "is not set" }, if l.vault_open { "is open" } else { "is closed" });
+        for id in &l.adopted {
+            println!("in the vault: key {id}");
+        }
+        for id in &l.not_adopted {
+            println!("not in the vault yet: key {id} (a start with the vault open adopts it)");
+        }
         for (what, n) in &l.waiting {
             println!("waiting to move: {n} values of {what}");
-        }
-        for (what, n) in &l.held {
-            println!("still under the key: {what} ({n})");
-        }
-        for app in &l.apps {
-            println!("reads the key itself: {app}");
         }
         match l.moved_since {
             Some(at) => println!("nothing has waited to move since {}", at.format("%Y-%m-%d %H:%M UTC")),
             None => println!("the move has not yet found everything moved (ferrum task vault_move)"),
+        }
+        println!(
+            "{}",
+            if l.older_builds_refused {
+                "builds before the old key's end are refused here: what the platform makes, it makes with the vault's keys"
+            } else {
+                "builds before this one may still run here: what the platform makes, it makes with the old key (legacy_key retire:yes ends that)"
+            }
+        );
+        for app in &l.apps {
+            println!("reads the key itself: {app} (given the vault's copy once it is gone)");
         }
         for (what, caller, last) in &l.uses {
             println!("used: {what}{}, last {}", if caller.is_empty() { String::new() } else { format!(" by {caller}") }, last.format("%Y-%m-%d %H:%M UTC"));
@@ -1785,8 +1808,9 @@ impl Task for LogicReplay {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        let Some(current) = k.settings.secret_key.clone() else { return Err(Error::Message("no secret key: runs are sealed with FERRUM_SECRET_KEY".into())) };
-        let keys = std::sync::Arc::new(ferrum_process::Keys { current, retired: k.settings.retired_secret_keys.clone() });
+        // Opened as the runtime opens them: with the platform's key for processes, or the old key it sealed them with.
+        let keys = std::sync::Arc::new(ferrum_process::Keys::default());
+        keys.ready(&k, app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?.vault);
         let mut results: Vec<(String, std::result::Result<(), String>)> = Vec::new();
         if let Ok(files) = vars.cli_arg("files") {
             for path in files.split(',').map(str::trim).filter(|p| !p.is_empty()) {

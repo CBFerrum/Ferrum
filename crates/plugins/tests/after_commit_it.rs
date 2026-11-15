@@ -51,9 +51,12 @@ async fn boot(host: &Arc<PluginHost>) -> Arc<Kernel> {
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     let mut hooks = HookRegistry::default();
+    // As on a server: the host keeps plugins' settings sealed (here with the old key: the vault is not opened).
+    host.use_vault(hooks.platform_vault());
     hooks.register("*", Arc::new(PluginHook(host.clone())));
     hooks.add_event_sink(Arc::new(PluginEvents(host.clone())));
-    Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot")
+    let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([5u8; 32])), ..Default::default() };
+    Kernel::boot(db, catalog, hooks, settings, None).await.expect("boot")
 }
 
 async fn pending(k: &Kernel, topic: &str) -> i64 {

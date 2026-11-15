@@ -37,7 +37,7 @@ pub async fn run_due_once(host: &Arc<PluginHost>, k: &Kernel) -> Result<usize> {
     tx.commit().await?;
     for (tenant, plugin, name) in &due {
         let outcome = async {
-            let plugins = host.plugins(&k.db, *tenant).await?;
+            let plugins = host.plugins(k, *tenant).await?;
             let Some(p) = plugins.iter().find(|p| p.id == *plugin) else { return Ok(()) };
             let ctx = host.service_ctx(k, *tenant, p).await?;
             let reply = {

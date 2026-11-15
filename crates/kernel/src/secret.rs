@@ -163,7 +163,7 @@ impl Kernel {
                     }
                     let sealed = self.keep(tx, &place, plain).await?;
                     // The key that sealed it beside the vault, or the vault's mark where the vault alone keeps it.
-                    let key_id = self.settings.secret_key.as_ref().map_or(crate::vault::kept::MARKER, |k| k.id.as_str());
+                    let key_id = self.env_key().map_or(crate::vault::kept::MARKER, |k| k.id.as_str());
                     sqlx::query(
                         "insert into record_secret (tenant_id, entity, record_id, field, sealed, key_id, updated_by) values ($1, $2, $3, $4, $5, $6, $7) \
                          on conflict (tenant_id, entity, record_id, field) do update set sealed = excluded.sealed, key_id = excluded.key_id, \
@@ -235,9 +235,10 @@ impl Kernel {
         }
     }
 
-    /// The server's key, then those being rotated out.
+    /// Every old key: the environment's (`FERRUM_SECRET_KEY`, then those being rotated out), then those adopted into the
+    /// vault, which keep opening what they sealed once the environment no longer has them (crate::vault::keyed).
     pub(crate) fn secret_keys(&self) -> impl Iterator<Item = &SecretKey> {
-        self.settings.secret_key.iter().chain(&self.settings.retired_secret_keys)
+        self.old_keys.iter()
     }
 
     /// Opens what was sealed with the server's key or one being rotated out. AES-GCM tells the right
@@ -256,7 +257,7 @@ impl Kernel {
     /// `sealed` under the current key, when another sealed it; `None` when it is current already.
     /// A value no key opens is counted and left as it is: it may yet open with a key configured later.
     fn moved(&self, aad: &str, sealed: &str, unopened: &mut u64) -> Result<Option<String>> {
-        let Some(current) = self.settings.secret_key.as_ref() else { return Ok(None) };
+        let Some(current) = self.env_key() else { return Ok(None) };
         // Only the vault keeps it: nothing here to seal again.
         if sealed == crate::vault::kept::MARKER || current.open(aad, sealed).is_ok() {
             return Ok(None);
@@ -274,7 +275,7 @@ impl Kernel {
     /// server has one; else the vault's mark with the vault open (a sandbox's, which the vault makes by its rule), or the
     /// secret itself with neither, as before the vault. [`Kernel::keep_webhook_secret`] is what keeps a new one.
     pub fn seal_webhook_secret(&self, tenant: Uuid, webhook: Uuid, secret: &str) -> Result<String> {
-        match &self.settings.secret_key {
+        match self.env_key() {
             Some(key) => Ok(format!("{SEALED_WEBHOOK}{}", key.seal(&webhook_label(tenant, webhook), secret)?)),
             None if self.db.vault.installation().is_ok() => Ok(crate::vault::kept::Store::Webhook.marker().to_string()),
             None => Ok(secret.to_string()),
@@ -306,7 +307,7 @@ impl Kernel {
     /// the next run. Plugins' settings are their host's (`PluginHost::seal_stored`).
     pub async fn reseal_secrets(&self) -> Result<Resealed> {
         let mut done = Resealed::default();
-        let Some(current) = self.settings.secret_key.as_ref() else { return Ok(done) };
+        let Some(current) = self.env_key() else { return Ok(done) };
         let mut tx = self.db.system_tx().await?;
         let hooks: Vec<(Uuid, Uuid, String)> = sqlx::query_as("select tenant_id, id, secret from webhook").fetch_all(&mut *tx).await?;
         for (tenant, id, stored) in hooks {
@@ -326,7 +327,7 @@ impl Kernel {
                     .rows_affected();
             }
         }
-        if !self.settings.retired_secret_keys.is_empty() {
+        if self.secret_keys().any(|k| k.id != current.id) {
             let fields: Vec<(Uuid, String, Uuid, String, String)> =
                 sqlx::query_as("select tenant_id, entity, record_id, field, sealed from record_secret where key_id <> $1")
                     .bind(&current.id)

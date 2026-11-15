@@ -442,11 +442,15 @@ async fn scenario() {
     common::reset(&db.pool).await;
     let dir = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../packages");
     let [core, contacts, parties] = ["core", "contacts", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
+    // As on a server: the plugin host keeps plugins' settings sealed (here with the old key: the vault is not opened).
+    let host = PluginHost::new(false).unwrap();
+    let mut hooks = HookRegistry::default();
+    host.use_vault(hooks.platform_vault());
     let k = Kernel::boot(
         db,
         Catalog::from_packages(vec![core, contacts, parties, notes_package()]).unwrap(),
-        HookRegistry::default(),
-        KernelSettings::default(),
+        hooks,
+        KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([5u8; 32])), ..Default::default() },
         None,
     )
     .await
@@ -461,7 +465,6 @@ async fn scenario() {
     }
     assert!(matches!(b.check("10.0.0.1").await, Err(Error::TooManyRequests(_))), "the fourth request, on another replica");
     b.check("10.0.0.2").await.expect("another client has its own count");
-    let host = PluginHost::new(false).unwrap();
     let mut tenants = Vec::new();
     for slug in ["acme", "other"] {
         let id = k

@@ -177,6 +177,10 @@ fn check_name(name: &str) -> Result<()> {
     if super::kept::Store::ALL.iter().any(|s| name.strip_prefix(s.kind()).is_some_and(|rest| rest.starts_with('.'))) {
         return Err(Error::field("name", "this name is one the kernel's stores keep: change the value where it is set"));
     }
+    // The old keys adopted into the vault (keyed.rs): what they made is checked with them, and nothing else sets them.
+    if name.starts_with(super::keyed::ADOPTED) {
+        return Err(Error::field("name", "this name is the kernel's, for an old key it adopted"));
+    }
     Ok(())
 }
 
@@ -385,14 +389,14 @@ async fn write(
 ) -> Result<(Described, Option<Zeroizing<String>>)> {
     check_name(name)?;
     let made = make(value)?;
-    write_made(k, scope, owner, name, made, rule, who, false).await.map(|(d, shown, _)| (d, shown))
+    write_made(&k.db, scope, owner, name, made, rule, who, false).await.map(|(d, shown, _)| (d, shown))
 }
 
 /// [`write`] of a value already made; with `only_new`, only where the secret has no current version (what is there is
 /// left as it is: `false`). Under the secret's lock, so that replicas doing it at once write it once.
 #[allow(clippy::too_many_arguments)]
 async fn write_made(
-    k: &Kernel,
+    db: &Db,
     scope: Scope,
     owner: &str,
     name: &str,
@@ -407,7 +411,7 @@ async fn write_made(
         r.check()?;
     }
     let (described, wrote) = with_retry(|| async {
-        let mut tx = k.db.vault_tx(scope.tenant()).await?;
+        let mut tx = db.vault_tx(scope.tenant()).await?;
         sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
             .bind(format!("ferrum.vault.secret {}/{owner}/{name}", scope.id()))
             .execute(&mut *tx)
@@ -426,7 +430,7 @@ async fn write_made(
         if let Some(r) = replaced.filter(|r| r.kind != kind) {
             return Err(Error::Invalid(format!("{name} holds {}: remove it first to keep another kind of secret under its name", r.kind.as_str())));
         }
-        let (key_version, _, key) = k.db.vault.current_owner_key(&k.db, &mut tx, scope.id(), owner).await?;
+        let (key_version, _, key) = db.vault.current_owner_key(db, &mut tx, scope.id(), owner).await?;
         let version = sqlx::query_scalar::<_, Option<i32>>("select max(version) from vault.secret where scope = $1 and owner = $2 and name = $3")
             .bind(scope.id())
             .bind(owner)
@@ -527,6 +531,16 @@ async fn list(k: &Kernel, scope: Scope, owner: Option<&str>) -> Result<Vec<Descr
 /// Code's own changes and uses: nobody behind them but the owner.
 const CODE: Who<'static> = Who { actor: None, request: "", by: None };
 
+/// Sets `name` of `owner` in `scope` only where it has no current version, as [`Vault::adopt`] does, before the kernel
+/// has booted (keyed.rs: the old keys adopted into the vault as the kernel boots); whether this wrote it. Recorded as
+/// `adopt` by `old key`.
+pub(super) async fn adopt_at_boot(db: &Db, scope: Scope, owner: &str, name: &str, value: New, rule: Rule) -> Result<bool> {
+    valid_name(name)?;
+    let request = crate::db::Trace::operation().unwrap_or_default();
+    let who = Who { actor: None, request: &request, by: Some("old key") };
+    write_made(db, scope, owner, name, make(value)?, Some(rule), &who, true).await.map(|(_, _, wrote)| wrote)
+}
+
 impl Vault {
     /// Sets `name` in `scope` to `value` under `rule`: a new secret, or a new version of one (its rule replaced).
     /// Recorded on the audit trail, never the value.
@@ -543,7 +557,7 @@ impl Vault {
         check_name(name)?;
         let request = crate::db::Trace::operation().unwrap_or_default();
         let who = Who { actor: None, request: &request, by: Some(by) };
-        write_made(k, scope, owner, name, make(value)?, Some(rule), &who, true).await.map(|(_, _, wrote)| wrote)
+        write_made(&k.db, scope, owner, name, make(value)?, Some(rule), &who, true).await.map(|(_, _, wrote)| wrote)
     }
 
     /// A new version of `name`, under its rule: what it signs from now on is signed with it, and the version before
@@ -1089,7 +1103,7 @@ pub(crate) async fn sandbox(k: &Kernel, from: Uuid, to: Uuid) -> Result<Value> {
             continue;
         };
         let keep = row.rule.sandbox == super::Sandbox::Keep;
-        write_made(k, sandbox, &owner, &name, value, Some(row.rule.clone()), &who, true).await?;
+        write_made(&k.db, sandbox, &owner, &name, value, Some(row.rule.clone()), &who, true).await?;
         if keep { kept += 1 } else { made += 1 }
     }
     Ok(json!({"kept": kept, "regenerated": made, "blank": blank}))

@@ -202,7 +202,8 @@ async fn scenario() {
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/procs.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let pkg = ferrum_meta::catalog::load_package_files(&files).expect("package");
-    let keys = Arc::new(ferrum_process::Keys { current: SecretKey::new([9u8; 32]), retired: vec![] });
+    // Sealed with the old key while it seals them (no vault here): ferrum_kernel::vault, keyed.rs.
+    let keys = Arc::new(ferrum_process::Keys::default());
     let settings = Settings {
         address,
         namespace: std::env::var("TEMPORAL_NAMESPACE").unwrap_or_else(|_| "ferrum-flc".into()),
@@ -211,10 +212,11 @@ async fn scenario() {
     };
     let client = ferrum_process::client(&settings).await.expect("temporal client");
     let mut hooks = HookRegistry::default();
+    let platform = hooks.platform_vault();
     hooks.add_event_sink(Arc::new(Dispatch::new(client.clone(), settings.queue.clone()).continuing_after(1)));
-    let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, KernelSettings { process_runtime: true, ..Default::default() }, None)
-        .await
-        .expect("boot");
+    let settings_k = KernelSettings { process_runtime: true, secret_key: Some(SecretKey::new([9u8; 32])), ..Default::default() };
+    let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, settings_k, None).await.expect("boot");
+    keys.ready(&k, platform);
     let worker = spawn(k.clone(), settings.clone()).await.expect("worker");
     let pump = tokio::spawn({
         let k = k.clone();

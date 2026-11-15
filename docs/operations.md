@@ -49,7 +49,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `mailer_password` | `MAILER_PASSWORD` | text |  | secret: the environment, else the vault (library) | The SMTP password. |
 | `jwt_secret` | `JWT_SECRET` | text |  | secret: the environment, else the vault (session) | Base64, at least 32 random bytes: `openssl rand -base64 48`. Changing it signs everyone out. Without it the vault's keys sign sessions, each named by the tokens it signs and replaced without signing anyone out (*The key that signs sessions*); then it is required only while the vault is closed. |
 | `jwt_expiration_seconds` | `JWT_EXPIRATION_SECONDS` | int | `28800` | installation, at once | How long a bearer token from signing in lasts, in seconds (default 8 hours). |
-| `secret_key` | `FERRUM_SECRET_KEY` | text |  | secret: the environment | Required. Base64 of exactly 32 random bytes: `openssl rand -base64 32`, or that key as a key-management service's ciphertext (`vault:v1:…`, [below](#the-secret-key-from-a-key-management-service)). Seals secret fields (mail passwords, API keys) and plugins' settings (payment gateways' keys among them) with AES-256-GCM; every replica needs the same key. Back it up: values sealed with a lost key must be entered again. |
+| `secret_key` | `FERRUM_SECRET_KEY` | text |  | secret: the environment | The old master key. A new installation leaves it out: where the vault opens, the vault keeps and keys everything. One that has it keeps it until `ferrum task legacy_key` says it may go ([Retiring the old key](#retiring-the-old-key)); where the vault cannot open, production requires it. Base64 of exactly 32 random bytes (`openssl rand -base64 32`), or that key as a key-management service's ciphertext (`vault:v1:…`, [below](#the-secret-key-from-a-key-management-service)); every replica needs the same key. Back it up while you keep backups taken with it: values sealed with a lost key must be entered again. |
 | `secret_key_command` | `FERRUM_SECRET_KEY_COMMAND` | text |  | secret: the environment | In place of `FERRUM_SECRET_KEY`: a command (run with `sh -c`, 30 seconds at most) that prints the key, such as a KMS's own CLI. |
 | `retired_secret_keys` | `FERRUM_RETIRED_SECRET_KEYS` | text |  | secret: the environment | Keys being rotated out, comma-separated: see *Rotating the secret key*. |
 | `kms_transit` | `FERRUM_KMS_TRANSIT` | text |  | the environment (the key-management client) | The OpenBao or Vault Transit key that unwraps `FERRUM_SECRET_KEY` and retired keys given as ciphertext: `https://host:8200/<mount>/<key>`. Signs in with `FERRUM_KMS_TOKEN_FILE`, `BAO_TOKEN` or `VAULT_TOKEN`, or as the pod's service account (`FERRUM_KMS_KUBERNETES_ROLE`, `FERRUM_KMS_KUBERNETES_MOUNT`); `FERRUM_KMS_CA_FILE` and `FERRUM_KMS_NAMESPACE` when needed. |
@@ -1035,9 +1035,10 @@ remembered on 15 November 2026, every line marked *(from memory)*. Check it agai
 
 ## Rotating the secret key
 
-`FERRUM_SECRET_KEY` seals secret fields, authenticator secrets, single sign-on client secrets,
-webhook signing secrets, plugins' settings and the Web Push key. To replace it, on a schedule or
-because the old key may have been seen:
+An installation that has `FERRUM_SECRET_KEY` (the old master key: a new one has none, *Retiring the old key*)
+seals with it, beside the vault, what a build before the vault reads: secret fields, authenticator secrets,
+single sign-on client secrets, webhook signing secrets, plugins' settings and the Web Push key. Better than
+rotating it is retiring it. To replace it, on a schedule or because the old key may have been seen:
 
 1. Generate a new key: `openssl rand -base64 32`.
 2. Give **every** replica both: add the new key to `FERRUM_RETIRED_SECRET_KEYS` and restart them all.
@@ -1306,8 +1307,9 @@ owner: secret fields (the app whose package declares the field; a field one app 
 adder's), connections' secrets and sign-in tokens, connectors' credentials, message channels' secrets, single sign-on
 client secrets, SAML keys, second factors, webhook signing secrets, approvals' secret parameters (the platform's), and the
 push key (the installation's). An app reads only its own secret fields, through its own vault handle; the platform
-uses the rest to sign, to check, or to put on a request, and shows none of them. Plugins' settings are not in the vault
-yet: the plugin host still seals them with the key.
+uses the rest to sign, to check, or to put on a request, and shows none of them. Plugins' settings are sealed under each
+plugin's own key in the workspace's vault (`{"$vault": …}` in the plugin's configuration), and never stored plain: with
+neither the vault open nor the old key, saving one is refused.
 
 - **What exists moves by itself.** The hourly upkeep moves every value the vault does not hold yet, on any number of
   replicas at once: each value in a transaction of its own, checked in the vault before it commits, and one that a
@@ -1317,32 +1319,58 @@ yet: the plugin host still seals them with the key.
   vault, where a build before this one reads it, so a rollback reads every value as it is now. A value the older build
   changes is read from where it changed it, and the next move takes it again. Nothing is deleted from the old stores in
   this release. Keep `FERRUM_SECRET_KEY` (and `FERRUM_RETIRED_SECRET_KEYS`) as they are while you might roll back.
-- **Without the key** (an installation that never had one: development, or the vault alone): the old stores hold only
-  the vault's mark `vault`, which opens nothing, and a webhook's secret is never kept plain again. A build before this one
-  refuses each of those values, and in production does not start without the key. In this release production still
-  requires the key: what it still keys (below) has not moved yet.
+- **Without the key** (a new installation, or one that retired it): the old stores hold only the vault's mark `vault`,
+  which opens nothing, and a webhook's secret is never kept plain again. A build before this one refuses each of those
+  values, and in production does not start without the key.
 - **Changing a connection's hosts asks for its secrets again**: they were given for the hosts its description reached
   then, and are not sent anywhere else.
 
 ### Retiring the old key
 
-`ferrum task legacy_key` (and the doctor's `legacy_key` findings) says what still depends on `FERRUM_SECRET_KEY`:
+A new installation needs no `FERRUM_SECRET_KEY`: where the vault opens, production starts without it, and the platform
+keys and seals what it gives out with keys of its own from the vault, each derived for one use: opt-out links in
+promotional messages, erased people's opt-outs, sign-ins to accounts (their `state` and the verifier while they wait),
+public addresses of files, connectors' account fingerprints, receipts' digests of secret parameters, messages waiting
+with secret values (a workspace's each), and processes' payloads (the installation's). Development, with the vault open,
+no longer derives a key from `JWT_SECRET`: that key opens only what it sealed before. With the vault closed, each of these
+is refused, saying why; nothing falls back to anything else.
 
-- values the old stores hold that the vault does not hold as they are, by store (`ferrum task vault_move` takes them;
-  one that stays names a value no configured key opens: `secrets.unopened` names it);
-- each path that used the key since nothing was left to move, with when it last did: `open:<store>` (a value read where
-  it was), and what this release still keys or seals with it: opt-out links, erased opt-outs' marks, sign-ins to
-  accounts and their state, public addresses of files, connectors' account fingerprints, receipts' secret parameters,
-  messages waiting with secret values, processes' payloads, plugins' settings;
-- the apps compiled in that still read it themselves (`settings.secret_key`) or read secret fields past the vault
-  (`Kernel::secret`, with the file that called it): each moves in its own repository.
+An installation that has the key takes it out in three steps, without stopping:
 
-The key can go when it says `retirable: true`: nothing waits to move, no path used the key since, and no app compiled
-in reads it. Then, once you will not roll back to a build before this one (it needs the key): remove
-`FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS` from every replica's environment, start them again, and run
-`ferrum task legacy_key` once more. Keep the key itself, offline, as long as you keep backups taken before: they need
-it. In this release the paths named above still use the key, so it stays; the release that moves them makes it
-retirable.
+1. **Upgrade.** Start this release with the key set, as before. Every replica that starts with the vault open adopts
+   `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS` into the vault once (each a secret of the platform's, used and
+   never shown; replicas starting together adopt it once). From then on what the key made is checked and opened with
+   the vault's copy as well. While older builds may still run, what the platform makes it still makes with the key, so
+   that a rollback finds every link, sign-in and receipt it gave out still good; the hourly upkeep moves what the old
+   stores and plugins' settings hold into the vault (`ferrum task vault_move` does it now).
+2. **Refuse older builds.** When `ferrum task legacy_key` says every key is in the vault and nothing waits to move, and
+   you will not roll back to a build before this one, run `ferrum task legacy_key retire:yes`. Builds before this one
+   (which need the key) no longer start (`ferrum task allow_older_builds reason:<why> feature:old-key-retired` lets them in again), and
+   each replica, once started again, makes what it gives out with the vault's keys.
+3. **Remove the variable.** `ferrum task legacy_key` then says `retirable: true`: remove `FERRUM_SECRET_KEY` and
+   `FERRUM_RETIRED_SECRET_KEYS` from every replica's environment and start them again. A replica that starts without the
+   key refuses older builds by itself as soon as it makes anything with the vault's keys.
+
+What `ferrum task legacy_key` (and the doctor's `legacy_key` finding) says at each stage:
+
+| Stage | `legacy_key` | The doctor |
+| --- | --- | --- |
+| Before the upgrade's first start with the vault open | the key's id under `not_adopted`; `retirable: false` | warning: the key is not yet in the vault |
+| Upgraded, values still moving | `adopted`; what waits, by store; `retirable: false` | the key is in the vault, the move is not done |
+| Everything moved, older builds still allowed | `moved_since`; `older_builds_refused: false`; `retirable: false` | run `legacy_key retire:yes` once no older build will run |
+| After `retire:yes` | `older_builds_refused: true`; `retirable: true` | the key may go |
+| The variable removed | `configured: false`; the ids still `adopted` | the key is gone; what it made is checked with the vault's copy |
+| A new installation | `configured: false`, nothing adopted | the key is not set, and never was |
+
+Apps compiled in that read the old key themselves (`settings.secret_key`, deprecated: the list comes with the build) are
+given the same key once it is gone from the environment, from the vault's copy, so nothing they sealed changes; on an
+installation that never had one, a key of the platform's own. Each moves onto its own vault handle in its repository.
+
+When the vault's keys make what a key made before: links and addresses made before a rotation of the platform's key
+still check (every version that made one is kept); a receipt's digest and a connector's fingerprint are made with the
+current version only, so a request repeated across a rotation (or across `retire:yes`) is answered as a new one, and
+connections saved before it are told apart from those saved after until they are saved again. Keep the key itself,
+offline, as long as you keep backups taken before it went: they need it.
 
 ### A workspace's vault
 
@@ -1357,8 +1385,10 @@ Customers' solutions may hold processes that wait for people, events and deadlin
 profile). They run on a [Temporal](https://temporal.io) server (MIT) beside Ferrum: set `TEMPORAL_ADDRESS`
 (and `TEMPORAL_NAMESPACE`, created beforehand) on the replicas that run background work. Without it, a
 solution with a process is refused and everything else runs as before. What Temporal stores is sealed with
-`FERRUM_SECRET_KEY`; after rotating it, keep the old key in `FERRUM_RETIRED_SECRET_KEYS` until the runs
-started before have finished. Settings and behaviour: [logic/processes.md](logic/processes.md).
+the platform's key for processes in the vault, each payload naming the version that sealed it, so runs read
+their own history after the key rotates; on an installation that still has `FERRUM_SECRET_KEY`, with that key
+until it is retired (*Retiring the old key*), and what it sealed opens with the vault's copy once it is gone.
+Settings and behaviour: [logic/processes.md](logic/processes.md).
 
 **Accounts solutions act as.** A run no person's act started acts as its solution's own service account,
 `solution.{id}@services.ferrum.invalid`, made at activation with exactly the rights its release was reviewed to
@@ -1414,8 +1444,8 @@ It fetches the history of every run that has not finished from Temporal and repl
 that format).
 
 A history that does not replay means the new build would decide those runs differently: keep the old build
-running them, and say so in the release notes. Replay needs the same `FERRUM_SECRET_KEY` (and retired keys)
-as the runs were sealed with.
+running them, and say so in the release notes. Replay opens the payloads as the runtime does: with the vault
+open, and the old key (or the vault's copy of it) for what it sealed.
 
 **From automations.** Studio's `POST /api/app/studio/solutions/import/automations` (administrators) turns each
 automation into a draft Solution: the same event, the condition as written, the actions as steps through

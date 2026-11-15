@@ -253,11 +253,22 @@ fn reseal_row(table: &str, tenant: Uuid, row: &mut Map<String, Value>, from: &[S
             let mut n = 0;
             if let Some(Value::Object(config)) = row.get_mut("config") {
                 for (k, v) in config.iter_mut() {
-                    if let Some(sealed) = v.get("$sealed").and_then(Value::as_str) {
-                        let new = reseal(from, to, &format!("{tenant}/plugin/{name}/{k}"), sealed, &format!("plugin {name}'s setting {k}"))?;
-                        *v = json!({"$sealed": new, "$key": to.map(|k| k.id.clone())});
-                        n += 1;
-                    }
+                    let Some(sealed) = v.get("$sealed").and_then(Value::as_str) else { continue };
+                    // Kept in the vault too, under the plugin's key in the workspace's vault, which travels with it: the
+                    // old key's copy beside is for the previous build, sealed again where this installation has one.
+                    let vault = v.get(crate::vault::PLUGIN_VAULT).cloned();
+                    *v = match (vault, to) {
+                        (Some(vault), None) => json!({ crate::vault::PLUGIN_VAULT: vault }),
+                        (vault, _) => {
+                            let new = reseal(from, to, &format!("{tenant}/plugin/{name}/{k}"), sealed, &format!("plugin {name}'s setting {k}"))?;
+                            let mut kept = json!({"$sealed": new, "$key": to.map(|k| k.id.clone())});
+                            if let Some(vault) = vault {
+                                kept[crate::vault::PLUGIN_VAULT] = vault;
+                            }
+                            kept
+                        }
+                    };
+                    n += 1;
                 }
             }
             n
@@ -267,6 +278,8 @@ fn reseal_row(table: &str, tenant: Uuid, row: &mut Map<String, Value>, from: &[S
             let at = format!("{table}.{column} of {}", row.get("id").unwrap_or(&Value::Null));
             match row.get_mut(column).and_then(Value::as_object_mut) {
                 Some(held) => match held.get("sealed").and_then(Value::as_str) {
+                    // Sealed under the platform's key in the workspace's vault, which travels with it.
+                    Some(sealed) if crate::vault::sealed_by_vault(sealed) => 0,
                     Some(sealed) => {
                         let new = reseal(from, to, &crate::messages::sealed_message(tenant), sealed, &at)?;
                         held.insert("sealed".into(), Value::String(new));
@@ -844,7 +857,7 @@ impl Kernel {
     /// Opens every value the workspace sealed at the source with the keys given, changing nothing; how many. Refuses
     /// what no key opens, and erased opt-outs kept as digests made with a key this installation does not hold.
     async fn prove_keys(&self, source: &Db, tenant: Uuid, from: &MoveSource, tables: &Shape) -> Result<u64> {
-        let to = self.settings.secret_key.as_ref();
+        let to = self.env_key();
         let mut tx = system(source).await?;
         let mut opened = 0;
         for t in [
@@ -874,11 +887,14 @@ impl Kernel {
             }
         }
         // An erased person's opt-out is kept as a digest under the key: only a key this installation holds still matches
-        // it (messages.rs, `erased_marks`), so without one the person could be sent to again.
-        let erased: i64 = sqlx::query_scalar("select count(*) from contact_consent where tenant_id = $1 and email::text like 'erased:%'")
-            .bind(tenant)
-            .fetch_one(&mut *tx)
-            .await?;
+        // it (messages.rs, `erased_marks`), so without one the person could be sent to again. One made with the vault's
+        // keys (`erased:v…`) is the workspace's vault's, which travels with it.
+        let erased: i64 = sqlx::query_scalar(
+            "select count(*) from contact_consent where tenant_id = $1 and email::text like 'erased:%' and email::text not like 'erased:v%'",
+        )
+        .bind(tenant)
+        .fetch_one(&mut *tx)
+        .await?;
         tx.commit().await?;
         if erased > 0 && !from.keys.iter().any(|k| self.secret_keys().any(|h| h.id == k.id)) {
             return Err(Error::Conflict(format!(
@@ -1025,7 +1041,7 @@ impl Kernel {
     async fn copy_arriving(&self, source: &Db, tenant: Uuid, move_id: Uuid, peer: &str, from: &MoveSource, say: &(dyn Fn(&str) + Send + Sync)) -> Result<()> {
         let tables = shape(&self.db).await?;
         let people = self.identities(source, tenant, from, say).await?;
-        let to = self.settings.secret_key.as_ref();
+        let to = self.env_key();
         let mut src = source.pool.begin().await?;
         sqlx::query("set transaction isolation level repeatable read, read only").execute(&mut *src).await?;
         sqlx::query("select set_config('ferrum.system', 'on', true), set_config('statement_timeout', '0', true)").execute(&mut *src).await?;

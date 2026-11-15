@@ -99,6 +99,8 @@ EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
 VAULT = ("-p", "ferrum-kernel", "--test", "vault_it")
 VAULT_FOLLOWS = ("-p", "ferrum-kernel", "--test", "vault_follows_it")
 VAULT_STORES = ("-p", "ferrum-kernel", "--test", "vault_stores_it")
+OLD_KEY = ("-p", "ferrum-kernel", "--test", "old_key_it")
+KEYED_UNIT = ("-p", "ferrum-kernel", "--lib", "vault::keyed::tests")
 CONNECTIONS_UNIT = ("-p", "ferrum-kernel", "--lib", "connections::tests")
 SESSIONS_UNIT = ("-p", "ferrum-server", "--lib", "sessions::tests")
 PLATFORM_SECRETS = ("-p", "ferrum-server", "--test", "secrets_it")
@@ -161,7 +163,7 @@ MUTANTS = [
     ('conn-blocked-ranges-shrunk', 'crates/kernel/src/connections/mod.rs', 'if crate::outbox::is_private(ip) {\n        return true;\n    }', 'if crate::outbox::is_private(ip) {\n        return false;\n    }', CONNECTIONS_UNIT),
     ('conn-other-host-reached', 'crates/kernel/src/connections/mod.rs', 'if !reach.any && !reach.hosts.is_empty() && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', 'if false && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', CONNECTIONS),
     # BD-64, BD-65: a public address's signature checked; reading any host only for a description without credentials.
-    ('conn-pulled-signature-ignored', 'crates/kernel/src/connections/public.rs', 'if self.settings.secret_key.is_none() || !same(&self.address_signature(id)?, signature) {', 'if self.settings.secret_key.is_none() {', CONNECTIONS),
+    ('conn-pulled-signature-ignored', 'crates/kernel/src/connections/public.rs', '.any(|(_, k)| same(&k.fingerprint("pulled-file", &id), signature))', '.any(|_| true)', OLD_KEY),
     ('conn-any-host-with-auth', 'crates/kernel/src/connections/mod.rs', 'if !matches!(self.auth, Auth::None) {', 'if false {', CONNECTIONS),
     ('conn-plain-http-called', 'crates/kernel/src/connections/mod.rs', '"http" if open => {}', '"http" => {}', CONNECTIONS),
     ('conn-answer-unbounded', 'crates/kernel/src/connections/mod.rs', 'max_bytes: self.desc.max_bytes.unwrap_or(DEFAULT_MAX_BYTES),', 'max_bytes: MAX_BYTES,', CONNECTIONS),
@@ -445,7 +447,7 @@ MUTANTS = [
     ("restricted-title-shown", "crates/kernel/src/doc.rs", "Reference::Restricted => match row_scope(ctx, tent, Action::Read) {", "Reference::Restricted => match Ok::<_, Error>(crate::ctx::RowScope::default()) {", RULES),
     ("restricted-title-ignores-rows", "crates/kernel/src/doc.rs", "            if let Some(scope) = &scope {\n                scope.push_sql(&mut qb, \"a\");\n            }\n            let rows: Vec<(Uuid, String)>", "            let _ = &scope;\n            let rows: Vec<(Uuid, String)>", RULES),
     ("explanation-ignores-the-record", "crates/kernel/src/access.rs", "let reached = by.is_some();", "let reached = true;", RULES),
-    ("retired-key-forgotten", "crates/kernel/src/secret.rs", "self.settings.secret_key.iter().chain(&self.settings.retired_secret_keys)", "self.settings.secret_key.iter().chain(&[])", SECRETS),
+    ("retired-key-forgotten", "crates/kernel/src/vault/keyed.rs", "env.iter().chain(&settings.retired_secret_keys).cloned().collect()", "env.iter().chain(&[]).cloned().collect()", SECRETS),
     ("lost-key-blanks-values", "crates/kernel/src/secret.rs", "                *unopened += 1;\n                Ok(None)", "                *unopened += 1;\n                current.seal(aad, \"\").map(Some)", SECRETS),
     ("webhook-secret-stays-plain", "crates/kernel/src/secret.rs", 'None => Some(format!("{SEALED_WEBHOOK}{}", current.seal(&label, &stored)?)),', "None => None,", SECRETS),
     ("privacy-hold-on-a-person-ignored", "crates/kernel/src/privacy.rs", 'if person_held(&mut tx, ctx.tenant, &emails).await? {\n            return Err(Error::Conflict', 'if false {\n            return Err(Error::Conflict', PRIVACY),
@@ -843,7 +845,7 @@ MUTANTS = [
     ("away-route-unreachable", "crates/studio/src/logic.rs", "\"dependents\" | \"away\"", "\"dependents\"", STUDIO_SOLUTIONS),
     ("effect-template-unchecked", "crates/kernel/src/automation.rs", "        match (message.filter(|m| !messages.contains(*m)), document.filter(|d| !documents.contains(*d))) {", "        match (None::<&String>, None::<&String>) {", EFFECTS),
     ("effect-refusal-unplaced", "crates/kernel/src/actions.rs", "            .map_err(|e| automation::at_effect(i, &what, e))?;", "            ?;", EFFECTS),
-    ("erased-opt-out-in-clear", "crates/kernel/src/messages.rs", "    let Some(key) = key else {", "    let Some(key) = None::<&crate::secret::SecretKey> else {", MESSAGES_API),
+    ("erased-opt-out-in-clear", "crates/kernel/src/messages.rs", "    if choices.is_empty() {\n        return Ok(vec![]);\n    }\n    let (version, key)", "    if true {\n        return Ok(vec![]);\n    }\n    let (version, key)", MESSAGES_API),
     ("erased-opt-out-unmatched", "crates/kernel/src/messages.rs", "&k.erased_marks(ctx.tenant, kind, &address)", "&[]", MESSAGES),
     ("describe-approvals-to-anyone", "crates/kernel/src/describe.rs", "        if !ctx.is_admin && ctx.perms.access(&ent.def.name, action) == Access::None {", "        if false {", DOCUMENT_APPROVALS),
     ("portal-signup-without-limit", "crates/kernel/src/portal_signup.rs", "        if theirs >= PER_ADDRESS_HOUR || here >= PER_NETWORK_HOUR {", "        if false {", PORTAL_SIGNUP),
@@ -865,7 +867,7 @@ MUTANTS = [
     # Secret parameters, answers given once and secret message values.
     ("secret-param-audited", "crates/kernel/src/doc.rs", "None, def.redacted(params)).await?;", "None, params.clone()).await?;", SECRET_VALUES),
     ("secret-param-in-error", "crates/kernel/src/doc.rs", ".map_err(|e| e.redact(&secrets.unwrap_or_default()))", ".map_err(|e| e.redact(&secrets.map(|_| vec![]).unwrap_or_default()))", SECRET_VALUES),
-    ("secret-param-digest-unkeyed", "crates/kernel/src/capability.rs", "input[\"params\"] = self.digestible_params(ctx, cap.entity.as_deref().unwrap_or_default(), &a.name, params)?;", "input[\"params\"] = params.clone();", SECRET_VALUES),
+    ("secret-param-digest-unkeyed", "crates/kernel/src/capability.rs", "input[\"params\"] = self.digestible_params(ctx, cap.entity.as_deref().unwrap_or_default(), &a.name, params).await?;", "input[\"params\"] = params.clone();", SECRET_VALUES),
     ("answer-once-kept", "crates/kernel/src/receipt.rs", "keep(&mut tx, ctx, key, 200, &def.map_or_else(|| out.clone(), |d| d.kept_result(&out))).await?;", "keep(&mut tx, ctx, key, 200, &out).await?;", SECRET_VALUES),
     ("secret-mail-waits-plain", "crates/kernel/src/outbox.rs", "payload[\"html\"] = crate::messages::masked(&payload[\"html\"], mask);", "payload[\"html\"] = payload[\"html\"].clone();", SECRET_VALUES),
     ("secret-mail-seal-left", "crates/kernel/src/outbox.rs", "set payload = payload - 'sealed' where id = $1", "set payload = payload where id = $1", SECRET_VALUES),
@@ -940,7 +942,7 @@ MUTANTS = [
     ("calendar-call-overwrites", "crates/kernel/src/process.rs", "        if there {\n            return Ok(false);", "        if false {\n            return Ok(false);", APP_CALLS),
     ("files-call-takes-anothers", "crates/kernel/src/files.rs", "(None, None) => ctx.is_system || r.6 == Some(ctx.user),", "(None, None) => true,", APP_CALLS),
     # BD-44: secrets masked in every form; a link's uploads held to their parameter and discarded on refusal; its own refusal words.
-    ("secret-masked-plain-only", "crates/kernel/src/messages.rs", "    let masks = encodings(&masks);", "", MESSAGES_UNIT),
+    ("secret-masked-plain-only", "crates/kernel/src/messages.rs", "    Ok(encodings(&masks))", "    Ok(masks)", MESSAGES_UNIT),
     ("link-upload-limits-ignored", "crates/kernel/src/action_link.rs", "                if let Some(why) = p.file_problem(i + 1, &f.content_type, f.data.len() as u64) {", "                if let Some(why) = None::<String> {", ACTION_LINKS),
     ("link-upload-kept-on-refusal", "crates/kernel/src/action_link.rs", "        if !matches!(out, Ok(Some(_))) && !kept.is_empty() {", "        if false {", ACTION_LINKS),
     ("condition-message-ignored", "crates/kernel/src/doc.rs", "                    Some(m) => crate::print::message(m, || told(ctx, &ent, doc.clone(), Some(self))),", "                    Some(_) => String::new(),", ACTION_LINKS),
@@ -1005,6 +1007,13 @@ MUTANTS = [
     ("kept-older-build-unseen", "crates/kernel/src/vault/kept.rs", "        if of.as_deref() != Some(digest(s).as_str()) {\n", "        if false {\n", VAULT_STORES),
     ("kept-plain-without-a-key", "crates/kernel/src/vault/kept.rs", "            None => place.store.marker().to_string(),\n        };\n        entered(tx)", "            None => plain.to_string(),\n        };\n        entered(tx)", VAULT_STORES),
     ("kept-secrets-to-any-host", "crates/kernel/src/connections/mod.rs", "rule.is_none_or(|r| set(&r.hosts) == set(&reach_hosts(desc)))", "rule.is_none_or(|_| true)", CONNECTIONS_UNIT),
+    # The old key's last uses: an opt-out link is honoured only under a key of its workspace's; once older builds are
+    # refused nothing is made with the old key; replicas starting together adopt it once; no app names the kernel's own
+    # labels for it.
+    ("keyed-opt-out-unchecked", "crates/kernel/src/messages.rs", '.any(|(_, k)| subtle_eq(k.fingerprint("message opt-out", &said).as_bytes(), sig.as_bytes()))', ".any(|_| true)", OLD_KEY),
+    ("keyed-old-key-after-retirement", "crates/kernel/src/vault/keyed.rs", "self.env_key().filter(|_| !self.keyed.retired.load(Ordering::Relaxed))", "self.env_key()", OLD_KEY),
+    ("keyed-adopted-twice", "crates/kernel/src/vault/secrets.rs", "write_made(db, scope, owner, name, make(value)?, Some(rule), &who, true).await.map(|(_, _, wrote)| wrote)", "write_made(db, scope, owner, name, make(value)?, Some(rule), &who, false).await.map(|(_, _, wrote)| wrote)", OLD_KEY),
+    ("keyed-app-names-kernel-labels", "crates/kernel/src/vault/keyed.rs", "        && !KERNEL_WORDS.contains(&id)\n", "\n", KEYED_UNIT),
     ("session-unsigned-verifies", "server/src/sessions.rs", "    ring::hmac::verify(&ring::hmac::Key::new(ring::hmac::HMAC_SHA512, key), signed.as_bytes(), &signature).ok()?;\n", "", SESSIONS_UNIT),
     ("session-key-past-its-end", "server/src/sessions.rs", "self.0.get(&n).filter(|h| h.until.is_none_or(|t| t > Utc::now()))", "self.0.get(&n)", SESSIONS_UNIT),
     ("compared-token-any", "server/src/secrets.rs", "        Ok(false) => Token::Bad,\n", "        Ok(false) => Token::Good,\n", PLATFORM_SECRETS),

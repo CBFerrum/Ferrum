@@ -193,7 +193,7 @@ async fn scenario() {
     // ───────────── nothing but the host ever held the token ─────────────
     let view: Value = json!(k.connections(&admin).await.unwrap());
     assert!(!view.to_string().contains(TOKEN), "never read back");
-    let reachable = host.plugin(&k.db, tenant, "connector-demo").await.unwrap();
+    let reachable = host.plugin(&k, tenant, "connector-demo").await.unwrap();
     assert!(!reachable.config.to_string().contains(TOKEN), "and not in the plugin's configuration");
     assert!(world.lock().unwrap().seen.iter().all(|r| r.contains("bearer tok_live")), "every call signed in");
 }

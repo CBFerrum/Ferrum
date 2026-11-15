@@ -3,7 +3,6 @@
 //! runs from its outbox, and a replica that runs background work also works them. Without either, solutions with a
 //! process are refused (`unsupported_profile`) and everything else runs as before.
 
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::{HookRegistry, Kernel};
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -13,8 +12,8 @@ use tokio::task::JoinHandle;
 static SETTINGS: std::sync::OnceLock<ferrum_process::Settings> = std::sync::OnceLock::new();
 
 /// Connects to Temporal when it is configured and registers what starts and signals runs. Whether this server
-/// runs processes.
-pub async fn configure(hooks: &mut HookRegistry, key: &SecretKey, retired: &[SecretKey]) -> Result<bool, String> {
+/// runs processes. What Temporal keeps is sealed with the kernel's keys once it has started ([`ready`]).
+pub async fn configure(hooks: &mut HookRegistry) -> Result<bool, String> {
     let Some(address) = ferrum_kernel::env::var("TEMPORAL_ADDRESS").filter(|a| !a.trim().is_empty()) else { return Ok(false) };
     #[cfg(feature = "process")]
     {
@@ -22,7 +21,7 @@ pub async fn configure(hooks: &mut HookRegistry, key: &SecretKey, retired: &[Sec
             address,
             namespace: ferrum_kernel::env::var("TEMPORAL_NAMESPACE").unwrap_or_else(|| "ferrum".into()),
             queue: ferrum_kernel::env::var("TEMPORAL_TASK_QUEUE").unwrap_or_else(|| ferrum_process::QUEUE.into()),
-            keys: Arc::new(ferrum_process::Keys { current: key.clone(), retired: retired.to_vec() }),
+            keys: Arc::new(ferrum_process::Keys::default()),
         };
         let client = ferrum_process::client(&settings).await.map_err(|e| format!("TEMPORAL_ADDRESS: {e}"))?;
         hooks.add_event_sink(Arc::new(ferrum_process::Dispatch::new(client, settings.queue.clone())));
@@ -31,10 +30,21 @@ pub async fn configure(hooks: &mut HookRegistry, key: &SecretKey, retired: &[Sec
     }
     #[cfg(not(feature = "process"))]
     {
-        let _ = (hooks, key, retired);
+        let _ = hooks;
         tracing::warn!(%address, "TEMPORAL_ADDRESS is set, but this build has no process runtime (the `process` feature): processes are refused");
         Ok(false)
     }
+}
+
+/// The kernel has started: payloads are sealed and opened with its keys from now on, through the platform's handle
+/// (ferrum_kernel::vault, `seal_process`).
+pub fn ready(k: &Arc<Kernel>, platform: &ferrum_kernel::vault::Vault) {
+    #[cfg(feature = "process")]
+    if let Some(s) = SETTINGS.get() {
+        s.keys.ready(k, platform.clone());
+    }
+    #[cfg(not(feature = "process"))]
+    let _ = (k, platform);
 }
 
 /// Works this server's processes until shutdown, when it was configured to run them.

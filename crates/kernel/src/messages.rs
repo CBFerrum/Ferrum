@@ -22,6 +22,7 @@ use crate::db::Tx;
 use crate::error::{Error, Result};
 use crate::jobs::{Job, JobHandler, NewJob};
 use crate::notify::Audience::Outside;
+use crate::vault::{Keyed, Scope};
 use crate::{Kernel, audit};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveTime, Timelike, Utc};
@@ -722,15 +723,12 @@ pub async fn render_for(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message, channel
     } else if promotional && k.opted_out(tx, ctx.tenant, channel, &address).await? {
         return Err(Error::Forbidden("opted out".into()));
     }
-    let opt_out = match (promotional, if promotional { k.keyed("opt_out") } else { None }) {
-        (false, _) => None,
-        (true, Some(key)) => {
-            k.person_link(ctx.tenant, Outside, &format!("/api/messages/opt-out?token={}", opt_out_token(key, ctx.tenant, channel, &address))).await
-        }
-        (true, None) => None,
+    let opt_out = match promotional {
+        false => None,
+        true => k.person_link(ctx.tenant, Outside, &format!("/api/messages/opt-out?token={}", k.opt_out_token(ctx.tenant, channel, &address).await?)).await,
     };
     if promotional && opt_out.is_none() {
-        return Err(Error::Unavailable("a promotional message needs the server's public address and key for its opt-out link".into()));
+        return Err(Error::Unavailable("a promotional message needs the server's public address for its opt-out link".into()));
     }
     let doc = record_view(k, tx, ctx, m.entity.as_deref(), m.record).await?;
     let settings = crate::settings::load(k, ctx, tx, &settings_named(&def)).await?;
@@ -813,9 +811,15 @@ pub(crate) const ERASED: &str = "erased:";
 
 /// A keyed digest of the workspace, channel and address (normalised: an e-mail address in lower case, a number in
 /// international form), so an erased opt-out still stops a promotional message to that address on that channel
-/// while nothing shows the address, and trying addresses without the server's key finds nothing (BD-20).
-fn erased_mark(key: &crate::secret::SecretKey, tenant: Uuid, channel: &str, address: &str) -> String {
-    format!("{ERASED}{}", key.fingerprint("erased opt-out", &format!("{tenant}|{channel}|{}", address.trim().to_lowercase())))
+/// while nothing shows the address, and trying addresses without the key finds nothing (BD-20). Under the old key
+/// `erased:<digest>`; under the workspace's key for these, made from version `v` of the platform's key in its vault,
+/// `erased:v<v>:<digest>` (crate::vault::keyed).
+fn erased_mark(version: Option<i32>, key: &crate::secret::SecretKey, tenant: Uuid, channel: &str, address: &str) -> String {
+    let digest = key.fingerprint("erased opt-out", &format!("{tenant}|{channel}|{}", address.trim().to_lowercase()));
+    match version {
+        None => format!("{ERASED}{digest}"),
+        Some(v) => format!("{ERASED}v{v}:{digest}"),
+    }
 }
 
 impl Kernel {
@@ -826,12 +830,19 @@ impl Kernel {
         if channel == "email" {
             return Ok(!self.may_contact_for(tx, tenant, address, crate::retention::Purpose::Marketing).await?);
         }
-        opted_out(tx, tenant, address, channel, &self.erased_marks(tenant, channel, address)).await
+        opted_out(tx, tenant, address, channel, &self.erased_marks(tenant, channel, address).await?).await
     }
 
-    /// The marks an erased opt-out of `address` on `channel` may carry: under the server's key and those being rotated out.
-    pub(crate) fn erased_marks(&self, tenant: Uuid, channel: &str, address: &str) -> Vec<String> {
-        self.keyed_all("erased_opt_out").map(|k| erased_mark(k, tenant, channel, address)).collect()
+    /// The marks an erased opt-out of `address` on `channel` may carry: under each key that may have made one.
+    pub(crate) async fn erased_marks(&self, tenant: Uuid, channel: &str, address: &str) -> Result<Vec<String>> {
+        let keys = self.checking_keys(Scope::Workspace(tenant), Keyed::ErasedOptOut).await?;
+        Ok(keys.iter().map(|(v, k)| erased_mark(*v, k, tenant, channel, address)).collect())
+    }
+
+    /// A promotional message's opt-out link's token for `address` on `channel`.
+    async fn opt_out_token(&self, tenant: Uuid, channel: &str, address: &str) -> Result<String> {
+        let (_, key) = self.making_key(Scope::Workspace(tenant), Keyed::OptOut).await?;
+        Ok(opt_out_token(&key, tenant, channel, address))
     }
 }
 
@@ -885,8 +896,9 @@ pub(crate) fn sealed_message(tenant: Uuid) -> String {
     format!("{tenant}/message")
 }
 
-/// The text of `m`'s secret values, and the server's key that seals them while they wait.
-fn secret_values<'a>(k: &'a Kernel, m: &Message) -> Result<(Vec<String>, Option<&'a crate::secret::SecretKey>)> {
+/// The text of `m`'s secret values, in every form they can be printed in; refused, saying why, when nothing here can
+/// seal them while they wait.
+async fn secret_values(k: &Kernel, m: &Message) -> Result<Vec<String>> {
     let masks: Vec<String> = m
         .secret
         .iter()
@@ -895,11 +907,10 @@ fn secret_values<'a>(k: &'a Kernel, m: &Message) -> Result<(Vec<String>, Option<
         .filter(|v| !v.is_empty() && v != "null")
         .collect();
     if masks.is_empty() {
-        return Ok((masks, None));
+        return Ok(masks);
     }
-    let masks = encodings(&masks);
-    let key = k.keyed("message_secrets").ok_or_else(|| Error::Unavailable("a message with a secret value needs the server's secret key".into()))?;
-    Ok((masks, Some(key)))
+    k.sealing_ready(Keyed::Message).await?;
+    Ok(encodings(&masks))
 }
 
 /// Every form each secret value can be printed in (BD-44): as it is, HTML-escaped (an attribute's or a link's
@@ -940,7 +951,7 @@ pub(crate) fn encodings(secrets: &[String]) -> Vec<String> {
 }
 
 async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Vec<Sent>> {
-    let (masks, key) = secret_values(k, m)?;
+    let masks = secret_values(k, m).await?;
     let def = effective(tx, ctx, &m.template).await?;
     if let Some(e) = &def.entity
         && m.entity.as_ref().is_some_and(|me| me != e)
@@ -994,9 +1005,9 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Ve
                     continue;
                 }
             };
-            let opt_out = match (&address, promotional, if promotional { k.keyed("opt_out") } else { None }) {
-                (Some(a), true, Some(key)) => k
-                    .person_link(ctx.tenant, Outside, &format!("/api/messages/opt-out?token={}", opt_out_token(key, ctx.tenant, ch, a)))
+            let opt_out = match (&address, promotional) {
+                (Some(a), true) => k
+                    .person_link(ctx.tenant, Outside, &format!("/api/messages/opt-out?token={}", k.opt_out_token(ctx.tenant, ch, a).await?))
                     .await
                     .unwrap_or_default(),
                 _ => String::new(),
@@ -1037,7 +1048,7 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Ve
                     let channel_id = connection(tx, ctx.tenant, kind).await?;
                     let refused = if channel_id.is_none() {
                         Some("no channel configured".to_string())
-                    } else if promotional && opted_out(tx, ctx.tenant, &address, kind, &k.erased_marks(ctx.tenant, kind, &address)).await? {
+                    } else if promotional && opted_out(tx, ctx.tenant, &address, kind, &k.erased_marks(ctx.tenant, kind, &address).await?).await? {
                         Some("opted out".into())
                     } else {
                         over_limit(tx, ctx.tenant, &address, &cfg).await?
@@ -1049,10 +1060,10 @@ async fn send_with(k: &Kernel, tx: &mut Tx, ctx: &Ctx, m: &Message) -> Result<Ve
                     let zone = r.time_zone.clone().unwrap_or_else(|| ctx.schema.timezone.clone());
                     let held = promotional && quiet_for(cfg.quiet_hours.as_ref(), &zone, Utc::now()).is_some();
                     let mut pending = json!({"message": message, "to": address, "promotional": promotional, "zone": zone, "language": language});
-                    if let Some(key) = key {
-                        let plain = json!({"message": message, "mask": masks}).to_string();
+                    if !masks.is_empty() {
+                        let plain = json!({"message": message, "mask": masks});
                         pending["message"] = Value::Null;
-                        pending["sealed"] = json!(key.seal(&sealed_message(ctx.tenant), &plain)?);
+                        pending["sealed"] = json!(k.seal_message(ctx.tenant, &plain).await?);
                     }
                     let sent = record(tx, ctx, m, ch, to, language, if held { "held" } else { "queued" }, None, Some(pending), channel_id).await?;
                     let mut job = NewJob::new(DELIVER_KIND, json!({"send": sent.id}));
@@ -1369,17 +1380,17 @@ pub(crate) fn masked(v: &Value, mask: &[String]) -> Value {
 
 impl Kernel {
     /// What a message with secret values holds sealed (`{message, mask}`, or a mail's `{subject, html, mask}`), opened.
-    pub(crate) fn open_message(&self, tenant: Uuid, sealed: &Value) -> Result<(Value, Vec<String>)> {
-        self.note_old_key("keyed:message_secrets");
-        let open: Value = serde_json::from_str(&self.open_sealed(&sealed_message(tenant), sealed.as_str().unwrap_or_default())?).map_err(Error::internal)?;
+    pub(crate) async fn open_message(&self, tenant: Uuid, sealed: &Value) -> Result<(Value, Vec<String>)> {
+        let sealed = sealed.as_str().unwrap_or_default();
+        let open = self.open_for_platform(Scope::Workspace(tenant), "message", &sealed_message(tenant), sealed, Keyed::Message).await?;
+        let open: Value = serde_json::from_str(&open).map_err(Error::internal)?;
         let mask = open["mask"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
         Ok((open, mask))
     }
 
-    /// `plain` sealed as a message with secret values is.
-    pub(crate) fn seal_message(&self, tenant: Uuid, plain: &Value) -> Result<String> {
-        let key = self.keyed("message_secrets").ok_or_else(|| Error::Unavailable("a message with a secret value needs the server's secret key".into()))?;
-        key.seal(&sealed_message(tenant), &plain.to_string())
+    /// `plain` sealed as a message with secret values is while it waits.
+    pub(crate) async fn seal_message(&self, tenant: Uuid, plain: &Value) -> Result<String> {
+        self.seal_for_platform(Scope::Workspace(tenant), "message", &sealed_message(tenant), &plain.to_string(), Keyed::Message).await
     }
 }
 
@@ -1466,7 +1477,7 @@ impl Kernel {
         let desc: ChannelDesc = serde_json::from_value(desc).map_err(Error::internal)?;
         let (message, mask) = match pending.get("sealed") {
             Some(sealed) => {
-                let (open, mask) = self.open_message(tenant, sealed)?;
+                let (open, mask) = self.open_message(tenant, sealed).await?;
                 (open["message"].clone(), mask)
             }
             None => (pending["message"].clone(), vec![]),
@@ -1831,16 +1842,17 @@ impl Kernel {
     pub async fn opt_out_by_link(&self, token: &str) -> Result<String> {
         use base64::Engine as _;
         let refused = || Error::invalid("this link is not one of ours, or was changed");
-        let key = self.keyed("opt_out").ok_or_else(refused)?;
         let (said, sig) = token.split_once('.').ok_or_else(refused)?;
         let said = String::from_utf8(base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(said).map_err(|_| refused())?).map_err(|_| refused())?;
-        if !subtle_eq(key.fingerprint("message opt-out", &said).as_bytes(), sig.as_bytes()) {
-            return Err(refused());
-        }
         let mut parts = said.splitn(3, '|');
         let (Some(tenant), Some(channel), Some(address)) = (parts.next().and_then(|t| t.parse::<Uuid>().ok()), parts.next(), parts.next()) else {
             return Err(refused());
         };
+        // Signed under a key of the workspace it names: any that may have made a link.
+        let keys = self.checking_keys(Scope::Workspace(tenant), Keyed::OptOut).await?;
+        if !keys.iter().any(|(_, k)| subtle_eq(k.fingerprint("message opt-out", &said).as_bytes(), sig.as_bytes())) {
+            return Err(refused());
+        }
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         record_choice(&mut tx, tenant, None, address, channel, false, "the link in a message").await?;
         tx.commit().await?;
@@ -2018,23 +2030,16 @@ pub(crate) async fn choices_of(tx: &mut Tx, tenant: Uuid, emails: &[String], dig
 }
 
 /// Erases the address of each of these choices: a consent given goes, an opt-out keeps its effect under its
-/// [`erased_mark`], with its channel, source, date and who recorded it (BD-20). Without the server's key the choices
-/// stay as they are. Returns the marks, for the erasure's journal (they name no address).
-pub(crate) async fn erase_choices(
-    tx: &mut Tx,
-    tenant: Uuid,
-    key: Option<&crate::secret::SecretKey>,
-    choices: &[(String, String, bool)],
-) -> Result<Vec<String>> {
-    let Some(key) = key else {
-        if !choices.is_empty() {
-            tracing::warn!(%tenant, "no secret key: an erased person's opt-outs are kept with their address");
-        }
+/// [`erased_mark`], with its channel, source, date and who recorded it (BD-20). Refused, saying why, when nothing here
+/// can make the mark. Returns the marks, for the erasure's journal (they name no address).
+pub(crate) async fn erase_choices(k: &Kernel, tx: &mut Tx, tenant: Uuid, choices: &[(String, String, bool)]) -> Result<Vec<String>> {
+    if choices.is_empty() {
         return Ok(vec![]);
-    };
+    }
+    let (version, key) = k.making_key(Scope::Workspace(tenant), Keyed::ErasedOptOut).await?;
     let mut marks = Vec::new();
     for (address, channel, granted) in choices {
-        let mark = erased_mark(key, tenant, channel, address);
+        let mark = erased_mark(version, &key, tenant, channel, address);
         // A consent goes; an opt-out replaces any it was erased as before.
         sqlx::query("delete from contact_consent where tenant_id = $1 and purpose = 'marketing' and channel = $2 and email = $3")
             .bind(tenant)

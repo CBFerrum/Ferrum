@@ -8,6 +8,7 @@
 
 use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
+use ferrum_kernel::vault::{self, Kdf, Opener, Scope};
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings, ListQuery};
 use ferrum_meta::Catalog;
 use ferrum_plugins::http::HttpCall;
@@ -25,15 +26,20 @@ fn obj(v: Value) -> ferrum_kernel::Doc {
     v.as_object().cloned().unwrap()
 }
 
-async fn boot(host: &Arc<PluginHost>) -> Arc<Kernel> {
+/// As on a server: the vault open, the plugin host given the platform's handle (plugins' settings are kept sealed under
+/// each plugin's key), and the old key `key` configured beside it.
+async fn boot(host: &Arc<PluginHost>, key: SecretKey) -> Arc<Kernel> {
     let url = std::env::var("FERRUM_PLUGINS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_plugins_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let opener = Opener { database_url: url, file: "/nonexistent/root.key".into(), kdf: Kdf { m_kib: 64, t: 1, p: 1 }, ..Default::default() };
+    vault::open(&db, opener, false).await.expect("vault");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     let mut hooks = HookRegistry::default();
+    host.use_vault(hooks.platform_vault());
     hooks.register("*", Arc::new(PluginHook(host.clone())));
     hooks.add_event_sink(Arc::new(PluginEvents(host.clone())));
-    Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot")
+    Kernel::boot(db, catalog, hooks, KernelSettings { secret_key: Some(key), ..Default::default() }, None).await.expect("boot")
 }
 
 async fn kv(k: &Kernel, tenant: Uuid, key: &str) -> Value {
@@ -55,10 +61,8 @@ fn a_plugin_turns_ferrum_into_a_device_platform() {
 
 async fn scenario() {
     let host = PluginHost::new(false).unwrap();
-    // As on a server: plugins' settings are sealed at rest with the server's secret key.
     let key = SecretKey::new([7u8; 32]);
-    host.seal_with(key.clone());
-    let k = boot(&host).await;
+    let k = boot(&host, key.clone()).await;
     let tenant = k
         .create_tenant(NewTenant {
             slug: "fleet".into(),
@@ -88,7 +92,7 @@ async fn scenario() {
     let plugin_id = host.install(&k, &admin, manifest, WASM).await.expect("install");
     let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.unwrap();
     assert!(admin.schema.entity("XDevice").is_some() && admin.schema.entity("XReading").is_some(), "the plugin's entities exist");
-    let gateway = host.plugin(&k.db, tenant, "device-gateway").await.unwrap();
+    let gateway = host.plugin(&k, tenant, "device-gateway").await.unwrap();
 
     // ───────────── a hook guards customers, configured by the administrator ─────────────
     let blocked = k.insert(&admin, "Customer", obj(json!({"customer_name": "Blocked Ltd"}))).await;
@@ -151,7 +155,6 @@ async fn scenario() {
 
     // ───────────── …even when the socket lives on another replica ─────────────
     let replica_b = PluginHost::new(false).unwrap();
-    replica_b.seal_with(key.clone());
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let listener = replica_b.sockets.spawn_listener(k.db.clone(), stop_rx);
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -222,7 +225,8 @@ async fn scenario() {
     assert_eq!(host.list(&k, &admin).await.unwrap()[0]["config_keys"], json!(["api_key", "blocked_word"]));
     host.set_config(&k, &admin, plugin_id, patch(json!({"blocked_word": null})), true).await.unwrap();
     assert_eq!(host.list(&k, &admin).await.unwrap()[0]["config_keys"], json!(["api_key"]));
-    // Sealed at rest, each value bound to its workspace, plugin and key; the plugin reads it as given.
+    // Sealed at rest under the plugin's own key in the workspace's vault, each value bound to its setting, and with the
+    // old key beside (what the previous build reads); the plugin reads it as given.
     host.set_enabled(&k, &admin, plugin_id, true).await.unwrap();
     let stored = || async {
         let mut tx = k.db.system_tx().await.unwrap();
@@ -231,56 +235,59 @@ async fn scenario() {
         tx.commit().await.unwrap();
         v
     };
+    let set_stored = |sql: &'static str| {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.system_tx().await.unwrap();
+            sqlx::query(sql).bind(tenant).bind(plugin_id).execute(&mut *tx).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
     let at_rest = stored().await;
-    assert!(at_rest["api_key"]["$sealed"].is_string() && !at_rest.to_string().contains("s3cret"), "{at_rest}");
-    assert_eq!(host.plugin(&k.db, tenant, "device-gateway").await.unwrap().config["api_key"], json!("s3cret"));
-    // A setting stored in the clear (before settings were sealed) is sealed at the next start.
+    assert!(at_rest["api_key"]["$vault"].is_string() && at_rest["api_key"]["$sealed"].is_string(), "{at_rest}");
+    assert!(!at_rest.to_string().contains("s3cret"), "{at_rest}");
+    let previous_build = key.open(&format!("{tenant}/plugin/device-gateway/api_key"), at_rest["api_key"]["$sealed"].as_str().unwrap()).unwrap();
+    assert_eq!(previous_build, "\"s3cret\"", "the previous build reads it with the old key");
+    assert_eq!(host.plugin(&k, tenant, "device-gateway").await.unwrap().config["api_key"], json!("s3cret"));
+    // A setting stored in the clear (before settings were sealed), and one the previous build sealed with the old key
+    // alone, are taken over by the move.
+    set_stored("update plugin set config = config || '{\"region\": \"eu\"}'::jsonb where tenant_id = $1 and id = $2").await;
+    let old = key.seal(&format!("{tenant}/plugin/device-gateway/zone"), "\"north\"").unwrap();
     let mut tx = k.db.system_tx().await.unwrap();
-    sqlx::query("update plugin set config = config || '{\"region\": \"eu\"}'::jsonb where tenant_id = $1 and id = $2")
+    sqlx::query("update plugin set config = config || jsonb_build_object('zone', jsonb_build_object('$sealed', $3::text, '$key', $4::text)) where tenant_id = $1 and id = $2")
         .bind(tenant)
         .bind(plugin_id)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(host.seal_stored(&k.db).await.unwrap(), 1);
-    assert_eq!(host.seal_stored(&k.db).await.unwrap(), 0, "nothing left to seal");
-    let at_rest = stored().await;
-    assert!(at_rest["region"]["$sealed"].is_string(), "{at_rest}");
-    let config = host.plugin(&k.db, tenant, "device-gateway").await.unwrap().config;
-    assert_eq!((config["api_key"].clone(), config["region"].clone()), (json!("s3cret"), json!("eu")));
-    // A sealed value moved to another setting, or read with another key, is left out (and logged).
-    let mut tx = k.db.system_tx().await.unwrap();
-    sqlx::query("update plugin set config = jsonb_set(config, '{region}', config->'api_key') where tenant_id = $1 and id = $2")
-        .bind(tenant)
-        .bind(plugin_id)
+        .bind(&old)
+        .bind(&key.id)
         .execute(&mut *tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
     host.invalidate(tenant);
-    let config = host.plugin(&k.db, tenant, "device-gateway").await.unwrap().config;
+    let config = host.plugin(&k, tenant, "device-gateway").await.unwrap().config;
+    assert_eq!((config["region"].clone(), config["zone"].clone()), (json!("eu"), json!("north")), "read as they are before the move");
+    let waiting = k.vault_waiting().await.unwrap();
+    assert_eq!(waiting.iter().find(|w| w.0 == "plugins' settings").map(|w| w.1), Some(2), "{waiting:?}");
+    let moved = k.vault_move().await.unwrap();
+    assert!(moved.moved >= 2 && moved.left == 0, "{moved:?}");
+    assert!(k.vault_waiting().await.unwrap().is_empty(), "nothing left to move");
+    let at_rest = stored().await;
+    assert!(at_rest["region"]["$vault"].is_string() && at_rest["zone"]["$vault"].is_string() && !at_rest.to_string().contains("north"), "{at_rest}");
+    host.invalidate(tenant);
+    let config = host.plugin(&k, tenant, "device-gateway").await.unwrap().config;
+    assert_eq!((config["api_key"].clone(), config["region"].clone(), config["zone"].clone()), (json!("s3cret"), json!("eu"), json!("north")));
+    // The plugin's key rotated: what it sealed still opens.
+    k.rotate_owner_key(Scope::Workspace(tenant), "plugin:device-gateway").await.unwrap();
+    host.invalidate(tenant);
+    assert_eq!(host.plugin(&k, tenant, "device-gateway").await.unwrap().config["api_key"], json!("s3cret"), "after a rotation");
+    // A sealed value moved to another setting is left out (and logged); so is every one on a host with no vault.
+    set_stored("update plugin set config = jsonb_set(config, '{region}', config->'api_key') where tenant_id = $1 and id = $2").await;
+    host.invalidate(tenant);
+    let config = host.plugin(&k, tenant, "device-gateway").await.unwrap().config;
     assert_eq!((config["api_key"].clone(), config.get("region").cloned()), (json!("s3cret"), None), "moved: refused");
-    let elsewhere = PluginHost::new(false).unwrap();
-    elsewhere.seal_with(SecretKey::new([8u8; 32]));
-    assert_eq!(*elsewhere.plugin(&k.db, tenant, "device-gateway").await.unwrap().config, json!({}), "another key opens nothing");
-    // A key rotated out: what it sealed still opens, and moves to the new key at the next start.
-    let rotated = PluginHost::new(false).unwrap();
-    let new_key = SecretKey::new([9u8; 32]);
-    rotated.seal_with(new_key.clone());
-    rotated.open_also_with(vec![key.clone()]);
-    assert_eq!(rotated.plugin(&k.db, tenant, "device-gateway").await.unwrap().config["api_key"], json!("s3cret"), "before the move");
-    assert_eq!(rotated.seal_stored(&k.db).await.unwrap(), 1);
-    assert_eq!(rotated.seal_stored(&k.db).await.unwrap(), 0, "nothing left to move");
-    assert_eq!(stored().await["api_key"]["$key"], json!(new_key.id));
-    rotated.invalidate(tenant);
-    assert_eq!(rotated.plugin(&k.db, tenant, "device-gateway").await.unwrap().config["api_key"], json!("s3cret"), "after it");
-    let lost = PluginHost::new(false).unwrap();
-    lost.seal_with(SecretKey::new([1u8; 32]));
-    assert!(lost.plugin(&k.db, tenant, "device-gateway").await.unwrap().config.get("api_key").is_none(), "without the key the setting is missing, not garbled");
-    assert_eq!(lost.seal_stored(&k.db).await.unwrap(), 0, "and a value no key opens is left for the key to come back");
-    assert_eq!(stored().await["api_key"]["$key"], json!(new_key.id));
-    assert_eq!(rotated.seal_stored(&k.db).await.unwrap(), 0);
+    let without = PluginHost::new(false).unwrap();
+    assert_eq!(*without.plugin(&k, tenant, "device-gateway").await.unwrap().config, json!({}), "no vault, nothing opens");
+    assert!(matches!(without.set_config(&k, &admin, plugin_id, patch(json!({"api_key": "x"})), true).await, Err(Error::Unavailable(_))), "nor is kept");
     host.remove(&k, &admin, plugin_id).await.unwrap();
     assert!(host.list(&k, &admin).await.unwrap().is_empty());
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();

@@ -10,6 +10,7 @@ use crate::ctx::Ctx;
 use crate::db::Tx;
 use crate::error::{Error, Result};
 use crate::jobs::{Job, JobHandler, NewJob};
+use crate::vault::{Keyed, Scope};
 use crate::{Kernel, audit};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -230,7 +231,7 @@ fn signin_label(tenant: Uuid, state_digest: &str) -> String {
 const STATE_LABEL: &str = "connection sign-in state";
 
 /// A sign-in's `state` that names where it started: `{random}.{workspace|host, base64url}.{mac}`,
-/// signed with the server key so nobody can change either.
+/// signed with the workspace's key for sign-ins (crate::vault::keyed) so nobody can change either.
 fn state_from(key: &crate::secret::SecretKey, tenant: Uuid, host: &str) -> String {
     let said = URL_SAFE_NO_PAD.encode(format!("{tenant}|{host}"));
     let nonce = random();
@@ -249,6 +250,12 @@ fn state_names(key: &crate::secret::SecretKey, state: &str) -> Option<(Uuid, Str
     let said = String::from_utf8(URL_SAFE_NO_PAD.decode(said).ok()?).ok()?;
     let (tenant, host) = said.split_once('|')?;
     Some((tenant.parse().ok()?, host.to_string()))
+}
+
+/// The workspace a `state` of [`state_from`] says it is of, before its signature is checked (which key to check it with).
+fn state_workspace(state: &str) -> Option<Uuid> {
+    let said = String::from_utf8(URL_SAFE_NO_PAD.decode(state.split('.').nth(1)?).ok()?).ok()?;
+    said.split_once('|')?.0.parse().ok()
 }
 
 /// Compares in time that does not depend on where the bytes differ.
@@ -349,15 +356,21 @@ impl Kernel {
             }
         };
         let redirect = self.connection_callback()?;
-        let key = self.keyed("account_sign_in").ok_or_else(|| Error::Unavailable("signing in to an account needs the server's secret key".into()))?;
+        self.sealing_ready(Keyed::SignInState).await?;
         // A provider that registers its clients: registered once, the first time anyone connects.
         let conn = if provider.client_id.trim().is_empty() { self.register_client(&conn, &redirect).await? } else { conn };
         let (provider, _) = oauth(&conn)?;
         let (client_id, _) = client(&conn, provider)?;
         let host = host.and_then(crate::shell::normalize_host);
-        let (state, verifier) = (host.map_or_else(random, |h| state_from(key, ctx.tenant, &h)), random());
+        let state = match host {
+            Some(h) => state_from(&self.making_key(Scope::Workspace(ctx.tenant), Keyed::SignInState).await?.1, ctx.tenant, &h),
+            None => random(),
+        };
+        let verifier = random();
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let state_digest = digest(&state);
+        let label = signin_label(ctx.tenant, &state_digest);
+        let sealed = self.seal_for_platform(Scope::Workspace(ctx.tenant), &label, &label, &verifier, Keyed::SignInState).await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query(
             "insert into conn_signin (state_digest, tenant_id, conn_id, user_id, owner_id, session_id, verifier, expires_at) \
@@ -369,7 +382,7 @@ impl Kernel {
         .bind(ctx.user)
         .bind(owner_id)
         .bind(session)
-        .bind(key.seal(&signin_label(ctx.tenant, &state_digest), &verifier)?)
+        .bind(sealed)
         .bind(SIGNIN_MINUTES)
         .execute(&mut *tx)
         .await?;
@@ -389,10 +402,11 @@ impl Kernel {
         Ok(url.into())
     }
 
-    /// The workspace and the host a sign-in started on, when its `state` names them under this
-    /// server's key ([`Kernel::connect_start_on`]); nothing for any other state.
-    pub fn connection_state_host(&self, state: &str) -> Option<(Uuid, String)> {
-        state_names(self.keyed("account_sign_in")?, state)
+    /// The workspace and the host a sign-in started on, when its `state` names them under a key of
+    /// that workspace's ([`Kernel::connect_start_on`]); nothing for any other state.
+    pub async fn connection_state_host(&self, state: &str) -> Option<(Uuid, String)> {
+        let keys = self.checking_keys(Scope::Workspace(state_workspace(state)?), Keyed::SignInState).await.ok()?;
+        keys.iter().find_map(|(_, k)| state_names(k, state))
     }
 
     /// The provider sent the browser back: the sign-in `state` started must be this person's, in this browser session,
@@ -418,8 +432,8 @@ impl Kernel {
             return Err(Error::invalid(format!("the provider did not connect the account: {said}")));
         }
         let code = code.filter(|c| !c.is_empty() && c.len() <= 2048).ok_or_else(|| Error::invalid("the provider sent no code"))?;
-        self.note_old_key("keyed:account_sign_in");
-        let verifier = self.open_sealed(&signin_label(ctx.tenant, &state_digest), &sealed)?;
+        let label = signin_label(ctx.tenant, &state_digest);
+        let verifier = self.open_for_platform(Scope::Workspace(ctx.tenant), &label, &label, &sealed, Keyed::SignInState).await?;
         let conn = self.load_connection(ctx.tenant, &conn_id.to_string()).await?;
         let (provider, _) = oauth(&conn)?;
         let form = [("grant_type", "authorization_code"), ("code", code), ("redirect_uri", &self.connection_callback()?), ("code_verifier", &verifier)];
@@ -1187,6 +1201,8 @@ mod tests {
         assert_eq!(state_names(&key, &forged), None, "the host changed");
         assert_eq!(state_names(&key, &random()), None, "a state that names nothing");
         assert_eq!(state_names(&key, "a.b"), None);
+        assert_eq!(state_workspace(&state), Some(t), "which workspace's keys check it");
+        assert_eq!(state_workspace("a.b"), None);
     }
 
     #[test]

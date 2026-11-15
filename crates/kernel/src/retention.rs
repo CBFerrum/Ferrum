@@ -430,8 +430,13 @@ impl Kernel {
     pub async fn may_contact_for(&self, tx: &mut crate::Tx, tenant: Uuid, email: &str, purpose: Purpose) -> Result<bool> {
         let Ok(email) = checked_email(email) else { return Ok(purpose == Purpose::Transactional) };
         let emails = addresses(tx, tenant, &email).await?;
-        // An erased person's opt-out is kept under a digest of the address (BD-20).
-        let erased: Vec<String> = emails.iter().flat_map(|e| self.erased_marks(tenant, "email", e)).collect();
+        // An erased person's opt-out is kept under a digest of the address (BD-20): what marketing asks.
+        let mut erased: Vec<String> = Vec::new();
+        if purpose == Purpose::Marketing {
+            for e in &emails {
+                erased.extend(self.erased_marks(tenant, "email", e).await?);
+            }
+        }
         let (restricted, withdrawn): (bool, bool) = sqlx::query_as(
             "select exists (select 1 from processing_restriction where tenant_id = $1 and lifted_at is null and lower(email::text) = any($2)), \
                     exists (select 1 from contact_consent where tenant_id = $1 and purpose = 'marketing' and channel = 'email' and not granted \
