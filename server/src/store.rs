@@ -1073,6 +1073,15 @@ pub struct Handoff {
     pub set_up_bucket: bool,
 }
 
+impl Handoff {
+    /// Whether the store asked for its bucket to be set up and the server signs with the key it handed over (`key_id`,
+    /// the one in use): an installation pointed at a store of its own signs with that store's, so its bucket is left as
+    /// it is even with the bundled store left running beside it.
+    pub fn sets_up(&self, key_id: Option<&str>) -> bool {
+        self.set_up_bucket && self.keys.iter().any(|(k, v)| *k == "aws_access_key_id" && Some(v.as_str()) == key_id)
+    }
+}
+
 /// [`Handoff`] from the file's text; `None` when it is not JSON.
 pub fn parse_handoff(text: &str) -> Option<Handoff> {
     let v = serde_json::from_str::<serde_json::Value>(text).ok()?;
@@ -1142,6 +1151,10 @@ mod tests {
         );
         let keys_only = parse_handoff(r#"{"aws_access_key_id":"A","aws_secret_access_key":"B"}"#).unwrap();
         assert!(!keys_only.set_up_bucket, "without the store saying so, a bucket is never changed");
+        assert!(bundled.sets_up(Some("FERRUMAB")));
+        assert!(!bundled.sets_up(Some("OWNKEY")), "a store of the installation's own, the bundled one left running beside it");
+        assert!(!bundled.sets_up(None));
+        assert!(!keys_only.sets_up(Some("A")));
         assert!(!parse_handoff(r#"{"set_up_bucket":"yes"}"#).unwrap().set_up_bucket);
         assert!(parse_handoff("not json").is_none());
     }

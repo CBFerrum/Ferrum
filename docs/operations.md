@@ -946,8 +946,10 @@ process with its own volume. Only its S3 port listens, on Compose's network alon
 (`deploy/store/start.sh`) makes an access key and the key that encrypts what it keeps, in its own volume, and hands the
 access key to the server once (`/run/ferrum/object-store/keys.json`, a volume only the two share): the server keeps it
 in the vault and deletes the file. Nothing goes into `deploy/.env`. The handoff also asks the server to make the bucket
-`ferrum` with versioning, lifecycle rules and encryption, which it does then (and at each start until it has); an
-installation that points Compose at a store of its own gets no handoff, and its bucket is left as it is. A database restored from a dump brings the
+`ferrum` with versioning, lifecycle rules and encryption, which it does then (and at each start until it has), and only
+while it signs with the key handed over: an installation that points Compose at a store of its own signs with that
+store's keys, so its bucket is left as it is even with the bundled store left running (`STORE_REPLICAS=0` stops it).
+A database restored from a dump brings the
 keys with its vault; a database made anew beside a store that already has keys finds none, and the server says so:
 read them from the store (`docker compose exec store cat /data/ferrum/s3.json`) and give them once with `ferrum task
 secret_set`. To use a store of your own instead, set its address and keys and `STORE_REPLICAS=0`.

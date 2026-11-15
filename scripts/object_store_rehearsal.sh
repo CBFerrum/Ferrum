@@ -17,7 +17,8 @@
 #    metric and the doctor say so; a server started with the store down is not ready, saying why (the log says it once),
 #    and becomes ready without a restart when the store comes up; one with a wrong bucket never becomes ready.
 # 3. The doctor's lines on moto: versioning, a lifecycle rule for old versions and encryption at rest, bad, then good
-#    once each is switched on; moto takes requests without keys, and the doctor says the bucket is public.
+#    once each is switched on (first with the bundled store's handoff beside it, which leaves a bucket of the
+#    installation's own as it is); moto takes requests without keys, and the doctor says the bucket is public.
 # 4. The drill: a dump at a moment T; after it, files deleted at once and files whose deletion waits; the dump restored
 #    to another database and checked (deploy/drill.sh): every file a row names opens as its row says but the one deleted
 #    at once; the live restore marker never goes back, and the live database is not held.
@@ -271,9 +272,13 @@ PY
 }
 MOTO=(FERRUM_S3_BUCKET=bare FERRUM_S3_ENDPOINT="http://127.0.0.1:$MOTO_PORT" FERRUM_S3_REGION=us-east-1 AWS_ACCESS_KEY_ID=moto AWS_SECRET_ACCESS_KEY=moto FERRUM_BACKUP_REACH_DAYS=30)
 s3 "http://127.0.0.1:$MOTO_PORT" make
+# A store of the installation's own with the bundled store's handoff beside it (Compose's store left running): the
+# server signs with its own keys, so its bucket is left as it is.
+mkdir -p "$work/own/object-store"
+printf '{"aws_access_key_id":"FERRUMBUNDLED","aws_secret_access_key":"bundled","set_up_bucket":true}\n' >"$work/own/object-store/keys.json"
 for check in versioning lifecycle encryption; do
-  line=$(doctor_line "${NAME}_bare" "storage.$check" "${MOTO[@]}")
-  [[ "$line" == warning:* ]] || fail "storage.$check before it is switched on: $line"
+  line=$(doctor_line "${NAME}_bare" "storage.$check" "${MOTO[@]}" FERRUM_TEST_RUN_DIR="$work/own")
+  [[ "$line" == warning:* ]] || fail "storage.$check before it is switched on (the bundled store's handoff beside a store of its own): $line"
   echo "    before: storage.$check $line"
   s3 "http://127.0.0.1:$MOTO_PORT" "$check"
   line=$(doctor_line "${NAME}_bare" "storage.$check" "${MOTO[@]}")
