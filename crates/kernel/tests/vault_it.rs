@@ -945,7 +945,7 @@ async fn dump_holds_nothing(dir: &Path) {
 
     // Not one of them, nor a value, nor the slots' keys, is anywhere in the database as it is.
     let mut needles: Vec<String> = Vec::new();
-    for bytes in values.iter().chain(opened.iter()).chain(keys.values()).chain([&installation, &file_key.to_vec(), &derived]) {
+    for bytes in values.iter().chain(opened.iter()).chain(keys.values()).chain([&installation, &*file_key, &derived]) {
         needles.extend(written(bytes));
     }
     for p in [&printed, &first_printed] {
