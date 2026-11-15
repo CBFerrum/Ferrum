@@ -14,7 +14,7 @@
 //! connections, channels and sign-in providers (new ids here). What people need to sign in travels: passwords, second
 //! factors (sealed again under the new id) and recovery codes.
 
-use crate::recovery::{may_copy, shape, which, workspace_columns};
+use crate::recovery::{may_copy, same_database, shape, workspace_columns};
 use crate::secret::SecretKey;
 use crate::workspace_move::{EachRow, KNOWN_SEALED, LEFT_BEHIND, MoveSource, SEALED_FORM, Shape, copy_rows, named, renumber_events, system};
 use crate::{Ctx, Db, DbConfig, Error, Kernel, Result, audit};
@@ -332,11 +332,11 @@ impl Kernel {
         };
         let source = remote.as_ref().unwrap_or(&self.db);
         let same = match &remote {
-            Some(r) => which(r).await? == which(&self.db).await?,
-            None => false,
+            Some(r) => same_database(&self.db, r).await?,
+            None => None,
         };
-        let result = if same {
-            Err(Error::Conflict("that is this database: say from:here for a sandbox beside the live workspace".into()))
+        let result = if let Some(same) = same {
+            Err(Error::Conflict(format!("that is {same}: say from:here for a sandbox beside the live workspace")))
         } else {
             self.sandboxing(source, slug, &new_slug, c, say).await
         };

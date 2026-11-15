@@ -157,6 +157,12 @@ Decided while building it (15 November 2026):
   session and `--enable-row-security`; the restore into an empty database in one transaction, without owners or
   grants, leaving out schemas the database has and comments on extensions. The chart's `import` mode passes the same
   setting as the `options` connection parameter and `--enable-row-security` as `pgDumpExtraOptions`.
+- **"Is this the same database?"** A transaction lock (a random key) taken on the live database and tried through the
+  copy's connection: only the same database refuses it, whatever the address or pooler. The identity stays as a second
+  opinion only for a standby in recovery, streaming, on the live timeline (the lock does not see it, and no genuine
+  copy is one): proven on a real streaming standby, refused while it follows and taken once promoted with the same
+  identity. Used by extraction, `move_workspace` and `copy_workspace from:`. A logical replica of the live database is
+  not seen by either: it is taken as a copy.
 - **The restore marker.** `platform_incarnation.restore_marker` (NULL: from before the marker; 0: born with it, so it
   adopts whatever the store has) and `restore_marker_at`; in the store `restore-marker/<system identifier>-<database
   oid>.json`, keyed by identity so that a snapshot, clone or branch reads its original's counter and two databases

@@ -17,7 +17,7 @@
 //! frozen for good, and running again only finishes 5. At no moment do both take changes.
 
 use crate::files::FileStore;
-use crate::recovery::{dangling, may_copy, shape, which, workspace_columns};
+use crate::recovery::{dangling, may_copy, same_database, shape, workspace_columns};
 use crate::secret::SecretKey;
 use crate::{Ctx, Db, DbConfig, Error, Kernel, Result, Tx, audit};
 use futures::TryStreamExt;
@@ -492,8 +492,8 @@ impl Kernel {
     }
 
     async fn moving(&self, source: &Db, slug: &str, from: &MoveSource, run: Run, say: &(dyn Fn(&str) + Send + Sync)) -> Result<Value> {
-        if which(source).await? == which(&self.db).await? {
-            return Err(Error::Conflict("that is this database: a move needs the source's database, and runs where the workspace is going".into()));
+        if let Some(same) = same_database(&self.db, source).await? {
+            return Err(Error::Conflict(format!("that is {same}: a move needs the source's database, and runs where the workspace is going")));
         }
         let peer = named(&from.url);
         let mut tx = system(source).await?;

@@ -127,11 +127,57 @@ pub(crate) async fn may_copy(db: &Db) -> Result<()> {
     })
 }
 
-/// Which database this is: a copy can have the same name in another cluster, or another name in this one.
-pub(crate) async fn which(db: &Db) -> Result<(i64, sqlx::postgres::types::Oid)> {
-    Ok(sqlx::query_as("select (select system_identifier from pg_control_system()), (select oid from pg_database where datname = current_database())")
-        .fetch_one(&db.pool)
-        .await?)
+/// What [`same_database`] found a copy to be, when it is no copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Same {
+    /// The database the server runs on, under whatever address.
+    This,
+    /// A standby still following it.
+    Following,
+}
+
+impl std::fmt::Display for Same {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Same::This => "this database",
+            Same::Following => "a standby still following this database",
+        })
+    }
+}
+
+/// Whether `copy` is `live` itself (D7). A lock is taken on `live` and tried through `copy`'s connection: advisory locks
+/// belong to one database, so only the same database refuses it, whatever its address and however it is reached (both
+/// are a transaction's, so a pooler in between changes nothing). A snapshot, clone or branch of this database keeps
+/// its identity (system identifier and database oid) and is still another database, so the identity is a second
+/// opinion only where no copy can be: a standby in recovery, streaming, on this database's timeline ([`following`]),
+/// which the lock does not see. When either side cannot say its identity, the lock alone decides.
+pub async fn same_database(live: &Db, copy: &Db) -> Result<Option<Same>> {
+    let key: i64 = rand::random();
+    let mut held = live.pool.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock($1)").bind(key).execute(&mut *held).await?;
+    let mut tried = copy.pool.begin().await?;
+    let free: bool = sqlx::query_scalar("select pg_try_advisory_xact_lock($1)").bind(key).fetch_one(&mut *tried).await?;
+    tried.rollback().await?;
+    held.rollback().await?;
+    if !free {
+        return Ok(Some(Same::This));
+    }
+    type Seen = (i64, i32, sqlx::postgres::types::Oid, bool, bool);
+    let ask = "select (select system_identifier from pg_control_system()), (select timeline_id from pg_control_checkpoint()), \
+               (select oid from pg_database where datname = current_database()), pg_is_in_recovery(), pg_last_wal_receive_lsn() is not null";
+    let here: std::result::Result<Seen, _> = sqlx::query_as(ask).fetch_one(&live.pool).await;
+    let there: std::result::Result<Seen, _> = sqlx::query_as(ask).fetch_one(&copy.pool).await;
+    Ok(match (here, there) {
+        (Ok(h), Ok(t)) if following((h.0, h.1, h.2.0), (t.0, t.1, t.2.0), t.3, t.4) => Some(Same::Following),
+        _ => None,
+    })
+}
+
+/// The identity's second opinion: a copy with this database's identity and timeline, in recovery and streaming, is a
+/// standby following it. A copy restored from a backup or a snapshot is promoted (or replays from an archive, not a
+/// stream), so it is never this.
+pub(crate) fn following(live: crate::moves::Identity, copy: crate::moves::Identity, recovering: bool, streaming: bool) -> bool {
+    live == copy && recovering && streaming
 }
 
 impl Kernel {
@@ -337,8 +383,8 @@ impl Kernel {
         let tenant = ctx.tenant;
         let source =
             Db::connect(DbConfig { url: source_url.to_string(), max_connections: 2, direct_url: Some(source_url.to_string()), ..Default::default() }).await?;
-        if which(&source).await? == which(&self.db).await? {
-            return Err(Error::Conflict("that is this database, not a copy of it".into()));
+        if let Some(same) = same_database(&self.db, &source).await? {
+            return Err(Error::Conflict(format!("that is {same}, not a copy of it")));
         }
         let mut tx = source.system_tx().await?;
         let there: Option<Uuid> = sqlx::query_scalar("select id from tenant where id = $1").bind(tenant).fetch_optional(&mut *tx).await?;
@@ -930,6 +976,21 @@ impl Kernel {
         }
         sqlx::query("update platform_incarnation set authority_epoch = 0").execute(&self.db.pool).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod same_tests {
+    use super::following;
+
+    #[test]
+    fn only_a_standby_streaming_on_this_timeline_is_this_database_by_its_identity() {
+        let here = (7, 2, 16384);
+        assert!(following(here, here, true, true), "a standby following this database");
+        assert!(!following(here, here, false, false), "a snapshot, clone or branch, promoted: a genuine copy");
+        assert!(!following(here, here, true, false), "a backup still replaying from the archive, paused: a genuine copy");
+        assert!(!following(here, (7, 3, 16384), true, true), "a standby of a copy promoted onto another timeline");
+        assert!(!following(here, (8, 2, 16384), true, true), "another cluster's standby");
     }
 }
 

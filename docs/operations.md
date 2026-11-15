@@ -3906,6 +3906,13 @@ made, as far back as the outbox keeps them, `outbox_keep_days`). Add `apply:yes`
 workspace has made is done again in the same transaction, before anyone sees the copy, so what was erased since
 it was taken stays erased without a task of its own.
 
+The copy may be a managed service's snapshot, clone or branch of this very database, which keeps its identity (the
+system identifier and the database's oid). So "is this the same database?" is asked with a lock: one is taken on the
+database the server runs on and tried through the copy's address, and only the same database refuses it (advisory
+locks belong to one database). The identity is asked as well, but only to refuse a standby still following this
+database (in recovery, streaming, on the same timeline), which the lock cannot see and which no genuine copy is. The
+same check stands in front of `move_workspace` and `copy_workspace from:`.
+
 Tables here refer to each other in circles, so the rows go in with referential triggers off. That takes a grant,
 which is worth taking away again afterwards. As a superuser:
 
