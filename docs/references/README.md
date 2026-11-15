@@ -25,6 +25,7 @@ claim pointing at a file. Nothing here was run, so "does" means "the code does".
 | [field-service.md](field-service.md) | OCA Field Service |
 | [erp.md](erp.md) | ERPNext |
 | [cloud.md](cloud.md) | Forgejo, Gitea, GitLab, Caddy, kamal-proxy, Pingora, Coolify, Railpack, BuildKit, Knative, Falco, k6, cargo-mutants: what Cloud built that they already do |
+| [object-stores.md](object-stores.md) | SeaweedFS and Garage, run side by side: the object store Compose bundles (this page alone was run, not only read) |
 
 The copies themselves live outside this repository, in `../referance/` beside the app checkouts, with
 how they were fetched, their commits and their licences. Ferrum's interfaces are written by hand:

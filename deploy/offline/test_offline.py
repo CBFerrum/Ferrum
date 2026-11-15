@@ -205,7 +205,8 @@ def compose(tmp: Path) -> None:
     e.run(str(HERE / "bundle.py"), COMMIT[:12], "--tool", "docker", "--with", "mail,clamav", "--out", str(out), CLAMAV_TAG="1.4")
     meta = json.loads((out / "bundle.json").read_text())
     refs = {i["ref"] for i in meta["images"]}
-    assert refs == {f"ghcr.io/cbferrum/ferrum:{COMMIT[:12]}", "postgres:17", "gotenberg/gotenberg:8", "collabora/code:26.04.5.2.1", "stalwartlabs/stalwart:v1.0", "clamav/clamav:1.4"}, refs
+    # The object store Compose bundles (SeaweedFS) is carried with the rest.
+    assert refs == {f"ghcr.io/cbferrum/ferrum:{COMMIT[:12]}", "postgres:17", "chrislusf/seaweedfs:4.53", "gotenberg/gotenberg:8", "collabora/code:26.04.5.2.1", "stalwartlabs/stalwart:v1.0", "clamav/clamav:1.4"}, refs
     assert meta["profile"] == "compose" and not meta["manifests"] and not (out / "manifests").exists()
     assert all(i["format"] == "docker-archive" for i in meta["images"])
     assert not (out / "deploy" / ".env").exists(), "the operator's secrets stay behind"

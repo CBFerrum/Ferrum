@@ -373,15 +373,19 @@ curl -fsS "${auth[@]}" -H 'content-type: application/json' "$API/api/admin/perso
   -d '{"email": "erase-rehearsal@smoke.test", "reason": "smoke: erased after the backup"}' > /dev/null || fail "the erasure"
 # The erasure is journalled with the files once it has committed, by the outbox's worker: the files' backup
 # holds it only once it is written, and it is what takes the customer away again after the restore.
+# The files are in the bundled store (docs/operations.md, "Object storage"): its filer, inside its container, lists them.
+journal() { compose exec -T store wget -qO- --header 'Accept: application/json' 'http://127.0.0.1:8888/buckets/ferrum/privacy-journal/' 2>/dev/null | grep -q FullPath; }
 for _ in $(seq 1 30); do
-  compose exec -T ferrum sh -c 'ls /var/lib/ferrum/files/privacy-journal/*/*.json' >/dev/null 2>&1 && break
+  journal && break
   sleep 1
 done
-compose exec -T ferrum sh -c 'ls /var/lib/ferrum/files/privacy-journal/*/*.json' >/dev/null 2>&1 || fail "the erasure's journal, written with the files"
-# A backup of a running server: tar says 1 when a file changed while it was read, and 2 when it failed.
+journal || fail "the erasure's journal, written with the files"
+# The store's volume, archived while the store is paused (docs/operations.md, "The store Compose bundles").
+compose pause store
 rc=0
-compose exec -T ferrum tar -C /var/lib/ferrum/files --warning=no-file-changed -czf - . > "$work/files.tgz" || rc=$?
-[ "$rc" -le 1 ] || fail "the attachments backup"
+compose run --rm --no-deps -T --entrypoint tar store -C /data -czf - . > "$work/store.tgz" || rc=$?
+compose unpause store
+[ "$rc" = 0 ] || fail "the store's backup"
 compose down -v --remove-orphans
 compose up -d db
 # A new volume is initialized over the socket alone; the server is up once it listens on TCP.
@@ -390,7 +394,7 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 compose exec -T db pg_restore -U postgres -d ferrum --clean --if-exists --exit-on-error < "$work/ferrum.dump" || fail "the database restore"
-compose run --rm --no-deps -T --entrypoint tar ferrum -C /var/lib/ferrum/files -xzf - < "$work/files.tgz" || fail "the attachments restore"
+compose run --rm --no-deps -T --entrypoint tar store -C /data -xzf - < "$work/store.tgz" || fail "the store's restore"
 compose up -d --no-build ferrum pdf
 wait_up "$API/_health" "the restored server"
 [ "$(curl -fsS "${auth[@]}" "$API/api/auth/me" | json 'd["user"]["email"]')" = "smoke@smoke.test" ] || fail "the session after the restore"
