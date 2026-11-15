@@ -74,7 +74,7 @@ async fn payloads_are_sealed_with_the_platforms_key() {
     let (_with_key_kernel, with_key) = replica(Some(&old), true).await;
     assert_eq!(with_key.decode(&ctx, vec![before.clone()]).await.unwrap(), vec![plain.clone()]);
     let window = with_key.encode(&ctx, vec![plain.clone()]).await.unwrap();
-    assert!(window[0].metadata.get("ferrum-key").is_none(), "while older builds may run: sealed with the old key, as they read it");
+    assert!(!window[0].metadata.contains_key("ferrum-key"), "while older builds may run: sealed with the old key, as they read it");
     assert!(old.open(AAD, std::str::from_utf8(&window[0].data).unwrap()).is_ok(), "the previous build opens it");
 
     let (a, a_codec) = replica(None, true).await;
