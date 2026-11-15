@@ -112,6 +112,19 @@ pool `default`. Three settings are each pool's own, in rows of their own (`scope
 name): `db_max_connections`, `run_background` and `zone`, the connection budget, background work and the zone pin. A
 pool's environment still sets them and wins, as the chart's pools do today (*Deployment shapes*).
 
+**At once, or at the next start.** A change of the table is announced on the channel `ferrum_settings`, which every
+replica's metadata listener hears: each replica then reads the table and takes the new values of the settings that
+apply at once (*at once* in the table above), within a second or so. Every 30 seconds each replica also compares the
+table's version with its own, so that a change whose notice it missed reaches it all the same. A setting that applies
+at start takes effect when a replica next starts; until then `ferrum task settings` and the doctor list the replicas
+that still run its older value. A value written to the table by hand that the start would refuse is not taken: the
+replica keeps what it has and says so in its log.
+
+**Replicas.** Each replica keeps a row in the table `replica` (its pool, build, start, when last seen, and the
+settings' version it runs), refreshed every 30 seconds, removed as it stops, and gone after two minutes unseen. The
+per-user and per-address request budgets are each pool's: every replica allows its share, the setting divided by its
+pool's live replicas, so that a person's budget holds however many replicas the pool has.
+
 **Copied once.** As a replica starts to serve, each setting its environment sets and the table does not hold yet is
 written to the table, once, as the environment's (`updated_by` is `environment`; replicas starting together write it
 once, under one lock). An installation configured by its environment so ends with its settings in the table, and

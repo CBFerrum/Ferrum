@@ -101,6 +101,81 @@ async fn scenario() {
     adopted_once(&third).await;
     pools(&third).await;
     third.kernel.db.close().await;
+    live().await;
+}
+
+/// Tells every replica that the table changed, as a change of it does.
+async fn notify(st: &AppState) {
+    let mut tx = st.kernel.db.system_tx().await.unwrap();
+    sqlx::query("select pg_notify('ferrum_settings', '')").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// Waits up to five seconds for `done`.
+async fn until(what: &str, done: impl Fn() -> bool) {
+    for _ in 0..100 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("{what}: not within five seconds");
+}
+
+/// Two replicas serving: a change of a setting that applies at once reaches the other without a restart, one whose
+/// notice was missed arrives with the compare, a value the start would refuse is not taken, and the per-user and
+/// per-address budgets are divided between them.
+async fn live() {
+    ferrum_server::settings::EVERY_MS.store(300, std::sync::atomic::Ordering::Relaxed);
+    let (a_ctx, b_ctx) = (replica(config(None)).await, replica(config(None)).await);
+    <App as Hooks>::before_run(&a_ctx).await.expect("serving");
+    <App as Hooks>::before_run(&b_ctx).await.expect("serving");
+    let (a, b) = (state(&a_ctx), state(&b_ctx));
+    until("both replicas counted", || a.live_settings.replicas() == 2 && b.live_settings.replicas() == 2).await;
+    assert_eq!(b.user_limiter.max(), 1500, "3000 a minute for the pool: half each");
+    assert_eq!(b.address_limiter.max(), 3000);
+
+    row(&a, "installation", "", "user_requests_per_minute", Some("600")).await;
+    row(&a, "installation", "", "session_days", Some("2")).await;
+    row(&a, "installation", "", "zone_mode", Some("report")).await;
+    row(&a, "installation", "", "default_workspace", Some("acme")).await;
+    notify(&a).await;
+    until("the change reaches the other replica", || b.live_settings.now().settings.user_requests_per_minute == 600).await;
+    assert_eq!(b.user_limiter.max(), 300, "and its share of it");
+    assert_eq!(b.shell.session_ttl(), std::time::Duration::from_secs(2 * 86_400));
+    assert_eq!(b.zones.mode(), ferrum_kernel::zones::Mode::Report);
+    assert_eq!(b.live_settings.now().settings.default_workspace, "", "a setting that applies at start waits for the next start");
+    assert_eq!(b.settings.default_workspace, "");
+
+    // No notice: the compare finds it.
+    row(&a, "installation", "", "jwt_expiration_seconds", Some("120")).await;
+    row(&a, "installation", "", "host_leaving_days", Some("5")).await;
+    until("a missed notice heals", || b.live_settings.now().jwt_expiration == 120 && b.kernel.live().host_leaving_days == 5).await;
+    assert_eq!(b.kernel.settings.host_leaving_days, 14, "the start's stay what they were for whoever reads them");
+
+    // Written by hand past every check: the replicas keep what they have.
+    row(&a, "installation", "", "zone_mode", Some("sideways")).await;
+    notify(&a).await;
+    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+    assert_eq!(b.zones.mode(), ferrum_kernel::zones::Mode::Report, "a value the start refuses is not taken");
+    assert_eq!(b.live_settings.now().settings.zone_mode, "report");
+    row(&a, "installation", "", "zone_mode", None).await;
+    notify(&a).await;
+    until("unset: back to the default", || b.zones.mode() == ferrum_kernel::zones::Mode::Enforce).await;
+
+    let ids = [a.live_settings.replica, b.live_settings.replica];
+    let _ = a.shutdown.send(true);
+    let _ = b.shutdown.send(true);
+    for st in [&a, &b] {
+        let handles: Vec<_> = st.background.lock().await.drain(..).collect();
+        futures_util::future::join_all(handles).await;
+    }
+    let mut tx = a.kernel.db.system_tx().await.unwrap();
+    let left: i64 = sqlx::query_scalar("select count(*) from replica where id = any($1)").bind(&ids[..]).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(left, 0, "a replica that stops takes its row with it");
+    a.kernel.db.close().await;
+    b.kernel.db.close().await;
 }
 
 /// A replica's address names its pool, and a pool's rows hold its own connection budget, background work and zone.
@@ -122,7 +197,7 @@ async fn pools(st: &AppState) {
     let said = refused.err().map(|e| e.to_string()).unwrap_or_default();
     assert!(said.contains("lower-case letters, digits and dashes"), "{said}");
     let written = ferrum_server::settings::adopt(&st.kernel.db, "web", &|n: &str| (n == "FERRUM_ZONE").then(|| "office".to_string())).await.unwrap();
-    assert_eq!(written, ["zone"]);
+    assert_eq!(written.into_iter().map(|(k, _)| k).collect::<Vec<_>>(), ["zone"]);
     let mut tx = st.kernel.db.system_tx().await.unwrap();
     let at: (String, String) = sqlx::query_as("select scope, scope_name from setting where key = 'zone'").fetch_one(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
@@ -145,7 +220,7 @@ async fn adopted_once(st: &AppState) {
     let (a, b) = (env("http://pdf:3000"), env("http://pdf:3000"));
     let db = &st.kernel.db;
     let (one, two) = tokio::join!(ferrum_server::settings::adopt(db, "default", &a), ferrum_server::settings::adopt(db, "default", &b));
-    let mut written = [one.unwrap(), two.unwrap()].concat();
+    let mut written: Vec<String> = [one.unwrap(), two.unwrap()].concat().into_iter().map(|(k, _)| k).collect();
     written.sort();
     assert_eq!(written, ["pdf_url"], "once, by one of them: session_days is the table's already, and the rest are not kept there");
     let later = ferrum_server::settings::adopt(db, "default", &env("http://elsewhere")).await.unwrap();

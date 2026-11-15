@@ -37,8 +37,9 @@ pub fn validate(plans: &Map<String, Value>) -> std::result::Result<(), String> {
 impl Kernel {
     /// Puts a workspace on one of the operator's plans: its quotas become the plan's, on record.
     pub async fn set_plan(&self, tenant: Uuid, plan: &str) -> Result<()> {
-        let quotas = self.settings.plans.get(plan).cloned().ok_or_else(|| {
-            let known: Vec<&String> = self.settings.plans.keys().collect();
+        let live = self.live();
+        let quotas = live.plans.get(plan).cloned().ok_or_else(|| {
+            let known: Vec<&String> = live.plans.keys().collect();
             Error::field("plan", format!("is not one of this server's plans ({known:?})"))
         })?;
         let mut tx = self.db.system_tenant_tx(tenant).await?;

@@ -599,7 +599,7 @@ impl Kernel {
         let given = evaluate(&c.file, vars)?;
         let file: Uuid = given.as_str().and_then(|s| s.trim().parse().ok()).ok_or_else(|| Error::invalid(format!("{given} is not a stored file")))?;
         let info = self.file_info(ctx, file).await.map_err(|_| Error::invalid(format!("the file {file} is not one you may send")))?;
-        let cap = self.settings.connection_upload_bytes;
+        let cap = self.live().connection_upload_bytes;
         if info.size <= 0 {
             return Ok(Outcome::No(format!("{} is empty", info.name)));
         }

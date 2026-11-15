@@ -4,6 +4,8 @@
 //! `setting` table's, else the default. They land where they always have, in Loco's configuration and in the two
 //! settings structs built from it, so that everything downstream reads them as before.
 
+use crate::state::{AppState, Settings};
+use ferrum_kernel::KernelSettings;
 use loco_rs::config::Config;
 use loco_rs::mailer::EmailSender;
 use serde::{Deserialize, Serialize};
@@ -11,8 +13,10 @@ use serde_json::{Value, json};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::time::Duration;
+use tokio::sync::watch;
 
 /// A setting's type: what its value may be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -257,8 +261,8 @@ async fn record(
 /// R1: each setting the environment (`env`) sets and the table does not hold yet is written there once, as the
 /// environment's, so that an installation configured by its environment ends with its settings in the table. A row the
 /// table holds, even one an operator unset, is left as it is; a variable set to nothing says the default, and is not
-/// copied. Returns the keys written.
-pub async fn adopt(db: &ferrum_kernel::Db, pool: &str, env: &(dyn Fn(&str) -> Option<String> + Sync)) -> ferrum_kernel::Result<Vec<String>> {
+/// copied. Returns the keys written, each with the version it made.
+pub async fn adopt(db: &ferrum_kernel::Db, pool: &str, env: &(dyn Fn(&str) -> Option<String> + Sync)) -> ferrum_kernel::Result<Vec<(String, i64)>> {
     let mut tx = db.system_tx().await?;
     lock(&mut tx).await?;
     let mut written = Vec::new();
@@ -277,7 +281,7 @@ pub async fn adopt(db: &ferrum_kernel::Db, pool: &str, env: &(dyn Fn(&str) -> Op
         .await?;
         if let Some(version) = version {
             record(&mut tx, at, &def.key, None, Some(&text), version, "environment").await?;
-            written.push(def.key.clone());
+            written.push((def.key.clone(), version));
         }
     }
     if !written.is_empty() {
@@ -523,6 +527,323 @@ fn loco_put(c: &mut Config, key: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// How often a replica says it is alive and compares the table's version with its own, so that a change whose notice it
+/// missed reaches it all the same (D2: within 30 seconds). Lowered by tests.
+pub static EVERY_MS: AtomicU64 = AtomicU64::new(30_000);
+
+/// The settings' values a replica's readers take while it runs: at its start, and again whenever one that applies at
+/// once changes.
+pub struct Now {
+    /// What the table, the environment and the defaults said.
+    pub snapshot: Snapshot,
+    /// The start's settings, with those that apply at once as `snapshot` has them.
+    pub settings: Settings,
+    /// `request_timeout_ms`, when the configuration times requests out at all.
+    pub timeout_ms: Option<u64>,
+    /// `jwt_expiration_seconds`.
+    pub jwt_expiration: u64,
+}
+
+/// One replica's settings while it runs (D2, live apply).
+pub struct Live {
+    /// The replica's pool (D1).
+    pub pool: String,
+    /// The replica's row in `replica`.
+    pub replica: uuid::Uuid,
+    /// The configuration the start made, and its base: a newer snapshot is applied to a copy of it.
+    config: Config,
+    base: Base,
+    /// As the replica started.
+    pub start: Arc<Now>,
+    now: RwLock<Arc<Now>>,
+    /// The pool's replicas seen in the last two minutes, this one among them.
+    replicas: AtomicU32,
+    /// The table's version this replica runs the settings that apply at start of (`replica.settings_version`): its
+    /// start's, or a later one that only copied its own environment there.
+    seen: std::sync::atomic::AtomicI64,
+}
+
+impl Live {
+    /// The settings a replica started with: `config` as the start made it from `snapshot`, and `settings` from it.
+    pub fn new(pool: &str, config: &Config, snapshot: Snapshot, settings: Settings) -> Live {
+        let now = Arc::new(Now { snapshot, settings, timeout_ms: timeout_ms(config), jwt_expiration: jwt_expiration(config) });
+        Live {
+            pool: pool.to_string(),
+            replica: uuid::Uuid::now_v7(),
+            config: config.clone(),
+            base: Base::of(config),
+            start: now.clone(),
+            seen: std::sync::atomic::AtomicI64::new(now.snapshot.version),
+            now: RwLock::new(now),
+            replicas: AtomicU32::new(1),
+        }
+    }
+
+    /// The values the readers take now.
+    pub fn now(&self) -> Arc<Now> {
+        self.now.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// What this replica copied from its own environment into the table, at `version`: values it runs already.
+    pub fn saw(&self, version: i64) {
+        self.seen.fetch_max(version, Ordering::Relaxed);
+    }
+
+    /// The pool's live replicas, this one among them.
+    pub fn replicas(&self) -> u32 {
+        self.replicas.load(Ordering::Relaxed).max(1)
+    }
+
+    /// `snapshot`'s values for what applies at once, over the start's for the rest, and the kernel's: refused, saying
+    /// why, where the start's checks would refuse them.
+    pub fn next(&self, snapshot: &Snapshot) -> Result<(Now, KernelLive), String> {
+        let mut config = self.config.clone();
+        self.base.apply(snapshot, &mut config)?;
+        let new: Settings = serde_json::from_value(config.settings.clone().unwrap_or_else(|| json!({}))).map_err(|e| format!("invalid settings: {e}"))?;
+        let settings = live_view(&self.start.settings, &new);
+        // What the kernel reads directly of these (plans, sign-up, connections) all applies at once.
+        let kernel = kernel_live(&settings, &|name| snapshot.var(name))?;
+        ferrum_kernel::zones::Zones::parse("", "", "", &settings.zone_mode)?;
+        Ok((Now { snapshot: snapshot.clone(), settings, timeout_ms: timeout_ms(&config), jwt_expiration: jwt_expiration(&config) }, kernel))
+    }
+
+    /// Every variable as the readers take it now: those that apply at once from `now`, the rest as at the start.
+    fn vars(&self, now: &Snapshot) -> HashMap<String, Option<String>> {
+        registry()
+            .iter()
+            .map(|d| {
+                let from = if d.applies == Applies::Live { now } else { &self.start.snapshot };
+                (d.env.clone(), from.get(&d.key).1.map(str::to_string))
+            })
+            .collect()
+    }
+}
+
+fn timeout_ms(config: &Config) -> Option<u64> {
+    config.server.middlewares.timeout_request.as_ref().filter(|t| t.enable).map(|t| t.timeout)
+}
+
+fn jwt_expiration(config: &Config) -> u64 {
+    config.auth.as_ref().and_then(|a| a.jwt.as_ref()).map_or(0, |j| j.expiration)
+}
+
+/// `start` with the settings that apply at once (`applies: live` in the registry) as `new` has them.
+pub fn live_view(start: &Settings, new: &Settings) -> Settings {
+    Settings {
+        user_requests_per_minute: new.user_requests_per_minute,
+        address_requests_per_minute: new.address_requests_per_minute,
+        proxy_hops: new.proxy_hops,
+        session_days: new.session_days,
+        direct_upload_max_bytes: new.direct_upload_max_bytes,
+        clamav_addr: new.clamav_addr.clone(),
+        clamav_max_mb: new.clamav_max_mb,
+        pdf_url: new.pdf_url.clone(),
+        push_services: new.push_services.clone(),
+        push_contact: new.push_contact.clone(),
+        audit_sink_url: new.audit_sink_url.clone(),
+        host_leaving_days: new.host_leaving_days,
+        dns_resolvers: new.dns_resolvers.clone(),
+        zone_mode: new.zone_mode.clone(),
+        ..start.clone()
+    }
+}
+
+/// The kernel's settings that apply at once, from the server's (`settings`) and the variables read directly (`var`):
+/// the same at the start and on a change, refused as the start refuses them.
+pub struct KernelLive {
+    pub connection_hosts: Vec<String>,
+    pub connection_upload_bytes: u64,
+    pub clamd: Option<String>,
+    pub clamd_max_bytes: u64,
+    pub pdf_url: Option<String>,
+    pub push_services: Vec<String>,
+    pub push_contact: Option<String>,
+    pub audit_sink: Option<ferrum_kernel::audit_sink::Sink>,
+    pub plans: serde_json::Map<String, Value>,
+    pub signup: ferrum_kernel::signup::SignupPolicy,
+    pub host_leaving_days: i64,
+    pub dns_resolvers: Vec<std::net::SocketAddr>,
+}
+
+pub fn kernel_live(settings: &Settings, var: &dyn Fn(&str) -> Option<String>) -> Result<KernelLive, String> {
+    let (plans, signup) = crate::app::signup_settings(var, crate::shell::base_domain(settings).is_some())?;
+    Ok(KernelLive {
+        connection_hosts: crate::app::connection_hosts(var("FERRUM_CONNECTION_HOSTS")),
+        connection_upload_bytes: crate::app::connection_upload_bytes(var("FERRUM_CONNECTION_UPLOAD_MB")),
+        clamd: Some(settings.clamav_addr.trim().to_string()).filter(|a| !a.is_empty()),
+        clamd_max_bytes: settings.clamav_max_mb << 20,
+        pdf_url: Some(settings.pdf_url.trim().to_string()).filter(|u| !u.is_empty()),
+        push_services: crate::app::push_services(&settings.push_services),
+        push_contact: Some(settings.push_contact.trim().to_string()).filter(|c| c.starts_with("mailto:") || c.starts_with("https://")),
+        audit_sink: ferrum_kernel::audit_sink::Sink::parse(&settings.audit_sink_url, &settings.audit_sink_secret)?,
+        plans,
+        signup,
+        host_leaving_days: settings.host_leaving_days.min(365).into(),
+        dns_resolvers: ferrum_kernel::shell::dns_resolvers(&settings.dns_resolvers)?,
+    })
+}
+
+impl KernelLive {
+    /// `settings` with these in place of its own.
+    pub fn onto(self, settings: KernelSettings) -> KernelSettings {
+        KernelSettings {
+            connection_hosts: self.connection_hosts,
+            connection_upload_bytes: self.connection_upload_bytes,
+            clamd: self.clamd,
+            clamd_max_bytes: self.clamd_max_bytes,
+            pdf_url: self.pdf_url,
+            push_services: self.push_services,
+            push_contact: self.push_contact,
+            audit_sink: self.audit_sink,
+            plans: self.plans,
+            signup: self.signup,
+            host_leaving_days: self.host_leaving_days,
+            dns_resolvers: self.dns_resolvers,
+            ..settings
+        }
+    }
+}
+
+/// A per-replica budget's share: the pool's `limit` divided among its `replicas` (0 stays no limit).
+pub fn share(limit: u32, replicas: u32) -> u32 {
+    if limit == 0 { 0 } else { limit.div_ceil(replicas.max(1)).max(1) }
+}
+
+/// The replica's request budgets: each setting divided among the pool's live replicas.
+fn budgets(st: &AppState) {
+    let (now, n) = (st.live_settings.now(), st.live_settings.replicas());
+    st.user_limiter.set_max(share(now.settings.user_requests_per_minute, n));
+    st.address_limiter.set_max(share(now.settings.address_requests_per_minute, n));
+}
+
+/// Reads the table and, when it changed, takes the new values of the settings that apply at once. A value the start
+/// would refuse is not taken: the replica keeps the ones it has, and says why.
+pub async fn refresh(st: &AppState) {
+    let stored = match read_with(&st.kernel.db.pool).await {
+        Ok(s) => s,
+        Err(e) => {
+            return tracing::warn!("reading the settings from the database failed (tried again within {} s): {e}", EVERY_MS.load(Ordering::Relaxed) / 1000);
+        }
+    };
+    let before = st.live_settings.now();
+    if stored.version == before.snapshot.version {
+        return;
+    }
+    let snapshot = Snapshot::resolve(&stored, &st.live_settings.pool, &|name| std::env::var(name).ok());
+    let (next, kernel) = match st.live_settings.next(&snapshot) {
+        Ok(n) => n,
+        Err(e) => return tracing::error!(version = stored.version, "the settings in the database changed, and this replica keeps the ones it has: {e}"),
+    };
+    if let Err(e) = st.kernel.registry.catalog().closure(&kernel.signup.packages) {
+        return tracing::error!(
+            version = stored.version,
+            "the settings in the database changed, and this replica keeps the ones it has: FERRUM_SIGNUP_PACKAGES: {e}"
+        );
+    }
+    if kernel.signup.open && st.kernel.mailer.is_none() {
+        return tracing::error!(version = stored.version, "the settings in the database changed, and this replica keeps the ones it has: sign-up needs mail");
+    }
+    let changed: Vec<&str> = registry().iter().filter(|d| snapshot.get(&d.key) != before.snapshot.get(&d.key)).map(|d| d.key.as_str()).collect();
+    let (at_once, later): (Vec<&str>, Vec<&str>) = changed.iter().partition(|k| find(k).is_some_and(|d| d.applies == Applies::Live));
+    st.kernel.set_live(kernel.onto(st.kernel.settings.clone()));
+    ferrum_kernel::env::set(st.live_settings.vars(&snapshot));
+    if let Ok(z) = ferrum_kernel::zones::Zones::parse("", "", "", &next.settings.zone_mode) {
+        st.zones.set_mode(z.mode());
+    }
+    crate::extract::PROXY_HOPS.store(next.settings.proxy_hops, Ordering::Relaxed);
+    st.shell.set_session_days(next.settings.session_days);
+    *st.live_settings.now.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(next);
+    budgets(st);
+    tracing::info!(version = stored.version, now = %at_once.join(", "), at_next_start = %later.join(", "), "the settings changed in the database");
+}
+
+/// Says this replica is alive (`replica`, refreshed every [`EVERY_MS`]; rows not seen for two minutes go), counts its
+/// pool's live replicas, and divides the request budgets among them.
+async fn heartbeat(st: &AppState) -> Result<(), ferrum_kernel::Error> {
+    let live = &st.live_settings;
+    let mut tx = st.kernel.db.system_tx().await?;
+    // A fenced database takes no writes: the replica is counted as it was.
+    if !st.kernel.db.fenced() {
+        sqlx::query(
+            "insert into replica (id, pool, build_date, settings_version) values ($1, $2, $3, $4) \
+             on conflict (id) do update set seen_at = now(), settings_version = excluded.settings_version",
+        )
+        .bind(live.replica)
+        .bind(&live.pool)
+        .bind(ferrum_kernel::window::build_date())
+        .bind(live.seen.load(Ordering::Relaxed))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("delete from replica where seen_at < now() - interval '2 minutes'").execute(&mut *tx).await?;
+    }
+    let n: i64 = sqlx::query_scalar("select count(*) from replica where pool = $1 and seen_at > now() - interval '2 minutes'")
+        .bind(&live.pool)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    live.replicas.store(u32::try_from(n).unwrap_or(u32::MAX).max(1), Ordering::Relaxed);
+    budgets(st);
+    Ok(())
+}
+
+/// The replica's settings loop, on every replica that serves: a change takes effect as soon as its notice comes (the
+/// metadata listener hears `ferrum_settings`), and every [`EVERY_MS`] the replica says it is alive and compares the
+/// table's version with its own. Its row goes when it stops.
+pub fn spawn(st: AppState, mut stop: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut notices = st.kernel.registry.settings_notices();
+        let mut tick = tokio::time::interval(Duration::from_millis(EVERY_MS.load(Ordering::Relaxed).max(10)));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = stop.changed() => break,
+                Ok(()) = notices.changed() => refresh(&st).await,
+                _ = tick.tick() => {
+                    if let Err(e) = heartbeat(&st).await {
+                        tracing::warn!("this replica's row in the replica table: {e}");
+                    }
+                    refresh(&st).await;
+                }
+            }
+        }
+        if let Ok(mut tx) = st.kernel.db.system_tx().await
+            && sqlx::query("delete from replica where id = $1").bind(st.live_settings.replica).execute(&mut *tx).await.is_ok()
+        {
+            let _ = tx.commit().await;
+        }
+    })
+}
+
+/// `timeout_request` (Loco's), reading `request_timeout_ms` as each request comes, so that a change applies at once.
+pub struct LiveTimeout(pub Arc<Live>);
+
+impl loco_rs::controller::middleware::MiddlewareLayer for LiveTimeout {
+    fn name(&self) -> &'static str {
+        "timeout_request"
+    }
+
+    fn is_enabled(&self) -> bool {
+        true
+    }
+
+    fn config(&self) -> serde_json::Result<Value> {
+        Ok(json!({"enable": true, "timeout": self.0.now().timeout_ms}))
+    }
+
+    fn apply(&self, app: axum::Router<loco_rs::app::AppContext>) -> loco_rs::Result<axum::Router<loco_rs::app::AppContext>> {
+        let live = self.0.clone();
+        Ok(app.layer(axum::middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
+            let live = live.clone();
+            async move {
+                use axum::response::IntoResponse;
+                let Some(ms) = live.now().timeout_ms else { return next.run(req).await };
+                // As tower-http's TimeoutLayer that Loco's middleware is: 408, empty.
+                tokio::time::timeout(Duration::from_millis(ms), next.run(req)).await.unwrap_or_else(|_| axum::http::StatusCode::REQUEST_TIMEOUT.into_response())
+            }
+        })))
+    }
+}
+
 /// The mail sender, made from `config` as Loco makes it before any of our code runs (its `create_mailer`): made again
 /// when the table sets any of the mail settings.
 pub fn mailer(config: &Config) -> loco_rs::Result<Option<EmailSender>> {
@@ -694,6 +1015,31 @@ mod tests {
             (before.server.port, before.server.host.clone(), before.database.auto_migrate)
         );
         assert_eq!(c.auth.as_ref().unwrap().jwt.as_ref().unwrap().expiration, before.auth.as_ref().unwrap().jwt.as_ref().unwrap().expiration);
+    }
+
+    #[test]
+    fn what_applies_at_once_is_exactly_what_a_running_replica_takes() {
+        let c = config();
+        let start: Settings = serde_json::from_value(c.settings.clone().unwrap()).unwrap();
+        for def in registry().iter().filter(|d| d.stored() && d.path.as_deref().is_some_and(|p| p.starts_with("settings."))) {
+            let other = match def.kind {
+                Kind::Bool if def.default == "true" => "false",
+                Kind::Bool => "true",
+                Kind::Int => "7",
+                Kind::Choice => def.values.iter().find(|v| **v != def.default && !v.is_empty()).unwrap().as_str(),
+                Kind::Text | Kind::Json => "x",
+            };
+            let mut changed = c.clone();
+            Base::of(&c).apply(&Snapshot::resolve(&stored(&[(def.key.as_str(), other)]), "default", &|_| None), &mut changed).unwrap();
+            let new: Settings = serde_json::from_value(changed.settings.clone().unwrap()).unwrap();
+            let taken = format!("{:?}", live_view(&start, &new)) != format!("{start:?}");
+            assert_eq!(taken, def.applies == Applies::Live && def.scope == Scope::Installation, "{}: applies {:?}", def.key, def.applies);
+        }
+    }
+
+    #[test]
+    fn a_budget_is_shared_by_the_pools_replicas() {
+        assert_eq!((share(3000, 2), share(3000, 3), share(1, 3), share(0, 4), share(10, 0)), (1500, 1000, 1, 0, 10));
     }
 
     #[test]

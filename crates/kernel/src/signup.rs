@@ -57,7 +57,8 @@ pub struct SignedUp {
 impl Kernel {
     /// The address, when this server takes a sign-up from it.
     fn signup_from(&self, email: &str) -> Result<String> {
-        let policy = &self.settings.signup;
+        let live = self.live();
+        let policy = &live.signup;
         if !policy.open {
             return Err(Error::Forbidden("this server does not take sign-ups: ask its operator for a workspace".into()));
         }
@@ -84,7 +85,7 @@ impl Kernel {
             admin_email: email.clone(),
             admin_password: s.password,
             admin_name: s.full_name.filter(|n| !n.trim().is_empty()),
-            packages: self.settings.signup.packages.clone(),
+            packages: self.live().signup.packages.clone(),
             settings: Some(json!({"signed_up_by": email})),
         };
         new.check()?;
@@ -95,7 +96,7 @@ impl Kernel {
                 .bind(&new.slug)
                 .fetch_one(&mut *tx)
                 .await?;
-        if made >= self.settings.signup.per_address {
+        if made >= self.live().signup.per_address {
             tx.commit().await?;
             return Err(Error::Forbidden(format!("this address has made {made} workspaces, as many as this server allows")));
         }
@@ -108,7 +109,7 @@ impl Kernel {
         tx.commit().await?;
         proof?;
         let tenant = self.create_tenant(new).await?;
-        if let Some(plan) = &self.settings.signup.plan {
+        if let Some(plan) = &self.live().signup.plan {
             self.set_plan(tenant, plan).await?;
         }
         // The code proved the address, so someone with no Ferrum account gets one, signed in. Someone

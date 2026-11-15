@@ -321,6 +321,8 @@ pub struct Kernel {
     /// This replica's zone settings (crate::zones), set by the server once checked: work a request
     /// queued in a zone is done in it by name, against these ([`Kernel::set_zones`]).
     pub(crate) zones: std::sync::RwLock<Arc<zones::Zones>>,
+    /// The settings as they are now ([`Kernel::live`]): `settings` with those that apply at once changed since the start.
+    pub(crate) live: std::sync::RwLock<Arc<KernelSettings>>,
 }
 
 impl Kernel {
@@ -461,6 +463,7 @@ impl Kernel {
         }
         db.ask_moves().await?;
         let registry = Arc::new(Registry::new(&catalog, Arc::new(full), db.clone()));
+        let live = std::sync::RwLock::new(Arc::new(settings.clone()));
         let kernel = Arc::new(Kernel {
             db,
             booted,
@@ -477,6 +480,7 @@ impl Kernel {
             failures: Default::default(),
             clock: Default::default(),
             zones: Default::default(),
+            live,
         });
         kernel.notice_restore().await?;
         // From this build's packages: a guest's are older than the database's (window.rs).
@@ -558,6 +562,17 @@ impl Kernel {
             Err(e) => tracing::warn!("notification digests failed: {e}"),
         }
         Ok(())
+    }
+
+    /// The settings as they are now: those that apply at once (docs/operations.md, "Settings in the database") as the
+    /// server last set them, the rest as at the start ([`Kernel::settings`]).
+    pub fn live(&self) -> Arc<KernelSettings> {
+        self.live.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The server, when a setting that applies at once changed: `settings` in place of those it had.
+    pub fn set_live(&self, settings: KernelSettings) {
+        *self.live.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(settings);
     }
 
     /// Readiness: database reachable and migrations applied.

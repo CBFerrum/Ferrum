@@ -192,7 +192,7 @@ pub(crate) async fn login(st: &AppState, headers: &HeaderMap, q: &[(String, Stri
     let boot = json!({
         "v": 1,
         "next": next,
-        "accounts": {"target": target, "regions": regions(st), "mail": st.kernel.mailer.is_some(), "sso_only": sso_only && target.is_some(), "signup": st.kernel.settings.signup.open},
+        "accounts": {"target": target, "regions": regions(st), "mail": st.kernel.mailer.is_some(), "sso_only": sso_only && target.is_some(), "signup": st.kernel.live().signup.open},
     });
     let title =
         target.as_ref().and_then(|t| t["name"].as_str()).map_or_else(|| "Sign in to Ferrum".to_string(), |name| format!("Sign in to continue to {name}"));
@@ -327,7 +327,8 @@ async fn directory(State(app): State<AppContext>, Query(q): Query<Vec<(String, S
 
 /// `/signup`: making a workspace of one's own, where the operator takes sign-ups.
 async fn signup_page(st: &AppState) -> ApiResult<Response> {
-    let policy = &st.kernel.settings.signup;
+    let live = st.kernel.live();
+    let policy = &live.signup;
     if !policy.open {
         return Ok(status_page(
             StatusCode::NOT_FOUND,
@@ -908,7 +909,7 @@ async fn region_callback(st: &AppState, headers: &HeaderMap, q: &[(String, Strin
         return Ok(failed("The account's region did not confirm the sign-in. Sign in again."));
     };
     let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
-    let ttl = st.shell.session_ttl;
+    let ttl = st.shell.session_ttl();
     st.kernel.record_sign_in(s.tenant, s.user, "signed_in", "accounts", &crate::zone::arrival(st, headers).await).await?;
     let sid = st.kernel.open_session_in(&s, ttl, ua, &client_ip(headers), None, entry.name()).await?;
     let mut res = Redirect::to(&shell::safe_next(&next)).into_response();

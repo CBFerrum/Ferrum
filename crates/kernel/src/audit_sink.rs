@@ -113,7 +113,7 @@ impl Kernel {
     /// One turn of the sender: the next batch after the cursor, sent and acknowledged, and the cursor moved.
     /// The first turn ever starts the cursor at now: events written before the sink was set are not sent.
     pub async fn audit_sink_once(&self) -> Result<Turn> {
-        let Some(sink) = self.settings.audit_sink.clone() else { return Ok(Turn::Off) };
+        let Some(sink) = self.live().audit_sink.clone() else { return Ok(Turn::Off) };
         if self.newer_build_here().await? {
             return Ok(Turn::Off);
         }
@@ -211,7 +211,7 @@ impl Kernel {
     /// How many of one workspace's audit events the sink has not sent yet (0 without a sink, or before its first
     /// turn): what `finish_move` waits for, since the events go with the rows it deletes.
     pub(crate) async fn audit_sink_unsent(&self, tenant: uuid::Uuid) -> Result<i64> {
-        if self.settings.audit_sink.is_none() {
+        if self.live().audit_sink.is_none() {
             return Ok(0);
         }
         let mut tx = self.db.system_tx().await?;
@@ -234,7 +234,7 @@ impl Kernel {
     /// How far behind the sink is: seconds since the oldest event not yet sent was written (0: nothing waits),
     /// or `None` without a sink or before its first turn.
     pub async fn audit_sink_behind(&self) -> Result<Option<f64>> {
-        if self.settings.audit_sink.is_none() {
+        if self.live().audit_sink.is_none() {
             return Ok(None);
         }
         let mut tx = self.db.system_tx().await?;
@@ -255,9 +255,9 @@ impl Kernel {
     }
 
     /// The sender, where background work runs: a turn as soon as the last one sent something, every two
-    /// seconds while there is nothing, and with growing pauses (up to five minutes) while the receiver fails.
+    /// seconds while there is nothing, and with growing pauses (up to five minutes) while the receiver fails. It runs
+    /// without a sink too, idle, so that one set while the server runs is sent to (the setting applies at once).
     pub fn spawn_audit_sink(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> Option<tokio::task::JoinHandle<()>> {
-        self.settings.audit_sink.as_ref()?;
         let k = self.clone();
         Some(tokio::spawn(async move {
             let mut failures = 0u32;

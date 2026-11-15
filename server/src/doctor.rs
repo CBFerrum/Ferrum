@@ -273,7 +273,8 @@ pub async fn service_findings(st: &AppState) -> Vec<Finding> {
         }
     };
     let mut out = office_findings(&office, &wopi, discovery);
-    let pdf = st.settings.pdf_url.trim().trim_end_matches('/');
+    let now = st.live_settings.now();
+    let pdf = now.settings.pdf_url.trim().trim_end_matches('/');
     let health = if pdf.is_empty() { None } else { Some(client.get(format!("{pdf}/health")).send().await.map(|r| r.status().as_u16()).map_err(|_| ())) };
     out.push(pdf_finding(pdf, health));
     out

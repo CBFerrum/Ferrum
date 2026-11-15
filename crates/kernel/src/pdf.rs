@@ -86,7 +86,7 @@ impl PdfPage {
 impl Kernel {
     /// Whether this server can make PDFs (a renderer is configured).
     pub fn pdf_enabled(&self) -> bool {
-        self.settings.pdf_url.is_some()
+        self.live().pdf_url.is_some()
     }
 
     /// A document's print format as a PDF, if the caller may read the document.
@@ -110,7 +110,8 @@ impl Kernel {
 
     /// [`Kernel::page_to_pdf`] on the paper and margins `page` says.
     pub async fn page_to_pdf_on(&self, html: &str, header: Option<&str>, footer: Option<&str>, page: &PdfPage) -> Result<Vec<u8>> {
-        let base = self.settings.pdf_url.as_deref().ok_or_else(|| Error::Unavailable("PDF output is not set up on this server (FERRUM_PDF_URL)".into()))?;
+        let live = self.live();
+        let base = live.pdf_url.as_deref().ok_or_else(|| Error::Unavailable("PDF output is not set up on this server (FERRUM_PDF_URL)".into()))?;
         let boundary = format!("ferrum-pdf-{}", Uuid::now_v7().simple());
         let owned = page.fields();
         let fields: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();

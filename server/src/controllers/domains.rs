@@ -135,7 +135,7 @@ async fn list(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Respo
         "used": {"addresses": used, "paths": paths},
         "read_only": read_only,
         // How long a removed address keeps serving those signed in there (FERRUM_HOST_LEAVING_DAYS; 0: none).
-        "leaving_days": st.kernel.settings.host_leaving_days,
+        "leaving_days": st.kernel.live().host_leaving_days,
     }))
     .into_response())
 }
