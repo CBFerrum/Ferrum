@@ -7,8 +7,10 @@
 //! signatures verify through a rotation's overlap, every use is on the audit trail under its cap, and people change
 //! them only as administrators who have just confirmed it is them. Every level rotates while two replicas keep using
 //! the secrets, a background re-seal stopped half way is taken up again by the other, and a changed database password is
-//! made good with the old one or the recovery key. Transit's part runs when `FERRUM_KMS_TEST_TRANSIT` is set (OpenBao,
-//! as kms_it.rs).
+//! made good with the old one or the recovery key. A secret's row moved anywhere else does not open; and every table of
+//! the database, searched for every value and every key (each made again from the rows and the key file, as someone
+//! with a dump and that file could), holds none of them. Transit's part runs when `FERRUM_KMS_TEST_TRANSIT` is set
+//! (OpenBao, as kms_it.rs).
 
 use ferrum_kernel::controls::Proof;
 use ferrum_kernel::vault::{self, Kdf, New, Opened, Opener, RecoveryKey, Rewrap, Rule, Scope, SlotKind, Vault};
@@ -197,6 +199,8 @@ async fn scenario() {
     keys_and_handles(&no_file).await;
     secrets_and_people(&no_file).await;
     rotation_under_use(&dir, &no_file).await;
+    moved_rows_do_not_open(&no_file).await;
+    dump_holds_nothing(&dir).await;
 
     if let Ok(base) = std::env::var("FERRUM_KMS_TEST_TRANSIT") {
         transit(&base, &no_file).await;
@@ -739,4 +743,224 @@ async fn rotation_under_use(dir: &Path, no_file: &Path) {
     assert_eq!(level(&never.vault_findings().await.unwrap(), "vault"), Some(Level::Off), "a process that never opened it");
     vault::remove_slot(&d.db, SlotKind::Recovery).await.unwrap();
     assert_eq!(level(&d.vault_findings().await.unwrap(), "vault.recovery"), Some(Level::Warning), "no recovery key");
+}
+
+/// Opens what the vault sealed, as its format says (nonce, ciphertext, tag; the place as associated data): what
+/// someone with the rows and a slot's key could do.
+fn open_as_stored(key: &[u8], place: &str, sealed: &[u8]) -> Option<Vec<u8>> {
+    use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
+    let (nonce, body) = sealed.split_at(NONCE_LEN);
+    let mut body = body.to_vec();
+    let key = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, key).ok()?);
+    let plain = key.open_in_place(Nonce::try_assume_unique_for_key(nonce).ok()?, Aad::from(place.as_bytes()), &mut body).ok()?;
+    Some(plain.to_vec())
+}
+
+/// The tables of `schema` that hold any of `needles` (each looked for as it is written in the row's text: bytes as
+/// hex), with how many rows.
+async fn holding(db: &Db, schema: &str, needles: &[String]) -> Vec<String> {
+    let like: Vec<String> = needles.iter().map(|s| format!("%{s}%")).collect();
+    let mut tx = db.pool.begin().await.unwrap();
+    sqlx::query("select set_config('ferrum.system', 'on', true), set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
+    let tables: Vec<String> =
+        sqlx::query_scalar("select table_name::text from information_schema.tables where table_schema = $1 and table_type = 'BASE TABLE' order by 1")
+            .bind(schema)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    let mut out = Vec::new();
+    for table in tables {
+        let hits: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("select count(*) from \"{schema}\".\"{table}\" x where x::text ilike any($1)")))
+            .bind(&like)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        if hits > 0 {
+            out.push(format!("{schema}.{table}: {hits}"));
+        }
+    }
+    tx.commit().await.unwrap();
+    out
+}
+
+/// Every way a key or a value can be written down: its bytes as hex, base64 and base64url, and as text.
+fn written(bytes: &[u8]) -> Vec<String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+    let mut out = vec![hex::encode(bytes), STANDARD.encode(bytes).trim_end_matches('=').to_string(), URL_SAFE_NO_PAD.encode(bytes)];
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        out.push(text.to_string());
+    }
+    out
+}
+
+async fn moved_rows_do_not_open(no_file: &Path) {
+    let db = replica().await;
+    reset(&db).await;
+    let (k, crm, hr) = kernel_with_apps(no_file).await;
+    let (w, w2) = (workspace(&k, "movers").await, workspace(&k, "elsewhere").await);
+    let ws = Scope::Workspace(w);
+    let open = Rule { reveal: true, ..Default::default() };
+    crm.set(&k, ws, "api", value("moved-nowhere"), open.clone()).await.unwrap();
+    crm.set(&k, ws, "other", value("x"), open.clone()).await.unwrap();
+    hr.set(&k, ws, "api", value("hr's own"), open.clone()).await.unwrap();
+    crm.set(&k, Scope::Workspace(w2), "api", value("there"), open.clone()).await.unwrap();
+    // Copies crm's `api` in `w` (its sealed value, under the version of crm's key that sealed it) over the row at
+    // (scope, owner, name, version), as someone with the database could; then asks for that row's secret.
+    let copy = |scope: Uuid, owner: &'static str, name: &'static str, version: i32| {
+        let db = db.clone();
+        async move {
+            let mut tx = db.pool.begin().await.unwrap();
+            sqlx::query("select set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
+            let sealed: Vec<u8> = sqlx::query_scalar("select sealed from vault.secret where scope = $1 and owner = 'crm' and name = 'api'")
+                .bind(w)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            let target_kv: i32 = sqlx::query_scalar("select max(version) from vault.key where scope = $1 and owner = $2")
+                .bind(scope)
+                .bind(owner)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            sqlx::query("delete from vault.secret where scope = $1 and owner = $2 and name = $3")
+                .bind(scope)
+                .bind(owner)
+                .bind(name)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            sqlx::query("insert into vault.secret (scope, owner, name, version, key_version, kind, sealed, rule) values ($1, $2, $3, $4, $5, 'value', $6, '{\"reveal\": true}')")
+                .bind(scope)
+                .bind(owner)
+                .bind(name)
+                .bind(version)
+                .bind(target_kv)
+                .bind(&sealed)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    let refused = |r: ferrum_kernel::Result<Zeroizing<Vec<u8>>>, how: &str| match r {
+        Ok(_) => panic!("{how}: it opened"),
+        Err(e) => assert!(e.to_string().contains("does not open"), "{how}: {e}"),
+    };
+    copy(w, "crm", "other", 1).await;
+    refused(crm.reveal(&k, ws, "other").await, "to another name, under the same key");
+    copy(w, "crm", "other", 2).await;
+    refused(crm.reveal(&k, ws, "other").await, "to another version");
+    copy(w, "hr", "api", 1).await;
+    refused(hr.reveal(&k, ws, "api").await, "to another owner");
+    copy(w2, "crm", "api", 1).await;
+    refused(crm.reveal(&k, Scope::Workspace(w2), "api").await, "to another workspace");
+    assert_eq!(&**crm.reveal(&k, ws, "api").await.unwrap(), b"moved-nowhere", "where it was sealed, it opens");
+
+    // Nothing of any of the vault's tables is seen by a query that does not go through it.
+    for table in ["root_slot", "key", "secret", "use_count"] {
+        assert!(count(&db, format!("select count(*) from vault.{table}")).await > 0 || table == "use_count", "{table} holds rows");
+        for (who, tx) in [("the system", db.system_tx().await.unwrap()), ("a workspace", db.tenant_tx(w).await.unwrap())] {
+            let mut tx = tx;
+            let seen: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("select count(*) from vault.{table}"))).fetch_one(&mut *tx).await.unwrap();
+            tx.rollback().await.unwrap();
+            assert_eq!(seen, 0, "{who} sees {table}");
+        }
+    }
+}
+
+async fn dump_holds_nothing(dir: &Path) {
+    let db = replica().await;
+    reset(&db).await;
+    // A vault opened with a key file only: what someone with a dump and this file could open, the test opens too.
+    let file = key_file(dir, "dump.key");
+    let file_key = Zeroizing::new(base64::Engine::decode(&base64::engine::general_purpose::STANDARD, std::fs::read_to_string(&file).unwrap().trim()).unwrap());
+    let db0 = replica().await;
+    assert_eq!(vault::open(&db0, opener(Some("ferrum"), &file, None), false).await.unwrap(), Opened::With(SlotKind::File), "a key file mounted: the best slot");
+    let printed = vault::put_slot(&db0, SlotKind::Recovery).await.unwrap().unwrap().to_string();
+    let mut hooks = HookRegistry::default();
+    let mut crm = None;
+    hooks.app("crm", &[], |h| crm = Some(h.vault()));
+    let k = Kernel::boot(db0, core(), hooks, KernelSettings::default(), None).await.unwrap();
+    let crm = crm.unwrap();
+    let w = workspace(&k, "dumped").await;
+    let ws = Scope::Workspace(w);
+    let mut values: Vec<Vec<u8>> = Vec::new();
+    for (name, v) in [("api", "Pq-2468-vault-secret"), ("smtp", "Zz-9753-mail-pass")] {
+        crm.set(&k, ws, name, value(v), Rule { reveal: true, ..Default::default() }).await.unwrap();
+        values.push(v.as_bytes().to_vec());
+    }
+    crm.set(&k, Scope::Installation, "license", value("Lc-1122-installation"), Rule::default()).await.unwrap();
+    values.push(b"Lc-1122-installation".to_vec());
+    let session = k.login("dumped", "admin@dumped.test", "Correct-Horse-9").await.unwrap();
+    let admin = Ctx { proof: Proof::Person { at: None, staff: true }, ..k.load_ctx(w, session.user, None, "it".into()).await.unwrap() }
+        .proved(Some(chrono::Utc::now()));
+    let shown = k.vault_set(&admin, "crm", "partner", New::Random(32), Rule::default()).await.unwrap().shown.unwrap().to_string();
+    values.push(shown.as_bytes().to_vec());
+    crm.set(&k, ws, "pair", New::Ed25519, Rule::default()).await.unwrap();
+    crm.set(&k, ws, "hooks", New::Random(32), Rule { overlap_secs: 600, ..Default::default() }).await.unwrap();
+    let sealed = crm.seal(&k, ws, "doc/9", b"Od-4680-kept-outside").await.unwrap();
+    values.push(b"Od-4680-kept-outside".to_vec());
+    let derived = crm.derive(&k, ws, "links").await.unwrap().bytes().to_vec();
+    for _ in 0..3 {
+        crm.reveal(&k, ws, "api").await.unwrap();
+        crm.sign(&k, ws, "pair", b"m").await.unwrap();
+    }
+    // Every level rotated, so that old and new versions are both there to look for.
+    let first_printed = printed;
+    let printed = vault::rotate_installation_key(&k.db, Some(RecoveryKey::New)).await.unwrap().expect("a new recovery key").to_string();
+    k.rotate_workspace_key(ws).await.unwrap();
+    k.rotate_owner_key(ws, "crm").await.unwrap();
+    crm.rotate(&k, ws, "hooks", New::Random(32)).await.unwrap();
+    assert_eq!(k.vault_reseal(ws, "crm").await.unwrap(), 0);
+    assert_eq!(&**crm.open(&k, ws, "doc/9", &sealed).await.unwrap(), b"Od-4680-kept-outside");
+
+    // Every key, made again from the rows and the key file alone.
+    let mut tx = db.pool.begin().await.unwrap();
+    sqlx::query("select set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
+    let (version, wrapped): (i32, Vec<u8>) =
+        sqlx::query_as("select installation_version, wrapped from vault.root_slot where kind = 'file'").fetch_one(&mut *tx).await.unwrap();
+    let installation = open_as_stored(&file_key, &format!("ferrum-vault/root/file/{version}"), &wrapped).expect("the installation key, with the file");
+    let mut keys: std::collections::HashMap<(Uuid, String, i32), Vec<u8>> = Default::default();
+    let rows: Vec<(Uuid, String, i32, i32, Vec<u8>)> =
+        sqlx::query_as("select scope, owner, version, parent_version, wrapped from vault.key order by owner = '' desc").fetch_all(&mut *tx).await.unwrap();
+    for (scope, owner, v, parent, wrapped) in &rows {
+        let above = if owner.is_empty() { installation.clone() } else { keys[&(*scope, String::new(), *parent)].clone() };
+        let key = open_as_stored(&above, &format!("ferrum-vault/key/{scope}/{owner}/{v}/{parent}"), wrapped).expect("a key, with the one above it");
+        keys.insert((*scope, owner.clone(), *v), key);
+    }
+    let secrets: Vec<(Uuid, String, String, i32, i32, Vec<u8>)> =
+        sqlx::query_as("select scope, owner, name, version, key_version, sealed from vault.secret").fetch_all(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let mut opened = Vec::new();
+    for (scope, owner, name, v, kv, sealed) in &secrets {
+        let plain = open_as_stored(&keys[&(*scope, owner.clone(), *kv)], &format!("ferrum-vault/secret/{scope}/{owner}/{name}/{v}/{kv}"), sealed)
+            .expect("a secret, with its key");
+        opened.push(plain);
+    }
+    for v in &values[..values.len() - 1] {
+        assert!(opened.contains(v), "the format is as this test reads it");
+    }
+    assert!(keys.len() >= 4 && opened.len() >= 7, "{} keys, {} secrets", keys.len(), opened.len());
+
+    // Not one of them, nor a value, nor the slots' keys, is anywhere in the database as it is.
+    let mut needles: Vec<String> = Vec::new();
+    for bytes in values.iter().chain(opened.iter()).chain(keys.values()).chain([&installation, &file_key.to_vec(), &derived]) {
+        needles.extend(written(bytes));
+    }
+    for p in [&printed, &first_printed] {
+        needles.push(p.clone());
+        needles.push(p.replace('-', ""));
+    }
+    let needles: Vec<String> = needles.into_iter().filter(|n| n.len() >= 12).collect();
+    // The search finds what is there: a public half kept as bytes, a workspace's name kept as text.
+    let public = crm.describe(&k, ws, "pair").await.unwrap().unwrap().public_key.unwrap();
+    let public = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, public).unwrap();
+    assert_eq!(holding(&db, "vault", &[hex::encode(&public)]).await, ["vault.secret: 1"]);
+    assert!(holding(&db, "public", &["dumped".to_string()]).await.iter().any(|t| t.starts_with("public.tenant:")));
+    assert_eq!(holding(&db, "public", &needles).await, Vec::<String>::new(), "a value or a key in a workspace's tables");
+    assert_eq!(holding(&db, "vault", &needles).await, Vec::<String>::new(), "a value or an unwrapped key in the vault's own");
+    // And without the key file (or the recovery key), the dump opens nothing: the slot's check says so.
+    let why = refusal(vault::open(&replica().await, opener(Some("not-the-password"), &dir.join("missing.key"), None), false).await);
+    assert!(why.contains("no slot opens the vault"), "{why}");
 }
