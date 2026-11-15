@@ -357,7 +357,7 @@ MUTANTS = [
     ("closure-rows-go-without-their-files", "crates/kernel/src/recovery.rs", "        if !failed.is_empty() {\n", "        if false {\n", CLOSURE),
     ("closure-misses-other-references", "crates/kernel/src/recovery.rs", "    columns.extend(others);\n", "", CLOSURE),
     ("closure-closed-is-writable", "crates/kernel/src/auth.rs", "t.account_state in ('restricted', 'closed')", "t.account_state in ('restricted')", CLOSURE),
-    ("closure-domains-free-again", "crates/kernel/src/recovery.rs", "        crate::shell::quarantine_hosts(&mut tx, tenant).await?;\n", "", CLOSURE),
+    ("closure-domains-free-again", "crates/kernel/src/recovery.rs", "        crate::shell::quarantine_hosts(&mut tx, tenant, false).await?;\n", "", CLOSURE),
     ("closure-slug-free-again", "crates/kernel/src/shell.rs", "insert into tenant_slug_retired (slug, tenant_id) select slug, id from tenant where id = $1 on conflict (slug) do nothing", "select $1::uuid", CLOSURE),
     ("closure-quarantine-unread", "crates/kernel/src/shell.rs", "Some(until) if until > Utc::now() => return recently(),", "Some(_) if false => return recently(),", CLOSURE),
     ("domain-proven-by-pointing-alone", "crates/kernel/src/shell.rs", "works: points && (verified || proved || record != Some(false))", "works: points", ("-p", "ferrum-server", "--test", "domain_proof_it")),
