@@ -329,7 +329,7 @@ MUTANTS = [
     ("share-is-everyones", "server/src/state.rs", "            held.entry(tenant).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.each))).clone()", "            held.entry(uuid::Uuid::nil()).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.each))).clone()", SHARES_UNIT),
     ("share-hides-its-wait", "server/src/state.rs", "                let _ = place.0.set((turn, asked.elapsed()));", "                let _ = place.0.set((turn, Duration::ZERO));", SHARES_UNIT),
     ("extract-any-copy-will-do", "crates/kernel/src/recovery.rs", "        if !differ.is_empty() {\n", "        if false {\n", RECOVERY),
-    ("extract-onto-itself", "crates/kernel/src/recovery.rs", "        if which(&source).await? == which(&self.db).await? {\n", "        if false {\n", RECOVERY),
+    ("extract-onto-itself", "crates/kernel/src/recovery.rs", "        if let Some(same) = same_database(&self.db, &source).await? {\n", "        if let Some(same) = None::<Same> {\n", RECOVERY),
     ("extract-without-looking", "crates/kernel/src/recovery.rs", "        if !apply {\n", "        if false {\n", RECOVERY),
     ("extract-references-unchecked", "crates/kernel/src/recovery.rs", "        if !broken.is_empty() {\n", "        if false {\n", RECOVERY),
     ("extract-old-password-returns", "crates/kernel/src/recovery.rs", "password_hash = p.password_hash, ", "", RECOVERY),
@@ -559,7 +559,7 @@ MUTANTS = [
     ("receipt-not-kept", "crates/kernel/src/receipt.rs", "        .bind(status)\n        .bind(answer)", "        .bind(status)\n        .bind(None::<Value>)", RECEIPTS),
     ("receipts-gone-in-a-day", "crates/kernel/src/outbox.rs", ".bind(crate::receipt::RECEIPT_DAYS)", ".bind(1)", RECEIPTS),
     # A held record's evidence survives changes and a workspace's deletion (FEO-007).
-    ("held-record-changed-without-a-trace", "crates/kernel/src/ddl.rs", "ddl.exec(format!(\"create or replace trigger ferrum_held_keep before update on {} for each row execute function ferrum_held_keep('{named}')\", q(&t)))\n            .await?;", "let _ = &named;", PRIVACY),
+    ("held-record-changed-without-a-trace", "crates/kernel/src/ddl.rs", "        ddl.exec(format!(\n            \"create or replace trigger ferrum_held_keep before update on {} for each row when ({STANDS_ASIDE}) execute function ferrum_held_keep('{named}')\",\n            q(&t)\n        ))\n        .await?;", "        let _ = &named;", PRIVACY),
     ("held-versions-outlive-the-hold", "crates/kernel/src/privacy.rs", "and o.released_at is null and o.entity = h.entity and o.record_id = h.record_id)", "and o.entity = h.entity and o.record_id = h.record_id)", PRIVACY),
     ("workspace-deleted-under-a-hold", "crates/kernel/src/recovery.rs", "if holds > 0 {", "if false {", CLOSURE),
     # The values chosen to stay are written in the merge's own transaction (FEO-006).
