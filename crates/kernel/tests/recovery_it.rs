@@ -1,12 +1,14 @@
 //! What happens when a database comes back from a backup, and when two regions each think they write,
 //! against real PostgreSQL (`FERRUM_TEST_DATABASE_URL`; these are reset first, and
 //! `FERRUM_RESTORE_TEST_DATABASE_URL` and `FERRUM_WITNESS_TEST_DATABASE_URL` as well). The backup is a real
-//! `pg_dump`, restored with a real `pg_restore`. Losing the witness is a real connection being cut.
+//! `pg_dump`, restored with a real `pg_restore`. Losing the witness is a real connection being cut. A planned move and the
+//! restore marker run on a database with a vault (crates/kernel/src/vault): its secrets read on the copy as they did.
 
 use async_trait::async_trait;
 use ferrum_kernel::outbox::{self, Event};
 use ferrum_kernel::recovery::{Authority, Restored};
 use ferrum_kernel::tenant::NewTenant;
+use ferrum_kernel::vault::{self, Kdf, New, Opener, Rule, Scope, Vault, Zeroizing};
 use ferrum_kernel::{Ctx, Db, DbConfig, Error, EventSink, HookRegistry, Kernel, KernelSettings, Result, Tx};
 use ferrum_meta::Catalog;
 use serde_json::json;
@@ -78,7 +80,11 @@ fn catalog() -> Catalog {
 async fn database(url: &str, reset: bool) -> Db {
     let db = Db::connect(DbConfig { url: url.to_string(), max_connections: 8, ..Default::default() }).await.expect("connect");
     if reset {
-        sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+        // The vault's schema too, so that each scenario's vault is its own (crates/kernel/src/vault).
+        sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;")
+            .execute(&db.pool)
+            .await
+            .expect("reset");
     }
     db
 }
@@ -88,6 +94,31 @@ async fn kernel(db: Db, sent: Arc<Sent>, app: Arc<App>) -> Arc<Kernel> {
     hooks.add_event_sink(sent);
     hooks.add_restored(app);
     Kernel::boot(db, catalog(), hooks, KernelSettings::default(), None).await.expect("boot")
+}
+
+/// [`kernel`] with its vault opened as a server opens it, from `address`'s password (Argon2id kept cheap here), and an
+/// app's handle on it.
+async fn vaulted(db: Db, address: &str, sent: Arc<Sent>, app: Arc<App>) -> (Arc<Kernel>, Vault) {
+    let opener = Opener {
+        database_url: address.to_string(),
+        file: PathBuf::from("/nonexistent/root.key"),
+        transit: None,
+        command: None,
+        kdf: Kdf { m_kib: 64, t: 1, p: 1 },
+    };
+    vault::open(&db, opener, false).await.expect("the vault opens");
+    let mut hooks = HookRegistry::default();
+    hooks.add_event_sink(sent);
+    hooks.add_restored(app);
+    let mut crm = None;
+    hooks.app("crm", &[], |h| crm = Some(h.vault()));
+    let k = Kernel::boot(db, catalog(), hooks, KernelSettings::default(), None).await.expect("boot");
+    (k, crm.unwrap())
+}
+
+/// A secret its owner may read, as it is kept.
+fn shown(s: &str) -> (New, Rule) {
+    (New::Value(Zeroizing::new(s.as_bytes().to_vec())), Rule { reveal: true, ..Default::default() })
 }
 
 async fn workspace(k: &Kernel, slug: &str) -> Ctx {
@@ -143,10 +174,10 @@ async fn restore(dump: &Path, address: &str) {
     let db = database(address, true).await;
     db.pool.close().await;
     // A schema of the extensions an administrator made there (as on a managed service, scripts/managed_pg.sh) is in
-    // the dump too, and so is the vault's (crates/kernel/src/vault): the database is emptied of them first, as an
+    // the dump too (the vault's is gone with the reset above): the database is emptied of it first, as an
     // administrator restoring a whole database would.
     let root = database(&superuser(address), false).await;
-    sqlx::raw_sql("drop schema if exists extensions cascade; drop schema if exists vault cascade").execute(&root.pool).await.unwrap();
+    sqlx::query("drop schema if exists extensions cascade").execute(&root.pool).await.unwrap();
     root.pool.close().await;
     let done = Command::new("pg_restore").args(["--exit-on-error", "-d", &superuser(address), dump.to_str().unwrap()]).status().expect("pg_restore");
     assert!(done.success());
@@ -244,7 +275,9 @@ async fn the_marker_notices_a_restore_the_identity_misses() {
     use ferrum_kernel::recovery::MarkerSaid;
     let live = url("FERRUM_TEST_DATABASE_URL", "ferrum_test");
     let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
-    let k = kernel(database(&live, true).await, sent.clone(), app.clone()).await;
+    let (k, crm) = vaulted(database(&live, true).await, &live, sent.clone(), app.clone()).await;
+    let (value, rule) = shown("L-before-the-snapshot");
+    crm.set(&k, Scope::Installation, "license", value, rule).await.unwrap();
     // No object store (development): nothing to compare with, nothing held, nothing waits.
     assert_eq!(k.watch_restore_marker().await.unwrap(), MarkerSaid::NoStore);
     assert!(!k.holding().await.unwrap());
@@ -292,7 +325,7 @@ async fn the_marker_notices_a_restore_the_identity_misses() {
     assert_eq!(k.restore_marker().await.unwrap(), MarkerSaid::Level(snapshot + 1));
     sqlx::query("update platform_incarnation set restore_marker = $1").bind(snapshot).execute(&k.db.pool).await.unwrap();
     let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
-    let restored = kernel(database(&live, false).await, sent.clone(), app.clone()).await;
+    let (restored, crm) = vaulted(database(&live, false).await, &live, sent.clone(), app.clone()).await;
     assert!(!restored.restore_held().await.unwrap(), "its identity says nothing");
     restored.set_file_store(files.clone());
     let said = restored.watch_restore_marker().await.unwrap();
@@ -301,6 +334,8 @@ async fn the_marker_notices_a_restore_the_identity_misses() {
     assert_eq!(app.told.load(Ordering::SeqCst), 1, "what apps had in hand is set aside, as after any restore");
     drain(&restored).await;
     assert_eq!(sent.count.load(Ordering::SeqCst), 0, "the payment does not go out again by itself");
+    let license = crm.reveal(&restored, Scope::Installation, "license").await.expect("held, its vault opens all the same");
+    assert_eq!(&**license, b"L-before-the-snapshot");
     // Noticed once; a held database does not move the marker on, so a stale copy cannot push a live one's past it.
     due(&restored).await;
     assert_eq!(restored.restore_marker().await.unwrap(), MarkerSaid::Level(snapshot + 1));
@@ -721,8 +756,12 @@ async fn try_pay(k: &Kernel, tenant: Uuid) -> Result<()> {
 async fn a_planned_move_carries_what_was_waiting() {
     let (live, copy) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
     let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
-    let k = kernel(database(&live, true).await, sent.clone(), app.clone()).await;
+    let (k, crm) = vaulted(database(&live, true).await, &live, sent.clone(), app.clone()).await;
     let admin = workspace(&k, "acme").await;
+    for (scope, name, kept) in [(Scope::Workspace(admin.tenant), "smtp.password", "p4ss-moving"), (Scope::Installation, "license", "L-moving")] {
+        let (value, rule) = shown(kept);
+        crm.set(&k, scope, name, value, rule).await.unwrap();
+    }
     drain(&k).await;
     pay(&k, admin.tenant).await;
     assert!(k.plan_move(" ", DAY, Duration::ZERO).await.is_err(), "it takes a reason");
@@ -771,8 +810,12 @@ async fn a_planned_move_carries_what_was_waiting() {
     try_pay(&two, admin.tenant).await.expect("the copy takes changes");
     drain(&two).await;
     assert_eq!(moved.count.load(Ordering::SeqCst), 2);
-    let again = kernel(database(&copy, false).await, moved.clone(), told.clone()).await;
+    let (again, crm) = vaulted(database(&copy, false).await, &copy, moved.clone(), told.clone()).await;
     assert!(!again.holding().await.unwrap() && adopted(&again).await == 1, "starting again changes nothing");
+    // The vault came with it, and opens on the copy with the role's password: every secret reads as it did.
+    for (scope, name, kept) in [(Scope::Workspace(admin.tenant), "smtp.password", "p4ss-moving"), (Scope::Installation, "license", "L-moving")] {
+        assert_eq!(&**crm.reveal(&again, scope, name).await.unwrap(), kept.as_bytes(), "{name}");
+    }
 
     // The source stays fenced when it starts again (it starts, then serves read-only).
     let db = database(&live, false).await;

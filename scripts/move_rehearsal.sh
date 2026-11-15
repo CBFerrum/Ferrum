@@ -5,7 +5,8 @@
 #    a workspace, a record, a file and a webhook whose delivery is still waiting; `ferrum task plan_move`; pg_dump,
 #    pg_restore into a second database, the files copied; a server on the copy with the same keys. It checks: no restore
 #    hold on the copy, the fence lifted there and still on the source, the waiting delivery made once, sealed values open,
-#    the doctor's move checks fine. Then the same without plan_move, which must end in the hold.
+#    the vault (made by the source's first start) open on the copy with the role's password, the doctor's move checks
+#    fine. Then the same without plan_move, which must end in the hold.
 # 2. One workspace between two running servers, and back (docs/operations.md, Moving one workspace), then a sandbox of it
 #    (A sandbox of a workspace): two servers, each on its own database, files directory and secret key, as two regions
 #    that trust each other. `move_workspace` on the second against the first, then `finish_move` on the first and the
@@ -190,7 +191,7 @@ python3 - "$work/doctor.json" <<'PY'
 import json, sys
 text = open(sys.argv[1]).read()
 found = {f["check"]: f["level"] for f in json.loads(text[text.index("\n[") + 1 if not text.startswith("[") else 0:])}
-for check in ["secrets.unopened", "files.missing", "restore"]:
+for check in ["secrets.unopened", "files.missing", "restore", "vault", "vault.slot.credential"]:
     assert found.get(check) == "ok", (check, found.get(check))
 assert "move" not in found, found["move"]
 PY

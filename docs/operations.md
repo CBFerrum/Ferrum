@@ -831,8 +831,10 @@ before a floor is refused at start, the older ones included.
   `--enable-row-security`, and checks that the session took it. The restore goes into an empty database the role
   owns, in one transaction, without owners or grants, leaving out a schema the database already has (an
   administrator's `extensions`) and comments on extensions (only their owner may write them). It is proven by
-  `crates/kernel/tests/dump_it.rs`: every row of every table and every sequence came back, and the server started on
-  the copy. By hand: `PGOPTIONS='-c ferrum.system=on -c ferrum.vault=on' pg_dump --enable-row-security -Fc`.
+  `crates/kernel/tests/dump_it.rs`: every row of every table and every sequence came back, the vault's included (its
+  row-level security and its append-only record with them), and the server started on the copy with its vault open and
+  its secrets as they were. Restored where the role has another password, see *The vault* (After a restore, a copy or a
+  move). By hand: `PGOPTIONS='-c ferrum.system=on -c ferrum.vault=on' pg_dump --enable-row-security -Fc`.
 * Docker Compose (commands run in `deploy/`): schedule a dump of the database (as `ferrum`, as above, or as the
   `postgres` superuser) and an archive of the attachments volume, and copy both off the host:
 
@@ -1000,7 +1002,11 @@ remembered:
 restores. A restore into a new database or cluster has another identity, which the server notices; a snapshot, clone
 or branch may keep the identity, and is noticed by the restore marker in object storage (*After restoring a backup*).
 Either way: point the address at it (or let the service swap it in), start or restart the server, run
-`ferrum task reapply_erasures`, check what was set aside, then `ferrum task release_restore note:"..."`. To take one
+`ferrum task reapply_erasures`, check what was set aside, then `ferrum task release_restore note:"..."`. The vault
+comes back inside the database and opens as it did while the role keeps the password its credential slot was made
+with, which a service's restore, clone or branch does (the table says so for each, from memory). Where the role has
+another password, the start stops saying *the database password in DATABASE_URL is not the one it was made with*: then
+*The vault*, After a restore, a copy or a move. To take one
 workspace back instead, restore to a database of its own and use `extract_tenant` (*Taking one workspace back*); a
 clone of this very database is a genuine copy there.
 
@@ -1016,13 +1022,13 @@ remembered on 15 November 2026, every line marked *(from memory)*. Check it agai
 
 | | What to make | Pooled address (`DATABASE_URL`) | Direct (`FERRUM_DATABASE_DIRECT_HOST`) | Backups and restore | Failover, and `hold_on_timeline` |
 |---|---|---|---|---|---|
-| Amazon RDS for PostgreSQL | As the master user: `CREATE ROLE ferrum LOGIN PASSWORD '…' CONNECTION LIMIT …; CREATE DATABASE ferrum OWNER ferrum;` (the master user is `rds_superuser`, no superuser; the three extensions are allowed) *(from memory)* | RDS Proxy's endpoint, if you use one (transaction pooling, with pinning on session state) *(from memory)* | The instance endpoint, port 5432 *(from memory)* | Automated snapshots and point-in-time restore make a new instance, which keeps the identity of the one it came from (a snapshot, clone or restore is noticed by the marker) *(from memory)* | Multi-AZ instance: synchronous standby, `false` is safe; Multi-AZ cluster (two readable standbys): semi-synchronous, `true` *(from memory)* |
-| Amazon Aurora PostgreSQL | As for RDS, on the cluster *(from memory)* | RDS Proxy *(from memory)* | The cluster (writer) endpoint *(from memory)* | Snapshots, point-in-time restore and fast clones make new clusters; whether `pg_control_system()` gives Aurora's storage a stable identity is unchecked, so count on the marker *(from memory)* | Storage is shared and replicated by quorum: a failover loses nothing committed, `false` *(from memory)* |
-| Google Cloud SQL | `CREATE ROLE`/`CREATE DATABASE` as `postgres` (`cloudsqlsuperuser`, no superuser) *(from memory)* | Managed connection pooling where your edition has it, or PgBouncer of your own *(from memory)* | The instance's private IP: use `sslmode=verify-ca` and the server CA from the console *(from memory)* | Backups and point-in-time recovery restore to the same or a new instance; clones are new instances *(from memory)* | Regional (HA) instances fail over on a synchronously replicated disk: `false` *(from memory)* |
-| Azure Database for PostgreSQL, Flexible Server | As the administrator (`azure_pg_admin`, no superuser); allow-list the three extensions in `azure.extensions` *(from memory)* | The built-in PgBouncer on port 6432 of the same host *(from memory)* | The same host, port 5432 *(from memory)* | Point-in-time restore makes a new server *(from memory)* | Zone-redundant high availability replicates synchronously: `false` *(from memory)* |
-| Supabase | A role of its own (`postgres` there has `BYPASSRLS`, which the server refuses): `CREATE ROLE ferrum LOGIN NOBYPASSRLS …` and a database it owns; the extensions are in the `extensions` schema already, as in the rehearsal *(from memory)* | Supavisor's transaction port (6543), user `ferrum.<project ref>` *(from memory)* | Supavisor's session port (5432) on the same host and user, since the database's own host takes another user name *(from memory)* | Daily backups and point-in-time recovery restore in place: the same identity, noticed by the marker *(from memory)* | Managed by Supabase; `true` unless they say a failover loses nothing *(from memory)* |
-| Neon | The project's role owns its database and is no superuser; whether a role made in Neon's console has `BYPASSRLS` is unchecked: make it with SQL (`CREATE ROLE ... NOBYPASSRLS`) if the server refuses it *(from memory)* | The `-pooler` host (PgBouncer, transaction mode) *(from memory)* | The same host without `-pooler` *(from memory)* | A branch or a restore to a point in time keeps the identity: noticed by the marker *(from memory)* | Compute is stateless over replicated storage: `false` *(from memory)* |
-| Your own, or CloudNativePG (the chart's) | `deploy/postgres-init` (Compose) or the chart do it | PgBouncer (`database.pooler`) | `-rw` (the chart sets it) | `pg_basebackup`, Barman, CloudNativePG's recovery (*Backups and restore*) | Synchronous replication: `false`; otherwise `true` |
+| Amazon RDS for PostgreSQL | As the master user: `CREATE ROLE ferrum LOGIN PASSWORD '…' CONNECTION LIMIT …; CREATE DATABASE ferrum OWNER ferrum;` (the master user is `rds_superuser`, no superuser; the three extensions are allowed) *(from memory)* | RDS Proxy's endpoint, if you use one (transaction pooling, with pinning on session state) *(from memory)* | The instance endpoint, port 5432 *(from memory)* | Automated snapshots and point-in-time restore make a new instance, which keeps the identity of the one it came from (a snapshot, clone or restore is noticed by the marker); roles keep their passwords, so the vault opens as before *(from memory)* | Multi-AZ instance: synchronous standby, `false` is safe; Multi-AZ cluster (two readable standbys): semi-synchronous, `true` *(from memory)* |
+| Amazon Aurora PostgreSQL | As for RDS, on the cluster *(from memory)* | RDS Proxy *(from memory)* | The cluster (writer) endpoint *(from memory)* | Snapshots, point-in-time restore and fast clones make new clusters; whether `pg_control_system()` gives Aurora's storage a stable identity is unchecked, so count on the marker; roles keep their passwords *(from memory)* | Storage is shared and replicated by quorum: a failover loses nothing committed, `false` *(from memory)* |
+| Google Cloud SQL | `CREATE ROLE`/`CREATE DATABASE` as `postgres` (`cloudsqlsuperuser`, no superuser) *(from memory)* | Managed connection pooling where your edition has it, or PgBouncer of your own *(from memory)* | The instance's private IP: use `sslmode=verify-ca` and the server CA from the console *(from memory)* | Backups and point-in-time recovery restore to the same or a new instance; clones are new instances; users keep their passwords *(from memory)* | Regional (HA) instances fail over on a synchronously replicated disk: `false` *(from memory)* |
+| Azure Database for PostgreSQL, Flexible Server | As the administrator (`azure_pg_admin`, no superuser); allow-list the three extensions in `azure.extensions` *(from memory)* | The built-in PgBouncer on port 6432 of the same host *(from memory)* | The same host, port 5432 *(from memory)* | Point-in-time restore makes a new server, with the roles and passwords it had *(from memory)* | Zone-redundant high availability replicates synchronously: `false` *(from memory)* |
+| Supabase | A role of its own (`postgres` there has `BYPASSRLS`, which the server refuses): `CREATE ROLE ferrum LOGIN NOBYPASSRLS …` and a database it owns; the extensions are in the `extensions` schema already, as in the rehearsal *(from memory)* | Supavisor's transaction port (6543), user `ferrum.<project ref>` *(from memory)* | Supavisor's session port (5432) on the same host and user, since the database's own host takes another user name *(from memory)* | Daily backups and point-in-time recovery restore in place: the same identity, noticed by the marker, and the same passwords *(from memory)* | Managed by Supabase; `true` unless they say a failover loses nothing *(from memory)* |
+| Neon | The project's role owns its database and is no superuser; whether a role made in Neon's console has `BYPASSRLS` is unchecked: make it with SQL (`CREATE ROLE ... NOBYPASSRLS`) if the server refuses it *(from memory)* | The `-pooler` host (PgBouncer, transaction mode) *(from memory)* | The same host without `-pooler` *(from memory)* | A branch or a restore to a point in time keeps the identity: noticed by the marker; a branch's roles keep their passwords *(from memory)* | Compute is stateless over replicated storage: `false` *(from memory)* |
+| Your own, or CloudNativePG (the chart's) | `deploy/postgres-init` (Compose) or the chart do it | PgBouncer (`database.pooler`) | `-rw` (the chart sets it) | `pg_basebackup`, Barman, CloudNativePG's recovery (*Backups and restore*); a new cluster's role has a password of its own, so `vault_rewrap` (*The vault*) | Synchronous replication: `false`; otherwise `true` |
 
 ## Rotating the secret key
 
@@ -1125,7 +1131,7 @@ Compose; CloudNativePG's backups), never the public schema alone. Keep each slot
 key file, the key-management service, the recovery key and, with the credential slot, the database password. A
 backup and the password together open everything. That is the price of the credential slot, and the reason a cluster
 should also have a `kms` or `file` slot. A restored backup brings back its vault as it was then, and the slots that
-opened it then open it again.
+opened it then open it again: the credential slot only with the password it was made with (below).
 
 **When the database password changes**, give every replica the new password, then run, with the new `DATABASE_URL`,
 `ferrum task vault_rewrap` and type the old password once (it is read from standard input, never from the command
@@ -1135,6 +1141,32 @@ one its password does not open.
 
 **When the password is lost** (or reset by the provider), run `ferrum task vault_rewrap with:recovery` and type the
 recovery key. Without the recovery key and without another slot's key, what the vault holds is lost.
+
+**After a restore, a copy or a move.** The vault is inside the database, so whatever carries the database carries it
+whole: `deploy/dump.sh`, the chart's `import`, `pg_dump` of the whole database, a service's snapshot or clone. Where the
+role has the password it had, it opens as before. A new cluster or server often gives the role a new one:
+CloudNativePG does for `import` (and from memory for `copy` and `recovery`, setting the new cluster's own), and a role
+made anew by hand for `deploy/dump.sh restore` has whatever it was given. The credential slot then does not open, and
+unless another slot opens the vault the server stops, saying *the database password in DATABASE_URL is not the one it
+was made with*, as does every task but `doctor`, `vault_status` and `vault_rewrap`. With the new `DATABASE_URL`, do one
+of these:
+
+1. With the old password at hand (the old installation's `DATABASE_URL`, or its `ferrum-db-app` Secret):
+   `ferrum task vault_rewrap`, and type it.
+2. With the recovery key: `ferrum task vault_rewrap with:recovery`, and type it.
+3. With a `file` slot (its key file mounted where this server runs) or a `kms` slot (the same service set here): the
+   vault opens with it and the server starts. Make the credential slot again for the new password:
+   `ferrum task vault_remove_slot kind:credential`, then `ferrum task vault_add_slot kind:credential`. A task does
+   not replace a credential slot its own password does not open, so the old one goes first; until then the doctor
+   warns that it does not open here.
+
+Then start the servers. `crates/kernel/tests/dump_it.rs` restores a vault with every kind of slot through
+`deploy/dump.sh` and takes each way, the key-management service's too; the planned move and the restore marker run on
+a database with a vault in `crates/kernel/tests/recovery_it.rs` and `scripts/move_rehearsal.sh`. In Kubernetes the pods
+and the migrate Job stop until it is done: run the task once from the server's image with the migrate Job's
+environment and `task vault_rewrap` as its arguments, attached to its standard input (not rehearsed on a cluster).
+Before a move that changes the password, keep the old one, or add a `kms` slot at the source the new place can also
+reach.
 
 **Its record.** Every change and use of a workspace's secrets is on that workspace's audit trail (owner, name, verb;
 never a value). What belongs to the installation (its slots, its installation key, the secrets of the installation's
@@ -2215,8 +2247,9 @@ slightly different moments.
 
 **How the database starts.** `database.bootstrap.mode` is read once, when CloudNativePG creates the cluster;
 keep it in your values afterwards. Every mode but `empty` needs the server's settings (`FERRUM_SECRET_KEY`
-above all: sealed values open only with the key that sealed them) and the files (object storage) of the
-installation it comes from.
+above all: sealed values open only with the key that sealed them), the files (object storage) of the
+installation it comes from, and a way into its vault: the new cluster's role has a password of its own, which the
+vault's credential slot was not made with (*The vault*, After a restore, a copy or a move).
 
 | Mode | What it does | Use it when you come from | Needs | After it |
 |---|---|---|---|---|
@@ -2303,7 +2336,9 @@ The two-version window is not closed for this: it matters only while a move is b
 events, deliveries and failed jobs, and `ferrum task release_restore` and a replay by hand follow ("After
 restoring a backup"). People's changes made at the source after the copy was taken are lost to the copy.
 
-**What moves with it.** The database; the files, byte for byte under the same keys (`tenants/`, `uploads/`,
+**What moves with it.** The database, the vault inside it (it opens on the copy with the slots it had; the
+credential slot only where the role kept its password, so after the chart's `import` see *The vault*, After a restore,
+a copy or a move); the files, byte for byte under the same keys (`tenants/`, `uploads/`,
 `ui/`, `apps/`, `privacy-journal/`, `access-journal/`, the same in a directory and in a bucket, so a plain
 copy of the whole tree or bucket does it); and the keys: `JWT_SECRET` (sessions), `FERRUM_SECRET_KEY` and
 every key in `FERRUM_RETIRED_SECRET_KEYS` (sealed values open only with the key that sealed them), with
@@ -2325,8 +2360,10 @@ newest 200 files and every app bundle the database names that storage lacks (`fi
    `docker compose run --rm --no-deps -T --entrypoint tar ferrum -C /var/lib/ferrum/files -cf - . | tar -C files -xf -`
    then `aws s3 sync files/ s3://<bucket>/` (or `rclone copy`). Compare the object count with the number
    of files.
-4. `helm install` with those values. CloudNativePG imports the fenced database; the server starts, adopts
-   the move and logs `THIS INSTALLATION MOVED HERE`.
+4. `helm install` with those values. CloudNativePG imports the fenced database, and the cluster's role has a new
+   password: the migrate Job stops on the vault's credential slot until `ferrum task vault_rewrap` has run once with
+   the cluster's `DATABASE_URL` and the Compose database's password (*The vault*, After a restore, a copy or a move).
+   Then the server starts, adopts the move and logs `THIS INSTALLATION MOVED HERE`.
 5. `kubectl -n ferrum exec deploy/ferrum -- ferrum task doctor`: no `move`, `secrets.unopened` and
    `files.missing` fine; then `ferrum task check_files`.
 6. Point the names at the cluster (the accounts, callbacks and link hosts first: "Names that should never

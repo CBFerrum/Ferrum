@@ -301,8 +301,9 @@ bootstrap:
       type: microservice
       databases: [{{ $src.database | default "ferrum" }}]
       source: {externalCluster: origin}
-      # Through row-level security as the system's own session (`options` below), so the source's ordinary role
-      # reads every workspace's rows (docs/operations.md, "Backups and restore"); harmless for a superuser.
+      # Through row-level security as the system's own session and the vault's (`options` below), so the source's
+      # ordinary role reads every workspace's rows and the vault's (docs/operations.md, "Backups and restore");
+      # harmless for a superuser.
       pgDumpExtraOptions: ["--enable-row-security"]
   {{- else }}
   pg_basebackup:

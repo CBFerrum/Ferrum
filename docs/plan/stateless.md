@@ -161,7 +161,10 @@ Decided while building it (15 November 2026):
 - **The dump.** `deploy/dump.sh`: pg_dump as the server's role with `ferrum.system` and `ferrum.vault` set for its
   session and `--enable-row-security`; the restore into an empty database in one transaction, without owners or
   grants, leaving out schemas the database has and comments on extensions. The chart's `import` mode passes the same
-  setting as the `options` connection parameter and `--enable-row-security` as `pgDumpExtraOptions`.
+  setting as the `options` connection parameter and `--enable-row-security` as `pgDumpExtraOptions`. The vault's
+  schema (D3) travels whole, its guards with it; where the copy's role has another password its credential slot does
+  not open, and the operator runs `vault_rewrap` (old password or recovery key) or opens with a `file` or `kms` slot
+  and makes the credential slot again (docs/operations.md, "The vault").
 - **"Is this the same database?"** A transaction lock (a random key) taken on the live database and tried through the
   copy's connection: only the same database refuses it, whatever the address or pooler. The identity stays as a second
   opinion only for a standby in recovery, streaming, on the live timeline (the lock does not see it, and no genuine

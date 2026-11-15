@@ -299,7 +299,9 @@ database:
   #   empty     a new, empty database
   #   import    a dump of one database from a running PostgreSQL (pg_dump, then pg_restore here); any
   #             version up to imageName's. The server treats the result as restored from a backup and holds
-  #             mail, webhooks, jobs and commands until an operator releases them.
+  #             mail, webhooks, jobs and commands until an operator releases them. The vault comes with it,
+  #             but this cluster's role has a password of its own: run `ferrum task vault_rewrap` once with
+  #             the old one (docs/operations.md, "The vault", After a restore, a copy or a move).
   #   copy      a physical copy of a running PostgreSQL (pg_basebackup), which must run imageName's major
   #             version (17) on the same architecture with the same tablespaces, allow a replication
   #             connection from this cluster in pg_hba.conf and have max_wal_senders free for two. It keeps
