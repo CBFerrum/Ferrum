@@ -35,7 +35,9 @@ if [ ! -f "$conf/s3.json" ]; then
 fi
 WEED_S3_SSE_KEK=$(cat "$conf/kek")
 export WEED_S3_SSE_KEK
+# No bucket made by a write that names it (-s3.autoCreateBucket=false): only the server's set-up makes one, so a wrong
+# bucket name is refused, and the server is not ready, saying so.
 # shellcheck disable=SC2086 # STORE_ARGS is a list of flags
 exec weed server -dir="$data" -ip=127.0.0.1 -ip.bind=127.0.0.1 -s3 -s3.ip.bind="${STORE_BIND:-0.0.0.0}" -s3.port="${STORE_PORT:-8333}" \
-  -s3.config="$conf/s3.json" -s3.port.iceberg=0 -s3.port.lance=0 -filer.encryptVolumeData -volume.max=0 -master.volumeSizeLimitMB=1024 \
-  ${STORE_ARGS:-}
+  -s3.config="$conf/s3.json" -s3.autoCreateBucket=false -s3.port.iceberg=0 -s3.port.lance=0 -filer.encryptVolumeData -volume.max=0 \
+  -master.volumeSizeLimitMB=1024 ${STORE_ARGS:-}

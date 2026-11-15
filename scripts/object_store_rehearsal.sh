@@ -15,7 +15,8 @@
 #    servers serve every file, each as its row says.
 #    Readiness: with the store stopped after the first answer, a replica stays ready (asked as a browser asks), the
 #    metric and the doctor say so; a server started with the store down is not ready, saying why (the log says it once),
-#    and becomes ready without a restart when the store comes up; one with a wrong bucket never becomes ready.
+#    and becomes ready without a restart when the store comes up; one with a wrong bucket never becomes ready, saying
+#    NoSuchBucket (the bundled store makes no bucket a write names).
 # 3. The doctor's lines on moto: versioning, a lifecycle rule for old versions and encryption at rest, bad, then good
 #    once each is switched on (first with the bundled store's handoff beside it, which leaves a bucket of the
 #    installation's own as it is); moto takes requests without keys, and the doctor says the bucket is public.
@@ -248,6 +249,7 @@ launch "${NAME}_live" $((BASE + 5)) wrong "${STORE[@]}" FERRUM_S3_BUCKET=nosuch 
 C_PID=$SERVED
 sleep 12
 [ "$(readiness "$C")" = 503 ] || fail "a server with a wrong bucket became ready"
+grep -q NoSuchBucket "$work/ready.json" || fail "a wrong bucket, not ready without saying so: $(cat "$work/ready.json")"
 echo "    a wrong bucket: never ready: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["message"][:140])' "$work/ready.json")"
 end "$C_PID"
 

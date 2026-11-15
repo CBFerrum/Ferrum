@@ -949,7 +949,8 @@ in the vault and deletes the file. Nothing goes into `deploy/.env`. The handoff 
 `ferrum` with versioning, lifecycle rules and encryption, which it does then (and at each start until it has), and only
 while it signs with the key handed over: an installation that points Compose at a store of its own signs with that
 store's keys, so its bucket is left as it is even with the bundled store left running (`STORE_REPLICAS=0` stops it).
-A database restored from a dump brings the
+The store makes no bucket a write names, so a wrong bucket name is refused, and the server is not ready, saying
+`NoSuchBucket`. A database restored from a dump brings the
 keys with its vault; a database made anew beside a store that already has keys finds none, and the server says so:
 read them from the store (`docker compose exec store cat /data/ferrum/s3.json`) and give them once with `ferrum task
 secret_set`. To use a store of your own instead, set its address and keys and `STORE_REPLICAS=0`.
