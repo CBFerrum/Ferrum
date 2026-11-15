@@ -75,6 +75,9 @@ spec:
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_BOOTSTRAP_TOKEN}}
             - name: FERRUM_METRICS_TOKEN
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_METRICS_TOKEN}}
+            # The settings routes for the Operations screen (docs/api.md, "Settings"); without it they answer nobody.
+            - name: FERRUM_OPERATOR_TOKEN
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_OPERATOR_TOKEN, optional: true}}
             - name: AWS_ACCESS_KEY_ID
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: AWS_ACCESS_KEY_ID}}
             - name: AWS_SECRET_ACCESS_KEY

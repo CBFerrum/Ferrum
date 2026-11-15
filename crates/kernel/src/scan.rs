@@ -82,8 +82,9 @@ impl Kernel {
         S: Stream<Item = Result<B>> + Unpin,
         B: AsRef<[u8]>,
     {
-        let Some(addr) = &self.settings.clamd else { return Ok("unscanned") };
-        if size > self.settings.clamd_max_bytes {
+        let live = self.live();
+        let Some(addr) = &live.clamd else { return Ok("unscanned") };
+        if size > live.clamd_max_bytes {
             tracing::warn!(file = file_name, size, "stored unscanned: past the malware scanner's size limit");
             return Ok("unscanned");
         }
@@ -109,7 +110,8 @@ impl Kernel {
 
     /// Whether the scanner is there, if one is configured (`ferrum task doctor`).
     pub async fn scanner_ok(&self) -> Option<Result<()>> {
-        let addr = self.settings.clamd.as_deref()?;
+        let live = self.live();
+        let addr = live.clamd.as_deref()?;
         Some(
             async {
                 let mut conn = TcpStream::connect(addr).await.map_err(|e| Error::Unavailable(e.to_string()))?;

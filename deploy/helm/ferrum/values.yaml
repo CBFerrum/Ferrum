@@ -41,7 +41,7 @@ storage:
 #   JWT_SECRET, FERRUM_SECRET_KEY, FERRUM_BOOTSTRAP_TOKEN, FERRUM_METRICS_TOKEN,
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # and, optional: FERRUM_CLAMAV_ADDR, FERRUM_CLAMAV_MAX_MB, FERRUM_CONNECTION_UPLOAD_MB, FERRUM_OPS_TELEMETRY_DAYS,
-#   FERRUM_RETIRED_SECRET_KEYS.
+#   FERRUM_RETIRED_SECRET_KEYS, FERRUM_OPERATOR_TOKEN (the settings routes for the Operations screen).
 secrets:
   existingSecret: ferrum-secrets
   # Optional: have the External Secrets Operator (installed separately) make that Secret from your
@@ -58,6 +58,23 @@ secrets:
 # Settings the chart does not know yet: entries of a container's `env`, added to the server.
 extraEnv: []
 # - {name: FERRUM_PROXY_HOPS, value: "2"}
+
+# Settings kept in the database (docs/operations.md, "Settings in the database"), applied by a Job before the pods
+# start, as the migrate Job runs (`ferrum task apply_settings`; on the first install with the chart's own database,
+# which does not exist yet when hooks run, from the first upgrade on). Name each setting by its key:
+#   settings:
+#     installation: {session_days: "7", user_requests_per_minute: "1200"}
+#     pools: {default: {db_max_connections: "40"}}   # a pool's own; `default` with no `pools`
+#     others: keep    # what the document leaves out: keep (the default), or unset it in the table
+# The environment still wins over the table: a setting this chart also renders as a variable keeps the variable's
+# value unless `environment` is minimal. Empty (the default): no Job.
+settings: {}
+# The server pods' environment: `full` (the default), every setting as a variable, as before; or `minimal`: the
+# database's address with the pool in it (`application_name=pool:<name>`), the secrets, and the variables apps
+# compiled into the server still read themselves. Every other setting then comes from the table: the settings Job
+# writes the values the full environment would have held, with `settings` over them. Not on the first install with
+# the chart's own database (the Job cannot run before it exists): install with `full`, then switch.
+environment: full
 
 # No replicas are set while autoscaling is enabled: the autoscaler owns the count.
 replicas: 3     # used only when autoscaling.enabled is false
@@ -194,6 +211,9 @@ privateGateway:
 database:
   enabled: true
   urlSecret: {name: "", key: uri}   # used when enabled is false
+  # With `environment: minimal`: whether that address already has a query (`?sslmode=require`), so that the pool's
+  # name is added to it with `&` instead of `?`.
+  urlHasQuery: false
   instances: 3
   imageName: ghcr.io/cloudnative-pg/postgresql:17
   storageSize: 100Gi

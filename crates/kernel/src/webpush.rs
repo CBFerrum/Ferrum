@@ -213,7 +213,7 @@ impl Kernel {
         let Some(vapid) = self.vapid().await? else {
             return Err(Error::Unavailable("notifications on devices need the server's secret key (FERRUM_SECRET_KEY)".into()));
         };
-        if endpoint.len() > 2048 || !allowed_endpoint(endpoint, &self.settings.push_services) {
+        if endpoint.len() > 2048 || !allowed_endpoint(endpoint, &self.live().push_services) {
             return Err(Error::field("endpoint", "is not a push service this server sends to"));
         }
         let key = key_bytes(p256dh, 65).filter(|k| k[0] == 4).ok_or_else(|| Error::field("keys.p256dh", "is not a P-256 public key"))?;
@@ -346,7 +346,8 @@ impl Kernel {
             Err(e) => return Err(e),
         };
         let audience = url.origin().ascii_serialization();
-        let contact = self.settings.push_contact.as_deref().or(self.settings.public_url.as_deref().filter(|u| u.starts_with("https://")));
+        let live = self.live();
+        let contact = live.push_contact.as_deref().or(self.settings.public_url.as_deref().filter(|u| u.starts_with("https://")));
         // ponytail: sent in the outbox's batch, one after another; a delivery queue of its own (as
         // webhooks have) if bursts of pushes hold up other events.
         let res = client

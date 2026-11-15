@@ -234,7 +234,8 @@ pub struct Shell {
     kernel: Arc<Kernel>,
     storage: Arc<Storage>,
     pub secure: bool,
-    pub session_ttl: Duration,
+    /// How long a browser stays signed in, in seconds (`session_days`, which applies at once).
+    session_secs: std::sync::atomic::AtomicU64,
     default_slug: String,
     default_workspace: DashMap<(), (Instant, Option<Uuid>)>,
     slugs: DashMap<String, (Instant, Option<Uuid>)>,
@@ -360,13 +361,28 @@ pub fn public_host(public_url: &str) -> Option<String> {
     reqwest::Url::parse(public_url.trim()).ok().and_then(|u| u.host_str().and_then(ferrum_kernel::shell::normalize_host))
 }
 
+/// `session_days` in seconds, held to 1 to 400 days.
+fn session_secs(days: u32) -> u64 {
+    u64::from(days.clamp(1, 400)) * 86_400
+}
+
 impl Shell {
+    /// How long a browser stays signed in.
+    pub fn session_ttl(&self) -> Duration {
+        Duration::from_secs(self.session_secs.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// `session_days` changed while the server runs: sessions opened from now on last that long.
+    pub fn set_session_days(&self, days: u32) {
+        self.session_secs.store(session_secs(days), std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn new(kernel: Arc<Kernel>, storage: Arc<Storage>, settings: &Settings, public_url: &str) -> Shell {
         Shell {
             kernel,
             storage,
             secure: public_url.trim().starts_with("https://"),
-            session_ttl: Duration::from_secs(u64::from(settings.session_days.clamp(1, 400)) * 86_400),
+            session_secs: std::sync::atomic::AtomicU64::new(session_secs(settings.session_days)),
             default_slug: settings.default_workspace.trim().to_lowercase(),
             default_workspace: DashMap::new(),
             slugs: DashMap::new(),
@@ -1561,7 +1577,7 @@ pub fn public_entry_page(entry: &EntryTemplate, bootstrap: &Value, csp: &str) ->
 /// The Content-Security-Policy of an app's pages: its own files and the host, plus the origins
 /// its manifest names (taken from operator settings where it says so).
 pub fn csp(manifest: Option<&AppManifest>, settings: &Value) -> String {
-    csp_with(manifest, settings, |name| std::env::var(name).ok())
+    csp_with(manifest, settings, ferrum_kernel::env::var)
 }
 
 /// [`csp`], reading the server's settings (`env:FERRUM_…`) through `env`.

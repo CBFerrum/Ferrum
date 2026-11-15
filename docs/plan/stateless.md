@@ -1,0 +1,151 @@
+# One input, two stores: settings in the database, the vault, object storage, any PostgreSQL, Git
+
+Status: being built (started 15 November 2026). The plan and its reasons: `STATELESS-VAULT-GIT-PLAN-2026-11-15.md`
+(kept outside the repository). This file is the decision record; where the two differ, this file wins. It becomes
+`docs/plan/stateless.md` in the repository with the first slice that lands.
+
+## Words
+
+- **The boot contract**: what a program may take from its environment.
+- **Setting**: a value an operator chooses for the installation or for one pool. Not a secret.
+- **Secret**: anything whose disclosure harms. Lives in the vault, never in a setting.
+- **Owner**: who a secret belongs to: `platform`, an app's id, or `plugin:<name>`.
+- **Slot**: one way of opening the installation key.
+- **R1 / R2**: the release that adds a thing, and the release after it. The previous build must still start on the
+  newer database (the two-version window), so anything an older build reads stays readable through R1.
+
+## Rules that every part keeps
+
+1. **One input.** After R2 a program reads `DATABASE_URL` and nothing else from its environment. Through R1, every
+   variable that works today still works and still wins, so a rollback behaves.
+2. **Two stores.** PostgreSQL and the object store. No program keeps anything else that it cannot rebuild.
+3. **Secrets are used, not handed out.** Raw values leave the vault only where a secret's rule allows `reveal`.
+4. **An owner opens only its own.** No public function takes an owner as a parameter from an app.
+5. **A dump opens nothing.** No key that opens a sealed value is stored unwrapped in the database or the bucket.
+6. **No superuser, no session state.** Everything works as an ordinary role, through a transaction-mode pooler
+   (transaction-local settings only), on managed PostgreSQL.
+7. **Additive.** New tables and columns only; nothing an older build reads changes shape in R1.
+8. **Fail closed, say why.** A program that cannot open its root, read its settings or reach a store refuses to
+   serve and names the cause in plain words. It never falls back to a weaker mode silently.
+9. **Plumbing in four places** still holds for anything that must remain in the environment in R1 (see RULES).
+
+## D1. The boot contract
+
+- `DATABASE_URL` (required). Its `application_name` parameter names the pool: `pool:<name>`; absent means `default`.
+- Files at fixed paths, read when present, never required: `/run/ferrum/root.key` (the file slot, 32 bytes as
+  base64), `/run/ferrum/db-ca.pem` (a certificate authority to trust for the database).
+- Start order: connect with a pool of two; read the pool's row; open the root (D3); read settings (D2); open the real
+  pools; serve; listen for changes.
+- Everything that today must be known before the database is reachable keeps a compiled default (log level and
+  format, telemetry off) and is then replaced by the database's value.
+- Port and bind address have fixed defaults (the container's); they remain overridable in R1 like everything else.
+
+## D2. Settings
+
+- **Table** `setting (scope, scope_name, key, value jsonb, version, updated_at, updated_by)`; `scope` is
+  `installation` or `pool`; primary key `(scope, scope_name, key)`. Created by one early, never-reshaped migration.
+- **Registry**: every setting is declared once in code: key, the legacy environment name, type, default, scope,
+  whether it applies `live` or at `start`, whether it is a secret. A secret is declared there but never stored in
+  `setting`: until the vault holds it (D4) it stays where it is today.
+- **Precedence in R1**: environment (when set) over database over default. The doctor lists every setting that the
+  environment decides. In R2 the environment is not read.
+- **Adopt**: at start, a setting found in the environment and absent from the table is written to it once, as
+  `updated_by = 'environment'`, under an advisory lock (two replicas starting together write it once).
+- **Live apply**: a change notifies channel `ferrum_settings`; each replica rebuilds its snapshot and swaps it in
+  atomically. A periodic compare of the table's highest version heals a missed notice within 30 seconds. A setting
+  marked `start` takes effect at the next start; until then the replica is listed as running the old value.
+- **Replicas table** `replica (id, pool, build_date, started_at, seen_at, settings_version)`, refreshed every 30
+  seconds and aged out after two minutes. It answers "which replicas still run the old value" and "how many replicas
+  are live" (per-user and per-address limits divide by that number).
+- **Changing settings**: `ferrum task settings` (list, with where each value comes from), `set`, `unset`,
+  `apply_settings file:` (a whole document, declarative; this is what the chart's Job runs), and operator routes for
+  the Operations interface. Each change is validated by the registry's type, recorded on the operator's audit trail
+  with old and new value, and never accepts a secret.
+- **The chart**: values gain a `settings:` document and a Job that applies it (as the migrate Job runs). In R1 the
+  default render is unchanged; `environment: minimal` renders only the database address (with the pool in
+  `application_name`) and relies on the Job.
+- **A check** (`scripts/settings.py`): every `get_env(` in the server's configuration and every read of the
+  environment in `server/` and `crates/` is declared in the registry or is on a short allow-list (the boot contract,
+  tests, build scripts); the operations guide's table is generated from the registry.
+
+## D3. The vault: keys and slots
+
+- **Sealing stays in the server**: AES-256-GCM (as `secret.rs` does today) with associated data that binds a value
+  to its place. Nothing is encrypted by SQL functions.
+- **Hierarchy**: slot → installation key → workspace key (one per workspace; one more for installation-wide
+  secrets) → owner key (one per owner in that workspace) → secret. Every key below a slot is random, stored wrapped,
+  and carries a version.
+- **Slots** (`vault.root_slot`): the installation key wrapped once per slot; any slot opens it.
+  - `credential`: wrapping key derived from the database password in `DATABASE_URL` with Argon2id and a per-slot
+    salt. The default when nothing else is present. Refused when the address has no password.
+  - `file`: the key in `/run/ferrum/root.key`.
+  - `kms`: the existing Transit and command wrappers (`kms.rs`); its address and options are settings.
+  - `recovery`: a key printed once by a task, for the owner to keep offline.
+  - Opening order at start: `file`, then `kms`, then `credential`. A fresh database gets an installation key and the
+    best slot available, made under an advisory lock so that replicas starting together make one.
+  - Tasks add and remove slots, re-wrap for a changed database password (`old password` given once), print a
+    recovery key, and show status. The last slot is never removable.
+- **Tables** live in schema `vault`, with row-level security forced and a policy that requires the transaction-local
+  setting `ferrum.vault = 'on'`, which only the vault module sets. A query that does not go through the module sees
+  no row.
+- **Key material in memory** is zeroed on drop and never formatted, logged or serialised.
+- **Rotation**: a slot (one row); the installation key (re-wrap workspace keys); a workspace or owner key (new
+  version; values re-sealed in the background; old version kept until none remain); one secret (versions; for
+  secrets that verify, the previous version stays valid for its rule's overlap).
+
+## D4. The vault: owners, verbs, rules
+
+- **A handle bound to its owner.** `Vault` values are made only inside the kernel crate; an app receives one for its
+  own id where the kernel calls it. There is no public function that takes an owner and returns secrets.
+- **Verbs**: `set` / `rotate` / `remove` / `describe` (metadata only); `reveal` (raw value, only if the secret's rule
+  allows it); `derive(purpose)` (a key from the owner key, nothing stored); `sign` / `verify` (HMAC and Ed25519);
+  `seal` / `open` (data under the owner key); and, where the platform makes the call, credentials added to outbound
+  requests for the hosts a secret names (the existing connections and plugin-host paths move onto this in D5).
+- **Rule on each secret**: `reveal` yes/no, the hosts it may be sent to, how a sandbox treats it (`blank`,
+  `regenerate`, `keep`), overlap on rotation, expiry.
+- **People**: setting, rotating and removing need a right for that owner and a confirmed identity (the existing
+  step-up). No route returns a value; one shown at creation is shown once.
+- **Audit**: every `reveal`, `sign`, outbound use, set, rotate and remove is on the audit trail (owner, name, verb,
+  workspace; never a value), under the existing cap on floods; `last_used` is kept coarsely on the secret.
+- **A check** (`scripts/secret_paths.py`): no crate outside the kernel's vault module names the master key, the
+  vault's tables or raw sealing functions; app crates use no `unsafe` and no cryptography crates directly.
+
+## D5. Moving what exists into the vault (after D3 and D4 have landed)
+
+- R1: the kernel's stores (secret fields, connections, plugin credentials, single sign-on secrets, SAML keys,
+  two-factor seeds, webhook secrets, the push key) and the environment's secrets (session signing, bootstrap and
+  metrics tokens, mail, object store, assistant, audit sink) are written to the vault; the old stores stay readable
+  for the previous build. `settings.secret_key` stops being public. Session tokens are signed with a key pair that
+  has a key id; the old shared secret still verifies until its tokens expire.
+- R2: the old stores and the environment's secrets are dropped; `COMPATIBLE_FROM` moves.
+- Apps: sealed columns of their own become vault secrets of that app; unsealed per-workspace keys become derived
+  keys; country add-ons' credentials become connections.
+
+## D6. Object storage only
+
+The local directory is refused outside development and tests. Docker Compose bundles an S3-compatible store. The
+store's address is a setting; its keys are a platform secret, or none where the pod has an identity. The doctor
+checks versioning, lifecycle and encryption at rest. Objects are backed up beside the database, and a drill restores
+both to one moment. Downloads stay through the server; short-lived direct links are a setting, never for entities
+marked for recorded reads.
+
+## D7. Any PostgreSQL
+
+The chart takes an outside database (address, certificate authority, an egress rule). Direct and read addresses are
+settings holding a host; the credential is the one in `DATABASE_URL`. A full dump works as the ordinary role. The
+"same database" check uses a lock. A restore is noticed through a marker in the object store. Moves and sandboxes
+run with an ordinary role. A rehearsal behaves like a managed service on this machine.
+
+## D8. Git
+
+The forge keeps its database in PostgreSQL, its eight kinds of objects in the object store, its sessions and issue
+index in the database, and takes every key as a file written at start; its configuration file is generated at each
+start in memory. Its one volume holds repositories and the task queue, and is backed up to the object store on a
+schedule, with a restore drill. Its administrator is made without a person. The gate counts turns in the database
+and runs as any number of replicas. A Code app, in its own repository, gives repositories, access by membership,
+tokens, sign-in to the forge through Ferrum and CI runners; Cloud keeps running the forge.
+
+## Not doing
+
+pgcrypto, pgsodium or any encryption inside SQL; OpenBao as a required service; a shared filesystem for Git; Redis
+or Valkey as a requirement; a database role per app.

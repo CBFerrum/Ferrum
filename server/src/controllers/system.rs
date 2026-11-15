@@ -32,10 +32,10 @@ async fn version(State(app): State<AppContext>) -> ApiResult<Response> {
     let uploads = json!({
         "max_bytes": st.settings.upload_max_bytes,
         "direct": st.objects.direct_uploads(),
-        "direct_max_bytes": st.objects.direct_uploads().then_some(st.settings.direct_upload_max_bytes),
+        "direct_max_bytes": st.objects.direct_uploads().then_some(st.live_settings.now().settings.direct_upload_max_bytes),
         // In parts through the server, on any store, resuming after a dropped connection.
         "parts": true,
-        "parts_max_bytes": st.settings.direct_upload_max_bytes,
+        "parts_max_bytes": st.live_settings.now().settings.direct_upload_max_bytes,
         "part_bytes": crate::objects::PART_BYTES,
     });
     Ok(Json(json!({
@@ -464,7 +464,7 @@ async fn start_upload(Auth(ctx): Auth, State(app): State<AppContext>, Json(b): J
         _ => return Err(ApiError(Error::field("record_id", "entity and record_id go together"))),
     };
     let up = crate::objects::NewUpload { file_name: b.file_name, content_type: b.content_type, size: b.size, attach_to, parts: b.parts };
-    let v = crate::objects::start(&st.kernel, &st.objects, &ctx, st.settings.direct_upload_max_bytes, up).await?;
+    let v = crate::objects::start(&st.kernel, &st.objects, &ctx, st.live_settings.now().settings.direct_upload_max_bytes, up).await?;
     Ok((StatusCode::CREATED, Json(v)).into_response())
 }
 

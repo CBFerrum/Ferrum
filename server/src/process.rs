@@ -15,13 +15,13 @@ static SETTINGS: std::sync::OnceLock<ferrum_process::Settings> = std::sync::Once
 /// Connects to Temporal when it is configured and registers what starts and signals runs. Whether this server
 /// runs processes.
 pub async fn configure(hooks: &mut HookRegistry, key: &SecretKey, retired: &[SecretKey]) -> Result<bool, String> {
-    let Some(address) = std::env::var("TEMPORAL_ADDRESS").ok().filter(|a| !a.trim().is_empty()) else { return Ok(false) };
+    let Some(address) = ferrum_kernel::env::var("TEMPORAL_ADDRESS").filter(|a| !a.trim().is_empty()) else { return Ok(false) };
     #[cfg(feature = "process")]
     {
         let settings = ferrum_process::Settings {
             address,
-            namespace: std::env::var("TEMPORAL_NAMESPACE").unwrap_or_else(|_| "ferrum".into()),
-            queue: std::env::var("TEMPORAL_TASK_QUEUE").unwrap_or_else(|_| ferrum_process::QUEUE.into()),
+            namespace: ferrum_kernel::env::var("TEMPORAL_NAMESPACE").unwrap_or_else(|| "ferrum".into()),
+            queue: ferrum_kernel::env::var("TEMPORAL_TASK_QUEUE").unwrap_or_else(|| ferrum_process::QUEUE.into()),
             keys: Arc::new(ferrum_process::Keys { current: key.clone(), retired: retired.to_vec() }),
         };
         let client = ferrum_process::client(&settings).await.map_err(|e| format!("TEMPORAL_ADDRESS: {e}"))?;

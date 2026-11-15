@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 /// Days of samples, from `FERRUM_OPS_TELEMETRY_DAYS` (default 30).
 pub fn retention_days() -> i64 {
-    std::env::var("FERRUM_OPS_TELEMETRY_DAYS").ok().and_then(|v| v.parse().ok()).filter(|d| *d >= 1).unwrap_or(30)
+    ferrum_kernel::env::var("FERRUM_OPS_TELEMETRY_DAYS").and_then(|v| v.parse().ok()).filter(|d| *d >= 1).unwrap_or(30)
 }
 
 /// Days of minute rollups.

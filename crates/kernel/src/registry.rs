@@ -12,6 +12,9 @@ use uuid::Uuid;
 
 pub const META_CHANNEL: &str = "ferrum_meta";
 
+/// The channel a change of the server's settings is announced on (server/src/settings.rs).
+pub const SETTINGS_CHANNEL: &str = "ferrum_settings";
+
 struct Cached {
     schema: Arc<Schema>,
     checked_at: Instant,
@@ -35,6 +38,8 @@ pub struct Registry {
     /// How often any workspace's settings were seen to change, or everything dropped: a replica's answers for hosts
     /// ([`crate::Kernel::route_host`]) are kept only while this stands.
     bumps: AtomicU64,
+    /// Moves on each notice of [`SETTINGS_CHANNEL`], and whenever one may have been missed ([`Registry::settings_notices`]).
+    settings: watch::Sender<u64>,
 }
 
 impl Registry {
@@ -48,7 +53,18 @@ impl Registry {
             changes: DashMap::new(),
             epoch: AtomicU64::new(0),
             bumps: AtomicU64::new(0),
+            settings: watch::channel(0).0,
         }
+    }
+
+    /// Changes of the server's settings this replica heard of: the metadata listener hears [`SETTINGS_CHANNEL`] too, and
+    /// the value moves on each notice, and whenever the listener (re)connects, since one may have been missed then.
+    pub fn settings_notices(&self) -> watch::Receiver<u64> {
+        self.settings.subscribe()
+    }
+
+    fn settings_changed(&self) {
+        self.settings.send_modify(|n| *n += 1);
     }
 
     pub(crate) fn bumps(&self) -> u64 {
@@ -224,9 +240,14 @@ impl Registry {
                 if *shutdown.borrow() {
                     return;
                 }
-                match me.db.listen(META_CHANNEL).await {
+                let listening = match me.db.listen(META_CHANNEL).await {
+                    Ok(mut listener) => listener.listen(SETTINGS_CHANNEL).await.map(|()| listener).map_err(Error::from),
+                    Err(e) => Err(e),
+                };
+                match listening {
                     Ok(mut listener) => {
                         backoff = Duration::from_millis(250);
+                        me.settings_changed();
                         if let Err(e) = me.reload_catalog().await {
                             tracing::error!("reloading the app catalog failed: {e}");
                         }
@@ -235,6 +256,7 @@ impl Registry {
                             tokio::select! {
                                 _ = shutdown.changed() => return,
                                 msg = crate::db::notification(&mut listener) => match msg {
+                                    Ok(n) if n.channel() == SETTINGS_CHANNEL => me.settings_changed(),
                                     Ok(n) if n.payload() == CATALOG_CHANGED => {
                                         if let Err(e) = me.reload_catalog().await {
                                             tracing::error!("reloading the app catalog failed: {e}");

@@ -62,7 +62,8 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   (`Kernel::rate_limit`). They are per address: Campaigns' tracking pixels and links opened
   through a mail provider's image proxy share that proxy's budget. Each user's own request budget
   (`FERRUM_USER_REQUESTS_PER_MINUTE`) and each address's (`FERRUM_ADDRESS_REQUESTS_PER_MINUTE`)
-  are counted per replica, not across the cluster. Addresses are what the proxies in front report
+  are a pool's: each replica counts its own requests against its share, the budget divided by the pool's live
+  replicas, so the budget holds roughly however requests spread over them. Addresses are what the proxies in front report
   (`FERRUM_PROXY_HOPS`); requests that came through no proxy are not counted per address.
 - **GST e-invoices and e-way bills** (`india`): Sales Invoices to registered businesses, SEZs and
   buyers abroad, and their credit notes; debit notes, deemed exports, reverse charge and

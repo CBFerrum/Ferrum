@@ -137,8 +137,10 @@ async fn scenario(main: String) {
 
     // Its listener's connection is cut: it drops its whole cache (what it may have missed), listens again, and drops
     // it once more then (what was announced in between).
+    // (The metadata listener also hears the settings' channel on the same connection, and that LISTEN is the last
+    // statement it ran, which is how `cut` finds a session.)
     let (epoch, _) = b.registry.revision(t);
-    assert!(cut(&a.db, "ferrum_meta").await >= 1);
+    assert!(cut(&a.db, ferrum_kernel::registry::SETTINGS_CHANNEL).await >= 1);
     wait("the cut was noticed, and it listens again", b.clone(), Box::new(move |b| b.registry.revision(t).0 >= epoch + 2)).await;
     let (_, changes) = b.registry.revision(t);
     let mut tx = a.db.system_tx().await.unwrap();

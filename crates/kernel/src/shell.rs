@@ -1255,7 +1255,7 @@ impl Kernel {
         .bind(&after.apps)
         .bind(&after.label)
         .bind(after.forward)
-        .bind(self.settings.host_leaving_days)
+        .bind(self.live().host_leaving_days)
         .execute(&mut *tx)
         .await?;
         let said = serde_json::json!({"host": host, "before": before, "after": after});
@@ -1424,7 +1424,7 @@ impl Kernel {
         tx.commit().await?;
         let Some((token, verified, proved)) = row else { return Ok(None) };
         let record = if points && !proved && self.settings.domain_proof == DomainProof::Record {
-            Some(domain_record(&self.settings.dns_resolvers, host, &token).await)
+            Some(domain_record(&self.live().dns_resolvers, host, &token).await)
         } else {
             None
         };
@@ -1529,7 +1529,7 @@ impl Kernel {
         may_change_addresses(ctx)?;
         let host = normalize_host(host).ok_or_else(|| Error::NotFound("no such domain".into()))?;
         let mut tx = self.db.system_tx().await?;
-        let until = self.release_in(&mut tx, ctx.tenant, &host, true, self.settings.host_leaving_days).await?;
+        let until = self.release_in(&mut tx, ctx.tenant, &host, true, self.live().host_leaving_days).await?;
         crate::audit::record_admin(&mut tx, ctx, "WorkspaceDomain", ctx.tenant, "remove", None, serde_json::json!({"host": host, "leaving_until": until}))
             .await?;
         tx.commit().await?;
@@ -1542,7 +1542,7 @@ impl Kernel {
     /// the leaving period, if it has one.
     pub async fn release_host(&self, host: &str, leaving_days: Option<i64>) -> Result<(Uuid, Option<DateTime<Utc>>)> {
         let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a host name"))?;
-        let days = leaving_days.unwrap_or(self.settings.host_leaving_days);
+        let days = leaving_days.unwrap_or(self.live().host_leaving_days);
         if !(0..=365).contains(&days) {
             return Err(Error::field("leaving_days", "must be from 0 to 365"));
         }
