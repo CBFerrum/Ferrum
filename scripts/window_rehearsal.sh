@@ -15,7 +15,10 @@
 # 2. the older build starts again, with FERRUM_MIGRATE_AT_START=false and then true: each time it must start as a guest,
 #    read and write the records it knows, leave the schema exactly as it was, and leave this build's waiting work alone
 #    (this build then takes it);
-# 3. this build switches on staff networks, which the older build enforces (it still starts), then recorded reads, which
+# 3. with SeaweedFS on the PATH (deploy/store/start.sh, as Compose runs it): this build moves the files to object
+#    storage (`files_move`) and the directory goes; the older build starts on that database and reads and writes files
+#    there, and this build reads what it wrote. Every start after this one is given the store's settings;
+# 4. this build switches on staff networks, which the older build enforces (it still starts), then recorded reads, which
 #    it does not: it refuses to start, naming them; `ferrum task allow_older_builds` lets it start; the next start of
 #    this build puts the floor back, and it is refused again.
 #
@@ -23,7 +26,8 @@
 # (this build; default target/debug/ferrum, built with `cargo build -p ferrum-server --no-default-features --bin ferrum`),
 # WINDOW_WORK (where the older build is made and kept; default ${TMPDIR:-/tmp}/ferrum-window), WINDOW_ADMIN_URL (a
 # superuser, to create the database; default postgres://$USER@localhost:5432), WINDOW_APP_URL (the servers' role;
-# default postgres://ferrum:ferrum@localhost:5432), WINDOW_PORT (default 5395).
+# default postgres://ferrum:ferrum@localhost:5432), WINDOW_PORT (default 5395), WINDOW_STORE_PORT (the store's S3 port,
+# and its inner ones from it + 10 and + 10010; default 39400).
 set -euo pipefail
 PREFIX=ferrum_windowrehearsal_
 [ $# -eq 2 ] || { echo "usage: $0 <older commit> ${PREFIX}<name>" >&2; exit 2; }
@@ -67,10 +71,12 @@ fi
 # Another server on the port would pass for one of these.
 if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then echo "refused: something listens on 127.0.0.1:$PORT (set WINDOW_PORT)" >&2; exit 2; fi
 work=$(mktemp -d)
-SERVER_PID=''
+SERVER_PID='' STORE_PID=''
+STORE_ENV=()
 cleanup() {
   status=$?
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null && wait "$SERVER_PID" 2>/dev/null
+  [ -n "$STORE_PID" ] && kill "$STORE_PID" 2>/dev/null && wait "$STORE_PID" 2>/dev/null
   if [ "$status" -ne 0 ]; then
     for log in "$work"/*.log; do [ -f "$log" ] && { echo "--- $log"; tail -30 "$log"; }; done
   fi
@@ -94,8 +100,8 @@ start() {
   local which=$1 log=$2; shift 2
   local bin=$BIN dir=$ROOT/server
   [ "$which" = old ] && bin=$OLD_BIN dir=$OLD_DIR/src/server
-  (cd "$dir" && exec env DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" PORT="$PORT" BINDING=127.0.0.1 PUBLIC_URL="$URL" "$@" \
-    "$bin" start) >"$work/$log.log" 2>&1 &
+  (cd "$dir" && exec env DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" PORT="$PORT" BINDING=127.0.0.1 PUBLIC_URL="$URL" \
+    ${STORE_ENV[@]+"${STORE_ENV[@]}"} "$@" "$bin" start) >"$work/$log.log" 2>&1 &
   SERVER_PID=$!
   for _ in $(seq 1 180); do
     curl -fsS "$URL/api/ready" >/dev/null 2>&1 && return 0
@@ -150,7 +156,8 @@ curl -fsS "$URL/api/tenants" -H 'x-ferrum-bootstrap-token: rehearsal-token' -H '
 T=$(token)
 [ "$(contact "$T" Old-1)" = 201 ] || fail "a record with the older build"
 # An installation keeping its files in a local directory, as one from before object storage only (D6) does.
-curl -fsS -o /dev/null "$URL/api/files" -H "authorization: Bearer $T" -F "file=@$ROOT/README.md" || fail "a file with the older build"
+FIRST=$(curl -fsS "$URL/api/files" -H "authorization: Bearer $T" -F "file=@$ROOT/README.md" | json 'd["id"] + " " + d["sha256"]') ||
+  fail "a file with the older build"
 stop
 
 step "this build migrates; with its background work off it leaves an event and a job waiting"
@@ -180,6 +187,45 @@ step "this build takes its waiting work"
 start new new-again FERRUM_RUN_BACKGROUND=true || fail "this build did not start again"
 for _ in $(seq 1 30); do [ "$(waiting)" = "0 0" ] && break; sleep 1; done
 [ "$(waiting)" = "0 0" ] || fail "this build did not take its own waiting work: $(waiting)"
+# The SHA-256 of file $1 downloaded through the server that runs now.
+fetched() { curl -fsSL "$URL/files/$1" -H "authorization: Bearer $(token)" | shasum -a 256 | cut -d' ' -f1; }
+if command -v weed >/dev/null 2>&1; then
+  step "this build moves the files to object storage; the older build reads and writes them there"
+  stop
+  SPORT=${WINDOW_STORE_PORT:-39400}
+  for p in "$SPORT" $((SPORT + 10)) $((SPORT + 11)) $((SPORT + 12)) $((SPORT + 10010)) $((SPORT + 10011)) $((SPORT + 10012)); do
+    if (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then fail "something listens on 127.0.0.1:$p (set WINDOW_STORE_PORT)"; fi
+  done
+  STORE_DATA="$work/store" STORE_HANDOFF="$work/run/object-store" STORE_BIND=127.0.0.1 STORE_PORT=$SPORT \
+    STORE_ARGS="-master.port=$((SPORT + 10)) -volume.port=$((SPORT + 11)) -filer.port=$((SPORT + 12)) -master.volumeSizeLimitMB=64" \
+    sh "$ROOT/deploy/store/start.sh" >"$work/store.log" 2>&1 &
+  STORE_PID=$!
+  for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$SPORT/healthz" >/dev/null 2>&1 && break; sleep 1; done
+  read -r KEY SECRET < <(python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["identities"][0]["credentials"][0]; print(c["accessKey"], c["secretKey"])' "$work/store/ferrum/s3.json")
+  # The older build takes the store's keys from the environment (it has no vault).
+  STORE_ENV=(FERRUM_S3_BUCKET=ferrum "FERRUM_S3_ENDPOINT=http://127.0.0.1:$SPORT" FERRUM_S3_REGION=us-east-1 "FERRUM_TEST_RUN_DIR=$work/run"
+    "AWS_ACCESS_KEY_ID=$KEY" "AWS_SECRET_ACCESS_KEY=$SECRET")
+  start new new-store || fail "this build did not start with the store"
+  grep -q "files are moving from the local directory" "$work/new-store.log" || fail "this build did not say files are moving"
+  stop
+  (cd "$ROOT/server" && exec env DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" "${STORE_ENV[@]}" "$BIN" task files_move) >"$work/move.log" 2>&1 ||
+    fail "files_move: $(tail -3 "$work/move.log")"
+  grep -q "is no longer read" "$work/move.log" || fail "the move was not confirmed: $(tail -3 "$work/move.log")"
+  mv "$work/files" "$work/files.moved" && mkdir -p "$work/files"
+  start old old-store || fail "the older build did not start on the database this build moved files in"
+  read -r first_id first_sha <<<"$FIRST"
+  [ "$(fetched "$first_id")" = "$first_sha" ] || fail "the older build does not read its file from object storage"
+  OLDER=$(curl -fsS "$URL/api/files" -H "authorization: Bearer $(token)" -F "file=@$ROOT/LICENSE" | json 'd["id"] + " " + d["sha256"]') ||
+    fail "the older build does not write a file to object storage"
+  read -r older_id older_sha <<<"$OLDER"
+  [ "$(fetched "$older_id")" = "$older_sha" ] || fail "the older build does not read back the file it wrote"
+  stop
+  start new new-after-store || fail "this build did not start again"
+  [ "$(fetched "$older_id")" = "$older_sha" ] || fail "this build does not read the file the older build wrote"
+  echo "    moved ($(head -1 "$work/move.log")); the older build read its file there, wrote one, and this build reads it"
+else
+  echo "    skipped moving files to object storage: no SeaweedFS (weed) on the PATH"
+fi
 T=$(token)
 settings() { curl -sS -o "$work/settings.json" -w '%{http_code}' -X PUT "$URL/api/admin/settings" -H "authorization: Bearer $T" -H 'content-type: application/json' -d "$1"; }
 # A build that knows floors (pull request 235 and later) names the protections it is too old for; one from before them
@@ -211,7 +257,8 @@ refused() {
 refused old-refused
 
 step "allow_older_builds with this build: the older build starts again, until this build's next start"
-(cd "$ROOT/server" && DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" "$BIN" task allow_older_builds reason:"window rehearsal") | tail -3
+(cd "$ROOT/server" && exec env DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" ${STORE_ENV[@]+"${STORE_ENV[@]}"} "$BIN" task allow_older_builds \
+  reason:"window rehearsal") | tail -3
 start old old-allowed || fail "the older build was refused after allow_older_builds"
 stop
 start new new-floor || fail "this build did not start"
