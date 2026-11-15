@@ -219,6 +219,34 @@ async fn scenario() {
     swap.set(&in_store);
     assert_eq!(k.read_file(&admin, ids[0]).await.unwrap().2, b"file 0 ".to_vec());
 
+    // ───────────── an older build writes to the directory after the move ─────────────
+    // A rollback to a build that keeps files in the directory, after the move was confirmed: no replica row to see it.
+    swap.set(&in_dir);
+    let late = store_file(600).await;
+    // This build again, the old directory still mounted: the file is read at once from there.
+    let mounted = Arc::new(Objects::local(bucket.to_str().unwrap()).unwrap().reading_directory(old.to_str().unwrap()).unwrap());
+    swap.set(&mounted);
+    assert_eq!(k.read_file(&admin, late).await.unwrap().2, b"file 600 ".repeat(6), "readable at once");
+    assert!(!bucket.join(key(late)).exists());
+    let counted = store::rescue(&db, &mounted, None, false).await.unwrap().unwrap();
+    assert_eq!((counted.found, counted.copied), (1, 0), "the doctor's count, nothing copied");
+    // The upkeep copies it over, once across replicas (another one holding the move's lock skips its turn).
+    let mut holder = db.direct.acquire().await.unwrap().detach();
+    let _: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)").bind(0x0FE2_2101i64).fetch_one(&mut holder).await.unwrap();
+    assert!(store::rescue(&db, &mounted, None, true).await.unwrap().is_none(), "another replica does it");
+    let _: bool = sqlx::query_scalar("select pg_advisory_unlock($1)").bind(0x0FE2_2101i64).fetch_one(&mut holder).await.unwrap();
+    let rescued = store::rescue(&db, &mounted, None, true).await.unwrap().unwrap();
+    assert!(rescued.found == 1 && rescued.copied == 1 && rescued.failed.is_empty(), "{rescued:?}");
+    assert_eq!(std::fs::read(bucket.join(key(late))).unwrap(), b"file 600 ".repeat(6), "in the store after the upkeep");
+    assert_eq!(store::rescue(&db, &mounted, None, false).await.unwrap().unwrap().found, 0);
+    // With the directory gone, nothing looks for a file left there.
+    swap.set(&in_dir);
+    let left = store_file(601).await;
+    swap.set(&in_store);
+    assert!(matches!(k.read_file(&admin, left).await, Err(Error::NotFound(_))), "not looked for without the directory");
+    assert_eq!(store::rescue(&db, &in_store, None, true).await.unwrap().unwrap().found, 0);
+    k.remove_file(&admin, left).await.unwrap();
+
     // ───────────── deletions that wait ─────────────
     let releases = Arc::new(Releases::new(db.clone(), 30));
     let waiting = Arc::new(Objects::local(bucket.to_str().unwrap()).unwrap().with_releases(releases.clone()));

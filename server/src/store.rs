@@ -334,7 +334,96 @@ pub async fn decide(db: &Db, settings: &Settings, development: bool, guest: bool
             state(db).await.map_err(err)?.map_or(found == "moving", |(s, _)| s == "moving")
         }
     };
-    Ok(if moving { (store.reading_directory(dir)?, Found::Store { moving: true }) } else { (store, Found::Store { moving: false }) })
+    // While the old directory is still mounted, a read the store misses looks there too, after the move as well: a file an
+    // older build wrote there (a rollback after the move) is readable at once, and [`rescue`] copies it over.
+    let objects = if moving || holds_files(dir) { store.reading_directory(dir)? } else { store };
+    Ok((objects, Found::Store { moving }))
+}
+
+/// What [`rescue`] found and copied.
+#[derive(Debug, Default)]
+pub struct Rescued {
+    /// Files the database names that the store lacks and the old directory holds.
+    pub found: u64,
+    /// Of those, copied over and read back the same.
+    pub copied: u64,
+    /// Those whose copy did not verify, and why.
+    pub failed: Vec<String>,
+}
+
+/// Files the database names that the store lacks and the old directory still holds (one an older build wrote there after
+/// the move, or while it ran): copied over as `files_move` copies them (read back, compared, recorded in `file_move`), and
+/// logged. Rows made from `from` on (`None`: from an hour before files began to move); under the move's lock, so that one
+/// replica does it at a time (`None` back when another holds it). `copy` false only counts them (the doctor). Nothing
+/// without the directory mounted.
+// ponytail: one look at the store per row made since files began to move, at each start; a watermark kept in the
+// database if installations keep the old directory mounted for months.
+pub async fn rescue(db: &Db, objects: &Objects, from: Option<chrono::DateTime<chrono::Utc>>, copy: bool) -> Result<Option<Rescued>> {
+    let Some(dir) = &objects.directory else { return Ok(Some(Rescued::default())) };
+    let from = match from {
+        Some(f) => f,
+        None => match state(db).await? {
+            Some((_, since)) => since - chrono::Duration::hours(1),
+            None => return Ok(Some(Rescued::default())),
+        },
+    };
+    let mut lock = None;
+    if copy {
+        let mut conn = db.direct.acquire().await?.detach();
+        let mine: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)").bind(MOVE_LOCK).fetch_one(&mut conn).await?;
+        if !mine {
+            return Ok(None);
+        }
+        lock = Some(conn);
+    }
+    let rescued = rescuing(db, objects, dir, from, copy).await;
+    if let Some(mut conn) = lock {
+        let _ = sqlx::query("select pg_advisory_unlock($1)").bind(MOVE_LOCK).execute(&mut conn).await;
+    }
+    rescued.map(Some)
+}
+
+async fn rescuing(db: &Db, objects: &Objects, dir: &Operator, from: chrono::DateTime<chrono::Utc>, copy: bool) -> Result<Rescued> {
+    let mut tx = db.system_tx().await?;
+    let keys: Vec<String> = sqlx::query_scalar(
+        "select storage_key from file_object where created_at >= $1 \
+         union select 'ui/' || r.app || '/' || r.digest || '/' || f.key from ui_release r cross join lateral jsonb_object_keys(r.files) f(key) \
+           where r.created_at >= $1 \
+         union select bundle_key from app_release where bundle_key is not null and created_at >= $1",
+    )
+    .bind(from)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let mut out = Rescued::default();
+    for key in keys {
+        match objects.op.stat(&key).await {
+            Ok(_) => continue,
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::Unavailable(format!("storage: {e}"))),
+        }
+        if !dir.exists(&key).await.map_err(|e| Error::Unavailable(format!("the old files directory: {e}")))? {
+            continue;
+        }
+        out.found += 1;
+        if !copy {
+            continue;
+        }
+        let copied = copy_one(dir, &objects.op, &key).await;
+        let mut moved = Moved::default();
+        match record(db, &key, copied, &mut moved).await? {
+            Some(why) => {
+                tracing::error!(%key, "a file the database names is in the old files directory and not in object storage, and did not copy: {why}");
+                out.failed.push(format!("{key}: {why}"));
+            }
+            None if moved.copied + moved.already > 0 => {
+                out.copied += 1;
+                tracing::warn!(%key, "a file the database names was in the old files directory and not in object storage: copied over");
+            }
+            None => {}
+        }
+    }
+    Ok(out)
 }
 
 /// Session advisory lock: one `files_move` at a time, whichever machine runs it.
@@ -587,8 +676,8 @@ async fn writers(db: &Db) -> Result<Vec<String>> {
 }
 
 /// What the doctor says of where files are: a kept directory (error-level), files still moving (with how many have
-/// moved), or nothing.
-pub async fn place_findings(db: &Db, settings: &Settings, production: bool, reads_directory: bool) -> Vec<Finding> {
+/// moved), files the store lacks that the old directory, still mounted, holds, or nothing.
+pub async fn place_findings(db: &Db, settings: &Settings, production: bool, objects: &Objects) -> Vec<Finding> {
     let dir = &settings.files_dir;
     if settings.s3_bucket.trim().is_empty() {
         return if production {
@@ -602,8 +691,31 @@ pub async fn place_findings(db: &Db, settings: &Settings, production: bool, read
             vec![Finding::off("storage.directory", format!("files are kept in a local directory ({dir}): development and tests only"))]
         };
     }
-    if !reads_directory {
+    if !objects.reads_directory() {
         return vec![];
+    }
+    if state(db).await.ok().flatten().is_some_and(|(s, _)| s == "store") {
+        return vec![match rescue(db, objects, None, false).await {
+            Ok(Some(r)) if r.found > 0 => Finding::warning(
+                "storage.directory_files",
+                format!(
+                    "{} files the database names are in the old files directory ({dir}) and not in object storage (an older build wrote them there after the move): they are read from there",
+                    r.found
+                ),
+                "Servers copy them over at their start and every hour; or run ferrum task files_move. Keep the directory mounted until this says none.",
+            ),
+            Ok(_) => Finding::ok(
+                "storage.directory_files",
+                format!(
+                    "the old files directory ({dir}) is still mounted, and object storage holds every file the database names since files moved: it may go"
+                ),
+            ),
+            Err(e) => Finding::warning(
+                "storage.directory_files",
+                format!("the old files directory could not be compared with object storage: {e}"),
+                "Check object storage and the directory.",
+            ),
+        }];
     }
     let moved: i64 = match db.system_tx().await {
         Ok(mut tx) => {

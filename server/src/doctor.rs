@@ -230,7 +230,7 @@ pub fn marker_findings(st: &AppState) -> Vec<Finding> {
 /// encryption at rest, public access and clock.
 pub async fn storage_findings(st: &AppState, production: bool) -> Vec<Finding> {
     let now = st.live_settings.now();
-    let mut out = crate::store::place_findings(&st.kernel.db, &st.settings, production, st.objects.reads_directory()).await;
+    let mut out = crate::store::place_findings(&st.kernel.db, &st.settings, production, &st.objects).await;
     out.push(crate::store::lag_finding(now.settings.files_delete_after_days, now.settings.backup_reach_days));
     match crate::store::Bucket::new(&st.settings) {
         Ok(Some(bucket)) => out.extend(bucket.findings(now.settings.backup_reach_days).await),

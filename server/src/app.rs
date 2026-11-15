@@ -356,6 +356,10 @@ impl Hooks for App {
                 dir = %settings.files_dir,
                 "files are moving from the local directory to object storage: reads look in both until `ferrum task files_move` has copied them"
             ),
+            crate::store::Found::Store { moving: false } if objects.reads_directory() => tracing::warn!(
+                dir = %settings.files_dir,
+                "the old files directory is still mounted: a file object storage lacks is looked for there, and copied over at start and every hour"
+            ),
             _ => {}
         }
         let releases = Arc::new(crate::store::Releases::new(kernel.db.clone(), settings.files_delete_after_days));
@@ -630,6 +634,31 @@ impl Hooks for App {
                     }
                 }
             }));
+            // While the old files directory is still mounted: files the database names that object storage lacks and the
+            // directory holds (an older build's, after a move), copied over at start and every hour, one replica at a time.
+            if state.objects.reads_directory() {
+                let (db, objects, mut stop) = (state.kernel.db.clone(), state.objects.clone(), state.shutdown.subscribe());
+                handles.push(tokio::spawn(async move {
+                    let mut from = None;
+                    loop {
+                        let started = chrono::Utc::now();
+                        match crate::store::rescue(&db, &objects, from, true).await {
+                            Ok(Some(r)) => {
+                                from = Some(started - chrono::Duration::hours(1));
+                                if r.copied > 0 || !r.failed.is_empty() {
+                                    tracing::warn!(copied = r.copied, failed = r.failed.len(), "files from the old files directory copied to object storage");
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => tracing::warn!("copying files the store lacks from the old files directory failed (tried again in an hour): {e}"),
+                        }
+                        tokio::select! {
+                            _ = stop.changed() => return,
+                            _ = tokio::time::sleep(Duration::from_secs(3600)) => {}
+                        }
+                    }
+                }));
+            }
             // Interface releases: mark those this replica served as used; purge the unused.
             let (shell, mut stop) = (state.shell.clone(), state.shutdown.subscribe());
             handles.push(tokio::spawn(async move {

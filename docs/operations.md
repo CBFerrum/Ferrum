@@ -873,9 +873,12 @@ What guarantees that nothing is lost: a write goes to the store from the moment 
 this build without a bucket refuses to start while files move; the confirmation waits for every replica that might
 still write to the directory, then passes over the directory once more; a file deleted while it is copied is deleted
 from the directory first, so the copy sees it gone and deletes its own. A server of a build from before the settings'
-`replica` table, still running when the move is confirmed, is the one writer nothing sees: what it writes stays in the
-directory, the doctor's file check names it, and `files_move` copies it when run again (it always reads the whole
-directory).
+`replica` table (a rollback after the move, or one still running when it is confirmed) is the one writer nothing sees,
+and it writes to the directory. So for as long as the old directory is still mounted, a read the store misses still
+looks there, and the file is readable at once; and at each start and every hour, one replica copies over every file the
+database names (since files began to move) that the store lacks and the directory holds, as `files_move` copies them,
+and logs it. The doctor counts such files (`storage.directory_files`), and says when the directory may go. Unmounted,
+nothing looks there.
 
 ### What the doctor checks
 
