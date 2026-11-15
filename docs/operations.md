@@ -1126,6 +1126,34 @@ longer one.
 The copy of the environment's `JWT_SECRET` keeps verifying what that secret signed once the environment stops setting
 it. The first rotation run where `JWT_SECRET` is no longer set gives the copy an end too, as for any key before.
 
+### Taking the secrets out of the environment
+
+1. Start every replica with this release, its environment as before. Each secret the environment sets is copied into
+   the vault (`ferrum task vault_events` shows each `adopt`; `ferrum task settings` shows each from `environment`).
+   Keep a recovery key (`ferrum task vault_recovery`): from now on the vault holds what the environment did.
+2. Take the variables out of the environment (the chart's or Compose's secret, the Deployment) and start the replicas
+   again. Each then comes from the vault (`ferrum task settings`: `vault`). People stay signed in: the copy of
+   `JWT_SECRET` verifies the tokens it signed.
+3. Run `ferrum task secret_set name:jwt_secret` once every replica runs without `JWT_SECRET`: the vault's keys sign
+   from then on, and the copy of the old secret stops verifying once its tokens have run out. Replace the tokens
+   callers hold if they were ever seen elsewhere (`secret_set name:metrics_token overlap:…`, and so on).
+4. `ferrum task doctor` says which secrets the environment still decides, and warns while the vault is closed.
+
+The environment keeps working through this release; the release after it stops reading these variables. The chart and
+Compose still require `JWT_SECRET` in this release (they let it go with that release): with them, leave it set, and
+the vault holds its copy meanwhile.
+
+### Rolling back with the secrets in the vault
+
+A build before this one reads its secrets from the environment alone. On a database whose secrets are in the vault and
+with an environment emptied, it does not work: it refuses to start in production (*JWT_SECRET is not set*), its
+operator routes and `/api/tenants` answer nobody, `/metrics` asks no token, mail is sent without its password and
+object storage without its keys. Before rolling back, put the variables back into the environment, from where you keep
+them (the vault shows a value to nobody): the mail and storage passwords and the model provider's key as they were; a
+new `JWT_SECRET` (the older build cannot read what the vault's keys signed, so people sign in again; the old secret, if
+you still have it, keeps the sessions it signed); the tokens your callers hold. The older build ignores the vault, and
+this build, started again later, takes the environment's values while they are set.
+
 ### A workspace's vault
 
 Its keys and secrets follow the workspace. Deleting it (`delete_tenant`, `delete_sandbox`, and `finish_move` at the
