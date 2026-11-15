@@ -142,7 +142,24 @@ impl Hooks for App {
     }
 
     async fn after_context(ctx: AppContext) -> Result<AppContext> {
+        let mut ctx = ctx;
+        // The settings (docs/plan/stateless.md, D1 and D2): the table's, read over a pool of two before anything else
+        // connects, under the environment's, which still wins. They land where the file put the variables, so that
+        // everything below reads them as before; Loco's mail sender, made from the file before this runs, is made again
+        // when the table sets any of it.
+        let stored = crate::settings::read(&ctx.config.database.uri).await.map_err(Error::Message)?;
+        // (The installation's root, D3, is opened here: after the table is read, before its values are used.)
+        let snapshot = crate::settings::Snapshot::resolve(&stored, "default", &|name| std::env::var(name).ok());
+        crate::settings::Base::of(&ctx.config).apply(&snapshot, &mut ctx.config).map_err(Error::Message)?;
+        if snapshot.mailer_from_database() {
+            ctx.mailer = crate::settings::mailer(&ctx.config)?;
+        }
+        ferrum_kernel::env::set(snapshot.vars());
         let settings = Settings::from_ctx(&ctx)?;
+        // A secret the environment still holds: the file lets it be missing, so that the table is read; here it may not.
+        if ctx.environment == Environment::Production && ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).is_none_or(|j| j.secret.trim().is_empty()) {
+            return Err(Error::Message("JWT_SECRET is not set: give it `openssl rand -base64 48` (docs/operations.md, Configuration)".into()));
+        }
         // The hosts this server names for itself, checked before it connects to or writes anything, on every start
         // (a guest of a newer build's database too).
         crate::shell::check_names(&settings, &ctx.config.server.host).map_err(Error::Message)?;
@@ -223,7 +240,7 @@ impl Hooks for App {
         plugins.seal_with(secret_key.clone());
         plugins.open_also_with(retired.clone());
         let processes = crate::process::configure(&mut hooks, &secret_key, &retired).await.map_err(Error::Message)?;
-        let (plans, signup) = signup_settings(|name| std::env::var(name).ok(), crate::shell::base_domain(&settings).is_some()).map_err(Error::Message)?;
+        let (plans, signup) = signup_settings(ferrum_kernel::env::var, crate::shell::base_domain(&settings).is_some()).map_err(Error::Message)?;
         if signup.open && mailer.is_none() {
             return Err(Error::Message("FERRUM_SIGNUP=open needs mail (settings.mailer): sign-up proves addresses with emailed codes".into()));
         }
@@ -236,13 +253,8 @@ impl Hooks for App {
             hooks,
             KernelSettings {
                 webhooks_allow_private: settings.webhooks_allow_private,
-                connection_hosts: std::env::var("FERRUM_CONNECTION_HOSTS")
-                    .unwrap_or_default()
-                    .split(',')
-                    .map(|h| h.trim().to_ascii_lowercase())
-                    .filter(|h| !h.is_empty())
-                    .collect(),
-                connection_upload_bytes: std::env::var("FERRUM_CONNECTION_UPLOAD_MB").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(25) << 20,
+                connection_hosts: connection_hosts(ferrum_kernel::env::var("FERRUM_CONNECTION_HOSTS")),
+                connection_upload_bytes: connection_upload_bytes(ferrum_kernel::env::var("FERRUM_CONNECTION_UPLOAD_MB")),
                 sso_allow_private: settings.sso_allow_private,
                 secret_key: Some(secret_key),
                 retired_secret_keys: retired,
@@ -252,7 +264,7 @@ impl Hooks for App {
                 public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
                 push_services: push_services(&settings.push_services),
                 push_contact: Some(settings.push_contact.trim().to_string()).filter(|c| c.starts_with("mailto:") || c.starts_with("https://")),
-                hold_on_timeline: std::env::var("FERRUM_HOLD_ON_TIMELINE").map_or(true, |v| v != "false"),
+                hold_on_timeline: ferrum_kernel::env::var("FERRUM_HOLD_ON_TIMELINE").is_none_or(|v| v != "false"),
                 accounts_host: crate::shell::accounts_host(&settings),
                 hooks_url: crate::shell::hooks_url(&settings, &ctx.config.server.host),
                 passkey_rp: crate::shell::host_setting("FERRUM_PASSKEY_RP", &settings.passkey_rp).ok().flatten(),
@@ -447,8 +459,8 @@ impl Hooks for App {
         if let Ok(witness) = std::env::var("FERRUM_AUTHORITY_WITNESS_URL")
             && !witness.trim().is_empty()
         {
-            let region = std::env::var("FERRUM_REGION").map_err(|_| Error::Message("FERRUM_AUTHORITY_WITNESS_URL needs FERRUM_REGION".into()))?;
-            let ttl = std::env::var("FERRUM_AUTHORITY_TTL_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+            let region = ferrum_kernel::env::var("FERRUM_REGION").ok_or_else(|| Error::Message("FERRUM_AUTHORITY_WITNESS_URL needs FERRUM_REGION".into()))?;
+            let ttl = ferrum_kernel::env::var("FERRUM_AUTHORITY_TTL_SECS").and_then(|v| v.parse().ok()).unwrap_or(30);
             let authority = ferrum_kernel::recovery::Authority::connect(&witness, "ferrum", &region, Duration::from_secs(ttl))
                 .await
                 .map_err(|e| Error::Message(e.to_string()))?;
@@ -955,6 +967,16 @@ fn is_start(args: impl IntoIterator<Item = String>) -> bool {
 fn is_migrate_task(args: impl IntoIterator<Item = String>) -> bool {
     let args: Vec<String> = args.into_iter().collect();
     args.windows(2).any(|w| w[0] == "task" && w[1] == "migrate")
+}
+
+/// `FERRUM_CONNECTION_HOSTS`: the hosts, lower-cased.
+pub(crate) fn connection_hosts(listed: Option<String>) -> Vec<String> {
+    listed.unwrap_or_default().split(',').map(|h| h.trim().to_ascii_lowercase()).filter(|h| !h.is_empty()).collect()
+}
+
+/// `FERRUM_CONNECTION_UPLOAD_MB`, in bytes: 25 MiB unless the operator says.
+pub(crate) fn connection_upload_bytes(mb: Option<String>) -> u64 {
+    mb.and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(25) << 20
 }
 
 fn push_services(listed: &str) -> Vec<String> {

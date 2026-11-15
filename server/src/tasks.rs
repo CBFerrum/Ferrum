@@ -797,7 +797,7 @@ impl Task for PlanMove {
         if let Ok(witness) = std::env::var("FERRUM_AUTHORITY_WITNESS_URL")
             && !witness.trim().is_empty()
         {
-            let region = std::env::var("FERRUM_REGION").unwrap_or_default();
+            let region = ferrum_kernel::env::var("FERRUM_REGION").unwrap_or_default();
             let authority =
                 ferrum_kernel::recovery::Authority::connect(&witness, "ferrum", &region, std::time::Duration::from_secs(30)).await.map_err(refused)?;
             let holder = authority.holder().await.map_err(refused)?;
@@ -1187,11 +1187,11 @@ impl Task for LogicReplay {
                 results.push((path.to_string(), ferrum_process::replay(history, Some(keys.clone())).await));
             }
         } else {
-            let address = std::env::var("TEMPORAL_ADDRESS").map_err(|_| Error::Message("TEMPORAL_ADDRESS is not set".into()))?;
+            let address = ferrum_kernel::env::var("TEMPORAL_ADDRESS").ok_or_else(|| Error::Message("TEMPORAL_ADDRESS is not set".into()))?;
             let settings = ferrum_process::Settings {
                 address,
-                namespace: std::env::var("TEMPORAL_NAMESPACE").unwrap_or_else(|_| "ferrum".into()),
-                queue: std::env::var("TEMPORAL_TASK_QUEUE").unwrap_or_else(|_| ferrum_process::QUEUE.into()),
+                namespace: ferrum_kernel::env::var("TEMPORAL_NAMESPACE").unwrap_or_else(|| "ferrum".into()),
+                queue: ferrum_kernel::env::var("TEMPORAL_TASK_QUEUE").unwrap_or_else(|| ferrum_process::QUEUE.into()),
                 keys,
             };
             // Named runs, or every one not finished.

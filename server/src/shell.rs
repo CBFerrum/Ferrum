@@ -1561,7 +1561,7 @@ pub fn public_entry_page(entry: &EntryTemplate, bootstrap: &Value, csp: &str) ->
 /// The Content-Security-Policy of an app's pages: its own files and the host, plus the origins
 /// its manifest names (taken from operator settings where it says so).
 pub fn csp(manifest: Option<&AppManifest>, settings: &Value) -> String {
-    csp_with(manifest, settings, |name| std::env::var(name).ok())
+    csp_with(manifest, settings, ferrum_kernel::env::var)
 }
 
 /// [`csp`], reading the server's settings (`env:FERRUM_…`) through `env`.

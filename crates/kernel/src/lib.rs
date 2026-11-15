@@ -32,6 +32,7 @@ pub mod doc;
 pub mod docfmt;
 pub mod doctor;
 pub mod documents;
+pub mod env;
 pub mod error;
 pub mod evidence;
 pub mod export;

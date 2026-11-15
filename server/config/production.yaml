@@ -1,5 +1,6 @@
-# Production: configure through environment variables (12-factor). Required:
-#   DATABASE_URL, JWT_SECRET (>= 32 chars), FERRUM_BOOTSTRAP_TOKEN (or empty to disable HTTP tenant creation)
+# Production: every setting here comes from the environment when it sets the variable, else from the database's
+# `setting` table (docs/operations.md, "Settings in the database"), else the default below. Only DATABASE_URL is needed
+# to start reading them; the secrets (JWT_SECRET, FERRUM_SECRET_KEY, ...) still come from the environment.
 logger:
   enable: true
   pretty_backtrace: false
@@ -62,7 +63,7 @@ database:
 
 auth:
   jwt:
-    secret: "<%= get_env(name="JWT_SECRET") %>"
+    secret: "<%= get_env(name="JWT_SECRET", default="") %>"
     expiration: <%= get_env(name="JWT_EXPIRATION_SECONDS", default="28800") %>
 
 settings:

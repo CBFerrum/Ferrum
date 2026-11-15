@@ -1,0 +1,1003 @@
+# Every setting the server reads, declared once (docs/plan/stateless.md, D2). The operations guide's table is
+# generated from this file (`python3 scripts/settings.py --write`), and `scripts/settings.py` checks that every
+# variable the server's configuration and code read is here.
+#
+#   key      the setting's name in the `setting` table, the tasks and the operator routes
+#   env      the environment variable that sets it; through R1 it still works and wins over the database
+#   type     text (the default), bool (true or false), int (a whole number, 0 or more), json (a JSON value), or
+#            choice (one of `values`; "" among them when it may be left empty)
+#   default  what applies when nothing sets it, as the variable would say it ("": nothing, or the reader's own)
+#   scope    installation (the default), or pool: each pool of replicas has its own (docs/operations.md, Deployment
+#            shapes)
+#   applies  start (the default): at a replica's next start; live: every replica takes a change within seconds
+#   path     where the variable lands in config/<environment>.yaml, when it is read there
+#   secret   true: never stored in the database and never accepted by the tasks or routes; it stays in the
+#            environment until the vault holds it (D4, D5)
+#   environment  who still reads it from the environment itself: the database's value would not reach them, so it
+#            is neither stored nor accepted, and the environment keeps deciding it
+#   sends    the secret this address is given: while that secret is in the environment, the database's value is not
+#            used, so that a row in the database never sends an environment's secret somewhere else
+#   doc      what it does, for the operations guide
+
+# The log, the port and the address people open.
+- key: log_level
+  env: LOG_LEVEL
+  type: choice
+  values: ["off", trace, debug, info, warn, error]
+  default: info
+  path: logger.level
+  doc: >-
+    What the log says: `trace`, `debug`, `info` (the default), `warn` or `error`. Logs are JSON on stdout.
+- key: port
+  env: PORT
+  type: int
+  default: "5150"
+  path: server.port
+  doc: >-
+    The port the server listens on.
+- key: binding
+  env: BINDING
+  default: 0.0.0.0
+  path: server.binding
+  doc: >-
+    The address the server listens on.
+- key: public_url
+  env: PUBLIC_URL
+  default: http://localhost
+  path: server.host
+  doc: >-
+    The address people open, scheme and port included (`https://erp.example.com`). Apps' screens name it in their
+    Content Security Policy, which Safari needs when a proxy in front rewrites the host, and links mailed to people
+    outside the workspace (Drive guests) are built on it, as are the short-lived addresses services pull files from
+    (`/files/pull/…`, BD-64; without it such calls are refused). Recommended.
+- key: request_timeout_ms
+  env: FERRUM_REQUEST_TIMEOUT_MS
+  type: int
+  default: "120000"
+  applies: live
+  path: server.middlewares.timeout_request.timeout
+  doc: >-
+    How long one request may take, receiving its body included; default 120000 (2 minutes). Large files over slow
+    links need more: allow the largest file divided by the slowest client's upload rate (200 MB at 10 Mbit/s is
+    about 3 minutes). Keep the gateway's request timeout (600 s in `gateway.yaml`) above it.
+- key: cors_enabled
+  env: CORS_ENABLED
+  type: bool
+  default: "false"
+  path: server.middlewares.cors.enable
+  doc: >-
+    Answers browsers' cross-origin requests from `cors_origins`. Not needed when the web app and the API share an
+    address.
+- key: cors_origins
+  env: CORS_ORIGINS
+  default: '"https://example.invalid"'
+  path: server.middlewares.cors.allow_origins
+  doc: >-
+    The origins `cors_enabled` admits, each in double quotes, separated by commas (`"https://a.example", "https://b.example"`).
+
+# Mail (SMTP).
+- key: mailer_enabled
+  env: MAILER_ENABLED
+  type: bool
+  default: "false"
+  path: mailer.smtp.enable
+  doc: >-
+    SMTP for mail: notifications people chose to have by email (at once, or in a daily digest), and apps' mail.
+    Without it, notifications stay in the bar and people cannot choose email.
+- key: mailer_host
+  env: MAILER_HOST
+  default: localhost
+  path: mailer.smtp.host
+  sends: MAILER_PASSWORD
+  doc: >-
+    The SMTP server.
+- key: mailer_port
+  env: MAILER_PORT
+  type: int
+  default: "587"
+  path: mailer.smtp.port
+  sends: MAILER_PASSWORD
+  doc: >-
+    The SMTP server's port.
+- key: mailer_secure
+  env: MAILER_SECURE
+  type: bool
+  default: "true"
+  path: mailer.smtp.secure
+  sends: MAILER_PASSWORD
+  doc: >-
+    `true`: STARTTLS to the SMTP server; `false`: plain text, for a relay on the same machine only.
+- key: mailer_user
+  env: MAILER_USER
+  path: mailer.smtp.auth.user
+  doc: >-
+    Who the server signs in to the SMTP server as.
+- key: mailer_password
+  env: MAILER_PASSWORD
+  path: mailer.smtp.auth.password
+  secret: true
+  doc: >-
+    The SMTP password.
+
+# Sessions and keys.
+- key: jwt_secret
+  env: JWT_SECRET
+  path: auth.jwt.secret
+  secret: true
+  doc: >-
+    Required. Base64, at least 32 random bytes: `openssl rand -base64 48`. Rotating it signs everyone out.
+- key: jwt_expiration_seconds
+  env: JWT_EXPIRATION_SECONDS
+  type: int
+  default: "28800"
+  applies: live
+  path: auth.jwt.expiration
+  doc: >-
+    How long a bearer token from signing in lasts, in seconds (default 8 hours).
+- key: secret_key
+  env: FERRUM_SECRET_KEY
+  path: settings.secret_key
+  secret: true
+  doc: >-
+    Required. Base64 of exactly 32 random bytes: `openssl rand -base64 32`, or that key as a key-management service's
+    ciphertext (`vault:v1:…`, [below](#the-secret-key-from-a-key-management-service)). Seals secret fields (mail
+    passwords, API keys) and plugins' settings (payment gateways' keys among them) with AES-256-GCM; every replica
+    needs the same key. Back it up: values sealed with a lost key must be entered again.
+- key: secret_key_command
+  env: FERRUM_SECRET_KEY_COMMAND
+  path: settings.secret_key_command
+  secret: true
+  doc: >-
+    In place of `FERRUM_SECRET_KEY`: a command (run with `sh -c`, 30 seconds at most) that prints the key, such as a
+    KMS's own CLI.
+- key: retired_secret_keys
+  env: FERRUM_RETIRED_SECRET_KEYS
+  path: settings.retired_secret_keys
+  secret: true
+  doc: >-
+    Keys being rotated out, comma-separated: see *Rotating the secret key*.
+- key: kms_transit
+  env: FERRUM_KMS_TRANSIT
+  path: settings.kms_transit
+  environment: the key-management client, which is given the token below
+  doc: >-
+    The OpenBao or Vault Transit key that unwraps `FERRUM_SECRET_KEY` and retired keys given as ciphertext:
+    `https://host:8200/<mount>/<key>`. Signs in with `FERRUM_KMS_TOKEN_FILE`, `BAO_TOKEN` or `VAULT_TOKEN`, or as the
+    pod's service account (`FERRUM_KMS_KUBERNETES_ROLE`, `FERRUM_KMS_KUBERNETES_MOUNT`); `FERRUM_KMS_CA_FILE` and
+    `FERRUM_KMS_NAMESPACE` when needed.
+- key: kms_token_file
+  env: FERRUM_KMS_TOKEN_FILE
+  environment: the key-management client
+  doc: >-
+    A file a Vault Agent keeps the Transit token in, read at each use.
+- key: bao_token
+  env: BAO_TOKEN
+  secret: true
+  doc: >-
+    The OpenBao token for `FERRUM_KMS_TRANSIT`.
+- key: vault_token
+  env: VAULT_TOKEN
+  secret: true
+  doc: >-
+    The Vault token for `FERRUM_KMS_TRANSIT`, when `BAO_TOKEN` is not set.
+- key: kms_kubernetes_role
+  env: FERRUM_KMS_KUBERNETES_ROLE
+  environment: the key-management client
+  doc: >-
+    Signs in to Transit as the pod's service account, with this role.
+- key: kms_kubernetes_mount
+  env: FERRUM_KMS_KUBERNETES_MOUNT
+  default: kubernetes
+  environment: the key-management client
+  doc: >-
+    The Kubernetes auth mount for `FERRUM_KMS_KUBERNETES_ROLE`.
+- key: kms_kubernetes_token_file
+  env: FERRUM_KMS_KUBERNETES_TOKEN_FILE
+  default: /var/run/secrets/kubernetes.io/serviceaccount/token
+  environment: the key-management client
+  doc: >-
+    The service account's token file.
+- key: kms_ca_file
+  env: FERRUM_KMS_CA_FILE
+  environment: the key-management client
+  doc: >-
+    A certificate authority (PEM) Transit's certificate is checked against, beside the usual ones.
+- key: kms_namespace
+  env: FERRUM_KMS_NAMESPACE
+  environment: the key-management client
+  doc: >-
+    The Vault namespace of `FERRUM_KMS_TRANSIT`.
+- key: bootstrap_token
+  env: FERRUM_BOOTSTRAP_TOKEN
+  path: settings.bootstrap_token
+  secret: true
+  doc: >-
+    Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it.
+- key: metrics_token
+  env: FERRUM_METRICS_TOKEN
+  path: settings.metrics_token
+  secret: true
+  doc: >-
+    `/metrics` then requires `Authorization: Bearer <token>`. Recommended.
+
+# The database.
+- key: migrate_at_start
+  env: FERRUM_MIGRATE_AT_START
+  type: bool
+  default: "true"
+  path: settings.migrate_at_start
+  doc: >-
+    Default `true`: the server migrates the database, syncs the schema and runs the upgrade steps as it starts.
+    `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and
+    refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe.
+    Either way, on a database a newer build migrated, the server starts as a guest that changes nothing, or refuses
+    (*Rolling back and the two-version window*).
+- key: db_max_connections
+  env: FERRUM_DB_MAX_CONNECTIONS
+  type: int
+  default: "30"
+  scope: pool
+  path: settings.db_max_connections
+  doc: >-
+    Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event
+    loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so.
+- key: database_direct_url
+  env: FERRUM_DATABASE_DIRECT_URL
+  path: settings.database_direct_url
+  secret: true
+  doc: >-
+    With a pooler: PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer):
+    what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the
+    default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler*. A secret while the
+    address holds the password.
+- key: database_read_url
+  env: FERRUM_DATABASE_READ_URL
+  path: settings.database_read_url
+  secret: true
+  doc: >-
+    A replica that reports and the reading of exports may use, while it is within the lag limit and has replayed
+    what the primary had committed when the read began; otherwise they read from the primary. Empty (the default):
+    none. See "Deployment shapes", *Read address*. A secret while the address holds the password.
+- key: database_read_max_lag_secs
+  env: FERRUM_DATABASE_READ_MAX_LAG_SECS
+  type: int
+  default: "10"
+  path: settings.database_read_max_lag_secs
+  doc: >-
+    The replay lag past which those reads go to the primary (default 10).
+- key: upkeep_concurrency
+  env: FERRUM_UPKEEP_CONCURRENCY
+  type: int
+  default: "2"
+  doc: >-
+    How many apps' periodic upkeep one replica runs at once (default 2). Each app's upkeep has a lock of its own
+    across replicas, so replicas share the apps between them; each running app holds one database connection.
+- key: hold_on_timeline
+  env: FERRUM_HOLD_ON_TIMELINE
+  type: bool
+  default: "true"
+  doc: >-
+    `false`: a new timeline of the database (a promoted replica) is not held as a restore. Only where failover is
+    synchronous; see *After restoring a backup*.
+- key: authority_witness_url
+  env: FERRUM_AUTHORITY_WITNESS_URL
+  secret: true
+  doc: >-
+    The witness of regions that can fail over (another database's address); see *Regions*. Unset, this server writes
+    without asking anyone, which is right for one region.
+- key: authority_ttl_secs
+  env: FERRUM_AUTHORITY_TTL_SECS
+  type: int
+  default: "30"
+  doc: >-
+    How long a region holds the right to write between renewals (default 30).
+
+# Replicas and their work.
+- key: run_background
+  env: FERRUM_RUN_BACKGROUND
+  type: bool
+  default: "true"
+  scope: pool
+  path: settings.run_background
+  doc: >-
+    `false` turns a replica into API-only.
+- key: user_requests_per_minute
+  env: FERRUM_USER_REQUESTS_PER_MINUTE
+  type: int
+  default: "3000"
+  applies: live
+  path: settings.user_requests_per_minute
+  doc: >-
+    Requests one user (with any of their sessions and API keys) may make per minute in a pool; beyond it they get
+    `429` with `Retry-After`. Default 3000; `0` turns it off. Each replica allows its share: this divided by the
+    pool's live replicas (the `replica` table).
+- key: address_requests_per_minute
+  env: FERRUM_ADDRESS_REQUESTS_PER_MINUTE
+  type: int
+  default: "6000"
+  applies: live
+  path: settings.address_requests_per_minute
+  doc: >-
+    Requests one client address may make per minute in a pool, counted for requests that came through the proxy
+    (`X-Forwarded-For`); default 6000, `0` turns it off. Each replica allows this divided by the pool's live
+    replicas. Health probes and in-cluster calls are not counted.
+- key: tenant_requests
+  env: FERRUM_TENANT_REQUESTS
+  type: int
+  path: settings.tenant_requests
+  doc: >-
+    One workspace's API requests that run at once on each replica. The rest wait their turn, and one that waits
+    five seconds is refused with `429`. A response that waited says how long in `X-Ferrum-Waited-Ms`. Default half
+    of `FERRUM_DB_MAX_CONNECTIONS`, at least 2, so a workspace that floods the server holds at most half its database
+    connections and everyone else has the others; `0` turns it off.
+- key: proxy_hops
+  env: FERRUM_PROXY_HOPS
+  type: int
+  default: "1"
+  applies: live
+  path: settings.proxy_hops
+  doc: >-
+    How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your
+    own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2
+    with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits is the
+    entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their
+    own (too high).
+# Files.
+- key: packages_dir
+  env: FERRUM_PACKAGES_DIR
+  default: packages
+  path: settings.packages_dir
+  doc: >-
+    Where the platform's packages are (the image's).
+- key: files_dir
+  env: FERRUM_FILES_DIR
+  default: /var/lib/ferrum/files
+  path: settings.files_dir
+  doc: >-
+    Local attachment directory (default `/var/lib/ferrum/files`).
+- key: require_object_storage
+  env: FERRUM_REQUIRE_OBJECT_STORAGE
+  type: bool
+  default: "true"
+  path: settings.require_object_storage
+  doc: >-
+    Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false`
+    only for single-server installs.
+- key: s3_bucket
+  env: FERRUM_S3_BUCKET
+  path: settings.s3_bucket
+  doc: >-
+    Attachment storage on S3 (multi-replica); with `FERRUM_S3_REGION` (`auto` if empty), `AWS_ACCESS_KEY_ID` and
+    `AWS_SECRET_ACCESS_KEY`.
+- key: s3_region
+  env: FERRUM_S3_REGION
+  path: settings.s3_region
+  doc: >-
+    The bucket's region (`auto` if empty).
+- key: s3_endpoint
+  env: FERRUM_S3_ENDPOINT
+  path: settings.s3_endpoint
+  doc: >-
+    Any S3-compatible store: MinIO, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean Spaces, GCS interoperability.
+- key: aws_access_key_id
+  env: AWS_ACCESS_KEY_ID
+  secret: true
+  doc: >-
+    The object store's key id.
+- key: aws_secret_access_key
+  env: AWS_SECRET_ACCESS_KEY
+  secret: true
+  doc: >-
+    The object store's secret key.
+- key: aws_session_token
+  env: AWS_SESSION_TOKEN
+  secret: true
+  doc: >-
+    A session token with the object store's keys, when they are temporary.
+- key: direct_upload_max_bytes
+  env: FERRUM_DIRECT_UPLOAD_MAX_BYTES
+  type: int
+  default: "2147483648"
+  applies: live
+  path: settings.direct_upload_max_bytes
+  doc: >-
+    Largest file browsers upload straight to the bucket, or in parts through the server (default 2 GiB). Straight
+    to the bucket needs the bucket CORS rule below.
+- key: clamav_addr
+  env: FERRUM_CLAMAV_ADDR
+  applies: live
+  path: settings.clamav_addr
+  doc: >-
+    Recommended: a ClamAV daemon uploads pass through, `host:3310`. What it finds is refused and audited; with it
+    set, a scanner that cannot answer refuses uploads too. See *Malware scanning*.
+- key: clamav_max_mb
+  env: FERRUM_CLAMAV_MAX_MB
+  type: int
+  default: "25"
+  applies: live
+  path: settings.clamav_max_mb
+  doc: >-
+    With a scanner: its `StreamMaxLength` in MiB (default 25). Files past it are stored unscanned.
+- key: pdf_url
+  env: FERRUM_PDF_URL
+  applies: live
+  path: settings.pdf_url
+  doc: >-
+    A Gotenberg-compatible renderer (`gotenberg/gotenberg:8`, included in both deployments as `pdf` / `ferrum-pdf`)
+    for PDFs of print formats; empty turns PDFs off. Run it with JavaScript off and an allow-list of
+    `^(data:|file:///tmp/).*` so templates cannot make it fetch anything; print formats then use inline (data:)
+    images.
+- key: ui_dir
+  env: FERRUM_UI_DIR
+  path: settings.ui_dir
+  doc: >-
+    Interfaces registered at start-up from a directory with one directory of built files per app id
+    (`<dir>/<app>/index.html`), for apps whose crate carries none: an interface compiled into an app's crate is the
+    one served, and a copy of it here is skipped with a warning. The image sets it to `/app/ui`, which holds the
+    shell's and Studio's (built from Ferrum-Frontend at the commit the Dockerfile pins); point it elsewhere to run
+    others.
+- key: ui_source
+  env: FERRUM_UI_SOURCE
+  path: settings.ui_source
+  doc: >-
+    Development: a server listing built interfaces (`index.json`, as Ferrum-Frontend's `npm run build:apps` writes
+    `dist-apps/`), fetched at start-up and every ten minutes, files checked against their digests.
+
+# Connections and the outside world.
+- key: connection_hosts
+  env: FERRUM_CONNECTION_HOSTS
+  applies: live
+  doc: >-
+    Hosts a connection may reach on a private address or over plain http, comma-separated: a service inside your own
+    network. Others are https on public addresses only.
+- key: connection_upload_mb
+  env: FERRUM_CONNECTION_UPLOAD_MB
+  type: int
+  default: "25"
+  applies: live
+  doc: >-
+    The most a connection's call sends of stored files in one request, and the largest file it sends in chunks, in
+    MiB (default 25). Raise it for services that take larger media in one request (Telegram 50); a description's
+    file part may declare up to it, never past it
+    ([BD-71](builder/decisions.md#bd-71-the-servers-upload-ceiling-and-a-file-parts-own)).
+- key: sso_allow_private
+  env: FERRUM_SSO_ALLOW_PRIVATE
+  type: bool
+  default: "false"
+  path: settings.sso_allow_private
+  doc: >-
+    `true` lets single sign-on reach an identity provider on a private address or over plain http (one inside your
+    own network, such as an in-cluster Keycloak); default `false`.
+- key: push_services
+  env: FERRUM_PUSH_SERVICES
+  applies: live
+  path: settings.push_services
+  doc: >-
+    The push services notifications go to, comma-separated: hosts (their subdomains too, over https) or exact
+    origins. Empty: the browsers' own, Chrome's and Edge's (`fcm.googleapis.com`), Firefox's
+    (`push.services.mozilla.com`), Safari's (`push.apple.com`) and Windows' (`notify.windows.com`); see
+    [Notifications on devices](#notifications-on-devices-web-push).
+- key: push_contact
+  env: FERRUM_PUSH_CONTACT
+  applies: live
+  path: settings.push_contact
+  doc: >-
+    Recommended: who push services may contact about this server's pushes, `mailto:ops@example.com` or an `https:`
+    page; default `PUBLIC_URL` when it is https. Apple's service wants one.
+- key: audit_sink_url
+  env: FERRUM_AUDIT_SINK_URL
+  applies: live
+  path: settings.audit_sink_url
+  doc: >-
+    Where every workspace's audit events are sent, in order, as they are written (`https://siem.example.com/ferrum`).
+    Default none: nothing is sent. See [Sending the audit log elsewhere](#sending-the-audit-log-elsewhere).
+- key: audit_sink_secret
+  env: FERRUM_AUDIT_SINK_SECRET
+  path: settings.audit_sink_secret
+  secret: true
+  doc: >-
+    With the sink: the key the batches are signed with (HMAC-SHA256), at least 16 characters; the receiver checks it.
+
+# Names and addresses.
+- key: default_workspace
+  env: FERRUM_DEFAULT_WORKSPACE
+  path: settings.default_workspace
+  doc: >-
+    The slug of the one workspace this server serves on every host (a single-workspace install): sign-in then asks
+    for no workspace. Empty: a host registered for a workspace leads to it, and elsewhere the workspace is chosen at
+    sign-in.
+- key: base_domain
+  env: FERRUM_BASE_DOMAIN
+  path: settings.base_domain
+  doc: >-
+    Shapes B and C ([Many workspaces](#many-workspaces-subdomains-and-ferrum-accounts)): the domain under which each
+    workspace is `{slug}.{base}`, people sign in at `accounts.{base}` and outside callers use `hooks.{base}`.
+    Empty: one workspace (`FERRUM_DEFAULT_WORKSPACE`) or a shared host.
+- key: accounts_host
+  env: FERRUM_ACCOUNTS_HOST
+  path: settings.accounts_host
+  doc: >-
+    The host where people sign in once, with their Ferrum account (`id.example.com`), with or without a base domain:
+    every host of every workspace sends sign-in there. Default `accounts.{base}` with `FERRUM_BASE_DOMAIN`, else none
+    (each host signs in on its own). See [Names that should never change](#names-that-should-never-change).
+- key: hooks_host
+  env: FERRUM_HOOKS_HOST
+  path: settings.hooks_host
+  doc: >-
+    The host other services call back (`hooks.example.com`): webhooks and `/api/public/…` calls, a mail or calendar
+    connector's sign-in return (`/api/connections/callback`), the addresses services pull files from. Default
+    `hooks.{base}` for pages and public calls with `FERRUM_BASE_DOMAIN`, else `PUBLIC_URL`; connectors and pulled
+    files use `PUBLIC_URL` unless this is set. See [Names that should never change](#names-that-should-never-change).
+- key: passkey_rp
+  env: FERRUM_PASSKEY_RP
+  path: settings.passkey_rp
+  doc: >-
+    The passkeys' relying party, a domain (`example.com`): passkeys made on it or a host under it work on every host
+    under it. Default none: each host is its own, as before. Never the base domain. See
+    [Names that should never change](#names-that-should-never-change).
+- key: link_host
+  env: FERRUM_LINK_HOST
+  path: settings.link_host
+  doc: >-
+    The host every mailed, notified or printed link goes through (`go.example.com`): links become
+    `https://{it}/go/{workspace}/{s|p}/…`, which lead on to wherever the workspace is when someone follows them.
+    Default none: links name the workspace's host, as before. See
+    [Names that should never change](#names-that-should-never-change).
+- key: apps_base
+  env: FERRUM_APPS_BASE
+  path: settings.apps_base
+  doc: >-
+    A domain under which isolated apps get origins of their own, `{app}--{workspace}.{base}` (`example-apps.net`);
+    see "Apps with interfaces of their own". Empty (the default): isolated apps run in sandboxed frames. `localhost`
+    works in development.
+- key: host_leaving_days
+  env: FERRUM_HOST_LEAVING_DAYS
+  type: int
+  default: "14"
+  applies: live
+  path: settings.host_leaving_days
+  doc: >-
+    How long a removed address keeps serving the people already signed in there, so that what their browsers kept
+    for it is sent, before it redirects (default 14 days; 0: it redirects at once, as before; at most 365). See
+    [Changing or removing an address](#changing-or-removing-an-address).
+- key: domain_proof
+  env: FERRUM_DOMAIN_PROOF
+  type: choice
+  values: ["", points, record]
+  path: settings.domain_proof
+  doc: >-
+    What a domain of a workspace's own must show before it works: `points` (it points at this cluster, as before)
+    or `record` (its DNS record `_ferrum.{domain}` as well). Default `record` with `FERRUM_BASE_DOMAIN`, else
+    `points`; set to `record` in so many words, it also keeps builds from before it from starting (a floor). A
+    cluster that serves workspaces of different companies must use `record`. See [Custom domains](#custom-domains).
+- key: dns_resolvers
+  env: FERRUM_DNS_RESOLVERS
+  applies: live
+  path: settings.dns_resolvers
+  doc: >-
+    The DNS servers asked for that record, as addresses separated by commas (`10.96.0.10`, `10.0.0.2:5353`).
+    Default: the system's (`/etc/resolv.conf`). The server does not start with one that is not an address.
+- key: region
+  env: FERRUM_REGION
+  path: settings.region
+  doc: >-
+    This cluster's region (`eu`): see `FERRUM_REGIONS`.
+- key: regions
+  env: FERRUM_REGIONS
+  path: settings.regions
+  doc: >-
+    The other regions' accounts hosts, `name=https://accounts.example.eu,…`: the sign-in page offers them, and a
+    workspace not found here is looked up there.
+
+# Zones.
+- key: zones
+  env: FERRUM_ZONES
+  type: json
+  path: settings.zones
+  doc: >-
+    Zones, JSON: zone name → rule, `{"public": {"staff": "none"}, "office": {"staff": "all", "networks":
+    ["10.0.0.0/8"]}}`. Default none: everyone is admitted everywhere, as before. See [Zones](#zones).
+- key: zone
+  env: FERRUM_ZONE
+  scope: pool
+  path: settings.zone
+  doc: >-
+    The zone this replica is in for every request (one of `FERRUM_ZONES`). Default none: each request's host,
+    network or the default decides.
+- key: zone_default
+  env: FERRUM_ZONE_DEFAULT
+  path: settings.zone_default
+  doc: >-
+    The zone of a request no host and no network places, on replicas without `FERRUM_ZONE`. Default none: admitted
+    as without zones.
+- key: zone_mode
+  env: FERRUM_ZONE_MODE
+  type: choice
+  values: ["", enforce, report]
+  applies: live
+  path: settings.zone_mode
+  doc: >-
+    `enforce` (the default) refuses what a zone's rule refuses; `report` admits it, and counts and logs it.
+
+# Apps.
+- key: app_stores
+  env: FERRUM_APP_STORES
+  path: settings.apps.registries
+  doc: >-
+    App stores, comma-separated base URLs (`https://store.example`); empty: no store, only apps built in or uploaded.
+- key: app_trusted_keys
+  env: FERRUM_APP_TRUSTED_KEYS
+  path: settings.apps.trusted_keys
+  doc: >-
+    With stores: comma-separated `store:<base64>` / `publisher:<base64>` Ed25519 public keys whose signatures this
+    cluster trusts (`ferrum-app keygen` prints them). Store apps need a store countersignature by one of them;
+    several keys may be trusted at once (rotation).
+- key: app_uploads
+  env: FERRUM_APP_UPLOADS
+  type: choice
+  values: ["off", private, cluster]
+  default: private
+  path: settings.apps.uploads
+  doc: >-
+    Who may upload app bundles: `off`, `private` (production default: sandboxed apps without tables, visible only in
+    the uploading workspace) or `cluster` (development default: available to every workspace).
+- key: app_allow_unsigned
+  env: FERRUM_APP_ALLOW_UNSIGNED
+  type: bool
+  default: "false"
+  path: settings.apps.allow_unsigned_uploads
+  doc: >-
+    `true` accepts uploads no trusted key signed (development default); production default `false`.
+- key: dev_ui
+  env: FERRUM_DEV_UI
+  type: bool
+  default: "false"
+  path: settings.dev_ui
+  doc: >-
+    Development only: administrators may serve an app's pages from its interface's Vite server on the same machine
+    (`ferrum-app dev --ui`, [Apps with interfaces of their own](#apps-with-interfaces-of-their-own)). The server
+    warns at start when it is on. Never on a server people use.
+- key: session_days
+  env: FERRUM_SESSION_DAYS
+  type: int
+  default: "14"
+  applies: live
+  path: settings.session_days
+  doc: >-
+    How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own
+    that people and administrators sign out one by one.
+- key: office_origin
+  env: FERRUM_OFFICE_ORIGIN
+  applies: live
+  doc: >-
+    With online editing: the editor server as browsers reach it (`https://office.example.com`), when that is not
+    `FERRUM_OFFICE_URL`: Drive's pages frame it and post to it, and their Content-Security-Policy names it (the
+    Compose stack sets it from `OFFICE_PUBLIC_URL`, the Helm chart from `office.host`).
+- key: ops_telemetry_days
+  env: FERRUM_OPS_TELEMETRY_DAYS
+  type: int
+  default: "30"
+  applies: live
+  doc: >-
+    Days of device measurements kept (default 30). Rollups outlive them.
+
+# Plans and sign-up.
+- key: plans
+  env: FERRUM_PLANS
+  type: json
+  applies: live
+  doc: >-
+    The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each
+    sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up).
+- key: signup
+  env: FERRUM_SIGNUP
+  type: choice
+  values: ["", open, closed]
+  applies: live
+  doc: >-
+    `open` lets people make workspaces of their own at `accounts.{base}/signup`; default `closed`. Needs
+    `FERRUM_BASE_DOMAIN` and mail.
+- key: signup_domains
+  env: FERRUM_SIGNUP_DOMAINS
+  applies: live
+  doc: >-
+    With sign-up: the address domains sign-ups come from (comma-separated; empty: any).
+- key: signup_packages
+  env: FERRUM_SIGNUP_PACKAGES
+  applies: live
+  doc: >-
+    With sign-up: what a new workspace installs besides the core, comma-separated.
+- key: signup_plan
+  env: FERRUM_SIGNUP_PLAN
+  applies: live
+  doc: >-
+    With sign-up: the plan a new workspace starts on (one of `FERRUM_PLANS`).
+- key: signup_per_address
+  env: FERRUM_SIGNUP_PER_ADDRESS
+  type: int
+  default: "3"
+  applies: live
+  doc: >-
+    With sign-up: how many workspaces one address may make (default 3).
+
+# The assistant (docs/operations.md, The assistant).
+- key: assistant_api_key
+  env: FERRUM_ASSISTANT_API_KEY
+  secret: true
+  doc: >-
+    The model service's API key; without it there is no assistant.
+- key: assistant_protocol
+  env: FERRUM_ASSISTANT_PROTOCOL
+  type: choice
+  values: ["", anthropic, openai]
+  doc: >-
+    `anthropic` (default): Anthropic's Messages API, or a proxy that speaks it; `openai`: an OpenAI-compatible chat
+    API.
+- key: assistant_model
+  env: FERRUM_ASSISTANT_MODEL
+  default: claude-opus-5-5
+  doc: >-
+    The model the assistant uses.
+- key: assistant_url
+  env: FERRUM_ASSISTANT_URL
+  default: https://api.anthropic.com
+  sends: FERRUM_ASSISTANT_API_KEY
+  doc: >-
+    A proxy or gateway that speaks the same API, or the provider's regional endpoint.
+- key: assistant_effort
+  env: FERRUM_ASSISTANT_EFFORT
+  type: choice
+  values: ["", low, medium, high, xhigh, max]
+  doc: >-
+    How hard the model thinks, and so its speed and cost: `low`, `medium` (default), `high`, `xhigh` or `max`.
+- key: assistant_fallbacks
+  env: FERRUM_ASSISTANT_FALLBACKS
+  type: choice
+  values: ["", "on", "off"]
+  doc: >-
+    `on`/`off`; on by default for Anthropic's API with a model that has them.
+- key: assistant_models
+  env: FERRUM_ASSISTANT_MODELS
+  doc: >-
+    Other models a workspace may choose, comma-separated.
+- key: assistant_monthly_tokens
+  env: FERRUM_ASSISTANT_MONTHLY_TOKENS
+  type: int
+  doc: >-
+    The most one workspace may use in a calendar month; it can set less.
+- key: assistant_calls_per_hour
+  env: FERRUM_ASSISTANT_CALLS_PER_HOUR
+  type: int
+  default: "120"
+  doc: >-
+    Calls to the model one person may make in an hour, default 120.
+
+# Durable processes (docs/operations.md, Durable processes).
+- key: temporal_address
+  env: TEMPORAL_ADDRESS
+  doc: >-
+    The Temporal server processes run on; without it, a solution with a process is refused.
+- key: temporal_namespace
+  env: TEMPORAL_NAMESPACE
+  default: ferrum
+  doc: >-
+    The Temporal namespace, created beforehand.
+- key: temporal_task_queue
+  env: TEMPORAL_TASK_QUEUE
+  default: ferrum-processes
+  doc: >-
+    The Temporal task queue the replicas work.
+- key: process_steps
+  env: FERRUM_PROCESS_STEPS
+  type: int
+  doc: >-
+    Activities one replica runs at once; default from its database pool.
+- key: process_steps_per_workspace
+  env: FERRUM_PROCESS_STEPS_PER_WORKSPACE
+  type: int
+  doc: >-
+    Activities one workspace may have at once on a replica; default from its database pool.
+
+# Traces, read by the OpenTelemetry SDK itself (docs/operations.md, Monitoring).
+- key: otel_exporter_otlp_endpoint
+  env: OTEL_EXPORTER_OTLP_ENDPOINT
+  environment: the OpenTelemetry SDK, with its other OTEL_* settings (a token among them)
+  doc: >-
+    The collector traces go to (`http://otel-collector:4318`; the server adds `/v1/traces`).
+- key: otel_exporter_otlp_traces_endpoint
+  env: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+  environment: the OpenTelemetry SDK
+  doc: >-
+    The collector's traces address, in place of the one above.
+- key: otel_sdk_disabled
+  env: OTEL_SDK_DISABLED
+  environment: the OpenTelemetry SDK
+  doc: >-
+    `true` turns traces off.
+- key: otel_service_name
+  env: OTEL_SERVICE_NAME
+  default: ferrum
+  environment: the OpenTelemetry SDK
+  doc: >-
+    The name traces carry.
+
+# Moving one workspace: the move task's own environment (docs/operations.md, Moving one workspace).
+- key: move_source_database_url
+  env: FERRUM_MOVE_SOURCE_DATABASE_URL
+  secret: true
+  doc: >-
+    The source installation's database.
+- key: move_source_secret_keys
+  env: FERRUM_MOVE_SOURCE_SECRET_KEYS
+  secret: true
+  doc: >-
+    The source's `FERRUM_SECRET_KEY`, then its retired keys, comma-separated.
+- key: move_source_files
+  env: FERRUM_MOVE_SOURCE_FILES
+  environment: the move task
+  doc: >-
+    `same` when both installations use one storage.
+- key: move_source_files_dir
+  env: FERRUM_MOVE_SOURCE_FILES_DIR
+  environment: the move task
+  doc: >-
+    The source's file directory.
+- key: move_source_s3_bucket
+  env: FERRUM_MOVE_SOURCE_S3_BUCKET
+  environment: the move task
+  doc: >-
+    The source's bucket.
+- key: move_source_s3_region
+  env: FERRUM_MOVE_SOURCE_S3_REGION
+  environment: the move task
+  doc: >-
+    The source bucket's region.
+- key: move_source_s3_endpoint
+  env: FERRUM_MOVE_SOURCE_S3_ENDPOINT
+  environment: the move task
+  doc: >-
+    The source bucket's S3-compatible store.
+- key: move_source_region
+  env: FERRUM_MOVE_SOURCE_REGION
+  environment: the move task
+  doc: >-
+    The source's region, when people keep their Ferrum account across regions.
+
+# Apps compiled into the server that read the environment themselves (their own repositories).
+- key: office_url
+  env: FERRUM_OFFICE_URL
+  environment: Drive
+  doc: >-
+    With online editing: the editor server as the server reaches it (docs/operations.md, Online editing).
+- key: office_wopi_url
+  env: FERRUM_OFFICE_WOPI_URL
+  environment: Drive
+  doc: >-
+    With online editing: this server as the editor server reaches it.
+- key: office_ips
+  env: FERRUM_OFFICE_IPS
+  environment: Drive
+  doc: >-
+    Optional: the only addresses WOPI calls are accepted from.
+- key: editors_url
+  env: FERRUM_EDITORS_URL
+  environment: Drive
+  doc: >-
+    The browser editors' server as browsers reach it (docs/operations.md, Browser editors).
+- key: drive_max_file_mb
+  env: FERRUM_DRIVE_MAX_FILE_MB
+  environment: Drive
+  doc: >-
+    Largest file in one request to Drive: an upload, a new version or an editor save. Default 32, at most 1024. A
+    replica holds each such file in memory while storing it, so allow `uploads at once × this` of memory per
+    replica. Workspaces set their own limit within it. Raise any proxy's body limit in front with it.
+- key: drive_max_zip_mb
+  env: FERRUM_DRIVE_MAX_ZIP_MB
+  environment: Drive
+  doc: >-
+    The largest folder Drive downloads as one zip.
+- key: meet_url
+  env: FERRUM_MEET_URL
+  environment: Comms
+  doc: >-
+    LiveKit as browsers reach it, `wss://meet.example.com` (docs/operations.md, Meetings).
+- key: meet_key
+  env: FERRUM_MEET_KEY
+  secret: true
+  doc: >-
+    LiveKit's API key (a name).
+- key: meet_secret
+  env: FERRUM_MEET_SECRET
+  secret: true
+  doc: >-
+    LiveKit's API secret.
+- key: meet_recordings
+  env: FERRUM_MEET_RECORDINGS
+  environment: Comms
+  doc: >-
+    `true` once LiveKit Egress runs beside LiveKit with its storage.
+- key: meet_api_url
+  env: FERRUM_MEET_API_URL
+  environment: Comms
+  doc: >-
+    LiveKit's server API as Ferrum reaches it, when that is not `FERRUM_MEET_URL` over http(s).
+- key: mail_url
+  env: FERRUM_MAIL_URL
+  environment: Comms
+  doc: >-
+    Stalwart's HTTP address as the server reaches it (docs/operations.md, Hosted mail).
+- key: mail_admin
+  env: FERRUM_MAIL_ADMIN
+  environment: Comms
+  doc: >-
+    A Stalwart administrator.
+- key: mail_admin_secret
+  env: FERRUM_MAIL_ADMIN_SECRET
+  secret: true
+  doc: >-
+    That administrator's password.
+- key: mail_host
+  env: FERRUM_MAIL_HOST
+  environment: Comms
+  doc: >-
+    Optional: the mail server's public host name, shown to people setting up mail programs.
+- key: metrics_engine_url
+  env: FERRUM_METRICS_ENGINE_URL
+  environment: Metrics
+  doc: >-
+    Metrics' engine for external sources (docs/operations.md, Metrics' engine for external sources).
+- key: metrics_engine_token
+  env: FERRUM_METRICS_ENGINE_TOKEN
+  secret: true
+  doc: >-
+    The engine's token, at least 32 characters.
+- key: eu_vies_url
+  env: FERRUM_EU_VIES_URL
+  environment: ERP's EU add-on
+  doc: >-
+    Another address for the EU's VAT number service (a test server).
+- key: eu_tedb_url
+  env: FERRUM_EU_TEDB_URL
+  environment: ERP's EU add-on
+  doc: >-
+    Another address for the EU's taxes database (a test server).
+- key: gb_hmrc_url
+  env: FERRUM_GB_HMRC_URL
+  environment: ERP's GB add-on
+  doc: >-
+    Another address for HMRC's Making Tax Digital API (its sandbox).
+- key: public_ip
+  env: FERRUM_PUBLIC_IP
+  environment: ERP's GB add-on
+  doc: >-
+    The server's public address, sent in HMRC's fraud-prevention headers.
+- key: my_myinvois_url
+  env: FERRUM_MY_MYINVOIS_URL
+  environment: ERP's Malaysia add-on
+  doc: >-
+    Another address for MyInvois (its sandbox).
+- key: ro_anaf_url
+  env: FERRUM_RO_ANAF_URL
+  environment: ERP's Romania add-on
+  doc: >-
+    Another address for ANAF's e-Factura (its test system).
+- key: us_avatax_url
+  env: FERRUM_US_AVATAX_URL
+  environment: ERP's US add-on
+  doc: >-
+    Another address for AvaTax (its sandbox).
+- key: pt_certificate
+  env: FERRUM_PT_CERTIFICATE
+  environment: ERP's Portugal add-on
+  doc: >-
+    The software certificate number for certified invoices (docs/operations.md, Portugal: certified invoices).
+- key: pt_key_version
+  env: FERRUM_PT_KEY_VERSION
+  environment: ERP's Portugal add-on
+  doc: >-
+    The signing key's version.
+- key: pt_signing_key
+  env: FERRUM_PT_SIGNING_KEY
+  secret: true
+  doc: >-
+    The key certified invoices are signed with.

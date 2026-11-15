@@ -15,7 +15,10 @@ through PostgreSQL `NOTIFY`. Any replica can be killed or added at any time.
 
 ## Configuration
 
-Production reads `config/production.yaml`, which takes everything from the environment:
+Production reads `config/production.yaml`. Each setting comes from the environment when the environment sets its
+variable, else from the database's `setting` table, else its default (*Settings in the database*, below). A server
+needs only `DATABASE_URL` to start reading them; the secrets (`JWT_SECRET`, `FERRUM_SECRET_KEY` and the others marked
+so) still come from the environment.
 
 | Variable | Required | Meaning |
 |---|---|---|
@@ -86,6 +89,29 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_DATABASE_DIRECT_URL` | with a pooler | PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler* |
 | `FERRUM_DATABASE_READ_URL` | no | A replica that reports and the reading of exports may use, while it is within the lag limit and has replayed what the primary had committed when the read began; otherwise they read from the primary. Empty (the default): none. See "Deployment shapes", *Read address* |
 | `FERRUM_DATABASE_READ_MAX_LAG_SECS` | no | The replay lag past which those reads go to the primary (default 10) |
+
+### Settings in the database
+
+Every setting is declared once, in `server/src/settings.yaml`: its key, the variable that sets it, its type, its
+default, whether it is the installation's or a pool's, whether it applies at once or at the next start, and whether
+it is a secret. The database keeps the installation's settings in the table `setting` (one row per setting, holding
+the text the variable would hold), and the server reads them as each replica starts:
+
+1. It connects to `DATABASE_URL` with a pool of two connections of its own and reads the table (a database this build
+   has not migrated yet has none: then nothing comes from it).
+2. Each setting is the environment's value when the environment sets the variable (even to nothing), else the
+   table's, else its default. The environment wins until the release after this one stops reading it, so that rolling
+   back behaves as before.
+3. The values land where the variables always did, so that everything works as before: a server whose table is
+   empty behaves exactly as one configured by the environment alone.
+4. Only then does it check its host names and zones and open its real pools, sized by those settings.
+
+A secret is never kept in the table and stays in the environment until the vault holds it. Neither is a setting
+that someone else reads from the environment itself (an app compiled into the server, the OpenTelemetry SDK, the
+key-management client, the move task): the table's value would not reach them. And an address that is given a
+secret (`MAILER_HOST` with `MAILER_PASSWORD`, `FERRUM_ASSISTANT_URL` with its key) takes no value from the table
+while that secret is in the environment, so that a row in the database never sends the environment's secret
+somewhere else.
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
