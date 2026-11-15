@@ -258,6 +258,21 @@
     A replica that reports and the reading of exports may use, while it is within the lag limit and has replayed
     what the primary had committed when the read began; otherwise they read from the primary. Empty (the default):
     none. See "Deployment shapes", *Read address*. A secret while the address holds the password.
+- key: database_direct_host
+  env: FERRUM_DATABASE_DIRECT_HOST
+  path: settings.database_direct_host
+  doc: >-
+    With a pooler: PostgreSQL itself as `host` or `host:port` (5432 when no port is given), when `DATABASE_URL` is a
+    connection pooler in transaction mode. What needs one session goes there, with `DATABASE_URL`'s role, password,
+    database and TLS options. Empty (the default): `DATABASE_URL`. `FERRUM_DATABASE_DIRECT_URL`, when set, wins.
+    See *Any PostgreSQL*.
+- key: database_read_host
+  env: FERRUM_DATABASE_READ_HOST
+  path: settings.database_read_host
+  doc: >-
+    A read replica as `host` or `host:port`, reached with `DATABASE_URL`'s role, password, database and TLS options:
+    what `database_read_url` does, without a second password. Empty (the default): none. `FERRUM_DATABASE_READ_URL`,
+    when set, wins.
 - key: database_read_max_lag_secs
   env: FERRUM_DATABASE_READ_MAX_LAG_SECS
   type: int

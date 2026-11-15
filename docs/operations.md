@@ -21,7 +21,12 @@ needs only `DATABASE_URL` to start reading them; the secrets (`JWT_SECRET`, `FER
 so) still come from the environment.
 
 `DATABASE_URL` (required): `postgres://user:pass@host:5432/db`, the database's address; its `application_name`
-names the replica's pool (*Pools*, below). Below, every setting as `server/src/settings.yaml` declares it (`python3
+names the replica's pool (*Pools*, below). `/run/ferrum/db-ca.pem`, when the file is there (the Helm chart mounts
+`database.external.caSecret` there): the certificate authority every connection to the database checks its
+certificate against. The addresses then ask for TLS with the certificate checked: no `sslmode` (or `prefer`) becomes
+`verify-full`, `require` becomes `verify-ca` (as libpq does with a root certificate), an address's own `sslrootcert`
+is left as it is, and `disable` or `allow` refuses to start. A certificate that does not verify refuses the start too,
+saying so (*Any PostgreSQL*). Below, every setting as `server/src/settings.yaml` declares it (`python3
 scripts/settings.py --write` writes this table; a setting's key is its variable in lower case, without `FERRUM_`).
 *Where it lives*: the installation's or each pool's, and whether a change applies at once or at a replica's next
 start; a secret, or a setting read from the environment by someone else, lives in the environment.
@@ -62,6 +67,8 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `db_max_connections` | `FERRUM_DB_MAX_CONNECTIONS` | int | `30` | each pool, next start | Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so. |
 | `database_direct_url` | `FERRUM_DATABASE_DIRECT_URL` | text |  | secret: the environment | With a pooler: PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler*. A secret while the address holds the password. |
 | `database_read_url` | `FERRUM_DATABASE_READ_URL` | text |  | secret: the environment | A replica that reports and the reading of exports may use, while it is within the lag limit and has replayed what the primary had committed when the read began; otherwise they read from the primary. Empty (the default): none. See "Deployment shapes", *Read address*. A secret while the address holds the password. |
+| `database_direct_host` | `FERRUM_DATABASE_DIRECT_HOST` | text |  | installation, next start | With a pooler: PostgreSQL itself as `host` or `host:port` (5432 when no port is given), when `DATABASE_URL` is a connection pooler in transaction mode. What needs one session goes there, with `DATABASE_URL`'s role, password, database and TLS options. Empty (the default): `DATABASE_URL`. `FERRUM_DATABASE_DIRECT_URL`, when set, wins. See *Any PostgreSQL*. |
+| `database_read_host` | `FERRUM_DATABASE_READ_HOST` | text |  | installation, next start | A read replica as `host` or `host:port`, reached with `DATABASE_URL`'s role, password, database and TLS options: what `database_read_url` does, without a second password. Empty (the default): none. `FERRUM_DATABASE_READ_URL`, when set, wins. |
 | `database_read_max_lag_secs` | `FERRUM_DATABASE_READ_MAX_LAG_SECS` | int | `10` | installation, next start | The replay lag past which those reads go to the primary (default 10). |
 | `upkeep_concurrency` | `FERRUM_UPKEEP_CONCURRENCY` | int | `2` | installation, next start | How many apps' periodic upkeep one replica runs at once (default 2). Each app's upkeep has a lock of its own across replicas, so replicas share the apps between them; each running app holds one database connection. |
 | `hold_on_timeline` | `FERRUM_HOLD_ON_TIMELINE` | bool | `true` | installation, next start | `false`: a new timeline of the database (a promoted replica) is not held as a restore. Only where failover is synchronous; see *After restoring a backup*. |
@@ -1361,8 +1368,13 @@ parameters it does not track), so PgBouncer needs no `ignore_startup_parameters`
 later, `pool_mode = transaction`, `max_prepared_statements` above 0 (sqlx prepares every statement), and
 the server's role and database. Checked with PgBouncer 1.26.1 on 14 November 2026 (README, *Testing*).
 
+*Only the hosts.* `FERRUM_DATABASE_DIRECT_HOST` and `FERRUM_DATABASE_READ_HOST` (`host` or `host:port`, 5432 without
+a port) say the same without a second password: the server reaches them with `DATABASE_URL`'s role, password, database
+and TLS options. `FERRUM_DATABASE_DIRECT_URL` and `FERRUM_DATABASE_READ_URL`, when set, still win. Where the pooled and
+direct addresses differ in more than their host (a role name the pooler adds something to), give the full address.
+
 *When a connection fails.* A direct address that does not answer at start stops the start, saying
-`FERRUM_DATABASE_DIRECT_URL`; Kubernetes starts the pod again. One that drops later: each listener notices
+`FERRUM_DATABASE_DIRECT_URL` or `FERRUM_DATABASE_DIRECT_HOST`; Kubernetes starts the pod again. One that drops later: each listener notices
 (it is never quietly reconnected), connects again with a back-off (metadata from 250 ms doubling to 10 s,
 the others every 2 s) and recovers as before: metadata and users drop every cached copy, co-editing reads every
 open document again, and live updates and plugin sockets are best effort (a page refreshes later). A session

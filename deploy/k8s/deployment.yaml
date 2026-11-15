@@ -117,6 +117,10 @@ spec:
             # - {name: FERRUM_DATABASE_DIRECT_URL, value: "postgresql://…@ferrum-db-rw:5432/ferrum"}
             # - {name: FERRUM_DATABASE_READ_URL, value: "postgresql://…@ferrum-db-ro:5432/ferrum"}
             # - {name: FERRUM_DATABASE_READ_MAX_LAG_SECS, value: "10"}
+            # Or only their hosts, reached with DATABASE_URL's role, password, database and TLS options (an outside
+            # database, docs/operations.md "Any PostgreSQL"; its certificate authority mounted at /run/ferrum/db-ca.pem):
+            # - {name: FERRUM_DATABASE_DIRECT_HOST, value: "db.example.internal:5432"}
+            # - {name: FERRUM_DATABASE_READ_HOST, value: "db-ro.example.internal"}
           resources:
             requests: {cpu: 250m, memory: 256Mi}
             limits: {memory: 1Gi}

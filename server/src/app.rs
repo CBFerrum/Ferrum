@@ -200,13 +200,26 @@ impl Hooks for App {
                 ferrum_kernel::doctor::POOL_FLOOR
             );
         }
+        // The direct and read addresses: the old full address when set (it wins in R1), else DATABASE_URL at the host a
+        // setting names (D7), else none.
+        let at = |full: &str, host: &str, name: &str| -> Result<Option<String>> {
+            if !full.trim().is_empty() {
+                return Ok(Some(full.trim().to_string()));
+            }
+            if host.trim().is_empty() {
+                return Ok(None);
+            }
+            ferrum_kernel::db::with_host(&ctx.config.database.uri, host).map(Some).map_err(|e| Error::Message(format!("{name}: {e}")))
+        };
+        let direct = at(&settings.database_direct_url, &settings.database_direct_host, "FERRUM_DATABASE_DIRECT_HOST")?;
+        let read = at(&settings.database_read_url, &settings.database_read_host, "FERRUM_DATABASE_READ_HOST")?;
         let db = Db::connect(DbConfig {
             url: ctx.config.database.uri.clone(),
             max_connections: settings.db_max_connections,
             // Unset: the same address as DATABASE_URL, one pool for everything as before.
-            direct_url: Some(Some(settings.database_direct_url.trim()).filter(|u| !u.is_empty()).unwrap_or(&ctx.config.database.uri).to_string()),
+            direct_url: Some(direct.unwrap_or_else(|| ctx.config.database.uri.clone())),
             direct_connections: ferrum_kernel::db::LISTENERS + ferrum_kernel::db::DIRECT_LOCKS + crate::packages::upkeep_concurrency() as u32,
-            read_url: Some(settings.database_read_url.trim().to_string()).filter(|u| !u.is_empty()),
+            read_url: read,
             read_max_lag: Duration::from_secs(settings.database_read_max_lag_secs),
             ..Default::default()
         })
