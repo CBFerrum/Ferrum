@@ -101,7 +101,7 @@ impl std::fmt::Debug for Opener {
 pub enum Opened {
     /// Open, with this slot.
     With(SlotKind),
-    /// The vault's tables are not in the database yet: it opens once the kernel has migrated it (`Kernel::boot`).
+    /// The database is not migrated as far as the vault yet: it opens once the kernel has migrated it (`Kernel::boot`).
     Later,
 }
 
@@ -201,14 +201,14 @@ impl Root {
 }
 
 /// Opens the vault of `db`, as a server does at start and a task before it runs (`server/src/tasks.rs`, `open_vault`).
-/// A database without the vault's tables yet is opened once the kernel has migrated it ([`Opened::Later`]); one
+/// A database not migrated as far as the vault yet is opened once the kernel has migrated it ([`Opened::Later`]); one
 /// without slots gets its installation key and the best slot here. An error says why each slot did not open, and
 /// leaves the vault closed with that reason: whatever then asks it is refused with it. `tolerate`: a task that
 /// reports or repairs the vault, which runs with it closed (only for an opening left to [`finish`]).
 pub async fn open(db: &Db, opener: Opener, tolerate: bool) -> Result<Opened> {
     let root = &db.vault;
     let _one = root.opening.lock().await;
-    if !tables_there(db).await? {
+    if !migrated(db).await? {
         root.set(State::Pending { opener, tolerate });
         return Ok(Opened::Later);
     }
@@ -237,7 +237,7 @@ pub(crate) async fn finish(db: &Db) -> Result<()> {
             return Ok(());
         }
         Ok(Opened::Later) => {
-            let e = Error::Unavailable("the vault's tables are not in the database: run `ferrum task migrate` with this build".into());
+            let e = Error::Unavailable("the database is not migrated as far as the vault: run `ferrum task migrate` with this build".into());
             db.vault.set(State::Closed { why: e.to_string(), opener: Some(opener) });
             e
         }
@@ -251,8 +251,26 @@ pub(crate) async fn finish(db: &Db) -> Result<()> {
     }
 }
 
-async fn tables_there(db: &Db) -> Result<bool> {
-    Ok(sqlx::query_scalar("select to_regclass('vault.root_slot') is not null").fetch_one(&db.side).await?)
+/// The kernel's migration that makes the vault.
+const MIGRATION: i64 = 20261119000201;
+
+/// Whether this database is migrated as far as the vault: its migration recorded, and with it every table it and the
+/// vault's module use (the workspaces', the audit trail's, the jobs'). A database not yet migrated (a new one, an
+/// upgrade, a test's reset of the public schema) has its vault opened once the kernel has migrated it.
+async fn migrated(db: &Db) -> Result<bool> {
+    let (recorded, tables): (bool, bool) =
+        sqlx::query_as("select to_regclass('public._sqlx_migrations') is not null, to_regclass('vault.root_slot') is not null").fetch_one(&db.side).await?;
+    if !recorded {
+        return Ok(false);
+    }
+    let made: bool =
+        sqlx::query_scalar("select exists (select 1 from public._sqlx_migrations where version = $1 and success)").bind(MIGRATION).fetch_one(&db.side).await?;
+    if made && !tables {
+        return Err(Error::Unavailable(
+            "the vault's tables are gone, although the database's migrations made them: restore the vault's schema from the backup taken with the rest".into(),
+        ));
+    }
+    Ok(made)
 }
 
 /// The vault's transaction-level lock on its root: taken shared by whatever wraps a key with the installation key,
@@ -902,7 +920,7 @@ pub async fn status(db: &Db) -> Result<Status> {
         }
         Err(why) => st.closed_because = Some(why),
     }
-    if !tables_there(db).await? {
+    if !migrated(db).await? {
         return Ok(st);
     }
     let slots = read_slots(db).await?;

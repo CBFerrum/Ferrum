@@ -191,10 +191,20 @@ async fn scenario() {
     let fresh = replica().await;
     sqlx::raw_sql("drop schema if exists vault cascade; drop schema if exists public cascade; create schema public;").execute(&fresh.pool).await.unwrap();
     assert_eq!(vault::open(&fresh, opener(Some("ferrum"), &no_file, None), false).await.unwrap(), Opened::Later);
-    let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
-    let k = Kernel::boot(fresh, Catalog::from_packages(vec![core]).unwrap(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
+    let k = Kernel::boot(fresh, core(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
     assert!(vault::put_slot(&k.db, SlotKind::Recovery).await.unwrap().is_some(), "open once booted");
     assert_eq!(as_vault(&db, "select count(*) from vault.root_slot").await, 2, "made then: credential and recovery");
+    // The public schema made again under a vault that is there (a test's reset, a restore of the public schema alone):
+    // opened once migrated, as before, never before the tables its first steps write to are there.
+    let again = replica().await;
+    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&again.pool).await.unwrap();
+    assert_eq!(vault::open(&again, opener(Some("ferrum"), &no_file, None), false).await.unwrap(), Opened::Later);
+    let k = Kernel::boot(again, core(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
+    assert!(vault::put_slot(&k.db, SlotKind::Recovery).await.unwrap().is_some(), "opened with the slots it had");
+    // The vault's schema gone behind the migrations' back: said, never made again empty.
+    sqlx::raw_sql("drop schema vault cascade").execute(&db.pool).await.unwrap();
+    let why = refusal(vault::open(&replica().await, opener(Some("ferrum"), &no_file, None), false).await);
+    assert!(why.contains("the vault's tables are gone"), "{why}");
 
     keys_and_handles(&no_file).await;
     secrets_and_people(&no_file).await;
