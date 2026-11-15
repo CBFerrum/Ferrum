@@ -145,6 +145,9 @@ async fn scenario() {
     for slug in ["acme-inc", "acme"] {
         sqlx::query("update tenant set slug = $2 where id = $1").bind(acme).bind(slug).execute(&mut *tx).await.unwrap();
     }
+    // Back under its first slug, which renaming it away retired: as if it had never left it, so that the deletion is seen
+    // retiring the slug it has.
+    sqlx::query("delete from tenant_slug_retired where slug = 'acme'").execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     let bravo_before = left_of(&k, bravo).await;
 
