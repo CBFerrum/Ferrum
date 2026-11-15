@@ -278,6 +278,7 @@ What one replica holds, with the defaults (counted from the code on 14 November 
 | The pool | `DATABASE_URL` | `FERRUM_DB_MAX_CONNECTIONS` (30) | Requests, background work. Without a direct address the listeners and session locks below come out of it |
 | The side pool | `DATABASE_URL` | 4 | Short writes while a request's own transaction is open (numbering); idle ones close after a minute |
 | Loco's own pool | `DATABASE_URL` | 2 | Opened at start to check Loco's migrations (there are none); nothing else uses it. Safe through a pooler: it keeps no session |
+| The settings' first read | `DATABASE_URL` | 2 | At start, before the server's own pools open: reads the `setting` table (*Settings in the database*), then closes. Safe through a pooler |
 | Listeners: metadata, users, plugin sockets, live updates, co-editing | the direct address | 5 | One each, for as long as the replica runs |
 | Session locks: apps' upkeep, app stores' revocations | the direct address | 3 | One per app whose upkeep runs (`FERRUM_UPKEEP_CONCURRENCY`, 2), one for revocations, while each runs |
 | At start: the two-version window's lock, then the migrations', the schema sync's and the upgrade steps' locks | the direct address | 2 | Before the replica serves or works: the window's lock is a connection outside every pool, the others one at a time |
