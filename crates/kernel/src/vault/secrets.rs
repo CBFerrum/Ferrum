@@ -283,6 +283,8 @@ async fn event(tx: &mut Tx, scope: Scope, actor: Option<Uuid>, request: &str, ca
 async fn audited(tx: &mut Tx, scope: Scope, owner: &str, name: &str, verb: &'static str, who: &Who<'_>, version: i32, capped: bool) -> Result<()> {
     if capped {
         flush_uses(tx, Some((scope, owner, name, verb))).await?;
+        // ponytail: one counter row per secret, verb and hour, so uses of one secret take turns on it; count in memory
+        // per replica, flushed now and then, if one secret is ever used thousands of times a second.
         let n: i32 = sqlx::query_scalar(
             "insert into vault.use_count (scope, owner, name, verb, hour, n) values ($1, $2, $3, $4, date_trunc('hour', now()), 1) \
              on conflict (scope, owner, name, verb, hour) do update set n = vault.use_count.n + 1 returning n",
