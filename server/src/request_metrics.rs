@@ -6,14 +6,20 @@
 //! the series are at most (apps + 1) × 9 classes × (12 buckets + sum + count), and only those with requests are written.
 //! Counting is a few atomic additions in a table made at start: no allocation, no lock. The layer is the outermost
 //! (`after_routes`), so a request a zone refuses or a fenced database answers with 503 is counted too.
+//!
+//! The same time is also counted to the request's workspace, when something answering it learns which one it is (its
+//! signed-in session, or its address: [`note_workspace`]), in memory, minute by minute over the last few minutes
+//! ([`Busy`]): whom a busy hour belongs to. Only the ten busiest are named on `/metrics`.
 
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
+use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::Instant;
+use uuid::Uuid;
 
 /// What a request is, by its path.
 pub const CLASSES: [&str; 9] = ["page", "records", "app", "files", "live", "admin", "sign-in", "public", "other"];
@@ -145,13 +151,118 @@ pub fn text() -> String {
     REQUESTS.get().map(Requests::text).unwrap_or_default()
 }
 
-/// The middleware: times every request and counts it where it belongs.
+/// How far back the busiest workspaces are measured, in minutes: this one and the four before it.
+pub const BUSY_MINUTES: usize = 5;
+/// The most workspaces one replica keeps time for (a few hundred kilobytes); a new one past it takes the least busy one's place.
+pub const BUSY_TRACKED: usize = 2000;
+/// How many of its busiest workspaces a replica names.
+pub const BUSIEST: usize = 10;
+
+tokio::task_local! {
+    /// The workspace of the request being answered, once something answering it knows ([`note_workspace`]).
+    static WORKSPACE: Cell<Option<Uuid>>;
+}
+
+/// The request being answered is `tenant`'s: its time is counted to it ([`count`]). The first to say so is believed (its
+/// session, or the address it came to); outside a request (a socket's task, a job) this does nothing.
+pub fn note_workspace(tenant: Uuid) {
+    let _ = WORKSPACE.try_with(|w| {
+        if w.get().is_none() {
+            w.set(Some(tenant));
+        }
+    });
+}
+
+/// A workspace's time over the last [`BUSY_MINUTES`]: one slot per minute, (the minute, microseconds in it).
+type Minutes = [(u64, u64); BUSY_MINUTES];
+
+/// Time this replica spent answering each workspace's requests, minute by minute, for at most [`BUSY_TRACKED`]
+/// workspaces, in memory only: nothing is written anywhere on a request's way. One lock, held for a few additions.
+#[derive(Default)]
+pub struct Busy(Mutex<HashMap<Uuid, Minutes>>);
+
+/// The time in `m` within the last [`BUSY_MINUTES`] at `now`.
+fn recent(m: &Minutes, now: u64) -> u64 {
+    m.iter().filter(|(at, _)| now.saturating_sub(*at) < BUSY_MINUTES as u64).map(|(_, us)| us).sum()
+}
+
+impl Busy {
+    /// `micros` of `tenant`'s requests, answered in `minute`. A workspace new to a full table takes the place of the one
+    /// with the least time lately (one with none first), so a crowd of small ones passing through never pushes out a busy one.
+    pub fn add(&self, tenant: Uuid, minute: u64, micros: u64) {
+        let mut by = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if by.len() >= BUSY_TRACKED && !by.contains_key(&tenant) {
+            // ponytail: a scan for the least busy when a new workspace finds the table full; a heap by time if replicas come
+            // to see many more than BUSY_TRACKED workspaces within BUSY_MINUTES.
+            if let Some(least) = by.iter().min_by_key(|(_, m)| recent(m, minute)).map(|(t, _)| *t) {
+                by.remove(&least);
+            }
+        }
+        let slot = &mut by.entry(tenant).or_default()[(minute % BUSY_MINUTES as u64) as usize];
+        if slot.0 != minute {
+            *slot = (minute, 0);
+        }
+        slot.1 += micros;
+    }
+
+    /// The `n` workspaces with the most time within the last [`BUSY_MINUTES`] at `minute`, busiest first, in seconds.
+    pub fn busiest(&self, n: usize, minute: u64) -> Vec<(Uuid, f64)> {
+        let by = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut all: Vec<(Uuid, u64)> = by.iter().map(|(t, m)| (*t, recent(m, minute))).filter(|(_, us)| *us > 0).collect();
+        drop(by);
+        all.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        all.truncate(n);
+        all.into_iter().map(|(t, us)| (t, us as f64 / 1e6)).collect()
+    }
+
+    #[cfg(test)]
+    fn tracked(&self) -> usize {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+}
+
+static BUSY: LazyLock<Busy> = LazyLock::new(Busy::default);
+static SINCE: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// This replica's minute (since it started: the clock of the machine plays no part).
+fn minute() -> u64 {
+    SINCE.elapsed().as_secs() / 60
+}
+
+/// This replica's [`BUSIEST`] busiest workspaces over the last [`BUSY_MINUTES`]: (workspace, seconds), busiest first.
+pub fn busiest() -> Vec<(Uuid, f64)> {
+    BUSY.busiest(BUSIEST, minute())
+}
+
+/// The gauge for `/metrics`, the busiest workspaces named as given (their slugs): at most [`BUSIEST`] series.
+pub fn busiest_text(named: &[(String, f64)]) -> String {
+    let mut out = String::from(
+        "# HELP ferrum_busiest_workspace_seconds Time this replica spent answering the requests of its ten busiest workspaces over the last five minutes, in seconds.\n\
+         # TYPE ferrum_busiest_workspace_seconds gauge\n",
+    );
+    for (workspace, seconds) in named.iter().take(BUSIEST) {
+        out.push_str(&format!("ferrum_busiest_workspace_seconds{{workspace=\"{workspace}\"}} {seconds:.3}\n"));
+    }
+    out
+}
+
+/// The middleware: times every request and counts it where it belongs, and to its workspace when it turned out to have one.
 pub async fn count(req: Request, next: Next) -> Response {
-    let Some(r) = REQUESTS.get() else { return next.run(req).await };
-    let (class, app) = r.place(req.uri().path(), req.headers().get("x-ferrum-ui").and_then(|v| v.to_str().ok()));
+    let placed = REQUESTS.get().map(|r| (r, r.place(req.uri().path(), req.headers().get("x-ferrum-ui").and_then(|v| v.to_str().ok()))));
     let started = Instant::now();
-    let res = next.run(req).await;
-    r.observe(class, app, started.elapsed().as_secs_f64());
+    let (res, workspace) = WORKSPACE
+        .scope(Cell::new(None), async move {
+            let res = next.run(req).await;
+            (res, WORKSPACE.with(Cell::get))
+        })
+        .await;
+    let took = started.elapsed();
+    if let Some((r, (class, app))) = placed {
+        r.observe(class, app, took.as_secs_f64());
+    }
+    if let Some(tenant) = workspace {
+        BUSY.add(tenant, minute(), took.as_micros().try_into().unwrap_or(u64::MAX));
+    }
     res
 }
 
@@ -236,5 +347,95 @@ mod tests {
         let text = text();
         assert!(text.contains("ferrum_http_request_duration_seconds_count{app=\"board\",class=\"app\"} 1"), "{text}");
         assert!(text.contains("ferrum_http_request_duration_seconds_count{app=\"crm\",class=\"page\"} 1"), "{text}");
+    }
+
+    // ── the busiest workspaces ──
+
+    fn ids(n: usize) -> Vec<Uuid> {
+        (0..n).map(|_| Uuid::now_v7()).collect()
+    }
+
+    #[test]
+    fn the_busiest_are_ranked_by_their_time_over_the_last_minutes() {
+        let busy = Busy::default();
+        let w = ids(4);
+        // Minute 100: the first workspace three seconds in two requests, the second one, the third two.
+        for (who, us) in [(0, 1_000_000), (1, 1_000_000), (0, 2_000_000), (2, 2_000_000)] {
+            busy.add(w[who], 100, us);
+        }
+        // Four minutes before: still within the five; six minutes before: not.
+        busy.add(w[1], 96, 5_000_000);
+        busy.add(w[3], 94, 60_000_000);
+        let ranked: Vec<(Uuid, f64)> = busy.busiest(10, 100);
+        assert_eq!(ranked, vec![(w[1], 6.0), (w[0], 3.0), (w[2], 2.0)], "the busiest first; an hour-old minute not at all");
+        assert_eq!(busy.busiest(2, 100).len(), 2, "only as many as asked");
+        assert!(busy.busiest(10, 106).is_empty(), "five minutes later, nothing is recent");
+        // A slot is used again a lap later: its old minute is not added to the new one.
+        busy.add(w[2], 105, 1_000_000);
+        assert_eq!(busy.busiest(10, 105), vec![(w[2], 1.0)]);
+    }
+
+    #[test]
+    fn the_table_is_bounded_and_a_crowd_of_small_ones_does_not_push_out_a_busy_one() {
+        let busy = Busy::default();
+        let heavy = Uuid::now_v7();
+        busy.add(heavy, 7, 30_000_000);
+        for (i, w) in ids(3 * BUSY_TRACKED).into_iter().enumerate() {
+            busy.add(w, 7, 1_000 + i as u64);
+        }
+        assert_eq!(busy.tracked(), BUSY_TRACKED, "never more than the cap, whatever passes through");
+        let top = busy.busiest(BUSIEST, 7);
+        assert_eq!((top.len(), top[0]), (BUSIEST, (heavy, 30.0)), "the busy one stays, and leads");
+        // The labels: at most ten series, whatever was counted.
+        let named: Vec<(String, f64)> = busy.busiest(usize::MAX, 7).into_iter().map(|(w, s)| (w.to_string(), s)).collect();
+        let text = busiest_text(&named);
+        assert_eq!(text.lines().filter(|l| !l.starts_with('#')).count(), BUSIEST, "{text}");
+        assert!(text.contains(&format!("ferrum_busiest_workspace_seconds{{workspace=\"{heavy}\"}} 30.000")), "{text}");
+    }
+
+    #[test]
+    fn requests_answered_at_once_are_each_counted_once() {
+        let busy = Busy::default();
+        let w = ids(4);
+        std::thread::scope(|s| {
+            for t in 0..8 {
+                let (busy, w) = (&busy, &w);
+                s.spawn(move || {
+                    for i in 0..1000 {
+                        busy.add(w[(t + i) % 4], 3, 1_000);
+                    }
+                });
+            }
+        });
+        let counted: Vec<f64> = busy.busiest(10, 3).into_iter().map(|(_, s)| s).collect();
+        assert_eq!(counted, vec![2.0; 4], "8 × 1000 requests of a millisecond, none lost, none twice");
+    }
+
+    /// Only a request that something answering it placed in a workspace is counted, to that workspace.
+    #[tokio::test]
+    async fn a_request_without_a_workspace_is_not_counted() {
+        use tower::ServiceExt;
+        let (acme, nobody) = (Uuid::now_v7(), Uuid::now_v7());
+        let app = axum::Router::new()
+            .route(
+                "/acme",
+                axum::routing::get(move || async move {
+                    note_workspace(acme);
+                    // The first to say is believed: a later word changes nothing.
+                    note_workspace(nobody);
+                    "ok"
+                }),
+            )
+            .route("/healthz", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(count));
+        let before = BUSY.busiest(usize::MAX, minute()).len();
+        let get = |path: &str| axum::http::Request::builder().uri(path).body(axum::body::Body::empty()).unwrap();
+        app.clone().oneshot(get("/healthz")).await.unwrap();
+        assert_eq!(BUSY.busiest(usize::MAX, minute()).len(), before, "no workspace: nothing counted");
+        app.clone().oneshot(get("/acme")).await.unwrap();
+        let after = BUSY.busiest(usize::MAX, minute());
+        assert!(after.iter().any(|(w, _)| *w == acme) && !after.iter().any(|(w, _)| *w == nobody), "{after:?}");
+        note_workspace(nobody);
+        assert!(!BUSY.busiest(usize::MAX, minute()).iter().any(|(w, _)| *w == nobody), "outside a request: nothing");
     }
 }

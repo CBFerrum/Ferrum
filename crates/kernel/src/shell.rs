@@ -465,14 +465,23 @@ impl Kernel {
     }
 
     /// The ways the person of `who` can confirm it is them now, on `host`, in order of preference: `{"way": "passkey"}` (a
-    /// passkey of theirs for a relying party the host may use), `{"way": "password", "code": bool}` (a password; `code`:
-    /// the code from an authenticator app is asked too), `{"way": "provider", "name": …}` (an identity linked to them at
-    /// an enabled single sign-on provider). Where the workspace requires single sign-on of them, neither a password nor a
-    /// passkey proves anything: only the provider. Empty: no way at all.
-    pub async fn step_up_ways(&self, who: &StepUp, host: &str) -> Result<Vec<Value>> {
+    /// passkey of theirs for a relying party the host may use), `{"way": "accounts_passkey"}` (failing that, a passkey of
+    /// their Ferrum account kept for the accounts host `accounts`, which the dialog asks for there, in a small window:
+    /// crate::sso, [`Kernel::accounts_step_up_begin`]), `{"way": "password", "code": bool}` (a password; `code`: the code
+    /// from an authenticator app is asked too), `{"way": "provider", "name": …}` (an identity linked to them at an enabled
+    /// single sign-on provider). Where the workspace requires single sign-on of them, neither a password nor a passkey
+    /// proves anything: only the provider. Empty: no way at all.
+    pub async fn step_up_ways(&self, who: &StepUp, host: &str, accounts: Option<&str>) -> Result<Vec<Value>> {
+        // Only a workspace account joined to a Ferrum account, on a host that hands sign-in to the accounts host, has its
+        // passkeys there (`keys`, set by whoever knows the hosts).
+        let at_accounts = match accounts {
+            Some(a) if who.keys != (who.tenant, who.user) => self.step_up_rps(a),
+            _ => Vec::new(),
+        };
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(bool, bool, bool, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        let row: Option<(bool, bool, bool, bool, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {}, exists (select 1 from passkey p where p.tenant_id = k.tenant_id and p.user_id = k.id and p.rp_id = any($5)), \
+               exists (select 1 from passkey p where p.tenant_id = k.tenant_id and p.user_id = k.id and p.rp_id = any($6)), \
                coalesce(k.password_hash is not null, false), coalesce(k.totp_enabled_at is not null, false) \
              from app_user u join tenant t on t.id = u.tenant_id left join app_user k on k.tenant_id = $3 and k.id = $4 and k.is_active \
              where u.tenant_id = $1 and u.id = $2 and u.is_active and t.status = 'active'",
@@ -483,13 +492,16 @@ impl Kernel {
         .bind(who.keys.0)
         .bind(who.keys.1)
         .bind(self.step_up_rps(host))
+        .bind(at_accounts)
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
-        let Some((sso_only, passkey, password, code)) = row else { return Ok(Vec::new()) };
+        let Some((sso_only, passkey, accounts_passkey, password, code)) = row else { return Ok(Vec::new()) };
         let mut ways = Vec::new();
         if passkey && !sso_only {
             ways.push(serde_json::json!({"way": "passkey"}));
+        } else if accounts_passkey && !sso_only {
+            ways.push(serde_json::json!({"way": crate::sso::ACCOUNTS_PASSKEY}));
         }
         if password && !sso_only {
             ways.push(serde_json::json!({"way": "password", "code": code}));
@@ -500,10 +512,10 @@ impl Kernel {
         Ok(ways)
     }
 
-    /// The person of `who` proved it is them (`way`: `password`, `passkey`, `provider`): their browser session counts as
-    /// stepped up, and the audit trail says so (sign-in, `stepped_up`, with where it came from), in one transaction, so
-    /// that neither is without the other. Only the session of that person, live; nothing else about it changes (whose it
-    /// is, when it ends). Every other replica drops what it holds of the person's sessions at once.
+    /// The person of `who` proved it is them (`way`: `password`, `passkey`, `accounts_passkey`, `provider`): their browser
+    /// session counts as stepped up, and the audit trail says so (sign-in, `stepped_up`, with where it came from), in one
+    /// transaction, so that neither is without the other. Only the session of that person, live; nothing else about it
+    /// changes (whose it is, when it ends). Every other replica drops what it holds of the person's sessions at once.
     pub async fn stepped_up(&self, who: &StepUp, way: &str, from: &crate::gate::Arrival) -> Result<()> {
         let mut tx = self.db.system_tenant_tx(who.tenant).await?;
         let marked = sqlx::query(

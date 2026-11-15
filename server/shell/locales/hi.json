@@ -364,5 +364,15 @@
   "Something went wrong on the server. Close this window and try again.": "सर्वर पर कुछ गड़बड़ हो गई। यह विंडो बंद करें और फिर से कोशिश करें।",
   "{provider} did not ask you to sign in again, so this cannot confirm it is you; an administrator can have the provider ask again when told to. Close this window and try again.": "{provider} ने आपसे फिर से साइन इन करने को नहीं कहा, इसलिए इससे पुष्टि नहीं हो सकती कि यह आप हैं; कोई व्यवस्थापक प्रदाता को ऐसा कहे जाने पर फिर से पूछने के लिए सेट कर सकता है। यह विंडो बंद करें और फिर से कोशिश करें।",
   "you signed in at {provider} as someone else: the account does not match, so nothing changed. Close this window and try again.": "आपने {provider} पर किसी और के रूप में साइन इन किया: खाता मेल नहीं खाता, इसलिए कुछ नहीं बदला। यह विंडो बंद करें और फिर से कोशिश करें।",
-  "Every app, at the workspace's main address": "हर ऐप, कार्यक्षेत्र के मुख्य पते पर"
+  "Every app, at the workspace's main address": "हर ऐप, कार्यक्षेत्र के मुख्य पते पर",
+  "{workspace} asks you to confirm it is you with a passkey of your Ferrum account.": "{workspace} आपसे अपने Ferrum खाते की पासकी से यह पुष्टि करने को कह रहा है कि यह आप हैं।",
+  "Confirming it is you needs JavaScript.": "यह पुष्टि करने के लिए कि यह आप हैं, JavaScript चाहिए।",
+  "Confirming it is you did not work": "पुष्टि नहीं हो सकी कि यह आप हैं",
+  "This request to confirm it is you has expired or was used already. Close this window and try again.": "यह पुष्टि करने का अनुरोध कि यह आप हैं, समाप्त हो गया है या पहले ही उपयोग हो चुका है। यह विंडो बंद करें और फिर से कोशिश करें।",
+  "No passkey was used. If this device has no passkey of your Ferrum account, use one that has, or close this window.": "किसी पासकी का उपयोग नहीं हुआ। अगर इस डिवाइस पर आपके Ferrum खाते की कोई पासकी नहीं है, तो ऐसा डिवाइस इस्तेमाल करें जिस पर हो, या यह विंडो बंद करें।",
+  "That passkey was not accepted, or this request has expired. Close this window and try again.": "यह पासकी स्वीकार नहीं हुई, या यह अनुरोध समाप्त हो गया है। यह विंडो बंद करें और फिर से कोशिश करें।",
+  "This browser cannot use a passkey. Use another browser, or close this window.": "यह ब्राउज़र पासकी का उपयोग नहीं कर सकता। कोई दूसरा ब्राउज़र इस्तेमाल करें, या यह विंडो बंद करें।",
+  "Confirm it is you in the window that opened.": "जो विंडो खुली है उसमें पुष्टि करें कि यह आप हैं।",
+  "If you closed the window before confirming it is you, try again.": "अगर आपने यह पुष्टि करने से पहले विंडो बंद कर दी कि यह आप हैं, तो फिर से कोशिश करें।",
+  "Confirming it is you did not finish. Try again.": "पुष्टि पूरी नहीं हुई कि यह आप हैं। फिर से कोशिश करें।"
 }

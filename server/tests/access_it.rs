@@ -279,6 +279,8 @@ async fn scenario() {
     assert!(counted("enforce") > before, "refusals are counted");
     let (_, metrics) = call(&r, Method::GET, "/metrics", INSIDE, Cred::None, None).await;
     assert!(metrics.contains("ferrum_staff_network_refusals_total{mode=\"enforce\",credential=\"token\"}"), "{metrics}");
+    // The time of those requests is acme's, named by its slug among this replica's busiest workspaces.
+    assert!(metrics.contains("ferrum_busiest_workspace_seconds{workspace=\"acme\"}"), "{metrics}");
 
     // Sign-in from outside: one answer for a right and a wrong password and nobody, no lockout counted.
     let was = failed_logins(&k, "member@acme.test").await;

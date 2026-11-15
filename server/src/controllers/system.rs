@@ -235,8 +235,13 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
         job_wait.unwrap_or(0.0),
         st.shares.refused.load(std::sync::atomic::Ordering::Relaxed)
     );
+    // This replica's busiest workspaces, by slug (a workspace no longer there, by its id).
+    let mut busiest = Vec::new();
+    for (tenant, seconds) in crate::request_metrics::busiest() {
+        busiest.push((st.shell.workspace(tenant).await.map_or_else(|_| tenant.to_string(), |w| w.slug.clone()), seconds));
+    }
     // Requests by app and kind, at the end (crate::request_metrics).
-    let mut resp = format!("{body}{}", crate::request_metrics::text()).into_response();
+    let mut resp = format!("{body}{}{}", crate::request_metrics::text(), crate::request_metrics::busiest_text(&busiest)).into_response();
     resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; version=0.0.4"));
     Ok(resp)
 }

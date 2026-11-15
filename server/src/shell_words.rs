@@ -138,6 +138,7 @@ mod tests {
         let scripts = [
             include_str!("../shell/runtime.js"),
             include_str!("../shell/login.js"),
+            include_str!("../shell/step-up.js"),
             include_str!("../shell/signup.js"),
             include_str!("../shell/portal.js"),
             include_str!("../shell/isolated.js"),

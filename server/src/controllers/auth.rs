@@ -735,10 +735,11 @@ async fn keys_of(st: &AppState, headers: &HeaderMap, tenant: Uuid, user: Uuid) -
     Ok(((tenant, user), None))
 }
 
-/// The ways the person of `who` can confirm it is them on this host ([`ferrum_kernel::Kernel::step_up_ways`]).
+/// The ways the person of `who` can confirm it is them on this host ([`ferrum_kernel::Kernel::step_up_ways`]), with the
+/// accounts host that keeps their Ferrum account's passkeys.
 async fn ways_of(st: &AppState, headers: &HeaderMap, who: &StepUp) -> Result<Vec<Value>, ApiError> {
     let host = crate::shell::request_host(headers).ok_or_else(|| ApiError(Error::invalid("no host")))?.to_ascii_lowercase();
-    Ok(st.kernel.step_up_ways(who, &host).await?)
+    Ok(st.kernel.step_up_ways(who, &host, st.shell.accounts_name()).await?)
 }
 
 /// `{ways}` with, when there is none, a message that says so plainly (`browser`: the credential has a browser session).
@@ -804,7 +805,7 @@ async fn step_up_caller(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kernel:
 }
 
 /// Where a step-up comes from, for the audit trail: the address, browser and zone, as a step-up.
-async fn step_up_from(st: &AppState, headers: &HeaderMap) -> ferrum_kernel::gate::Arrival {
+pub(crate) async fn step_up_from(st: &AppState, headers: &HeaderMap) -> ferrum_kernel::gate::Arrival {
     ferrum_kernel::gate::Arrival { step_up: true, ..crate::zone::arrival(st, headers).await }
 }
 
@@ -868,6 +869,14 @@ struct ProviderStepUp {
     dialog: String,
 }
 
+/// A dialog's own value for a way that opens a window: 16 to 64 letters, digits, `-` or `_`.
+fn dialog_value(dialog: &str) -> Result<(), ApiError> {
+    if !(16..=64).contains(&dialog.len()) || !dialog.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err(ApiError(Error::field("dialog", "16 to 64 letters, digits, - or _")));
+    }
+    Ok(())
+}
+
 /// `POST /api/auth/step-up/provider {dialog}` → `{url}`: the address to open in a small window, where the identity
 /// provider the person is linked to has them sign in again. The provider comes back to the return address registered
 /// with it (`/app/login`; on the accounts host where sign-in happens there), then to this host's done page, which hands
@@ -882,9 +891,7 @@ async fn step_up_provider(
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let who = step_up_caller(&st, &headers, &ctx, device).await?;
-    if !(16..=64).contains(&req.dialog.len()) || !req.dialog.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
-        return Err(ApiError(Error::field("dialog", "16 to 64 letters, digits, - or _")));
-    }
+    dialog_value(&req.dialog)?;
     let redirect = match accounts_for(&st, &headers).await? {
         Some(accounts) => format!("{accounts}/app/login"),
         None => here_url(&st, &headers, "/app/login")?,
@@ -986,6 +993,69 @@ async fn step_up_provider_finish(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// Whether `host` (as a browser sent it) is a live address of `tenant` that opens its shell: the only kind a proof from the
+/// accounts host is handed to ([`crate::shell::Shell::workspace_at`]: not a portal's, a site's, a leaving or released one,
+/// another workspace's or one of the cluster's own).
+pub(crate) async fn live_address(st: &AppState, host: &str, tenant: Uuid) -> Result<bool, ApiError> {
+    let Some(bare) = ferrum_kernel::shell::normalize_host(host.rsplit_once(':').map_or(host, |(name, _)| name)) else { return Ok(false) };
+    Ok(st.shell.workspace_at(&bare).await? == Some(tenant))
+}
+
+/// `POST /api/auth/step-up/accounts {dialog}` → `{url}`: the address to open in a small window at the accounts host, where
+/// the person confirms it is them with a passkey of their Ferrum account, which this address may not use (the way
+/// `accounts_passkey`). The window shows which workspace asks, asks the device there, and comes back to this host's done
+/// page, which hands the proof to the dialog that asked, as signing in again at a provider does. Only on a live address of
+/// the session's workspace (the proof comes back to the address the dialog is on, and to no other); `dialog` as for the
+/// provider.
+async fn step_up_accounts(
+    _: StaffZone,
+    BrowserSession(ctx, device): BrowserSession,
+    State(app): State<AppContext>,
+    headers: HeaderMap,
+    Json(req): Json<ProviderStepUp>,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let who = step_up_caller(&st, &headers, &ctx, device).await?;
+    dialog_value(&req.dialog)?;
+    let host = crate::shell::request_host(&headers).ok_or_else(|| ApiError(Error::invalid("no host")))?.to_ascii_lowercase();
+    let (Some(accounts), Some(origin)) = (st.shell.accounts_name(), st.shell.accounts_origin(&headers)) else {
+        return Err(ApiError(Error::invalid("this server keeps no passkeys at an accounts host")));
+    };
+    if !live_address(&st, &host, ctx.tenant).await? {
+        return Err(ApiError(Error::invalid("confirm it is you on one of the workspace's own addresses")));
+    }
+    let back = here_url(&st, &headers, &format!("{STEP_UP_DONE}?dialog={}", req.dialog))?;
+    let state = st.kernel.accounts_step_up_begin(&who, &host, accounts, &back).await?;
+    Ok(Json(json!({"url": format!("{origin}/step-up?state={state}")})).into_response())
+}
+
+#[derive(Deserialize)]
+struct AccountsProof {
+    state: String,
+    code: String,
+    dialog: String,
+}
+
+/// `POST /api/auth/step-up/accounts/finish {state, code, dialog}`: `204` once the proof the window brought back from the
+/// accounts host is this session's and this person's, for this dialog, on this host, fresh and unused; the session then
+/// counts as stepped up.
+async fn step_up_accounts_finish(
+    _: StaffZone,
+    BrowserSession(ctx, device): BrowserSession,
+    State(app): State<AppContext>,
+    headers: HeaderMap,
+    Json(req): Json<AccountsProof>,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let who = step_up_caller(&st, &headers, &ctx, device).await?;
+    if req.state.len() > 200 || req.code.len() > 200 || req.dialog.len() > 64 {
+        return Err(ApiError(Error::Unauthorized("confirming it is you did not finish; try again".into())));
+    }
+    let here = here_url(&st, &headers, "/")?;
+    st.kernel.accounts_step_up_finish(&who, &here, &req.state, &req.code, &req.dialog, &step_up_from(&st, &headers).await).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 /// Shapes B and C: someone whose workspace account joined their Ferrum account has that account's
 /// password, two-step sign-in and passkeys, kept at the accounts host.
 async fn kept_by_identity(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kernel::Ctx) -> Result<(), ApiError> {
@@ -1008,7 +1078,7 @@ async fn kept_by_identity(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kerne
 /// The relying party of a request ([`ferrum_kernel::Kernel::passkey_rp`]: its host, or
 /// `FERRUM_PASSKEY_RP` for a host under it), and the one origin a ceremony on it may be answered
 /// from: this host's own (the kernel also checks that host may use the party).
-fn relying_party(st: &AppState, headers: &HeaderMap) -> Result<(String, Vec<String>), ApiError> {
+pub(crate) fn relying_party(st: &AppState, headers: &HeaderMap) -> Result<(String, Vec<String>), ApiError> {
     let host = crate::shell::request_host(headers).ok_or_else(|| ApiError(Error::invalid("no host")))?.to_ascii_lowercase();
     let rp = st.kernel.passkey_rp(&host);
     let scheme = if st.shell.secure { "https" } else { "http" };
@@ -1231,6 +1301,8 @@ pub fn routes() -> Routes {
         .add("/step-up/provider/back", get(step_up_provider_back))
         .add("/step-up/provider/done", get(step_up_provider_done))
         .add("/step-up/provider/finish", post(step_up_provider_finish))
+        .add("/step-up/accounts", post(step_up_accounts))
+        .add("/step-up/accounts/finish", post(step_up_accounts_finish))
         .add("/password", post(change_password))
         .add("/api_keys", get(list_keys).post(create_key))
         .add("/api_keys/{id}", delete(revoke_key).patch(update_key))

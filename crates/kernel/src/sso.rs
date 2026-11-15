@@ -32,6 +32,10 @@
 //! file): the provider is asked to have them sign in again, and the answer counts only when it is the
 //! identity they are linked to, signed in just now. Its flow is bound to the session and the person,
 //! never finishes a sign-in, and a sign-in's flow never confirms anyone.
+//!
+//! The accounts host plays the provider for a passkey of the person's Ferrum account, which the
+//! workspace's address may not use (`accounts_passkey`): the same flow, with no provider, answered by
+//! a passkey ceremony there instead of a provider's sign-in, and the same way back and proof.
 
 use crate::auth::Session;
 use crate::ctx::Ctx;
@@ -83,6 +87,12 @@ const STEP_UP_PROOF_SECS: i64 = 60;
 /// What a step-up's state starts with, so the return address providers have registered (`/app/login`) can tell it from
 /// a sign-in's. Which kind a flow is, is kept with it: each finish refuses the other kind whatever its state says.
 pub const STEP_UP_STATE: &str = "su.";
+/// The way, and the method on the audit trail, of confirming it is you with a passkey of your Ferrum account at the
+/// accounts host ([`Kernel::accounts_step_up_begin`]), told apart from a passkey used on the address itself (`passkey`).
+pub const ACCOUNTS_PASSKEY: &str = "accounts_passkey";
+/// What the accounts host says of a request to confirm it is you that is unknown, used, expired or no longer its
+/// workspace's, the same for each.
+pub const ACCOUNTS_GONE: &str = "this request to confirm it is you has expired or was used already; close this window and try again";
 
 /// Whether a sign-in at the provider at `at` (seconds since 1970) shows the person signed in again for a step-up asked at
 /// `asked`, checked at `now`: within [`STEP_UP_FRESH_SECS`] of now and not before it was asked, either way allowing for
@@ -920,7 +930,7 @@ impl Kernel {
             let n = self.saml_names(tenant, &p)?;
             // An XML ID: a letter or `_` first.
             let (state, request) = (random_secret(""), format!("_{}", hex::encode(rand::random::<[u8; 16]>())));
-            self.store_flow(&state, tenant, provider, &request, "", redirect_uri, binding, None).await?;
+            self.store_flow(&state, tenant, Some(provider), &request, "", redirect_uri, binding, None).await?;
             let key = self.saml_key(tenant).await?;
             let sp = ferrum_saml::Sp { entity_id: &n.entity_id, acs_url: &n.acs_url, key: Some(&key), decrypt: &[], slo_url: None };
             return ferrum_saml::request_url(&sp, &idp, &request, &state, false).map_err(Error::Unavailable);
@@ -931,7 +941,7 @@ impl Kernel {
             return Err(Error::Unavailable("the provider's sign-in address must use https".into()));
         }
         let (state, nonce, verifier) = (random_secret(""), random_secret(""), random_secret(""));
-        self.store_flow(&state, tenant, provider, &nonce, &verifier, redirect_uri, binding, None).await?;
+        self.store_flow(&state, tenant, Some(provider), &nonce, &verifier, redirect_uri, binding, None).await?;
         url.query_pairs_mut()
             .append_pair("response_type", "code")
             .append_pair("client_id", &p.client_id)
@@ -946,13 +956,14 @@ impl Kernel {
 
     /// A sign-in on its way through a provider: `nonce` is the OpenID Connect nonce, or the SAML
     /// request's ID. `step_up`: a sign-in again that only confirms it is the person of this browser session (the
-    /// session, the person, the page that hands the proof on), which never signs anyone in.
+    /// session, the person, the page that hands the proof on), which never signs anyone in. No provider: a passkey's
+    /// ceremony at the accounts host answers it ([`ACCOUNTS_PASSKEY`]).
     #[allow(clippy::too_many_arguments)]
     async fn store_flow(
         &self,
         state: &str,
         tenant: Uuid,
-        provider: Uuid,
+        provider: Option<Uuid>,
         nonce: &str,
         verifier: &str,
         redirect_uri: &str,
@@ -995,7 +1006,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let flow: Option<(Uuid, String, String, Option<Uuid>, i64)> = sqlx::query_as(
             "select provider_id, nonce, redirect_uri, step_up_user, extract(epoch from created_at)::bigint from sso_flow \
-             where state_hash = $1 and tenant_id = $2 and code_hash is null and created_at > now() - make_interval(mins => $3)",
+             where state_hash = $1 and tenant_id = $2 and provider_id is not null and code_hash is null and created_at > now() - make_interval(mins => $3)",
         )
         .bind(hash(relay_state))
         .bind(tenant)
@@ -1019,7 +1030,7 @@ impl Kernel {
                 Ok(person) => self.same_and_fresh(tenant, user, &p, &person.subject, person.authn_instant, asked).await,
                 Err(e) => Err(e),
             };
-            return self.step_up_answered(relay_state, tenant, user, &redirect_uri, checked, from).await;
+            return self.step_up_answered(relay_state, &redirect_uri, checked, from, "provider", (tenant, user)).await;
         }
         let mut tx = self.db.system_tx().await?;
         let person = match checked {
@@ -1379,7 +1390,7 @@ impl Kernel {
             let idp = self.saml_idp(p.saml_metadata.as_deref().unwrap_or_default()).await?;
             let n = self.saml_names(who.tenant, &p)?;
             let request = format!("_{}", hex::encode(rand::random::<[u8; 16]>()));
-            self.store_flow(&state, who.tenant, provider, &request, "", back, &binding, bound).await?;
+            self.store_flow(&state, who.tenant, Some(provider), &request, "", back, &binding, bound).await?;
             let key = self.saml_key(who.tenant).await?;
             let sp = ferrum_saml::Sp { entity_id: &n.entity_id, acs_url: &n.acs_url, key: Some(&key), decrypt: &[], slo_url: None };
             return ferrum_saml::request_url(&sp, &idp, &request, &state, true).map_err(Error::Unavailable);
@@ -1390,7 +1401,7 @@ impl Kernel {
             return Err(Error::Unavailable("the provider's sign-in address must use https".into()));
         }
         let (nonce, verifier) = (random_secret(""), random_secret(""));
-        self.store_flow(&state, who.tenant, provider, &nonce, &verifier, redirect_uri, &binding, bound).await?;
+        self.store_flow(&state, who.tenant, Some(provider), &nonce, &verifier, redirect_uri, &binding, bound).await?;
         url.query_pairs_mut()
             .append_pair("response_type", "code")
             .append_pair("client_id", &p.client_id)
@@ -1415,7 +1426,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let flow: Option<Flow> = sqlx::query_as(
             "select tenant_id, provider_id, nonce, verifier, redirect_uri, step_up_user, step_up_back, extract(epoch from created_at)::bigint from sso_flow \
-             where state_hash = $1 and step_up_session is not null and code_hash is null and created_at > now() - make_interval(mins => $2)",
+             where state_hash = $1 and provider_id is not null and step_up_session is not null and code_hash is null and created_at > now() - make_interval(mins => $2)",
         )
         .bind(hash(state))
         .bind(FLOW_MINUTES)
@@ -1438,19 +1449,28 @@ impl Kernel {
             self.same_and_fresh(tenant, user, &p, &claims.sub, auth_time(&claims), asked).await
         }
         .await;
-        self.step_up_answered(state, tenant, user, &back, checked, from).await
+        self.step_up_answered(state, &back, checked, from, "provider", (tenant, user)).await
     }
 
-    /// The provider's answer to a step-up's signing in again, `checked`: refused, the flow goes and the person's trail has
-    /// a failed step-up; accepted, the flow keeps a one-time code (as a hash) and when it was made, and the browser goes on
-    /// to `back` with the state and that code. Once: a flow already answered is not answered again.
-    async fn step_up_answered(&self, state: &str, tenant: Uuid, user: Uuid, back: &str, checked: Result<()>, from: &crate::gate::Arrival) -> Result<String> {
+    /// The answer to a step-up's flow, `checked` (a provider's sign-in again, or the passkey ceremony at the accounts host,
+    /// `way`): refused, the flow goes and `blame`'s trail (the account whose credential was tried) has a failed step-up;
+    /// accepted, the flow keeps a one-time code (as a hash) and when it was made, and the browser goes on to `back` with
+    /// the state and that code. Once: a flow already answered is not answered again.
+    async fn step_up_answered(
+        &self,
+        state: &str,
+        back: &str,
+        checked: Result<()>,
+        from: &crate::gate::Arrival,
+        way: &str,
+        blame: (Uuid, Uuid),
+    ) -> Result<String> {
         if let Err(e) = checked {
             let mut tx = self.db.system_tx().await?;
             sqlx::query("delete from sso_flow where state_hash = $1 and code_hash is null").bind(hash(state)).execute(&mut *tx).await?;
             tx.commit().await?;
             if matches!(e, Error::Unauthorized(_) | Error::Forbidden(_)) {
-                self.record_sign_in_failure(tenant, user, "step_up_failed", "provider", from).await?;
+                self.record_sign_in_failure(blame.0, blame.1, "step_up_failed", way, from).await?;
             }
             return Err(e);
         }
@@ -1459,7 +1479,7 @@ impl Kernel {
         let done = sqlx::query("update sso_flow set code_hash = $2, answer = $3 where state_hash = $1 and code_hash is null")
             .bind(hash(state))
             .bind(hash(&proof))
-            .bind(json!({"step_up": true, "at": chrono::Utc::now().timestamp()}))
+            .bind(json!({"step_up": true, "at": chrono::Utc::now().timestamp(), "way": way}))
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -1500,12 +1520,32 @@ impl Kernel {
     /// handed to (`here`, this request's). Then the session counts as stepped up ([`Kernel::stepped_up`]). Anything else is
     /// a failed step-up on the person's trail, and changes nothing.
     pub async fn sso_step_up_finish(&self, who: &StepUp, here: &str, state: &str, code: &str, from: &crate::gate::Arrival) -> Result<()> {
-        let unfinished = || Error::Unauthorized("signing in again did not finish; try again".into());
+        self.step_up_finish(who, here, state, code, "provider", None, from).await
+    }
+
+    /// [`Kernel::sso_step_up_finish`] of either way that opens a window (`way`: `provider`, or [`ACCOUNTS_PASSKEY`] with the
+    /// `dialog` its proof must name). A proof of the other way is not taken.
+    #[allow(clippy::too_many_arguments)]
+    async fn step_up_finish(
+        &self,
+        who: &StepUp,
+        here: &str,
+        state: &str,
+        code: &str,
+        way: &str,
+        dialog: Option<&str>,
+        from: &crate::gate::Arrival,
+    ) -> Result<()> {
+        let unfinished = || {
+            Error::Unauthorized(
+                if way == ACCOUNTS_PASSKEY { "confirming it is you did not finish; try again" } else { "signing in again did not finish; try again" }.into(),
+            )
+        };
         let proved = async {
             let mut tx = self.db.system_tx().await?;
             let taken: Option<(Option<String>, Option<Value>)> = sqlx::query_as(
                 "delete from sso_flow where state_hash = $1 and tenant_id = $2 and step_up_session = $3 and step_up_user = $4 and code_hash = $5 \
-                 and created_at > now() - make_interval(mins => $6) returning step_up_back, answer",
+                 and created_at > now() - make_interval(mins => $6) and (provider_id is null) = $7 returning step_up_back, answer",
             )
             .bind(hash(state))
             .bind(who.tenant)
@@ -1513,6 +1553,7 @@ impl Kernel {
             .bind(who.user)
             .bind(hash(code))
             .bind(FLOW_MINUTES)
+            .bind(way == ACCOUNTS_PASSKEY)
             .fetch_optional(&mut *tx)
             .await?;
             tx.commit().await?;
@@ -1520,20 +1561,99 @@ impl Kernel {
             let made = answer.filter(|a| a["step_up"] == json!(true)).and_then(|a| a["at"].as_i64()).ok_or_else(unfinished)?;
             let origin = |u: &str| reqwest::Url::parse(u).ok().map(|u| u.origin().ascii_serialization());
             let same_origin = origin(here).is_some() && origin(here) == back.as_deref().and_then(origin);
-            if !same_origin || made < chrono::Utc::now().timestamp() - STEP_UP_PROOF_SECS {
+            // The dialog that asked, when the way names it: a proof another dialog asked for is used up, not taken.
+            let asked_by = back
+                .as_deref()
+                .and_then(|b| reqwest::Url::parse(b).ok())
+                .and_then(|u| u.query_pairs().find(|(k, _)| k == "dialog").map(|(_, v)| v.into_owned()));
+            if !same_origin || made < chrono::Utc::now().timestamp() - STEP_UP_PROOF_SECS || dialog.is_some_and(|d| asked_by.as_deref() != Some(d)) {
                 return Err(unfinished());
             }
             Ok(())
         }
         .await;
         match proved {
-            Ok(()) => self.stepped_up(who, "provider", from).await,
+            Ok(()) => self.stepped_up(who, way, from).await,
             Err(e @ Error::Unauthorized(_)) => {
-                self.record_sign_in_failure(who.tenant, who.user, "step_up_failed", "provider", from).await?;
+                self.record_sign_in_failure(who.tenant, who.user, "step_up_failed", way, from).await?;
                 Err(e)
             }
             Err(e) => Err(e),
         }
+    }
+
+    // ── a passkey of the Ferrum account, at the accounts host (`accounts_passkey`) ──
+
+    /// Starts confirming it is the person of `who` with a passkey of their Ferrum account, kept for the accounts host
+    /// `accounts`, which `host` (the workspace's address their dialog is on) may not use → the request's state, for the
+    /// window at the accounts host ([`Kernel::accounts_step_up`]). Bound, as signing in again at a provider is, to the
+    /// session and the person, and to `back`: the page on that address that hands the proof to the dialog, which the
+    /// caller makes from the request's own host and has checked is a live address of the session's workspace. Only for
+    /// someone the ways list offers it to ([`Kernel::step_up_ways`]); where single sign-on is required of them, refused.
+    pub async fn accounts_step_up_begin(&self, who: &StepUp, host: &str, accounts: &str, back: &str) -> Result<String> {
+        if self.sso_only(who.tenant, who.user).await? {
+            return Err(Error::Forbidden(crate::gate::SSO_ONLY_STEP_UP.into()));
+        }
+        if !self.step_up_ways(who, host, Some(accounts)).await?.contains(&json!({"way": ACCOUNTS_PASSKEY})) {
+            return Err(Error::invalid("you have no passkey of your Ferrum account to confirm it is you with here"));
+        }
+        let state = random_secret(STEP_UP_STATE);
+        // No provider, and a binding nobody is given: it never finishes a sign-in, nor a provider's step-up.
+        self.store_flow(&state, who.tenant, None, "", "", "", &random_secret(""), Some((who.session, who.user, back))).await?;
+        Ok(state)
+    }
+
+    /// The request to confirm it is you that `state` names at the accounts host ([`Kernel::accounts_step_up_begin`]): who
+    /// it is for (the session and person on the workspace's address, and their Ferrum account as the keys) and where its
+    /// proof goes; only while it is unanswered and within [`STEP_UP_FRESH_SECS`] of being asked, as a sign-in again must
+    /// be fresh. Anything else is "expired or used", the same for each.
+    pub async fn accounts_step_up(&self, state: &str) -> Result<(StepUp, String)> {
+        let gone = || Error::Unauthorized(ACCOUNTS_GONE.into());
+        if state.is_empty() || state.len() > 200 {
+            return Err(gone());
+        }
+        let mut tx = self.db.system_tx().await?;
+        let row: Option<(Uuid, Uuid, Uuid, String)> = sqlx::query_as(
+            "select tenant_id, step_up_session, step_up_user, step_up_back from sso_flow where state_hash = $1 and provider_id is null \
+             and step_up_session is not null and step_up_back is not null and code_hash is null and created_at > now() - make_interval(secs => $2)",
+        )
+        .bind(hash(state))
+        .bind(STEP_UP_FRESH_SECS as f64)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let (tenant, session, user, back) = row.ok_or_else(gone)?;
+        // The Ferrum account the workspace's account is joined to now: its passkeys are what count.
+        let (Some((account, _)), Some(directory)) = (self.identity_of(tenant, user).await?, self.directory().await?) else { return Err(gone()) };
+        Ok((StepUp { tenant, user, session, keys: (directory, account) }, back))
+    }
+
+    /// The passkey ceremony at the accounts host for the request `state` names (`who`, `back`: [`Kernel::accounts_step_up`]),
+    /// answered on a page of `origins` (the accounts host's own): checked as a passkey step-up is, with the challenge made
+    /// for that request's session and person, against the Ferrum account's own passkeys, the device verifying the person.
+    /// Accepted → where to send the window: `back`, with the state and a one-use proof for the dialog to finish with
+    /// ([`Kernel::accounts_step_up_finish`]). Refused → the request is used up, and the Ferrum account's trail has a failed
+    /// step-up (`accounts_passkey`). A session at the accounts host plays no part.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn accounts_step_up_answer(
+        &self,
+        state: &str,
+        who: &StepUp,
+        back: &str,
+        request: Uuid,
+        origins: &[String],
+        credential: &Value,
+        from: &crate::gate::Arrival,
+    ) -> Result<String> {
+        let checked = self.passkey_proof(who, request, origins, credential).await;
+        self.step_up_answered(state, back, checked, from, ACCOUNTS_PASSKEY, who.keys).await
+    }
+
+    /// Takes the proof the window brought back from the accounts host ([`Kernel::accounts_step_up_answer`]) for the dialog
+    /// that asked (`dialog`), as [`Kernel::sso_step_up_finish`] takes a provider's: once, within a minute, only for that
+    /// session and person, on the origin it was handed to. Then the session counts as stepped up (`accounts_passkey`).
+    pub async fn accounts_step_up_finish(&self, who: &StepUp, here: &str, state: &str, code: &str, dialog: &str, from: &crate::gate::Arrival) -> Result<()> {
+        self.step_up_finish(who, here, state, code, ACCOUNTS_PASSKEY, Some(dialog), from).await
     }
 }
 
