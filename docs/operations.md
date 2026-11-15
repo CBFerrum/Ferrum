@@ -89,6 +89,11 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `aws_access_key_id` | `AWS_ACCESS_KEY_ID` | text |  | secret: the environment, else the vault (library) | The object store's key id. |
 | `aws_secret_access_key` | `AWS_SECRET_ACCESS_KEY` | text |  | secret: the environment, else the vault (library) | The object store's secret key. |
 | `aws_session_token` | `AWS_SESSION_TOKEN` | text |  | secret: the environment, else the vault (library) | A session token with the object store's keys, when they are temporary. |
+| `s3_set_up_bucket` | `FERRUM_S3_SET_UP_BUCKET` | bool | `false` | installation, next start | `true`: at start, make the bucket when it is missing, and turn on what the doctor looks for when the bucket has none of it: versioning, lifecycle rules (old versions end after `backup_reach_days`, 30 when not set; unfinished uploads after a day) and default encryption. Never replaces a bucket's own rules. For a store this installation alone uses, such as the one Compose bundles; its keys need the right to change the bucket's configuration. |
+| `files_delete_after_days` | `FERRUM_FILES_DELETE_AFTER_DAYS` | int | `0` | installation, at once | Days a deleted file stays in object storage before it goes (0, the default: at once). At least `backup_reach_days`, so that a database restored to any moment its backups reach finds every file it names (see *Backups of files*). |
+| `backup_reach_days` | `FERRUM_BACKUP_REACH_DAYS` | int | `0` | installation, at once | How many days back the database's backups reach (the chart's `database.backup.retention`; 0: not said). The doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule. |
+| `files_direct_links` | `FERRUM_FILES_DIRECT_LINKS` | bool | `false` | installation, at once | `true`: a download (`/files/{id}`) answers with a short-lived link signed for the object store, which the browser follows, instead of passing the bytes through the server. Never for files of entities whose reads are recorded, for outside people, for types a browser would run, or while files move. Off by default. |
+| `files_direct_link_seconds` | `FERRUM_FILES_DIRECT_LINK_SECONDS` | int | `60` | installation, at once | How long a direct link works, in seconds (default 60; at most 300). |
 | `direct_upload_max_bytes` | `FERRUM_DIRECT_UPLOAD_MAX_BYTES` | int | `2147483648` | installation, at once | Largest file browsers upload straight to the bucket, or in parts through the server (default 2 GiB). Straight to the bucket needs the bucket CORS rule below. |
 | `clamav_addr` | `FERRUM_CLAMAV_ADDR` | text |  | installation, at once | Recommended: a ClamAV daemon uploads pass through, `host:3310`. What it finds is refused and audited; with it set, a scanner that cannot answer refuses uploads too. See *Malware scanning*. |
 | `clamav_max_mb` | `FERRUM_CLAMAV_MAX_MB` | int | `25` | installation, at once | With a scanner: its `StreamMaxLength` in MiB (default 25). Files past it are stored unscanned. |
@@ -513,7 +518,7 @@ GitHub; `scripts/local_ci.sh` runs every other job. From the repository's root, 
    ```bash
    FERRUM_IMAGE=ferrum:ci FERRUM_EDITORS_IMAGE=ferrum-editors:ci SMOKE_MEET=1 deploy/smoke.sh
    ```
-   It pulls `postgres:17`, `gotenberg/gotenberg:8`, `collabora/code:26.04.5.2.1` and `livekit/livekit-server:v1.13.10`,
+   It pulls `postgres:17`, `chrislusf/seaweedfs:4.53`, `gotenberg/gotenberg:8`, `collabora/code:26.04.5.2.1` and `livekit/livekit-server:v1.13.10`,
    listens on 127.0.0.1 ports 8080, 9980, 8090 and 7880 (`SMOKE_PORT`, `SMOKE_OFFICE_PORT`, `SMOKE_EDITORS_PORT`,
    `SMOKE_MEET_PORT` move them), and removes its containers and volumes when it ends. As CI runs it, an upgrade: add
    `FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest` after `docker login ghcr.io` (the package is private; amd64,
@@ -558,7 +563,7 @@ deploy/offline/bundle.py <commit> --kubernetes --with editors,clamav    # Kubern
 tar -cf ferrum-offline-<commit>.tar ferrum-offline-<commit>/
 ```
 
-The bundle holds every image (the server's at that commit, the database's, the PDF renderer's, the online editor's, and
+The bundle holds every image (the server's at that commit, the database's, the object store's, the PDF renderer's, the online editor's, and
 what `--with` adds: `editors`, `mail`, `meet`, `clamav`; the editor, Collabora, is in the stack); with `--kubernetes`, the operators'
 manifests at the versions `deploy/kind/install.sh` names and every image they name, including the ones
 named only in their settings or in a Secret, and the Envoy proxy Envoy Gateway starts, which only its
@@ -811,6 +816,135 @@ before a floor is refused at start, the older ones included.
 * **Seeing it.** `ferrum task doctor` lists the floors in effect, when each was switched on and by which build, and the
   oldest build that may start (`window.floors`).
 
+## Object storage
+
+Files (attachments, documents, apps' bundles and interfaces, the erasure and access journals, the restore marker) live
+in an S3-compatible object store: the bucket `s3_bucket` names (with `s3_endpoint` and `s3_region`, settings like any
+other), reached with the platform's keys (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, in the vault or the
+environment, *The platform's secrets*). The second store beside PostgreSQL (docs/plan/stateless.md, D6): no server
+keeps a file only on its own disk.
+
+**Keys or the machine's identity.** Without keys, the store's library finds them where the machine has an identity: a
+web identity token (`AWS_WEB_IDENTITY_TOKEN_FILE` with `AWS_ROLE_ARN`: IRSA on EKS, or any OpenID Connect provider the
+store trusts), a container's credentials (`AWS_CONTAINER_CREDENTIALS_FULL_URI`: EKS Pod Identity, ECS), AWS's own
+profile, or an instance's role. With AWS itself (no `s3_endpoint`) that is as before. With an S3-compatible store (an
+endpoint) and no keys, the server starts only when the machine names an identity; otherwise it refuses, saying which
+keys to set. `scripts/object_store_rehearsal.sh` proves the container's credentials against a store that checks every
+signature; that IRSA's token is accepted by AWS's STS, and that a role's policy reaches the bucket, only a cloud shows.
+
+**A local directory** (`files_dir`) is for development and tests. Elsewhere a server without a bucket starts only for
+an installation that already keeps its files there: the newest file its database names (a workspace's newest file,
+else the newest interface's) must be in that directory. A new database names none, an empty or wrong directory (a
+volume that was not mounted, another machine's) lacks it, and a database that has kept its files in a store says so: so
+no mistake in the settings makes a new installation keep files where a new container loses them. Refused, the server
+says what to set. An installation that keeps its files there works through this release, with a warning at each
+start and an error-level line in the doctor (`storage.directory`), until its files move. `require_object_storage`
+still refuses a directory outright, as before.
+
+### Moving files from a directory
+
+1. Set the store (`ferrum task set key:s3_bucket value:…`, its endpoint and region, and its keys: `ferrum task
+   secret_set`), or the variables, and start the servers again. A server that starts with a bucket while the directory
+   still holds files records that files are moving (`file_store`, once, whichever replica starts first): from then on
+   every write goes to the store, a read looks in the store first and the directory second, and a deletion takes both.
+   Nothing needs to wait: everything is readable all along. Keep the directory mounted.
+2. Run `ferrum task files_move` (where the store is set: in the server's container, or as a Job). It copies every file
+   of the directory to the store, reads each copy back, and compares its length and SHA-256 with the directory's;
+   each one copied is recorded (`file_move`), so a run that stops, or is killed, goes on from there when run again.
+   One runs at a time, wherever it is run (a session lock: another run stops at once). It never writes over what the
+   store holds (a file there with other bytes is named, and stops the confirmation), never deletes from the directory,
+   and leaves out uploads not yet recorded and the restore marker (each server writes the store's own).
+3. It ends by recording that the directory is no longer read, once nothing failed, no server that may still write to
+   the directory runs (one started before files began to move, or a build older than this one: from `replica`), and a
+   last pass after that check found nothing new. Otherwise it says why; fix that and run it again. Then start the
+   servers again (until then they still look in the directory second, which does no harm), and keep the directory
+   until you are sure.
+
+What guarantees that nothing is lost: a write goes to the store from the moment a server starts with it; a server of
+this build without a bucket refuses to start while files move; the confirmation waits for every replica that might
+still write to the directory, then passes over the directory once more; a file deleted while it is copied is deleted
+from the directory first, so the copy sees it gone and deletes its own. A server of a build from before the settings'
+`replica` table, still running when the move is confirmed, is the one writer nothing sees: what it writes stays in the
+directory, the doctor's file check names it, and `files_move` copies it when run again (it always reads the whole
+directory).
+
+### What the doctor checks
+
+`storage` (a write, a read and a delete), `storage.directory` and `storage.moving`, `storage.deletions` (below), and,
+asking the bucket with the same keys or identity: `storage.versioning` (versions kept, so that what is deleted or
+written over outside Ferrum can be taken back), `storage.lifecycle` (a rule over the whole bucket ending old versions,
+no sooner than `backup_reach_days`), `storage.encryption` (default encryption at rest), `storage.public` (a request
+without keys is refused, and the bucket's policy does not make it public) and `storage.clock` (a request signed more
+than 15 minutes off the store's time is refused). Each says what to do. `s3_set_up_bucket` makes the bucket where it
+is missing and turns on versioning, the lifecycle rules (old versions after `backup_reach_days`, 30 when it is not
+set; the restore marker's after a day; unfinished uploads after a day) and default encryption where the bucket has
+none of them; it never replaces a bucket's own rules. It is for a store this installation alone uses (Compose's), and
+needs keys allowed to change the bucket's configuration; elsewhere, set them yourself.
+
+### Direct links
+
+Downloads go through the server. With `files_direct_links` on, a download (`GET /files/{id}`) is answered with `307`
+and a link signed for the store, which works for `files_direct_link_seconds` (60 by default, at most 300), so that large
+files do not pass through a replica. The server still decides who may download, as before. Never for a file of an
+entity whose reads are recorded (*Recording who read what*: a link could be read again without the server knowing),
+for an outside person (a portal rule decides what they see at each download), for a type a browser would run (HTML,
+SVG, XML, scripts: they would run on the store's address), or while files move.
+
+### Backups of files
+
+Files are named once and never named again for other bytes (a workspace's file by a new id, an interface's or an app's
+by its content's digest), and only ever deleted. So a database restored to a moment T needs only that the objects it
+names at T still exist. Deletions therefore wait: `files_delete_after_days` (0 by default: at once, as before) keeps
+a deleted file that many days before it goes, recorded in `object_release` and swept every ten minutes by the replicas
+that run background work. Set it to at least how far back the database's backups reach (`backup_reach_days`; 30 with
+the chart's `database.backup.retention`), and every moment the backups reach finds its files. A key written again
+while its deletion waits (an interface published again) calls the deletion off. Nothing is swept while a restore is
+held (*After restoring a backup*), so a restored copy started beside the live installation deletes nothing of a store
+they share. An erased person's files stay as long, as their rows stay in the database's backups; `reapply_erasures`
+deletes them again after a restore.
+
+The store keeps itself: versioning on and a lifecycle rule ending old versions after `backup_reach_days` (the doctor
+checks both) cover what Ferrum does not delete, such as someone with the keys deleting or writing over a file. This
+relies on versioning rather than copying the bucket elsewhere: a version is made only by a deletion, so it costs
+nothing until one; a copy would double every file and need keys and a schedule of its own, and would still lag behind
+the database. Losing the bucket or the account is the provider's to cover (replication to another region or account).
+Never take the bucket back to a moment by its versions: the restore marker would go back with it, and a restore of
+the database would not be noticed.
+
+**The drill.** Restore the database to a moment and check every file its rows name, as `deploy/drill.sh` does:
+
+```bash
+deploy/dump.sh dump "$DATABASE_URL" t.dump                   # the moment T (or CloudNativePG's recovery to a targetTime)
+deploy/drill.sh t.dump postgres://ferrum:…@db:5432/drill     # restored into an empty database, then checked
+deploy/drill.sh --restored postgres://ferrum:…@restored/ferrum   # one restored already
+```
+
+It runs `ferrum task check_files digest:yes` on the restored database with the servers' settings and secrets: every
+file a row names is read through and its length and SHA-256 compared with the row's, and the app bundles are looked
+for. It writes nothing to the live database and never takes the store back: a copy with the live database's identity
+reads its restore marker, finds itself behind and is held; a copy with another identity keeps a marker of its own. Run
+it after each change to backups, and at least quarterly.
+
+### The store Compose bundles
+
+`deploy/docker-compose.yml` runs SeaweedFS as `store` (chosen by trial: docs/references/object-stores.md), in one
+process with its own volume. Only its S3 port listens, on Compose's network alone. Its first start
+(`deploy/store/start.sh`) makes an access key and the key that encrypts what it keeps, in its own volume, and hands the
+access key to the server once (`/run/ferrum/object-store/keys.json`, a volume only the two share): the server keeps it
+in the vault and deletes the file. Nothing goes into `deploy/.env`. The server makes the bucket `ferrum` with
+versioning, lifecycle rules and encryption (`FERRUM_S3_SET_UP_BUCKET=true`). A database restored from a dump brings the
+keys with its vault; a database made anew beside a store that already has keys finds none, and the server says so:
+read them from the store (`docker compose exec store cat /data/ferrum/s3.json`) and give them once with `ferrum task
+secret_set`. To use a store of your own instead, set its address and keys and `STORE_REPLICAS=0`.
+
+An installation from before this release keeps its `files` volume: with the new Compose file it starts with the store
+set and files moving, reads both, and moves its files with `docker compose exec ferrum ferrum task files_move`. With
+its old Compose file it keeps the directory, warned, as above. Back the store up beside the database: the dump first,
+then the store's volume with the store paused (`docker compose pause store`, an archive of its volume as *Backups and
+restore* takes the files' one, `docker compose unpause store`), and `files_delete_after_days` at least the time
+between the two, so that nothing the dump names is deleted before the archive. Not run here: there is no Docker on the
+machine this was built on.
+
 ## Backups and restore
 
 * CloudNativePG archives WAL continuously through the Barman Cloud plugin and takes a base backup
@@ -875,6 +1009,10 @@ before a floor is refused at start, the older ones included.
   ```
 
   Then run `ferrum task reapply_erasures` (After restoring a backup, below) before anyone uses it.
+* With the store Compose bundles (from the release that adds it), files, journals and the restore marker are in the
+  `store` volume, not `files`: archive that one instead, with the store paused, and restore it the same way (*Object
+  storage*, The store Compose bundles). Files deleted between the dump and the archive are kept for
+  `files_delete_after_days`; the restore drill (*Object storage*, Backups of files) checks the result.
 * Test a restore at least quarterly. After restoring, run the audit verification below.
 
 ## Regions
