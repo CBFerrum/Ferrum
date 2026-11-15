@@ -372,8 +372,19 @@ helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
   with the keys of `deploy/k8s/secret.example.yaml`, and the backups' Secret `ferrum-backup-s3`.
 * *The image.* Set `image.digest` (a digest wins) or `image.tag` (a commit's full SHA). With neither, the chart refuses to
   render; there is no default and never `latest`. The same holds for the optional parts' images.
-* *Settings.* `values.yaml` lists them with the environment variable each becomes; `extraEnv` adds any other. With
-  `database.enabled=false` the chart makes no database: name the Secret holding your connection URI in `database.urlSecret`.
+* *Settings.* `values.yaml` lists them with the environment variable each becomes; `extraEnv` adds any other.
+* *An outside database.* With `database.enabled=false` the chart runs no PostgreSQL: no Cluster, backups, pooler,
+  read service, database PodMonitor or bootstrap (the service's own tools back up, restore and fail over; *Any
+  PostgreSQL*). `database.external` says where it is: `urlSecret`, the Secret holding `DATABASE_URL` (the ordinary
+  role's address, the pooler's if there is one; the older `database.urlSecret` still works); `directHost`, PostgreSQL
+  itself as `host` or `host:port` when that address is a pooler in transaction mode (`FERRUM_DATABASE_DIRECT_HOST`:
+  listeners, session locks, migrations and the schema sync go there, with the address's role, password, database and
+  TLS options; the migrate and settings Jobs get it too); `readHost`, a read replica (`FERRUM_DATABASE_READ_HOST`, the
+  server's pods only); `caSecret`, a Secret whose key holds the certificate authority the database's certificate is
+  checked against, mounted at `/run/ferrum/db-ca.pem` in the pods and both Jobs; `egress`, the address ranges and
+  ports of the database and its pooler, which the network policy lets the server reach (without them, and with
+  `networkPolicy.enabled`, the pods cannot reach it). The chart still runs the migrate and settings Jobs and applies
+  the network policy.
 * *The online editor.* `office.enabled` (on by default): Collabora in the namespace `office.namespace`, on the host
   `office.host` with its own certificate, with its limits, probes and network policy; see *Online editing*. The image
   is an exact tag (`office.image`; a digest wins), pinned like the PDF renderer's.

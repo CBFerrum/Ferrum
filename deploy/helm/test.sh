@@ -165,6 +165,59 @@ grep -q 'install with environment: full' <<<"$err" || { echo "unexpected error: 
 tpl -f "$tmp/digest.yaml" --set environment=minimal,database.enabled=false,database.urlSecret.name=db,database.urlHasQuery=true \
   | grep -q 'value: $(FERRUM_DATABASE_ADDRESS)&application_name=pool:default'
 
+echo "an outside database: no Cluster, the address from its Secret, a way out to it, its certificate authority at the fixed path"
+ext=(--set database.enabled=false --set database.external.urlSecret.name=db --set-json 'database.external.egress.cidrs=["10.20.0.0/16"]'
+  --set database.external.caSecret.name=db-ca --set migrate.enabled=true --set-json 'settings={"installation":{"session_days":"7"}}' --is-upgrade)
+tpl -f "$tmp/digest.yaml" "${ext[@]}" > "$tmp/ext.yaml"
+tpl -f "$tmp/digest.yaml" "${ext[@]}" --set database.external.directHost=db-direct.internal:5432 --set database.external.readHost=db-ro.internal \
+  --set-json 'database.external.egress.ports=[5432,6432]' > "$tmp/extp.yaml"
+tpl -f "$tmp/digest.yaml" --set database.enabled=false --set database.urlSecret.name=old-db > "$tmp/exto.yaml"
+python3 - "$tmp/ext.yaml" "$tmp/extp.yaml" "$tmp/exto.yaml" <<'PY'
+import sys, yaml
+def load(path):
+    docs = [d for d in yaml.safe_load_all(open(path)) if d]
+    assert not [d for d in docs if d["kind"] in ("Cluster", "Pooler", "ScheduledBackup", "ObjectStore")], "the chart runs no database"
+    return docs
+def pod(d):
+    return d["spec"]["template"]["spec"]
+def env(d):
+    return {e["name"]: e for e in pod(d)["containers"][0]["env"]}
+def workloads(docs):
+    return [d for d in docs if d["kind"] in ("Deployment", "Job") and d["metadata"]["name"] in ("ferrum", "ferrum-migrate", "ferrum-settings")]
+
+docs = load(sys.argv[1])
+assert len(workloads(docs)) == 3, [d["metadata"]["name"] for d in workloads(docs)]
+for w in workloads(docs):
+    e = env(w)
+    assert e["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {"name": "db", "key": "uri"}, w["metadata"]["name"]
+    assert not {"FERRUM_DATABASE_DIRECT_HOST", "FERRUM_DATABASE_READ_HOST"} & set(e), "nothing direct without a host"
+    mounts = {m["name"]: m for m in pod(w)["containers"][0]["volumeMounts"]}
+    assert mounts["run"] == {"name": "run", "mountPath": "/run/ferrum", "readOnly": True}, mounts
+    vols = {v["name"]: v for v in pod(w)["volumes"]}
+    assert vols["run"]["projected"]["sources"] == [{"secret": {"name": "db-ca", "items": [{"key": "ca.crt", "path": "db-ca.pem"}]}}], vols["run"]
+policy = next(d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "ferrum")
+out = [r for r in policy["spec"]["egress"] if r.get("to") and "ipBlock" in r["to"][0]]
+assert out == [{"to": [{"ipBlock": {"cidr": "10.20.0.0/16"}}], "ports": [{"port": 5432}]}], policy["spec"]["egress"]
+
+docs = load(sys.argv[2])
+for w in workloads(docs):
+    e, name = env(w), w["metadata"]["name"]
+    assert e["FERRUM_DATABASE_DIRECT_HOST"]["value"] == "db-direct.internal:5432", name
+    assert ("FERRUM_DATABASE_READ_HOST" in e) == (name == "ferrum"), f"{name}: reads from the replica only where requests are served"
+policy = next(d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "ferrum")
+assert {"to": [{"ipBlock": {"cidr": "10.20.0.0/16"}}], "ports": [{"port": 5432}, {"port": 6432}]} in policy["spec"]["egress"]
+
+docs = load(sys.argv[3])
+dep = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ferrum")
+assert env(dep)["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {"name": "old-db", "key": "uri"}, "the older name still works"
+assert "run" not in {v["name"] for v in pod(dep)["volumes"]}, "no certificate authority, no volume"
+PY
+if err=$(tpl -f "$tmp/digest.yaml" --set database.enabled=false 2>&1); then echo "rendered an outside database without its address"; exit 1; fi
+grep -q 'database.external.urlSecret.name' <<<"$err" || { echo "unexpected error: $err"; exit 1; }
+echo "the chart's own database: none of the outside database's settings show"
+! tpl -f "$tmp/digest.yaml" --set database.external.directHost=x --set database.external.caSecret.name=y --set-json 'database.external.egress.cidrs=["10.0.0.0/8"]' \
+  | grep -qE 'DIRECT_HOST|/run/ferrum|ipBlock: \{cidr: 10.0.0.0/8\}'
+
 echo "an ExternalSecret makes the server's Secret only when asked, and needs its store"
 ! tpl -f "$tmp/digest.yaml" | grep -q 'kind: ExternalSecret'
 tpl -f "$tmp/digest.yaml" --set secrets.externalSecret.enabled=true --set secrets.externalSecret.secretStoreRef.name=vault \

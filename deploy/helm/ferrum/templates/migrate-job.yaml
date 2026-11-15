@@ -39,7 +39,9 @@ spec:
             capabilities: {drop: ["ALL"]}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            {{- include "ferrum.runMount" . | nindent 12 }}
       volumes:
         - name: tmp
           emptyDir: {sizeLimit: 512Mi}
+        {{- include "ferrum.runVolume" . | nindent 8 }}
 {{- end }}

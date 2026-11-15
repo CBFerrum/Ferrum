@@ -207,10 +207,34 @@ privateGateway:
       # Azure: service.beta.kubernetes.io/azure-load-balancer-internal: "true"
 
 # A CloudNativePG Cluster with continuous backups (Barman Cloud plugin). Off: bring your own
-# database and name the Secret holding its connection URI in urlSecret.
+# database (`external` below; docs/operations.md, "Any PostgreSQL").
 database:
   enabled: true
-  urlSecret: {name: "", key: uri}   # used when enabled is false
+  urlSecret: {name: "", key: uri}   # with enabled false: the older name of external.urlSecret, still read
+  # With enabled false: a PostgreSQL the chart does not run (Amazon RDS or Aurora, Cloud SQL, Azure, Supabase, Neon,
+  # or your own). The chart then makes no Cluster, backups, pooler, read service, database PodMonitor or bootstrap:
+  # pooler, readReplicas, bootstrap, backup, instances and parameters below apply to its own database only, and the
+  # service's own tools back up, restore and fail over. It still runs the migrate and settings Jobs, sets the pods'
+  # environment and network policy, and mounts the certificate authority.
+  external:
+    urlSecret: {name: "", key: uri}  # the Secret holding DATABASE_URL: the ordinary role's address (the pooler's, if any)
+    # host or host:port of PostgreSQL itself when urlSecret's address is a pooler in transaction mode (RDS Proxy,
+    # PgBouncer, Supabase's or Neon's pooled address): listeners, session locks and migrations go there, with
+    # urlSecret's role, password, database and TLS options (FERRUM_DATABASE_DIRECT_HOST). The migrate and settings
+    # Jobs get it too. Empty: everything through urlSecret's address.
+    directHost: ""
+    # host or host:port of a read replica reports and exports may read from (FERRUM_DATABASE_READ_HOST). Empty: none.
+    readHost: ""
+    # A Secret holding the certificate authority the database's certificate is checked against (Amazon's RDS bundle,
+    # Google's server CA, ...), mounted at /run/ferrum/db-ca.pem in the pods and Jobs. With it, an address that asks
+    # for no TLS mode is checked in full (verify-full), `require` checks the certificate (verify-ca, as libpq does),
+    # and the server refuses to start, saying why, when the certificate does not verify.
+    caSecret: {name: "", key: ca.crt}
+    # The network policy's way out to it (networkPolicy.enabled): the address ranges of the database and its pooler,
+    # and their ports. Empty cidrs: no rule, and the pods cannot reach it while the policy is on.
+    egress:
+      cidrs: []
+      ports: [5432]
   # With `environment: minimal`: whether that address already has a query (`?sslmode=require`), so that the pool's
   # name is added to it with `&` instead of `?`.
   urlHasQuery: false
