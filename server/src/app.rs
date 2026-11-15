@@ -178,10 +178,6 @@ impl Hooks for App {
         }
         ferrum_kernel::env::set(snapshot.vars());
         let settings = Settings::from_ctx(&ctx)?;
-        // A secret the environment still holds: the file lets it be missing, so that the table is read; here it may not.
-        if ctx.environment == Environment::Production && ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).is_none_or(|j| j.secret.trim().is_empty()) {
-            return Err(Error::Message("JWT_SECRET is not set: give it `openssl rand -base64 48` (docs/operations.md, Configuration)".into()));
-        }
         // The hosts this server names for itself, checked before it connects to or writes anything, on every start
         // (a guest of a newer build's database too).
         crate::shell::check_names(&settings, &ctx.config.server.host).map_err(Error::Message)?;
@@ -332,13 +328,18 @@ impl Hooks for App {
             Err(e) => tracing::warn!("resealing stored secrets: {e}"),
         }
         // Loco signs with the base64-decoded secret: reject anything that is not valid base64 at boot.
-        if loco_rs::auth::jwt::JWT::new(&jwt.secret).generate_token(60, "probe".into(), serde_json::Map::new()).is_err() {
-            return Err(Error::Message("auth.jwt.secret must be base64 (generate one with `openssl rand -base64 48`)".into()));
+        if !jwt.secret.trim().is_empty() {
+            if loco_rs::auth::jwt::JWT::new(&jwt.secret).generate_token(60, "probe".into(), serde_json::Map::new()).is_err() {
+                return Err(Error::Message("auth.jwt.secret must be base64 (generate one with `openssl rand -base64 48`)".into()));
+            }
+            if jwt.secret.len() < 44 && ctx.environment == Environment::Production {
+                return Err(Error::Message("auth.jwt.secret must encode at least 32 random bytes in production".into()));
+            }
         }
-        if jwt.secret.len() < 44 && ctx.environment == Environment::Production {
-            return Err(Error::Message("auth.jwt.secret must encode at least 32 random bytes in production".into()));
-        }
+        // What signs sessions (crate::sessions): JWT_SECRET where it is set, else the vault's keys (its first made now);
+        // refused when neither is there.
         let vault_open = ferrum_kernel::vault::status(&kernel.db).await.is_ok_and(|s| s.open);
+        let sessions = crate::sessions::Sessions::start(&jwt.secret, vault_open.then(|| (kernel.clone(), platform.clone()))).await.map_err(Error::Message)?;
         let storage = build_storage(&settings)?;
         probe_storage(&storage).await;
         let objects = Arc::new(crate::objects::Objects::new(&settings).map_err(|e| Error::Message(format!("object storage: {e}")))?);
@@ -423,7 +424,7 @@ impl Hooks for App {
             settings,
             shutdown: Arc::new(tx),
             background: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-            jwt_secret: jwt.secret.clone(),
+            sessions: Arc::new(sessions),
             jwt_expiration: jwt.expiration,
             vault: platform,
             vault_open,

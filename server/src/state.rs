@@ -434,7 +434,8 @@ pub struct AppState {
     pub settings: Settings,
     pub shutdown: Arc<watch::Sender<bool>>,
     pub background: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
-    pub jwt_secret: String,
+    /// The keys that sign sessions and API tokens (crate::sessions).
+    pub sessions: Arc<crate::sessions::Sessions>,
     pub jwt_expiration: u64,
     /// The platform's own vault handle, as the registry gave it to the server (crate::secrets).
     pub vault: ferrum_kernel::vault::Vault,

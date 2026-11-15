@@ -815,6 +815,10 @@ pub fn spawn(st: AppState, mut stop: watch::Receiver<bool>) -> tokio::task::Join
                         tracing::warn!("this replica's row in the replica table: {e}");
                     }
                     refresh(&st).await;
+                    // A rotation of the key that signs sessions reaches every replica with the same compare.
+                    if let Err(e) = st.sessions.reload().await {
+                        tracing::warn!("reading the keys that sign sessions again: {e}");
+                    }
                 }
             }
         }

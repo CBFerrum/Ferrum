@@ -130,7 +130,9 @@
   secret: true
   vault: session
   doc: >-
-    Required. Base64, at least 32 random bytes: `openssl rand -base64 48`. Rotating it signs everyone out.
+    Base64, at least 32 random bytes: `openssl rand -base64 48`. Changing it signs everyone out. Without it the
+    vault's keys sign sessions, each named by the tokens it signs and replaced without signing anyone out (*The key
+    that signs sessions*); then it is required only while the vault is closed.
 - key: jwt_expiration_seconds
   env: JWT_EXPIRATION_SECONDS
   type: int

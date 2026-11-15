@@ -1057,6 +1057,27 @@ deletes, under the same cap on uses (a hundred an hour for each secret and verb,
 this machine; whether there is a recovery key; the keys' ages; secrets still sealed with an older key a day after a
 rotation; which of the platform's secrets the environment still decides; and a warning while the vault is closed.
 
+### The key that signs sessions
+
+Every session, browser cookie, API token, app token and OAuth access token is a token the server signs and only the
+server checks. With `JWT_SECRET` set, it signs as before, and its tokens name no key, so that an older build reads
+them. Without it, the vault's keys sign (`session.1`, `session.2`, …), and each token names the key that signed it.
+Only this server verifies them, so a secret key with a name does all that a key pair would; there is nothing to
+publish. An installation with nothing in its environment gets its first key at its first start, one between replicas
+starting together.
+
+`ferrum task secret_set name:jwt_secret` replaces it without signing anyone out: the next key signs from then on, and
+every key before it verifies what it signed until the longest token it could have signed has run out (the longest of
+`session_days` and `jwt_expiration_seconds` as they are then, and five minutes more), then it is gone. Each replica
+reads the keys again every 30 seconds, and at once when a token names one it does not hold: so a token one replica
+signs with the new key is taken by every other at once, and every replica signs with it within half a minute. A token
+naming a key that is not there, or over, or signed otherwise, is refused. The end is set at the rotation, from the
+settings then: a rotation made just after `session_days` was lowered ends sooner the browsers that signed in under the
+longer one.
+
+The copy of the environment's `JWT_SECRET` keeps verifying what that secret signed once the environment stops setting
+it. The first rotation run where `JWT_SECRET` is no longer set gives the copy an end too, as for any key before.
+
 ## Durable processes
 
 Customers' solutions may hold processes that wait for people, events and deadlines (the Full Process
