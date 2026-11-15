@@ -81,7 +81,9 @@ spec:
           ports:
             - {name: http, containerPort: 5150}
           env:
-            {{- if $pooled }}
+            {{- if eq .Values.environment "minimal" }}
+            {{- include "ferrum.minimalEnv" (list . $p) | nindent 12 }}
+            {{- else if $pooled }}
             {{- include "ferrum.poolEnv" (list . $p) | nindent 12 }}
             {{- else }}
             {{- include "ferrum.env" . | nindent 12 }}

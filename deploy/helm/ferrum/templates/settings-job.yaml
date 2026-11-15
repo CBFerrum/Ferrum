@@ -1,0 +1,61 @@
+{{- if eq (include "ferrum.settingsJob" .) "true" }}
+{{- $n := include "ferrum.fullname" . }}
+# The settings document (values.yaml, `settings`; with `environment: minimal`, the chart's own values too), applied to
+# the database's `setting` table by `ferrum task apply_settings` before the install or upgrade is applied, after the
+# migrate Job (docs/operations.md, "Settings in the database"). A hook too, so that it exists when the Job runs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $n }}-settings
+  labels: {{- include "ferrum.labels" (list . (printf "%s-settings" $n)) | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  settings.yaml: |
+    {{- include "ferrum.settingsDocument" . | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $n }}-settings
+  labels: {{- include "ferrum.labels" (list . (printf "%s-settings" $n)) | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrate.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: {{ $n }}-settings}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: settings
+          image: {{ include "ferrum.image" (list "image" .Values.image) }}
+          args: ["task", "apply_settings", "file:/etc/ferrum/settings/settings.yaml"]
+          env:
+            {{- /* As the migrate Job: straight to the primary, never through the pooler. */}}
+            {{- include "ferrum.env" (dict "Values" .Values "Release" .Release "Chart" .Chart "direct" true) | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: settings, mountPath: /etc/ferrum/settings, readOnly: true}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 512Mi}
+        - name: settings
+          configMap: {name: {{ $n }}-settings}
+{{- end }}

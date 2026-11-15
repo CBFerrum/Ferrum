@@ -297,6 +297,18 @@ helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
   so that one install has no Job and the pods migrate themselves; every `helm upgrade` after it uses the Job. (Tools
   that render with `helm template` and never mark an upgrade, such as some GitOps setups, then never get the Job:
   the pods keep migrating themselves, which is safe.)
+* *Settings in the database.* `settings` in the values is a document as `ferrum task apply_settings` takes it
+  (*Settings in the database*), which a hook Job applies before an install or upgrade, after the migrate Job, and
+  under the same rule for a first install with the chart's own database (from the first upgrade on). The environment
+  still wins: a setting the chart also renders as a variable keeps the variable's value. `environment: minimal` gives
+  the server's pods only the database's address, naming each pod's pool (`application_name=pool:<name>`, `default`
+  without `pools`; `database.urlHasQuery: true` when an outside database's address already has a query), the
+  secrets, and the variables apps compiled into the server read themselves (`FERRUM_OFFICE_URL`, `FERRUM_EDITORS_URL`
+  and the like); the Job then writes every other value the chart would have set as a variable, under its setting's
+  key, each pool's three of its own too, with `settings` over them. It cannot be the first install with the chart's
+  own database (the chart refuses): install with `full`, then switch on an upgrade. The settings Job counts in the
+  connection budget like the migrate Job. The default, `full`, renders exactly what it rendered before. Compose and
+  `deploy/k8s` keep the full environment; `ferrum task apply_settings` moves a stack's settings into the table by hand.
 
 `bash deploy/helm/test.sh` (CI runs it) fails when the chart and `deploy/k8s` differ in resources, environment variables,
 ports, probes, security context or resources.
