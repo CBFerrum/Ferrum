@@ -4130,6 +4130,22 @@ would point at nothing still refuses the whole copy and changes nothing. A build
 with `session_replication_role` instead, which needs `GRANT SET ON PARAMETER session_replication_role TO ferrum` from
 a superuser, or on a managed service from its administrator (*Any PostgreSQL*); give it only while such a build copies.
 
+*What a copy holds in memory.* Each check that waits for the commit is kept by the copying session on the database
+server until it commits: about 12 bytes for each foreign key of each row copied in, and for each foreign key that can
+point at a row deleted. Measured on PostgreSQL 17.9: a million rows with one key took 12.6 MB, a million more with two
+keys 24 MB more. That memory is outside `work_mem` and `shared_buffers` and never goes to disk, so plan the database
+server's free memory for it: a workspace of 100 million rows whose tables average two keys needs about 2.4 GB in that
+one session while it copies. At commit the waiting checks run one after another (here 3 million in 19 seconds, about
+6 µs each; slower on a busy or distant server), so that copy also spends some 20 minutes committing, with the
+workspace suspended. The most any copy here can need, every workspace at once (as of the last `ANALYZE`):
+
+```sql
+select pg_size_pretty(sum(greatest(c.reltuples, 0)::bigint * k.n) * 12) from pg_class c
+  join (select conrelid, count(*) n from pg_constraint where contype = 'f' group by conrelid) k on k.conrelid = c.oid;
+```
+
+One workspace needs its share of that.
+
 It happens in one transaction, with the workspace suspended first so that nobody is writing to it. Every
 reference the workspace's rows make is checked before it commits, and one that would point at nothing stops it.
 If it stops part way, nothing has changed and the workspace is still suspended: run it again. Other workspaces
