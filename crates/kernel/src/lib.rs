@@ -323,6 +323,8 @@ pub struct Kernel {
     pub(crate) zones: std::sync::RwLock<Arc<zones::Zones>>,
     /// The settings as they are now ([`Kernel::live`]): `settings` with those that apply at once changed since the start.
     pub(crate) live: std::sync::RwLock<Arc<KernelSettings>>,
+    /// What this process knows of the restore marker (recovery.rs).
+    pub(crate) marker: recovery::Marker,
 }
 
 impl Kernel {
@@ -481,6 +483,7 @@ impl Kernel {
             clock: Default::default(),
             zones: Default::default(),
             live,
+            marker: Default::default(),
         });
         kernel.notice_restore().await?;
         // From this build's packages: a guest's are older than the database's (window.rs).

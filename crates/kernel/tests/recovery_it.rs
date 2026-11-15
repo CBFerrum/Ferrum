@@ -149,7 +149,160 @@ fn restores_and_regions() {
         tokio::spawn(a_mark_out_of_time_or_unfenced_is_a_restore()).await.unwrap();
         tokio::spawn(the_fence_falls_between_transactions()).await.unwrap();
         tokio::spawn(what_a_move_can_break()).await.unwrap();
+        tokio::spawn(the_marker_notices_a_restore_the_identity_misses()).await.unwrap();
     });
+}
+
+/// Object storage that can be cut off, as an outage does.
+#[derive(Default)]
+struct Flaky {
+    files: MemFiles,
+    down: AtomicBool,
+}
+
+#[async_trait]
+impl ferrum_kernel::files::FileStore for Flaky {
+    async fn put(&self, key: &str, data: &[u8]) -> Result<()> {
+        if self.down.load(Ordering::SeqCst) {
+            return Err(Error::Unavailable("object storage does not answer".into()));
+        }
+        self.files.put(key, data).await
+    }
+    async fn get(&self, key: &str) -> Result<Vec<u8>> {
+        if self.down.load(Ordering::SeqCst) {
+            return Err(Error::Unavailable("object storage does not answer".into()));
+        }
+        self.files.get(key).await
+    }
+    async fn delete(&self, key: &str) -> Result<()> {
+        self.files.delete(key).await
+    }
+}
+
+async fn marker_in_database(k: &Kernel) -> Option<i64> {
+    sqlx::query_scalar("select restore_marker from platform_incarnation").fetch_one(&k.db.pool).await.unwrap()
+}
+
+async fn marker_in_store(k: &Kernel, files: &Flaky) -> Option<i64> {
+    let (system, oid): (i64, sqlx::postgres::types::Oid) =
+        sqlx::query_as("select (select system_identifier from pg_control_system()), (select oid from pg_database where datname = current_database())")
+            .fetch_one(&k.db.pool)
+            .await
+            .unwrap();
+    let key = format!("{}{system}-{}.json", ferrum_kernel::recovery::MARKER_PREFIX, oid.0);
+    let body = files.files.0.lock().unwrap().get(&key).cloned()?;
+    serde_json::from_slice::<serde_json::Value>(&body).unwrap()["counter"].as_i64()
+}
+
+/// The marker is due again (it moves on at most every 30 seconds), as a minute passing would make it.
+async fn due(k: &Kernel) {
+    sqlx::query("update platform_incarnation set restore_marker_at = now() - interval '1 minute'").execute(&k.db.pool).await.unwrap();
+}
+
+/// D7: a snapshot restore, a clone or a branch keeps the database's identity, so only the marker in object storage tells
+/// that it went back in time.
+async fn the_marker_notices_a_restore_the_identity_misses() {
+    use ferrum_kernel::recovery::MarkerSaid;
+    let live = url("FERRUM_TEST_DATABASE_URL", "ferrum_test");
+    let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
+    let k = kernel(database(&live, true).await, sent.clone(), app.clone()).await;
+    // No object store (development): nothing to compare with, nothing held, nothing waits.
+    assert_eq!(k.watch_restore_marker().await.unwrap(), MarkerSaid::NoStore);
+    assert!(!k.holding().await.unwrap());
+
+    // A first install, on a store that holds this identity's marker already (a database dropped and made again in
+    // place): born with the marker, it adopts the store's counter and moves on from there.
+    let files = Arc::new(Flaky::default());
+    k.set_file_store(files.clone());
+    assert_eq!(marker_in_database(&k).await, Some(0), "born with it");
+    let (system, oid): (i64, sqlx::postgres::types::Oid) =
+        sqlx::query_as("select (select system_identifier from pg_control_system()), (select oid from pg_database where datname = current_database())")
+            .fetch_one(&k.db.pool)
+            .await
+            .unwrap();
+    let key = format!("{}{system}-{}.json", ferrum_kernel::recovery::MARKER_PREFIX, oid.0);
+    files.files.0.lock().unwrap().insert(key, serde_json::to_vec(&json!({"counter": 50})).unwrap());
+    assert_eq!(k.watch_restore_marker().await.unwrap(), MarkerSaid::Level(51));
+    assert_eq!((marker_in_database(&k).await, marker_in_store(&k, &files).await), (Some(51), Some(51)), "the database first, then the store");
+    assert_eq!(k.restore_marker().await.unwrap(), MarkerSaid::Level(51), "at most every 30 seconds");
+
+    // Two replicas looking at once, again and again: never held, the counter only moves forward, and the store is never
+    // ahead of the database.
+    let other = kernel(database(&live, false).await, Arc::new(Sent::default()), Arc::new(App::default())).await;
+    other.set_file_store(files.clone());
+    let mut last = 51;
+    for _ in 0..8 {
+        due(&k).await;
+        let (a, b) = tokio::join!(k.restore_marker(), other.restore_marker());
+        for said in [a.unwrap(), b.unwrap()] {
+            assert!(matches!(said, MarkerSaid::Level(_)), "{said:?}");
+        }
+        let (db, store) = (marker_in_database(&k).await.unwrap(), marker_in_store(&k, &files).await.unwrap());
+        assert!(db > last && store <= db, "{last} then {db}, the store at {store}");
+        last = db;
+    }
+    assert!(!k.restore_held().await.unwrap() && !k.holding().await.unwrap());
+
+    // A payment is waiting when the snapshot is taken; the marker moves on; the database is taken back to the snapshot
+    // with its identity and timeline unchanged, under a server that starts on it afresh.
+    let admin = workspace(&k, "acme").await;
+    drain(&k).await;
+    pay(&k, admin.tenant).await;
+    let snapshot = marker_in_database(&k).await.unwrap();
+    due(&k).await;
+    assert_eq!(k.restore_marker().await.unwrap(), MarkerSaid::Level(snapshot + 1));
+    sqlx::query("update platform_incarnation set restore_marker = $1").bind(snapshot).execute(&k.db.pool).await.unwrap();
+    let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
+    let restored = kernel(database(&live, false).await, sent.clone(), app.clone()).await;
+    assert!(!restored.restore_held().await.unwrap(), "its identity says nothing");
+    restored.set_file_store(files.clone());
+    let said = restored.watch_restore_marker().await.unwrap();
+    assert!(matches!(&said, MarkerSaid::Held(why) if why.contains(&format!("object storage's is {}", snapshot + 1))), "{said:?}");
+    assert!(restored.restore_held().await.unwrap() && restored.holding().await.unwrap());
+    assert_eq!(app.told.load(Ordering::SeqCst), 1, "what apps had in hand is set aside, as after any restore");
+    drain(&restored).await;
+    assert_eq!(sent.count.load(Ordering::SeqCst), 0, "the payment does not go out again by itself");
+    // Noticed once; a held database does not move the marker on, so a stale copy cannot push a live one's past it.
+    due(&restored).await;
+    assert_eq!(restored.restore_marker().await.unwrap(), MarkerSaid::Level(snapshot + 1));
+    assert_eq!(app.told.load(Ordering::SeqCst), 1);
+    assert_eq!(marker_in_store(&k, &files).await, Some(snapshot + 1));
+    restored.release_hold(&admin, "checked the payments with the bank").await.unwrap();
+    due(&restored).await;
+    assert_eq!(restored.restore_marker().await.unwrap(), MarkerSaid::Level(snapshot + 2), "released, it moves on");
+
+    // The store is briefly unreachable: a healthy installation is not held. A replica that starts meanwhile sends
+    // nothing until a look reaches the store, and then carries on by itself.
+    files.down.store(true, Ordering::SeqCst);
+    let starting = kernel(database(&live, false).await, Arc::new(Sent::default()), Arc::new(App::default())).await;
+    starting.set_file_store(files.clone());
+    assert!(matches!(starting.watch_restore_marker().await.unwrap(), MarkerSaid::StoreDown(_)));
+    assert!(starting.holding().await.unwrap() && !starting.restore_held().await.unwrap(), "it waits; nothing is held");
+    assert!(!restored.holding().await.unwrap(), "a replica that compared already carries on");
+    files.down.store(false, Ordering::SeqCst);
+    assert!(matches!(starting.restore_marker().await.unwrap(), MarkerSaid::Level(_)));
+    assert!(!starting.holding().await.unwrap());
+
+    // The database swapped for an older one under a running server while the store is down: what the server saw itself
+    // is enough.
+    files.down.store(true, Ordering::SeqCst);
+    let now = marker_in_database(&starting).await.unwrap();
+    sqlx::query("update platform_incarnation set restore_marker = $1").bind(now - 3).execute(&k.db.pool).await.unwrap();
+    let said = starting.restore_marker().await.unwrap();
+    assert!(matches!(&said, MarkerSaid::Held(why) if why.contains(&format!("saw {now}"))), "{said:?}");
+    files.down.store(false, Ordering::SeqCst);
+    let admin = k.load_ctx(admin.tenant, admin.user, None, "it".into()).await.unwrap();
+    starting.release_hold(&admin, "the swap was ours").await.unwrap();
+
+    // A planned move fences the database: the marker does not move there, so the copy that carries on is level with the
+    // store, not behind it.
+    let before = marker_in_database(&k).await;
+    let mark = k.plan_move("to another cluster", DAY, Duration::ZERO).await.expect("planned");
+    due(&k).await;
+    assert_eq!(k.restore_marker().await.unwrap(), MarkerSaid::Fenced);
+    assert_eq!(marker_in_database(&k).await, before, "nothing moved");
+    k.cancel_move("rehearsed only").await.unwrap();
+    let _ = mark;
 }
 
 /// AT-DR-002.

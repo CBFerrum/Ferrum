@@ -26,6 +26,7 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -247,12 +248,15 @@ impl Kernel {
             return Ok(());
         }
         let Some((was_system, was_timeline, was_oid)) = known else {
-            sqlx::query("insert into platform_incarnation (system_identifier, timeline, database_oid) values ($1, $2, $3) on conflict do nothing")
-                .bind(system)
-                .bind(timeline)
-                .bind(oid)
-                .execute(&mut *tx)
-                .await?;
+            // Born with the restore marker (0): there is nothing it could be behind yet.
+            sqlx::query(
+                "insert into platform_incarnation (system_identifier, timeline, database_oid, restore_marker) values ($1, $2, $3, 0) on conflict do nothing",
+            )
+            .bind(system)
+            .bind(timeline)
+            .bind(oid)
+            .execute(&mut *tx)
+            .await?;
             tx.commit().await?;
             return Ok(());
         };
@@ -574,9 +578,13 @@ impl Kernel {
         Ok(sqlx::query_scalar("select exists (select 1 from platform_incarnation where held_since is not null)").fetch_one(&self.db.pool).await?)
     }
 
-    /// Whether a restore is waiting for a person, or a move is planned (moves.rs). Everything that reaches outside asks
-    /// this first.
+    /// Whether a restore is waiting for a person, or a move is planned (moves.rs), or this replica started and has not yet
+    /// compared the database with the restore marker in a store that answers. Everything that reaches outside asks this
+    /// first.
     pub async fn holding(&self) -> Result<bool> {
+        if self.marker.waiting.load(Ordering::SeqCst) {
+            return Ok(true);
+        }
         Ok(sqlx::query_scalar("select exists (select 1 from platform_incarnation where held_since is not null) or exists (select 1 from platform_move)")
             .fetch_one(&self.db.pool)
             .await?)
@@ -632,6 +640,191 @@ async fn absent<T>(store: &Arc<dyn crate::files::FileStore>, files: Vec<(T, Stri
     let found: Vec<Result<Option<T>>> =
         futures::stream::iter(files).map(|(t, key)| async move { Ok(if store.exists(&key).await? { None } else { Some(t) }) }).buffered(16).collect().await;
     found.into_iter().filter_map(Result::transpose).collect()
+}
+
+/// Where the restore marker is kept in object storage, beside the journals (privacy.rs, lifecycle.rs): one object for
+/// each database identity (system identifier and database oid). A snapshot, clone or branch keeps its original's
+/// identity, so it reads the counter its original wrote; two databases sharing a store never read each other's.
+pub const MARKER_PREFIX: &str = "restore-marker/";
+
+/// How often a replica looks at the restore marker ([`Kernel::spawn_restore_marker`]). The counter moves on at most every
+/// 30 seconds, whichever replica looks: a restore to less than a minute or so before the store's last write is not
+/// seen by the marker (the identity and the timeline still see most of those).
+pub const MARKER_EVERY: Duration = Duration::from_secs(60);
+
+/// What this process knows of the restore marker (D7).
+pub(crate) struct Marker {
+    /// The highest counter this process has seen in the database (-1: none yet): one below it went back in time.
+    seen: AtomicI64,
+    /// The server asked for a look as it started, and the store has not answered one since: outward work waits
+    /// ([`Kernel::holding`]) rather than go out from a database nobody has compared yet.
+    waiting: AtomicBool,
+    /// When the store last answered, and the counter then.
+    last: std::sync::Mutex<Option<(chrono::DateTime<chrono::Utc>, i64)>>,
+}
+
+impl Default for Marker {
+    fn default() -> Self {
+        Marker { seen: AtomicI64::new(-1), waiting: AtomicBool::new(false), last: Default::default() }
+    }
+}
+
+/// What one look at the restore marker found.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "marker", content = "detail")]
+pub enum MarkerSaid {
+    /// No object store (development, tests): nothing to compare with; the identity alone notices restores.
+    NoStore,
+    /// The database takes no changes here (a region without the right to write, a planned move's fence): nothing moves.
+    Fenced,
+    /// The store did not answer: nothing was compared this time, and nothing is held for it.
+    StoreDown(String),
+    /// The database is level with the store, or ahead of it: its counter now.
+    Level(i64),
+    /// The database came up behind: held, as a restore is, until a person releases it.
+    Held(String),
+}
+
+/// Why `now` (the database's counter; None before the marker) is behind, if it is: behind what this process saw while it
+/// ran, or behind the store's (`stored`). A database born with the marker (0) is behind no store: it adopts its counter.
+pub(crate) fn behind(now: Option<i64>, seen: i64, stored: Option<i64>) -> Option<String> {
+    let n = now.unwrap_or(-1);
+    let said = |c: Option<i64>| c.map_or_else(|| "missing (a database from before the marker)".to_string(), |c| c.to_string());
+    if n < seen {
+        return Some(format!("this database's restore marker is {}, and this server saw {seen} while it ran: it went back in time", said(now)));
+    }
+    match stored {
+        Some(v) if n < v && now != Some(0) => {
+            Some(format!("this database's restore marker is {}, and object storage's is {v}: it was taken back in time", said(now)))
+        }
+        _ => None,
+    }
+}
+
+impl Kernel {
+    /// The server, as it starts: one look at the restore marker; until a look has reached the store, outward work waits.
+    pub async fn watch_restore_marker(&self) -> Result<MarkerSaid> {
+        let said = self.restore_marker().await?;
+        self.marker.waiting.store(matches!(said, MarkerSaid::StoreDown(_)), Ordering::SeqCst);
+        Ok(said)
+    }
+
+    /// Whether outward work waits for the store to answer a first look, and the store's last answer (when, and the
+    /// counter): for the doctor.
+    pub fn restore_marker_state(&self) -> (bool, Option<(chrono::DateTime<chrono::Utc>, i64)>) {
+        (self.marker.waiting.load(Ordering::SeqCst), self.marker.last.lock().ok().and_then(|l| *l))
+    }
+
+    /// One look at the restore marker: the store's counter read first, then the database's under its row's lock, so that
+    /// a healthy database is never found behind (it is always written first, and only moves forward). Behind the store,
+    /// or behind what this process saw, it is held exactly as a restore its identity gives away is. Otherwise, at most
+    /// every 30 seconds, it moves on: the database's counter first (committed), then the store's. Safe on every replica
+    /// at once: the row's lock puts them one after another, and a store write that lands late only leaves the store
+    /// behind, which holds nothing.
+    pub async fn restore_marker(&self) -> Result<MarkerSaid> {
+        let Some(store) = self.files.get() else { return Ok(MarkerSaid::NoStore) };
+        if self.db.fenced() {
+            return Ok(MarkerSaid::Fenced);
+        }
+        let (system, oid): (i64, sqlx::postgres::types::Oid) =
+            sqlx::query_as("select (select system_identifier from pg_control_system()), (select oid from pg_database where datname = current_database())")
+                .fetch_one(&self.db.pool)
+                .await?;
+        let key = format!("{MARKER_PREFIX}{system}-{}.json", oid.0);
+        let stored = match store.get(&key).await {
+            Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|v| v["counter"].as_i64())
+                .map(Some)
+                .ok_or_else(|| Error::Conflict(format!("{key} in object storage is not a restore marker this server wrote"))),
+            Err(Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        };
+        let mut tx = self.db.system_tx().await?;
+        let read_only: bool = sqlx::query_scalar("select current_setting('transaction_read_only') = 'on'").fetch_one(&mut *tx).await?;
+        let row: Option<(Option<i64>, bool, bool)> = if read_only {
+            None
+        } else {
+            sqlx::query_as(
+                "select restore_marker, restore_marker_at is null or restore_marker_at < now() - interval '30 seconds', held_since is not null \
+                 from platform_incarnation for update",
+            )
+            .fetch_optional(&mut *tx)
+            .await?
+        };
+        let Some((now, due, held)) = row else {
+            tx.rollback().await?;
+            return Ok(MarkerSaid::Fenced);
+        };
+        let seen = self.marker.seen.load(Ordering::SeqCst);
+        if let Some(why) = behind(now, seen, stored.as_ref().ok().copied().flatten()) {
+            let to = now.unwrap_or(0).max(seen).max(stored.as_ref().ok().copied().flatten().unwrap_or(0));
+            tracing::error!(because = %why, "a restore was noticed: everything that reaches outside is held until a person releases it");
+            sqlx::query(
+                "update platform_incarnation set held_since = now(), held_because = $1, released_at = null, released_by = null, released_note = null, \
+                 restore_marker = $2",
+            )
+            .bind(&why)
+            .bind(to)
+            .execute(&mut *tx)
+            .await?;
+            self.set_aside(&mut tx, None).await?;
+            tx.commit().await?;
+            self.marker.seen.fetch_max(to, Ordering::SeqCst);
+            return Ok(MarkerSaid::Held(why));
+        }
+        let n = now.unwrap_or(0);
+        let stored = match stored {
+            Ok(v) => v,
+            Err(e) => {
+                tx.commit().await?;
+                self.marker.seen.fetch_max(n, Ordering::SeqCst);
+                return Ok(MarkerSaid::StoreDown(e.to_string()));
+            }
+        };
+        // A held database does not move it on: a restored copy started beside the live one must not push the live one's
+        // marker past it.
+        let at = if !held && (due || stored.is_none() || now.is_none() || now == Some(0)) {
+            let next = n.max(stored.unwrap_or(0)).max(seen) + 1;
+            sqlx::query("update platform_incarnation set restore_marker = $1, restore_marker_at = now()").bind(next).execute(&mut *tx).await?;
+            tx.commit().await?;
+            self.marker.seen.fetch_max(next, Ordering::SeqCst);
+            let body = json!({"counter": next, "at": chrono::Utc::now(), "database": format!("{system}-{}", oid.0)});
+            if let Err(e) = store.put(&key, &serde_json::to_vec(&body).map_err(Error::internal)?).await {
+                return Ok(MarkerSaid::StoreDown(e.to_string()));
+            }
+            next
+        } else {
+            tx.commit().await?;
+            self.marker.seen.fetch_max(n, Ordering::SeqCst);
+            n
+        };
+        if let Ok(mut last) = self.marker.last.lock() {
+            *last = Some((chrono::Utc::now(), at));
+        }
+        self.marker.waiting.store(false, Ordering::SeqCst);
+        Ok(MarkerSaid::Level(at))
+    }
+
+    /// Looks at the restore marker every [`MARKER_EVERY`], on every replica (the server, once it serves).
+    pub fn spawn_restore_marker(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+        let k = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    _ = tokio::time::sleep(MARKER_EVERY) => {}
+                }
+                match k.restore_marker().await {
+                    Ok(MarkerSaid::StoreDown(e)) => {
+                        tracing::warn!("the restore marker could not be read or written in object storage (tried again in a minute): {e}")
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("looking at the restore marker failed (tried again in a minute): {e}"),
+                }
+            }
+        })
+    }
 }
 
 /// Who holds the right to write, as a witness has it.
@@ -737,5 +930,23 @@ impl Kernel {
         }
         sqlx::query("update platform_incarnation set authority_epoch = 0").execute(&self.db.pool).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::behind;
+
+    #[test]
+    fn behind_the_store_or_what_was_seen_and_nothing_else() {
+        assert_eq!(behind(Some(5), 5, Some(5)), None, "level");
+        assert_eq!(behind(Some(6), 5, Some(5)), None, "ahead: written first");
+        assert_eq!(behind(None, -1, None), None, "from before the marker, nothing written yet: the first look writes it");
+        assert_eq!(behind(Some(0), -1, Some(9)), None, "born with it on a store that had one: it adopts it");
+        assert!(behind(Some(4), -1, Some(5)).unwrap().contains("object storage's is 5"));
+        assert!(behind(None, -1, Some(5)).unwrap().contains("from before the marker"), "a backup older than the marker");
+        assert!(behind(Some(3), 7, None).unwrap().contains("saw 7"), "the store gone and the database swapped under a running server");
+        assert!(behind(Some(0), 7, Some(9)).unwrap().contains("saw 7"), "born again under a running server");
+        assert!(behind(None, 2, None).is_some());
     }
 }

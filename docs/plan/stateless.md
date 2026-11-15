@@ -157,6 +157,16 @@ Decided while building it (15 November 2026):
   session and `--enable-row-security`; the restore into an empty database in one transaction, without owners or
   grants, leaving out schemas the database has and comments on extensions. The chart's `import` mode passes the same
   setting as the `options` connection parameter and `--enable-row-security` as `pgDumpExtraOptions`.
+- **The restore marker.** `platform_incarnation.restore_marker` (NULL: from before the marker; 0: born with it, so it
+  adopts whatever the store has) and `restore_marker_at`; in the store `restore-marker/<system identifier>-<database
+  oid>.json`, keyed by identity so that a snapshot, clone or branch reads its original's counter and two databases
+  sharing a store never meet. Every replica looks as it starts (after the store is set, before it serves) and every
+  minute; the store is read first, then the database under its row's lock; behind the store, or behind what the
+  process saw itself, is held as a restore is today (same columns, same setting aside). One replica moves it on at
+  most every 30 seconds, database first. A fenced or held database moves nothing. A replica whose first look cannot
+  reach the store sends nothing (`holding()`) until a look does; one that has compared carries on through an outage.
+  Guests (an older build on a newer database) do not look. Not noticed: database and store taken back together; a
+  restore to less than about a minute before the store's last write; a database given a store without its marker.
 
 ## D8. Git
 

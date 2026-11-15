@@ -909,7 +909,31 @@ and commands become unknown. `ferrum task doctor` says so.
 
 A failover to a synchronous replica is also a new timeline, and loses nothing. Set
 `FERRUM_HOLD_ON_TIMELINE=false` if that is the only way a timeline changes here. Then an in-place
-point-in-time restore is not noticed, so run the steps below by hand after one.
+point-in-time restore is not noticed by the timeline, only by the marker below.
+
+*The restore marker.* A managed service's snapshot restore, clone or branch can keep the database's identity and
+timeline, so the server also keeps a counter that only moves forward, in the database (`platform_incarnation`) and in
+object storage beside the journals (`restore-marker/<system identifier>-<database oid>.json`, one per database
+identity). Every replica looks at it as it starts and then every minute: the store's counter is read first, then the
+database's, under its row's lock; the database is always written first, so a healthy one is never behind. A database
+behind the store's counter, or behind what a running replica saw in it, has been taken back in time, and is held exactly
+as above. Otherwise one replica moves both on, at most every 30 seconds: the database first, then the store. So:
+
+- *Two replicas at once* take turns on the row; a store write that lands late only leaves the store behind, which
+  holds nothing.
+- *The store briefly unreachable* holds nothing: a replica that has compared once carries on. A replica that starts
+  meanwhile sends nothing until one of its looks reaches the store (the doctor says so), then carries on by itself.
+  A database swapped under a running replica meanwhile is still noticed, from what that replica saw.
+- *A first install* (born with the marker) takes the counter the store has for its identity, if any, and moves on.
+  A database from before the marker, on a store that has one for its identity, is a backup older than the marker:
+  held.
+- *Without object storage* (development) there is no marker; the identity alone notices restores, as before.
+- *A planned move* fences the source, and a fenced database moves nothing, so its copy starts level with the store
+  and carries on; a *sandbox* lives in the same database and changes nothing of it. A held database moves nothing
+  either, so a stale copy started on the same storage cannot push the live one's marker past it.
+- *Not noticed*: the database and the store taken back together to one moment (a full site restore, or the bucket's
+  object versions rolled back); a restore to less than about a minute before the store's last write; a database
+  given another store that lacks its marker. The identity and the timeline still notice what they can.
 
 A database the Helm chart starts from another one (`database.bootstrap.mode`, "Moving from one shape to
 another") is held the same way unless the move was planned: `import` makes a database this server never

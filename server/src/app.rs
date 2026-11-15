@@ -432,6 +432,18 @@ impl Hooks for App {
             live_settings: Arc::new(crate::settings::Live::new(&pool, &ctx.config, snapshot, settings_at_start)),
         };
         state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone(), state.objects.clone())));
+        // A restore that keeps the database's identity is noticed by the marker in object storage (docs/operations.md,
+        // "After restoring a backup"): one look before this replica serves or sends anything; until a look reaches the
+        // store, what reaches outside waits. A guest of a newer build's database writes nothing.
+        if state.kernel.booted.guest.is_none() {
+            match state.kernel.watch_restore_marker().await {
+                Ok(ferrum_kernel::recovery::MarkerSaid::StoreDown(e)) => {
+                    tracing::warn!("the restore marker could not be compared with object storage: nothing reaches outside from this replica until it can ({e})")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("looking at the restore marker failed (tried again in a minute): {e}"),
+            }
+        }
         state.kernel.db.starting(false);
         let ctx = ctx.into_builder().storage(storage).build();
         ctx.shared_store.insert(state);
@@ -457,6 +469,10 @@ impl Hooks for App {
         let mut listeners = state.kernel.spawn_listeners(state.shutdown.subscribe());
         // Changes of the settings, and this replica's row in `replica` (docs/operations.md, "Settings in the database").
         listeners.push(crate::settings::spawn(state.clone(), state.shutdown.subscribe()));
+        // The restore marker, every minute (docs/operations.md, "After restoring a backup").
+        if state.kernel.booted.guest.is_none() {
+            listeners.push(state.kernel.spawn_restore_marker(state.shutdown.subscribe()));
+        }
         listeners.push(state.plugins.sockets.spawn_listener(state.kernel.db.clone(), state.shutdown.subscribe()));
         listeners.push(state.live.spawn_listener(state.kernel.clone(), state.shutdown.subscribe()));
         listeners.extend(state.docs.spawn(state.kernel.clone(), state.shutdown.subscribe()));
