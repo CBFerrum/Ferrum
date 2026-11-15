@@ -1486,7 +1486,10 @@ A build before this one reads its secrets from the environment alone. On a datab
 with an environment emptied, it does not work: it refuses to start in production (*JWT_SECRET is not set*), its
 operator routes and `/api/tenants` answer nobody, `/metrics` asks no token, mail is sent without its password and
 object storage without its keys. Before rolling back, put the variables back into the environment, from where you keep
-them (the vault shows a value to nobody): the mail and storage passwords and the model provider's key as they were; a
+them (the vault shows a value to nobody): the mail and storage passwords and the model provider's key as they were (the
+store Compose bundles never had its keys there: `docker compose exec store cat /data/ferrum/s3.json` shows them, its
+`accessKey` and `secretKey` for `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, as `scripts/window_rehearsal.sh` gives
+them to the older build); a
 new `JWT_SECRET` (the older build cannot read what the vault's keys signed, so people sign in again; the old secret, if
 you still have it, keeps the sessions it signed); the tokens your callers hold. The older build ignores the vault, and
 this build, started again later, takes the environment's values while they are set.
