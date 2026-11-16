@@ -107,6 +107,7 @@ pub use hooks::{ApprovalDecided, DocAccess, DocHook, DocHost, EventSink, HookCtx
 pub use process::load_calendar;
 pub use query::{Filter, ListQuery, Op, Page};
 pub use registry::Registry;
+pub use vault::OldKey;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -167,10 +168,15 @@ pub struct KernelSettings {
     /// (docs/plan/stateless.md, D5); an app opens or checks what it made with it through its own handle
     /// (`Vault::open_old`, `seal_old`, `old_fingerprints`).
     pub old_key: OldKey,
+    /// An input, for suites that give a kernel the old key this way: taken into `old_key` (when that holds none) where a
+    /// kernel takes its settings, and emptied there, so a kernel's settings never hold it. It goes with the old key.
+    pub secret_key: Option<secret::SecretKey>,
     /// The ClamAV daemon uploads pass through (`host:port`); without one they are stored unscanned.
     pub clamd: Option<String>,
     /// The scanner's `StreamMaxLength`: files past it are stored unscanned.
     pub clamd_max_bytes: u64,
+    /// An input beside `secret_key`, the keys it retired: taken and emptied as it is. It goes with the old key.
+    pub retired_secret_keys: Vec<secret::SecretKey>,
     /// Base URL of a Gotenberg-compatible PDF renderer; without it there are no PDFs.
     pub pdf_url: Option<String>,
     /// The web app's address as people reach it (`PUBLIC_URL`), for links in mail.
@@ -224,25 +230,6 @@ pub struct KernelSettings {
     pub dns_resolvers: Vec<std::net::SocketAddr>,
 }
 
-/// The old master key and the keys it retired, handed to the kernel and read by nothing else: no function gives a key
-/// back, so a kernel's settings are no way to the old key for an app (docs/plan/stateless.md, D5).
-#[derive(Debug, Clone, Default)]
-pub struct OldKey {
-    pub(crate) current: Option<secret::SecretKey>,
-    /// Keys being rotated out: values they sealed still open, until [`Kernel::reseal_secrets`] has moved them to the
-    /// current key.
-    pub(crate) retired: Vec<secret::SecretKey>,
-}
-
-impl OldKey {
-    /// The old key and the keys it retired, as an installation from before the vault configures them: what the server
-    /// reads from `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS`, and what a test gives a kernel that is to start
-    /// as such an installation.
-    pub fn configured(current: Option<secret::SecretKey>, retired: Vec<secret::SecretKey>) -> Self {
-        OldKey { current, retired }
-    }
-}
-
 impl KernelSettings {
     /// Where other services call back (an OAuth connector's return address, the addresses they pull
     /// files from): the hooks host when it is set, else the public address; none without either.
@@ -274,8 +261,10 @@ impl Default for KernelSettings {
             ctx_ttl: Duration::from_secs(30),
             event_retention_days: 30,
             old_key: OldKey::default(),
+            secret_key: None,
             clamd: None,
             clamd_max_bytes: 25 << 20,
+            retired_secret_keys: Vec::new(),
             pdf_url: None,
             public_url: None,
             push_services: webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect(),
@@ -394,7 +383,8 @@ impl Kernel {
     }
 
     /// Migrates the kernel schema, syncs entity tables for the catalog, and returns a ready kernel.
-    pub async fn boot(db: Db, catalog: Catalog, mut hooks: HookRegistry, settings: KernelSettings, mailer: Option<Arc<dyn Mailer>>) -> Result<Arc<Kernel>> {
+    pub async fn boot(db: Db, catalog: Catalog, mut hooks: HookRegistry, mut settings: KernelSettings, mailer: Option<Arc<dyn Mailer>>) -> Result<Arc<Kernel>> {
+        vault::take_old_key_inputs(&mut settings);
         // Customer logic's rules run in every workspace's saves, after the apps' own hooks (logic.rs).
         hooks.register("*", Arc::new(logic::TenantRules));
         // Active releases' processes start on, and wait for, the workspace's events (process.rs).
@@ -624,7 +614,8 @@ impl Kernel {
     }
 
     /// The server, when a setting that applies at once changed: `settings` in place of those it had.
-    pub fn set_live(&self, settings: KernelSettings) {
+    pub fn set_live(&self, mut settings: KernelSettings) {
+        vault::take_old_key_inputs(&mut settings);
         *self.live.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(settings);
     }
 

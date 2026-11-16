@@ -62,8 +62,9 @@ mod seal;
 mod secrets;
 
 pub use kept::{LegacyKey, Moved};
-pub use keyed::OLD_KEY_FLOOR;
+pub(crate) use keyed::take_old_key_inputs;
 pub(crate) use keyed::{Keyed, PLUGIN_VAULT, Ring, adopted_ids, at_boot, older_builds_refused, sealed_by_vault};
+pub use keyed::{OLD_KEY_FLOOR, OldKey};
 pub(crate) use root::{CHANNEL, Root, finish};
 pub use root::{
     Opened, Opener, Printed, ROOT_FILE, RecoveryKey, Resealing, Rewrap, SlotKind, SlotStatus, Status, open, put_slot, remove_slot, rewrap,

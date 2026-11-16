@@ -128,6 +128,13 @@ async fn secrets_are_write_only_sealed_and_bound() {
         let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
         Kernel::boot(db, catalog(), HookRegistry::default(), s, None).await.expect("boot")
     };
+    // The key given the way suites gave it before `old_key` (an app's suite does): taken in and used, what it sealed
+    // opening, and nothing of it left in the kernel's settings.
+    let old_way = boot(KernelSettings { secret_key: Some(key.clone()), retired_secret_keys: vec![SecretKey::new([3u8; 32])], ..Default::default() }).await;
+    assert_eq!(reveal(&old_way, tenant, id).await.unwrap().as_deref(), Some("rotated-value"), "what the key sealed opens");
+    assert!(old_way.settings.secret_key.is_none() && old_way.settings.retired_secret_keys.is_empty(), "nothing read back");
+    assert!(old_way.live().secret_key.is_none() && old_way.live().retired_secret_keys.is_empty(), "nor from the settings as they are now");
+    drop(old_way);
     let hook = Uuid::now_v7();
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, $2, 'old', 'https://hooks.test/x', 'plain-signing-secret', '{*}')")

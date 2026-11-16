@@ -88,7 +88,7 @@ on another connection before the caller commits never waits on it (an app's `rea
 connection of its own is not needed).
 
 **What it made with the old key (R1 only).** The old key is the kernel's alone: `KernelSettings::old_key` holds it and
-gives nothing back. An app that sealed or keyed things of its own with it (through `settings.secret_key`, public until
+gives nothing back (`secret_key` and `retired_secret_keys` are inputs only, emptied as a kernel takes them). An app that sealed or keyed things of its own with it (through `settings.secret_key`, public until
 platform 0.3.x) keeps them working through its handle until they lapse, with no key in its hands and nothing wider. Each names a context of the app's own: its id, then one of ` -.:/|`, then more (`cloud-dns-key`,
 `helpdesk mail token`, `pos snapshot`); not one that another app's longer id also begins (`cloud-ops-…` is `cloud-ops`'s,
 not `cloud`'s), not one that begins with a workspace's id, and never for an app whose id is a word the platform's own
@@ -108,9 +108,9 @@ tokens 0.11 issued with `old_fingerprints` (`helpdesk mail token`, `helpdesk mai
 snapshots with a key it derives (`derive`, 0.7.5), the server never checks their old signatures, and a till comparing one
 sees it change once; Cloud opens and writes what it sealed with `open_old` and `seal_old` (its contexts begin `cloud-`).
 
-**A test with the old key.** A suite that boots a kernel as an installation from before the vault, with an old key (and
-the keys it retired), gives it so: `KernelSettings { old_key: OldKey::configured(Some(key), vec![]), ..Default::default() }`.
-Nothing reads it back; what it sealed is opened by the kernel, and by the app through the calls above.
+**A test with the old key.** An app's suite that gives a kernel the old key as before (`KernelSettings { secret_key: …,
+retired_secret_keys: … }`) keeps working unchanged: the kernel takes those fields in as it boots and empties them, so
+nothing reads the key back from its settings.
 
 ## Files an app keeps for its own work
 

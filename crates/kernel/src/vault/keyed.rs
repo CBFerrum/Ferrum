@@ -209,6 +209,35 @@ impl Kernel {
 // noted (`legacy_key_use`, `current key`): the previous build gives its apps that still read the old key that one, from
 // the vault's copy, once it is gone from the environment.
 
+/// The old master key and the keys it retired, handed to the kernel and read by nothing else: no function gives a key
+/// back, so a kernel's settings are no way to the old key for an app (docs/plan/stateless.md, D5).
+#[derive(Debug, Clone, Default)]
+pub struct OldKey {
+    pub(crate) current: Option<SecretKey>,
+    /// Keys being rotated out: values they sealed still open, until [`Kernel::reseal_secrets`] has moved them to the
+    /// current key.
+    pub(crate) retired: Vec<SecretKey>,
+}
+
+impl OldKey {
+    /// The old key and the keys it retired, as an installation from before the vault configures them: what the server
+    /// reads from `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS`, and what a test gives a kernel that is to start
+    /// as such an installation.
+    pub fn configured(current: Option<SecretKey>, retired: Vec<SecretKey>) -> Self {
+        OldKey { current, retired }
+    }
+}
+
+/// Where a kernel takes its settings: the old key given in the input fields (`secret_key`, `retired_secret_keys`, as
+/// suites gave it before [`OldKey`]) taken into `old_key` when that holds none, and the fields emptied either way, so
+/// nothing an app reaches holds a key.
+pub(crate) fn take_old_key_inputs(settings: &mut KernelSettings) {
+    let (current, retired) = (settings.secret_key.take(), std::mem::take(&mut settings.retired_secret_keys));
+    if settings.old_key.current.is_none() && settings.old_key.retired.is_empty() {
+        settings.old_key = OldKey { current, retired };
+    }
+}
+
 /// The adopted keys' names: `legacy.key.<id>`. The vault's verbs refuse them (secrets.rs, `check_name`).
 pub(super) const ADOPTED: &str = "legacy.key.";
 
