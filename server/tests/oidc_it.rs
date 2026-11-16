@@ -360,6 +360,46 @@ async fn scenario() {
     assert_eq!(call(&r, Method::GET, ACME, "/oauth/userinfo", &[("authorization", &format!("Bearer {held}"))], None).await.status, StatusCode::UNAUTHORIZED);
     assert!(k.openid_sweep().await.unwrap() >= 1, "and its app is told");
 
+    // ── `amr` says every proof given together: a password and a recovery code at sign-in, a password and the app's code at a
+    // step-up, each in the kernel's words ──
+    let two = k.create_user(&admin_ctx, "two@acme.test", "Two", Some(PASSWORD), &[], true).await.unwrap();
+    let two_ctx = k.load_ctx(acme, two, None, "it".into()).await.unwrap();
+    let totp = k.begin_two_factor(&two_ctx).await.unwrap()["secret"].as_str().unwrap().to_string();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let recovery = k.enable_two_factor(&two_ctx, &ferrum_kernel::twofactor::code(&totp, now - 30).unwrap()).await.unwrap();
+    let page = [("content-type", "application/json"), ("sec-fetch-site", "same-origin")];
+    let first =
+        call(&r, Method::POST, ACME, "/api/auth/login", &page, Some(json!({"tenant": "acme", "email": "two@acme.test", "password": PASSWORD}).to_string()))
+            .await;
+    let ticket = first.json()["ticket"].as_str().expect("a second step").to_string();
+    let second = json!({"ticket": ticket, "code": recovery[0], "session": "cookie"}).to_string();
+    let second = call(&r, Method::POST, ACME, "/api/auth/login/second-factor", &page, Some(second)).await;
+    assert_eq!(second.status, StatusCode::OK, "{}", second.body);
+    let name = ferrum_server::shell::cookie_name(false);
+    let two_cookie = second
+        .headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find_map(|c| c.strip_prefix(&format!("{name}=")).map(|rest| format!("{name}={}", rest.split(';').next().unwrap_or_default())))
+        .expect("signed in");
+    let claims = |id_token: &str| -> Value {
+        serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(id_token.split('.').nth(1).unwrap()).unwrap()).unwrap()
+    };
+    let c = code(&r, ACME, &two_cookie, &client.client_id, "").await;
+    let signed = redeem(&r, ACME, &client.client_id, &secret, &c).await.json();
+    assert_eq!(claims(signed["id_token"].as_str().unwrap())["amr"], json!(["password", "recovery_code"]));
+    let res = call(&r, Method::GET, ACME, &authorize_path(&client.client_id, "&prompt=login"), &[("cookie", &two_cookie)], None).await;
+    let waiting = res.body.split("\"waiting\":\"").nth(1).and_then(|s| s.split('"').next()).expect("waits").to_string();
+    let two_page = [("cookie", two_cookie.as_str()), ("sec-fetch-site", "same-origin"), ("content-type", "application/json")];
+    let app_code = ferrum_kernel::twofactor::code(&totp, now + 30).unwrap();
+    let stepped = call(&r, Method::POST, ACME, "/api/auth/step-up", &two_page, Some(json!({"password": PASSWORD, "code": app_code}).to_string())).await;
+    assert_eq!(stepped.status, StatusCode::NO_CONTENT, "{}", stepped.body);
+    let done = call(&r, Method::POST, ACME, "/api/oauth/authorize/confirm", &two_page, Some(json!({"waiting": waiting}).to_string())).await;
+    let c = param(done.json()["redirect_to"].as_str().unwrap(), "code").unwrap();
+    let signed = redeem(&r, ACME, &client.client_id, &secret, &c).await.json();
+    assert_eq!(claims(signed["id_token"].as_str().unwrap())["amr"], json!(["password", "authenticator"]));
+
     // ── failures at the token endpoint are counted like failed sign-ins ──
     let c = code(&r, ACME, &cookie(&r, ACME, "acme", "admin@acme.test").await, &client.client_id, "").await;
     let mut last = StatusCode::OK;

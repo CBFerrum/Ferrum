@@ -709,16 +709,23 @@ impl Kernel {
     /// transaction, so that neither is without the other. Only the session of that person, live; nothing else about it
     /// changes (whose it is, when it ends). Every other replica drops what it holds of the person's sessions at once.
     pub async fn stepped_up(&self, who: &StepUp, way: &str, from: &crate::gate::Arrival) -> Result<()> {
+        self.stepped_up_by(who, &[way], from).await
+    }
+
+    /// [`Kernel::stepped_up`] by more than one proof given together (`password` then `authenticator` or
+    /// `recovery_code`): every one is how the session's person last proved who they are (an ID token's `amr`,
+    /// crate::oidc); the trail names the first as the way, as before.
+    pub async fn stepped_up_by(&self, who: &StepUp, ways: &[&str], from: &crate::gate::Arrival) -> Result<()> {
+        let way = ways.first().copied().ok_or_else(|| Error::invalid("a step-up names how the person proved it is them"))?;
         let mut tx = self.db.system_tenant_tx(who.tenant).await?;
-        // The way is how the session's person last proved who they are now (an ID token's `amr`, crate::oidc).
         let marked = sqlx::query(
-            "update user_session set step_up_at = now(), proof = array[$4::text] where tenant_id = $1 and id = $2 and user_id = $3 and revoked_at is null \
+            "update user_session set step_up_at = now(), proof = $4 where tenant_id = $1 and id = $2 and user_id = $3 and revoked_at is null \
              and expires_at > now()",
         )
         .bind(who.tenant)
         .bind(who.session)
         .bind(who.user)
-        .bind(way)
+        .bind(ways)
         .execute(&mut *tx)
         .await?
         .rows_affected();

@@ -2216,9 +2216,11 @@ provider) and then goes on to the client; with `prompt=none` it answers `login_r
 
 **Claims.** The ID token is a JWT signed `EdDSA` with the workspace's key (`kid`): `iss`, `sub`, `aud` and `azp` (the
 client), `exp` (five minutes after `iat`), `iat`, `auth_time` (when the person last proved who they are in the browser
-session, as above), `nonce` when one was sent, and `amr`, how they proved it: the steps of their sign-in (`password`
-then `authenticator`, `passkey`, `sso`, `code`, `accounts`) or the way they last confirmed it is them (`password`,
-`passkey`, `accounts_passkey`, `provider`); none for a session an older build opened. `sub` is the person's in that
+session, as above), `nonce` when one was sent, and `amr`, how they proved it, every proof they gave together: the
+steps of their sign-in (`password` or `code`, then `authenticator` or `recovery_code` when there was a second step;
+`passkey`, `sso`, `accounts`) or of the last time they confirmed it is them (`password`, with `authenticator` or
+`recovery_code` when that asked for a code too; `passkey`, `accounts_passkey`, `provider`); none for a session an older
+build opened. `sub` is the person's in that
 workspace: random, kept, the same at every address of the workspace, and it says nothing else about them. Scope
 `profile` adds `name`, `email` adds `email` and `email_verified`. Then what the companion's app gives
 (`Companion::claims`; for the forge, `preferred_username`, the account's name there, and `email`, an address only that

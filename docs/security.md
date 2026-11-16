@@ -293,7 +293,8 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   random, single-use, a minute long, and bound to its client, exact return address, PKCE S256 verifier and issuer. A
   code used twice stops the access token it gave. A nonce is never taken twice by a client. The access token is opaque
   and five minutes long, and only the user-info takes it. There is no refresh token.
-* `auth_time` is when the person last proved who they are in that browser session; `amr` how. `max_age` and
+* `auth_time` is when the person last proved who they are in that browser session; `amr` how, every proof given
+  together (a password and the authenticator app's code: both). `max_age` and
   `prompt=login` are met only by the person confirming it is them again through the step-up, never assumed.
 * The subject is random per person and workspace, kept, and says nothing else. A companion's own claims (the forge's
   account name) are its app's, and never one of the platform's.

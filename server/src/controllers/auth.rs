@@ -39,6 +39,24 @@ fn token(st: &AppState, s: &Session, ttl: u64, extra: Option<&str>) -> Result<St
     signed(st, s, ttl, extra.map(|flag| (flag, json!(true))))
 }
 
+/// The ticket between the two steps of signing in, naming its first step (`password`, `code`): what the second step adds
+/// to, as how the person proved who they are (an ID token's `amr`, ferrum_kernel::oidc).
+fn ticket(st: &AppState, s: &Session, first: &str) -> Result<String, ApiError> {
+    let mut claims = Map::new();
+    claims.insert("tenant".into(), json!(s.tenant.to_string()));
+    claims.insert("tv".into(), json!(s.token_version));
+    claims.insert("mfa".into(), json!(true));
+    claims.insert("step".into(), json!(first));
+    st.sessions.sign(TICKET_SECS, s.user.to_string(), claims).map_err(ApiError)
+}
+
+/// The steps a sign-in finished with the second one took: the ticket's first (a ticket from a build that did not name it
+/// says nothing of it), then the code given.
+fn steps<'a>(claims: &'a Map<String, Value>, second: &'a str) -> Vec<&'a str> {
+    let first = claims.get("step").and_then(Value::as_str).filter(|s| matches!(*s, "password" | "code"));
+    first.into_iter().chain([second]).collect()
+}
+
 /// A token for a browser session: the cookie's (`sid`) or a page's bearer token bound to it
 /// (`bsid`), both ending when the session does.
 pub(crate) fn device_token(st: &AppState, s: &Session, ttl: u64, kind: &str, device: Uuid) -> Result<String, ApiError> {
@@ -155,9 +173,7 @@ async fn login(State(app): State<AppContext>, headers: HeaderMap, Json(req): Jso
     let from = crate::zone::arrival(&st, &headers).await;
     match st.kernel.sign_in_at(&req.tenant, &req.email, &req.password, from).await? {
         SignIn::Session(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "password").await,
-        SignIn::SecondFactor(s) => {
-            Ok(Json(json!({"second_factor": true, "ticket": token(&st, &s, TICKET_SECS, Some("mfa"))?, "expires_in": TICKET_SECS})).into_response())
-        }
+        SignIn::SecondFactor(s) => Ok(Json(json!({"second_factor": true, "ticket": ticket(&st, &s, "password")?, "expires_in": TICKET_SECS})).into_response()),
         SignIn::SetupRequired(s) => Ok(Json(json!({
             "two_factor_setup": true,
             "token": token(&st, &s, SETUP_SECS, Some("setup_2fa"))?,
@@ -198,9 +214,9 @@ async fn login_second_factor(State(app): State<AppContext>, headers: HeaderMap, 
         return Err(again());
     }
     let from = crate::zone::arrival(&st, &headers).await;
-    let s = st.kernel.second_factor_from(tenant, user, tv, &req.code, &from).await?;
+    let (s, given) = st.kernel.second_step(tenant, user, tv, &req.code, &from).await?;
     st.kernel.record_sign_in(tenant, user, "second_step", "authenticator", &from).await?;
-    session_response_with(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "password", None, &["password", "authenticator"]).await
+    session_response_with(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "password", None, &steps(claims, given)).await
 }
 
 #[derive(Deserialize)]
@@ -264,9 +280,7 @@ async fn sign_in_with_code(State(app): State<AppContext>, headers: HeaderMap, Js
         return Err(ApiError(Error::Unauthorized("that code is wrong or has expired; ask for a new one".into())));
     }
     match st.kernel.sign_in_with_code(&req.tenant, &req.email, &req.code).await? {
-        SignIn::SecondFactor(s) => {
-            Ok(Json(json!({"second_factor": true, "ticket": token(&st, &s, TICKET_SECS, Some("mfa"))?, "expires_in": TICKET_SECS})).into_response())
-        }
+        SignIn::SecondFactor(s) => Ok(Json(json!({"second_factor": true, "ticket": ticket(&st, &s, "code")?, "expires_in": TICKET_SECS})).into_response()),
         SignIn::Session(s) | SignIn::SetupRequired(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "code").await,
     }
 }
@@ -709,18 +723,19 @@ async fn step_up(
     };
     // A wrong password or code is a failed step-up on the trail of the account it is, and counts toward its lockout.
     let from = step_up_from(&st, &headers).await;
-    match st.kernel.sign_in_at(&slug, &email, &req.password, from.clone()).await? {
-        SignIn::Session(_) | SignIn::SetupRequired(_) => {}
+    let given = match st.kernel.sign_in_at(&slug, &email, &req.password, from.clone()).await? {
+        SignIn::Session(_) | SignIn::SetupRequired(_) => None,
         SignIn::SecondFactor(t) => {
             let code = req
                 .code
                 .as_deref()
                 .filter(|c| !c.is_empty())
                 .ok_or_else(|| ApiError(Error::field("code", "the code from your authenticator app is needed")))?;
-            st.kernel.second_factor_from(t.tenant, t.user, t.token_version, code, &from).await?;
+            Some(st.kernel.second_step(t.tenant, t.user, t.token_version, code, &from).await?.1)
         }
-    }
-    st.kernel.stepped_up(&StepUp { tenant: ctx.tenant, user: ctx.user, session: device, keys }, "password", &from).await?;
+    };
+    let ways: Vec<&str> = std::iter::once("password").chain(given).collect();
+    st.kernel.stepped_up_by(&StepUp { tenant: ctx.tenant, user: ctx.user, session: device, keys }, &ways, &from).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1317,4 +1332,19 @@ pub fn routes() -> Routes {
         .add("/password", post(change_password))
         .add("/api_keys", get(list_keys).post(create_key))
         .add("/api_keys/{id}", delete(revoke_key).patch(update_key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::steps;
+    use serde_json::{Map, Value, json};
+
+    #[test]
+    fn a_second_step_adds_to_the_first() {
+        let with = |step: Value| json!({"mfa": true, "step": step}).as_object().cloned().unwrap_or_default();
+        assert_eq!(steps(&with(json!("password")), "authenticator"), ["password", "authenticator"]);
+        assert_eq!(steps(&with(json!("code")), "recovery_code"), ["code", "recovery_code"]);
+        assert_eq!(steps(&with(json!("passkey")), "authenticator"), ["authenticator"], "a first step no ticket can name is not said");
+        assert_eq!(steps(&Map::new(), "authenticator"), ["authenticator"], "a ticket from a build that did not name it: only what is known");
+    }
 }
