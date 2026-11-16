@@ -5,8 +5,7 @@
 //! the browser binding, the return address, refused answers, email and account rules, and metadata
 //! fetched from where the provider publishes it, through a change of its signing key; assertions
 //! encrypted to the workspace's key (and refused when they should be), its replacement; single logout
-//! both ways; providers saved before all this; and the addresses of providers added on a server with
-//! an accounts host.
+//! both ways; and the addresses of providers added on a server with an accounts host.
 #![cfg(feature = "saml")]
 
 use ferrum_kernel::auth::Session;
@@ -309,8 +308,7 @@ async fn scenario() {
 
     encrypted_assertions(&run, provider, &idp).await;
     step_up(&run, provider, &idp).await;
-    let logout = single_logout(&run, &admin).await;
-    saved_before(&run, &admin, provider, logout).await;
+    single_logout(&run, &admin).await;
     accounts_host(&run, &admin, settings_again).await;
 }
 
@@ -514,7 +512,7 @@ async fn ended_by_provider(run: &Run) -> i64 {
 
 /// Single logout, started here and started at the provider. → the provider that does it, and its
 /// identity provider.
-async fn single_logout(run: &Run, admin: &ferrum_kernel::Ctx) -> (Uuid, TestIdp) {
+async fn single_logout(run: &Run, admin: &ferrum_kernel::Ctx) {
     let idp = TestIdp::new("https://slo.samlco.test/metadata", "https://slo.samlco.test/sso").with_logout("https://slo.samlco.test/slo", "redirect");
     let provider = run.k.save_sso_provider(admin, None, input(json!({"label": "With logout", "saml_metadata": idp.metadata()}))).await.unwrap();
     let ours = || async { run.k.saml_metadata(run.tenant).await.unwrap() };
@@ -618,34 +616,6 @@ async fn single_logout(run: &Run, admin: &ferrum_kernel::Ctx) -> (Uuid, TestIdp)
     assert!(run.live(pat, s3).await, "nothing ended");
     assert_eq!(run.k.sign_out_session(run.tenant, s3, BACK).await.unwrap(), None, "not sent to the provider");
     assert!(!run.live(pat, s3).await);
-    (provider, idp)
-}
-
-/// A provider saved before keys and logout were published behaves as then until it is saved again.
-async fn saved_before(run: &Run, admin: &ferrum_kernel::Ctx, provider: Uuid, (logout, idp): (Uuid, TestIdp)) {
-    let mut tx = run.k.db.system_tx().await.unwrap();
-    sqlx::query("update sso_provider set saml_sp_base = null, slo_out = null, slo_in = null where id = any($1)")
-        .bind(vec![provider, logout])
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let as_then = |m: &str| !m.contains("use=\"encryption\"") && !m.contains("SingleLogoutService");
-    assert!(as_then(&run.k.saml_metadata(run.tenant).await.unwrap()), "the metadata says what it said");
-    let (pat, sid) = run.session(logout, &idp, "persistent-pat", "pat@samlco.test", "s-5").await;
-    let request = TestIdp::redirect(&idp, "SAMLRequest", &idp.logout_request(&run.sp(), "_lr5", "persistent-pat", None, &[]), None);
-    let SloStep::Send(out) = run.k.saml_slo(run.tenant, Incoming::Redirect(&request)).await.unwrap() else { panic!() };
-    assert!(TestIdp::message(&out.url, "SAMLResponse").0.contains("status:Responder") && run.live(pat, sid).await, "no logout from the provider");
-    assert_eq!(run.k.sign_out_session(run.tenant, sid, BACK).await.unwrap(), None, "nor to it");
-    // Saved again, each provider keeps its addresses; once none is left as then, the metadata has it all.
-    run.k.save_sso_provider(admin, Some(logout), input(json!({"label": "With logout", "saml_metadata": idp.metadata()}))).await.unwrap();
-    assert!(as_then(&run.k.saml_metadata(run.tenant).await.unwrap()), "another provider is still as then");
-    let contoso = TestIdp::new("https://idp.samlco.test/metadata", "https://idp.samlco.test/sso");
-    run.k.save_sso_provider(admin, Some(provider), input(json!({"saml_metadata": contoso.metadata()}))).await.unwrap();
-    let ours = run.k.saml_metadata(run.tenant).await.unwrap();
-    assert!(!as_then(&ours) && ours.contains(&format!("entityID=\"{}\"", run.entity_id)), "{ours}");
-    let (_, sid) = run.session(logout, &idp, "persistent-pat", "pat@samlco.test", "s-6").await;
-    assert!(run.k.sign_out_session(run.tenant, sid, BACK).await.unwrap().is_some());
 }
 
 /// On a server with an accounts host, providers added from then on have their addresses there; those

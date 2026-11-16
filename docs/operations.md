@@ -4690,10 +4690,7 @@ sign-in page: the bar's sign-out (and the portal's) follows the address `POST /a
 ([api](api.md)); a client that does not is signed out here only. Sessions a provider's logout ends stop
 on every replica at once, as after a step-up. A signed logout request from the provider ends the sessions its sign-ins opened for
 that person (those it names, or all of theirs through that provider), recorded as ended by the provider,
-and is answered, signed. A provider saved before this (and not saved since) has no single logout, and
-while one is left the metadata under `PUBLIC_URL` publishes neither the encryption key nor the logout
-service, as before: a provider that reads it again (AD FS, Shibboleth) would otherwise start encrypting
-or sending logout requests unasked. Save each SAML provider once to turn them on.
+and is answered, signed.
 
 Not supported: sign-ins the provider starts unasked, the artifact binding, logout by the back channel
 (SOAP), NameIDs encrypted in logout requests, and ECDSA signatures on HTTP-Redirect logout messages.
