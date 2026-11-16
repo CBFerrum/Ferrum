@@ -282,7 +282,8 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   Ferrum keeps only its SHA-256 digest and compares in constant time.
 * The issuer is the address of the workspace the request came to; only addresses that serve one workspace's shell are
   issuers, and a code, an access token and a user-info are good only at the address they were asked at. A sandbox,
-  a forwarding address, a shared host, the accounts and hooks hosts answer nothing.
+  a forwarding address, a shared host, the accounts and hooks hosts answer nothing. The stored setting `openid` turns
+  all of it off at once.
 * ID tokens are signed `EdDSA` by a key pair of the workspace's that the platform's vault made and holds (the private
   half never leaves it; `sign_at` names the version in the token); a rotation keeps the version before published for
   a day. The real Forgejo 17.0.1 does not check the signature at all (it trusts the TLS answer of the token endpoint:

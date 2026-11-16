@@ -2190,7 +2190,9 @@ own, an operator's address, or, without a base domain, the installation's one wo
 (`FERRUM_DEFAULT_WORKSPACE`). Every such address is an issuer of its own; a code is good only at the one it was asked
 at. Nothing below answers (`404`) on a host shared by several workspaces, a forwarding address, an address in its
 leaving period, the accounts or hooks host, a portal or a site, or a sandbox (nothing a sandbox does reaches outside, and
-a companion is outside).
+a companion is outside). With the stored setting `openid` off
+([operations](operations.md#programs-beside-ferrum-signing-in-through-it)), nothing below answers either, and the
+authorization and token endpoints answer a companion as a client they do not know.
 
 | Route | What it does |
 |---|---|

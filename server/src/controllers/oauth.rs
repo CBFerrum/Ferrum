@@ -288,8 +288,11 @@ async fn signed_in(st: &crate::state::AppState, method: &Method, headers: &Heade
 /// (anyone else signs in first and comes back).
 async fn consent(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query(req): Query<ConsentReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    // A program beside Ferrum that an installed app declared (oidc.rs): no consent page, and its own checks.
-    if let Some(client) = st.kernel.companion_client(&req.client_id).await? {
+    // A program beside Ferrum that an installed app declared (oidc.rs): no consent page, and its own checks. Turned off
+    // (`openid`), it is a client this endpoint does not know.
+    if super::oidc::on(&st)
+        && let Some(client) = st.kernel.companion_client(&req.client_id).await?
+    {
         return super::oidc::authorize(&st, &headers, &uri, client).await;
     }
     let Some(ctx) = signed_in(&st, &Method::GET, &headers).await? else {

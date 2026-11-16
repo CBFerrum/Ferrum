@@ -447,6 +447,8 @@ Ferrum is an OpenID Connect provider for the programs installed apps run beside 
   no workspace's, and answers nothing. A forwarding address serves nothing, and answers nothing. A sandbox answers
   nothing either, rather than being an issuer of its own: nothing a sandbox does reaches outside (`Kernel::outward`),
   and a companion is outside; its companions' clients are not copied, so none could be given a code there.
+- **An operator can turn it off**: the stored setting `openid`, at once; off, nothing of it answers and API clients'
+  OAuth is as it was. The doctor says which, and how many clients there are.
 - **A companion's client is its app's**, declared in code per workspace (`Vault::companion`), its secret the app's own
   managed secret; there is no consent page. The app names the right that lets a person in and the claims that place
   them. Dynamic registration stays as it was and never gives `openid`.

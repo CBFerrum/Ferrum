@@ -130,6 +130,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `app_allow_unsigned` | `FERRUM_APP_ALLOW_UNSIGNED` | bool | `false` | installation, next start | `true` accepts uploads no trusted key signed (development default); production default `false`. |
 | `dev_ui` | `FERRUM_DEV_UI` | bool | `false` | installation, next start | Development only: administrators may serve an app's pages from its interface's Vite server on the same machine (`ferrum-app dev --ui`, [Apps with interfaces of their own](#apps-with-interfaces-of-their-own)). The server warns at start when it is on. Never on a server people use. |
 | `session_days` | `FERRUM_SESSION_DAYS` | int | `14` | installation, at once | How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own that people and administrators sign out one by one. |
+| `openid` | `FERRUM_OPENID` | bool | `true` | installation, at once | `false`: no program an installed app runs beside Ferrum (the forge) signs anyone in through it. The discovery document, the keys, the user-info and those programs' way through the authorization and token endpoints answer as if they were not there (`404`, or the endpoint's answer to a client it does not know); API clients' OAuth goes on as before. On by default, which changes nothing by itself: a program signs anyone in only where an installed app declared it. The doctor says which it is, and how many programs' clients there are. |
 | `office_origin` | `FERRUM_OFFICE_ORIGIN` | text |  | installation, at once | With online editing: the editor server as browsers reach it (`https://office.example.com`), when that is not `FERRUM_OFFICE_URL`: Drive's pages frame it and post to it, and their Content-Security-Policy names it (the Compose stack sets it from `OFFICE_PUBLIC_URL`, the Helm chart from `office.host`). |
 | `ops_telemetry_days` | `FERRUM_OPS_TELEMETRY_DAYS` | int | `30` | installation, at once | Days of device measurements kept (default 30). Rollups outlive them. |
 | `plans` | `FERRUM_PLANS` | json |  | installation, at once | The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up). |
@@ -4623,10 +4624,14 @@ let in, `companion_code_replayed` for a code used twice), and each declaration, 
 workspace's (administration, `Companion`). The vault records each signature (`sign` of the platform's `oidc.signing`,
 summed past a hundred an hour) and the client's secret as the app's (`adopt`, `manage`, `reveal`).
 
-**Turning it off.** For one program: remove its client, and switch the program off in its app (Cloud's own setting), or
-the app declares it again. There is no switch for the whole installation: discovery and the keys answer on every
-workspace's address, and nobody signs in anywhere until an app declares a program there. The signing key is rotated with the task above; rotate
-twice within a day only if the key before must stop verifying at once.
+**Turning it off.** For the whole installation: the stored setting `openid` (`false`; it applies at once, on every
+replica). Off, the discovery document, the keys, the user-info and the programs' way through the authorization and token
+endpoints answer as if they were not there (`404`, or the endpoint's answer to a client it does not know), and API
+clients' OAuth goes on as before; the clients, keys and secrets are kept, and on again, everything answers as it did.
+On (the default) changes nothing by itself: nobody signs in anywhere until an app declares a program there. `ferrum
+doctor` says which it is and how many programs' clients there are, in how many workspaces. For one program: remove its
+client, and switch the program off in its app (Cloud's own setting), or the app declares it again. The signing key is
+rotated with the task above; rotate twice within a day only if the key before must stop verifying at once.
 
 **Limits.** The authorization endpoint counts each request against the person's address, and the token endpoint and
 the user-info each failure against the caller's, as failed sign-ins are (20 a minute, shared by the replicas); a

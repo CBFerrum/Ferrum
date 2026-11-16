@@ -400,6 +400,43 @@ async fn scenario() {
     let signed = redeem(&r, ACME, &client.client_id, &secret, &c).await.json();
     assert_eq!(claims(signed["id_token"].as_str().unwrap())["amr"], json!(["password", "authenticator"]));
 
+    // ── turned off (`openid`, at once): nothing of this answers, and API clients go on as before; on again, it does ──
+    let set = |value: &'static str| {
+        let st = st.clone();
+        async move {
+            let change = ferrum_server::settings::Change { name: "openid".into(), pool: None, value: Some(value.into()) };
+            ferrum_server::settings::change(&st, &[change], "test").await.unwrap();
+            ferrum_server::settings::refresh(&st).await;
+        }
+    };
+    let held = redeem(&r, ACME, &client.client_id, &secret, &code(&r, ACME, &two_cookie, &client.client_id, "").await).await.json();
+    let held = held["access_token"].as_str().unwrap().to_string();
+    let doctor = ferrum_server::doctor::openid_findings(&st).await.unwrap();
+    assert!(doctor[0].detail.contains("openid true") && doctor[0].detail.contains("2 program clients in 2 workspaces"), "{:?}", doctor[0].detail);
+    set("false").await;
+    let doctor = ferrum_server::doctor::openid_findings(&st).await.unwrap();
+    assert!(doctor[0].detail.contains("turned off") && doctor[0].detail.contains("from the database"), "{:?}", doctor[0].detail);
+    for path in ["/.well-known/openid-configuration", "/oauth/jwks"] {
+        assert_eq!(call(&r, Method::GET, ACME, path, &[], None).await.status, StatusCode::NOT_FOUND, "{path}");
+    }
+    assert_eq!(call(&r, Method::GET, ACME, "/oauth/userinfo", &[("authorization", &format!("Bearer {held}"))], None).await.status, StatusCode::NOT_FOUND);
+    let res = call(&r, Method::GET, ACME, &authorize_path(&client.client_id, ""), &[("cookie", &two_cookie)], None).await;
+    assert!(res.status == StatusCode::BAD_REQUEST && res.body.contains("not registered"), "a client it does not know: {}", res.status);
+    let refused = redeem(&r, ACME, &client.client_id, &secret, "any").await;
+    assert_eq!((refused.status, refused.json()["error"].clone()), (StatusCode::UNAUTHORIZED, json!("invalid_client")), "{}", refused.body);
+    let api = k.oauth_register(Some("it".into()), vec!["http://127.0.0.1:9/cb".into()]).await.unwrap();
+    let api_code = k.oauth_issue_code(&two_ctx, &api.id, "http://127.0.0.1:9/cb", CHALLENGE, "S256").await.unwrap();
+    let form = format!(
+        "grant_type=authorization_code&code={api_code}&redirect_uri={}&code_verifier={VERIFIER}&client_id={}",
+        urlencode("http://127.0.0.1:9/cb"),
+        api.id
+    );
+    let api_token = call(&r, Method::POST, ACME, "/oauth/token", &[("content-type", "application/x-www-form-urlencoded")], Some(form)).await;
+    assert!(api_token.status == StatusCode::OK && api_token.json()["access_token"].is_string(), "an API client as before: {}", api_token.body);
+    set("true").await;
+    assert_eq!(call(&r, Method::GET, ACME, "/.well-known/openid-configuration", &[], None).await.status, StatusCode::OK);
+    assert_eq!(call(&r, Method::GET, ACME, "/oauth/userinfo", &[("authorization", &format!("Bearer {held}"))], None).await.status, StatusCode::OK);
+
     // ── failures at the token endpoint are counted like failed sign-ins ──
     let c = code(&r, ACME, &cookie(&r, ACME, "acme", "admin@acme.test").await, &client.client_id, "").await;
     let mut last = StatusCode::OK;

@@ -27,6 +27,9 @@ use uuid::Uuid;
 /// period, a forwarding address (it serves nothing), a shared host (no workspace's own), the accounts or hooks host, a
 /// portal or a site, or a sandbox (nothing it does reaches outside, and a companion is outside).
 pub(crate) async fn issuer(st: &AppState, headers: &HeaderMap) -> ApiResult<Option<(Uuid, String)>> {
+    if !on(st) {
+        return Ok(None);
+    }
     let Place::Workspace(tenant) = st.shell.place(headers).await? else { return Ok(None) };
     if st.shell.leaving(headers).await?.is_some() || st.shell.workspace(tenant).await?.sandbox.is_some() {
         return Ok(None);
@@ -35,6 +38,13 @@ pub(crate) async fn issuer(st: &AppState, headers: &HeaderMap) -> ApiResult<Opti
     let host = request_host(headers).and_then(|h| h.split(':').next()).map(str::to_ascii_lowercase);
     let Some(host) = host.filter(|h| h == "localhost" || ferrum_kernel::shell::normalize_host(h).as_deref() == Some(h.as_str())) else { return Ok(None) };
     Ok(st.shell.origin_of(&host, headers).map(|origin| (tenant, origin)))
+}
+
+/// Whether programs beside Ferrum sign anyone in through it (the setting `openid`, which applies at once): off, every
+/// route here answers as if it were not there, and the authorization and token endpoints as for a client they do not
+/// know (oauth.rs asks this first).
+pub(crate) fn on(st: &AppState) -> bool {
+    st.live_settings.now().snapshot.get("openid").1.is_none_or(|v| !v.trim().eq_ignore_ascii_case("false"))
 }
 
 fn not_here() -> Response {
@@ -267,6 +277,9 @@ fn basic(headers: &HeaderMap) -> Option<(String, String)> {
 /// (HTTP Basic, or `client_secret` in the form) and redeems its code once; a wrong one of either is answered as the
 /// specification says, the same whatever was wrong, and counted against the caller's address.
 pub(crate) async fn token(st: &AppState, headers: &HeaderMap, form: &super::oauth::TokenReq) -> Option<Response> {
+    if !on(st) {
+        return None;
+    }
     let (client_id, secret) = match basic(headers) {
         Some((id, secret)) => (id, Some(secret)),
         None => (form.client_id.clone()?, form.client_secret.clone()),

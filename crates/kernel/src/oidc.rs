@@ -882,6 +882,14 @@ impl Kernel {
         Ok(Overview { companions, keys })
     }
 
+    /// How many companions' clients there are, and in how many workspaces (the doctor).
+    pub async fn openid_clients(&self) -> Result<(i64, i64)> {
+        let mut tx = self.db.system_tx().await?;
+        let n = sqlx::query_as("select count(*), count(distinct tenant_id) from oauth_companion").fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(n)
+    }
+
     /// An operator takes a companion's client away (`ferrum task openid tenant:… remove:<client_id>`): every sign-in
     /// through it ends at once, and the app's next declaration makes it again. Recorded. Whether there was one.
     pub async fn openid_remove(&self, tenant: Uuid, client_id: &str) -> Result<bool> {
