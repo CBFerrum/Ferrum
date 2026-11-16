@@ -24,10 +24,19 @@ pub trait Companion: Send + Sync {
     /// The files it writes, by name: what `ferrum task services` lists, and exactly what a render returns.
     fn files(&self) -> &'static [&'static str];
 
-    /// The secrets of its owner that the vault makes for it at its first render, at the installation's scope
-    /// ([`Rendering::made`]): `ferrum task vault_rotate level:service` makes each of them anew.
+    /// The secrets of its owner the vault keeps for it, at the installation's scope: made at its first render
+    /// ([`Rendering::made`]), or kept from what was there ([`Rendering::keep`]); `ferrum task vault_rotate level:service`
+    /// makes each of them anew.
     fn made(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    /// Why this installation may not have the service rendered, in plain words: asked before every render and every
+    /// rotation, which are then refused with nothing written and nothing made, and by `ferrum task services`, which says
+    /// it. `None` (the default): it may.
+    async fn refusal(&self, r: &Rendering<'_>) -> Result<Option<String>> {
+        let _ = r;
+        Ok(None)
     }
 
     /// Whether the files' group reads them too (mode 0640), for a program that runs as another user of that group;
@@ -125,6 +134,17 @@ impl Rendering<'_> {
         self.vault.make_for(self.kernel, name, rule, self.service).await.map(|_| ())
     }
 
+    /// Keeps `name`, one of the secrets the service declares, which its owner holds already (something else made it, and
+    /// the vault took it in): marked as its owner's to manage from now on and given `rule` (its value as it is), once
+    /// however many render at once, so that `vault_rotate level:service` rotates it under that rule. Nothing is made:
+    /// refused where there is none.
+    pub async fn keep(&self, name: &str, rule: Rule) -> Result<()> {
+        if !self.made.contains(&name) {
+            return Err(Error::Invalid(format!("the service {} does not declare that the vault keeps {name} for it", self.service)));
+        }
+        self.vault.keep_for(self.kernel, name, rule, self.service).await.map(|_| ())
+    }
+
     /// The current value of its owner's secret `name` of the installation, for a file: only where the secret's rule lets
     /// its owner read it. On the record as `render`, naming the service; never the value.
     pub async fn secret(&self, name: &str) -> Result<Zeroizing<Vec<u8>>> {
@@ -161,6 +181,9 @@ pub struct Declared {
     pub owner: String,
     pub files: Vec<String>,
     pub made: Vec<String>,
+    /// Why it cannot be rendered here ([`Companion::refusal`]; the vault closed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
 }
 
 /// A render's files, to be written by [`write`].
@@ -216,46 +239,74 @@ pub(crate) fn declaration_problems(name: &str, c: &dyn Companion) -> Vec<String>
 }
 
 impl Kernel {
-    /// Every service declared on this server, with its owner, its files and the secrets the vault makes for it.
-    pub fn companions(&self) -> Vec<Declared> {
-        self.hooks
-            .companions()
-            .map(|(name, owner, c)| Declared {
+    /// Every service declared on this server, with its owner, its files, the secrets the vault keeps for it, and why it
+    /// cannot be rendered here, if it cannot (the settings as `settings` resolves them).
+    pub async fn companions(&self, settings: &(dyn Fn(&str) -> Option<String> + Sync)) -> Vec<Declared> {
+        let mut out = Vec::new();
+        for (name, owner, c) in self.hooks.companions() {
+            let refused = match self.rendering(name, owner, c, settings) {
+                Ok(r) => c.refusal(&r).await.unwrap_or_else(|e| Some(e.to_string())),
+                Err(e) => Some(e.to_string()),
+            };
+            out.push(Declared {
                 name: name.to_string(),
                 owner: owner.to_string(),
                 files: c.files().iter().map(|f| f.to_string()).collect(),
                 made: c.made().iter().map(|m| m.to_string()).collect(),
-            })
-            .collect()
+                refused,
+            });
+        }
+        out
+    }
+
+    /// What the service `name` is given as it renders: refused while the vault is closed.
+    fn rendering<'a>(
+        &'a self,
+        name: &'a str,
+        owner: &str,
+        companion: &dyn Companion,
+        settings: &'a (dyn Fn(&str) -> Option<String> + Sync),
+    ) -> Result<Rendering<'a>> {
+        self.db.vault.installation()?;
+        Ok(Rendering { kernel: self, vault: crate::vault::handle_of(self, owner)?, service: name, made: companion.made(), settings, given: Mutex::default() })
+    }
+
+    /// Refused, saying why, where the service says this installation may not have it rendered.
+    async fn may_render(&self, name: &str, companion: &dyn Companion, r: &Rendering<'_>) -> Result<()> {
+        match companion.refusal(r).await? {
+            Some(why) => Err(Error::Conflict(format!("the service {name} is not rendered here: {why}"))),
+            None => Ok(()),
+        }
     }
 
     /// The files of the service `name`, from the settings as `settings` resolves them and its owner's secrets: refused
-    /// while the vault is closed (whatever the service needs), and when the function fails, returns a file it did not
-    /// declare (or not one it did), or puts a secret's value in a file that says it holds none.
+    /// while the vault is closed (whatever the service needs), where the service says this installation may not have it
+    /// ([`Companion::refusal`], asked first), and when the function fails, returns a file it did not declare (or not one
+    /// it did), or puts a secret's value in a file that says it holds none.
     pub async fn render(&self, name: &str, settings: &(dyn Fn(&str) -> Option<String> + Sync)) -> Result<Rendered> {
         let (owner, companion) = self.companion(name)?;
-        self.db.vault.installation()?;
-        let r =
-            Rendering { kernel: self, vault: crate::vault::handle_of(self, owner)?, service: name, made: companion.made(), settings, given: Mutex::default() };
+        let r = self.rendering(name, owner, companion, settings)?;
+        self.may_render(name, companion, &r).await?;
         let files = companion.render(&r).await?;
         let given = r.given.into_inner().unwrap_or_else(|e| e.into_inner());
         checked(name, companion.files(), &files, &given)?;
         Ok(Rendered { service: name.to_string(), owner: owner.to_string(), group_reads: companion.group_reads(), files })
     }
 
-    /// New values of the secrets the vault made for the service `name` ([`Companion::made`]), for the operator (`ferrum
+    /// New values of the secrets the vault keeps for the service `name` ([`Companion::made`]), for the operator (`ferrum
     /// task vault_rotate level:service`): each of the same kind, its rule kept, so that the version before still verifies
-    /// and is given to the service's renders for the rule's overlap. Only secrets the vault made (their app manages them).
-    pub async fn rotate_companion(&self, name: &str) -> Result<Vec<Described>> {
+    /// and is given to the service's renders for the rule's overlap. Only secrets the vault keeps for a service (their app
+    /// manages them), and refused, changing nothing, where the service may not be rendered here.
+    pub async fn rotate_companion(&self, name: &str, settings: &(dyn Fn(&str) -> Option<String> + Sync)) -> Result<Vec<Described>> {
         let (owner, companion) = self.companion(name)?;
-        self.db.vault.installation()?;
+        let r = self.rendering(name, owner, companion, settings)?;
+        self.may_render(name, companion, &r).await?;
         if companion.made().is_empty() {
-            return Err(Error::Invalid(format!("the vault makes none of the service {name}'s secrets: nothing to rotate here")));
+            return Err(Error::Invalid(format!("the vault keeps none of the service {name}'s secrets: nothing to rotate here")));
         }
-        let v = crate::vault::handle_of(self, owner)?;
         let mut out = Vec::new();
         for secret in companion.made() {
-            out.push(v.rotate_made(self, secret, name).await?);
+            out.push(r.vault.rotate_made(self, secret, name).await?);
         }
         Ok(out)
     }

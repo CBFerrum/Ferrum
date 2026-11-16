@@ -934,7 +934,89 @@ impl Vault {
 // Services: the programs beside the server whose files their owners render (crate::companion). A render is given its
 // owner's secrets of the installation's scope for those files, recorded as `render` with the service's name.
 
+/// How the current version of a secret came to be, as the installation's record of its vault says ([`Vault::origin`]):
+/// never its value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    /// What wrote it: `adopt` (copied from what something else made), `make` (made for a service), `set` or `rotate`.
+    pub verb: String,
+    /// What acted when no person did: `environment`, `operator`, the program that handed it over (`object store`), …
+    pub by: Option<String>,
+    /// The service it was made or rotated for.
+    pub service: Option<String>,
+}
+
 impl Vault {
+    /// How the current version of `name`, a secret of this handle's owner in the installation's scope, was written, as
+    /// the installation's record of its vault says; `None` where there is no current version, or no record of it.
+    pub async fn origin(&self, k: &Kernel, name: &str) -> Result<Option<Origin>> {
+        let owner = self.bound(k)?;
+        check_name(name)?;
+        let mut tx = k.db.vault_tx(None).await?;
+        let rows = rows(&mut tx, Scope::Installation, owner, name).await?;
+        let Some(current) = rows.iter().find(|r| r.valid_until.is_none()) else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let found: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "select action, details->>'by', details->>'service' from vault.event where owner = $1 and name = $2 \
+             and action in ('adopt', 'make', 'set', 'rotate') and details->>'version' = $3 order by id desc limit 1",
+        )
+        .bind(owner)
+        .bind(name)
+        .bind(current.version.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(found.map(|(verb, by, service)| Origin { verb, by, service }))
+    }
+
+    /// Marks `name`, a secret of this handle's owner at the installation's scope that is there already (something other
+    /// than the vault made it), as its owner's to manage, kept for the service `service` under `rule` (its value and
+    /// version as they are): from then on people's routes leave it to the owner, and `vault_rotate level:service` rotates
+    /// it under that rule. Under the secret's lock, so that renders at once mark it once; recorded as `rule` and `manage`,
+    /// naming the service, when it marks it. Nothing is made: not found where there is no current version. Whether it
+    /// marked it.
+    pub(crate) async fn keep_for(&self, k: &Kernel, name: &str, rule: Rule, service: &str) -> Result<bool> {
+        let owner = self.bound(k)?;
+        check_name(name)?;
+        rule.check()?;
+        let rule = serde_json::to_value(&rule).map_err(Error::internal)?;
+        let scope = Scope::Installation;
+        let request = crate::db::Trace::operation().unwrap_or_default();
+        let who = Who { actor: None, request: &request, by: None, service: Some(service) };
+        with_retry(|| async {
+            let mut tx = k.db.vault_tx(None).await?;
+            sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!("ferrum.vault.secret {}/{owner}/{name}", scope.id()))
+                .execute(&mut *tx)
+                .await?;
+            let version = current(&rows(&mut tx, scope, owner, name).await?, name)?.version;
+            let marked = sqlx::query("insert into vault.managed (scope, owner, name) values ($1, $2, $3) on conflict do nothing")
+                .bind(scope.id())
+                .bind(owner)
+                .bind(name)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected()
+                > 0;
+            if marked {
+                sqlx::query("update vault.secret set rule = $4 where scope = $1 and owner = $2 and name = $3 and valid_until is null")
+                    .bind(scope.id())
+                    .bind(owner)
+                    .bind(name)
+                    .bind(&rule)
+                    .execute(&mut *tx)
+                    .await?;
+                audited(&mut tx, scope, owner, name, "rule", &who, version, false).await?;
+                audited(&mut tx, scope, owner, name, "manage", &who, version, false).await?;
+            }
+            tx.commit().await?;
+            Ok(marked)
+        })
+        .await
+    }
+
     /// Makes `name` of this handle's owner at the installation's scope for the service `service`, where it has none: a
     /// random value of 32 bytes as text (43 characters of base64url) under `rule`, marked as its owner's to manage, in one
     /// transaction under the secret's lock, so that renders and replicas at once make one. One a person set there (not so
@@ -963,7 +1045,9 @@ impl Vault {
         let new = match kind {
             None => return Err(Error::NotFound(format!("{name} of {owner} (the service {service} has not been rendered yet)"))),
             Some(_) if !ours => {
-                return Err(Error::Conflict(format!("{name} is not a secret the vault made for the service {service}: change it where it was set")));
+                return Err(Error::Conflict(format!(
+                    "{name} is not a secret the vault keeps for the service {service}: render the service first, or change it where it was set"
+                )));
             }
             Some(Kind::Value) => New::Random(32),
             Some(Kind::Ed25519) => New::Ed25519,

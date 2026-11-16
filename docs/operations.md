@@ -1044,16 +1044,16 @@ keys with its vault; a database made anew beside a store that already has keys f
 read them from the store (`docker compose exec store cat /data/ferrum/s3.json`) and give them once with `ferrum task
 secret_set`. To use a store of your own instead, set its address and keys and `STORE_REPLICAS=0`.
 
-Its keys can come from the vault instead (`-f deploy/store-files.yml`; *Files for the programs beside the server*): the
-vault makes them at the first render, a one-shot service renders them into a file before each start of the store
-(`STORE_S3_CONFIG` for `deploy/store/start.sh`), and nothing is handed over. The store keeps its data and its own
-encryption key. An installation whose store already handed its keys over removes them from the vault first
-(`ferrum task secret_remove name:aws_access_key_id`, then `name:aws_secret_access_key`): the vault makes new ones only
-where there are none, and the store lets in the new ones only. The server then sets the bucket up itself
-(`FERRUM_S3_SET_UP_BUCKET=true` in that file), as the handoff asked it to. Render `object-store` for the bundled store
-only: its keys are the server's own (`aws_access_key_id`, `aws_secret_access_key`), so on an installation whose store
-lets the server in by the machine's identity, keys made by a render would be what the server signs with at its next
-start. Keys an operator set for a store of the installation's own are never written out: the render refuses them.
+Once it has handed its keys over, the store can take them back from the vault at each start, and the vault rotates
+them from then on (`-f deploy/store-files.yml`; *Files for the programs beside the server*): a one-shot service renders
+the keys the server keeps into a file before each start of the store (`STORE_S3_CONFIG` for `deploy/store/start.sh`).
+The first render keeps the handed-over keys for the service, as they are: the store keeps its data, its keys and its
+encryption key. A new installation starts once without that file, so that the handoff happens. The render, and a
+rotation through it, are refused, writing and making nothing, on an installation whose store is not the bundled one:
+where the vault holds no keys the bundled store handed over (the server signs with the machine's identity, or a store
+of the installation's own has keys given elsewhere), or where the keys there now were set by an operator (`secret_set`,
+the environment). `ferrum task services` says so. Without the refusal, keys made by a render would be what the server
+signs with at its next start, and its real store would never have heard of them.
 
 An installation from before this release keeps its `files` volume: with the new Compose file it starts with the store
 set and files moving, reads both, and moves its files with `docker compose exec ferrum ferrum task files_move`. With
@@ -1714,7 +1714,7 @@ owners stops the server, naming both.
 
 | Task | What it does |
 |---|---|
-| `ferrum task services [format:json]` | the services this build declares: each one's owner, its files and the secrets the vault makes for it; never a value |
+| `ferrum task services [format:json]` | the services this build declares: each one's owner, its files and the secrets the vault keeps for it, and why one cannot be rendered here; never a value |
 | `ferrum task render service:<name> to:<dir>` | writes the service's files into `<dir>`, from the database and the vault; prints the files' names |
 | `ferrum task vault_rotate level:service service:<name>` | new values of the secrets the vault made for the service, never shown; the ones before stay for their overlap |
 
@@ -1723,6 +1723,9 @@ release, else the database's), asks the service for its files, then writes them.
 `DATABASE_URL` and nothing else: that is its one input. With the vault closed, a setting the service needs and nobody
 set, or a secret it may not have, it refuses, says why, and writes nothing.
 
+- **Only where it belongs.** A service may refuse an installation it does not belong to, and then a render and a
+  rotation through it are refused, writing and making nothing: the bundled store's (below) is refused on any
+  installation whose store is another one.
 - **The first render makes the shared secrets.** A secret the service declares that the vault does not hold yet is made
   then: 32 random bytes, as 43 characters of base64url, in the installation's scope, owned by the service's owner. Renders
   and replicas at once make one (the secret's lock). It is marked as its owner's to manage: the Secrets screen and the
@@ -1761,7 +1764,7 @@ its old way by default, and a value switches it:
 
 | Program | Its service (owner) | Switched by | What it is given |
 |---|---|---|---|
-| The store Compose bundles | `object-store` (the platform) | `-f deploy/store-files.yml` | `s3.json`: its access keys, both pairs while an overlap of a day lasts |
+| The store Compose bundles | `object-store` (the platform) | `-f deploy/store-files.yml`, once it has handed its keys over | `s3.json`: the access keys it handed over, both pairs while an overlap of a day lasts |
 | Metrics' engine | `metrics-engine` (Metrics, once its release declares it) | the chart's `metricsEngine.files: rendered`, implied by `environment: minimal` once the image declares the service; `deploy/k8s`: the component `metrics-engine-files` after `metrics-engine` | `token`: one token a line, the current first |
 
 The meeting server and the mail server switch when Comms declares their services (docs/plan/stateless.md says what it

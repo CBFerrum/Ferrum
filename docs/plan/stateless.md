@@ -522,8 +522,15 @@ docs/app-contract.md, "Declaring a service").
   failed) and the next render replaces; atomic as a whole would take a link swapped in their place.
 - **The platform's service** is the store Compose bundles (`object-store`, server/src/companions.rs): SeaweedFS's
   `s3.json` with the platform's `aws_access_key_id` and `aws_secret_access_key`, which the server signs with; both pairs
-  while an overlap of a day lasts. `deploy/store-files.yml` and `STORE_S3_CONFIG` switch the store to it; the handoff
-  stays the default.
+  while an overlap of a day lasts. It renders only the keys that store handed over, and never makes any: a service may
+  refuse an installation (`Companion::refusal`, asked before a render and a rotation, said by `ferrum task services`).
+  What tells the bundled store's keys is the vault's record of how their current versions were written (`Vault::origin`):
+  `adopt` by `object store` (the handoff, written by nothing else) or a rotation for the service since. No keys (the
+  machine's identity, or a store whose keys come from elsewhere), or keys an operator set (`secret_set`, the
+  environment): refused, nothing written, nothing made. The first render keeps the handed-over keys for the service as
+  they are (`Rendering::keep`: marked once under the secret's lock, given the service's rule), so the store keeps its
+  keys. `deploy/store-files.yml` and `STORE_S3_CONFIG` switch the store to it once the handoff has happened; the handoff
+  stays the default, and a new installation starts once without the file.
 - **Deploy.** Chart and `deploy/k8s`: Metrics' engine, the one bundled program in the release's namespace that takes a
   secret of ours (`metricsEngine.files`, the component `metrics-engine-files`); `environment: minimal` implies it only
   for the services listed in `ferrum.declaredServices`, empty today. Literally, minimal would have stopped every minimal
@@ -532,12 +539,14 @@ docs/app-contract.md, "Declaring a service").
   database's address, and its proof key is its own. The browser editors and the PDF renderer take no secret of ours.
 - **The proof.** `crates/kernel/tests/companions_it.rs`: a service of settings, a meeting server declared in the test as
   Comms is to declare it, two replicas rendering at once (one `make`), the refusals, the cap, a rotation, a closed vault,
-  a clash; LiveKit 1.13.11 started on the written file and called with tokens the vault signs, both versions let in
-  during the overlap and the one before refused after it. `scripts/companions_rehearsal.sh` (`scripts/local_ci.sh
-  companions`): the real binary with `DATABASE_URL` alone renders `object-store` twice at once (one key pair), SeaweedFS
-  starts on the file through `deploy/store/start.sh`, servers keep and read files through it, a rotation's overlap lets
-  the server from before and one started after in, its end leaves the first out, and a vault that does not open writes
-  nothing; no key in any output or log.
+  a clash, and a handed-over key (refused where nobody or a person gave it, kept once by two replicas, rotated);
+  LiveKit 1.13.11 started on the written file and called with tokens the vault signs, both versions let in during the
+  overlap and the one before refused after it. `scripts/companions_rehearsal.sh` (`scripts/local_ci.sh companions`):
+  the real binary with `DATABASE_URL` alone refuses `object-store` where the vault holds no store keys and where an
+  operator set them (nothing written, nothing made, the keys as they were); after the bundled store's handoff it renders
+  them twice at once (kept once, the keys the store made), SeaweedFS starts on the file through `deploy/store/start.sh`,
+  servers keep and read files through it, a rotation's overlap lets the server from before and one started after in,
+  its end leaves the first out, and a vault that does not open writes nothing; no key in any output or log.
 - **Not run here**: the chart, `deploy/k8s` and Compose (rendered and compared only); the engine's init container; the
   Dockerfile's new directory, which the one-shot's volume takes its owner from.
 

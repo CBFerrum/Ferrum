@@ -1,10 +1,10 @@
 # The bundled store's keys from the server's vault (docs/operations.md, "Files for the programs beside the server"): the
-# vault makes them at the first render, nobody types them, and a one-shot service renders them before each start of the
-# store into a volume the two share, in place of the keys the store makes itself and hands over at its first start.
+# keys the store made and handed over at its first start, which the server keeps in its vault, rendered back by a
+# one-shot service before each start of the store into a volume the two share, and rotated by the vault from then on.
+# Add this file once the stack has started without it at least once (the handoff): until the vault holds the keys the
+# store handed over, the render is refused and the store does not start. Then:
 #   docker compose -f deploy/docker-compose.yml -f deploy/store-files.yml --env-file deploy/.env up -d
-# An installation whose store already handed its keys over takes them out of the vault first (`ferrum task secret_remove
-# name:aws_access_key_id`, then `name:aws_secret_access_key`): the vault makes new ones only where there are none. The
-# store keeps its data and its encryption key; only who it lets in changes. Rotating the keys: docs/operations.md.
+# The store keeps its data, its keys and its encryption key. Rotating the keys: docs/operations.md.
 services:
   store-files:
     image: ${FERRUM_IMAGE:-ghcr.io/cbferrum/ferrum:latest}

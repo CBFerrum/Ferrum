@@ -1629,7 +1629,7 @@ impl Task for VaultRotate {
             }
             "service" => {
                 let service = vars.cli_arg("service").map_err(|_| Error::Message("say which: service:<name> (`ferrum task services` lists them)".into()))?;
-                for d in k.rotate_companion(service).await.map_err(refused)? {
+                for d in k.rotate_companion(service, &known_settings).await.map_err(refused)? {
                     let until = d.previous_until.map(|t| format!("; the version before is still given to its renders, and verifies, until {t}"));
                     println!("{}'s {} is at version {}{}", d.owner, d.name, d.version, until.unwrap_or_default());
                 }
@@ -1733,6 +1733,12 @@ impl Task for VaultTransfer {
     }
 }
 
+/// The settings the registry declares, by key or variable, as this process resolved them: what a service is given, so
+/// that it never reads past the registry into the environment.
+fn known_settings(name: &str) -> Option<String> {
+    crate::settings::find(name).and_then(|d| ferrum_kernel::env::var(&d.env))
+}
+
 /// `services [format:json]`: the services declared on this server (docs/operations.md, "Files for the programs beside
 /// the server"), each with its owner, its files and the secrets the vault makes for it. Names only.
 pub struct ListServices;
@@ -1743,14 +1749,17 @@ impl Task for ListServices {
         TaskInfo { name: "services".into(), detail: "The programs beside the server whose files `render` writes, with their owners and files".into() }
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
-        let all = kernel(ctx)?.companions();
+        let all = kernel(ctx)?.companions(&known_settings).await;
         if vars.cli_arg("format").is_ok_and(|f| f == "json") {
             println!("{}", serde_json::to_string_pretty(&all).map_err(refused)?);
             return Ok(());
         }
         for s in &all {
-            let made = if s.made.is_empty() { String::new() } else { format!("; the vault makes {}", s.made.join(", ")) };
+            let made = if s.made.is_empty() { String::new() } else { format!("; the vault keeps {}", s.made.join(", ")) };
             println!("{} ({}): {}{made}", s.name, s.owner, s.files.join(", "));
+            if let Some(why) = &s.refused {
+                println!("    not rendered here: {why}");
+            }
         }
         if all.is_empty() {
             println!("no service is declared on this server");
@@ -1776,10 +1785,7 @@ impl Task for Render {
         let k = kernel(ctx)?;
         let service = vars.cli_arg("service").map_err(|_| Error::Message("say which: service:<name> (`ferrum task services` lists them)".into()))?;
         let dir = vars.cli_arg("to").map_err(|_| Error::Message("say where: to:<directory>".into()))?;
-        // The settings the registry declares, by key or variable, as this process resolved them: a service never reads
-        // past the registry into the environment.
-        let settings = |name: &str| crate::settings::find(name).and_then(|d| ferrum_kernel::env::var(&d.env));
-        let rendered = k.render(service, &settings).await.map_err(refused)?;
+        let rendered = k.render(service, &known_settings).await.map_err(refused)?;
         let written = ferrum_kernel::companion::write(Path::new(dir), &rendered).map_err(refused)?;
         for (name, secret) in &written.files {
             println!("{name}{}", if *secret { " (holds a secret)" } else { "" });

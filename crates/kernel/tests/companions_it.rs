@@ -119,6 +119,35 @@ impl Companion for Peeking {
     }
 }
 
+/// A program whose key it makes itself and hands over, as the store Compose bundles does: the service writes that key
+/// back for it, and refuses any other installation, where the key was not handed over by it.
+struct Handed;
+
+#[async_trait::async_trait]
+impl Companion for Handed {
+    fn files(&self) -> &'static [&'static str] {
+        &["handed.key"]
+    }
+    fn made(&self) -> &'static [&'static str] {
+        &["handed.key"]
+    }
+    async fn refusal(&self, r: &Rendering<'_>) -> Result<Option<String>> {
+        let origin = r.vault().origin(r.kernel(), "handed.key").await?;
+        let ours =
+            origin.as_ref().is_some_and(|o| (o.verb == "adopt" && o.by.as_deref() == Some("the program")) || o.service.as_deref() == Some("peek-handed"));
+        Ok((!ours).then(|| format!("handed.key was not handed over by the program ({origin:?})")))
+    }
+    async fn render(&self, r: &Rendering<'_>) -> Result<Vec<File>> {
+        r.keep("handed.key", Rule { reveal: true, overlap_secs: 3600, ..Default::default() }).await?;
+        let mut bytes = Zeroizing::new(Vec::new());
+        for v in r.versions("handed.key").await? {
+            bytes.extend_from_slice(&v.value);
+            bytes.push(b'\n');
+        }
+        Ok(vec![File { name: "handed.key".into(), bytes, secret: true }])
+    }
+}
+
 /// The settings the server resolved, as a render is given them.
 fn settings(pairs: Vec<(&'static str, String)>) -> impl Fn(&str) -> Option<String> + Sync {
     move |name: &str| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.clone())
@@ -142,6 +171,7 @@ async fn kernel(password: Option<&str>, more: impl FnOnce(&mut HookRegistry)) ->
         peek = Some(h.vault());
         h.add_companion("peek-signing", Arc::new(Peeking("signing.key")));
         h.add_companion("peek-typed", Arc::new(Peeking("typed.token")));
+        h.add_companion("peek-handed", Arc::new(Handed));
     });
     more(&mut hooks);
     let k = Kernel::boot(db, core(), hooks, KernelSettings::default(), None).await?;
@@ -171,16 +201,20 @@ async fn scenario() {
 
     // ── services declared by the platform and by apps: listed with their owners, files and what the vault makes ──
     let (k, talk, peek) = kernel(Some("ferrum"), |_| {}).await.expect("boot");
-    let listed: Vec<(String, String, Vec<String>, Vec<String>)> = k.companions().into_iter().map(|d| (d.name, d.owner, d.files, d.made)).collect();
+    let none = settings(vec![]);
+    let listed: Vec<(String, String, Vec<String>, Vec<String>, bool)> =
+        k.companions(&none).await.into_iter().map(|d| (d.name, d.owner, d.files, d.made, d.refused.is_some())).collect();
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     assert_eq!(
         listed,
         [
-            ("greeter".to_string(), "platform".to_string(), s(&["greeter.conf"]), s(&[])),
-            ("meet".into(), "talk".into(), s(&["livekit.yaml"]), s(&["meet.secret"])),
-            ("peek-signing".into(), "peek".into(), s(&["peek.txt"]), s(&["typed.token"])),
-            ("peek-typed".into(), "peek".into(), s(&["peek.txt"]), s(&["typed.token"])),
-        ]
+            ("greeter".to_string(), "platform".to_string(), s(&["greeter.conf"]), s(&[]), false),
+            ("meet".into(), "talk".into(), s(&["livekit.yaml"]), s(&["meet.secret"]), false),
+            ("peek-handed".into(), "peek".into(), s(&["handed.key"]), s(&["handed.key"]), true),
+            ("peek-signing".into(), "peek".into(), s(&["peek.txt"]), s(&["typed.token"]), false),
+            ("peek-typed".into(), "peek".into(), s(&["peek.txt"]), s(&["typed.token"]), false),
+        ],
+        "the service whose key nobody handed over here says it cannot be rendered"
     );
 
     // ── a service of settings alone: rendered from them, as the server resolved them ──
@@ -201,7 +235,6 @@ async fn scenario() {
 
     // ── the meeting server: its secret made by the first render, once, though two replicas render at once ──
     let (k2, _, _) = kernel(Some("ferrum"), |_| {}).await.expect("a second replica");
-    let none = settings(vec![]);
     let (a, b) = tokio::join!(k.render("meet", &none), k2.render("meet", &none));
     let (a, b) = (a.expect("one replica"), b.expect("the other"));
     assert_eq!(a.files[0].bytes.as_slice(), b.files[0].bytes.as_slice(), "the same secret in both");
@@ -241,8 +274,8 @@ async fn scenario() {
     .unwrap();
     let e = k.render("peek-typed", &none).await.unwrap_err();
     assert!(matches!(e, Error::Conflict(_)) && e.to_string().contains("typed.token was set by a person"), "{e}");
-    let e = k.rotate_companion("peek-typed").await.unwrap_err().to_string();
-    assert!(e.contains("not a secret the vault made for the service peek-typed"), "{e}");
+    let e = k.rotate_companion("peek-typed", &none).await.unwrap_err().to_string();
+    assert!(e.contains("not a secret the vault keeps for the service peek-typed"), "{e}");
     assert!(events(&k, "render", "signing.key").await.is_empty() && events(&k, "render", "typed.token").await.is_empty(), "neither given");
 
     // ── under the cap on uses: the first hundred renders an hour recorded one by one, the rest counted ──
@@ -252,7 +285,7 @@ async fn scenario() {
     assert_eq!(events(&k, "render", "meet.secret").await.len(), vault::USES_PER_HOUR as usize, "the rest wait for the hour's summary");
 
     // ── a rotation, for the operator: the version before given to the next render too, while its overlap lasts ──
-    let rotated = k.rotate_companion("meet").await.expect("rotate");
+    let rotated = k.rotate_companion("meet", &none).await.expect("rotate");
     assert_eq!((rotated.len(), rotated[0].version, rotated[0].previous_until.is_some()), (1, 2, true));
     let rot = events(&k, "rotate", "meet.secret").await;
     assert_eq!((rot.len(), rot[0]["by"].as_str(), rot[0]["service"].as_str()), (1, Some("operator"), Some("meet")));
@@ -261,6 +294,56 @@ async fn scenario() {
     let keys: Vec<&str> = yaml.lines().filter_map(|l| l.strip_prefix("  \"")).filter_map(|l| l.split('"').next()).collect();
     assert_eq!(keys, ["ferrum.2", "ferrum.1"], "the current, then the one before: {yaml}");
     assert!(yaml.contains(&secret), "the one before is the first one");
+
+    // ── a key the program hands over itself: refused, making and writing nothing, where it did not hand it over ──
+    let refused = |e: Error| match e {
+        Error::Conflict(why) => why,
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+    let why = refused(k.render("peek-handed", &none).await.unwrap_err());
+    assert!(why.starts_with("the service peek-handed is not rendered here: handed.key was not handed over by the program"), "{why}");
+    assert!(refused(k.rotate_companion("peek-handed", &none).await.unwrap_err()).contains("not handed over"), "a rotation too");
+    assert!(peek.describe(&k, Scope::Installation, "handed.key").await.unwrap().is_none(), "nothing made");
+    peek.set(
+        &k,
+        Scope::Installation,
+        "handed.key",
+        New::Value(Zeroizing::new(b"a-persons-key-0123456789".to_vec())),
+        Rule { reveal: true, ..Default::default() },
+    )
+    .await
+    .unwrap();
+    assert!(refused(k.render("peek-handed", &none).await.unwrap_err()).contains("not handed over"), "a person's key is not the program's");
+    let d = peek.describe(&k, Scope::Installation, "handed.key").await.unwrap().unwrap();
+    assert_eq!((d.version, d.managed_by.as_deref(), d.rule.overlap_secs), (1, None, 0), "left as the person set it");
+    assert_eq!(peek.origin(&k, "handed.key").await.unwrap().map(|o| o.verb), Some("set".to_string()));
+    assert!(events(&k, "render", "handed.key").await.is_empty() && events(&k, "manage", "handed.key").await.is_empty());
+    // Handed over by the program: kept once though two replicas render at once, given the service's rule, and written.
+    peek.remove(&k, Scope::Installation, "handed.key").await.unwrap();
+    let handed = b"the-programs-own-key-0123456789".to_vec();
+    peek.adopt(&k, Scope::Installation, "handed.key", New::Value(Zeroizing::new(handed.clone())), Rule { reveal: true, ..Default::default() }, "the program")
+        .await
+        .unwrap();
+    let o = peek.origin(&k, "handed.key").await.unwrap().unwrap();
+    assert_eq!((o.verb.as_str(), o.by.as_deref(), o.service.as_deref()), ("adopt", Some("the program"), None));
+    assert!(k.companions(&none).await.iter().all(|d| d.refused.is_none()), "renderable here now");
+    let (a, b) = tokio::join!(k.render("peek-handed", &none), k2.render("peek-handed", &none));
+    let (a, b) = (a.expect("one"), b.expect("the other"));
+    assert_eq!(
+        (a.files[0].bytes.as_slice(), b.files[0].bytes.as_slice()),
+        ([handed.as_slice(), b"\n"].concat().as_slice(), [handed.as_slice(), b"\n"].concat().as_slice())
+    );
+    let kept = events(&k, "manage", "handed.key").await;
+    assert_eq!((kept.len(), kept[0]["service"].as_str()), (1, Some("peek-handed")), "kept once: {kept:?}");
+    let d = peek.describe(&k, Scope::Installation, "handed.key").await.unwrap().unwrap();
+    assert_eq!((d.version, d.managed_by.as_deref(), d.rule.overlap_secs), (1, Some("peek"), 3600), "its value as it was, under the service's rule");
+    // Rotated by the vault for the service from then on: the next render gives both, and the record says so.
+    let rotated = k.rotate_companion("peek-handed", &none).await.expect("rotate the kept key");
+    assert_eq!((rotated[0].version, rotated[0].previous_until.is_some()), (2, true));
+    let o = peek.origin(&k, "handed.key").await.unwrap().unwrap();
+    assert_eq!((o.verb.as_str(), o.by.as_deref(), o.service.as_deref()), ("rotate", Some("operator"), Some("peek-handed")));
+    let both = k.render("peek-handed", &none).await.unwrap();
+    assert_eq!(both.files[0].bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()).count(), 2, "the new key and the handed one");
 
     // ── the meeting server itself, started on the file written, called with tokens the vault signed ──
     livekit(&k, &talk, &secret).await;
@@ -272,7 +355,9 @@ async fn scenario() {
         let e = closed.render(service, &given).await.unwrap_err().to_string();
         assert!(e.starts_with("the vault is closed"), "{service}: {e}");
     }
-    assert!(closed.rotate_companion("meet").await.unwrap_err().to_string().starts_with("the vault is closed"));
+    assert!(closed.rotate_companion("meet", &given).await.unwrap_err().to_string().starts_with("the vault is closed"));
+    let listed = closed.companions(&given).await;
+    assert!(listed.iter().all(|d| d.refused.as_deref().is_some_and(|r| r.starts_with("the vault is closed"))), "{listed:?}");
 
     // ── one name, two owners: the start stops, naming both ──
     let e = kernel(Some("ferrum"), |h| {

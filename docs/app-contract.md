@@ -187,6 +187,11 @@ impl Companion for Meet {
   the one before while its overlap lasts. Only where the secret's rule says `reveal: true`; each given is on the record
   as `render`, naming the service, never the value. A file that holds one says `secret: true`: one that says otherwise
   and holds a value the render was given is refused.
+- **Where it belongs.** `refusal(r)` says, in plain words, why this installation may not have the service rendered
+  (`None`: it may). It is asked before every render and every rotation, which are then refused with nothing written
+  and nothing made, and `ferrum task services` shows it. A service that writes back a key its program made and handed
+  over keeps it with `r.keep(name, rule)` (marked as the app's once, its value as it is; nothing made) and refuses where
+  the vault's record (`vault().origin(…)`) does not say the program handed it over.
 - **Rotation.** The operator rotates what the vault made (`ferrum task vault_rotate level:service service:<name>`); the
   app's code goes on using its handle. A program that can hold two values is given both (`versions`), and the app
   presents the version before while the overlap lasts (the current `version - 1`, while `describe` says

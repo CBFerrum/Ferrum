@@ -8,9 +8,10 @@
 # also asks the server to make the bucket, with versioning, lifecycle rules and default encryption.
 # Then the store runs: S3 on the network, its master, volume server and filer inside the container alone.
 #
-# With STORE_S3_CONFIG (deploy/store-files.yml), the access keys are the server's vault's instead: made by its first
-# render and rendered for each start into that file (`ferrum task render service:object-store`; docs/operations.md,
-# "Files for the programs beside the server"). Nothing is made or handed over here then but the encryption key.
+# With STORE_S3_CONFIG (deploy/store-files.yml), the access keys come from the server's vault instead: the ones this
+# store handed over, rendered for each start into that file and rotated by the vault since (`ferrum task render
+# service:object-store`; docs/operations.md, "Files for the programs beside the server"). Nothing is made or handed over
+# here then but the encryption key, where there is none yet.
 #
 # Settings, for running it elsewhere (scripts/object_store_rehearsal.sh runs it with the store's own binary):
 # STORE_DATA (default /data), STORE_HANDOFF (default /handoff), STORE_BIND (default 0.0.0.0), STORE_PORT (default
