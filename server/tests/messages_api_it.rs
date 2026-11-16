@@ -70,7 +70,7 @@ async fn scenario() {
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/note.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let notes = ferrum_meta::catalog::load_package_files(&files).expect("package");
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), ..Default::default() };
+    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, notes]).unwrap(), HookRegistry::default(), settings, Some(std::sync::Arc::new(Mailer)))
         .await
         .expect("boot");

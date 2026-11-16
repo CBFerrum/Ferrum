@@ -500,8 +500,11 @@ async fn scenario() {
         let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
         let db = ferrum_kernel::Db::connect(ferrum_kernel::DbConfig { url, max_connections: 4, ..Default::default() }).await.unwrap();
         let catalog = ferrum_meta::Catalog::load_dir(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages")).unwrap();
-        let settings =
-            ferrum_kernel::KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), audit_sink: sink, ..Default::default() };
+        let settings = ferrum_kernel::KernelSettings {
+            old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), vec![]),
+            audit_sink: sink,
+            ..Default::default()
+        };
         Kernel::boot(db, catalog, ferrum_kernel::HookRegistry::default(), settings, None).await.unwrap()
     };
     assert_eq!(sender.audit_sink_once().await.unwrap(), ferrum_kernel::audit_sink::Turn::Sent(0), "the cursor starts now");

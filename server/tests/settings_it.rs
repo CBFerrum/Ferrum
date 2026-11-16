@@ -260,7 +260,7 @@ async fn changes(a: &AppState, b: &AppState) {
     let said = |r: ferrum_kernel::Result<Vec<ferrum_server::settings::Done>>| r.err().map(|e| e.to_string()).unwrap_or_default();
     assert!(said(change(a, &one("session_days", Some("soon")), "task").await).contains("whole number"));
     assert!(said(change(a, &one("FERRUM_METRICS_TOKEN", Some("x")), "task").await).contains("is a secret"));
-    assert!(said(change(a, &one("drive.office_url", Some("http://o")), "task").await).contains("by Drive"));
+    assert!(said(change(a, &one("kms_ca_file", Some("/etc/ca.pem")), "task").await).contains("by the key-management client"));
     assert!(matches!(change(a, &one("nonsense", Some("1")), "task").await, Err(ferrum_kernel::Error::NotFound(_))));
     assert!(said(change(a, &one("db_max_connections", Some("8")), "task").await).contains("each pool's own"));
     let zone = said(change(a, &one("zone_default", Some("nowhere")), "task").await);
@@ -291,6 +291,9 @@ async fn changes(a: &AppState, b: &AppState) {
     assert_eq!(record, [(None, Some(json!("2")), "task".to_string()), (Some(json!("2")), None, "task".to_string())], "each change, before and after");
     let pool = change(a, &[Change { name: "db_max_connections".into(), pool: Some("web".into()), value: Some("8".into()) }], "task").await.unwrap();
     assert_eq!(pool[0].pool.as_deref(), Some("web"));
+    // An app's own setting, which its manifest declares: kept in the table as <app>.<key>, as the platform's are.
+    let drive = change(a, &one("FERRUM_OFFICE_URL", Some("http://office.test")), "task").await.unwrap();
+    assert_eq!((drive[0].key.as_str(), drive[0].new.as_deref()), ("drive.office_url", Some("http://office.test")));
 
     // A document: what it names, and with `others: unset` the installation's settings it leaves out.
     let doc: ferrum_server::settings::Document =
@@ -517,7 +520,11 @@ async fn adopted_once(st: &AppState) {
     let (one, two) = tokio::join!(ferrum_server::settings::adopt(db, "default", &a), ferrum_server::settings::adopt(db, "default", &b));
     let mut written: Vec<String> = [one.unwrap(), two.unwrap()].concat().into_iter().map(|(k, _)| k).collect();
     written.sort();
-    assert_eq!(written, ["pdf_url"], "once, by one of them: session_days is the table's already, and the rest are not kept there");
+    assert_eq!(
+        written,
+        ["drive.office_url", "pdf_url"],
+        "once, by one of them: session_days is the table's already, a secret is never kept there, and an app's own setting is, as the platform's are"
+    );
     let later = ferrum_server::settings::adopt(db, "default", &env("http://elsewhere")).await.unwrap();
     assert!(later.is_empty(), "the table holds it now: {later:?}");
     row(st, "installation", "", "host_leaving_days", None).await;
@@ -529,6 +536,12 @@ async fn adopted_once(st: &AppState) {
     let changes: Vec<(String, Option<serde_json::Value>, serde_json::Value, String)> =
         sqlx::query_as("select key, old_value, new_value, updated_by from setting_change where key = 'pdf_url'").fetch_all(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(rows, [("pdf_url".to_string(), json!("http://pdf:3000"), "environment".to_string())]);
+    assert_eq!(
+        rows,
+        [
+            ("drive.office_url".to_string(), json!("http://office"), "environment".to_string()),
+            ("pdf_url".to_string(), json!("http://pdf:3000"), "environment".to_string())
+        ]
+    );
     assert_eq!(changes, [("pdf_url".to_string(), None, json!("http://pdf:3000"), "environment".to_string())], "recorded once");
 }

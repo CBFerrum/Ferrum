@@ -450,7 +450,7 @@ async fn scenario() {
         db,
         Catalog::from_packages(vec![core, contacts, parties, notes_package()]).unwrap(),
         hooks,
-        KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([5u8; 32])), ..Default::default() },
+        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([5u8; 32])), vec![]), ..Default::default() },
         None,
     )
     .await

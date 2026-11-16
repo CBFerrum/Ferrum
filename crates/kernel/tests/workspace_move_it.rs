@@ -92,7 +92,7 @@ async fn installation(url: &str, key: &SecretKey, seen: &Arc<Seen>, files: &Path
     let mut hooks = HookRegistry::default();
     hooks.add_event_sink(Arc::new(Sink(seen.clone())));
     hooks.add_job_handler(Arc::new(Counted(seen.clone())));
-    let settings = KernelSettings { secret_key: Some(key.clone()), ..Default::default() };
+    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(key.clone()), vec![]), ..Default::default() };
     let k = Kernel::boot(db, catalog(), hooks, settings, None).await.expect("boot");
     k.set_file_store(Arc::new(DirFiles(files.to_path_buf())));
     k.ensure_directory().await.unwrap();
@@ -548,9 +548,15 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     // Another replica of A, running while the move (a task, a process of its own) brings the workspace back, which looked
     // at its address before: nothing there then.
     let replica = Db::connect(DbConfig { url: a_url.clone(), max_connections: 4, ..Default::default() }).await.expect("connect");
-    let a2 = Kernel::boot(replica, catalog(), HookRegistry::default(), KernelSettings { secret_key: Some(key_a.clone()), ..Default::default() }, None)
-        .await
-        .expect("a second replica of A");
+    let a2 = Kernel::boot(
+        replica,
+        catalog(),
+        HookRegistry::default(),
+        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(key_a.clone()), vec![]), ..Default::default() },
+        None,
+    )
+    .await
+    .expect("a second replica of A");
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let listening = a2.spawn_listeners(stopped);
     assert_eq!(a2.route_host("acme.eu.example").await.unwrap(), HostRoute::Unknown);

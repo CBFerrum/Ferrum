@@ -88,11 +88,13 @@ pub(crate) fn range(headers: &HeaderMap) -> Option<&str> {
 
 /// The stored file a site's answer names ([`SiteResponse::file`]), taken out of its headers: the
 /// workspace's own, as a stream (only the `range` asked for, when the file holds it), its length
-/// and that range. None when it names none.
+/// and that range. None when it names none. A kind of file an app keeps for its own work goes out
+/// only from a site of that app's (`package`'s owner): not found from any other.
 pub async fn named_file(
     kernel: &Kernel,
     objects: &crate::objects::Objects,
     tenant: uuid::Uuid,
+    package: &str,
     r: &mut SiteResponse,
     range: Option<&str>,
 ) -> ferrum_kernel::Result<Option<(u64, Option<std::ops::Range<u64>>, Body)>> {
@@ -100,20 +102,26 @@ pub async fn named_file(
     let Some(id) = named.map(|i| r.headers.remove(i).1) else { return Ok(None) };
     let id: uuid::Uuid = id.parse().map_err(|_| Error::internal("a site named a file that is no file id"))?;
     let mut tx = kernel.db.tenant_tx(tenant).await?;
-    let key: Option<String> =
-        sqlx::query_scalar("select storage_key from file_object where tenant_id = $1 and id = $2").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("select storage_key, entity from file_object where tenant_id = $1 and id = $2").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
     tx.commit().await?;
-    let key = key.ok_or_else(|| Error::NotFound("file".into()))?;
+    let key = row.filter(|(_, entity)| kernel.site_may_send(package, entity.as_deref())).map(|r| r.0).ok_or_else(|| Error::NotFound("file".into()))?;
     Ok(Some(objects.stream(&key, range).await?))
 }
 
 /// A site's answer as the server sends it. One that names a stored file of the workspace's gets
 /// that file as its body, streamed from storage, or the `range` of it the request asks for when the
 /// answer is a whole one (200).
-pub(crate) async fn respond(st: &crate::state::AppState, tenant: uuid::Uuid, mut r: SiteResponse, range: Option<&str>) -> Result<Response, ApiError> {
+pub(crate) async fn respond(
+    st: &crate::state::AppState,
+    tenant: uuid::Uuid,
+    package: &str,
+    mut r: SiteResponse,
+    range: Option<&str>,
+) -> Result<Response, ApiError> {
     let status = StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK);
     let range = range.filter(|_| status == StatusCode::OK);
-    let streamed = named_file(&st.kernel, &st.objects, tenant, &mut r, range).await?;
+    let streamed = named_file(&st.kernel, &st.objects, tenant, package, &mut r, range).await?;
     let mut resp = match streamed {
         Some(s) => crate::objects::streamed_response(status, s),
         None => (status, r.body).into_response(),
@@ -153,7 +161,7 @@ async fn app(
     let tenant = ctx.tenant;
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let req = request(tenant, Some(ctx), method, &uri, path, query, &headers, body)?;
-    respond(&st, tenant, handle(&st.kernel, site, req).await?, range(&headers)).await
+    respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await
 }
 
 async fn public(
@@ -176,7 +184,7 @@ async fn public(
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let req = request(tenant, None, method, &uri, path, query, &headers, body)?;
-    respond(&st, tenant, handle(&st.kernel, site, req).await?, range(&headers)).await
+    respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await
 }
 
 pub fn routes() -> Routes {

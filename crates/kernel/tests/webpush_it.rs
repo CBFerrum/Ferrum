@@ -33,7 +33,7 @@ async fn kernel(port: u16, secret: [u8; 32], reset: bool) -> Arc<Kernel> {
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     // The push service is on this machine: its exact origin is listed, and private addresses allowed.
     let settings = KernelSettings {
-        secret_key: Some(SecretKey::new(secret)),
+        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new(secret)), vec![]),
         webhooks_allow_private: true,
         push_services: vec![format!("http://127.0.0.1:{port}")],
         push_contact: Some("mailto:ops@ferrum.test".into()),

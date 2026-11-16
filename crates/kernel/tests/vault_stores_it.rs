@@ -97,7 +97,7 @@ async fn replica_on(url: &str, key: Option<SecretKey>, retired: Vec<SecretKey>, 
     hooks.app("crm", &[], |h| crm = Some(h.vault()));
     hooks.app("hr", &[], |h| hr = Some(h.vault()));
     hooks.own("crm", &["crm".into()]).own("hr", &["hr".into()]);
-    let settings = KernelSettings { secret_key: key, retired_secret_keys: retired, ..Default::default() };
+    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(key, retired), ..Default::default() };
     let k = Kernel::boot(db, catalog(), hooks, settings, None).await.expect("boot");
     Replica { k, platform, crm: crm.unwrap(), hr: hr.unwrap() }
 }

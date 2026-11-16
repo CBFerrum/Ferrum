@@ -23,7 +23,7 @@ fn url() -> String {
 
 async fn boot(db: Db, mail: bool) -> Arc<Kernel> {
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), ..Default::default() };
+    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
     let mailer: Option<Arc<dyn ferrum_kernel::Mailer>> = if mail { Some(Arc::new(Quiet)) } else { None };
     Kernel::boot(db, catalog, HookRegistry::default(), settings, mailer).await.expect("boot")
 }

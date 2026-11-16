@@ -887,8 +887,8 @@ pub struct LegacyKey {
     /// Builds from before the old key's end are refused here: what the platform makes, it makes with the vault's keys.
     /// Until then it makes them with the old key, which those builds check them with.
     pub older_builds_refused: bool,
-    /// Apps compiled in that read the old key themselves (the server's list, from scripts/secret_paths.py): without it
-    /// in the environment they are given the copy adopted into the vault.
+    /// Apps compiled in that read the old key themselves (the server's list, from scripts/secret_paths.py): none since
+    /// the key is the kernel's alone (`KernelSettings::old_key`).
     pub apps: Vec<String>,
     /// Paths that used the old key, and readers that passed the vault by, with when last: (what, caller, last).
     pub uses: Vec<(String, String, chrono::DateTime<chrono::Utc>)>,
@@ -902,7 +902,7 @@ impl Kernel {
     /// waits for if not.
     pub async fn legacy_key(&self, apps: Vec<String>) -> Result<LegacyKey> {
         let mut out = LegacyKey { configured: self.env_key().is_some(), vault_open: self.db.vault.installation().is_ok(), apps, ..Default::default() };
-        let configured: Vec<&crate::secret::SecretKey> = self.env_key().into_iter().chain(&self.settings.retired_secret_keys).collect();
+        let configured: Vec<&crate::secret::SecretKey> = self.env_key().into_iter().chain(&self.settings.old_key.retired).collect();
         if out.vault_open {
             out.waiting = self.vault_waiting().await?;
             out.adopted = super::adopted_ids(&self.db).await?;

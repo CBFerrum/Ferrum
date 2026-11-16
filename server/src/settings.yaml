@@ -990,178 +990,37 @@
   doc: >-
     The source's region, when people keep their Ferrum account across regions.
 
-# Apps compiled into the server that read the environment themselves (their own repositories), each under the app it
-# moves to (`app:`). Their releases pinned today read these variables with std::env::var, which the database's value
-# never reaches, so they stay in the environment. An app's release that reads them through ferrum_kernel::env::var
-# declares them in its manifest (`operator_settings`, docs/app-contract.md): its declaration then replaces the entry
-# here, kept in the table as the app's. The platform's file drops these entries in the release after the one whose pins
-# have every app named here declare them (R2). Their secrets are not settings: each app keeps its own in its vault.
-- key: drive.office_url
-  env: FERRUM_OFFICE_URL
-  environment: Drive
-  app: drive
-  doc: >-
-    With online editing: the editor server as the server reaches it (docs/operations.md, Online editing).
-- key: drive.office_wopi_url
-  env: FERRUM_OFFICE_WOPI_URL
-  environment: Drive
-  app: drive
-  doc: >-
-    With online editing: this server as the editor server reaches it.
-- key: drive.office_ips
-  env: FERRUM_OFFICE_IPS
-  environment: Drive
-  app: drive
-  doc: >-
-    Optional: the only addresses WOPI calls are accepted from.
-- key: drive.editors_url
-  env: FERRUM_EDITORS_URL
-  environment: Drive
-  app: drive
-  doc: >-
-    The browser editors' server as browsers reach it (docs/operations.md, Browser editors).
-- key: drive.max_file_mb
-  env: FERRUM_DRIVE_MAX_FILE_MB
-  environment: Drive
-  app: drive
-  doc: >-
-    Largest file in one request to Drive: an upload, a new version or an editor save. Default 32, at most 1024. A
-    replica holds each such file in memory while storing it, so allow `uploads at once × this` of memory per
-    replica. Workspaces set their own limit within it. Raise any proxy's body limit in front with it.
-- key: drive.max_zip_mb
-  env: FERRUM_DRIVE_MAX_ZIP_MB
-  environment: Drive
-  app: drive
-  doc: >-
-    The largest folder Drive downloads as one zip.
-- key: comms.meet_url
-  env: FERRUM_MEET_URL
-  environment: Comms
-  app: comms
-  sends: FERRUM_MEET_SECRET
-  doc: >-
-    LiveKit as browsers reach it, `wss://meet.example.com` (docs/operations.md, Meetings).
+# The apps' own secrets, which the variables below gave them until now. Each app keeps its secret in its own vault;
+# while the variable is set it still wins, through this release, and the app adopts it into its vault once. An app
+# declares no secret as a setting (docs/app-contract.md): these entries say the variables are secrets, so that none is
+# ever written to the table. The apps' settings are their own (`operator_settings` in each app's manifest).
 - key: comms.meet_key
   env: FERRUM_MEET_KEY
   secret: true
   app: comms
   doc: >-
-    LiveKit's API key (a name).
+    LiveKit's API key (a name); Comms keeps it in its vault as `meet.key`.
 - key: comms.meet_secret
   env: FERRUM_MEET_SECRET
   secret: true
   app: comms
   doc: >-
-    LiveKit's API secret.
-- key: comms.meet_recordings
-  env: FERRUM_MEET_RECORDINGS
-  environment: Comms
-  app: comms
-  doc: >-
-    `true` once LiveKit Egress runs beside LiveKit with its storage.
-- key: comms.meet_api_url
-  env: FERRUM_MEET_API_URL
-  environment: Comms
-  app: comms
-  sends: FERRUM_MEET_SECRET
-  doc: >-
-    LiveKit's server API as Ferrum reaches it, when that is not `FERRUM_MEET_URL` over http(s).
-- key: comms.mail_url
-  env: FERRUM_MAIL_URL
-  environment: Comms
-  app: comms
-  sends: FERRUM_MAIL_ADMIN_SECRET
-  doc: >-
-    Stalwart's HTTP address as the server reaches it (docs/operations.md, Hosted mail).
-- key: comms.mail_admin
-  env: FERRUM_MAIL_ADMIN
-  environment: Comms
-  app: comms
-  sends: FERRUM_MAIL_ADMIN_SECRET
-  doc: >-
-    A Stalwart administrator.
+    LiveKit's API secret; Comms keeps it in its vault as `meet.secret`.
 - key: comms.mail_admin_secret
   env: FERRUM_MAIL_ADMIN_SECRET
   secret: true
   app: comms
   doc: >-
-    That administrator's password.
-- key: comms.mail_host
-  env: FERRUM_MAIL_HOST
-  environment: Comms
-  app: comms
-  doc: >-
-    Optional: the mail server's public host name, shown to people setting up mail programs.
-- key: metrics.engine_url
-  env: FERRUM_METRICS_ENGINE_URL
-  environment: Metrics
-  app: metrics
-  sends: FERRUM_METRICS_ENGINE_TOKEN
-  doc: >-
-    Metrics' engine for external sources (docs/operations.md, Metrics' engine for external sources).
+    The password of Stalwart's administrator (`comms.mail_admin`); Comms keeps it in its vault as `mail.admin_secret`.
 - key: metrics.engine_token
   env: FERRUM_METRICS_ENGINE_TOKEN
   secret: true
   app: metrics
   doc: >-
-    The engine's token, at least 32 characters.
-- key: eu.vies_url
-  env: FERRUM_EU_VIES_URL
-  environment: ERP's EU add-on
-  app: eu
-  doc: >-
-    Another address for the EU's VAT number service (a test server).
-- key: eu.tedb_url
-  env: FERRUM_EU_TEDB_URL
-  environment: ERP's EU add-on
-  app: eu
-  doc: >-
-    Another address for the EU's taxes database (a test server).
-- key: gb.hmrc_url
-  env: FERRUM_GB_HMRC_URL
-  environment: ERP's GB add-on
-  app: gb
-  doc: >-
-    Another address for HMRC's Making Tax Digital API (its sandbox).
-- key: gb.public_ip
-  env: FERRUM_PUBLIC_IP
-  environment: ERP's GB add-on
-  app: gb
-  doc: >-
-    The server's public address, sent in HMRC's fraud-prevention headers.
-- key: my.myinvois_url
-  env: FERRUM_MY_MYINVOIS_URL
-  environment: ERP's Malaysia add-on
-  app: my
-  doc: >-
-    Another address for MyInvois (its sandbox).
-- key: ro.anaf_url
-  env: FERRUM_RO_ANAF_URL
-  environment: ERP's Romania add-on
-  app: ro
-  doc: >-
-    Another address for ANAF's e-Factura (its test system).
-- key: us.avatax_url
-  env: FERRUM_US_AVATAX_URL
-  environment: ERP's US add-on
-  app: us
-  doc: >-
-    Another address for AvaTax (its sandbox).
-- key: pt.certificate
-  env: FERRUM_PT_CERTIFICATE
-  environment: ERP's Portugal add-on
-  app: pt
-  doc: >-
-    The software certificate number for certified invoices (docs/operations.md, Portugal: certified invoices).
-- key: pt.key_version
-  env: FERRUM_PT_KEY_VERSION
-  environment: ERP's Portugal add-on
-  app: pt
-  doc: >-
-    The signing key's version.
+    The token of Metrics' engine, at least 32 characters; Metrics keeps it in its vault as `engine.token`.
 - key: pt.signing_key
   env: FERRUM_PT_SIGNING_KEY
   secret: true
   app: pt
   doc: >-
-    The key certified invoices are signed with.
+    The key Portugal's certified invoices are signed with; the add-on keeps it in its vault as `signing.key`.

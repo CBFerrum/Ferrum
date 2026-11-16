@@ -16,26 +16,13 @@ Written by `python3 scripts/settings.py --write`, which refuses to add to it: it
 | `FERRUM_AUTHORITY_WITNESS_URL` | another database's address with its password: a secret the vault does not hold yet |
 | `FERRUM_DATABASE_DIRECT_URL` | a whole address with its password: give the host in DATABASE_URL instead (ferrum_direct_host) |
 | `FERRUM_DATABASE_READ_URL` | a whole address with its password: give the host in DATABASE_URL instead (ferrum_read_host) |
-| `FERRUM_DRIVE_MAX_FILE_MB` | `drive` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_DRIVE_MAX_ZIP_MB` | `drive` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_EDITORS_URL` | `drive` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_EU_TEDB_URL` | `eu` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_EU_VIES_URL` | `eu` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_GB_HMRC_URL` | `gb` reads it with std::env::var until its release declares it (operator_settings) |
 | `FERRUM_KMS_CA_FILE` | read by the key-management client (through R1; the file is /run/ferrum/kms-ca.pem from now on) |
 | `FERRUM_KMS_KUBERNETES_TOKEN_FILE` | read by the key-management client (through R1; a file the server sends is never named by the database) |
 | `FERRUM_KMS_TOKEN_FILE` | read by the key-management client (through R1; the token's file is /run/ferrum/kms.token from now on) |
-| `FERRUM_MAIL_ADMIN` | `comms` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_MAIL_ADMIN_SECRET` | `comms`'s own secret, until it keeps it in its own vault |
-| `FERRUM_MAIL_HOST` | `comms` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_MAIL_URL` | `comms` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_MEET_API_URL` | `comms` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_MEET_KEY` | `comms`'s own secret, until it keeps it in its own vault |
-| `FERRUM_MEET_RECORDINGS` | `comms` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_MEET_SECRET` | `comms`'s own secret, until it keeps it in its own vault |
-| `FERRUM_MEET_URL` | `comms` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_METRICS_ENGINE_TOKEN` | `metrics`'s own secret, until it keeps it in its own vault |
-| `FERRUM_METRICS_ENGINE_URL` | `metrics` reads it with std::env::var until its release declares it (operator_settings) |
+| `FERRUM_MAIL_ADMIN_SECRET` | `comms`'s own secret, kept in its own vault: it adopts the environment's while it is set, until its release stops reading it |
+| `FERRUM_MEET_KEY` | `comms`'s own secret, kept in its own vault: it adopts the environment's while it is set, until its release stops reading it |
+| `FERRUM_MEET_SECRET` | `comms`'s own secret, kept in its own vault: it adopts the environment's while it is set, until its release stops reading it |
+| `FERRUM_METRICS_ENGINE_TOKEN` | `metrics`'s own secret, kept in its own vault: it adopts the environment's while it is set, until its release stops reading it |
 | `FERRUM_MOVE_SOURCE_DATABASE_URL` | an input of `ferrum task move_workspace`, given in its environment as it runs |
 | `FERRUM_MOVE_SOURCE_FILES` | an input of `ferrum task move_workspace`, given in its environment as it runs |
 | `FERRUM_MOVE_SOURCE_FILES_DIR` | an input of `ferrum task move_workspace`, given in its environment as it runs |
@@ -44,20 +31,11 @@ Written by `python3 scripts/settings.py --write`, which refuses to add to it: it
 | `FERRUM_MOVE_SOURCE_S3_ENDPOINT` | an input of `ferrum task move_workspace`, given in its environment as it runs |
 | `FERRUM_MOVE_SOURCE_S3_REGION` | an input of `ferrum task move_workspace`, given in its environment as it runs |
 | `FERRUM_MOVE_SOURCE_SECRET_KEYS` | an input of `ferrum task move_workspace`, given in its environment as it runs |
-| `FERRUM_MY_MYINVOIS_URL` | `my` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_OFFICE_IPS` | `drive` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_OFFICE_URL` | `drive` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_OFFICE_WOPI_URL` | `drive` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_PT_CERTIFICATE` | `pt` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_PT_KEY_VERSION` | `pt` reads it with std::env::var until its release declares it (operator_settings) |
-| `FERRUM_PT_SIGNING_KEY` | `pt`'s own secret, until it keeps it in its own vault |
-| `FERRUM_PUBLIC_IP` | `gb` reads it with std::env::var until its release declares it (operator_settings) |
+| `FERRUM_PT_SIGNING_KEY` | `pt`'s own secret, kept in its own vault: it adopts the environment's while it is set, until its release stops reading it |
 | `FERRUM_RETIRED_SECRET_KEYS` | the old master key's retired ones, until it retires |
-| `FERRUM_RO_ANAF_URL` | `ro` reads it with std::env::var until its release declares it (operator_settings) |
 | `FERRUM_SECRET_KEY` | the old master key, until it retires (docs/operations.md, Retiring the old key) |
 | `FERRUM_SECRET_KEY_COMMAND` | a command line, never read from the database, where whoever writes a row would run a program |
 | `FERRUM_TEST_RUN_DIR` | a debug build only: where a test puts the files of /run/ferrum (a release build never reads it) |
-| `FERRUM_US_AVATAX_URL` | `us` reads it with std::env::var until its release declares it (operator_settings) |
 | `HOME` | PostgreSQL's driver and the object store's client: where a user's own files would be (~/.pgpass, ~/.aws) |
 | `HTTPS_PROXY` | the HTTP client (reqwest): the system's proxy for the server's outbound requests |
 | `HTTP_PROXY` | the HTTP client (reqwest): the system's proxy for the server's outbound requests |

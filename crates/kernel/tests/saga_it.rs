@@ -136,7 +136,7 @@ async fn workflows_undo_what_they_did_when_they_cannot_finish() {
         ["reserve", "charge", "ship"].into_iter().map(|name| Arc::new(Act { name, world: world.clone() }) as Arc<dyn Step>).collect();
     let mut hooks = HookRegistry::default();
     hooks.add_job_handler(Arc::new(Saga::new("order", "Order", steps)));
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([4u8; 32])), ..Default::default() };
+    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([4u8; 32])), vec![]), ..Default::default() };
     let k = Kernel::boot(db, catalog, hooks, settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {

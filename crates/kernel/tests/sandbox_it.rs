@@ -130,7 +130,7 @@ async fn installation(url: &str, key: &SecretKey, seen: &Arc<Seen>, mails: &Arc<
     let mut hooks = HookRegistry::default();
     hooks.add_event_sink(Arc::new(Sink(seen.clone())));
     hooks.add_job_handler(Arc::new(CallOut(call.to_string())));
-    let settings = KernelSettings { secret_key: Some(key.clone()), webhooks_allow_private: true, ..Default::default() };
+    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(key.clone()), vec![]), webhooks_allow_private: true, ..Default::default() };
     let k = Kernel::boot(db, catalog(), hooks, settings, Some(Arc::new(Mails(mails.clone())))).await.expect("boot");
     k.set_file_store(Arc::new(DirFiles(files.to_path_buf())));
     k.ensure_directory().await.unwrap();

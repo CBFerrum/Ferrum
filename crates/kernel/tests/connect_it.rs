@@ -174,7 +174,7 @@ async fn scenario() {
     let world = Arc::new(Mutex::new(World { token: "right".into(), ..Default::default() }));
     let mut hooks = HookRegistry::default();
     hooks.add_connector(Arc::new(Stub(world.clone())));
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), ..Default::default() };
+    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
     let k = Kernel::boot(db, catalog(), hooks, settings, None).await.expect("boot");
     let workspace = |slug: &str| NewTenant {
         slug: slug.into(),

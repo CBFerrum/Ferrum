@@ -250,6 +250,8 @@ pub struct HookRegistry {
     openid_companions: HashMap<(String, String), Arc<dyn crate::oidc::Companion>>,
     /// The app whose registration is running.
     app: Option<String>,
+    /// Kinds of file apps keep for their own work ([`HookRegistry::file_kind`]): the app that declared each.
+    file_kinds: HashMap<String, String>,
     /// The programs beside the server whose files their owners render ([`HookRegistry::add_companion`]), by name:
     /// their owner (an app's id, or `platform`) and what renders them.
     companions: std::collections::BTreeMap<String, (String, Arc<dyn crate::companion::Companion>)>,
@@ -404,6 +406,32 @@ impl HookRegistry {
     /// App `app`'s companion `name` that signs people in, when it registered one.
     pub(crate) fn openid_companion_of(&self, app: &str, name: &str) -> Option<&Arc<dyn crate::oidc::Companion>> {
         self.openid_companions.get(&(app.to_string(), name.to_string()))
+    }
+
+    /// Declares a kind of file the app registering keeps for its own work (`<app id>.<name>`: `name` lowercase letters,
+    /// digits and `_`), and gives its handle (crate::files::FileKind): what the app keeps, reads and lets go of such files
+    /// with, as nobody else can. Once per kind, inside the app's registration: otherwise the server does not start
+    /// ([`HookRegistry::settle`]).
+    pub fn file_kind(&mut self, name: &str) -> crate::files::FileKind {
+        let Some((app, mint)) = self.app.as_ref().and_then(|a| self.vault_apps.get(a).map(|m| (a.clone(), *m))) else {
+            self.problems.push(format!("a kind of file ({name}) was declared outside an app's registration"));
+            return crate::files::FileKind::new(name.to_string(), "", 0);
+        };
+        let kind = format!("{app}.{name}");
+        let named = name.len() <= 40
+            && name.starts_with(|c: char| c.is_ascii_lowercase())
+            && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !named {
+            self.problems.push(format!("{kind:?} is not a kind of file's name (lowercase letters, digits and _ after the app's id)"));
+        } else if self.file_kinds.insert(kind.clone(), app.clone()).is_some() {
+            self.problems.push(format!("the kind of file {kind} is declared twice"));
+        }
+        crate::files::FileKind::new(kind, &app, if named { mint } else { 0 })
+    }
+
+    /// The app that declared the kind of file `kind` ([`HookRegistry::file_kind`]).
+    pub(crate) fn file_kind_app(&self, kind: &str) -> Option<&str> {
+        self.file_kinds.get(kind).map(String::as_str)
     }
 
     /// The apps this registry gave vault handles to.
@@ -800,6 +828,31 @@ mod tests {
         });
         assert_eq!(plain.scopes(), [("Invoice".to_string(), None)], "no packages: every workspace, as before");
         assert!(plain.settle().is_ok());
+    }
+
+    #[test]
+    fn a_kind_of_file_is_declared_once_by_its_app() {
+        let mut r = HookRegistry::default();
+        let mut kinds = Vec::new();
+        r.app("cloud", &[], |h| {
+            kinds.push(h.file_kind("backup"));
+            kinds.push(h.file_kind("artifact"));
+        });
+        assert_eq!(kinds.iter().map(|k| k.kind()).collect::<Vec<_>>(), ["cloud.backup", "cloud.artifact"]);
+        assert_eq!((r.file_kind_app("cloud.backup"), r.file_kind_app("hr.backup")), (Some("cloud"), None));
+        assert!(r.settle().is_ok());
+        r.app("hr", &[], |h| {
+            h.file_kind("payslip");
+            h.file_kind("payslip");
+            h.file_kind("Pay Slip");
+        });
+        r.file_kind("loose");
+        let problems = r.settle().unwrap_err().join("; ");
+        for said in
+            ["the kind of file hr.payslip is declared twice", "\"hr.Pay Slip\" is not a kind of file's name", "a kind of file (loose) was declared outside"]
+        {
+            assert!(problems.contains(said), "{said}: {problems}");
+        }
     }
 
     struct Program(&'static [&'static str], &'static [&'static str]);

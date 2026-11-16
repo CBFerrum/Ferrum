@@ -310,8 +310,7 @@ impl Hooks for App {
             KernelSettings {
                 webhooks_allow_private: settings.webhooks_allow_private,
                 sso_allow_private: settings.sso_allow_private,
-                secret_key,
-                retired_secret_keys: retired,
+                old_key: ferrum_kernel::OldKey::configured(secret_key, retired),
                 public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
                 accounts_host: crate::shell::accounts_host(&settings),
                 hooks_url: crate::shell::hooks_url(&settings, &ctx.config.server.host),

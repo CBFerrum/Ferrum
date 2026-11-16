@@ -137,7 +137,8 @@ async fn scenario() {
     let mut packages = vec![core, ferrum_meta::catalog::load_package_files(&files).expect("package")];
     packages.extend(ferrum_studio::packages().expect("studio packages"));
     let mut hooks = HookRegistry::default();
-    ferrum_studio::register(&mut hooks);
+    let studio: Vec<String> = ferrum_studio::packages().expect("studio packages").iter().map(|p| p.name().to_string()).collect();
+    hooks.app("studio", &studio, ferrum_studio::register).own("studio", &studio);
     let settings = KernelSettings { process_runtime: true, ..Default::default() };
     let k: Arc<Kernel> = Kernel::boot(db, Catalog::from_packages(packages).unwrap(), hooks, settings, None).await.expect("boot");
     let admin = workspace(&k, "acme").await;

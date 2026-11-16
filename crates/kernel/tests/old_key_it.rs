@@ -158,7 +158,7 @@ async fn replica(key: Option<&SecretKey>, open: bool) -> Replica {
     let mut hooks = HookRegistry::default();
     let platform = hooks.platform_vault();
     let settings = KernelSettings {
-        secret_key: key.cloned(),
+        old_key: ferrum_kernel::OldKey::configured(key.cloned(), vec![]),
         public_url: Some("https://ferrum.test".into()),
         connection_hosts: vec!["127.0.0.1".into()],
         ..Default::default()
@@ -365,8 +365,6 @@ async fn fresh(port: u16) {
     // ── the vault open: each works with the vault's keys ──
     reset().await;
     let (a, b) = (replica(None, true).await, replica(None, true).await);
-    assert!(a.k.settings.secret_key.is_some(), "apps that still read the key are given one of the platform's");
-    assert_eq!(a.k.settings.secret_key.as_ref().map(|k| &k.id), b.k.settings.secret_key.as_ref().map(|k| &k.id), "the same on every replica");
     let p = workspace(&a.k, "fresh", port).await;
     // An opt-out link, made on one replica and honoured on the other.
     let token = opt_out_link(&a.k, &p, "+4915199990").await.unwrap();
@@ -503,7 +501,6 @@ async fn upgraded(port: u16) {
     // ── the key gone from the environment: everything made with it still works, on two replicas ──
     drop((a, b));
     let (c, d) = tokio::join!(replica(None, true), replica(None, true));
-    assert_eq!(c.k.settings.secret_key.as_ref().map(|k| k.id.clone()), Some(old.id.clone()), "apps that read the key are given the vault's copy");
     for (r, t) in [(&c, &token), (&d, &token1)] {
         assert_eq!(r.k.opt_out_by_link(t).await.unwrap(), "text", "a link the old key made");
     }

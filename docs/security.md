@@ -47,13 +47,19 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   processes' payloads) uses keys it derives from its own key in the vault, one per use, a workspace's where the thing is
   a workspace's. A new installation has no old key (`FERRUM_SECRET_KEY`) at all; one that had it keeps it adopted in
   the vault, used and never shown, so what it made is still checked and opened after the variable is gone
-  ([Retiring the old key](operations.md#retiring-the-old-key)). With the vault closed, each of these is refused.
+  ([Retiring the old key](operations.md#retiring-the-old-key)). With the vault closed, each of these is refused. The
+  old key is the kernel's alone: no app is given it (its settings' field gives nothing back), and an app opens or checks
+  what it once made with it only through its own handle, for contexts of its own (`open_old`, `seal_old`,
+  `old_fingerprints`).
   Plugins' settings are sealed under each plugin's own key, never stored plain.
 * Keys form a hierarchy: a slot's key, the installation key, a workspace key, an owner key (`platform`, an app, a
   plugin), the secret. Every key below a slot is random, versioned and stored only wrapped: a dump holds no key that
   opens anything without a slot's key. Key material is zeroed when dropped and never formatted, logged or serialised.
 * Its tables are behind row-level security that only the vault's own transactions satisfy (a transaction-local
   setting): the system's transactions, a workspace's and any other query see no row of it.
+* Files an app keeps for its own work (a kind it declares: built artifacts, databases' backups) are reached only through
+  its handle for that kind: the platform's routes for files refuse them to everyone, administrators included, a site of
+  another app cannot answer with one, and a workspace's export leaves them out and says so.
 * An app reaches only its own: it is given a handle bound to its id as it registers, which only the kernel makes and
   which works only with the server that gave it out; no function takes an owner and gives back what is its. Inside one
   process this rests on the shape of the code and on a check in the build (`scripts/secret_paths.py`), not on the

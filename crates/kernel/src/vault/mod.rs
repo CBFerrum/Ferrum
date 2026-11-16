@@ -62,8 +62,9 @@ mod seal;
 mod secrets;
 
 pub use kept::{LegacyKey, Moved};
-pub use keyed::OLD_KEY_FLOOR;
+pub(crate) use keyed::take_old_key_inputs;
 pub(crate) use keyed::{Keyed, PLUGIN_VAULT, Ring, adopted_ids, at_boot, older_builds_refused, sealed_by_vault};
+pub use keyed::{OLD_KEY_FLOOR, OldKey};
 pub(crate) use root::{CHANNEL, Root, finish};
 pub use root::{
     Opened, Opener, Printed, ROOT_FILE, RecoveryKey, Resealing, Rewrap, SlotKind, SlotStatus, Status, open, put_slot, remove_slot, rewrap,
@@ -72,7 +73,7 @@ pub use root::{
 pub use scope::transfer_out;
 pub(crate) use scope::{carry_in, digest, drop_scope, may_carry};
 pub use seal::Kdf;
-pub use secrets::{Carry, Changed, Described, Kind, MAX_OVERLAP_SECS, New, Origin, Rule, Sandbox, USES_PER_HOUR, carried};
+pub use secrets::{Carry, Changed, Described, Kind, MANAGED_BY_APP, MAX_OVERLAP_SECS, New, Origin, Rule, Sandbox, USES_PER_HOUR, carried};
 pub(crate) use secrets::{handler, of_owner as handle_of, sandbox as sandbox_secrets, secret_name_ok, upkeep};
 /// What holds a key, a password or a secret's value, zeroed when dropped: the vault's own type, for its callers.
 pub use zeroize::Zeroizing;

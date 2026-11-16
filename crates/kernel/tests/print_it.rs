@@ -328,8 +328,11 @@ async fn scenario() {
     broken.insert("print/invoice.layout.json".into(), layout_file().replace("\"version\": 1", "\"version\": 1, \"css\": \"x\""));
     assert!(ferrum_meta::catalog::load_package_files(&broken).is_err(), "an unknown key in a layout file is refused");
 
-    let settings =
-        KernelSettings { pdf_url: Some(fake_pdf_renderer().await), secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
+    let settings = KernelSettings {
+        pdf_url: Some(fake_pdf_renderer().await),
+        old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), vec![]),
+        ..Default::default()
+    };
     let k = Kernel::boot(db.clone(), Catalog::from_packages(vec![core, shop]).unwrap(), HookRegistry::default(), settings, Some(Arc::new(Captured)))
         .await
         .expect("boot");

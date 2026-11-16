@@ -32,7 +32,7 @@ async fn replica(key: Option<&SecretKey>, open: bool) -> (Arc<Kernel>, Sealed) {
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
     let mut hooks = HookRegistry::default();
     let platform = hooks.platform_vault();
-    let settings = KernelSettings { secret_key: key.cloned(), ..Default::default() };
+    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(key.cloned(), vec![]), ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core]).unwrap(), hooks, settings, None).await.expect("boot");
     let keys = Arc::new(Keys::default());
     keys.ready(&k, platform);
