@@ -147,7 +147,7 @@ pub struct Capability {
     pub unknown_outcome: UnknownOutcome,
     /// What it means when it reports done: accepted is not completed.
     pub completion: String,
-    /// The capability that undoes this one, where one exists.
+    /// The capability that undoes this one, where one exists: its whole id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compensate_with: Option<String>,
     pub limits: Limits,
@@ -184,13 +184,10 @@ impl Capability {
         Ok(self)
     }
 
-    /// The capability that undoes this one, when its app declares one: an action of the same entity.
+    /// The capability that undoes this one, when its app declares one: `compensate_with`, the whole id the catalog
+    /// gives it.
     pub fn compensation(&self) -> Option<String> {
-        let action = self.compensate_with.as_ref()?;
-        Some(match &self.entity {
-            Some(e) => format!("{}.{}.{action}", self.owner, snake(e)),
-            None => format!("{}.{action}", self.owner),
-        })
+        self.compensate_with.clone()
     }
 
     /// Whether the input's top-level fields are ones the capability declares.
@@ -296,6 +293,14 @@ mod tests {
         let mut b = a.clone();
         b.effect = Effect::Pure;
         assert_ne!(b.compute_digest().unwrap(), a.digest, "calling a write pure is another capability");
+    }
+
+    #[test]
+    fn its_undo_is_the_capability_the_catalog_names() {
+        // The kernel's catalog names the undo by its whole id (crates/kernel/tests/capability_it.rs), which a process's
+        // lock carries as it is.
+        let c = Capability { compensate_with: Some("procurement.material_request.cancel".into()), ..cap() };
+        assert_eq!(c.compensation().as_deref(), Some("procurement.material_request.cancel"));
     }
 
     #[test]
