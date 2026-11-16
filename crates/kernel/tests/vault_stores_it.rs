@@ -576,8 +576,43 @@ async fn scenario() {
     assert!(left.iter().all(|(_, n, _)| !n.starts_with("field.") && !n.starts_with("channel.")), "{left:?}");
 
     moves_and_sandboxes().await;
+    keys_are_never_made_in_a_callers_transaction().await;
     reset().await;
     reset_on(&other_url()).await;
+}
+
+/// A secret field written inside a request's open transaction, on a workspace whose vault has no key yet, then the
+/// vault asked on another connection before that transaction commits: nothing waits (the uncommitted insert of the key
+/// used to hold the other connection until the lock timeout), on two replicas at once, and the workspace ends with one
+/// workspace key and one owner key.
+async fn keys_are_never_made_in_a_callers_transaction() {
+    reset().await;
+    let first = replica(None, true).await;
+    let (tenant, _) = workspace(&first.k, "keyless").await;
+    // No key at all in the workspace, as before anything of it was sealed.
+    let mut tx = first.k.db.pool.begin().await.unwrap();
+    sqlx::query("select set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
+    for q in ["delete from vault.secret where scope = $1", "delete from vault.key where scope = $1 and owner <> ''", "delete from vault.key where scope = $1"] {
+        sqlx::query(q).bind(tenant).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let (a, b) = (replica(None, true).await, replica(None, true).await);
+    let ws = Scope::Workspace(tenant);
+    let write_then_ask = |r: Replica, c: Ctx, title: &'static str| async move {
+        let mut tx = r.k.db.tenant_tx(tenant).await.unwrap();
+        r.k.insert_tx(&c, &mut tx, "Lead", obj(json!({"title": title, "api_key": "Kl-1717-in-a-request"}))).await.unwrap();
+        let asked = std::time::Instant::now();
+        let derived = tokio::time::timeout(std::time::Duration::from_secs(5), r.crm.derive(&r.k, ws, "keys-while-open")).await;
+        let waited = asked.elapsed();
+        tx.commit().await.unwrap();
+        (derived.is_ok_and(|d| d.is_ok()), waited)
+    };
+    let (ca, cb) = (ctx(&a.k, "keyless", tenant).await, ctx(&b.k, "keyless", tenant).await);
+    let ((done_a, waited_a), (done_b, waited_b)) = tokio::join!(write_then_ask(a, ca, "A"), write_then_ask(b, cb, "B"));
+    assert!(done_a && done_b, "the vault answered on another connection before the commit ({waited_a:?}, {waited_b:?})");
+    assert!(waited_a.as_secs() < 3 && waited_b.as_secs() < 3, "and nothing waited: {waited_a:?}, {waited_b:?}");
+    let keys: Vec<(String, i64)> = sql(&first.k, "select owner, count(*) from vault.key where scope = $1 group by owner order by owner", &[tenant]).await;
+    assert_eq!(keys, vec![(String::new(), 1), ("crm".to_string(), 1)], "one workspace key and one owner key");
 }
 
 /// A replica with the old key `key` and `retired` being rotated out, the vault open.
