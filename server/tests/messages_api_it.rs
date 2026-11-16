@@ -8,7 +8,6 @@ mod common;
 use axum::response::IntoResponse;
 use ferrum_kernel::messages::ChannelInput;
 use ferrum_kernel::pack::ExportOptions;
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::{Catalog, MessageDef};
@@ -64,13 +63,14 @@ fn an_editor_previews_saves_and_packs_message_templates() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     common::reset(&db.pool).await;
+    common::open_vault(&db, &url).await;
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages/core")).expect("core");
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/note.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let notes = ferrum_meta::catalog::load_package_files(&files).expect("package");
-    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
+    let settings = KernelSettings::default();
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, notes]).unwrap(), HookRegistry::default(), settings, Some(std::sync::Arc::new(Mailer)))
         .await
         .expect("boot");

@@ -7,7 +7,6 @@
 
 use async_trait::async_trait;
 use ferrum_kernel::saga::{Saga, Step, StepCx};
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
@@ -136,7 +135,7 @@ async fn workflows_undo_what_they_did_when_they_cannot_finish() {
         ["reserve", "charge", "ship"].into_iter().map(|name| Arc::new(Act { name, world: world.clone() }) as Arc<dyn Step>).collect();
     let mut hooks = HookRegistry::default();
     hooks.add_job_handler(Arc::new(Saga::new("order", "Order", steps)));
-    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([4u8; 32])), vec![]), ..Default::default() };
+    let settings = KernelSettings::default();
     let k = Kernel::boot(db, catalog, hooks, settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {

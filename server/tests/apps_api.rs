@@ -438,23 +438,18 @@ fn the_app_manager_installs_upgrades_and_removes_apps() {
 async fn scenario() {
     // ── a cluster: core plus the native app `notes`, two workspaces ──
     let url = std::env::var("FERRUM_APPS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_apps_api_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     common::reset(&db.pool).await;
+    common::open_vault(&db, &url).await;
     let dir = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../packages");
     let [core, contacts, parties] = ["core", "contacts", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
-    // As on a server: the plugin host keeps plugins' settings sealed (here with the old key: the vault is not opened).
+    // As on a server: the plugin host keeps plugins' settings sealed (the vault open).
     let host = PluginHost::new(false).unwrap();
     let mut hooks = HookRegistry::default();
     host.use_vault(hooks.platform_vault());
-    let k = Kernel::boot(
-        db,
-        Catalog::from_packages(vec![core, contacts, parties, notes_package()]).unwrap(),
-        hooks,
-        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([5u8; 32])), vec![]), ..Default::default() },
-        None,
-    )
-    .await
-    .expect("boot");
+    let k = Kernel::boot(db, Catalog::from_packages(vec![core, contacts, parties, notes_package()]).unwrap(), hooks, KernelSettings::default(), None)
+        .await
+        .expect("boot");
     // Rate limits hold across replicas: two limiters on one database share their count.
     let (a, b) = (
         ferrum_server::state::RateLimiter::shared("it", std::time::Duration::from_secs(60), 3, k.db.clone()),

@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use ferrum_kernel::capability::Invocation;
 use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::messages::{self, ChannelInput, Message, Recipient};
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, DocHook, Error, HookCtx, HookRegistry, Kernel, KernelSettings, Result};
 use ferrum_meta::Catalog;
@@ -144,19 +143,22 @@ fn secrets_come_to_rest_nowhere() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url.clone(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/card.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let vault = ferrum_meta::catalog::load_package_files(&files).expect("package");
     let mut hooks = HookRegistry::default();
     hooks.register("Card", Arc::new(Vault));
-    let settings = KernelSettings {
-        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]),
-        webhooks_allow_private: true,
-        ..Default::default()
-    };
+    let settings = KernelSettings { webhooks_allow_private: true, ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, vault]).unwrap(), hooks, settings, Some(Arc::new(Captured))).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {

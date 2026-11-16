@@ -4,7 +4,6 @@
 //!
 //! Every run continues as new after each event it handles, so each scenario also crosses continuations.
 
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, HookRegistry, Kernel, KernelSettings};
 use ferrum_logic::calendar::Calendar;
@@ -196,13 +195,20 @@ async fn scenario() {
         return;
     }
     let url = std::env::var("FERRUM_PROCESS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_process_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 16, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 16, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url.clone(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/procs.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let pkg = ferrum_meta::catalog::load_package_files(&files).expect("package");
-    // Sealed with the old key while it seals them (no vault here): ferrum_kernel::vault, keyed.rs.
+    // Sealed with the platform's key for processes, in the vault: ferrum_kernel::vault, keyed.rs.
     let keys = Arc::new(ferrum_process::Keys::default());
     let settings = Settings {
         address,
@@ -214,8 +220,7 @@ async fn scenario() {
     let mut hooks = HookRegistry::default();
     let platform = hooks.platform_vault();
     hooks.add_event_sink(Arc::new(Dispatch::new(client.clone(), settings.queue.clone()).continuing_after(1)));
-    let settings_k =
-        KernelSettings { process_runtime: true, old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([9u8; 32])), vec![]), ..Default::default() };
+    let settings_k = KernelSettings { process_runtime: true, ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, settings_k, None).await.expect("boot");
     keys.ready(&k, platform);
     let worker = spawn(k.clone(), settings.clone()).await.expect("worker");

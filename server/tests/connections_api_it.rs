@@ -13,7 +13,6 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use ferrum_kernel::connections::ConnectionInput;
 use ferrum_kernel::pack::ExportOptions;
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
@@ -80,17 +79,14 @@ fn connections_are_called_and_carried() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     common::reset(&db.pool).await;
+    common::open_vault(&db, &url).await;
     let core = ferrum_meta::catalog::load_package_dir(&FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../packages/core")).expect("core");
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/alert.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let alerts = ferrum_meta::catalog::load_package_files(&files).expect("package");
-    let settings = KernelSettings {
-        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]),
-        public_url: Some("https://ferrum.example.test".into()),
-        ..Default::default()
-    };
+    let settings = KernelSettings { public_url: Some("https://ferrum.example.test".into()), ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, alerts]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
     let admin = workspace(&k, "acme").await;
 

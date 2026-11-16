@@ -182,8 +182,15 @@ fn documents_from_data() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url.clone(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/offer.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
@@ -201,11 +208,7 @@ async fn scenario() {
         assert!(err.contains(says), "{says}: {err}");
     }
 
-    let settings = KernelSettings {
-        pdf_url: Some(fake_pdf_renderer(Duration::ZERO).await),
-        old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), vec![]),
-        ..Default::default()
-    };
+    let settings = KernelSettings { pdf_url: Some(fake_pdf_renderer(Duration::ZERO).await), ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, letters]).unwrap(), HookRegistry::default(), settings, Some(Arc::new(Captured)))
         .await
         .expect("boot");

@@ -5,7 +5,6 @@
 //! people and storage quotas hold; an address makes a few workspaces at most.
 
 use ferrum_kernel::plans;
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::signup::{SignUp, SignupPolicy};
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
@@ -22,12 +21,7 @@ fn url() -> String {
 async fn boot(db: Db, signup: SignupPolicy) -> Arc<Kernel> {
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     let plans = json!({"free": {"people": 2, "storage_bytes": 1000, "ai_tokens_month": 50000}, "team": {"people": 10}});
-    let settings = KernelSettings {
-        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]),
-        plans: plans.as_object().unwrap().clone(),
-        signup,
-        ..Default::default()
-    };
+    let settings = KernelSettings { plans: plans.as_object().unwrap().clone(), signup, ..Default::default() };
     Kernel::boot(db, catalog, HookRegistry::default(), settings, Some(Arc::new(Quiet))).await.expect("boot")
 }
 

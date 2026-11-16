@@ -79,10 +79,7 @@ async fn installation(url: &str, key: SecretKey, files: &Path) -> Installation {
     let mut crm = None;
     hooks.app("crm", &[], |h| crm = Some(h.vault()));
     let catalog = ferrum_meta::Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    let k =
-        Kernel::boot(db, catalog, hooks, KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(key.clone()), vec![]), ..Default::default() }, None)
-            .await
-            .expect("boot");
+    let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
     k.set_file_store(Arc::new(DirFiles(files.to_path_buf())));
     k.ensure_directory().await.unwrap();
     Installation { url: url.to_string(), k, platform, crm: crm.unwrap(), key, files: files.to_path_buf() }

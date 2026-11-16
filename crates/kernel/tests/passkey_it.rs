@@ -8,7 +8,6 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use ciborium::value::Value as Cbor;
 use ferrum_kernel::gate::Arrival;
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::shell::StepUp;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
@@ -36,11 +35,7 @@ async fn boot(rp: Option<&str>, reset: bool) -> Arc<Kernel> {
             .expect("reset");
     }
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    let settings = KernelSettings {
-        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]),
-        passkey_rp: rp.map(str::to_string),
-        ..Default::default()
-    };
+    let settings = KernelSettings { passkey_rp: rp.map(str::to_string), ..Default::default() };
     Kernel::boot(db, catalog, HookRegistry::default(), settings, None).await.expect("boot")
 }
 
