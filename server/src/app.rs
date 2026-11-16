@@ -131,8 +131,8 @@ impl Hooks for App {
         "ferrum"
     }
 
-    /// Loco's log, with traces to an OpenTelemetry collector when the settings name one (telemetry.rs). Loco sets the log
-    /// up after the first set-up's `after_context`, so the settings (and the vault's secrets) are read by then.
+    /// Loco's log, with traces to an OpenTelemetry collector when the settings name one (telemetry.rs). It is set up after
+    /// the set-up's `after_context` ([`start`]), so the settings (and the vault's secrets) are read by then.
     fn init_logger(ctx: &AppContext) -> Result<bool> {
         crate::telemetry::init(ctx)
     }
@@ -479,18 +479,6 @@ impl Hooks for App {
             Ok(0) => {}
             Ok(made) => tracing::info!(made, "workspaces' hosts got their main one"),
             Err(e) => tracing::error!("workspaces' main hosts: {e}"),
-        }
-        // `ferrum start`: Loco sets up a context only to read the configuration, then the one that serves, and keeps the
-        // first as long as the process runs. Once this one is ready, the earlier one's pools are closed, so that they hold
-        // no connections (docs/operations.md, "Database role").
-        if is_start(std::env::args()) {
-            let earlier = EARLIER_SET_UP.lock().ok().and_then(|mut e| e.replace((kernel.db.clone(), ctx.db.clone())));
-            if let Some((db, loco)) = earlier {
-                tokio::spawn(async move {
-                    db.close().await;
-                    let _ = loco.close_by_ref().await;
-                });
-            }
         }
         let (tx, _rx) = watch::channel(false);
         let db = kernel.db.clone();
@@ -1140,24 +1128,58 @@ pub(crate) fn signup_settings(
     Ok((plans, policy))
 }
 
-/// The pools of the last set-up of this process (see `is_start`).
-static EARLIER_SET_UP: std::sync::Mutex<Option<(Db, sea_orm::DatabaseConnection)>> = std::sync::Mutex::new(None);
-
-/// `ferrum start` (the server binary, not a test's): the command whose set-up Loco does twice.
+/// `ferrum start` (the server binary, not a test's): the process that serves.
 fn is_start(args: impl IntoIterator<Item = String>) -> bool {
-    let args: Vec<String> = args.into_iter().collect();
-    let server = args.first().and_then(|a| Path::new(a).file_name()).is_some_and(|n| n == "ferrum");
-    let mut rest = args.iter().skip(1);
-    let command = loop {
-        match rest.next() {
-            Some(a) if a == "-e" || a == "--environment" => {
-                rest.next();
-            }
-            Some(a) if a.starts_with('-') => {}
-            other => break other,
+    start_command(args).is_some()
+}
+
+/// `ferrum start`'s command line, as [`start`] runs it.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct StartCommand {
+    environment: Option<String>,
+    no_banner: bool,
+}
+
+/// `ferrum start` (the server binary's: a test binary given `start` as its filter is not), as [`start`] runs it: the
+/// environment (`-e`) and `--no-banner`; `Err` for another option of Loco's `start` (the port and the address are
+/// settings, and this server has no Loco workers or scheduler). `None` for another command, which Loco's runs.
+pub(crate) fn start_command(args: impl IntoIterator<Item = String>) -> Option<std::result::Result<StartCommand, String>> {
+    let mut args = args.into_iter();
+    Path::new(&args.next()?).file_name().filter(|n| *n == "ferrum")?;
+    let (mut command, mut start) = (StartCommand::default(), false);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "-e" | "--environment" => command.environment = args.next(),
+            "start" | "s" if !start => start = true,
+            "-n" | "--no-banner" if start => command.no_banner = true,
+            _ if !start => return None,
+            other => return Some(Err(format!("ferrum start takes -e and --no-banner, not {other} (PORT and BINDING are settings)"))),
         }
-    };
-    server && command.is_some_and(|c| c == "start")
+    }
+    start.then_some(Ok(command))
+}
+
+/// `ferrum start`: the set-up once, then the server. Loco's own `start` builds a context to read the configuration and set
+/// the log up, then another to serve: every replica set itself up twice (the vault, the kernel's boot, every app's
+/// registration, the start's own steps) and kept both, the first before there was a log. The set-up's own lines go to the
+/// log as the configuration's files and the environment set it; what follows, as its settings do (`init_logger`).
+pub(crate) async fn start(command: StartCommand) -> Result<()> {
+    use tracing::instrument::WithSubscriber;
+    use tracing_subscriber::layer::SubscriberExt;
+    let environment: Environment = command.environment.unwrap_or_else(loco_rs::environment::resolve_from_env).into();
+    let config = App::load_config(&environment).await?;
+    let log = &config.logger;
+    let stdout = log.enable.then(|| loco_rs::logger::init_layer(std::io::stdout, &log.format, true));
+    let filter = loco_rs::logger::init_env_filter::<App>(log.override_filter.as_ref(), &log.level);
+    let early = tracing::Dispatch::new(tracing_subscriber::registry().with(stdout).with(filter));
+    let ctx = loco_rs::boot::create_context::<App>(&environment, config).with_subscriber(early).await?;
+    if !App::init_logger(&ctx)? {
+        loco_rs::logger::init::<App>(&ctx.config.logger)?;
+    }
+    loco_rs::db::converge::<App, Migrator>(&ctx, &ctx.config.database).await?;
+    let boot = loco_rs::boot::run_app::<App>(&StartMode::ServerOnly, ctx).await?;
+    let params = ServeParams { port: boot.app_context.config.server.port, binding: boot.app_context.config.server.binding.clone() };
+    loco_rs::boot::start::<App>(boot, params, command.no_banner).await
 }
 
 /// Whether the command line runs `ferrum task migrate`.
@@ -1263,6 +1285,13 @@ mod tests {
         assert!(!args(&["ferrum", "task", "migrate"]));
         // A test binary given `start` as its filter: its set-ups are each a test's own.
         assert!(!args(&["/target/debug/deps/apps_api-0123abcd", "start"]));
+        let command = |a: &[&str]| super::start_command(a.iter().map(|s| s.to_string()));
+        assert_eq!(
+            command(&["ferrum", "-e", "production", "start", "--no-banner"]),
+            Some(Ok(super::StartCommand { environment: Some("production".into()), no_banner: true }))
+        );
+        assert!(matches!(command(&["ferrum", "start", "--worker"]), Some(Err(_))), "no Loco workers here");
+        assert_eq!(command(&["ferrum", "--help"]), None, "Loco's command line");
     }
 
     use super::*;

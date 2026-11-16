@@ -82,8 +82,8 @@ fn provider(traces: &Traces) -> Result<SdkTracerProvider, String> {
     Ok(SdkTracerProvider::builder().with_batch_exporter(exporter).with_resource(resource).build())
 }
 
-/// Sets up the log as Loco would (its filter, its format), with traces to the collector the settings name, as the first
-/// of Loco's set-ups read them (`ctx`'s replica state); `false` leaves the log to Loco.
+/// Sets up the log as Loco would (its filter, its format), with traces to the collector the settings name, as the set-up
+/// read them (`ctx`'s replica state); `false` leaves the log to Loco.
 pub fn init(ctx: &AppContext) -> loco_rs::Result<bool> {
     let Some(st) = ctx.shared_store.get::<crate::state::AppState>() else { return Ok(false) };
     let snapshot = &st.live_settings.start.snapshot;

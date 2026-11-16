@@ -390,7 +390,6 @@ What one replica holds, with the defaults (counted from the code on 14 November 
 | Listeners: metadata, users, plugin sockets, live updates, co-editing | the direct address | 5 | One each, for as long as the replica runs |
 | Session locks: apps' upkeep, app stores' revocations | the direct address | 3 | One per app whose upkeep runs (`FERRUM_UPKEEP_CONCURRENCY`, 2), one for revocations, while each runs |
 | At start: the two-version window's lock, then the migrations', the schema sync's and the upgrade steps' locks | the direct address | 2 | Before the replica serves or works: the window's lock is a connection outside every pool, the others one at a time |
-| The first of Loco's two set-ups (`ferrum start` sets up twice and keeps the first) | `DATABASE_URL` | its own pools | Until the set-up that serves is ready; then closed |
 | The Temporal worker (`TEMPORAL_ADDRESS`) | none: it talks to Temporal | 0 | |
 | The region witness (`FERRUM_AUTHORITY_WITNESS_URL`) | another database | 2 there | When set |
 
