@@ -262,7 +262,7 @@ impl Kernel {
              picked as ( \
                select claimed.tenant_id, claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) order by random()) w \
                cross join lateral (select j.tenant_id, j.id from job j where j.tenant_id = w.tenant_id and (not j.cancel_requested or j.undo_on_cancel) \
-                 and (j.build_date is null or j.build_date <= $5) \
+                 and j.build_date <= $5 \
                  and ((j.status = 'queued' and j.run_at <= now()) or (j.status = 'running' and j.lease_until < now())) \
                  and (select count(*) from job r where r.tenant_id = w.tenant_id and r.status = 'running' and r.lease_until >= now()) < $3 \
                  order by j.priority, j.run_at limit 1 for update of j skip locked) claimed \
