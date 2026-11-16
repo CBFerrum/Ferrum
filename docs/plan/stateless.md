@@ -436,6 +436,35 @@ schedule, with a restore drill. Its administrator is made without a person. The 
 and runs as any number of replicas. A Code app, in its own repository, gives repositories, access by membership,
 tokens, sign-in to the forge through Ferrum and CI runners; Cloud keeps running the forge.
 
+### D8: signing in to the forge through Ferrum (built)
+
+Ferrum is an OpenID Connect provider for the programs installed apps run beside it (crates/kernel/src/oidc.rs; docs/api.md,
+*Signing in to programs beside Ferrum*). What was decided, and why:
+
+- **The issuer is the workspace's address the request came to** (every address that serves one workspace's shell is
+  one, each with the same subjects, and a code is good only where it was asked). Without a base domain: the
+  installation's one workspace on its own host, or a domain of a workspace's own; a host several workspaces share is
+  no workspace's, and answers nothing. A forwarding address serves nothing, and answers nothing. A sandbox answers
+  nothing either, rather than being an issuer of its own: nothing a sandbox does reaches outside (`Kernel::outward`),
+  and a companion is outside; its companions' clients are not copied, so none could be given a code there.
+- **A companion's client is its app's**, declared in code per workspace (`Vault::companion`), its secret the app's own
+  managed secret; there is no consent page. The app names the right that lets a person in and the claims that place
+  them. Dynamic registration stays as it was and never gives `openid`.
+- **Ed25519.** The vault's own key kind (`oidc.signing`, a platform secret per workspace, versions with a day's
+  overlap, `sign_at` naming each signature's version). The real Forgejo 17.0.1 accepted EdDSA, and ES256, and also a
+  token with a signature of zeros: it never fetches `jwks_uri`, and checks the issuer, the audience, the expiry and the
+  user-info's subject, trusting TLS to the token endpoint for the rest. Forgejo accepting anything, the vault's kind
+  is the smallest choice; a relying party that verifies only RS256 would need an RSA key, which ring signs with but
+  cannot make (OpenID Connect Discovery lists RS256 as required; Core exempts providers that answer only at the token
+  endpoint, as this one does).
+- **Nothing outlives the browser session**: no refresh tokens for companions; codes and access tokens are refused once
+  the session or the person's access ended; the app is told within 15 seconds (`ferrum.companion.signed_out`) and ends
+  the companion's own session. API clients' refresh tokens are as they were: they end with signing out everywhere, a
+  new password or deactivation, not with one device's sign-out (their consent page says so).
+- **The forge's side is Cloud's**: an authentication source per workspace, the forge's account name and an address
+  only that account has as claims, and locking the account to end its sessions (docs/app-contract.md, *A companion's
+  sign-in*). Rehearsed against the real Forgejo: scripts/oidc_rehearsal.sh.
+
 ## D1 and D2 closed: the environment's last readers (built)
 
 What still decided anything from the environment after D5, and what a new installation still had to be given besides
