@@ -3719,6 +3719,7 @@ dependencies = [
  "hex",
  "regex",
  "rust_decimal",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml_ng",

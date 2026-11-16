@@ -114,6 +114,59 @@ sees it change once; Cloud opens and writes what it sealed with `open_old` and `
 retired_secret_keys: … }`) keeps working unchanged: the kernel takes those fields in as it boots and empties them, so
 nothing reads the key back from its settings.
 
+## Using another app's operations
+
+**Offering one.** An app offers an operation to other apps as an action on one of its records, or on a record it
+extends, with a contract: `hidden`, so that it is no button, and in the catalog all the same (docs/logic/capabilities.md).
+An action a package adds to another package's entity is the adding package's: `{adder}.{entity}.{action}`, at the
+adder's version. Its `permission` is for whoever reaches it directly: a person through the API, an agent, a process.
+
+**Declaring a use.** The package that needs another app's operation says so, within what it depends on:
+
+```yaml
+package: bookings_payments
+depends: [bookings, commerce]
+uses:
+  - {capability: commerce.sales_invoice.request_payment, version: "^0.6"}
+```
+
+The catalog refuses a use of a package it does not depend on, and a version that is not a range. The install screen
+lists the uses with the app's other permissions, and an upgrade that adds one asks again; disabling the app takes its
+packages, and with them its uses, away.
+
+**Calling it**, in the caller's transaction, with the vault handle the app's registration took:
+
+```rust
+let ask = Invocation::new("commerce.sales_invoice.request_payment", json!({"id": invoice, "params": {"gateway": gateway}}));
+let receipt = k.call_tx(&handle, ctx, tx, &ask.key(format!("deposit:{booking}"))).await?;
+```
+
+- **Granted, or not.** A package of the app installed in the workspace declares the capability, or the call is
+  `forbidden`. The operation must be installed, at a version within a range declared, or it is
+  `capability_unavailable`. An action's params are those it declares, each it needs given, or the call is `invalid`.
+- **For the person.** It runs as the system on behalf of the person in `ctx`, within their zone: the use, approved at
+  install, stands in for the operation's `permission`, and nothing else is reached through it. The person is the
+  receipt's actor, and the maker of what it makes.
+- **Once, and the app's own.** The key is the app's (`{app}:{key}`): two apps never meet on one, and a key one caller
+  took answers no other. The same key again answers what was done, as the first call's result, whoever the app acts
+  for now (a job with no person, another person): the app did it, and may need the id of what it made. With other
+  input it is refused (`input_changed`).
+- **Done or refused, never left waiting.** An operation that would wait for an approval is refused. A refused call
+  leaves nothing of itself in the caller's transaction: the call runs inside a savepoint, and on any refusal (the
+  operation's own check failing after it wrote, an approval it would wait for) everything it wrote, its receipt and
+  any approval it parked are rolled back to it, and its key is free again. What the caller wrote before the call stays,
+  so a caller may carry on without it ("no deposit: confirm the booking anyway") and commit. Calls nest: a call made
+  inside another app's operation is undone alone, and a refusal of the outer one takes the inner ones with it. A
+  caller that does not carry on rolls back as usual, and everything goes together. The cost is two statements per call
+  (`savepoint`, then `release`), three on a refusal.
+- **Recorded.** The receipt names the app (`logic_effect.caller`) beside the person, and finding an operation
+  (`GET /api/admin/operations/{id}`) shows it as each effect's `caller`.
+- **Seen.** `GET /api/admin/apps/connections` (administrators, docs/api.md) lists, for the workspace, what each
+  installed package uses with its range and the version installed, the hooks apps run on other packages' records, and
+  each app's calls of the last 30 days by capability, with a count and the latest time.
+
+The handle is what proves which app calls: keep it inside the app's crate (`pub(crate)`), never handed to another.
+
 ## Files an app keeps for its own work
 
 What an app keeps for its own work in the platform's file store (built artifacts, databases' backups, a customer's

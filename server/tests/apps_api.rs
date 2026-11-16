@@ -736,8 +736,12 @@ async fn scenario() {
     let joined = dev.plan(&their_ctx().await, "gw", Some("2.1.0")).await.unwrap();
     dev.install(&their_ctx().await, "gw", Some("2.1.0"), &joined.digest, false).await.unwrap();
     let their_serial = k.add_customization(&their_ctx().await, "GwDevice", label("Their serial"), None).await.unwrap();
-    // 2.2.0 names the serial, which this workspace has named for itself.
+    // 2.2.0 names the serial, which this workspace has named for itself, and uses an operation of the kit.
     let mut relabelled = gw("2.2.0", &["api.example.com", "hooks.example.com"]);
+    relabelled.insert(
+        "packages/gw/package.yaml".into(),
+        b"package: gw\nversion: 2.2.0\ndepends: [core, kit]\nuses:\n  - {capability: kit.kt_thing.create, version: '^1'}\n".to_vec(),
+    );
     relabelled.insert(
         "packages/gw/entities/device.yaml".into(),
         b"name: GwDevice\nlabel: Device\nkind: master\nfields:\n  - {name: serial, type: data, label: Serial number}\n".to_vec(),
@@ -755,7 +759,8 @@ async fn scenario() {
     );
     let up = dev.plan(&ctx().await, "gw", Some("2.2.0")).await.unwrap();
     assert_eq!(up.steps.iter().map(|s| (s.id.as_str(), s.action)).collect::<Vec<_>>(), [("gw", StepAction::Upgrade)]);
-    assert_eq!(up.increases, ["calls host: hooks.example.com"]);
+    assert_eq!(up.increases, ["calls host: hooks.example.com", "uses kit.kt_thing.create"], "a use added asks again");
+    assert_eq!(up.permissions.uses.iter().collect::<Vec<_>>(), ["kit.kt_thing.create"], "and is in the consent");
     // What it changes under a customization is said before anyone agrees, and agreed to (FEO-056).
     assert_eq!(up.customizations.iter().map(|c| (c.id, c.now.clone())).collect::<Vec<_>>(), [(serial, json!("Serial number"))]);
     assert!(up.warnings.iter().any(|w| w.starts_with("Your customization of Device's serial (label) replaces what this update changes")), "{:?}", up.warnings);

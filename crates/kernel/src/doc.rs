@@ -1054,7 +1054,7 @@ impl Kernel {
                 return Err(Error::invalid(format!("the conditions for '{action}' are not met")));
             }
         }
-        let params = transition_params(t, params)?;
+        let params = given_params(&t.action, &t.params, params)?;
         let target = wf.def.states.iter().find(|s| s.name == t.to).ok_or_else(|| Error::internal("workflow target state missing"))?;
         check_state_needs(&ent, &doc, Some((target, action)))?;
         let mut next = doc.clone();
@@ -2209,28 +2209,26 @@ pub(crate) async fn raised_linked(tx: &mut Tx, ctx: &Ctx, ent: &EffEntity, doc: 
     Ok(raised)
 }
 
-/// What transition `t` is given (an object, or null for nothing), refused when a required one is missing or empty or
-/// one it does not ask for is sent: the server says so, not only the form (BD-19).
-fn transition_params(t: &ferrum_meta::WorkflowTransition, params: &Value) -> Result<Value> {
+/// What `action` (a transition's, or an action's called by another app) is given as the `declared` params (an object, or
+/// null for nothing), refused when a required one is missing or empty or one it does not ask for is sent: the server
+/// says so, not only the form (BD-19).
+pub(crate) fn given_params(action: &str, declared: &[ferrum_meta::ActionParam], params: &Value) -> Result<Value> {
     let given = match params {
         Value::Null => Map::new(),
         Value::Object(m) => m.clone(),
-        _ => return Err(Error::invalid(format!("'{}' takes its parameters as an object", t.action))),
+        _ => return Err(Error::invalid(format!("'{action}' takes its parameters as an object"))),
     };
     let mut errors: Vec<FieldError> =
-        given.keys().filter(|k| !t.params.iter().any(|p| &p.name == *k)).map(|k| FieldError::new(k, format!("'{}' does not ask for this", t.action))).collect();
+        given.keys().filter(|k| !declared.iter().any(|p| &p.name == *k)).map(|k| FieldError::new(k, format!("'{action}' does not ask for this"))).collect();
     errors.extend(
-        t.params
-            .iter()
-            .filter(|p| p.required && given.get(&p.name).is_none_or(is_empty))
-            .map(|p| FieldError::new(&p.name, format!("is needed to {}", t.action))),
+        declared.iter().filter(|p| p.required && given.get(&p.name).is_none_or(is_empty)).map(|p| FieldError::new(&p.name, format!("is needed to {action}"))),
     );
     if !errors.is_empty() {
         return Err(Error::Validation(errors));
     }
     // One it asks for and was not given reads as null, so an expression may ask about it.
     let mut given = given;
-    for p in &t.params {
+    for p in declared {
         given.entry(p.name.clone()).or_insert(Value::Null);
     }
     Ok(Value::Object(given))

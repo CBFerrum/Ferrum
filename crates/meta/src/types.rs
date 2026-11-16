@@ -72,6 +72,20 @@ pub struct PackageManifest {
     /// a release changes one the workspace has not edited, and flags one it has.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub automations: Vec<PackageAutomation>,
+    /// Operations of packages it depends on that its app calls through the gate (`Kernel::call_tx`): approved with the
+    /// app when it is installed, and refused to the app where none of its packages installed there declares them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<UseDef>,
+}
+
+/// An operation of another package that a package's app calls ([`PackageManifest::uses`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UseDef {
+    /// The capability's id in the catalog, `{package}.{entity}.{operation}`, of a package it depends on.
+    pub capability: String,
+    /// The versions of it the app was built for, a semver range (`^0.6`): another installed version is not called.
+    pub version: String,
 }
 
 /// A package's approval policy on submitting or cancelling its documents, or on one of its entities' actions
@@ -921,6 +935,10 @@ pub struct ActionDef {
     /// customization is saved. An action with effects needs no handler.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<Value>,
+    /// The package whose overlay added it to another package's entity, as the schema is built (never written): its
+    /// capability is that package's, `{origin}.{entity}.{action}` at its version.
+    #[serde(skip)]
+    pub origin: Option<String>,
 }
 
 /// A service target: "this must happen within so much working time" (docs/api.md, "Service targets"). The

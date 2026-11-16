@@ -14,6 +14,7 @@
 use crate::ctx::{Access, Action, Ctx};
 use crate::db::{Tx, with_retry};
 use crate::error::{Error, Result};
+use crate::vault::Vault;
 use crate::{Doc, Kernel};
 use ferrum_logic::capability::{Capability, Effect, Idempotency, Limits, Operation, Profile, UnknownOutcome, object_schema, snake};
 use ferrum_logic::refusal::{Code, Refusal};
@@ -74,10 +75,10 @@ fn refused(code: Code, message: impl Into<String>) -> Error {
     Refusal::new(code, message).into()
 }
 
-/// The version an entity's capabilities carry: its package's, or for a workspace's own entity, the
+/// The version capabilities of `package` carry: the package's, or for a workspace's own entity (`tenant`), the
 /// workspace schema's revision.
-fn version_of(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> String {
-    match k.registry.catalog().package(&ent.package) {
+fn version_of(k: &Kernel, ctx: &Ctx, package: &str) -> String {
+    match k.registry.catalog().package(package) {
         Some(p) => p.manifest.version.clone(),
         None => format!("schema-{}", ctx.schema.version),
     }
@@ -187,7 +188,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
     }
     let name = ent.def.name.as_str();
     let label = ent.def.label.as_str();
-    let version = version_of(k, ctx, ent);
+    let version = version_of(k, ctx, &ent.package);
     let owner = ent.package.as_str();
     let prefix = format!("{owner}.{}", snake(name));
     let record = crate::describe::entity_schema(ctx, ent, 0);
@@ -290,6 +291,10 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         if a.hidden && a.contract.is_none() {
             continue;
         }
+        // One another package's overlay added is that package's operation, its code behind it: its id, owner and version.
+        let origin = a.origin.as_deref().unwrap_or(owner);
+        let of = |package: &str| format!("{package}.{}", snake(name));
+        let version = if origin == owner { version.clone() } else { version_of(k, ctx, origin) };
         let contract = a.contract.clone().unwrap_or_default();
         let effect = contract.effect.unwrap_or(if a.read_only { Effect::Query } else { Effect::TransactionalAction });
         let mut params = Map::new();
@@ -311,9 +316,9 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
             .clone()
             .unwrap_or_else(|| if effect.changes() { format!("{} is done, committed with this receipt", a.label) } else { format!("What {} reads", a.label) });
         let mut c = capability(
-            format!("{prefix}.{}", a.name),
+            format!("{}.{}", of(origin), a.name),
             &version,
-            owner,
+            origin,
             Some(name),
             Operation::Action(a.name.clone()),
             a.label.clone(),
@@ -333,7 +338,11 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         if let Some(days) = contract.retention_days {
             c.retention_days = days;
         }
-        c.compensate_with = contract.compensate_with.as_ref().map(|undo| format!("{prefix}.{undo}"));
+        // The undo is named where it comes from: the entity's own action, or the one a package added.
+        c.compensate_with = contract.compensate_with.as_ref().map(|undo| {
+            let from = ent.def.actions.iter().find(|x| &x.name == undo).and_then(|x| x.origin.as_deref()).unwrap_or(owner);
+            format!("{}.{undo}", of(from))
+        });
         out.push(c);
     }
     if let Some(wf) = &ent.workflow {
@@ -471,12 +480,9 @@ impl Kernel {
         let candidates = if id.starts_with("ferrum.") {
             platform_capabilities()
         } else {
-            ctx.schema
-                .entities
-                .values()
-                .filter(|e| id.starts_with(&format!("{}.{}.", e.package, snake(&e.def.name))))
-                .flat_map(|e| entity_capabilities(self, ctx, e))
-                .collect()
+            // `{package}.{entity}.…`: the package is the entity's, or the one whose overlay added the action.
+            let entity = id.split('.').nth(1).unwrap_or_default();
+            ctx.schema.entities.values().filter(|e| snake(&e.def.name) == entity).flat_map(|e| entity_capabilities(self, ctx, e)).collect()
         };
         let found = candidates.into_iter().find(|c| c.id == id).and_then(|c| c.sealed().ok());
         match found {
@@ -559,6 +565,68 @@ impl Kernel {
 
     async fn invoke_tx_as(&self, ctx: &Ctx, tx: &mut Tx, inv: &Invocation, granted: bool) -> Result<Receipt> {
         let cap = self.capability_as(ctx, &inv.capability, granted)?;
+        self.run_capability(ctx, tx, cap, inv, None).await
+    }
+
+    /// App `handle`'s call of another app's operation, for `ctx`'s person, in the caller's transaction `tx`
+    /// (docs/app-contract.md, *Using another app's operations*). The handle says which app calls: one this server gave
+    /// out. A package of that app installed in the workspace must declare the capability in its `uses` (`forbidden`),
+    /// the installed operation be at a version within a range declared (`capability_unavailable`), and an action's
+    /// params be those it declares (`invalid`). It runs through the gate as the system on the person's behalf, within
+    /// their zone: the person is its actor, the key is the app's own (`{app}:{key}`), and the receipt names the app.
+    /// What would wait for an approval is refused: a call does the thing or fails. A refused call leaves nothing of itself
+    /// in `tx` (a savepoint around it), and what the caller wrote before it stays: the caller may carry on and commit.
+    pub async fn call_tx(&self, handle: &Vault, ctx: &Ctx, tx: &mut Tx, inv: &Invocation) -> Result<Receipt> {
+        let app = handle.given(self)?;
+        let catalog = self.registry.catalog();
+        let ranges: Vec<&str> = ctx
+            .schema
+            .packages
+            .iter()
+            .filter(|p| self.hooks.package_owner(p) == Some(app))
+            .filter_map(|p| catalog.package(p))
+            .flat_map(|p| &p.manifest.uses)
+            .filter(|u| u.capability == inv.capability)
+            .map(|u| u.version.as_str())
+            .collect();
+        if ranges.is_empty() {
+            return Err(refused(Code::PermissionDenied, format!("{app} does not use {} here: none of its packages installed declares it", inv.capability)));
+        }
+        let system = crate::actions::system(ctx);
+        let cap = self.capability_as(&system, &inv.capability, false)?;
+        let installed = semver::Version::parse(&cap.version).ok();
+        let within = |range: &&str| semver::VersionReq::parse(range).is_ok_and(|r| installed.as_ref().is_some_and(|v| r.matches(v)));
+        if !ranges.iter().any(within) {
+            return Err(refused(
+                Code::CapabilityUnavailable,
+                format!("{} is at {} here, and {app} was built for {}", cap.id, cap.version, ranges.join(" or ")),
+            ));
+        }
+        if let Operation::Action(name) = &cap.operation
+            && let Some(a) = crate::receipt::action_def(ctx, cap.entity.as_deref().unwrap_or_default(), name)
+        {
+            crate::doc::given_params(&a.name, &a.params, inv.input.get("params").unwrap_or(&Value::Null))?;
+        }
+        let key = inv.effect_key.as_deref().filter(|k| !k.trim().is_empty()).map(|k| format!("{app}:{k}"));
+        // A refusal takes back all the call wrote, its receipt too, and nothing the caller wrote before it: a caller that
+        // carries on commits none of it. Savepoints nest, so a call made inside another's operation is undone alone.
+        sqlx::query("savepoint app_call").execute(&mut **tx).await?;
+        let done = match self.run_capability(&system, tx, cap, &Invocation { effect_key: key, ..inv.clone() }, Some(app)).await {
+            Ok(done) if done.result.get("_approval").is_some() => {
+                Err(refused(Code::PermissionDenied, format!("{} waits for an approval here, and a call from {app} does it or fails", done.capability)))
+            }
+            done => done,
+        };
+        // Rolled back to, a savepoint stays: released as well, so that a refusal of the call around this one rolls back
+        // to its own savepoint, not to this one.
+        let end = if done.is_ok() { "release savepoint app_call" } else { "rollback to savepoint app_call; release savepoint app_call" };
+        sqlx::raw_sql(end).execute(&mut **tx).await?;
+        done
+    }
+
+    /// Capability `cap` run in `tx` as `inv` asks, its receipt naming `caller`, the app whose call it is
+    /// ([`Kernel::call_tx`]); none for everyone else.
+    async fn run_capability(&self, ctx: &Ctx, tx: &mut Tx, cap: Capability, inv: &Invocation, caller: Option<&str>) -> Result<Receipt> {
         if let Some(v) = &inv.version
             && v != &cap.version
         {
@@ -586,8 +654,8 @@ impl Kernel {
             _ => cap.input_digest(&inv.input)?,
         };
         let claimed = sqlx::query(
-            "insert into logic_effect (tenant_id, environment, capability, effect_key, input_digest, version, capability_digest, actor) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8) on conflict do nothing",
+            "insert into logic_effect (tenant_id, environment, capability, effect_key, input_digest, version, capability_digest, actor, caller) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict do nothing",
         )
         .bind(ctx.tenant)
         .bind(&inv.environment)
@@ -597,12 +665,13 @@ impl Kernel {
         .bind(&cap.version)
         .bind(&cap.digest)
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
+        .bind(caller)
         .execute(&mut **tx)
         .await?
         .rows_affected()
             == 1;
         if !claimed {
-            return self.repeat(ctx, tx, &cap, &inv.environment, key, &digest).await;
+            return self.repeat(ctx, tx, &cap, &inv.environment, key, &digest, caller).await;
         }
         let result = self.carry_out(ctx, tx, &cap, &inv.input, Some(key)).await?;
         let record = result.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
@@ -623,10 +692,10 @@ impl Kernel {
     }
 
     /// The key was used before: the same input gets what was done, with the caller's own view of it;
-    /// other input is refused.
-    async fn repeat(&self, ctx: &Ctx, tx: &mut Tx, cap: &Capability, environment: &str, key: &str, digest: &str) -> Result<Receipt> {
-        let (was, result, entity, record, actor): (String, Value, Option<String>, Option<Uuid>, Option<Uuid>) = sqlx::query_as(
-            "select input_digest, result, record_entity, record_id, actor from logic_effect \
+    /// other input is refused, and so is a key another caller claimed (an app's keys are its own).
+    async fn repeat(&self, ctx: &Ctx, tx: &mut Tx, cap: &Capability, environment: &str, key: &str, digest: &str, caller: Option<&str>) -> Result<Receipt> {
+        let (was, result, entity, record, actor, by): (String, Value, Option<String>, Option<Uuid>, Option<Uuid>, Option<String>) = sqlx::query_as(
+            "select input_digest, result, record_entity, record_id, actor, caller from logic_effect \
              where tenant_id = $1 and environment = $2 and capability = $3 and effect_key = $4",
         )
         .bind(ctx.tenant)
@@ -638,10 +707,14 @@ impl Kernel {
         if was != digest {
             return Err(refused(Code::InputChanged, format!("the key {key} was used for {} with other input: use a new key for a new request", cap.id)));
         }
-        // What someone else did is shown as the caller may see it now, never as its first caller saw it.
+        if by.as_deref() != caller {
+            return Err(refused(Code::InputChanged, format!("the key {key} was used for {} by another caller: use a new key", cap.id)));
+        }
+        // What someone else did is shown as the caller may see it now, never as its first caller saw it. An app repeating
+        // its own key (checked just above) did it, whoever it acts for now.
         let shown = match (entity, record) {
             (Some(e), Some(id)) => self.get_tx(ctx, tx, &e, id, false).await.map(Value::Object).unwrap_or(Value::Null),
-            _ if actor == Some(ctx.user) => result,
+            _ if actor == Some(ctx.user) || caller.is_some() => result,
             _ => Value::Null,
         };
         let answered_once = match &cap.operation {

@@ -210,6 +210,9 @@ pub struct Permissions {
     /// Roles its packages define or extend with grants: role → entity → access, as for `entities`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub roles: BTreeMap<String, BTreeMap<String, BTreeSet<String>>>,
+    /// Operations of other apps its packages declare that it calls (`uses`): their capabilities' ids.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub uses: BTreeSet<String>,
     /// SQL scripts its packages run on the cluster (`package/file.sql`).
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub sql: BTreeSet<String>,
@@ -321,6 +324,7 @@ impl Permissions {
             }
             added_pairs(&mut out, grants, was.unwrap_or(&none), |e, a| format!("role {role}: {a} {}", records(e)));
         }
+        out.extend(self.uses.difference(&previous.uses).map(|c| format!("uses {c}")));
         added_items(&mut out, "runs SQL", &self.sql, &previous.sql);
         out
     }
@@ -336,7 +340,7 @@ fn note(overlays: &mut BTreeMap<String, BTreeSet<String>>, own: &BTreeSet<String
 impl Bundle {
     /// Everything this app asks for: its plugin's permissions, hooks, hosts, public routes,
     /// sockets, schedules and subscriptions; its packages' new entities, changes to other
-    /// entities, roles and SQL.
+    /// entities, roles, SQL and the operations of other apps they use.
     pub fn permissions(&self) -> Result<Permissions, AppError> {
         let mut out = Permissions {
             native: self.manifest.runtime == Runtime::Native,
@@ -371,6 +375,7 @@ impl Bundle {
                 }
             }
             out.sql.extend(pkg.sql.iter().map(|(file, _)| format!("{}/{file}", pkg.name())));
+            out.uses.extend(pkg.manifest.uses.iter().map(|u| u.capability.clone()));
         }
         for p in &self.manifest.access {
             let a = access(&p.permission());
@@ -525,6 +530,23 @@ mod tests {
         assert_ne!(Permissions::default().digest(), a.digest());
         // Empty categories are not part of the canonical form.
         assert_eq!(serde_json::to_string(&Permissions::default()).unwrap(), "{}");
+    }
+
+    #[test]
+    fn what_an_app_uses_of_other_apps_is_consented_to() {
+        // An app that uses nothing keeps the digest its consent was recorded with before uses were asked about.
+        let none = Bundle::from_files(meta_app()).unwrap().permissions().unwrap();
+        assert_eq!(none.digest(), "c39ceadc8329a620740e079016a957100f7198766f4c33cdfda8f89e38461e53");
+        // Its packages' uses are in its summary; an upgrade that adds one asks again, and one that drops one does not.
+        let mut files = meta_app();
+        let yaml = String::from_utf8(files["packages/kit/package.yaml"].clone()).unwrap()
+            + "uses:\n  - {capability: selling.sales_invoice.request_payment, version: '^0.6'}\n";
+        files.insert("packages/kit/package.yaml".into(), yaml.into_bytes());
+        let uses = Bundle::from_files(files).unwrap().permissions().unwrap();
+        assert_eq!(uses.uses, set(&["selling.sales_invoice.request_payment"]));
+        assert_eq!(uses.increases(&none), ["uses selling.sales_invoice.request_payment"]);
+        assert!(none.increases(&uses).is_empty());
+        assert_ne!(uses.digest(), none.digest());
     }
 
     #[test]

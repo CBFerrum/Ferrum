@@ -33,6 +33,8 @@ async fn every_controller_mounts_once_and_is_reached() {
         (Method::GET, format!("/api/admin/connector-instances/{id}/drift")),
         (Method::GET, format!("/api/admin/connector-instances/{id}/activity")),
         (Method::POST, "/api/admin/connection-drift/{id}/resolve".to_string()),
+        // How apps use each other (admin.rs).
+        (Method::GET, "/api/admin/apps/connections".to_string()),
         // Connections (connections.rs).
         (Method::GET, "/api/admin/connections".to_string()),
         (Method::POST, "/api/admin/connections".to_string()),

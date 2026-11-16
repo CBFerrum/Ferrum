@@ -14,7 +14,7 @@ Nothing is typed in twice. A workspace's capabilities are read from what it has 
 |---|---|---|
 | Every entity | `read`, `list` | query |
 | Every entity but a ledger | `create`, `update`, `delete`; `submit` and `cancel` when it is submittable | transactional action |
-| Each action its package declares | `{action}` | query when the action is read-only, otherwise transactional action, unless its contract says another |
+| Each action its package declares, or another package adds to it | `{action}` | query when the action is read-only, otherwise transactional action, unless its contract says another |
 | Each transition of its workflow | `transition.{action}` | transactional action |
 | The platform | `ferrum.notify` (in-app), `ferrum.mail` (queued with the outbox) | transactional action; external effect |
 
@@ -23,7 +23,10 @@ nothing a record or a caller passes becomes markup in a mail sent in the workspa
 
 An id is `{package}.{entity}.{operation}`: `procurement.material_request.make_purchase_order`,
 `selling.sales_order.submit`, `stockcap.hold.transition.approve`. Its version is its package's, and its digest
-covers everything it promises. A ledger offers none: its engine posts it, and the API reads it through reports.
+covers everything it promises. An action a package adds to another package's entity (an overlay's `add_action`) is
+the adding package's, whose code does it: listed and found under that package, at its version
+(`commerce.sales_order.web_ship`, not `selling.sales_order.web_ship`), and reached only where a zone shows both
+packages. A ledger offers none: its engine posts it, and the API reads it through reports.
 An action marked `hidden` (meant for code) is left out unless its app writes it a contract.
 
 An app says more about an action with a contract:

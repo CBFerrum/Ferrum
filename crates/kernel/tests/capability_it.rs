@@ -40,6 +40,8 @@ const ENTITIES: &str = r#"
   fields:
     - {name: qty, type: int}
 "#;
+/// Another package's action on the Hold: an operation of `stockplus`, its undo the Hold's own `release`.
+const PLUS: &str = "package: stockplus\nversion: 0.9.0\ndepends: [stockcap]\noverlays:\n  - entity: Hold\n    ops:\n      - {op: add_action, action: {name: weigh, label: Weigh, permission: write, contract: {completion: The hold is weighed, compensate_with: release}}}\n";
 /// The engine table a ledger is posted to: the app's own SQL, as a real ledger's is.
 const LEDGER_SQL: &str = "create table stockcap_line (tenant_id uuid not null references tenant (id), id uuid not null, qty int, created_at timestamptz not null default now(), primary key (tenant_id, id));";
 
@@ -61,6 +63,7 @@ impl DocHook for Stock {
             }
             "release" => Some(json!({"released": true})),
             "peek" => Some(json!({"qty": doc["qty"]})),
+            "weigh" => Some(json!({"weighed": doc["qty"]})),
             "restock" => {
                 let id: Uuid = doc["id"].as_str().unwrap().parse().unwrap();
                 sqlx::query("update e_hold set note = 'restocked' where id = $1").bind(id).execute(&mut **hc.tx).await?;
@@ -125,10 +128,11 @@ async fn scenario() {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
     let pkg = ferrum_meta::catalog::load_package_files(&files).expect("package");
+    let plus = ferrum_meta::catalog::load_package_files(&BTreeMap::from([("package.yaml".to_string(), PLUS.to_string())])).expect("stockplus");
     let stock = Arc::new(Stock::default());
     let mut hooks = HookRegistry::default();
     hooks.register("Hold", stock.clone());
-    let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot");
+    let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg, plus]).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot");
     let (admin, clerk) = workspace(&k, "acme").await;
     let viewer = k.create_user(&admin, "viewer@acme.test", "Viewer", Some("Correct-Horse-9"), &["Viewer".to_string()], false).await.unwrap();
     let viewer = k.load_ctx(admin.tenant, viewer, None, "it".into()).await.unwrap();
@@ -279,6 +283,32 @@ async fn scenario() {
     let across = Invocation::new("stockcap.hold.read", json!({"id": hold.to_string()}));
     assert_eq!(code(&k.invoke(&beta, across).await.unwrap_err()), "not_found", "another workspace's record does not exist here");
     assert_eq!(count(&k, &beta, "select count(*) from logic_effect").await, 1, "and none of its receipts are visible");
+
+    // An action one package adds to another's entity is the adder's operation: listed and found under the adder, at its
+    // version, with its undo named where the undo comes from (the Hold's own release); not under the Hold's package.
+    let new = NewTenant {
+        slug: "plus".into(),
+        name: "plus".into(),
+        admin_email: "admin@plus.test".into(),
+        admin_password: "Correct-Horse-9".into(),
+        admin_name: None,
+        packages: vec!["stockplus".into()],
+        settings: None,
+    };
+    let tenant = k.create_tenant(new).await.unwrap();
+    let session = k.login("plus", "admin@plus.test", "Correct-Horse-9").await.unwrap();
+    let plus = k.load_ctx(tenant, session.user, None, "it".into()).await.unwrap();
+    let weigh = k.capability(&plus, "stockplus.hold.weigh").expect("under the package that adds it");
+    assert_eq!(
+        (weigh.owner.as_str(), weigh.version.as_str(), weigh.entity.as_deref(), weigh.compensate_with.as_deref()),
+        ("stockplus", "0.9.0", Some("Hold"), Some("stockcap.hold.release"))
+    );
+    assert_eq!(code(&k.capability(&plus, "stockcap.hold.weigh").unwrap_err()), "capability_unavailable", "not under the Hold's package");
+    let listed = k.catalog(&plus);
+    assert!(ids(&listed).contains(&"stockplus.hold.weigh") && !ids(&listed).contains(&"stockcap.hold.weigh"), "{:?}", ids(&listed));
+    let held = k.invoke(&plus, create("P", 3).key("plus/hold")).await.unwrap();
+    let weighed = Invocation::new("stockplus.hold.weigh", json!({"id": held.result["id"], "params": {}})).key("plus/weigh");
+    assert_eq!(k.invoke(&plus, weighed).await.unwrap().result, json!({"weighed": 3}));
 
     // A destination is held to at the connection itself (FLC-SEC-005): a host that resolves to a private or loopback
     // address is refused before anything is sent, and a permitted host's redirect is never followed, so it cannot

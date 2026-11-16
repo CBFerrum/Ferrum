@@ -897,6 +897,13 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                         }
                     }
                 }
+                // An action added to another package's entity is the adder's operation, its code behind it.
+                if let OverlayOp::AddAction { action } = op
+                    && b.package != pkg.name()
+                    && let Some(a) = b.def.actions.iter_mut().find(|a| a.name == action.name)
+                {
+                    a.origin = Some(pkg.name().to_string());
+                }
             }
         }
         for wf in &pkg.manifest.workflows {

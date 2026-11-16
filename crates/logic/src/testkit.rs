@@ -81,7 +81,7 @@ impl Fixture {
                 cap("field_service.service_request.create", Effect::TransactionalAction, create_input(&["subject", "description"], &["subject"]), id_out),
                 Capability {
                     owner: "example.inventory".into(),
-                    compensate_with: Some("release_hold".into()),
+                    compensate_with: Some("example.inventory.release_hold".into()),
                     ..cap(
                         "example.inventory.place_hold",
                         Effect::TransactionalAction,
