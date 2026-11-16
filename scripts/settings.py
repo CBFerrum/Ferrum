@@ -296,7 +296,7 @@ def rows(entries):
         if e.get("secret") and e.get("vault"):
             where = f"secret: the environment, else the vault ({e['vault']})"
         elif e.get("secret") and e.get("app"):
-            where = f"secret: the environment, until `{e['app']}` keeps it in its own vault"
+            where = f"secret: `{e['app']}`'s own vault; the environment's, while set, wins and is adopted there once"
         elif e.get("secret"):
             where = "secret: the environment"
         elif e.get("input"):
@@ -326,7 +326,7 @@ def environment_only(entries):
         elif e.get("environment"):
             out[env] = f"read by {e['environment']}"
         elif e.get("secret") and app:
-            out[env] = f"`{app}`'s own secret, until it keeps it in its own vault"
+            out[env] = f"`{app}`'s own secret, kept in its own vault: it adopts the environment's while it is set, until its release stops reading it"
         elif e.get("secret") and not e.get("vault"):
             out[env] = SECRETS_WHY.get(e["key"], "a secret the vault does not hold yet")
     return out

@@ -28,10 +28,7 @@ for a while, or reads it to move what it sealed, and goes as each moves.
 | `crates/kernel/src/webpush.rs` | 2 | what it says when the push key does not open names it |
 | `crates/kernel/src/workspace_move.rs` | 9 | a move opens what the source's old keys sealed, and seals the previous build's columns here |
 | `ferrum-app-commerce:gateways/stripe/src/lib.rs` | 1 | Stripe's own `secret_key` (the name of a plugin's credential), not the old key |
-| `ferrum-app-commerce:src/gift_card.rs` | 1 | asks whether the old key is set: moves to `Kernel::seals_secret_values` in its repository |
-| `ferrum-app-commerce:src/shopper.rs` | 1 | asks whether the old key is set: moves to `Kernel::seals_secret_values` in its repository |
-| `ferrum-app-pos:src/snapshot.rs` | 1 | signs snapshots with the old key: moves to a key of its own (`derive`) in its repository |
-| `server/src/app.rs` | 16 | reads the old keys from the environment for the kernel to adopt and for the previous build's columns |
+| `server/src/app.rs` | 15 | reads the old keys from the environment for the kernel to adopt and for the previous build's columns |
 | `server/src/doctor.rs` | 8 | says whether the old key is set, and how |
 | `server/src/state.rs` | 2 | the old keys' settings |
 | `server/src/tasks.rs` | 7 | `kms_wrap` prints the old keys wrapped by the key-management service |
@@ -78,29 +75,7 @@ call moves, in its app's own repository, to the app's own handle (`Vault::field`
 
 | Where | Calls |
 |---|---|
-| `ferrum-app-bookings:src/outside.rs` | 1 |
-| `ferrum-app-bookings:src/settings.rs` | 2 |
-| `ferrum-app-campaigns:src/public.rs` | 1 |
-| `ferrum-app-campaigns:src/util.rs` | 1 |
-| `ferrum-app-comms:src/account.rs` | 2 |
-| `ferrum-app-comms:src/arrivals.rs` | 1 |
-| `ferrum-app-comms:src/calendar.rs` | 1 |
-| `ferrum-app-comms:src/subscribe.rs` | 1 |
-| `ferrum-app-comms:src/util.rs` | 2 |
-| `ferrum-app-comms:src/webmail.rs` | 1 |
-| `ferrum-app-control:src/hosting.rs` | 2 |
-| `ferrum-app-control:src/site.rs` | 1 |
-| `ferrum-app-erp:src/shipping.rs` | 1 |
-| `ferrum-app-live:src/settings.rs` | 1 |
-| `ferrum-app-lms:src/lti.rs` | 1 |
-| `ferrum-app-sign:src/token.rs` | 2 |
-| `ferrum-countries:src/myinvois.rs` | 2 |
-| `ferrum-eu-members:src/anaf.rs` | 5 |
-| `ferrum-gb:src/mtd.rs` | 5 |
-| `ferrum-india:src/irp.rs` | 1 |
-| `ferrum-procurement:src/rfq.rs` | 1 |
-| `ferrum-us:src/avatax.rs` | 1 |
-| `ferrum-us:src/reports.rs` | 1 |
+| (none) | |
 
 ## Apps that read the old key
 
@@ -109,6 +84,4 @@ keys, sealed data, secrets of its own), the old key cannot be retired (`ferrum t
 
 | Where | Uses |
 |---|---|
-| `ferrum-app-commerce:src/gift_card.rs` | 1 |
-| `ferrum-app-commerce:src/shopper.rs` | 1 |
-| `ferrum-app-pos:src/snapshot.rs` | 1 |
+| (none) | |

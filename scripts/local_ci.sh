@@ -35,10 +35,11 @@
 #           S3 servers (SeaweedFS from Homebrew, run by deploy/store/start.sh, and moto 5.0.28 in OBJECT_PYTHON): a new
 #           installation refused on a directory, files moved with files_move killed partway, two replicas, the doctor's
 #           bucket lines, the restore drill, direct links and a machine's identity in place of keys.
-#   oneinput not in the workflow, and only when named: scripts/one_input.sh, the server without apps started with
+#   oneinput not in the workflow, and only when named: scripts/one_input.sh, the server with its apps started with
 #           DATABASE_URL in its environment and nothing else, as two replicas doing real work on a fresh database with
-#           a private SeaweedFS for its files, every name it asks its environment for checked against the settings'
-#           registry and scripts/settings.py's baseline; then the previous build (the merge base, made once in
+#           a private SeaweedFS for its files, Comms taking its meeting address from the table and signing with the
+#           secret in its vault, every name it asks its environment for checked against the settings' registry and
+#           scripts/settings.py's baseline; then the previous build (the merge base without apps, made once in
 #           WINDOW_WORK as for `window`) on the same database. Needs SeaweedFS's `weed` and a C compiler.
 #   companions not in the workflow, and only when named: scripts/companions_rehearsal.sh, the server without apps
 #           rendering the bundled store's keys from a fresh database with DATABASE_URL alone (two renders at once, one
@@ -304,7 +305,7 @@ job_objects() {
 }
 
 job_oneinput() {
-  run "oneinput build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
+  run "oneinput build (with its apps)" cargo build -p ferrum-server --bin ferrum --locked || return
   run "oneinput proof" scripts/one_input.sh "ferrum_oneinput$SFX"
 }
 

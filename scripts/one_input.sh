@@ -21,12 +21,16 @@
 # background work; a setting that applies at once changed, and both replicas taking it within the time promised (30 s;
 # a notice usually brings it within a second); a restart after which the session from before still works; the doctor
 # saying the environment decides nothing; then the previous build started on the same database, signing in and reading
-# the record (scripts/window.py's rule: the build before a change still runs on the database it leaves).
+# the record (scripts/window.py's rule: the build before a change still runs on the database it leaves). In between,
+# an app's own: Comms takes its meeting address from the table and signs LiveKit's tokens with the secret in its vault.
+#
+# The previous build is made without apps (as scripts/window_rehearsal.sh makes its older build): it starts as a guest
+# on what this one migrated, its apps' tables there included.
 #
 # Needs: PostgreSQL (the servers' role and a superuser to make the database), SeaweedFS's `weed` for object storage
 # (a private one on 127.0.0.1, with a key pair of its own), a C compiler for the getenv library, curl, python3.
-# Settings, the script's own (none reaches a server): FERRUM_BIN (this build; default
-# $CARGO_TARGET_DIR/debug/ferrum, built with `cargo build -p ferrum-server --no-default-features --bin ferrum`),
+# Settings, the script's own (none reaches a server): FERRUM_BIN (this build, with its apps; default
+# $CARGO_TARGET_DIR/debug/ferrum, built with `cargo build -p ferrum-server --bin ferrum`),
 # ONEINPUT_OLD (the previous build's commit; default the merge base with origin/main), WINDOW_WORK (where it is made and
 # kept, shared with scripts/window_rehearsal.sh; default ${TMPDIR:-/tmp}/ferrum-window; about 3 GB while it builds),
 # ONEINPUT_ADMIN_URL (default postgres://$USER@localhost:5432),
@@ -39,7 +43,7 @@ DB=$1
 [[ "$DB" == "$PREFIX"* && "$DB" =~ ^[a-z0-9_]+$ ]] || { echo "refused: $DB does not start with $PREFIX" >&2; exit 2; }
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BIN=$(cd "$ROOT" && realpath "${FERRUM_BIN:-${CARGO_TARGET_DIR:-target}/debug/ferrum}")
-[ -x "$BIN" ] || { echo "no server binary at $BIN (cargo build -p ferrum-server --no-default-features --bin ferrum)" >&2; exit 2; }
+[ -x "$BIN" ] || { echo "no server binary at $BIN (cargo build -p ferrum-server --bin ferrum)" >&2; exit 2; }
 WORK=${WINDOW_WORK:-${TMPDIR:-/tmp}/ferrum-window}
 ADMIN=${ONEINPUT_ADMIN_URL:-postgres://$USER@localhost:5432}
 APP=${ONEINPUT_APP_URL:-postgres://ferrum:ferrum@localhost:5432}
@@ -244,6 +248,41 @@ until [ "$(said "$A")" = 7 ] && [ "$(said "$B")" = 7 ]; do
   sleep 0.5
 done
 echo "    both replicas took it within $(($(date +%s) - t0)) s"
+
+step "an app's own: Comms' meeting address from the table, and LiveKit's key and secret in Comms' vault, used from there"
+MEET_KEY=oneinput-$(openssl rand -hex 4)
+MEET_SECRET=$(openssl rand -hex 24)
+printf '{"value":"%s","rule":{"reveal":true,"hosts":["127.0.0.1"]}}' "$MEET_KEY" >"$work/meet.key.json"
+printf '{"value":"%s","rule":{"hosts":["127.0.0.1"]}}' "$MEET_SECRET" >"$work/meet.secret.json"
+for name in meet.key meet.secret; do
+  [ "$(curl -sS -o "$work/put.json" -w '%{http_code}' -X PUT "$A/api/operator/secrets/comms/$name" -H "x-ferrum-operator-token: $OPERATOR" \
+    -H 'content-type: application/json' -d @"$work/$name.json")" = 200 ] || fail "Comms' secret $name: $(cat "$work/put.json")"
+done
+task set set key:comms.meet_url value:ws://127.0.0.1:7880 >/dev/null || fail "comms.meet_url: this build has no Comms (build the server with its apps)"
+curl -fsS "$A/api/tenants" -H "x-ferrum-bootstrap-token: $BOOTSTRAP" -H 'content-type: application/json' \
+  -d "{\"slug\":\"talk\",\"name\":\"Talk\",\"admin_email\":\"admin@talk.test\",\"admin_password\":\"$PASSWORD\",\"packages\":[\"comms\"]}" >/dev/null \
+  || fail "a workspace with Comms"
+T3=$(curl -fsS "$B/api/auth/login" -H 'content-type: application/json' -d "{\"tenant\":\"talk\",\"email\":\"admin@talk.test\",\"password\":\"$PASSWORD\"}" | json 'd["token"]')
+t0=$(date +%s)
+until curl -fsS "$B/api/app/comms/meet" -H "authorization: Bearer $T3" -H 'accept-encoding: gzip' --compressed | grep -q '"available":true'; do
+  [ $(($(date +%s) - t0)) -le 30 ] || fail "Comms did not take its meeting address from the table within 30 s"
+  sleep 0.5
+done
+ROOM=$(curl -fsS -X POST "$B/api/app/comms/meet/rooms" -H "authorization: Bearer $T3" -H 'content-type: application/json' -d '{"title":"One input"}' | json 'd["id"]')
+curl -fsS -X POST "$B/api/app/comms/meet/room/$ROOM/token" -H "authorization: Bearer $T3" >"$work/join.json" || fail "a meeting's token"
+# The answer names the address the table holds, and its token is LiveKit's, named for the key and signed by the vault's
+# copy of the secret (HS256 over header and claims): nothing of either was ever in the environment.
+python3 - "$work/join.json" "$MEET_KEY" "$MEET_SECRET" <<'PY' || fail "the meeting's token"
+import base64, hashlib, hmac, json, sys
+join, key, secret = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
+head, claims, signature = join["token"].split(".")
+unpad = lambda s: base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+assert join["url"] == "ws://127.0.0.1:7880", f"the address: {join['url']}"
+assert json.loads(unpad(claims))["iss"] == key, "the key it names"
+assert hmac.compare_digest(unpad(signature), hmac.new(secret.encode(), f"{head}.{claims}".encode(), hashlib.sha256).digest()), "the signature"
+print("    Comms took ws://127.0.0.1:7880 from the table and signed with meet.secret from its vault")
+PY
+grep -lF "$MEET_SECRET" "$work"/*.log "$work"/*.err && fail "the secret is in a log"
 
 step "a restart: the session from before still works"
 stop

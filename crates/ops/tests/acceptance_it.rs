@@ -34,7 +34,8 @@ async fn boot() -> Arc<Kernel> {
     assert_eq!(catalog.links_out_of_reach("ops"), Vec::<String>::new());
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
-    hooks.scoped(&["ops".to_string()], ferrum_ops::register);
+    let ops: Vec<String> = ferrum_ops::packages().expect("ops packages").iter().map(|p| p.name().to_string()).collect();
+    hooks.app("ops", &ops, ferrum_ops::register).own("ops", &ops);
     Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot")
 }
 

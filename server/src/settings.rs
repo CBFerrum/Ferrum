@@ -1509,7 +1509,9 @@ mod tests {
         assert_eq!(s.get("host_leaving_days"), (Source::Default, None));
         assert_eq!(s.get("secret_key"), (Source::Environment, Some("from-the-environment")), "a secret is never the table's");
         assert_eq!(Snapshot::resolve(&table, "default", &|_| None).get("secret_key"), (Source::Default, None));
-        assert_eq!(s.get("drive.office_url"), (Source::Default, None), "Drive reads it from the environment: the table's would not reach it");
+        // Drive declares it (operator_settings): the table's value reaches it, as the platform's own do.
+        #[cfg(feature = "drive")]
+        assert_eq!(s.get("drive.office_url"), (Source::Database, Some("http://o")));
         let input = stored(&[("move_source_region", "eu")]);
         assert_eq!(Snapshot::resolve(&input, "default", &|_| None).get("move_source_region"), (Source::Default, None), "a task's input is never the table's");
         assert_eq!(s.var("FERRUM_PDF_URL").as_deref(), Some("http://pdf:3000"));

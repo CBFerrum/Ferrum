@@ -595,6 +595,27 @@ each program reads as it starts.
 - **Drive** declares nothing: the online editor's settings are not secrets and its proof key is its own; the browser
   editors hold no secret.
 
+## This week's app releases built in (built)
+
+The platform builds the apps' releases of the program: every app at its repository's `main` of 16 November (ERP 0.28.0
+with its add-ons, Drive 0.18.0, Comms 0.22.0, Metrics 0.8.0, Commerce 0.11.1, POS 0.7.5, Helpdesk 0.12.1, Control 0.5.12,
+Live 0.2.2, Sign 0.3.3, Campaigns 0.5.4, Learn 0.9.3, Bookings 0.7.4, Forms 0.4.0, HR 0.14.1, and the others' tips).
+
+- **The pin is the lock.** `cargo update -p <crate> --precise <rev>` for each: only the apps' own crates moved (loco-rs
+  stays 1.2.0). Campaigns 0.5.3 asked for Comms below 0.22, beside Comms 0.22.0: the server's check of what compiled apps
+  require of each other (`compiled_apps_fit_together`) refused the pair, and Campaigns 0.5.4 widened its range. Developers, Intelligence, Intranet and Website stay where they were: their `main` moved by documentation
+  alone (READMEs, screenshots, a commit id rewritten in `ui/dist/.source`).
+- **Their settings are their own.** Every app pinned that reads a setting declares it and reads it through
+  `ferrum_kernel::env::var`, so the platform's 22 entries for them go from `server/src/settings.yaml`. The apps' five
+  secrets stay declared there (`secret: true`, `app:`): each app keeps its own in its vault and still adopts the
+  environment's while it is set, so they stay in `docs/registry/environment-only.md`, which shrinks from 96 names to 74.
+- **Past the vault.** No app reads a secret field past its handle (37 calls in 23 files before) or the old key (3).
+- **Registered as the server registers them.** Suites that boot apps register each by its id, owning its packages
+  (`hooks.app(id, …)` and `hooks.own(id, …)`), as `server/src/packages.rs` does.
+- **The proof with the apps.** `scripts/one_input.sh` runs the server with every app; Comms takes its meeting address
+  (`comms.meet_url`) from the table and signs LiveKit's token with `meet.secret` from its own vault, the script checking
+  the signature. The previous build stays one without apps.
+
 ## Not doing
 
 pgcrypto, pgsodium or any encryption inside SQL; OpenBao as a required service; a shared filesystem for Git; Redis

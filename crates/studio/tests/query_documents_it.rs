@@ -60,7 +60,8 @@ async fn scenario() {
     packages.extend(ferrum_studio::packages().expect("studio packages"));
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
-    ferrum_studio::register(&mut hooks);
+    let studio: Vec<String> = ferrum_studio::packages().expect("studio packages").iter().map(|p| p.name().to_string()).collect();
+    hooks.app("studio", &studio, ferrum_studio::register).own("studio", &studio);
     let k = Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, KernelSettings::default(), Some(Arc::new(Mailer))).await.expect("boot");
     let store = Arc::new(MemFiles::default());
     k.set_file_store(store.clone());
