@@ -332,7 +332,13 @@ move() {
   local from=$1 to=$2 token=$3 from_host="moving.$1.localhost"
   local envs=()
   while IFS= read -r line; do envs+=("$line"); done < <(side_env "$to")
-  envs+=(FERRUM_MOVE_SOURCE_DATABASE_URL="$(side_get "$from" DATABASE_URL)" FERRUM_MOVE_SOURCE_SECRET_KEYS="$(side_get "$from" FERRUM_SECRET_KEY)"
+  # The workspace's keys and secrets in the source's vault travel with a transfer made there (docs/operations.md,
+  # "Moving one workspace"): its key is shown once, given after the source's own keys, and never printed here.
+  local from_envs=() transfer
+  while IFS= read -r line; do from_envs+=("$line"); done < <(side_env "$from")
+  transfer=$( (cd "$ROOT/server" && exec env "${from_envs[@]}" "$BIN" task vault_transfer workspace:moving) 2>"$work/transfer-$from-$to.err" | sed -n 's/^    \([^ ][^ ]*\)$/\1/p' | head -1) || true
+  [ -n "$transfer" ] || fail "no transfer of the workspace's vault was made at $from: $(tail -3 "$work/transfer-$from-$to.err")"
+  envs+=(FERRUM_MOVE_SOURCE_DATABASE_URL="$(side_get "$from" DATABASE_URL)" FERRUM_MOVE_SOURCE_SECRET_KEYS="$(side_get "$from" FERRUM_SECRET_KEY),$transfer"
     FERRUM_MOVE_SOURCE_FILES_DIR="$(side_get "$from" FERRUM_FILES_DIR)" FERRUM_MOVE_SOURCE_REGION="$from")
   grant
   (cd "$ROOT/server" && exec env "${envs[@]}" "$BIN" task move_workspace tenant:moving wait:1) >"$work/move-$from-$to.out" 2>&1 &
