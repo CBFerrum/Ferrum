@@ -5,6 +5,8 @@ person, an administrator and the platform can count on from every app, whoever w
 program can see are checked on every pull request by `scripts/check_apps.py`, over the apps the lock
 compiles in; the rest is reviewed, and walked in a browser (docs/platform/evidence).
 
+How to follow it, step by step and with examples, is in the app developer's handbook: [docs/guides](guides/README.md).
+
 ## Checked on every pull request
 
 | Part | What it is |
@@ -184,16 +186,17 @@ the workspace suspended, the client taken away), the app hears `ferrum.companion
 `{user, subject, client_id, app, companion, session, reason}`. Ferrum stops answering for it at once; the companion's
 own session is the app's to end.
 
-**The forge, as Cloud configures it** (checked with the real Forgejo 17.0.1, scripts/oidc_rehearsal.sh): an
-authentication source per workspace, `forgejo admin auth add-oauth --name <one per workspace> --provider openidConnect
---key <client_id> --secret <secret> --auto-discover-url https://<the workspace's main address>/.well-known/openid-configuration
---scopes openid --scopes profile`, made or brought up to date (`update-oauth`) as the forge starts; and in `app.ini`,
-`[oauth2_client] ENABLE_AUTO_REGISTRATION = true`, `USERNAME = preferred_username`, `ACCOUNT_LINKING = auto` (with
-`[service] DISABLE_REGISTRATION = true` kept: it does not stop this). The forge then finds the account Cloud made by its
-name and links the subject to it; one Cloud has not made yet, the forge makes under that name, bound to the source and
-the subject (a password Cloud gives it afterwards still works for Cloud's calls as that person). The email claim must be an address no other account
-of the forge has, since the forge links a subject it does not know to the account with that address, whichever source
-it came from. On `ferrum.companion.signed_out`, Forgejo 17 has no call that ends one person's sessions (a new password
+**The forge, as Cloud configures it** (Cloud's `src/code/sign_in.rs` and `docs/operating-code.md`; the protocol checked
+with the real Forgejo 17.0.1, scripts/oidc_rehearsal.sh): an OpenID Connect authentication source per workspace
+(`ferrum-<16 hex of the workspace>`, discovering `https://<the workspace's main address>/.well-known/openid-configuration`),
+which Cloud's controller writes every minute in the forge's own `login_source` table with the client it declared (Forgejo
+has no call for it); the forge takes a new source at its first sign-in and a changed one at its next start. Before
+Ferrum gives the forge a person's token (in `claims`), Cloud makes their account, or checks the one it made, bound to
+that source and their subject (`source_id`, `login_name`), and keeps its id: the forge finds them by the subject and
+makes no account and links none by itself (`[oauth2_client] ENABLE_AUTO_REGISTRATION = false`, `ACCOUNT_LINKING =
+disabled`, `[service] DISABLE_REGISTRATION = true`). Access is granted, and an account locked, only as the account whose
+id Cloud holds; an account under the person's name that Cloud did not make for them is given nothing, and their sign-in
+is turned back. The email claim is still an address only that account has. On `ferrum.companion.signed_out`, Forgejo 17 has no call that ends one person's sessions (a new password
 leaves them, and a session in use never runs out): the one thing that ends them at once is locking the account
 (`prohibit_login`, as Cloud does on a departure), which refuses every session of it until it is lifted, and lifting it
 lets the same sessions back in. So lock it on every reason; for `access_ended` keep it locked; for the others lift it

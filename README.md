@@ -595,6 +595,7 @@ flowchart LR
 | | Document | What it covers |
 |---|---|---|
 | 📘 | [API contract](docs/api.md) | Auth, metadata, documents, collaboration, live updates, the shell, reports, administration, apps, search, notifications, MCP, ERPNext compatibility |
+| 🧭 | [App developer's handbook](docs/guides/README.md) | How to build an app and the rules it keeps: a first app step by step, the manifest, data, permissions, stateless apps, the vault, files, companion programs, privacy, security, testing, releasing, the interface, accessibility, languages, dos and don'ts, a review checklist |
 | 🧩 | [Plugins](docs/plugins.md) | Writing one, manifests, host calls, extension points, screens, interfaces of their own, limits |
 | 🛠️ | [Operations runbook](docs/operations.md) | Components, configuration, first deployment, upgrades, backups, monitoring, scaling, capacity, incident playbooks |
 | 🔐 | [Security](docs/security.md) | The model, the controls, and the latest review |

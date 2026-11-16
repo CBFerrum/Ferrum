@@ -38,7 +38,7 @@ independently (`BLOCK-SECURITY-REVIEW`).
 | Sessions | Theft, stale access | `token_version` plus NOTIFY; rows per device; sockets recheck | `lifecycle_it` |
 | SCIM | A filter that matches too much | Unknown filters are errors | `lifecycle_it` |
 | Identity linking | Takeover through a reused email | Linked by subject, on proof | `identity_it`, `sso_it` |
-| File uploads | Malware, decompression bombs | Size limits. *Gap:* no malware scanning (`FERRUM-OPS-007`) | |
+| File uploads | Malware, decompression bombs | Size limits. Every upload passes ClamAV before it is stored (`crates/kernel/src/scan.rs`: `Kernel::store_file`, `scan_stream` for direct uploads, apps' kinds of file), refused when found or when the scanner cannot answer. Optional: without `FERRUM_CLAMAV_ADDR` files are stored unscanned and the doctor says so; a file past `FERRUM_CLAMAV_MAX_MB` is stored marked `unscanned` | `scan_it` |
 | Stored secrets | Database or backup theft | Sealed with AES-256-GCM, bound to their place; rotation | `secret_it`, `platform_it` |
 | Supply chain | A poisoned build | Pinned bases, attested promotion, advisory register | Not yet run in CI |
 | Site link | A stolen or replayed request moves equipment | Ed25519 per device, public keys only on the server, a timestamp that must rise. Quarantine ends a key's epoch at once | `ops_it`, mutants `ops-replay-accepted`, `ops-signature-unchecked` |
