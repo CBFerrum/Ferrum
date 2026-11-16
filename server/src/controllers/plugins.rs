@@ -314,7 +314,7 @@ async fn screen_file(
     // The origins the frame was loaded from, as the browser sees them: the public address the
     // operator configured, and the one the request names.
     let mut origins: Vec<String> = Vec::new();
-    for o in [plain_origin(&app.config.server.host), plain_origin(&crate::controllers::oauth::base_url(&headers))].into_iter().flatten() {
+    for o in [plain_origin(&app.config.server.host), plain_origin(&crate::controllers::oauth::base_url(&st, &headers))].into_iter().flatten() {
         if !origins.contains(&o) {
             origins.push(o);
         }

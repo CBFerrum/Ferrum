@@ -673,6 +673,14 @@ fn user_of(ctx: &Ctx) -> Option<Uuid> {
     (!ctx.user.is_nil()).then_some(ctx.user)
 }
 
+/// Code that no key this server trusts signed (`why`), taken only where unsigned uploads are (`allow_unsigned`).
+fn unsigned(what: &str, why: &str, allow_unsigned: bool) -> Result<()> {
+    if allow_unsigned {
+        return Ok(());
+    }
+    Err(Error::Forbidden(format!("{what}: {why}; this server accepts only bundles signed by a key it trusts (apps.trusted_keys)")))
+}
+
 fn app_err(e: AppError) -> Error {
     match e {
         AppError::Signature(_) => Error::Forbidden(e.to_string()),
@@ -1288,10 +1296,8 @@ impl AppManager {
     async fn accept(&self, bytes: Bytes, private: Option<Uuid>, allow_unsigned: bool, by: Option<Uuid>) -> Result<(Bundle, Release)> {
         let b = read_bundle(bytes.clone()).await?;
         let (id, version) = (b.manifest.id.clone(), b.manifest.version.clone());
-        if let Trust::Untrusted(why) = self.trust(&b)?
-            && !allow_unsigned
-        {
-            return Err(Error::Forbidden(format!("{id} {version}: {why}; this server accepts only bundles signed by a key it trusts (apps.trusted_keys)")));
+        if let Trust::Untrusted(why) = self.trust(&b)? {
+            unsigned(&format!("{id} {version}"), &why, allow_unsigned)?;
         }
         self.check_app(&b)?;
         if self.native(&id).is_some() {
@@ -2025,16 +2031,30 @@ impl AppManager {
         Ok(delete)
     }
 
+    /// Where an administrator's upload is made available, as `apps.uploads` says: to every workspace, to `ctx`'s alone, or
+    /// nowhere. A bundle's ([`AppManager::upload`]) and a plugin module's on its own ([`AppManager::install_plugin`]).
+    fn upload_to(&self, ctx: &Ctx) -> Result<Option<Uuid>> {
+        admin(ctx)?;
+        match self.uploads {
+            Uploads::Off => Err(Error::Forbidden("uploading apps is turned off on this server (apps.uploads)".into())),
+            Uploads::Private => Ok(Some(ctx.tenant)),
+            Uploads::Cluster => Ok(None),
+        }
+    }
+
+    /// A plugin module uploaded on its own (`POST /api/admin/plugins`, docs/plugins.md): an upload as a bundle is, and one
+    /// that no key signed, so taken only where this server takes those (`apps.allow_unsigned_uploads`).
+    pub async fn install_plugin(&self, ctx: &Ctx, plugin: NewPlugin, wasm: &[u8]) -> Result<Uuid> {
+        self.upload_to(ctx)?;
+        unsigned(&plugin.name, "a plugin module on its own is signed by no key", self.allow_unsigned)?;
+        self.plugins.install(&self.kernel, ctx, plugin, wasm).await
+    }
+
     /// An uploaded bundle: verified against the trusted keys, then — by `apps.uploads` — made
     /// available to every workspace, or privately to this one (sandboxed code without tables).
     /// Returns the app and the plan to install it.
     pub async fn upload(&self, ctx: &Ctx, bytes: Bytes) -> Result<(AppSummary, Plan)> {
-        admin(ctx)?;
-        let private = match self.uploads {
-            Uploads::Off => return Err(Error::Forbidden("uploading apps is turned off on this server (apps.uploads)".into())),
-            Uploads::Private => Some(ctx.tenant),
-            Uploads::Cluster => None,
-        };
+        let private = self.upload_to(ctx)?;
         let (b, _) = self.accept(bytes, private, self.allow_unsigned, user_of(ctx)).await?;
         tracing::info!(tenant = %ctx.tenant, app = %b.manifest.id, version = %b.manifest.version, private = private.is_some(), "app uploaded");
         // Planned in the workspace as it is now: a release made available on the cluster has already

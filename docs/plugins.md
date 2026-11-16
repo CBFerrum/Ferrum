@@ -43,7 +43,10 @@ Any language that compiles to a core WebAssembly module works: the contract is b
 ## Installing
 
 `POST /api/admin/plugins` (administrators) with the manifest fields plus `wasm_base64`. Installing
-again with the same `name` upgrades it in place. `PUT /api/admin/plugins/{id}/enabled`
+again with the same `name` upgrades it in place. A module on its own is signed by no key, so it is
+taken only where the server takes uploads that no trusted key signed (`apps.uploads` not `off`, and
+`apps.allow_unsigned_uploads`, development's default); elsewhere it ships in an app bundle
+(`runtime: wasm`) signed by a key the server trusts. `PUT /api/admin/plugins/{id}/enabled`
 `{"enabled": false}` switches it off at once; `PUT /api/admin/plugins/{id}/config` `{"config": {...}}`
 replaces its settings and secrets (listings only show the keys; each value is sealed at rest with the
 server's `FERRUM_SECRET_KEY`, bound to its workspace, plugin and key, and settings stored before that

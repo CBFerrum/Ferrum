@@ -2156,7 +2156,9 @@ the REST API; unknown tools or bad arguments are JSON-RPC errors (-32602). Admin
 
 Discovery: `GET /.well-known/oauth-protected-resource` (RFC 9728) and
 `GET /.well-known/oauth-authorization-server` (RFC 8414); a 401 from `/mcp` carries
-`WWW-Authenticate: Bearer resource_metadata="…"`. `POST /oauth/register` (RFC 7591, public clients;
+`WWW-Authenticate: Bearer resource_metadata="…"`. Their addresses, the issuer and `iss` below among them, are the host
+the request was addressed to (`Host`) in the scheme of the server's public address; `X-Forwarded-Host` and
+`X-Forwarded-Proto` are not read. `POST /oauth/register` (RFC 7591, public clients;
 redirect URIs must be https, loopback http — any port — or an app scheme). Authorization endpoint:
 `GET /oauth/authorize` (`response_type=code`, `client_id`, `redirect_uri`, `code_challenge`,
 `code_challenge_method=S256`, `state`), a consent page the server draws for the person signed in

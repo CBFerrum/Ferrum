@@ -209,6 +209,16 @@ async fn scenario() {
     let (_, body, _) = sign_in(&r, INSIDE, "admin@acme.test", PASSWORD, false).await;
     let admin_token = body["token"].as_str().unwrap().to_string();
 
+    // ── 0. Code the operator does not take ──
+    // A plugin module on its own is signed by no key: where the server takes no upload a trusted key did not sign (the
+    // test configuration's `apps`, as production's), an administrator's module is refused as an unsigned bundle is, and
+    // nothing is installed.
+    let module = base64::engine::general_purpose::STANDARD.encode(ferrum_plugins::constant_plugin_wat("{}"));
+    let upload = json!({"name": "unsigned", "hooks": [{"entity": "*", "stage": "validate"}], "wasm_base64": module});
+    let (status, answer) = call(&r, Method::POST, "/api/admin/plugins", INSIDE, Cred::Bearer(&admin_token), Some(upload)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    assert_eq!(st.plugins.list(&k, &admin).await.unwrap(), Vec::<Value>::new(), "nothing installed");
+
     // ── 1. Staff networks ──
     let networks = json!({"staff_networks": {"networks": ["10.0.0.0/8", "2001:db8::/32"], "mode": "enforce"}});
     // No self-lockout: saving from outside the new list is refused, saying why.

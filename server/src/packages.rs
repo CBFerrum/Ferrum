@@ -126,7 +126,7 @@ macro_rules! apps {
             }
             let _ = hooks;
             ferrum_domain::reports::set_owners(owners);
-            // Set, not added to: the set-up runs twice in one process on `ferrum start`.
+            // Set, not added to: a process may set up more than once (a test's replicas).
             ferrum_domain::reports::set_sources(sources)
         }
 
@@ -728,8 +728,8 @@ mod tests {
         assert_eq!(hooks.settle(), Ok(()));
     }
 
-    /// Loco runs `after_context` twice on `ferrum start` (once in `cli::main`, once in `create_app`), so the apps
-    /// register twice: their reports are still listed, and run, once.
+    /// A process that sets up more than once (a test's replicas) registers the apps each time: their reports are still
+    /// listed, and run, once.
     #[test]
     fn reports_are_listed_once_however_often_apps_register() {
         for _ in 0..2 {

@@ -3,7 +3,9 @@
 //! connection that checks the server's certificate and its name against an authority given here. Otherwise the host is not
 //! used and never connected to; the log says so once and the doctor reports it. A host from the environment is used as
 //! before. Against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`, reset), with the server binary started as an operator
-//! starts it: each host is a port on this machine that counts the connections made to it.
+//! starts it: each host is a port on this machine that counts the connections made to it. Last, on an empty database, the
+//! binary's start sets itself up once, and its log says what that did; and a replica's set-up leaves the apps' upkeep to
+//! the round of upkeep and its locks.
 
 mod common;
 
@@ -70,9 +72,10 @@ fn ferrum(args: &[&str], env: &[(&str, String)], log: &std::path::Path) -> std::
         .expect("the server binary")
 }
 
+/// Waits up to five minutes (an empty database is migrated first) for the server on `port` to answer `/api/ready`.
 async fn ready(port: u16, child: &mut std::process::Child, log: &std::path::Path) {
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap();
-    for _ in 0..360 {
+    for _ in 0..600 {
         if let Ok(Some(status)) = child.try_wait() {
             panic!("the server stopped ({status}): {}", std::fs::read_to_string(log).unwrap_or_default());
         }
@@ -198,5 +201,57 @@ async fn scenario() {
     assert!(used.load(Ordering::SeqCst) > 0, "the environment's host is used");
 
     st.kernel.db.close().await;
+
+    // `ferrum start` sets itself up once, and its log says what that did: on an empty database, the schema it made.
+    // (Loco's command line sets up twice, the first time before there is a log: what a start did went unsaid, and each
+    // replica kept two of everything the set-up makes.)
+    let pool = sqlx::PgPool::connect(&url()).await.expect("connect");
+    common::reset(&pool).await;
+    pool.close().await;
+    let (port, log) = (free_port(), dir.join("once.log"));
+    let out = std::fs::File::create(&log).unwrap();
+    let mut server = std::process::Command::new(env!("CARGO_BIN_EXE_ferrum"))
+        .args(["-e", "development", "start", "--no-banner"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env_clear()
+        .envs(secrets.iter().map(|(k, v)| (*k, v.clone())))
+        .envs([
+            ("PORT", port.to_string()),
+            ("BINDING", "127.0.0.1".to_string()),
+            ("FERRUM_FILES_DIR", dir.join("files").to_string_lossy().into_owned()),
+            ("LOG_LEVEL", "info".to_string()),
+        ])
+        .stdout(out.try_clone().unwrap())
+        .stderr(out)
+        .spawn()
+        .expect("the server binary");
+    ready(port, &mut server, &log).await;
+    stop(&mut server);
+    let said = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(said.matches("pretty backtraces are enabled").count(), 1, "one set-up (development's configuration says this once in each): {said}");
+    assert_eq!(said.matches("schema synced").count(), 1, "what the start did is in its log: {said}");
+
+    // A replica's set-up does no app's upkeep: that is the round's (crate::packages::round), one replica at a time under
+    // each app's lock. A second replica starting on this database leaves ERP's (here: next year's ledger partition, gone)
+    // as it found it, and the next round does it.
+    let one = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config()).build()).await.expect("a replica");
+    let one = one.shared_store.get::<AppState>().expect("state");
+    let pool = sqlx::PgPool::connect(&url()).await.expect("connect");
+    let next: String = sqlx::query_scalar("select format('journal_line_y%s', extract(year from now())::int + 1)").fetch_one(&pool).await.unwrap();
+    assert!(table(&pool, &next).await, "ERP's ledger has next year's partition");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("drop table {next}"))).execute(&pool).await.unwrap();
+    let two = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config()).build()).await.expect("another replica");
+    two.shared_store.get::<AppState>().expect("state").kernel.db.close().await;
+    assert!(!table(&pool, &next).await, "a replica's start ran ERP's upkeep itself, outside the round and its lock");
+    ferrum_server::packages::round(&one.kernel.db.direct, ferrum_server::packages::upkeep_jobs(&one.kernel), 4, std::time::Duration::from_secs(60)).await;
+    assert!(table(&pool, &next).await, "the round made it again");
+    pool.close().await;
+    one.kernel.db.close().await;
+
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Whether the table `name` is there.
+async fn table(pool: &sqlx::PgPool, name: &str) -> bool {
+    sqlx::query_scalar("select to_regclass($1) is not null").bind(name).fetch_one(pool).await.unwrap()
 }

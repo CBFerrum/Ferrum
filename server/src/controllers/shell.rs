@@ -442,7 +442,7 @@ async fn page(
     if let Some(res) = super::origins::serve_app_host(&st, &headers, &path).await? {
         return Ok(res);
     }
-    let origins = server_origins(&app, &headers);
+    let origins = server_origins(&app, &st, &headers);
     let mut parts = path.splitn(2, '/');
     let first = parts.next().unwrap_or_default();
     let rest = parts.next();
@@ -995,9 +995,9 @@ async fn ui_file(st: &AppState, rest: &str, headers: &HeaderMap) -> ApiResult<Re
 
 /// The origins a browser may reach this server at: the public address the operator configured,
 /// and the one this request names.
-fn server_origins(app: &AppContext, headers: &HeaderMap) -> Vec<String> {
+fn server_origins(app: &AppContext, st: &AppState, headers: &HeaderMap) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for o in [super::plugins::plain_origin(&app.config.server.host), super::plugins::plain_origin(&super::oauth::base_url(headers))].into_iter().flatten() {
+    for o in [super::plugins::plain_origin(&app.config.server.host), super::plugins::plain_origin(&super::oauth::base_url(st, headers))].into_iter().flatten() {
         if !out.contains(&o) {
             out.push(o);
         }

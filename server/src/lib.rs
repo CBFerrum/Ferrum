@@ -40,12 +40,19 @@ pub mod zone;
 /// cost no memory.
 const THREAD_STACK: usize = 16 << 20;
 
-/// The `ferrum` command: this server and its tasks. A binary built elsewhere calls [`extensions::extend`] first.
+/// The `ferrum` command: this server ([`app::start`]) and Loco's commands, its tasks among them. A binary built elsewhere
+/// calls [`extensions::extend`] first.
 pub fn run() -> loco_rs::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(THREAD_STACK)
         .build()
         .map_err(|e| loco_rs::Error::Message(format!("tokio runtime: {e}")))?
-        .block_on(loco_rs::cli::main::<app::App, migration::Migrator>())
+        .block_on(async {
+            match app::start_command(std::env::args()) {
+                Some(Ok(command)) => app::start(command).await,
+                Some(Err(why)) => Err(loco_rs::Error::Message(why)),
+                None => loco_rs::cli::main::<app::App, migration::Migrator>().await,
+            }
+        })
 }

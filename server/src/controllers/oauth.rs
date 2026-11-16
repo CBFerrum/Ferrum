@@ -7,7 +7,7 @@
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Auth, client_ip};
-use crate::state::app_state;
+use crate::state::{AppState, app_state};
 use axum::Json;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
@@ -21,18 +21,17 @@ use serde_json::{Map, json};
 
 const ACCESS_TTL_SECS: u64 = 3600;
 
-/// The public origin as the client sees it (honours the proxy's forwarded headers).
-pub fn base_url(headers: &HeaderMap) -> String {
-    let get = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).map(|v| v.split(',').next().unwrap_or(v).trim().to_string());
-    let host = get("x-forwarded-host").or_else(|| get("host")).unwrap_or_else(|| "localhost".into());
-    let proto =
-        get("x-forwarded-proto").unwrap_or_else(|| if host.starts_with("localhost") || host.starts_with("127.") { "http".into() } else { "https".into() });
-    format!("{proto}://{host}")
+/// The origin a request reached the server at: the host it was routed by (`Host`), in the scheme of the server's public
+/// address (crate::shell::Shell's, as the OpenID issuer's, oidc.rs). What a caller writes in `X-Forwarded-Host` or
+/// `X-Forwarded-Proto` is not read: anyone who reaches the server directly writes there what they like, and a cache in
+/// front keeps the answer under `Host`.
+pub fn base_url(st: &AppState, headers: &HeaderMap) -> String {
+    format!("{}://{}", if st.shell.secure { "https" } else { "http" }, crate::shell::request_host(headers).unwrap_or("localhost"))
 }
 
 /// RFC 9728 metadata location advertised in `WWW-Authenticate` by protected endpoints.
-pub fn resource_metadata_url(headers: &HeaderMap) -> String {
-    format!("{}/.well-known/oauth-protected-resource", base_url(headers))
+pub fn resource_metadata_url(st: &AppState, headers: &HeaderMap) -> String {
+    format!("{}/.well-known/oauth-protected-resource", base_url(st, headers))
 }
 
 fn no_store(mut resp: Response) -> Response {
@@ -46,21 +45,21 @@ fn oauth_error(status: StatusCode, error: &str, description: &str) -> Response {
     no_store((status, Json(json!({"error": error, "error_description": description}))).into_response())
 }
 
-async fn protected_resource(headers: HeaderMap) -> Response {
-    let base = base_url(&headers);
-    Json(json!({
+async fn protected_resource(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let base = base_url(&app_state(&app)?, &headers);
+    Ok(Json(json!({
         "resource": format!("{base}/mcp"),
         "authorization_servers": [base],
         "bearer_methods_supported": ["header"],
         "scopes_supported": [SCOPE],
         "resource_name": "Ferrum",
     }))
-    .into_response()
+    .into_response())
 }
 
-async fn authorization_server(headers: HeaderMap) -> Response {
-    let base = base_url(&headers);
-    Json(json!({
+async fn authorization_server(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let base = base_url(&app_state(&app)?, &headers);
+    Ok(Json(json!({
         "issuer": base,
         "authorization_endpoint": format!("{base}/oauth/authorize"),
         "token_endpoint": format!("{base}/oauth/token"),
@@ -73,7 +72,7 @@ async fn authorization_server(headers: HeaderMap) -> Response {
         "revocation_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": [SCOPE],
     }))
-    .into_response()
+    .into_response())
 }
 
 #[derive(Deserialize)]
@@ -139,7 +138,7 @@ fn s256() -> String {
 async fn authorize(Auth(ctx): Auth, State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<AuthorizeReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let code = st.kernel.oauth_issue_code(&ctx, &req.client_id, &req.redirect_uri, &req.code_challenge, &req.code_challenge_method).await?;
-    let url = back_to(&req.redirect_uri, &[("code", &code), ("state", req.state.as_deref().unwrap_or_default()), ("iss", &base_url(&headers))]);
+    let url = back_to(&req.redirect_uri, &[("code", &code), ("state", req.state.as_deref().unwrap_or_default()), ("iss", &base_url(&st, &headers))]);
     Ok(no_store(Json(json!({"redirect_to": url})).into_response()))
 }
 
@@ -369,7 +368,7 @@ async fn consent_answer(State(app): State<AppContext>, headers: HeaderMap, Form(
     };
     let to = if req.decision == "allow" {
         let code = st.kernel.oauth_issue_code(&ctx, &client.id, &req.redirect_uri, &req.code_challenge, &req.code_challenge_method).await?;
-        back_to(&req.redirect_uri, &[("code", &code), ("state", &req.state), ("iss", &base_url(&headers))])
+        back_to(&req.redirect_uri, &[("code", &code), ("state", &req.state), ("iss", &base_url(&st, &headers))])
     } else {
         back_to(&req.redirect_uri, &[("error", "access_denied"), ("state", &req.state)])
     };
