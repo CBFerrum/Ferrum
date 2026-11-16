@@ -3,7 +3,8 @@
 //! The installation key is random and is stored only wrapped, once per slot; any slot opens it:
 //! * `file`: the key in `/run/ferrum/root.key` (base64 of 32 bytes), mounted where the server runs;
 //! * `kms`: a key the key-management service holds, reached as `kms.rs` reaches it: a command
-//!   (`FERRUM_SECRET_KEY_COMMAND`) or OpenBao's or Vault's Transit engine (`FERRUM_KMS_TRANSIT`);
+//!   (`FERRUM_SECRET_KEY_COMMAND`, the environment's alone) or OpenBao's or Vault's Transit engine (the setting
+//!   `kms_transit`), the slot bound to the service's address it was made with;
 //! * `credential`: a key derived from the database password in `DATABASE_URL` (Argon2id, the slot's own salt);
 //! * `recovery`: a key printed once, for its owner to keep offline: only `ferrum task vault_rewrap` opens with it.
 //!
@@ -69,7 +70,7 @@ impl std::fmt::Display for SlotKind {
 }
 
 /// What this process has of each slot's key. A server makes it from its environment, as it is read today:
-/// `DATABASE_URL`, the fixed file path, `FERRUM_KMS_TRANSIT` and `FERRUM_SECRET_KEY_COMMAND`.
+/// `DATABASE_URL`, the fixed file path, the setting `kms_transit` and `FERRUM_SECRET_KEY_COMMAND`.
 #[derive(Clone, Default)]
 pub struct Opener {
     /// The credential slot's key is derived from this address's password.
@@ -105,7 +106,8 @@ pub enum Opened {
     Later,
     /// The vault has no slot yet, and nothing here can make its first one: no password in `DATABASE_URL`, no key
     /// file, no key-management service. It stays closed, saying so, and everything that asks it is refused; a later
-    /// start with one of them makes it. In this release nothing depends on the vault, so the server starts all the same.
+    /// start with one of them makes it. The server starts all the same, with what the environment gives in its place
+    /// (`JWT_SECRET`, and in production the old key), or refuses, saying which it lacks.
     Closed,
 }
 
@@ -159,7 +161,7 @@ impl Default for Root {
 fn rootless(opener: &Opener) -> String {
     format!(
         "nothing here can make its first slot: DATABASE_URL has no password, there is no key file at {}, and no key-management service is set \
-         (FERRUM_KMS_TRANSIT or FERRUM_SECRET_KEY_COMMAND). Give it one of these, and the next start makes it (docs/operations.md, \"The vault\")",
+         (the setting kms_transit, or FERRUM_SECRET_KEY_COMMAND). Give it one of these, and the next start makes it (docs/operations.md, \"The vault\")",
         opener.file.display()
     )
 }
@@ -464,8 +466,20 @@ async fn slot_key(slot: &SlotRow, opener: &Opener) -> std::result::Result<Key, M
             }
             Some("transit") => {
                 let Some(transit) = &opener.transit else {
-                    return Err(Miss::Absent("it was made through the key-management service's Transit key, and FERRUM_KMS_TRANSIT is not set here".into()));
+                    return Err(Miss::Absent("it was made through the key-management service's Transit key, and kms_transit is not set here".into()));
                 };
+                // The service's token goes only to the service the slot was made with (its address is in the slot, which
+                // only the vault writes): a setting changed in the database sends it nowhere else. A slot made before
+                // this release names none, and is asked where the settings say, as before.
+                if let Some(made) = slot.params["api"].as_str()
+                    && made != transit.api
+                {
+                    return Err(Miss::Absent(format!(
+                        "it was made with the key-management service at {made}, and kms_transit says {} here: nothing is sent there. Set kms_transit \
+                         back, or make the slot again with ferrum task vault_add_slot kind:kms where the vault opens",
+                        transit.api
+                    )));
+                }
                 let Some(wrapped) = &slot.kms_wrapped else { return Err(Miss::Damaged("its row holds no Transit ciphertext".into())) };
                 match kms::resolve(wrapped, Some(transit)).await {
                     Ok(k) => Ok(kms_key(k)),
@@ -582,7 +596,7 @@ async fn kms_slot(opener: &Opener) -> Result<Option<Made>> {
         if back.bytes() != kek.bytes() {
             return Err(Error::Unavailable("the key-management service gave back another key than the one it was given".into()));
         }
-        let params = json!({"how": "transit", "key": format!("{}/{}", transit.mount, transit.key)});
+        let params = json!({"how": "transit", "key": format!("{}/{}", transit.mount, transit.key), "api": transit.api});
         return Ok(Some(Made { kek, salt: None, params, kms_wrapped: Some(wrapped), printed: None }));
     }
     Ok(None)
@@ -611,7 +625,7 @@ async fn make_slot(kind: SlotKind, opener: &Opener) -> Result<Made> {
         SlotKind::File => file_slot(opener).await,
         SlotKind::Kms => kms_slot(opener)
             .await?
-            .ok_or_else(|| Error::Invalid("no key-management service is set here (FERRUM_KMS_TRANSIT or FERRUM_SECRET_KEY_COMMAND)".into())),
+            .ok_or_else(|| Error::Invalid("no key-management service is set here (the setting kms_transit, or FERRUM_SECRET_KEY_COMMAND)".into())),
         SlotKind::Credential => {
             credential_slot(opener).await?.ok_or_else(|| Error::Invalid("DATABASE_URL has no password, and the credential slot is made from it".into()))
         }
@@ -737,7 +751,10 @@ pub async fn put_slot(db: &Db, kind: SlotKind) -> Result<Printed> {
             Ok(_) => {}
             Err(Miss::Wrong(_) | Miss::Absent(_)) => {
                 return Err(Error::Invalid(
-                    "this task's DATABASE_URL does not open the credential slot: run it with the servers' DATABASE_URL, or run `ferrum task vault_rewrap` if the database password changed".into(),
+                    "this task's DATABASE_URL does not open the credential slot: run it with the servers' DATABASE_URL. If the database password \
+                     changed, give the old one or the recovery key (`with:password` or `with:recovery`, from standard input or `file:<path>`), or \
+                     start a server with the new DATABASE_URL: where another slot opens the vault it makes the credential slot again by itself"
+                        .into(),
                 ));
             }
             Err(m) => return Err(Error::Unavailable(format!("the credential slot: {m}"))),
@@ -756,6 +773,88 @@ pub async fn put_slot(db: &Db, kind: SlotKind) -> Result<Printed> {
     super::installation_event(&mut tx, if had { "slot_replaced" } else { "slot_added" }, json!({"slot": kind.as_str()})).await?;
     tx.commit().await?;
     Ok(made.printed)
+}
+
+/// What a server's start does to the slots by itself, once the vault is open (docs/operations.md, "The vault"), so that a
+/// changed database password (an import, a copy, a recovery, a provider's reset) closes nothing:
+/// * a `file` slot where the key file is mounted and the vault has none (an installation that had only its credential
+///   slot gains it at its next start);
+/// * the `credential` slot made again for this process's database password where it no longer opens with it and
+///   another slot opened the vault: that password is the one the database takes now, since this process connects
+///   with it. Never one that opens with it, and never where none was: an operator who removed it keeps it removed.
+///
+/// Each under the root's lock, looked at again inside it, so that replicas starting together do it once; recorded in the
+/// vault's record. A file slot whose key is another than the one mounted is left alone (the doctor says so). Returns what
+/// it did, in words.
+pub async fn settle(db: &Db) -> Result<Vec<String>> {
+    let root = &db.vault;
+    let installation = root.installation()?;
+    let opener = root.opener().ok_or_else(|| Error::Unavailable("the vault is closed".into()))?;
+    let by = root.opened().map_err(Error::Unavailable)?;
+    let slots = read_slots(db).await?;
+    let mut done = Vec::new();
+    if !slots.iter().any(|s| s.kind == SlotKind::File) && opener.file.exists() {
+        match file_key(&opener) {
+            Ok(kek) => {
+                if put_once(db, &installation, SlotKind::File, &Made::plain(kek), |_| async { Ok(true) }).await? {
+                    done.push("the key file now opens the vault too (a file slot)".to_string());
+                }
+            }
+            Err(miss) => tracing::warn!("the vault has no file slot, and the key file is not one: {miss}"),
+        }
+    }
+    let credential = slots.iter().find(|s| s.kind == SlotKind::Credential);
+    if by != SlotKind::Credential
+        && let Some(slot) = credential
+        && matches!(unlock(slot, &opener).await, Err(Miss::Wrong(_)))
+        && let Some(made) = credential_slot(&opener).await?
+    {
+        // Inside the lock: made again only while the row there still does not open with this password.
+        let still = |row: SlotRow| {
+            let opener = opener.clone();
+            async move { Ok(matches!(unlock(&row, &opener).await, Err(Miss::Wrong(_)))) }
+        };
+        if put_once(db, &installation, SlotKind::Credential, &made, still).await? {
+            done.push(format!("the credential slot was made again for this DATABASE_URL's password (the vault opened with its {by} slot)"));
+        }
+    }
+    Ok(done)
+}
+
+/// Writes the slot `made` of `kind` under the root's lock, where `still` says the slot there (none: there is none) still
+/// calls for it; whether it wrote.
+async fn put_once<F, Fut>(db: &Db, installation: &Installation, kind: SlotKind, made: &Made, still: F) -> Result<bool>
+where
+    F: FnOnce(SlotRow) -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    let row = made.row(kind, installation)?;
+    let mut tx = db.vault_tx(None).await?;
+    lock(&mut tx, true).await?;
+    if current_version(&mut tx).await? != Some(installation.version) {
+        return Ok(false);
+    }
+    let there: Option<SlotTuple> = sqlx::query_as(
+        "select kind, installation_version, installation_made_at, wrapped, check_value, salt, params, kms_wrapped, created_at from vault.root_slot where kind = $1",
+    )
+    .bind(kind.as_str())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let wanted = match there {
+        None => kind == SlotKind::File,
+        Some((_, version, made_at, wrapped, check, salt, params, kms_wrapped, created_at)) => {
+            kind == SlotKind::Credential && still(SlotRow { kind, version, made_at, wrapped, check, salt, params, kms_wrapped, created_at }).await?
+        }
+    };
+    if !wanted {
+        return Ok(false);
+    }
+    write_slot(&mut tx, &row).await?;
+    notify(&mut tx, "*").await?;
+    let what = if kind == SlotKind::File { "slot_added" } else { "credential_remade" };
+    super::installation_event(&mut tx, what, json!({"slot": kind.as_str(), "by": "start"})).await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// Removes the slot of `kind`; never the last one a server opens the vault with (file, kms or credential).
@@ -1096,10 +1195,18 @@ impl crate::Kernel {
         for (kind, opens) in try_slots(&self.db).await? {
             out.push(match opens {
                 Ok(()) => Finding::ok(slot_check(kind), format!("the {kind} slot opens the vault here")),
+                // The password changed: the next server's start makes it again, as another slot opens the vault.
+                Err(why) if kind == SlotKind::Credential => Finding::warning(
+                    slot_check(kind),
+                    format!("the {kind} slot does not open the vault here: {why}"),
+                    "Start a server with this DATABASE_URL: another slot opens the vault, so it makes the credential slot again for this password by \
+                     itself. To do it now: ferrum task vault_rewrap with the old password (or with:recovery), from standard input or file:<path>.",
+                ),
                 Err(why) => Finding::warning(
                     slot_check(kind),
                     format!("the {kind} slot does not open the vault here: {why}"),
-                    "A replica that cannot use one slot opens with another; make this one again (ferrum task vault_add_slot) or remove it.",
+                    "A replica that cannot use one slot opens with another; make this one again where its key is here (ferrum task vault_add_slot \
+                     kind:<it>) or remove it (vault_remove_slot).",
                 ),
             });
         }

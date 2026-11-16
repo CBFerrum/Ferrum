@@ -37,12 +37,13 @@ storage:
   region: ap-south-1
   endpoint: ""  # MinIO, Cloudflare R2 and other S3-compatible stores: https://<account>.r2.cloudflarestorage.com
 
-# The name of a Secret you created. The chart creates none and holds no secret value. Keys:
-#   JWT_SECRET, FERRUM_BOOTSTRAP_TOKEN, FERRUM_METRICS_TOKEN,
-#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-# and, optional: FERRUM_CLAMAV_ADDR, FERRUM_CLAMAV_MAX_MB, FERRUM_CONNECTION_UPLOAD_MB, FERRUM_OPS_TELEMETRY_DAYS,
+# The name of a Secret you created, read where it is there: none of its keys is required any more, as the vault holds
+# the platform's secrets (docs/operations.md, "The platform's secrets"; `ferrum task secret_set`). Its keys, each
+# optional: JWT_SECRET, FERRUM_BOOTSTRAP_TOKEN, FERRUM_METRICS_TOKEN, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (or the
+#   pod's own identity), FERRUM_CLAMAV_ADDR, FERRUM_CLAMAV_MAX_MB, FERRUM_CONNECTION_UPLOAD_MB, FERRUM_OPS_TELEMETRY_DAYS,
 #   FERRUM_SECRET_KEY and FERRUM_RETIRED_SECRET_KEYS (the old master key, where an installation still has it:
 #   docs/operations.md, "Retiring the old key"), FERRUM_OPERATOR_TOKEN (the settings routes for the Operations screen).
+# The environment, where it sets one, still wins over the vault in this release.
 secrets:
   existingSecret: ferrum-secrets
   # Optional: have the External Secrets Operator (installed separately) make that Secret from your
@@ -55,6 +56,27 @@ secrets:
     dataFrom: []   # - extract: {key: ferrum/production}
     # Or key by key:
     data: []       # - {secretKey: JWT_SECRET, remoteRef: {key: ferrum/production, property: JWT_SECRET}}
+
+# The vault's root (docs/operations.md, "The vault"): files mounted at /run/ferrum in every pod and Job.
+vault:
+  # The key file of the vault's `file` slot, at /run/ferrum/root.key. Empty name: the chart makes the Secret
+  # <fullname>-vault-key once, with a random key, kept when the release is removed and never changed by an upgrade (it
+  # looks the Secret up and keeps what it holds). Every cluster then has a slot beside the credential one, so a changed
+  # database password (an import, a copy, a recovery, a provider's reset) closes nothing: the next start makes the
+  # credential slot again by itself. Name an existing Secret to bring the key along: a new cluster that takes another's
+  # database (database.bootstrap import, copy or recovery) names a copy of the old cluster's key Secret. A tool that
+  # renders the chart without the cluster (Argo CD, `helm template`) cannot look the Secret up and would make a new key
+  # each time: with one, make the Secret yourself (`kubectl create secret generic ferrum-vault-key
+  # --from-literal=root.key="$(openssl rand -base64 32)"`) and name it here.
+  keySecret: {name: "", key: root.key}
+  # The key-management service of the vault's `kms` slot (the settings kms_transit, kms_kubernetes_role, ...: in
+  # `settings` below). Its token is never a setting: a Secret mounted at /run/ferrum/kms.token, or the pod's own
+  # service account (serviceAccount: true mounts its token at its standard path, for kms_kubernetes_role).
+  kms:
+    tokenSecret: {name: "", key: token}
+    # A certificate authority the service's certificate is checked against, mounted at /run/ferrum/kms-ca.pem.
+    caSecret: {name: "", key: ca.crt}
+    serviceAccount: false
 
 # Settings the chart does not know yet: entries of a container's `env`, added to the server.
 extraEnv: []
@@ -221,10 +243,12 @@ database:
     urlSecret: {name: "", key: uri}  # the Secret holding DATABASE_URL: the ordinary role's address (the pooler's, if any)
     # host or host:port of PostgreSQL itself when urlSecret's address is a pooler in transaction mode (RDS Proxy,
     # PgBouncer, Supabase's or Neon's pooled address): listeners, session locks and migrations go there, with
-    # urlSecret's role, password, database and TLS options (FERRUM_DATABASE_DIRECT_HOST). The migrate and settings
-    # Jobs get it too. Empty: everything through urlSecret's address.
+    # urlSecret's role, password, database and TLS options (FERRUM_DATABASE_DIRECT_HOST; with `environment: minimal`,
+    # the address's own `ferrum_direct_host`). The migrate and settings Jobs get it too. Empty: everything through
+    # urlSecret's address.
     directHost: ""
-    # host or host:port of a read replica reports and exports may read from (FERRUM_DATABASE_READ_HOST). Empty: none.
+    # host or host:port of a read replica reports and exports may read from (FERRUM_DATABASE_READ_HOST; with
+    # `environment: minimal`, the address's own `ferrum_read_host`). Empty: none.
     readHost: ""
     # A Secret holding the certificate authority the database's certificate is checked against (Amazon's RDS bundle,
     # Google's server CA, ...), mounted at /run/ferrum/db-ca.pem in the pods and Jobs. With it, an address that asks

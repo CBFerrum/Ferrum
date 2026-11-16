@@ -2,7 +2,8 @@
 """The settings' registry (server/src/settings.yaml; docs/plan/stateless.md, D2) against what reads them.
 
     scripts/settings.py            # check; exit 1 on any finding
-    scripts/settings.py --write    # write the operations guide's table from the registry, then check
+    scripts/settings.py --write    # write the operations guide's table and the baseline, then check
+    scripts/settings.py --names    # the registry's variables and the baseline's, as JSON (scripts/one_input.sh)
 
 What it checks:
 * every `get_env(name=...)` in server/config/*.yaml names a variable the registry declares, or one of the boot
@@ -12,11 +13,23 @@ What it checks:
   and the readers' own `env("X")`, `var("X")`, `some("X")`, `set("X")`, `env!`, `option_env!`) is declared, or on the
   allow-list below: the boot contract, tests' own, and what the build bakes in;
 * the registry itself: each key and variable once, a known type, a choice with its values, a secret neither stored nor
-  live, a vault's kind only on a secret, and the three settings a pool has of its own;
-* the table in docs/operations.md between its markers is the one this registry makes.
+  live, a vault's kind only on a secret, the three settings a pool has of its own, an app's entry under its app (and
+  in the platform's file still read from the environment until that app declares it), a task's input that alone;
+* the apps' own (`operator_settings` in the manifest of each app the lock compiles in, as the server adds them): each
+  replaces the platform's entry that moves to its app, and no key or variable has two owners;
+* the table in docs/operations.md between its markers is the one this registry makes, the apps' settings under their
+  app;
+* the baseline of what stays in the environment once the registry's variables are no longer read
+  (docs/registry/environment-only.md): each of the registry's entries that the environment alone decides (a secret the
+  vault does not hold, one someone else reads, a task's input), with why, and the names the boot contract and the
+  libraries read themselves (LIBRARIES below). It may only shrink: `--write` refuses to add a name to it, and the check
+  fails while it holds one the registry no longer has. scripts/one_input.sh fails a server that reads a name neither
+  the registry nor this baseline declares.
 """
 
+import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -57,11 +70,115 @@ TYPES = {"text", "bool", "int", "json", "choice"}
 # How the vault holds a platform secret (server/src/secrets.rs).
 HELD = {"session", "compared", "library"}
 POOL = ["db_max_connections", "run_background", "zone"]
+APP_ID = re.compile(r"^[a-z][a-z0-9-]{1,39}$")
+BASELINE = ROOT / "docs/registry/environment-only.md"
+# What the program reads from its environment besides the registry's variables, each with why: the boot contract's own,
+# and what the libraries it is built from read themselves (seen by scripts/one_input.sh, which asks libc's getenv).
+LIBRARIES = {
+    "LOCO_ENV": "which configuration file the program reads (the image sets it; `-e production` on the command line does the same)",
+    "RAILS_ENV": "Loco's other names for LOCO_ENV, asked after it",
+    "NODE_ENV": "Loco's other names for LOCO_ENV, asked after it",
+    "LOCO_CONFIG_FOLDER": "Loco: where the configuration files are (the image's /app/config otherwise)",
+    "RUST_LOG": "the log's filter, over the log level (a diagnosing aid)",
+    "RUST_BACKTRACE": "the Rust runtime: how a panic is reported",
+    "RUST_LIB_BACKTRACE": "the Rust runtime: how a panic is reported",
+    "RUST_MIN_STACK": "the Rust runtime: a new thread's stack",
+    "TZ": "the C library: the machine's time zone (the server works in UTC)",
+    "HOME": "PostgreSQL's driver and the object store's client: where a user's own files would be (~/.pgpass, ~/.aws)",
+    "PGHOST": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGHOSTADDR": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGPORT": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGUSER": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGPASSWORD": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGDATABASE": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGSSLMODE": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGSSLROOTCERT": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGSSLCERT": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGSSLKEY": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGAPPNAME": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGOPTIONS": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGPASSFILE": "PostgreSQL's driver (sqlx): a password file, where DATABASE_URL has no password",
+    "USER": "PostgreSQL's driver (sqlx): the role, where DATABASE_URL names none",
+    "HTTPS_PROXY": "the HTTP client (reqwest): the system's proxy for the server's outbound requests",
+    "HTTP_PROXY": "the HTTP client (reqwest): the system's proxy for the server's outbound requests",
+    "ALL_PROXY": "the HTTP client (reqwest): the system's proxy for the server's outbound requests",
+    "NO_PROXY": "the HTTP client (reqwest): hosts its outbound requests reach without the proxy",
+    "https_proxy": "the HTTP client (reqwest): the system's proxy, in lower case",
+    "http_proxy": "the HTTP client (reqwest): the system's proxy, in lower case",
+    "all_proxy": "the HTTP client (reqwest): the system's proxy, in lower case",
+    "no_proxy": "the HTTP client (reqwest): hosts reached without the proxy, in lower case",
+    "REQUEST_METHOD": "the HTTP client (reqwest): set under CGI, where it ignores HTTP_PROXY (httpoxy)",
+    "TMPDIR": "the Rust runtime: where temporary files go",
+    "PATH": "where a program the server runs is found (sh, for FERRUM_SECRET_KEY_COMMAND)",
+    "LANG": "the C library: the language of its own messages",
+    "NO_COLOR": "the terminal's colours (Loco's banner and log)",
+    "CLICOLOR": "the terminal's colours (Loco's banner and log)",
+    "CLICOLOR_FORCE": "the terminal's colours (Loco's banner and log)",
+    "TOKIO_WORKER_THREADS": "the async runtime: how many threads it runs",
+    "TOKIO_UNSTABLE_SHARDED_BLOCKING_QUEUE": "the async runtime: how it queues blocking work",
+    "WASMTIME_BACKTRACE_DETAILS": "the plugin runtime (wasmtime): how a plugin's crash is reported",
+    "OPENSSL_armcap": "the cryptography library: which processor instructions it uses",
+    "SSH_AUTH_SOCK": "a library's SSH agent (libgit2), used only for a repository reached over SSH",
+    "FERRUM_TEST_RUN_DIR": "a debug build only: where a test puts the files of /run/ferrum (a release build never reads it)",
+    "AWS_WEB_IDENTITY_TOKEN_FILE": "the object store: a machine's own identity (a web identity, IRSA) in place of keys",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI": "the object store: a container's own credentials (EKS Pod Identity, ECS) in place of keys",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "the object store: a container's own credentials (ECS) in place of keys",
+    "AWS_PROFILE": "the object store's client: the AWS profile, where no keys are given",
+    "AWS_SHARED_CREDENTIALS_FILE": "the object store's client: the AWS credentials file, where no keys are given",
+}
 
 
 def registry():
     entries = yaml.safe_load(REGISTRY.read_text())
     return entries if isinstance(entries, list) else []
+
+
+def platform_findings(entries):
+    """What only the platform's file must hold: an entry that moves to an app is still read from the environment."""
+    return [f"{e.get('key')}: moves to {e['app']}, and is read from the environment until {e['app']} declares it (environment:)"
+            for e in entries if e.get("app") and not e.get("environment") and not e.get("secret")]
+
+
+def apps_declared():
+    """(app id, its operator_settings) of each app the lock compiles in (`cargo metadata`, as scripts/check_apps.py reads
+    them), once each."""
+    run = subprocess.run(["cargo", "metadata", "--format-version", "1", "--locked", "--all-features"], cwd=ROOT, capture_output=True, text=True)
+    if run.returncode != 0:
+        sys.exit(f"cargo metadata: {run.stderr.strip()}")
+    out, seen = [], set()
+    for p in json.loads(run.stdout)["packages"]:
+        if not (p.get("source") or "").startswith("git+https://github.com/CBFerrum/"):
+            continue
+        root = Path(p["manifest_path"]).parent
+        for manifest in sorted([root / "app.yaml", *root.glob("apps/*.yaml")]):
+            if manifest in seen or not manifest.is_file():
+                continue
+            seen.add(manifest)
+            m = yaml.safe_load(manifest.read_text()) or {}
+            if m.get("operator_settings"):
+                out.append((m["id"], m["operator_settings"]))
+    return sorted(out, key=lambda a: a[0])
+
+
+def merged(entries, apps):
+    """The registry as the server makes it (server/src/settings.rs, `merged`): each app's declarations as `<app>.<key>`,
+    replacing the platform's entry that moves to that app; and what clashes."""
+    entries = [dict(e) for e in entries]
+    found, declared = [], []
+    for app, settings in apps:
+        for s in settings:
+            key = f"{app}.{s.get('key')}"
+            theirs = [e for e in entries if e.get("env") == s.get("env") or e.get("key") == key]
+            for e in theirs:
+                if e.get("app") == app and not e.get("secret"):
+                    entries.remove(e)
+                else:
+                    found.append(f"{s.get('env')} is declared twice: by the platform ({e.get('key')}) and by the app {app} ({key})")
+            for d in declared:
+                if d["env"] == s.get("env") or d["key"] == key:
+                    found.append(f"{s.get('env')} is declared twice: by the app {d['app']} ({d['key']}) and by the app {app} ({key})")
+            declared.append({**{k: v for k, v in s.items() if k != "key"}, "key": key, "app": app})
+    return entries + declared, found
 
 
 def registry_findings(entries):
@@ -91,6 +208,10 @@ def registry_findings(entries):
             found.append(f"{where}: sends {e['sends']}, which is not a secret of the registry")
         if e.get("vault") is not None and (not e.get("secret") or e["vault"] not in HELD):
             found.append(f"{where}: vault is one of {sorted(HELD)}, and only on a secret")
+        if e.get("app") is not None and (not APP_ID.match(str(e["app"])) or not str(key).startswith(f"{e['app']}.")):
+            found.append(f"{where}: an app's setting is <app>.<key>, under an app's id")
+        if e.get("input") is not None and (e.get("environment") or e.get("app") or e.get("applies") == "live" or e.get("scope") == "pool"):
+            found.append(f"{where}: a task's input is that alone: no one else's, no app's, neither live nor a pool's")
     pools = [e.get("key") for e in entries if e.get("scope") == "pool"]
     if pools != POOL:
         found.append(f"a pool's own settings are {POOL}, not {pools}")
@@ -155,6 +276,14 @@ def cell(text):
 
 
 def table(entries):
+    """The platform's settings, then each app's under its name."""
+    out = rows(e for e in entries if not e.get("app"))
+    for app in sorted({e["app"] for e in entries if e.get("app")}):
+        out += f"\n\nThe app `{app}`'s settings:\n\n" + rows(e for e in entries if e.get("app") == app)
+    return out
+
+
+def rows(entries):
     rows = [
         "| Setting | Variable | Type | Default | Where it lives | Meaning |",
         "|---|---|---|---|---|---|",
@@ -166,8 +295,14 @@ def table(entries):
         default = e.get("default", "")
         if e.get("secret") and e.get("vault"):
             where = f"secret: the environment, else the vault ({e['vault']})"
+        elif e.get("secret") and e.get("app"):
+            where = f"secret: the environment, until `{e['app']}` keeps it in its own vault"
         elif e.get("secret"):
             where = "secret: the environment"
+        elif e.get("input"):
+            where = f"an input of `ferrum task {e['input']}`, from its environment as it runs"
+        elif e.get("environment") and e.get("app"):
+            where = f"the environment ({e['environment'].split(',')[0]} reads it itself); the database's once `{e['app']}` declares it"
         elif e.get("environment"):
             where = f"the environment ({e['environment'].split(',')[0]})"
         else:
@@ -177,6 +312,71 @@ def table(entries):
                 where += f"; not from the table while `{e['sends']}` is in the environment; moving it takes that secret again or clears it"
         rows.append(f"| `{e['key']}` | `{e['env']}` | {kind} | {f'`{cell(default)}`' if default else ''} | {where} | {cell(e.get('doc', ''))} |")
     return "\n".join(rows)
+
+
+def environment_only(entries):
+    """Each name that stays in the environment once the registry's variables are no longer read, with why."""
+    out = dict(LIBRARIES)
+    for e in entries:
+        app, env = e.get("app"), e.get("env")
+        if e.get("input"):
+            out[env] = f"an input of `ferrum task {e['input']}`, given in its environment as it runs"
+        elif e.get("environment") and app:
+            out[env] = f"`{app}` reads it with std::env::var until its release declares it (operator_settings)"
+        elif e.get("environment"):
+            out[env] = f"read by {e['environment']}"
+        elif e.get("secret") and app:
+            out[env] = f"`{app}`'s own secret, until it keeps it in its own vault"
+        elif e.get("secret") and not e.get("vault"):
+            out[env] = SECRETS_WHY.get(e["key"], "a secret the vault does not hold yet")
+    return out
+
+
+SECRETS_WHY = {
+    "secret_key": "the old master key, until it retires (docs/operations.md, Retiring the old key)",
+    "retired_secret_keys": "the old master key's retired ones, until it retires",
+    "secret_key_command": "a command line, never read from the database, where whoever writes a row would run a program",
+    "bao_token": "through R1: the key-management service's token is the file /run/ferrum/kms.token",
+    "vault_token": "through R1: the key-management service's token is the file /run/ferrum/kms.token",
+    "database_direct_url": "a whole address with its password: give the host in DATABASE_URL instead (ferrum_direct_host)",
+    "database_read_url": "a whole address with its password: give the host in DATABASE_URL instead (ferrum_read_host)",
+    "authority_witness_url": "another database's address with its password: a secret the vault does not hold yet",
+}
+
+
+def baseline_read():
+    """The names the baseline file lists, or None when there is none yet."""
+    if not BASELINE.is_file():
+        return None
+    return set(re.findall(r"^\| `([A-Za-z_][A-Za-z0-9_]*)` \|", BASELINE.read_text(), re.M))
+
+
+def baseline_text(only):
+    rows = "\n".join(f"| `{name}` | {cell(why)} |" for name, why in sorted(only.items()))
+    return (
+        "# What stays in the environment\n\n"
+        "Written by `python3 scripts/settings.py --write`, which refuses to add to it: it may only shrink. Each name a "
+        "replica still reads from its environment once the release after this one stops reading the settings' registry "
+        "(server/src/settings.yaml), besides `DATABASE_URL`, with why (docs/operations.md, *What a replica still reads from "
+        "its environment*). `scripts/one_input.sh` fails a server that reads a name neither the registry nor this list "
+        "declares.\n\n| Variable | Why |\n|---|---|\n" + rows + "\n"
+    )
+
+
+def baseline_findings(entries, write):
+    only = environment_only(entries)
+    had = baseline_read()
+    if had is not None:
+        grown = sorted(set(only) - had)
+        if grown:
+            return [f"{BASELINE.relative_to(ROOT)} may only shrink, and these are new to it: {', '.join(grown)}"]
+    text = baseline_text(only)
+    if BASELINE.is_file() and BASELINE.read_text() == text:
+        return []
+    if write:
+        BASELINE.write_text(text)
+        return []
+    return [f"{BASELINE.relative_to(ROOT)} is not the registry's: run python3 scripts/settings.py --write (it can shrink)"]
 
 
 def guide_findings(entries, write):
@@ -196,15 +396,30 @@ def guide_findings(entries, write):
 
 def main():
     write = "--write" in sys.argv[1:]
-    entries = registry()
-    found = registry_findings(entries) + config_findings(entries) + code_findings(entries) + guide_findings(entries, write)
+    platform = registry()
+    entries, clashes = merged(platform, apps_declared())
+    if "--names" in sys.argv[1:]:
+        print(json.dumps({"registry": sorted({e["env"] for e in entries if e.get("env")}), "baseline": environment_only(entries)}))
+        return 0
+    found = (
+        platform_findings(platform)
+        + clashes
+        + registry_findings(entries)
+        + config_findings(entries)
+        + code_findings(entries)
+        + guide_findings(entries, write)
+        + baseline_findings(entries, write)
+    )
     for f in found:
         print(f)
     live = sum(1 for e in entries if e.get("applies") == "live")
     secret = sum(1 for e in entries if e.get("secret"))
     held = sum(1 for e in entries if e.get("vault"))
     elsewhere = sum(1 for e in entries if e.get("environment"))
-    print(f"{len(entries)} settings: {live} apply at once, {secret} secrets ({held} in the vault), {elsewhere} read from the environment by others; {len(found)} findings")
+    inputs = sum(1 for e in entries if e.get("input"))
+    apps = sum(1 for e in entries if e.get("app") and not e.get("environment") and not e.get("secret"))
+    print(f"{len(entries)} settings: {live} apply at once, {secret} secrets ({held} in the vault), {elsewhere} read from the environment by others, "
+          f"{inputs} tasks' inputs, {apps} declared by apps; {len(found)} findings")
     return 1 if found else 0
 
 

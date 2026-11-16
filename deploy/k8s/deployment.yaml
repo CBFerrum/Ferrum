@@ -54,7 +54,7 @@ spec:
             - name: DATABASE_URL
               valueFrom: {secretKeyRef: {name: ferrum-db-app, key: uri}}
             - name: JWT_SECRET
-              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: JWT_SECRET}}
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: JWT_SECRET, optional: true}}
             - name: FERRUM_SECRET_KEY
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_SECRET_KEY, optional: true}}
             - name: FERRUM_CLAMAV_ADDR
@@ -72,16 +72,16 @@ spec:
             - name: FERRUM_AUDIT_SINK_SECRET
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_AUDIT_SINK_SECRET, optional: true}}
             - name: FERRUM_BOOTSTRAP_TOKEN
-              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_BOOTSTRAP_TOKEN}}
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_BOOTSTRAP_TOKEN, optional: true}}
             - name: FERRUM_METRICS_TOKEN
-              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_METRICS_TOKEN}}
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_METRICS_TOKEN, optional: true}}
             # The settings routes for the Operations screen (docs/api.md, "Settings"); without it they answer nobody.
             - name: FERRUM_OPERATOR_TOKEN
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_OPERATOR_TOKEN, optional: true}}
             - name: AWS_ACCESS_KEY_ID
-              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: AWS_ACCESS_KEY_ID}}
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: AWS_ACCESS_KEY_ID, optional: true}}
             - name: AWS_SECRET_ACCESS_KEY
-              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: AWS_SECRET_ACCESS_KEY}}
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: AWS_SECRET_ACCESS_KEY, optional: true}}
             # Attachments must be shared by all replicas: use object storage.
             - {name: FERRUM_S3_BUCKET, value: "CHANGE-ME-files-bucket"}
             - {name: FERRUM_S3_REGION, value: "ap-south-1"}
@@ -130,6 +130,9 @@ spec:
             capabilities: {drop: ["ALL"]}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            # The vault's key file (docs/operations.md, "The vault"): the Secret ferrum-vault-key, made once by hand
+            # (secret.example.yaml); without it the pod starts, and the vault opens with its other slots.
+            - {name: run, mountPath: /run/ferrum, readOnly: true}
           startupProbe:
             httpGet: {path: /_ping, port: http}
             periodSeconds: 2
@@ -152,3 +155,7 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {sizeLimit: 512Mi}
+        - name: run
+          projected:
+            sources:
+              - secret: {name: ferrum-vault-key, items: [{key: root.key, path: root.key}], optional: true}

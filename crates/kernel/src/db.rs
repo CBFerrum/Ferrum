@@ -13,8 +13,15 @@ use uuid::Uuid;
 
 pub type Tx = Transaction<'static, Postgres>;
 
-/// Connections in the side pool (see [`Db::side`]); count them in the database's connection budget.
+/// The fewest connections in the side pool (see [`Db::side`]); count them in the database's connection budget.
 pub const SIDE_CONNECTIONS: u32 = 4;
+
+/// The side pool's connections for a main pool of `main`: an eighth of it, and never fewer than [`SIDE_CONNECTIONS`]
+/// (4 with the default pool of 30). The vault's verbs and short side writes (numbering) take one each, outside the
+/// caller's transaction, so the side pool grows with the requests that can ask for one at once.
+pub fn side_connections(main: u32) -> u32 {
+    main.div_ceil(8).max(SIDE_CONNECTIONS)
+}
 
 /// The server's LISTEN loops, each holding one connection of [`Db::direct`] for as long as it runs: metadata and users
 /// (kernel), plugin sockets, live updates and co-editing (server).
@@ -277,12 +284,14 @@ impl Db {
         let session = |o: PgConnectOptions| {
             o.options([("timezone", "UTC"), ("lock_timeout", LOCK_TIMEOUT), ("idle_in_transaction_session_timeout", IDLE_IN_TRANSACTION)])
         };
+        // Tests' own direct addresses, read by a debug build only (a release build reads no test's variable).
+        let test = |name: &str| if cfg!(debug_assertions) { std::env::var(name).ok() } else { None };
         let direct_url = config
             .direct_url
             .clone()
-            .or_else(|| std::env::var("FERRUM_TEST_DATABASE_DIRECT_URL").ok())
+            .or_else(|| test("FERRUM_TEST_DATABASE_DIRECT_URL"))
             // Suites on several databases through a pooler (scripts/local_ci.sh managed): each one's own, by host.
-            .or_else(|| std::env::var("FERRUM_TEST_DATABASE_DIRECT_HOST").ok().and_then(|h| with_host(&config.url, &h).ok()))
+            .or_else(|| test("FERRUM_TEST_DATABASE_DIRECT_HOST").and_then(|h| with_host(&config.url, &h).ok()))
             .map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty() && *u != config.url);
         let main = url(&config.url, "database url")?;
@@ -290,7 +299,7 @@ impl Db {
         // without it.
         let main = if direct_url.is_some() { main.extra_float_digits(None) } else { session(main) };
         let side = PgPoolOptions::new()
-            .max_connections(SIDE_CONNECTIONS)
+            .max_connections(side_connections(config.max_connections))
             .min_connections(0)
             .acquire_timeout(config.acquire_timeout)
             .idle_timeout(Some(Duration::from_secs(60)))
@@ -698,15 +707,26 @@ fn pooler_refused(e: sqlx::Error) -> Error {
 /// Where an outside database's certificate authority is read from when it is there (docs/plan/stateless.md, D1).
 pub const DB_CA: &str = "/run/ferrum/db-ca.pem";
 
-/// The outside database's certificate authority, when its file is there: [`DB_CA`]. A debug build (tests, a developer's
-/// machine) looks in `FERRUM_TEST_RUN_DIR` instead when that is set, for `db-ca.pem`; a release build never reads it.
+/// The outside database's certificate authority, when its file is there: [`DB_CA`] ([`run_file`]).
 pub fn database_ca() -> Option<String> {
+    run_file(DB_CA).map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Where a file of the boot contract's is read: its fixed path under `/run/ferrum` (docs/plan/stateless.md, D1). A debug
+/// build (tests, a developer's machine, the rehearsals) looks in `FERRUM_TEST_RUN_DIR` instead when that is set, for the
+/// file of the same name; a release build never reads that variable.
+pub fn run_path(fixed: &str) -> std::path::PathBuf {
     let elsewhere = if cfg!(debug_assertions) { std::env::var("FERRUM_TEST_RUN_DIR").ok().filter(|d| !d.trim().is_empty()) } else { None };
-    let path = match elsewhere {
-        Some(dir) => std::path::Path::new(&dir).join("db-ca.pem"),
-        None => std::path::PathBuf::from(DB_CA),
-    };
-    path.is_file().then(|| path.to_string_lossy().into_owned())
+    match (elsewhere, std::path::Path::new(fixed).file_name()) {
+        (Some(dir), Some(name)) => std::path::Path::new(&dir).join(name),
+        _ => std::path::PathBuf::from(fixed),
+    }
+}
+
+/// A file of the boot contract's ([`run_path`]), when it is there.
+pub fn run_file(fixed: &str) -> Option<std::path::PathBuf> {
+    let path = run_path(fixed);
+    path.is_file().then_some(path)
 }
 
 /// `url` trusting the database's certificate authority when its file is there ([`database_ca`], [`with_ca`]); as it is
@@ -749,6 +769,49 @@ pub fn with_host(url: &str, host: &str) -> Result<String> {
         u.query_pairs_mut().clear().extend_pairs(kept);
     }
     Ok(u.to_string())
+}
+
+/// D7's hosts given in the database's address itself (`DATABASE_URL`): `ferrum_direct_host` and `ferrum_read_host`, each
+/// `host` or `host:port` as the settings `database_direct_host` and `database_read_host` take them. With them the address
+/// is all a replica needs, and they are as trusted as the address, which the operator gave. They are no connection
+/// parameters: [`address_hosts`] takes them out before anything connects.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AddressHosts {
+    #[serde(default)]
+    pub direct_host: String,
+    #[serde(default)]
+    pub read_host: String,
+}
+
+/// `url` without the parameters [`AddressHosts`] names, and their values; `url` as it is when it has none (or is no
+/// address at all: whatever reads it next says so). A value that is not a host, or a host and port, is refused.
+pub fn address_hosts(url: &str) -> Result<(String, AddressHosts)> {
+    let mut hosts = AddressHosts::default();
+    let Ok(mut u) = reqwest::Url::parse(url.trim()) else { return Ok((url.to_string(), hosts)) };
+    let pairs: Vec<(String, String)> = u.query_pairs().into_owned().collect();
+    if !pairs.iter().any(|(k, _)| k == "ferrum_direct_host" || k == "ferrum_read_host") {
+        return Ok((url.to_string(), hosts));
+    }
+    let mut kept = Vec::new();
+    for (k, v) in pairs {
+        match k.as_str() {
+            "ferrum_direct_host" => hosts.direct_host = v.trim().to_string(),
+            "ferrum_read_host" => hosts.read_host = v.trim().to_string(),
+            _ => kept.push((k, v)),
+        }
+    }
+    if kept.is_empty() {
+        u.set_query(None);
+    } else {
+        u.query_pairs_mut().clear().extend_pairs(kept);
+    }
+    let stripped = u.to_string();
+    for (name, host) in [("ferrum_direct_host", &hosts.direct_host), ("ferrum_read_host", &hosts.read_host)] {
+        if !host.is_empty() {
+            with_host(&stripped, host).map_err(|e| Error::Invalid(format!("DATABASE_URL's {name}: {e}")))?;
+        }
+    }
+    Ok((stripped, hosts))
 }
 
 /// Whether a host taken from the settings table may be given `url`'s password (D7): only `url`'s own host (another port is
@@ -829,6 +892,19 @@ pub async fn check_certificate(url: &str, ca: &str) -> Result<()> {
 #[cfg(test)]
 mod address_tests {
     use super::*;
+
+    #[test]
+    fn the_hosts_in_the_address_are_taken_out_of_it() {
+        let (url, hosts) =
+            address_hosts("postgres://u:p%40ss@pooler:6432/f?sslmode=require&ferrum_direct_host=db:5432&application_name=pool:web&ferrum_read_host=ro")
+                .unwrap();
+        assert_eq!(url, "postgres://u:p%40ss@pooler:6432/f?sslmode=require&application_name=pool%3Aweb", "the rest as it was");
+        assert_eq!(hosts, AddressHosts { direct_host: "db:5432".into(), read_host: "ro".into() });
+        assert_eq!(with_host(&url, &hosts.direct_host).unwrap(), "postgres://u:p%40ss@db:5432/f?sslmode=require&application_name=pool%3Aweb");
+        let plain = "postgres://u:p@db/f?application_name=pool:web";
+        assert_eq!(address_hosts(plain).unwrap(), (plain.to_string(), AddressHosts::default()), "an address without them is left exactly as it is");
+        assert!(address_hosts("postgres://u:p@db/f?ferrum_direct_host=a/b").unwrap_err().to_string().contains("ferrum_direct_host"));
+    }
 
     /// Against a PostgreSQL with TLS whose certificate `FERRUM_TEST_TLS_CA` signed (scripts/managed_pg.sh makes one):
     /// trusted, it connects with the name checked; another authority is refused, saying why. Skipped without it.

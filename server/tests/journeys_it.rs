@@ -92,10 +92,13 @@ impl As {
 
 async fn kernel() -> Arc<Kernel> {
     let url = std::env::var("FERRUM_JOURNEYS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_journeys_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 20, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 20, ..Default::default() }).await.expect("connect");
     common::reset(&db.pool).await;
+    // As the server starts: the vault opened, the platform's handle taken, then each app registered as itself.
+    common::open_vault(&db, &url).await;
     let catalog = ferrum_server::packages::base_catalog(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/no-extra-packages")).expect("catalog");
     let mut hooks = HookRegistry::default();
+    let _platform = hooks.platform_vault();
     ferrum_domain::register(&mut hooks);
     ferrum_server::packages::register(&mut hooks).unwrap();
     let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), Some(Arc::new(Captured))).await.expect("boot");

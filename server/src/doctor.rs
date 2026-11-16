@@ -97,7 +97,8 @@ pub async fn database_settings_findings(st: &AppState) -> Vec<Finding> {
     let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
     let (mut decided, mut differ) = (Vec::new(), Vec::new());
     for s in all["settings"].as_array().into_iter().flatten() {
-        if s["secret"] == true || !s["environment"].is_null() || s["source"] != "environment" {
+        // A secret, a setting someone else reads, or a task's own input: none of them a replica's setting to count.
+        if s["secret"] == true || !s["environment"].is_null() || !s["input"].is_null() || s["source"] != "environment" {
             continue;
         }
         decided.push(text(&s["key"]));
@@ -174,14 +175,18 @@ fn apps_in(baseline: &str, heading: &str) -> Vec<String> {
 /// password elsewhere (docs/operations.md, "Any PostgreSQL").
 pub fn stored_host_findings(st: &AppState, database_url: &str) -> Vec<Finding> {
     let now = st.live_settings.start.clone();
-    ["database_direct_host", "database_read_host"]
+    let hosts = &st.settings.database_address;
+    // A host the address itself gives wins over the table's, which is then not used at all.
+    [("database_direct_host", &hosts.direct_host), ("database_read_host", &hosts.read_host)]
         .into_iter()
+        .filter(|(_, in_address)| in_address.is_empty())
+        .map(|(key, _)| key)
         .filter_map(|key| {
             crate::settings::stored_host_refused(&now.snapshot, key, database_url).err().map(|why| {
                 Finding::warning(
                     if key == "database_direct_host" { "database.direct_host" } else { "database.read_host" },
                     format!("the setting {key} from the database is not used: {why}"),
-                    "Give the host in the environment (FERRUM_DATABASE_DIRECT_HOST, FERRUM_DATABASE_READ_HOST), mount the database's certificate authority, or remove the setting.",
+                    "Give the host in DATABASE_URL itself (ferrum_direct_host=…, ferrum_read_host=…), mount the database's certificate authority, or remove the setting.",
                 )
             })
         })

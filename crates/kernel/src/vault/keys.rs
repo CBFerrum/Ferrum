@@ -201,6 +201,32 @@ impl Root {
         Ok((1, false, Arc::new(key)))
     }
 
+    /// The owner key of (`scope`, `owner`) for a caller's own transaction `tx`: where it is not there yet, made first on
+    /// the vault's own connection and committed ([`Root::ensure_owner_key`]), then read in `tx`, which sees what is
+    /// committed. So no key is ever inserted inside a caller's transaction, where, uncommitted, it would hold every other
+    /// connection that asks the vault for it (a `derive`, a `seal`, another request's first key) until the caller ends.
+    pub(crate) async fn owner_key_for_caller(&self, db: &Db, tx: &mut Tx, scope: Uuid, owner: &str) -> Result<(i32, bool, Arc<Key>)> {
+        let there: bool =
+            sqlx::query_scalar("select exists (select 1 from vault.key where scope = $1 and owner = $2)").bind(scope).bind(owner).fetch_one(&mut **tx).await?;
+        if !there {
+            self.ensure_owner_key(db, scope, owner).await?;
+        }
+        self.current_owner_key(db, tx, scope, owner).await
+    }
+
+    /// Makes the owner key of (`scope`, `owner`), and the scope's workspace key, where they are not there, in a
+    /// transaction of the vault's own that commits at once: replicas and requests making it together make one (the
+    /// loser reads the winner's again).
+    pub(crate) async fn ensure_owner_key(&self, db: &Db, scope: Uuid, owner: &str) -> Result<()> {
+        crate::db::with_retry(|| async {
+            let mut tx = db.vault_tx((!scope.is_nil()).then_some(scope)).await?;
+            self.current_owner_key(db, &mut tx, scope, owner).await?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await
+    }
+
     /// The newest workspace key of `scope`, made with the installation key the first time (under the root's shared
     /// lock, so that a rotation of the installation key does not meet it half made); only for a workspace that is there.
     pub(crate) async fn current_workspace_key(&self, db: &Db, tx: &mut Tx, scope: Uuid) -> Result<(i32, Arc<Key>)> {

@@ -250,11 +250,10 @@ async fn put(k: &Kernel, tx: &mut Tx, place: &Place, plain: &[u8], stored: &str)
     }
     lock(tx, place, true).await?;
     let (scope, owner, name) = (place.scope.id(), place.owner.as_str(), place.name());
-    // A key another replica made at the same moment is there once read again (this transaction reads what is committed).
-    let (key_version, _, key) = match k.db.vault.current_owner_key(&k.db, tx, scope, owner).await {
-        Err(Error::Retryable(_)) => k.db.vault.current_owner_key(&k.db, tx, scope, owner).await?,
-        other => other?,
-    };
+    // The owner key, made first (with the workspace key) on the vault's own connection and committed where it is not
+    // there yet: never in the caller's transaction, whose insert, uncommitted, would hold every other connection asking
+    // the vault for the same key until the caller ends (keys.rs, `ensure_owner_key`).
+    let (key_version, _, key) = k.db.vault.owner_key_for_caller(&k.db, tx, scope, owner).await?;
     let version: i32 = sqlx::query_scalar("select coalesce(max(version), 0) + 1 from vault.secret where scope = $1 and owner = $2 and name = $3")
         .bind(scope)
         .bind(owner)
@@ -803,9 +802,10 @@ impl Kernel {
 impl super::Vault {
     /// The value of a secret field this handle's owner declares (its app's package declares the field, or the platform
     /// for the platform's): read in the caller's transaction, recorded as a reveal, never a value of another owner's. A
-    /// field that is not this owner's is refused, set or not.
+    /// field that is not this owner's is refused, set or not. With the vault closed it reads as the kernel's own readers
+    /// do: the old store with the old key (an installation whose vault cannot have a root loses nothing).
     pub async fn field(&self, k: &Kernel, tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid, field: &str) -> Result<Option<Zeroizing<String>>> {
-        let owner = self.bound(k)?;
+        let owner = self.given(k)?;
         if k.field_owner(entity, field).await? != owner {
             return Err(Error::Forbidden(format!("{entity}.{field} is not {owner}'s: an app reads only the secret fields its own packages declare")));
         }

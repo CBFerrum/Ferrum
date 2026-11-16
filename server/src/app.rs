@@ -65,6 +65,14 @@ impl Hooks for App {
     /// that does not verify refuses the start here, saying so; anything else wrong with the address the start says itself.
     async fn load_config(env: &Environment) -> Result<Config> {
         let mut config = env.load()?;
+        // D7's hosts in the address itself (`ferrum_direct_host`, `ferrum_read_host`): no connection's parameters, so
+        // taken out before anything connects, and kept where the start reads them (Settings::database_address).
+        let (uri, hosts) = ferrum_kernel::db::address_hosts(&config.database.uri).map_err(|e| Error::Message(e.to_string()))?;
+        config.database.uri = uri;
+        if hosts != Default::default() {
+            let settings = config.settings.get_or_insert_with(|| serde_json::json!({}));
+            settings["database_address"] = serde_json::to_value(&hosts).map_err(|e| Error::Message(e.to_string()))?;
+        }
         if let Some(ca) = ferrum_kernel::db::database_ca() {
             config.database.uri = ferrum_kernel::db::with_ca(&config.database.uri, &ca).map_err(|e| Error::Message(format!("DATABASE_URL: {e}")))?;
             ferrum_kernel::db::check_certificate(&config.database.uri, &ca).await.map_err(|e| Error::Message(e.to_string()))?;
@@ -123,9 +131,10 @@ impl Hooks for App {
         "ferrum"
     }
 
-    /// Loco's log, with traces to an OpenTelemetry collector when one is configured (telemetry.rs).
+    /// Loco's log, with traces to an OpenTelemetry collector when the settings name one (telemetry.rs). Loco sets the log
+    /// up after the first set-up's `after_context`, so the settings (and the vault's secrets) are read by then.
     fn init_logger(ctx: &AppContext) -> Result<bool> {
-        crate::telemetry::init(&ctx.config.logger)
+        crate::telemetry::init(ctx)
     }
 
     fn app_version() -> String {
@@ -151,6 +160,11 @@ impl Hooks for App {
         // connects, under the environment's, which still wins. They land where the file put the variables, so that
         // everything below reads them as before; Loco's mail sender, made from the file before this runs, is made again
         // when the table sets any of it.
+        // The apps compiled in declare settings of their own (`operator_settings`): one key or variable with two owners
+        // stops the start, naming both, before any setting is read.
+        if let Some(clash) = crate::settings::clash() {
+            return Err(Error::Message(format!("settings: {clash}")));
+        }
         // The address names the replica's pool (`application_name=pool:<name>`), whose rows hold its own settings.
         let pool = crate::settings::pool_name(&ctx.config.database.uri).map_err(Error::Message)?;
         let stored = crate::settings::read(&ctx.config.database.uri).await.map_err(Error::Message)?;
@@ -191,25 +205,26 @@ impl Hooks for App {
                 ferrum_kernel::doctor::POOL_FLOOR
             );
         }
-        // The direct and read addresses: the old full address when set (it wins in R1), else DATABASE_URL at the host a
-        // setting names (D7), else none. A host from the settings table is given DATABASE_URL's password, so it is used
-        // only where that cannot draw the password elsewhere (ferrum_kernel::db::may_send_password); otherwise it is not
-        // used, the log says so once and the doctor reports it. One from the environment is used as before.
-        let at = |full: &str, host: &str, key: &str, name: &str| -> Result<Option<String>> {
+        // The direct and read addresses: the old full address when set (it wins in R1), else DATABASE_URL at the host the
+        // environment's variable names (R1), else the address's own parameter (`ferrum_direct_host`, `ferrum_read_host`:
+        // as trusted as the address), else the settings table's (D7), else none. A host from the table is given
+        // DATABASE_URL's password, so it is used only where that cannot draw the password elsewhere
+        // (ferrum_kernel::db::may_send_password); otherwise it is not used, the log says so once and the doctor reports it.
+        let at = |full: &str, host: &str, in_address: &str, key: &str, name: &str| -> Result<Option<String>> {
             if !full.trim().is_empty() {
                 return ferrum_kernel::db::trusted(full).map(Some).map_err(|e| Error::Message(format!("{}: {e}", name.replace("_HOST", "_URL"))));
             }
-            if host.trim().is_empty() {
-                return Ok(None);
-            }
-            if let Err(why) = crate::settings::stored_host_refused(&snapshot, key, &ctx.config.database.uri) {
+            let Some((host, from_table)) = crate::settings::host_to_use(&snapshot, key, host, in_address) else { return Ok(None) };
+            if from_table && let Err(why) = crate::settings::stored_host_refused(&snapshot, key, &ctx.config.database.uri) {
                 tracing::error!("the setting {key} from the database is not used: {why}");
                 return Ok(None);
             }
             ferrum_kernel::db::with_host(&ctx.config.database.uri, host).map(Some).map_err(|e| Error::Message(format!("{name}: {e}")))
         };
-        let direct = at(&settings.database_direct_url, &settings.database_direct_host, "database_direct_host", "FERRUM_DATABASE_DIRECT_HOST")?;
-        let read = at(&settings.database_read_url, &settings.database_read_host, "database_read_host", "FERRUM_DATABASE_READ_HOST")?;
+        let hosts = &settings.database_address;
+        let direct =
+            at(&settings.database_direct_url, &settings.database_direct_host, &hosts.direct_host, "database_direct_host", "FERRUM_DATABASE_DIRECT_HOST")?;
+        let read = at(&settings.database_read_url, &settings.database_read_host, &hosts.read_host, "database_read_host", "FERRUM_DATABASE_READ_HOST")?;
         let db = Db::connect(DbConfig {
             url: ctx.config.database.uri.clone(),
             max_connections: settings.db_max_connections,
@@ -229,6 +244,8 @@ impl Hooks for App {
         // (crate::secrets): the mail password, the audit sink's key, the object store's and the model provider's keys.
         let transit = kms_transit(&settings)?;
         let vault_opens = crate::tasks::open_vault(&db, &settings, &ctx.config.database.uri, transit.as_ref()).await?;
+        // The old keys, given as ciphertext, are unwrapped only at an address the environment gives beside them.
+        let transit = kms_transit_of_the_environment(&settings)?;
         let mut hooks = HookRegistry::default();
         let platform = hooks.platform_vault();
         let revealed = crate::secrets::at_start(&db, &hooks, &platform, &mut ctx.config, &snapshot).await.map_err(Error::Message)?;
@@ -319,6 +336,16 @@ impl Hooks for App {
         if proof_floor(&settings.domain_proof) {
             kernel.require_floor(&ferrum_kernel::shell::PROOF_FLOOR, "").await.map_err(|e| Error::Message(format!("domain proof: {e}")))?;
         }
+        // A server's start keeps the vault's slots whole by itself (ferrum_kernel::vault::settle): the mounted key file
+        // gets its slot, and a credential slot that the database password no longer opens is made again for it, where
+        // another slot opened the vault. Not a task's (one run with another role's address would remake it for that
+        // role), nor a guest's. Logged, never fatal: the vault is open either way.
+        if vault_opens && kernel.booted.guest.is_none() && is_start(std::env::args()) {
+            match ferrum_kernel::vault::settle(&kernel.db).await {
+                Ok(done) => done.iter().for_each(|d| tracing::warn!("the vault: {d}")),
+                Err(e) => tracing::warn!("the vault's slots could not be completed (the next start tries again): {e}"),
+            }
+        }
         ferrum_app_erp::maintenance(&kernel).await.map_err(|e| Error::Message(format!("ERP's upkeep: {e}")))?;
         if let Err(e) = kernel.registry.catalog().closure(&kernel.settings.signup.packages) {
             return Err(Error::Message(format!("FERRUM_SIGNUP_PACKAGES: {e}")));
@@ -345,9 +372,20 @@ impl Hooks for App {
         let sessions = crate::sessions::Sessions::start(&jwt.secret, vault_open.then(|| (kernel.clone(), platform.clone()))).await.map_err(Error::Message)?;
         // Where files are kept (docs/operations.md, "Object storage"): the store, or a local directory only in development
         // and tests and for an installation already keeping its files there; while they move to the store, read from both.
+        // A task other than the server's start runs without it while it is not set up yet: on a fresh installation the
+        // settings that name it are what `apply_settings` writes and its keys what `secret_set` puts in the vault, from the
+        // database's address alone (D1). Whatever then reaches for a file is refused; the server itself never starts so.
         let development = matches!(ctx.environment, Environment::Development | Environment::Test);
         let guest = kernel.booted.guest.is_some();
-        let (objects, found) = crate::store::decide(&kernel.db, &settings, development, guest).await.map_err(Error::Message)?;
+        let task = !is_start(std::env::args());
+        let (objects, found, unstored) = match crate::store::decide(&kernel.db, &settings, development, guest).await {
+            Ok((objects, found)) => (objects, found, false),
+            Err(e) if task => {
+                tracing::warn!("object storage is not set up ({e}): this task runs without it, and refuses whatever needs a file");
+                (crate::objects::Objects::refusing().map_err(Error::Message)?, crate::store::Found::Store { moving: false }, true)
+            }
+            Err(e) => return Err(Error::Message(e)),
+        };
         match found {
             crate::store::Found::Directory { kept: true } => tracing::warn!(
                 dir = %settings.files_dir,
@@ -370,7 +408,7 @@ impl Hooks for App {
         // (its handoff) and the server signs with the key it handed over: never a bucket of an installation's own unasked.
         let env_key = std::env::var("AWS_ACCESS_KEY_ID").ok().filter(|v| !v.is_empty());
         let key_id = env_key.as_deref().or_else(|| settings.revealed.get("aws_access_key_id"));
-        if (settings.s3_set_up_bucket || crate::store::handed_over().is_some_and(|h| h.sets_up(key_id))) && !guest {
+        if (settings.s3_set_up_bucket || crate::store::handed_over().is_some_and(|h| h.sets_up(key_id))) && !guest && !unstored {
             // Done by each probe first, until it has worked (crate::store::check).
             match crate::store::Bucket::new(&settings) {
                 Ok(Some(bucket)) => {
@@ -383,7 +421,9 @@ impl Hooks for App {
         // One write-then-read probe (the bucket's set-up first, where asked): until one has worked this replica is not
         // ready (/api/ready), and it keeps asking (crate::store::spawn_health); the start goes on, so that it serves its
         // liveness and says why.
-        crate::store::check(&objects).await;
+        if !unstored {
+            crate::store::check(&objects).await;
+        }
         let storage = Arc::new(storage_of(objects.clone()));
         crate::request_metrics::Requests::install(crate::request_metrics::Requests::new(&crate::appmgr::compiled_natives()));
         let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())
@@ -1137,14 +1177,25 @@ pub(crate) fn push_services(listed: &str) -> Vec<String> {
     if listed.is_empty() { ferrum_kernel::webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect() } else { listed }
 }
 
-/// The Transit key that unwraps keys configured as ciphertext (`FERRUM_KMS_TRANSIT`), signing in as
-/// the environment says (crates/kernel/src/kms.rs).
+/// The key-management service's Transit key (`kms_transit`), signing in as the settings say, with the token from the
+/// file mounted at its fixed path or the pod's own identity (crates/kernel/src/kms.rs). The vault's kms slot is asked
+/// only at the address it was made with (crates/kernel/src/vault/root.rs).
 pub fn kms_transit(settings: &Settings) -> Result<Option<ferrum_kernel::kms::Transit>> {
     let url = settings.kms_transit.trim();
     if url.is_empty() {
         return Ok(None);
     }
-    ferrum_kernel::kms::Transit::from_env(url, |name| std::env::var(name).ok()).map(Some).map_err(|e| Error::Message(e.to_string()))
+    ferrum_kernel::kms::Transit::from_env(url, ferrum_kernel::env::var).map(Some).map_err(|e| Error::Message(e.to_string()))
+}
+
+/// [`kms_transit`] where the environment itself gives its address (`FERRUM_KMS_TRANSIT`), else none: what keys from the
+/// environment given as ciphertext are unwrapped with, and the old key wrapped (the old keys, a move's source keys).
+/// An address from the database is never sent such a key, nor a token to unwrap one: a row there would choose where.
+pub fn kms_transit_of_the_environment(settings: &Settings) -> Result<Option<ferrum_kernel::kms::Transit>> {
+    if std::env::var("FERRUM_KMS_TRANSIT").ok().is_none_or(|v| v.trim().is_empty()) {
+        return Ok(None);
+    }
+    kms_transit(settings)
 }
 
 /// The old master key (`FERRUM_SECRET_KEY`): printed by `FERRUM_SECRET_KEY_COMMAND`, or configured (itself or as

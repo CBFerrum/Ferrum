@@ -20,7 +20,7 @@ spec:
       labels: {app.kubernetes.io/name: {{ $n }}-migrate}
     spec:
       restartPolicy: Never
-      automountServiceAccountToken: false
+      automountServiceAccountToken: {{ include "ferrum.serviceAccountToken" . }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

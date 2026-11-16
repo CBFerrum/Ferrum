@@ -239,7 +239,7 @@ assert names.index("FERRUM_DB_PASSWORD") < names.index("FERRUM_DATABASE_READ_URL
 assert "FERRUM_DATABASE_READ_URL" not in env(next(d for d in docs if d["kind"] == "Job"))
 PY2
 tpl --set database.readReplicas.enabled=true --set database.pooler.enabled=true | grep -c "name: FERRUM_DB_PASSWORD" | grep -qx 1
-! tpl | grep -q FERRUM_DATABASE_READ_URL
+! tpl | grep -q FERRUM_DATABASE_READ_URL || exit 1
 refuses "database.readReplicas needs database.instances of 2 or more" --set database.readReplicas.enabled=true --set database.instances=1
 refuses "needs database.enabled" --set database.pooler.enabled=true --set database.enabled=false --set database.urlSecret.name=x
 refuses "is the name of another part of the chart" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"db-pooler"}]'
