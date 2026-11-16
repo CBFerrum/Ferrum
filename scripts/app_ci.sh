@@ -28,6 +28,11 @@ while read -r var db; do
   case " ${DBS[*]:-} " in *" $var="*) ;; *) DBS+=("$var=$PG/${db}_localci");; esac
 done < <(grep -rhoE --include='*.rs' 'env::var\("FERRUM_[A-Z0-9_]*_TEST_DATABASE_URL"\)[^"]*"postgres://[^/"]*/[a-z0-9_]+' "$APP_DIR" 2>/dev/null |
   sed -E 's#.*"(FERRUM_[A-Z0-9_]*)".*/([a-z0-9_]+)$#\1 \2#' | sort -u)
+# And each one a suite reads through the test kit (database("FERRUM_X_TEST_DATABASE_URL"), default ferrum_x_test).
+while read -r var; do
+  db=$(echo "${var#FERRUM_}" | sed 's/_DATABASE_URL$//' | tr 'A-Z' 'a-z')
+  case " ${DBS[*]:-} " in *" $var="*) ;; *) DBS+=("$var=$PG/ferrum_${db}_localci");; esac
+done < <(grep -rhoE --include='*.rs' 'database\("FERRUM_[A-Z0-9_]*_TEST_DATABASE_URL"\)' "$APP_DIR" 2>/dev/null | sed -E 's/.*"(.*)".*/\1/' | sort -u)
 [ ${#DBS[@]} -gt 0 ] || DBS=("FERRUM_$(echo "$APP" | tr 'a-z-' 'A-Z_')_TEST_DATABASE_URL=$PG/ferrum_${APP//-/_}_localci")
 # A workspace's members too, when its workflow tests them.
 WS=$(grep -q "cargo test --workspace" "$APP_DIR/.github/workflows/ci.yml" 2>/dev/null && echo --workspace)
