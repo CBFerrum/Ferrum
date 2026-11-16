@@ -3,7 +3,6 @@
 //! wrong codes, recovery codes, lockout, an administrator's reset and the workspace policy.
 
 use ferrum_kernel::auth::SignIn;
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::twofactor::code;
 use ferrum_kernel::{Access, Action, Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
@@ -18,10 +17,17 @@ fn now() -> u64 {
 
 async fn kernel() -> Arc<Kernel> {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url.clone(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
+    let settings = KernelSettings::default();
     Kernel::boot(db, catalog, HookRegistry::default(), settings, None).await.expect("boot")
 }
 

@@ -14,7 +14,6 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ferrum_kernel::auth::{Session, SignIn};
 use ferrum_kernel::gate::Arrival;
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::shell::StepUp;
 use ferrum_kernel::sso::SsoProviderInput;
 use ferrum_kernel::tenant::NewTenant;
@@ -182,11 +181,11 @@ fn input(issuer: &str) -> SsoProviderInput {
 #[tokio::test]
 async fn single_sign_on() {
     let url = std::env::var("FERRUM_SSO_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_sso_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     common::reset(&db.pool).await;
+    common::open_vault(&db, &url).await;
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages")).expect("catalog");
-    let settings =
-        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([9u8; 32])), vec![]), sso_allow_private: true, ..Default::default() };
+    let settings = KernelSettings { sso_allow_private: true, ..Default::default() };
     let k = Kernel::boot(db, catalog, HookRegistry::default(), settings, None).await.expect("boot");
     let idp = start_idp().await;
     let issuer = idp.lock().unwrap().issuer.clone();

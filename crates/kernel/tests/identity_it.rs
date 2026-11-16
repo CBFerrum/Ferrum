@@ -7,7 +7,6 @@
 
 use ferrum_kernel::auth::Session;
 use ferrum_kernel::identity::{AccountSignIn, Entry, Proof};
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::twofactor::code;
 use ferrum_kernel::{Ctx, Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
@@ -23,7 +22,7 @@ fn url() -> String {
 
 async fn boot(db: Db, mail: bool) -> Arc<Kernel> {
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
+    let settings = KernelSettings::default();
     let mailer: Option<Arc<dyn ferrum_kernel::Mailer>> = if mail { Some(Arc::new(Quiet)) } else { None };
     Kernel::boot(db, catalog, HookRegistry::default(), settings, mailer).await.expect("boot")
 }
@@ -124,6 +123,13 @@ fn one_person_many_workspaces() {
 async fn scenario() {
     let db = Db::connect(DbConfig { url: url(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let k = boot(db.clone(), true).await;
     let acme = k.create_tenant(tenant("acme")).await.unwrap();
     let globex = k.create_tenant(tenant("globex")).await.unwrap();

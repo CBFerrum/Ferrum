@@ -56,15 +56,7 @@ fn refused<T: std::fmt::Debug>(r: Result<T, Error>, says: &str) {
 }
 
 async fn boot(db: Db) -> Arc<Kernel> {
-    Kernel::boot(
-        db,
-        catalog(),
-        HookRegistry::default(),
-        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([42u8; 32])), vec![]), ..Default::default() },
-        None,
-    )
-    .await
-    .expect("boot")
+    Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot")
 }
 
 #[test]
@@ -77,6 +69,13 @@ async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url.clone(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let k = boot(db).await;
     let tenant = k
         .create_tenant(NewTenant {

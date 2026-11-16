@@ -219,7 +219,7 @@ impl ferrum_kernel::files::FileStore for DirFiles {
 }
 
 /// An installation on `url`, reset, its vault opened with the database's password, with app `forgeapp` and its handle.
-async fn installation(url: &str, key: &ferrum_kernel::secret::SecretKey, files: &Path) -> (Arc<Kernel>, Vault) {
+async fn installation(url: &str, files: &Path) -> (Arc<Kernel>, Vault) {
     let db = Db::connect(DbConfig { url: url.to_string(), max_connections: 8, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let opener = Opener { database_url: url.to_string(), file: files.join("absent.key"), kdf: Kdf { m_kib: 64, t: 1, p: 1 }, ..Default::default() };
@@ -231,10 +231,7 @@ async fn installation(url: &str, key: &ferrum_kernel::secret::SecretKey, files: 
         h.openid_companion("forge", Arc::new(Forge));
     });
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    let k =
-        Kernel::boot(db, catalog, hooks, KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(key.clone()), vec![]), ..Default::default() }, None)
-            .await
-            .expect("boot");
+    let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
     k.set_file_store(Arc::new(DirFiles(files.to_path_buf())));
     k.ensure_directory().await.unwrap();
     (k, forge.unwrap())
@@ -277,8 +274,8 @@ async fn copied_and_moved() {
     std::fs::create_dir_all(&files_b).unwrap();
     let url_b = std::env::var("FERRUM_RESTORE_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_restore_test".into());
     let key_a = ferrum_kernel::secret::SecretKey::new([3; 32]);
-    let (a, forge_a) = installation(&url(), &key_a, &files_a).await;
-    let (b, forge_b) = installation(&url_b, &ferrum_kernel::secret::SecretKey::new([4; 32]), &files_b).await;
+    let (a, forge_a) = installation(&url(), &files_a).await;
+    let (b, forge_b) = installation(&url_b, &files_b).await;
     let t = workspace(&a, "acme").await;
     let client = forge_a.companion(&a, t, "forge", &[BACK.into()]).await.unwrap();
     let before = signs_in(&a, &forge_a, "acme", "admin@acme.test", &client).await;

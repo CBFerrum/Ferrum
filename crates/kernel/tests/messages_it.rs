@@ -4,7 +4,6 @@
 //! one-time codes, a provider described as configuration and its delivery reports and replies, and erasure.
 
 use ferrum_kernel::messages::{self, ChannelInput, Message, Recipient};
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::vault::{self, Kdf, Opener};
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, HookRegistry, Kernel, KernelSettings};
@@ -170,12 +169,7 @@ async fn scenario() {
     let err = Catalog::from_packages(vec![core.clone(), ferrum_meta::catalog::load_package_files(&wrong).unwrap()]).unwrap_err().to_string();
     assert!(err.contains("must be unique and start with 'notes.'"), "{err}");
 
-    let settings = KernelSettings {
-        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]),
-        webhooks_allow_private: true,
-        public_url: Some("https://ferrum.test".into()),
-        ..Default::default()
-    };
+    let settings = KernelSettings { webhooks_allow_private: true, public_url: Some("https://ferrum.test".into()), ..Default::default() };
     let k =
         Kernel::boot(db, Catalog::from_packages(vec![core, notes]).unwrap(), HookRegistry::default(), settings, Some(Arc::new(Captured))).await.expect("boot");
     let tenant = k

@@ -38,11 +38,11 @@ fn names_stay_put() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 8, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 8, ..Default::default() }).await.expect("connect");
     common::reset(&db.pool).await;
+    common::open_vault(&db, &url).await;
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages/core")).expect("core");
-    let settings =
-        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
+    let settings = KernelSettings::default();
     let k = Kernel::boot(db, Catalog::from_packages(vec![core]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
     let acme = k
         .create_tenant(NewTenant {
@@ -77,14 +77,10 @@ async fn connector_return(acme: uuid::Uuid) {
     tokio::spawn(async move { axum::serve(listener, token).await.unwrap() });
 
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 4, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 4, ..Default::default() }).await.expect("connect");
+    common::open_vault(&db, &url).await;
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages/core")).expect("core");
-    let settings = KernelSettings {
-        old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), vec![]),
-        public_url: Some("https://erp.acme.test".into()),
-        connection_hosts: vec!["127.0.0.1".into()],
-        ..Default::default()
-    };
+    let settings = KernelSettings { public_url: Some("https://erp.acme.test".into()), connection_hosts: vec!["127.0.0.1".into()], ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
     let sh = shell(&k, json!({}), "https://erp.acme.test");
     let s = k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
@@ -172,7 +168,8 @@ async fn link_host(k: &Arc<Kernel>, acme: uuid::Uuid) {
 
     // On.
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 4, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 4, ..Default::default() }).await.expect("connect");
+    common::open_vault(&db, &url).await;
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages/core")).expect("core");
     let settings = KernelSettings { link_host: Some("go.acme.test".into()), public_url: Some("https://erp.acme.test".into()), ..Default::default() };
     let on = Kernel::boot(db, Catalog::from_packages(vec![core]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");

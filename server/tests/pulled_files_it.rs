@@ -14,7 +14,6 @@ use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use ferrum_kernel::connections::{self, Call, ConnectionInput};
 use ferrum_kernel::files::FileStore;
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings, Result};
 use ferrum_meta::Catalog;
@@ -90,18 +89,15 @@ fn a_service_pulls_a_file_by_its_short_lived_address() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_APPS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_apps_api_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     common::reset(&db.pool).await;
+    common::open_vault(&db, &url).await;
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages/core")).expect("core");
     // The server's route listens first: its address is the public address the kernel boots with.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let ferrum_port = listener.local_addr().unwrap().port();
-    let settings = KernelSettings {
-        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([9u8; 32])), vec![]),
-        connection_hosts: vec!["127.0.0.1".into()],
-        public_url: Some(format!("http://127.0.0.1:{ferrum_port}")),
-        ..Default::default()
-    };
+    let settings =
+        KernelSettings { connection_hosts: vec!["127.0.0.1".into()], public_url: Some(format!("http://127.0.0.1:{ferrum_port}")), ..Default::default() };
     let k = Kernel::boot(db.clone(), Catalog::from_packages(vec![core.clone()]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
     let root = std::env::temp_dir().join(format!("ferrum-pulled-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(&root).unwrap();
@@ -198,11 +194,7 @@ async fn scenario() {
     assert!(e.to_string().contains("not one you may send"), "{e}");
 
     // A server without a public address refuses, saying why.
-    let bare = KernelSettings {
-        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([9u8; 32])), vec![]),
-        connection_hosts: vec!["127.0.0.1".into()],
-        ..Default::default()
-    };
+    let bare = KernelSettings { connection_hosts: vec!["127.0.0.1".into()], ..Default::default() };
     let k2 = Kernel::boot(db.clone(), Catalog::from_packages(vec![core]).unwrap(), HookRegistry::default(), bare, None).await.expect("boot");
     k2.set_file_store(Arc::new(Dir(root.clone())));
     let admin2 = k2.load_ctx(tenant, session.user, None, "it".into()).await.unwrap();

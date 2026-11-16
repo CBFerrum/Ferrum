@@ -13,7 +13,6 @@ use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::response::Response;
 use axum::routing::post;
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::{Catalog, Package};
@@ -144,8 +143,9 @@ fn a_ticket_cannot_talk_the_assistant_into_anything() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_ASSISTANT_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_assistant_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     common::reset(&db.pool).await;
+    common::open_vault(&db, &url).await;
     let dir = std::env::temp_dir().join(format!("ferrum-egress-it-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("cases/entities")).unwrap();
@@ -156,7 +156,7 @@ async fn scenario() {
         ferrum_meta::catalog::load_package_dir(&dir.join("cases")).unwrap(),
     ];
     let _ = std::fs::remove_dir_all(&dir);
-    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
+    let settings = KernelSettings::default();
     let k = Kernel::boot(db, Catalog::from_packages(packages).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {

@@ -15,7 +15,6 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ferrum_kernel::gate::Arrival;
 use ferrum_kernel::saml_logout::{Incoming, SloStep};
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::shell::StepUp;
 use ferrum_kernel::sso::SsoProviderInput;
 use ferrum_kernel::tenant::NewTenant;
@@ -399,16 +398,18 @@ async fn a_sign_in_through_keycloak() {
     };
     let kc = kc.trim_end_matches('/').to_string();
     let url = std::env::var("FERRUM_SAML_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_saml_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
-    let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    // Keycloak runs on this machine, over plain http: as a provider on the operator's own network.
-    let settings = KernelSettings {
-        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([6u8; 32])), vec![]),
-        sso_allow_private: true,
-        public_url: Some(PUBLIC.into()),
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url.clone(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
         ..Default::default()
     };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
+    let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
+    // Keycloak runs on this machine, over plain http: as a provider on the operator's own network.
+    let settings = KernelSettings { sso_allow_private: true, public_url: Some(PUBLIC.into()), ..Default::default() };
     let k = Kernel::boot(db, catalog, HookRegistry::default(), settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {
