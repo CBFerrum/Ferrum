@@ -8,11 +8,12 @@
 use ferrum_kernel::capability::Invocation;
 use ferrum_kernel::retention::Purpose;
 use ferrum_kernel::tenant::NewTenant;
+use ferrum_kernel::vault::{self, Kdf, Opener};
 use ferrum_kernel::{Db, DbConfig, Doc, HookRegistry, Kernel, KernelSettings, automation};
 use ferrum_meta::Catalog;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const PACKAGE: &str = "package: leads\nversion: 0.1.0\ndepends: [core]\npersonal_data:\n  - {entity: Lead, match: email, erase: [email]}\nroles:\n  - name: Seller\n    permissions:\n      - {entity: Lead, read: true, write: true, create: true}\n";
@@ -52,8 +53,11 @@ fn marketing_stops_where_consent_ends() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    // Opened as a server opens it (erasing someone who opted out needs it), with the database's password.
+    let opener = Opener { database_url: url, file: PathBuf::from("/nonexistent/root.key"), transit: None, command: None, kdf: Kdf { m_kib: 64, t: 1, p: 1 } };
+    vault::open(&db, opener, false).await.expect("the vault opens");
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/lead.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
