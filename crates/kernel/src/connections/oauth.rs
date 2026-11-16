@@ -763,11 +763,12 @@ impl Kernel {
         if status != "connected" {
             return Err(Error::invalid(format!("{} needs reconnecting: the provider no longer accepts its sign-in", conn.name)));
         }
-        if force || expires.is_some_and(|e| e < Utc::now() + chrono::Duration::seconds(CALL_AHEAD_SECS)) {
-            return self.refresh_tokens(conn, owner, force.then_some(sealed.as_str())).await;
-        }
         let open: Value = serde_json::from_str(&self.kept_alone(&token_place(conn.tenant, conn.id, owner), &sealed).await?).map_err(Error::internal)?;
-        Ok(open["access_token"].as_str().unwrap_or_default().to_string())
+        let token = open["access_token"].as_str().unwrap_or_default();
+        if force || expires.is_some_and(|e| e < Utc::now() + chrono::Duration::seconds(CALL_AHEAD_SECS)) {
+            return self.refresh_tokens(conn, owner, force.then_some(token)).await;
+        }
+        Ok(token.to_string())
     }
 
     /// Refreshes `owner`'s tokens, the row locked so that two refreshes do not race a rotating refresh token: one that
@@ -788,8 +789,9 @@ impl Kernel {
         }
         let open: Value = serde_json::from_str(&self.kept(&mut tx, &token_place(conn.tenant, conn.id, owner), &sealed).await?).map_err(Error::internal)?;
         let fresh = expires.is_none_or(|e| e > Utc::now() + chrono::Duration::seconds(CALL_AHEAD_SECS));
-        if fresh && stale.is_none_or(|s| s != sealed) {
-            return Ok(open["access_token"].as_str().unwrap_or_default().to_string());
+        let now = open["access_token"].as_str().unwrap_or_default();
+        if fresh && stale.is_none_or(|s| s != now) {
+            return Ok(now.to_string());
         }
         let refresh = open["refresh_token"].as_str().filter(|r| !r.is_empty()).map(str::to_string);
         let granted = match (&conn.desc.auth, &refresh) {
