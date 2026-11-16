@@ -1,0 +1,43 @@
+# The bundled store's keys from the server's vault (docs/operations.md, "Files for the programs beside the server"): the
+# vault makes them at the first render, nobody types them, and a one-shot service renders them before each start of the
+# store into a volume the two share, in place of the keys the store makes itself and hands over at its first start.
+#   docker compose -f deploy/docker-compose.yml -f deploy/store-files.yml --env-file deploy/.env up -d
+# An installation whose store already handed its keys over takes them out of the vault first (`ferrum task secret_remove
+# name:aws_access_key_id`, then `name:aws_secret_access_key`): the vault makes new ones only where there are none. The
+# store keeps its data and its encryption key; only who it lets in changes. Rotating the keys: docs/operations.md.
+services:
+  store-files:
+    image: ${FERRUM_IMAGE:-ghcr.io/cbferrum/ferrum:latest}
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Its one input: the database's address. What it writes comes from the database and the vault.
+    environment:
+      DATABASE_URL: postgres://ferrum:${FERRUM_DB_PASSWORD}@db:5432/ferrum
+    command: ["task", "render", "service:object-store", "to:/var/lib/ferrum/companion"]
+    volumes:
+      # Owned by the server's user, as the image's directory is.
+      - store-files:/var/lib/ferrum/companion
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  store:
+    depends_on:
+      store-files:
+        condition: service_completed_successfully
+    environment:
+      STORE_S3_CONFIG: /run/store-files/s3.json
+    volumes:
+      - store-files:/run/store-files:ro
+
+  ferrum:
+    environment:
+      # No handoff from the store: the server makes the bucket and its protections itself, as the handoff asked it to.
+      FERRUM_S3_SET_UP_BUCKET: "true"
+
+volumes:
+  store-files:

@@ -239,23 +239,7 @@ spec:
       ports:
         - {port: 5150}
   egress:
-    {{- if .Values.database.enabled }}
-    - to:
-        - podSelector:
-            matchLabels: {cnpg.io/cluster: {{ $f }}-db}
-      ports:
-        - {port: 5432}
-    {{- else if .Values.database.external.egress.cidrs }}
-    # The outside database and its pooler (database.external.egress).
-    - to:
-        {{- range .Values.database.external.egress.cidrs }}
-        - ipBlock: {cidr: {{ . }}}
-        {{- end }}
-      ports:
-        {{- range .Values.database.external.egress.ports }}
-        - {port: {{ . }}}
-        {{- end }}
-    {{- end }}
+    {{- include "ferrum.databaseEgress" . | nindent 4 }}
     {{- if .Values.pdf.enabled }}
     - to:
         - podSelector:

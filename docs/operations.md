@@ -1044,6 +1044,14 @@ keys with its vault; a database made anew beside a store that already has keys f
 read them from the store (`docker compose exec store cat /data/ferrum/s3.json`) and give them once with `ferrum task
 secret_set`. To use a store of your own instead, set its address and keys and `STORE_REPLICAS=0`.
 
+Its keys can come from the vault instead (`-f deploy/store-files.yml`; *Files for the programs beside the server*): the
+vault makes them at the first render, a one-shot service renders them into a file before each start of the store
+(`STORE_S3_CONFIG` for `deploy/store/start.sh`), and nothing is handed over. The store keeps its data and its own
+encryption key. An installation whose store already handed its keys over removes them from the vault first
+(`ferrum task secret_remove name:aws_access_key_id`, then `name:aws_secret_access_key`): the vault makes new ones only
+where there are none, and the store lets in the new ones only. The server then sets the bucket up itself
+(`FERRUM_S3_SET_UP_BUCKET=true` in that file), as the handoff asked it to.
+
 An installation from before this release keeps its `files` volume: with the new Compose file it starts with the store
 set and files moving, reads both, and moves its files with `docker compose exec ferrum ferrum task files_move`. With
 its old Compose file it keeps the directory, warned, as above. Back the store up beside the database with the commands
@@ -1738,6 +1746,51 @@ program, whose render then gives it the new value. Where the program can hold tw
 the version before too while the secret's overlap lasts, so that the server and the program never refuse each other in
 between. Rotate when the program can be restarted within the overlap.
 
+**How a program gets its files.** In Kubernetes, an init container renders them as the program's pod starts: the
+server's image, with the database's address as its one input (straight to PostgreSQL, as the migrate Job) and
+`/run/ferrum` for the vault's key file. It writes into a memory-backed volume the program mounts read-only at
+`/run/companion`, and the program's network policy lets the pod reach the database, and DNS, for the render. It opens
+the vault with the key file or the database password, never with the pod's service account. In Compose, a one-shot
+service renders them before the program starts, into a volume the two share (on the host's disk, as the store's own
+keys always were: a volume in memory would be gone before the program starts). Through this release each program keeps
+its old way by default, and a value switches it:
+
+| Program | Its service (owner) | Switched by | What it is given |
+|---|---|---|---|
+| The store Compose bundles | `object-store` (the platform) | `-f deploy/store-files.yml` | `s3.json`: its access keys, both pairs while an overlap of a day lasts |
+| Metrics' engine | `metrics-engine` (Metrics, once its release declares it) | the chart's `metricsEngine.files: rendered`, implied by `environment: minimal` once the image declares the service; `deploy/k8s`: the component `metrics-engine-files` after `metrics-engine` | `token`: one token a line, the current first |
+
+The meeting server and the mail server switch when Comms declares their services (docs/plan/stateless.md says what it
+declares). The online editor and the browser editors take no secret of ours, only settings the chart's values give
+them; a render would put the database's address into pods that hold no secret today (and, for the editor, into a
+namespace of a lower security level), so they keep their values. None of this was run on a cluster or in Compose: the
+chart and `deploy/k8s` were rendered and compared (`deploy/helm/test.sh`), Compose with `docker compose config`; the
+store's switch was rehearsed with its own binary (`scripts/companions_rehearsal.sh`).
+
+**Rotating, program by program.**
+
+- *The store Compose bundles* (`object-store`): both keys rotate together. Restart the store first: it then lets in
+  both pairs. Then restart the servers: each starts with the new pair, and one not yet restarted keeps the pair before,
+  which the store still lets in. A day later the overlap is over: restart the store once more, and it lets in the new
+  pair alone.
+  ```bash
+  C="docker compose -f deploy/docker-compose.yml -f deploy/store-files.yml --env-file deploy/.env"
+  $C exec ferrum ferrum task vault_rotate level:service service:object-store
+  $C up -d --force-recreate store-files store      # both pairs rendered; the store started on them
+  $C up -d --force-recreate ferrum
+  $C up -d --force-recreate store-files store      # a day later: the new pair alone
+  ```
+- *Metrics' engine* (`metrics-engine`, with a Metrics release that declares it): rotate, then restart the engine's pods
+  within the overlap (a day): each is given both tokens, and Metrics sends the one before until the overlap is over, so
+  no pod refuses it meanwhile.
+  ```bash
+  kubectl -n ferrum exec deploy/ferrum -- ferrum task vault_rotate level:service service:metrics-engine
+  kubectl -n ferrum rollout restart deployment/ferrum-metrics-engine
+  ```
+- *The meeting server* holds many keys, one for each version, and is restarted within the overlap; *the mail server*
+  holds one administrator's secret, so it is restarted at once after the rotation. Both as Comms says, once it declares
+  them.
+
 ## Durable processes
 
 Customers' solutions may hold processes that wait for people, events and deadlines (the Full Process
@@ -1881,6 +1934,10 @@ docker compose -f deploy/docker-compose.yml -f deploy/metrics-engine.yml --env-f
   carries the source under `stale`, and Intelligence says so in its answers.
 - **Datasets** are files. Refresh them in place, by writing a new file and renaming it over the old one; the
   newest file's time is the dataset's age. They are not backed up with the stack: they are the lake's.
+- **Its token from the vault**, typed by nobody (*Files for the programs beside the server*): with a Metrics release
+  that declares the service `metrics-engine`, the chart's `metricsEngine.files: rendered` (or the `deploy/k8s`
+  component `metrics-engine-files`) renders the token into each engine pod as it starts, and neither side reads the
+  Secret `ferrum-metrics-engine` any more. Until then keep `secret`, the default.
 
 ## Background jobs
 
