@@ -97,7 +97,7 @@ async fn scenario() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let ferrum_port = listener.local_addr().unwrap().port();
     let settings = KernelSettings {
-        secret_key: Some(SecretKey::new([9u8; 32])),
+        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([9u8; 32])), vec![]),
         connection_hosts: vec!["127.0.0.1".into()],
         public_url: Some(format!("http://127.0.0.1:{ferrum_port}")),
         ..Default::default()
@@ -198,7 +198,11 @@ async fn scenario() {
     assert!(e.to_string().contains("not one you may send"), "{e}");
 
     // A server without a public address refuses, saying why.
-    let bare = KernelSettings { secret_key: Some(SecretKey::new([9u8; 32])), connection_hosts: vec!["127.0.0.1".into()], ..Default::default() };
+    let bare = KernelSettings {
+        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([9u8; 32])), vec![]),
+        connection_hosts: vec!["127.0.0.1".into()],
+        ..Default::default()
+    };
     let k2 = Kernel::boot(db.clone(), Catalog::from_packages(vec![core]).unwrap(), HookRegistry::default(), bare, None).await.expect("boot");
     k2.set_file_store(Arc::new(Dir(root.clone())));
     let admin2 = k2.load_ctx(tenant, session.user, None, "it".into()).await.unwrap();

@@ -41,7 +41,9 @@ async fn kernel(key: Option<SecretKey>, reset: bool) -> Arc<Kernel> {
             .await
             .expect("reset");
     }
-    Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings { secret_key: key, ..Default::default() }, None).await.expect("boot")
+    Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings { old_key: ferrum_kernel::OldKey::configured(key, vec![]), ..Default::default() }, None)
+        .await
+        .expect("boot")
 }
 
 /// Through the reader apps used before each read its own with its vault handle: deprecated, still working in this release.
@@ -117,13 +119,22 @@ async fn secrets_are_write_only_sealed_and_bound() {
 
     // Rotation: a new key with the old one retired. Everything sealed moves, and keeps working.
     let new_key = SecretKey::new([9u8; 32]);
-    let settings =
-        |secret_key: Option<SecretKey>, retired_secret_keys: Vec<SecretKey>| KernelSettings { secret_key, retired_secret_keys, ..Default::default() };
+    let settings = |current: Option<SecretKey>, retired: Vec<SecretKey>| KernelSettings {
+        old_key: ferrum_kernel::OldKey::configured(current, retired),
+        ..Default::default()
+    };
     let boot = |s: KernelSettings| async move {
         let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
         let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
         Kernel::boot(db, catalog(), HookRegistry::default(), s, None).await.expect("boot")
     };
+    // The key given the way suites gave it before `old_key` (an app's suite does): taken in and used, what it sealed
+    // opening, and nothing of it left in the kernel's settings.
+    let old_way = boot(KernelSettings { secret_key: Some(key.clone()), retired_secret_keys: vec![SecretKey::new([3u8; 32])], ..Default::default() }).await;
+    assert_eq!(reveal(&old_way, tenant, id).await.unwrap().as_deref(), Some("rotated-value"), "what the key sealed opens");
+    assert!(old_way.settings.secret_key.is_none() && old_way.settings.retired_secret_keys.is_empty(), "nothing read back");
+    assert!(old_way.live().secret_key.is_none() && old_way.live().retired_secret_keys.is_empty(), "nor from the settings as they are now");
+    drop(old_way);
     let hook = Uuid::now_v7();
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, $2, 'old', 'https://hooks.test/x', 'plain-signing-secret', '{*}')")

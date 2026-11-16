@@ -522,7 +522,8 @@ async fn scenario() {
     let mut packages = vec![core];
     packages.extend(ferrum_studio::packages().expect("studio packages"));
     let mut hooks = HookRegistry::default();
-    ferrum_studio::register(&mut hooks);
+    let studio: Vec<String> = ferrum_studio::packages().expect("studio packages").iter().map(|p| p.name().to_string()).collect();
+    hooks.app("studio", &studio, ferrum_studio::register).own("studio", &studio);
     let k: Arc<Kernel> = Kernel::boot(db, Catalog::from_packages(packages).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot");
 
     // ───────────── the committed pack is what the builder produces ─────────────

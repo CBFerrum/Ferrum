@@ -228,10 +228,14 @@ A new installation needs no `FERRUM_SECRET_KEY`, and one that has it takes it ou
   (`legacy.key.<id>`, used, never revealed, its name refused to the verbs), written at the first start with the vault open
   under the secret's lock, so replicas starting together write it once. Whatever the old key sealed or keyed is opened
   and checked with these copies once the environment no longer has it.
-- **Apps.** `settings.secret_key` stays public through R1 (apps compiled in at their pinned revisions read it): it holds
-  the environment's key, else the one it last had (adopted), else a key of the platform's own. An app moves onto its
-  own handle; what it sealed or keyed with the old key itself it keeps through the R1-only calls `open_old`, `seal_old`
-  and `old_fingerprints`, for contexts of its own (docs/app-contract.md, *The vault*).
+- **Apps.** The old key is the kernel's alone since the apps pinned on 16 November stopped reading it:
+  `KernelSettings::old_key` (an `OldKey`, given with `OldKey::configured(current, retired)`) gives nothing back. Two
+  private fields would have refused every `KernelSettings { …, ..Default::default() }` outside the kernel (Rust refuses
+  a functional update past a field the caller cannot see), so it is one public field of a type that hides the key; the
+  fields `secret_key` and `retired_secret_keys` stay as inputs only (apps' suites set them), taken into `old_key` and
+  emptied wherever a kernel takes its settings (`Kernel::boot`, `set_live`). What an app sealed or keyed with the old key
+  itself it keeps through the R1-only calls `open_old`, `seal_old` and `old_fingerprints`, for contexts of its own
+  (docs/app-contract.md, *The vault*).
 - **Plugins' settings** are sealed under each plugin's own key in the workspace's vault, beside the old key while it is
   configured; the move takes those from before (sealed with the old key, or plain). Never stored plain.
 - **Production** no longer requires the key where the vault opens; development with the vault open no longer derives
@@ -337,6 +341,28 @@ object another service wrote into the store as a file (recordings need it).
   `src/firmware.rs:32-37,167`): a file field stored with `store_file`, fetched by gateways through a new signed route
   answered with `read_file` (relay.rs:23-25 lists the routes passed). No CA keys anywhere; device certificates are
   fingerprints in the database (`src/site.rs:326-333`).
+
+### D6, an app's own files (built, 16 November 2026)
+
+Cloud keeps its built artifacts, resources' backups and managed objects as the workspace's files through the seam above.
+Kept loose (tied to no record, no uploader), they were an administrator's by the rule for loose files: downloadable by
+id through the generic route, tied to any record by naming them in an attach field, and in every export.
+
+- **A kind of file**, declared by its app in its registration (`HookRegistry::file_kind(name)`, `<app id>.<name>`, once,
+  checked by `settle`), and its handle (`files::FileKind`: `keep`, `info`, `read`, `release`), as the platform keeps
+  its own exports (`ferrum.export`). A file of a kind is tied to (the kind, an id of the app's choosing). No entity's
+  name has a dot, so the kind is told apart wherever a file is looked at, declared or not: a kind whose app left the
+  build stays out of reach.
+- **Out of reach**: the generic download, copy, deletion, print of an image, a tie through an attach field (taken as an
+  id naming no file) and the record's listing refuse it to everyone, administrators included, as a file that is not
+  there. A site's answer naming one (`SiteResponse::file`) is streamed only from a site of a package the declaring app
+  owns. Mail an app sends with its own files is its own way out.
+- **The export** leaves them out, its records as before, and says so per kind (`files_left_out`: files, bytes, why).
+  An export has no import in the platform; nothing there to change.
+- **As any file**: the quota (bytes are bytes), the deletion lag (`release` goes through `release_objects`), a move and
+  a sandbox (the app's rows naming them are copied, so the files go with them), the workspace's deletion, readiness,
+  the doctor and the restore drill. A person's erasure touches files of records; a kind's files are no person's record.
+- **Not an entity flag**: Cloud's rows are its own tables, not entities, so a flag on an entity would not reach them.
 
 ## D7. Any PostgreSQL
 
@@ -647,6 +673,27 @@ each program reads as it starts.
   drops its `:?` guard.
 - **Drive** declares nothing: the online editor's settings are not secrets and its proof key is its own; the browser
   editors hold no secret.
+
+## This week's app releases built in (built)
+
+The platform builds the apps' releases of the program: every app at its repository's `main` of 16 November (ERP 0.28.0
+with its add-ons, Drive 0.18.0, Comms 0.22.0, Metrics 0.8.0, Commerce 0.11.1, POS 0.7.5, Helpdesk 0.12.1, Control 0.5.12,
+Live 0.2.2, Sign 0.3.3, Campaigns 0.5.4, Learn 0.9.3, Bookings 0.7.4, Forms 0.4.0, HR 0.14.1, and the others' tips).
+
+- **The pin is the lock.** `cargo update -p <crate> --precise <rev>` for each: only the apps' own crates moved (loco-rs
+  stays 1.2.0). Campaigns 0.5.3 asked for Comms below 0.22, beside Comms 0.22.0: the server's check of what compiled apps
+  require of each other (`compiled_apps_fit_together`) refused the pair, and Campaigns 0.5.4 widened its range. Developers, Intelligence, Intranet and Website stay where they were: their `main` moved by documentation
+  alone (READMEs, screenshots, a commit id rewritten in `ui/dist/.source`).
+- **Their settings are their own.** Every app pinned that reads a setting declares it and reads it through
+  `ferrum_kernel::env::var`, so the platform's 22 entries for them go from `server/src/settings.yaml`. The apps' five
+  secrets stay declared there (`secret: true`, `app:`): each app keeps its own in its vault and still adopts the
+  environment's while it is set, so they stay in `docs/registry/environment-only.md`, which shrinks from 96 names to 74.
+- **Past the vault.** No app reads a secret field past its handle (37 calls in 23 files before) or the old key (3).
+- **Registered as the server registers them.** Suites that boot apps register each by its id, owning its packages
+  (`hooks.app(id, …)` and `hooks.own(id, …)`), as `server/src/packages.rs` does.
+- **The proof with the apps.** `scripts/one_input.sh` runs the server with every app; Comms takes its meeting address
+  (`comms.meet_url`) from the table and signs LiveKit's token with `meet.secret` from its own vault, the script checking
+  the signature. The previous build stays one without apps.
 
 ## Not doing
 

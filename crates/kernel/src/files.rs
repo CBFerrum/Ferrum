@@ -57,6 +57,121 @@ pub struct FileInfo {
     pub(crate) key: String,
 }
 
+/// Whether a stored file's `entity` is a kind of file the platform or an app keeps for its own work (`<owner>.<name>`:
+/// `ferrum.export`, an app's [`FileKind`]), not an entity whose records hold the file: no entity's name has a dot.
+pub(crate) fn is_kind(entity: &str) -> bool {
+    entity.contains('.')
+}
+
+/// A kind of file an app keeps for its own work, such as built artifacts or databases' backups: the workspace's files,
+/// counted, kept and deleted as any (its quota, the deletion lag, the doctor, the restore drill, a move, a sandbox), but
+/// not its content to hand out. Nobody reaches one through the platform's routes for files, administrators included
+/// (not found, as a file that is not there): not downloaded, copied, deleted or tied to a record; a workspace's export
+/// leaves them out and says so. Its app keeps, reads and lets go of them with this handle, and answers with one from its
+/// own site ([`crate::SiteResponse::file`]): that is their only way out, and the app owes the customer one.
+///
+/// Declared in the app's registration ([`crate::HookRegistry::file_kind`]) as `<app id>.<name>`, by that app alone;
+/// a kind no app declares any more (its app left the build) is still nobody's to reach.
+#[derive(Clone)]
+pub struct FileKind {
+    kind: Arc<str>,
+    app: Arc<str>,
+    /// What the registry that gave it out noted for the app (its vault handle's), checked at each use.
+    mint: u128,
+}
+
+impl std::fmt::Debug for FileKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FileKind({})", self.kind)
+    }
+}
+
+impl FileKind {
+    pub(crate) fn new(kind: String, app: &str, mint: u128) -> FileKind {
+        FileKind { kind: kind.into(), app: app.into(), mint }
+    }
+
+    /// `<app id>.<name>`: what `file_object.entity` holds for each file of the kind.
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// Refused unless `k` booted with the registry that gave this handle out, the kind declared by its app.
+    fn given(&self, k: &Kernel) -> Result<()> {
+        let ok = self.mint != 0 && k.hooks.vault_mint(&self.app) == Some(self.mint) && k.hooks.file_kind_app(&self.kind) == Some(&*self.app);
+        if ok { Ok(()) } else { Err(Error::Forbidden(format!("the kind of file {} was not declared to this server", self.kind))) }
+    }
+
+    /// Keeps `data` as a file of the kind in `tenant`'s storage, tied to `id` (whatever the app names it by: an artifact,
+    /// a backup): counted against the workspace's storage and scanned as an upload is. `{id, file_name, size, sha256}`.
+    pub async fn keep(&self, k: &Kernel, tenant: Uuid, id: Uuid, file_name: &str, content_type: &str, data: &[u8]) -> Result<Value> {
+        self.given(k)?;
+        let ctx = Ctx::system(tenant, k.registry.schema(tenant).await?);
+        k.check_storage_quota(tenant, data.len() as u64).await?;
+        let scanned = k.scan_stream(&ctx, file_name, data.len() as u64, futures::stream::iter([Ok::<_, Error>(data)])).await?;
+        let mut kept = k.keep_file(&ctx, Some((&self.kind, id)), file_name, content_type, data, scanned).await?;
+        if let Some(m) = kept.as_object_mut() {
+            // No address of the platform's serves it: the app answers with it from its own site.
+            m.remove("url");
+        }
+        Ok(kept)
+    }
+
+    /// A file of the kind's name, content type and size, to answer with it from the app's site
+    /// ([`crate::SiteResponse::file`]). Not found when it is not this kind's.
+    pub async fn info(&self, k: &Kernel, tenant: Uuid, file: Uuid) -> Result<FileInfo> {
+        self.given(k)?;
+        let mut tx = k.db.tenant_tx(tenant).await?;
+        let row: Option<(String, String, i64, String)> =
+            sqlx::query_as("select file_name, content_type, size_bytes, storage_key from file_object where tenant_id = $1 and id = $2 and entity = $3")
+                .bind(tenant)
+                .bind(file)
+                .bind(&*self.kind)
+                .fetch_optional(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        let (name, content_type, size, key) = row.ok_or_else(|| Error::NotFound("file".into()))?;
+        Ok(FileInfo { name, content_type, size, key })
+    }
+
+    /// A file of the kind's name, content type and bytes; one larger than [`MAX_READ_WHOLE`] is streamed instead.
+    pub async fn read(&self, k: &Kernel, tenant: Uuid, file: Uuid) -> Result<(String, String, Vec<u8>)> {
+        let f = self.info(k, tenant, file).await?;
+        if f.size > MAX_READ_WHOLE {
+            return Err(Error::invalid(format!("{} is larger than {} MB, more than is read whole: it is sent as a stream", f.name, MAX_READ_WHOLE >> 20)));
+        }
+        Ok((f.name, f.content_type, k.file_store()?.get(&f.key).await?))
+    }
+
+    /// Lets `files` of the kind go in the caller's transaction: their rows now, their bytes after the platform's
+    /// deletion lag once it commits (crate::outbox::release_objects). Another kind's, or none, are left alone. How many.
+    pub async fn release(&self, k: &Kernel, tx: &mut Tx, tenant: Uuid, files: &[Uuid]) -> Result<u64> {
+        self.given(k)?;
+        if files.is_empty() {
+            return Ok(0);
+        }
+        let keys: Vec<String> = sqlx::query_scalar("delete from file_object where tenant_id = $1 and id = any($2) and entity = $3 returning storage_key")
+            .bind(tenant)
+            .bind(files)
+            .bind(&*self.kind)
+            .fetch_all(&mut **tx)
+            .await?;
+        crate::outbox::release_objects(tx, tenant, &keys).await?;
+        Ok(keys.len() as u64)
+    }
+}
+
+impl Kernel {
+    /// Whether the site of `package` may answer with a stored file tied to `entity` ([`crate::SiteResponse::file`]): any
+    /// file but a kind's ([`FileKind`]); a kind's only from a site of the app that declared it.
+    pub fn site_may_send(&self, package: &str, entity: Option<&str>) -> bool {
+        match entity.filter(|e| is_kind(e)) {
+            None => true,
+            Some(kind) => self.hooks.file_kind_app(kind).is_some_and(|app| self.hooks.package_owner(package) == Some(app)),
+        }
+    }
+}
+
 /// A file tied to no record is its uploader's, and an administrator's (and the system's).
 fn owns_loose(ctx: &Ctx, by: Option<Uuid>) -> bool {
     ctx.is_admin || ctx.is_system || (!ctx.user.is_nil() && by == Some(ctx.user))
@@ -177,6 +292,8 @@ impl Kernel {
     /// outside person any file tied to a record: [`Kernel::may_download_file`] decides theirs.
     pub async fn may_download(&self, ctx: &Ctx, entity: Option<&str>, record: Option<Uuid>, by: Option<Uuid>) -> Result<()> {
         match (entity, record) {
+            // A kind of file an app keeps for its own work: nobody's through these routes ([`FileKind`]).
+            (Some(e), _) if is_kind(e) => Err(Error::NotFound("file".into())),
             (Some(_), Some(_)) if ctx.outside => Err(Error::NotFound("file".into())),
             // Tied to a record of an app the caller's zone leaves out (crate::zones, level 2): not there.
             (Some(e), Some(_)) if !ctx.sees(e) => Err(Error::NotFound("file".into())),
@@ -191,7 +308,7 @@ impl Kernel {
     /// they uploaded it, or when a field of the record as they read it names it (BD-22); otherwise it is not found,
     /// the same as a file that is not there.
     pub async fn may_download_file(&self, ctx: &Ctx, file: Uuid, entity: Option<&str>, record: Option<Uuid>, by: Option<Uuid>, shared: bool) -> Result<()> {
-        let (Some(e), Some(r), true) = (entity, record, ctx.outside) else { return self.may_download(ctx, entity, record, by).await };
+        let (Some(e), Some(r), true) = (entity.filter(|e| !is_kind(e)), record, ctx.outside) else { return self.may_download(ctx, entity, record, by).await };
         let doc = self.read_record(ctx, e, r, false).await.map_err(|_| Error::NotFound("file".into()))?;
         let seen = (shared && ctx.perms.shared(e).is_some())
             || (!ctx.user.is_nil() && by == Some(ctx.user))
@@ -221,8 +338,9 @@ impl Kernel {
                     .bind(file)
                     .fetch_optional(&mut **tx)
                     .await?;
-            // An id naming no stored file gives nothing away.
-            let Some((entity, record, by)) = row else { continue };
+            // An id naming no stored file gives nothing away, nor one of a kind an app keeps for its own work ([`FileKind`]):
+            // neither is tied.
+            let Some((entity, record, by)) = row.filter(|r| !r.0.as_deref().is_some_and(is_kind)) else { continue };
             let refused = || Error::Forbidden(format!("{} names a file you cannot download", ent.def.label));
             match (entity, record) {
                 (Some(e), Some(r)) => {

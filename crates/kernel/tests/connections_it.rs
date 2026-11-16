@@ -1167,7 +1167,7 @@ async fn boot() -> (Arc<Kernel>, Ctx) {
         [("package.yaml", PACKAGE), ("entities/parcel.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let depot = ferrum_meta::catalog::load_package_files(&files).expect("package");
     let settings = KernelSettings {
-        secret_key: Some(SecretKey::new([9u8; 32])),
+        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([9u8; 32])), vec![]),
         connection_hosts: vec!["127.0.0.1".into()],
         public_url: Some("https://ferrum.example.test".into()),
         ..Default::default()

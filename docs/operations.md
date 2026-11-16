@@ -171,73 +171,75 @@ The app `comms`'s settings:
 
 | Setting | Variable | Type | Default | Where it lives | Meaning |
 |---|---|---|---|---|---|
-| `comms.meet_url` | `FERRUM_MEET_URL` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | LiveKit as browsers reach it, `wss://meet.example.com` (docs/operations.md, Meetings). |
-| `comms.meet_key` | `FERRUM_MEET_KEY` | text |  | secret: the environment, until `comms` keeps it in its own vault | LiveKit's API key (a name). |
-| `comms.meet_secret` | `FERRUM_MEET_SECRET` | text |  | secret: the environment, until `comms` keeps it in its own vault | LiveKit's API secret. |
-| `comms.meet_recordings` | `FERRUM_MEET_RECORDINGS` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | `true` once LiveKit Egress runs beside LiveKit with its storage. |
-| `comms.meet_api_url` | `FERRUM_MEET_API_URL` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | LiveKit's server API as Ferrum reaches it, when that is not `FERRUM_MEET_URL` over http(s). |
-| `comms.mail_url` | `FERRUM_MAIL_URL` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | Stalwart's HTTP address as the server reaches it (docs/operations.md, Hosted mail). |
-| `comms.mail_admin` | `FERRUM_MAIL_ADMIN` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | A Stalwart administrator. |
-| `comms.mail_admin_secret` | `FERRUM_MAIL_ADMIN_SECRET` | text |  | secret: the environment, until `comms` keeps it in its own vault | That administrator's password. |
-| `comms.mail_host` | `FERRUM_MAIL_HOST` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | Optional: the mail server's public host name, shown to people setting up mail programs. |
+| `comms.meet_key` | `FERRUM_MEET_KEY` | text |  | secret: `comms`'s own vault; the environment's, while set, wins and is adopted there once | LiveKit's API key (a name); Comms keeps it in its vault as `meet.key`. |
+| `comms.meet_secret` | `FERRUM_MEET_SECRET` | text |  | secret: `comms`'s own vault; the environment's, while set, wins and is adopted there once | LiveKit's API secret; Comms keeps it in its vault as `meet.secret`. |
+| `comms.mail_admin_secret` | `FERRUM_MAIL_ADMIN_SECRET` | text |  | secret: `comms`'s own vault; the environment's, while set, wins and is adopted there once | The password of Stalwart's administrator (`comms.mail_admin`); Comms keeps it in its vault as `mail.admin_secret`. |
+| `comms.meet_url` | `FERRUM_MEET_URL` | text |  | installation, at once; not from the table while `FERRUM_MEET_SECRET` is in the environment; moving it takes that secret again or clears it | LiveKit as browsers reach it, wss://meet.example.com. Its key and secret are Comms' secrets meet.key and meet.secret. |
+| `comms.meet_api_url` | `FERRUM_MEET_API_URL` | text |  | installation, at once; not from the table while `FERRUM_MEET_SECRET` is in the environment; moving it takes that secret again or clears it | LiveKit's server API as Ferrum reaches it, when that is not the address above over http(s). |
+| `comms.meet_recordings` | `FERRUM_MEET_RECORDINGS` | bool | `false` | installation, at once | true once LiveKit Egress runs beside LiveKit with its storage, so people can record meetings. |
+| `comms.meet_node_ip` | `FERRUM_MEET_NODE_IP` | text |  | installation, at once | Optional. The IP address LiveKit gives browsers, written into its file by the service meet; unset, LiveKit finds it. |
+| `comms.meet_external_ip` | `FERRUM_MEET_EXTERNAL_IP` | bool | `true` | installation, at once | Whether LiveKit finds its public address by STUN, written into its file by the service meet; false on a network without internet access. |
+| `comms.mail_url` | `FERRUM_MAIL_URL` | text |  | installation, at once; not from the table while `FERRUM_MAIL_ADMIN_SECRET` is in the environment; moving it takes that secret again or clears it | Stalwart's HTTP address as the server reaches it, for hosted mailboxes. |
+| `comms.mail_admin` | `FERRUM_MAIL_ADMIN` | text |  | installation, at once; not from the table while `FERRUM_MAIL_ADMIN_SECRET` is in the environment; moving it takes that secret again or clears it | A Stalwart administrator (admin, the fallback administrator, where the service mail renders its password). Its password is Comms' secret mail.admin_secret. |
+| `comms.mail_host` | `FERRUM_MAIL_HOST` | text |  | installation, at once | Optional. The mail server's public host name, shown to people setting up mail programs. |
 
 The app `drive`'s settings:
 
 | Setting | Variable | Type | Default | Where it lives | Meaning |
 |---|---|---|---|---|---|
-| `drive.office_url` | `FERRUM_OFFICE_URL` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | With online editing: the editor server as the server reaches it (docs/operations.md, Online editing). |
-| `drive.office_wopi_url` | `FERRUM_OFFICE_WOPI_URL` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | With online editing: this server as the editor server reaches it. |
-| `drive.office_ips` | `FERRUM_OFFICE_IPS` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | Optional: the only addresses WOPI calls are accepted from. |
-| `drive.editors_url` | `FERRUM_EDITORS_URL` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | The browser editors' server as browsers reach it (docs/operations.md, Browser editors). |
-| `drive.max_file_mb` | `FERRUM_DRIVE_MAX_FILE_MB` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | Largest file in one request to Drive: an upload, a new version or an editor save. Default 32, at most 1024. A replica holds each such file in memory while storing it, so allow `uploads at once × this` of memory per replica. Workspaces set their own limit within it. Raise any proxy's body limit in front with it. |
-| `drive.max_zip_mb` | `FERRUM_DRIVE_MAX_ZIP_MB` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | The largest folder Drive downloads as one zip. |
+| `drive.office_url` | `FERRUM_OFFICE_URL` | text |  | installation, at once | With online editing, the editor server (Collabora Online or ONLYOFFICE Docs) as the server reaches it. |
+| `drive.office_wopi_url` | `FERRUM_OFFICE_WOPI_URL` | text |  | installation, at once | With online editing, this server as the editor server reaches it. |
+| `drive.office_ips` | `FERRUM_OFFICE_IPS` | text |  | installation, at once | Optional. The only addresses WOPI calls are accepted from, separated by commas. |
+| `drive.editors_url` | `FERRUM_EDITORS_URL` | text |  | installation, at once | The browser editors' server (GridCraft, WordCraft, PdfCraft) as browsers reach it. |
+| `drive.max_file_mb` | `FERRUM_DRIVE_MAX_FILE_MB` | int | `32` | installation, at once | Largest file in one request to Drive, in MB (an upload, a new version or an editor save), at most 1024. A replica holds each such file in memory while storing it. Raise any proxy's body limit in front with it. |
+| `drive.max_zip_mb` | `FERRUM_DRIVE_MAX_ZIP_MB` | int | `128` | installation, at once | The largest folder Drive downloads as one zip, in MB before compression, at most 1024. |
 
 The app `eu`'s settings:
 
 | Setting | Variable | Type | Default | Where it lives | Meaning |
 |---|---|---|---|---|---|
-| `eu.vies_url` | `FERRUM_EU_VIES_URL` | text |  | the environment (ERP's EU add-on reads it itself); the database's once `eu` declares it | Another address for the EU's VAT number service (a test server). |
-| `eu.tedb_url` | `FERRUM_EU_TEDB_URL` | text |  | the environment (ERP's EU add-on reads it itself); the database's once `eu` declares it | Another address for the EU's taxes database (a test server). |
+| `eu.vies_url` | `FERRUM_EU_VIES_URL` | text |  | installation, at once | Another address for the EU's VAT number service (VIES), only on its own host outside development. |
+| `eu.tedb_url` | `FERRUM_EU_TEDB_URL` | text |  | installation, at once | Another address for the EU's taxes database (TEDB), only on its own host outside development. |
 
 The app `gb`'s settings:
 
 | Setting | Variable | Type | Default | Where it lives | Meaning |
 |---|---|---|---|---|---|
-| `gb.hmrc_url` | `FERRUM_GB_HMRC_URL` | text |  | the environment (ERP's GB add-on reads it itself); the database's once `gb` declares it | Another address for HMRC's Making Tax Digital API (its sandbox). |
-| `gb.public_ip` | `FERRUM_PUBLIC_IP` | text |  | the environment (ERP's GB add-on reads it itself); the database's once `gb` declares it | The server's public address, sent in HMRC's fraud-prevention headers. |
+| `gb.hmrc_url` | `FERRUM_GB_HMRC_URL` | text |  | installation, at once | Another address for HMRC's Making Tax Digital API. Outside development only HMRC's own hosts are called, so a company's credentials go nowhere else. |
+| `gb.public_ip` | `FERRUM_PUBLIC_IP` | text |  | installation, at once | The server's public address, sent in HMRC's fraud-prevention headers; found from the public address unless set. |
 
 The app `metrics`'s settings:
 
 | Setting | Variable | Type | Default | Where it lives | Meaning |
 |---|---|---|---|---|---|
-| `metrics.engine_url` | `FERRUM_METRICS_ENGINE_URL` | text |  | the environment (Metrics reads it itself); the database's once `metrics` declares it | Metrics' engine for external sources (docs/operations.md, Metrics' engine for external sources). |
-| `metrics.engine_token` | `FERRUM_METRICS_ENGINE_TOKEN` | text |  | secret: the environment, until `metrics` keeps it in its own vault | The engine's token, at least 32 characters. |
+| `metrics.engine_token` | `FERRUM_METRICS_ENGINE_TOKEN` | text |  | secret: `metrics`'s own vault; the environment's, while set, wins and is adopted there once | The token of Metrics' engine, at least 32 characters; Metrics keeps it in its vault as `engine.token`. |
+| `metrics.engine_url` | `FERRUM_METRICS_ENGINE_URL` | text |  | installation, at once; not from the table while `FERRUM_METRICS_ENGINE_TOKEN` is in the environment; moving it takes that secret again or clears it | Metrics' engine for external sources, as the server reaches it (a private address; plain http allowed). Its token is Metrics' secret engine.token, sent only to the host it was given for. |
 
 The app `my`'s settings:
 
 | Setting | Variable | Type | Default | Where it lives | Meaning |
 |---|---|---|---|---|---|
-| `my.myinvois_url` | `FERRUM_MY_MYINVOIS_URL` | text |  | the environment (ERP's Malaysia add-on reads it itself); the database's once `my` declares it | Another address for MyInvois (its sandbox). |
+| `my.myinvois_url` | `FERRUM_MY_MYINVOIS_URL` | text |  | installation, at once | Another address for MyInvois. Outside development only MyInvois's own hosts are called, so a company's credentials go nowhere else. |
 
 The app `pt`'s settings:
 
 | Setting | Variable | Type | Default | Where it lives | Meaning |
 |---|---|---|---|---|---|
-| `pt.certificate` | `FERRUM_PT_CERTIFICATE` | text |  | the environment (ERP's Portugal add-on reads it itself); the database's once `pt` declares it | The software certificate number for certified invoices (docs/operations.md, Portugal: certified invoices). |
-| `pt.key_version` | `FERRUM_PT_KEY_VERSION` | text |  | the environment (ERP's Portugal add-on reads it itself); the database's once `pt` declares it | The signing key's version. |
-| `pt.signing_key` | `FERRUM_PT_SIGNING_KEY` | text |  | secret: the environment, until `pt` keeps it in its own vault | The key certified invoices are signed with. |
+| `pt.signing_key` | `FERRUM_PT_SIGNING_KEY` | text |  | secret: `pt`'s own vault; the environment's, while set, wins and is adopted there once | The key Portugal's certified invoices are signed with; the add-on keeps it in its vault as `signing.key`. |
+| `pt.certificate` | `FERRUM_PT_CERTIFICATE` | text |  | installation, at once | The AT's certificate number of this software, printed on certified invoices. The signing key is Portugal's secret signing.key. |
+| `pt.key_version` | `FERRUM_PT_KEY_VERSION` | text | `1` | installation, at once | The signing key's version, as the AT knows it. |
 
 The app `ro`'s settings:
 
 | Setting | Variable | Type | Default | Where it lives | Meaning |
 |---|---|---|---|---|---|
-| `ro.anaf_url` | `FERRUM_RO_ANAF_URL` | text |  | the environment (ERP's Romania add-on reads it itself); the database's once `ro` declares it | Another address for ANAF's e-Factura (its test system). |
+| `ro.anaf_url` | `FERRUM_RO_ANAF_URL` | text |  | installation, at once | Another address for ANAF's e-Factura. Outside development only ANAF's own hosts are called, so a company's credentials go nowhere else. |
 
 The app `us`'s settings:
 
 | Setting | Variable | Type | Default | Where it lives | Meaning |
 |---|---|---|---|---|---|
-| `us.avatax_url` | `FERRUM_US_AVATAX_URL` | text |  | the environment (ERP's US add-on reads it itself); the database's once `us` declares it | Another address for AvaTax (its sandbox). |
+| `us.avatax_url` | `FERRUM_US_AVATAX_URL` | text |  | installation, at once | Another address for AvaTax. Outside development only AvaTax's own hosts are called, so a company's licence key goes nowhere else. |
 <!-- settings: end -->
 
 ### Settings in the database
@@ -325,9 +327,11 @@ vault gives it only to the host it was set for.
 **Apps' settings.** An app compiled into the server declares the settings it reads in its manifest
 (`operator_settings`, docs/app-contract.md): each is kept as `<app>.<key>` (`drive.max_file_mb`), changed like any
 other, and listed under its app in the table above. The server adds them before it reads any setting, and does not
-start when two owners declare one key or variable, naming both. The apps pinned in this release still read their
-variables with the environment alone, so their entries in the table are the environment's until each app's release
-declares them; an address that is given a secret says so (`sends:`), as the platform's do.
+start when two owners declare one key or variable, naming both. Every app pinned in this release that reads a setting
+declares it (Drive, Comms, Metrics, and ERP's EU, United Kingdom, Malaysia, Romania, United States and Portugal
+add-ons), so each is read from the table like the platform's own, the environment still winning through this release;
+an address that is given a secret says so (`sends:`), as the platform's do. An app's secrets are never settings: each
+app keeps its own in its vault.
 
 **A task's inputs.** What one task is told as it runs (`move_workspace`'s and `copy_workspace from:`'s source,
 `FERRUM_MOVE_SOURCE_*`) is given in that task's environment: no replica reads it, so it is neither stored nor counted
@@ -346,17 +350,19 @@ behaves; the release after stops. What stays in the environment after that, each
 - `LOCO_ENV` (the image sets it): which configuration file the program reads, not a value an operator chooses.
 - `FERRUM_SECRET_KEY_COMMAND`: a command line is never read from the database, where whoever writes a row would run a
   program. Prefer the key file or the key-management service.
-- The old keys and the secrets of the apps that still read their own (`FERRUM_SECRET_KEY`, `FERRUM_RETIRED_SECRET_KEYS`,
-  `FERRUM_MEET_SECRET`, …), until the old key retires and each app keeps its own in its vault.
+- The old keys (`FERRUM_SECRET_KEY`, `FERRUM_RETIRED_SECRET_KEYS`), until the old key retires; and the apps' own
+  secrets (`FERRUM_MEET_SECRET`, …), which each app keeps in its own vault and adopts from the environment while one is
+  set, until its release stops reading them. The apps' settings are the database's, as the platform's are.
 - What the libraries read themselves: PostgreSQL's driver its `PG*` variables (the parts `DATABASE_URL` leaves out),
   the HTTP client the system's proxy (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`: set, every outbound request
   goes through it), the log's filter `RUST_LOG`, the OpenTelemetry SDK its other `OTEL_*` variables, the object store's
   client its `AWS_*` profile, the runtime its threads (`TOKIO_WORKER_THREADS`). Leave them unset.
 
 `docs/registry/environment-only.md` lists each such name with why (`python3 scripts/settings.py --write` writes it, and
-refuses to let it grow). `scripts/one_input.sh` proves the rest: the real server, started with `DATABASE_URL` alone in
-its environment, migrates, takes its settings from a document and its secrets from tasks, serves as two replicas, keeps
-a file in object storage, runs a job once, takes a live change on both replicas, keeps a session across a restart and
+refuses to let it grow). `scripts/one_input.sh` proves the rest: the real server with its apps, started with
+`DATABASE_URL` alone in its environment, migrates, takes its settings from a document and its secrets from tasks, serves
+as two replicas, keeps a file in object storage, runs a job once, takes a live change on both replicas, has Comms take
+its meeting address from the table and sign with the secret in its own vault, keeps a session across a restart and
 has its doctor say the environment decides nothing; every name it asks its environment for (seen in libc's `getenv`)
 is the registry's or on that list, and only `DATABASE_URL` was set; then the previous build starts on the same
 database.
@@ -1685,9 +1691,10 @@ What `ferrum task legacy_key` (and the doctor's `legacy_key` finding) says at ea
 | The variable removed | `configured: false`; the ids still `adopted` | the key is gone; what it made is checked with the vault's copy |
 | A new installation | `configured: false`, nothing adopted | the key is not set, and never was |
 
-Apps compiled in that read the old key themselves (`settings.secret_key`, deprecated: the list comes with the build) are
-given the same key once it is gone from the environment, from the vault's copy, so nothing they sealed changes; on an
-installation that never had one, a key of the platform's own. Each moves onto its own vault handle in its repository.
+No app reads the old key itself: it is the kernel's alone. What an app sealed or keyed with it before (Cloud's, Helpdesk's
+mail tokens) the app opens and checks through its own vault handle, with the vault's copies once the key is gone from the
+environment (docs/app-contract.md, *The vault*). The previous build's apps that still read it are given the key noted as
+the environment's last, from the vault's copy, so a rollback changes nothing they sealed.
 
 When the vault's keys make what a key made before: links and addresses made before a rotation of the platform's key
 still check (every version that made one is kept); a receipt's digest and a connector's fingerprint are made with the
@@ -1992,7 +1999,12 @@ customizations and automations, in zip parts of about 128 MB of JSON lines and f
 days or by a personal-data erasure, whichever comes first (the export then says so). Passwords,
 sign-in factors, secret fields, sealed settings, API keys and sessions stay out. `manifest.json` names
 every workspace table it did not carry (`tables_left_out`) and every file the storage no longer had
-(`files_missing`), which it goes on without: read it before relying on an export as a way out.
+(`files_missing`), which it goes on without: read it before relying on an export as a way out. Files an
+app keeps for its own work (Cloud's built artifacts and databases' backups: docs/app-contract.md,
+*Files an app keeps for its own work*) stay out too, its records as before: `files_left_out` names each
+kind with how many files and bytes it held, and its app hands them out its own way. They are the
+workspace's all the same: counted against its storage, moved and copied into a sandbox with it, deleted
+with it after the deletion lag, and read by the restore drill (`check_files`) as any file.
 
 ## Malware scanning
 

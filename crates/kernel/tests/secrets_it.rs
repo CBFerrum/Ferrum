@@ -152,7 +152,11 @@ async fn scenario() {
     let vault = ferrum_meta::catalog::load_package_files(&files).expect("package");
     let mut hooks = HookRegistry::default();
     hooks.register("Card", Arc::new(Vault));
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), webhooks_allow_private: true, ..Default::default() };
+    let settings = KernelSettings {
+        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]),
+        webhooks_allow_private: true,
+        ..Default::default()
+    };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, vault]).unwrap(), hooks, settings, Some(Arc::new(Captured))).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {

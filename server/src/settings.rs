@@ -140,9 +140,9 @@ impl Def {
 /// `app.yaml`); or, when two owners declare one key or variable, the platform's alone and why the server does not start.
 static REGISTRY: LazyLock<(Vec<Def>, Option<String>)> = LazyLock::new(|| {
     let platform: Vec<Def> = serde_yaml::from_str(include_str!("settings.yaml")).expect("server/src/settings.yaml is the registry");
+    // Every compiled-in app's manifest once: the apps built in elsewhere (crate::extensions) are among them already.
     let apps: Vec<(String, Vec<ferrum_apps::OperatorSetting>)> = crate::packages::native_manifests()
         .into_iter()
-        .chain(crate::extensions::all().iter().map(|e| e.manifest))
         // A manifest that does not parse leaves its app out of the server (crate::appmgr::compiled_natives says so).
         .filter_map(|yaml| ferrum_apps::AppManifest::parse(yaml).ok())
         .filter(|m| !m.operator_settings.is_empty())
@@ -1509,7 +1509,9 @@ mod tests {
         assert_eq!(s.get("host_leaving_days"), (Source::Default, None));
         assert_eq!(s.get("secret_key"), (Source::Environment, Some("from-the-environment")), "a secret is never the table's");
         assert_eq!(Snapshot::resolve(&table, "default", &|_| None).get("secret_key"), (Source::Default, None));
-        assert_eq!(s.get("drive.office_url"), (Source::Default, None), "Drive reads it from the environment: the table's would not reach it");
+        // Drive declares it (operator_settings): the table's value reaches it, as the platform's own do.
+        #[cfg(feature = "drive")]
+        assert_eq!(s.get("drive.office_url"), (Source::Database, Some("http://o")));
         let input = stored(&[("move_source_region", "eu")]);
         assert_eq!(Snapshot::resolve(&input, "default", &|_| None).get("move_source_region"), (Source::Default, None), "a task's input is never the table's");
         assert_eq!(s.var("FERRUM_PDF_URL").as_deref(), Some("http://pdf:3000"));

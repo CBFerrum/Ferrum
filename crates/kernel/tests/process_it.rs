@@ -457,7 +457,8 @@ async fn scenario() {
         [("package.yaml", PACKAGE), ("entities/procs.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let pkg = ferrum_meta::catalog::load_package_files(&files).expect("package");
     let catalog = Catalog::from_packages(vec![core, pkg]).unwrap();
-    let settings = KernelSettings { process_runtime: true, secret_key: Some(SecretKey::new([42u8; 32])), ..Default::default() };
+    let settings =
+        KernelSettings { process_runtime: true, old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([42u8; 32])), vec![]), ..Default::default() };
     let pause = Arc::new(Pause::default());
     let mut hooks = HookRegistry::default();
     hooks.register("Order", pause.clone());

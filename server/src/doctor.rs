@@ -29,13 +29,16 @@ pub fn settings_findings(production: bool, jwt_secret: &str, st: &crate::state::
     out.push(if !st.secret_key_command.trim().is_empty() {
         Finding::ok("secrets.seal", "the secret key comes from FERRUM_SECRET_KEY_COMMAND")
     } else if st.secret_key.trim().is_empty() {
-        // The old key: where the vault opens, nothing needs it (docs/operations.md, "Retiring the old key").
+        // The old key: where the vault opens, nothing needs it (docs/operations.md, "Retiring the old key"). Where it does
+        // not, what needs one of the two is refused, erasing someone who opted out among it: said before anyone tries.
         match vault_open {
             true => Finding::ok("secrets.seal", "the old key is not set: the vault keeps and keys what the platform makes"),
             false => blocker_in_production(
                 "secrets.seal",
-                "the old key is not set, and the vault is closed",
-                "Open the vault (docs/operations.md, \"The vault\"), or set FERRUM_SECRET_KEY to `openssl rand -base64 32` and keep it.",
+                "the old key is not set, and the vault is closed: secret fields, connections' credentials, opt-out links, \
+                 sign-ins to accounts and public addresses of files are refused, and so is erasing someone who opted out",
+                "Give the vault a root: a password in DATABASE_URL, a key file at /run/ferrum/root.key, or a key-management \
+                 service. The next start opens it (the line `vault` says why it is closed; docs/operations.md, \"The vault\").",
             ),
         }
     } else if ferrum_kernel::kms::is_wrapped(&st.secret_key) {
@@ -800,6 +803,12 @@ mod tests {
             let f = settings_findings(production, &good, &open, "https://erp.example.com", true);
             assert_eq!(level(&f, "secrets.seal"), Some(Level::Ok));
         }
+        // With neither the old key nor the vault, it says before anyone tries what is refused, erasing someone who opted
+        // out among it, and what to do.
+        let closed = settings_findings(true, &good, &open, "https://erp.example.com", false);
+        let seal = closed.iter().find(|f| f.check == "secrets.seal").unwrap();
+        assert!(seal.detail.contains("erasing someone who opted out"), "{seal:?}");
+        assert!(seal.fix.is_some_and(|f| f.starts_with("Give the vault a root") && !f.contains("FERRUM_SECRET_KEY")), "{seal:?}");
         assert_eq!(level(&settings_findings(false, &good, &settings(), "http://localhost:5150", true), "network.public_url"), Some(Level::Warning));
     }
 

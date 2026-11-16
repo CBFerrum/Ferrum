@@ -897,7 +897,7 @@ async fn what_a_move_can_break() {
     let live = url("FERRUM_TEST_DATABASE_URL", "ferrum_test");
     let (old, new) = (SecretKey::new([1; 32]), SecretKey::new([2; 32]));
     let boot = |db: Db, key: SecretKey, retired: Vec<SecretKey>| async move {
-        let settings = KernelSettings { secret_key: Some(key), retired_secret_keys: retired, ..Default::default() };
+        let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(key), retired), ..Default::default() };
         Kernel::boot(db, catalog(), HookRegistry::default(), settings, None).await.expect("boot")
     };
     let k = boot(database(&live, true).await, old.clone(), vec![]).await;

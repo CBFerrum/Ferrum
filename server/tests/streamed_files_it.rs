@@ -1,7 +1,8 @@
 //! A site's answer that names a stored file (`SiteResponse::file`, FERRUM-OPS-006), against a real
 //! PostgreSQL (`FERRUM_APPS_TEST_DATABASE_URL`, reset first) and files on a local directory: the
 //! server streams that file from storage as the body, or the range of it a request asks for, the
-//! header that named it goes, and a file of another workspace is not found. Then an upload in parts: resumed from where it stands after a
+//! header that named it goes, a file of another workspace is not found, and a kind of file an app keeps for its own work
+//! goes out from that app's site alone. Then an upload in parts: resumed from where it stands after a
 //! part's answer is lost, joined in order when complete, and swept with its parts when left; with
 //! `FERRUM_TEST_S3_ENDPOINT` (CI's S3 emulator), the same in parts joined by a multipart upload, and
 //! a direct upload sent to its presigned URL and completed.
@@ -51,7 +52,14 @@ async fn scenario() {
     common::reset(&db.pool).await;
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages");
     let packages = ["core", "contacts", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
-    let k = Kernel::boot(db, Catalog::from_packages(packages.to_vec()).unwrap(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
+    // Two apps, as the server registers them: one keeps a kind of file for its own work and owns `contacts`, whose site
+    // answers with those files; the other owns `parties`.
+    let mut hooks = HookRegistry::default();
+    let mut backups = None;
+    hooks.app("keeper", &[], |h| backups = Some(h.file_kind("backup"))).own("keeper", &["contacts".into()]);
+    hooks.app("other", &[], |_| {}).own("other", &["parties".into()]);
+    let backups = backups.unwrap();
+    let k = Kernel::boot(db, Catalog::from_packages(packages.to_vec()).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot");
     let root = std::env::temp_dir().join(format!("ferrum-streamed-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(&root).unwrap();
     k.set_file_store(Arc::new(Dir(root.clone())));
@@ -80,24 +88,36 @@ async fn scenario() {
 
     // Its workspace's file: streamed, with its length, and the header that named it gone.
     let mut r = SiteResponse::file(200, "application/octet-stream", vec![("content-disposition".into(), "attachment".into())], id);
-    let (size, part, body) = named_file(&k, &objects, tenants[0], &mut r, None).await.unwrap().expect("a file was named");
+    let (size, part, body) = named_file(&k, &objects, tenants[0], "contacts", &mut r, None).await.unwrap().expect("a file was named");
     assert_eq!((size, part), (data.len() as u64, None));
     assert_eq!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref(), data.as_slice());
     assert_eq!(r.headers, vec![("content-disposition".to_string(), "attachment".to_string())]);
     assert!(r.body.is_empty(), "nothing read whole");
     // The range a player asks for when seeking, and only that, read from storage.
     let mut r = SiteResponse::file(200, "video/mp4", vec![], id);
-    let (size, part, body) = named_file(&k, &objects, tenants[0], &mut r, Some("bytes=400000-400099")).await.unwrap().expect("a file was named");
+    let (size, part, body) = named_file(&k, &objects, tenants[0], "contacts", &mut r, Some("bytes=400000-400099")).await.unwrap().expect("a file was named");
     assert_eq!((size, part), (data.len() as u64, Some(400_000..400_100)));
     assert_eq!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref(), &data[400_000..400_100]);
 
     // Another workspace's answer naming it finds nothing.
     let mut theirs = SiteResponse::file(200, "application/octet-stream", vec![], id);
-    assert!(matches!(named_file(&k, &objects, tenants[1], &mut theirs, None).await, Err(Error::NotFound(_))));
+    assert!(matches!(named_file(&k, &objects, tenants[1], "contacts", &mut theirs, None).await, Err(Error::NotFound(_))));
+
+    // A kind of file an app keeps for its own work goes out from a site of that app's alone: any other site's answer
+    // naming it finds nothing, as one naming a file that is not there.
+    let kept = backups.keep(&k, tenants[0], uuid::Uuid::now_v7(), "db.dump", "application/octet-stream", b"a backup").await.unwrap();
+    let backup: uuid::Uuid = kept["id"].as_str().unwrap().parse().unwrap();
+    let mut ours = SiteResponse::file(200, "application/octet-stream", vec![], backup);
+    let (_, _, body) = named_file(&k, &objects, tenants[0], "contacts", &mut ours, None).await.unwrap().expect("its app's site sends it");
+    assert_eq!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref(), b"a backup");
+    for site in ["parties", "core"] {
+        let mut theirs = SiteResponse::file(200, "application/octet-stream", vec![], backup);
+        assert!(matches!(named_file(&k, &objects, tenants[0], site, &mut theirs, None).await, Err(Error::NotFound(_))), "{site}'s site");
+    }
 
     // An answer that names no file is sent as it is.
     let mut plain = SiteResponse::json(200, &json!({"ok": true}));
-    assert!(named_file(&k, &objects, tenants[0], &mut plain, None).await.unwrap().is_none());
+    assert!(named_file(&k, &objects, tenants[0], "contacts", &mut plain, None).await.unwrap().is_none());
 
     // ───────────── an upload in parts ─────────────
     let p = PART_BYTES as usize;

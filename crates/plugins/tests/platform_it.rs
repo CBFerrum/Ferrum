@@ -39,7 +39,9 @@ async fn boot(host: &Arc<PluginHost>, key: SecretKey) -> Arc<Kernel> {
     host.use_vault(hooks.platform_vault());
     hooks.register("*", Arc::new(PluginHook(host.clone())));
     hooks.add_event_sink(Arc::new(PluginEvents(host.clone())));
-    Kernel::boot(db, catalog, hooks, KernelSettings { secret_key: Some(key), ..Default::default() }, None).await.expect("boot")
+    Kernel::boot(db, catalog, hooks, KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(key), vec![]), ..Default::default() }, None)
+        .await
+        .expect("boot")
 }
 
 async fn kv(k: &Kernel, tenant: Uuid, key: &str) -> Value {

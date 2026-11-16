@@ -284,10 +284,24 @@ async fn managed(k: &Kernel, scope: Scope, owner: &str, name: &str) -> Result<bo
 /// Refused, naming the app, when `owner` manages `name` itself: what people's routes and an operator's regenerate ask.
 async fn not_managed(k: &Kernel, scope: Scope, owner: &str, name: &str) -> Result<()> {
     if managed(k, scope, owner, name).await? {
-        return Err(Error::Conflict(format!("{name} is managed by its app, {owner}: it is changed there, not here")));
+        return Err(managed_by(owner, name));
     }
     Ok(())
 }
+
+/// The refusal of a change to a secret its app manages: `409`, code [`MANAGED_BY_APP`], the app's id as its own field (a
+/// screen names the app in the person's language), and a sentence for every other client.
+fn managed_by(owner: &str, name: &str) -> Error {
+    Error::Refused {
+        code: MANAGED_BY_APP,
+        status: 409,
+        message: format!("{name} is managed by its app, {owner}: it is changed there, not here"),
+        pointer: Some(owner.to_string()),
+    }
+}
+
+/// The code of [`managed_by`]'s refusal; the server answers with the app's id beside it (`app`).
+pub const MANAGED_BY_APP: &str = "managed_by_app";
 
 /// The current version, or refused: not there, or expired.
 fn current<'a>(rows: &'a [Row], name: &str) -> Result<&'a Row> {

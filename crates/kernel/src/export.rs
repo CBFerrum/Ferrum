@@ -367,8 +367,19 @@ async fn make(k: &Kernel, job: &Job, ctx: &Ctx) -> Result<Value> {
     job.progress(k, json!({"step": "files", "done": 0})).await?;
 
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    // The workspace's files, not the kinds the platform and apps keep for their own work (`<owner>.<name>`, which no
+    // entity's name is: crate::files::FileKind), which their apps hand out their own way.
     let files: Vec<(Uuid, String, String, String, Option<String>, Option<Uuid>)> = sqlx::query_as(
-        "select id, file_name, content_type, storage_key, entity, record_id from file_object where tenant_id = $1 and entity is distinct from $2 order by id",
+        "select id, file_name, content_type, storage_key, entity, record_id from file_object where tenant_id = $1 \
+           and (entity is null or strpos(entity, '.') = 0) order by id",
+    )
+    .bind(ctx.tenant)
+    .fetch_all(&mut *tx)
+    .await?;
+    let kinds_left_out: Vec<Value> = sqlx::query_scalar(
+        "select jsonb_build_object('kind', entity, 'files', count(*), 'bytes', coalesce(sum(size_bytes), 0)::int8, \
+           'why', 'its app keeps them for its own work and hands them out its own way') \
+         from file_object where tenant_id = $1 and strpos(entity, '.') > 0 and entity <> $2 group by entity order by entity",
     )
     .bind(ctx.tenant)
     .bind(EXPORT_ENTITY)
@@ -419,6 +430,7 @@ async fn make(k: &Kernel, job: &Job, ctx: &Ctx) -> Result<Value> {
         "files": index.len(),
         "not_included": ["passwords and sign-in factors", "secret field values", "sealed settings", "API keys", "sessions"],
         "tables_left_out": left_out,
+        "files_left_out": kinds_left_out,
         "files_missing": missing,
     });
     parts.add("manifest.json", &serde_json::to_vec_pretty(&manifest).map_err(Error::internal)?).await?;

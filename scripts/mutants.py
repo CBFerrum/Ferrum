@@ -149,11 +149,19 @@ RULE_HIDE = ("-p", "ferrum-kernel", "--test", "rule_hide_it")
 PACKAGED_RULES = ("-p", "ferrum-kernel", "--test", "packaged_rules_it")
 APP_CALLS = ("-p", "ferrum-kernel", "--test", "app_calls_it")
 ZONES2 = ("-p", "ferrum-server", "--test", "zones2_it")
+FILE_KINDS = ("-p", "ferrum-kernel", "--test", "file_kinds_it")
+STREAMED = ("-p", "ferrum-server", "--test", "streamed_files_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # Files an app keeps for its own work (crates/kernel/src/files.rs, FileKind): nobody else's to reach.
+    ("file-kind-tied-through-a-field", "crates/kernel/src/files.rs", "row.filter(|r| !r.0.as_deref().is_some_and(is_kind)) else { continue };", "row else { continue };", FILE_KINDS),
+    ("file-kind-deleted-by-id", "crates/kernel/src/collab.rs", "row.filter(|r| !r.0.as_deref().is_some_and(crate::files::is_kind)).ok_or_else(", "row.ok_or_else(", FILE_KINDS),
+    ("file-kind-exported", "crates/kernel/src/export.rs", "and (entity is null or strpos(entity, '.') = 0) order by id", "order by id", FILE_KINDS),
+    ("file-kind-handle-anywhere", "crates/kernel/src/files.rs", "let ok = self.mint != 0 && k.hooks.vault_mint(&self.app) == Some(self.mint)", "let ok = true || self.mint != 0 && k.hooks.vault_mint(&self.app) == Some(self.mint)", FILE_KINDS),
+    ("file-kind-from-any-site", "crates/kernel/src/files.rs", "match entity.filter(|e| is_kind(e)) {", "match None::<&str> {", STREAMED),
     # Zones, level 2 (docs/operations.md, "Zones"): staff limited to some apps reach nothing else, nor does what acts for them.
     ("zones2-entity-filter-gone", "crates/kernel/src/doc.rs", "        if ctx.sees(name) {\n            return Ok(ent.clone());", "        if true {\n            return Ok(ent.clone());", ZONES2),
     ("zones2-worker-forgets-the-zone", "crates/kernel/src/jobs.rs", "k.load_ctx_in(self.tenant_id, user, self.zone.as_deref(), format!(", "k.load_ctx_in(self.tenant_id, user, None, format!(", ZONES2),
@@ -449,7 +457,7 @@ MUTANTS = [
     ("restricted-title-shown", "crates/kernel/src/doc.rs", "Reference::Restricted => match row_scope(ctx, tent, Action::Read) {", "Reference::Restricted => match Ok::<_, Error>(crate::ctx::RowScope::default()) {", RULES),
     ("restricted-title-ignores-rows", "crates/kernel/src/doc.rs", "            if let Some(scope) = &scope {\n                scope.push_sql(&mut qb, \"a\");\n            }\n            let rows: Vec<(Uuid, String)>", "            let _ = &scope;\n            let rows: Vec<(Uuid, String)>", RULES),
     ("explanation-ignores-the-record", "crates/kernel/src/access.rs", "let reached = by.is_some();", "let reached = true;", RULES),
-    ("retired-key-forgotten", "crates/kernel/src/vault/keyed.rs", "env.iter().chain(&settings.retired_secret_keys).cloned().collect()", "env.iter().chain(&[]).cloned().collect()", SECRETS),
+    ("retired-key-forgotten", "crates/kernel/src/vault/keyed.rs", "env.iter().chain(&settings.old_key.retired).cloned().collect()", "env.iter().chain(&[]).cloned().collect()", SECRETS),
     ("lost-key-blanks-values", "crates/kernel/src/secret.rs", "                *unopened += 1;\n                Ok(None)", "                *unopened += 1;\n                current.seal(aad, \"\").map(Some)", SECRETS),
     ("webhook-secret-stays-plain", "crates/kernel/src/secret.rs", 'None => Some(format!("{SEALED_WEBHOOK}{}", current.seal(&label, &stored)?)),', "None => None,", SECRETS),
     ("privacy-hold-on-a-person-ignored", "crates/kernel/src/privacy.rs", 'if person_held(&mut tx, ctx.tenant, &emails).await? {\n            return Err(Error::Conflict', 'if false {\n            return Err(Error::Conflict', PRIVACY),

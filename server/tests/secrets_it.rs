@@ -511,9 +511,17 @@ async fn people(a: &AppState, a_ctx: &AppContext, needles: &mut Vec<String>) {
         (Method::PUT, "/api/admin/secrets/platform/webhook-key/rule", Some(json!({"rule": {}}))),
         (Method::DELETE, "/api/admin/secrets/platform/webhook-key", None),
     ] {
-        let r = ask(&boss, method.clone(), path, body).await;
+        let r = ask(&boss, method.clone(), path, body.clone()).await;
         assert_eq!(r.status, StatusCode::CONFLICT, "{method} {path}: {}", r.body);
-        assert!(r.body.contains("managed by its app, platform"), "with why: {}", r.body);
+        // A code and the app's id of their own, for a screen to say it in the person's language, and the sentence beside.
+        assert_eq!((r.json()["error"].clone(), r.json()["app"].clone()), (json!("managed_by_app"), json!("platform")), "{}", r.body);
+        assert!(r.json()["message"].as_str().is_some_and(|m| m.contains("managed by its app, platform")), "with why: {}", r.body);
+        // As a browser asks: the same refusal, compressed.
+        let browser = as_browser(&boss);
+        let mut h: Vec<(&str, &str)> = browser.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        h.push(("accept-encoding", "gzip, br"));
+        let gz = call(&s, method.clone(), path, &h, body).await;
+        assert!(gz.status == StatusCode::CONFLICT && gz.headers.contains_key(header::CONTENT_ENCODING), "{method} {path} as a browser: {}", gz.status);
     }
     assert_eq!(ask(&boss, Method::GET, "/api/admin/secrets", None).await.json()["owners"][0]["secrets"][0]["managed_by"], json!("platform"));
     a.vault.manage(&a.kernel, ws, "webhook-key", false).await.unwrap();

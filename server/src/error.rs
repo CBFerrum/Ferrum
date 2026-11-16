@@ -57,6 +57,10 @@ impl ApiError {
             }
             // A zone's refusal names where the credential works (crates/kernel/src/zones.rs).
             Error::Refused { code: "zone", pointer, .. } => json!({"error": "zone", "message": e.to_string(), "staff_address": pointer}),
+            // A secret its app manages names that app by id, for a screen to name it in the person's language.
+            Error::Refused { code: ferrum_kernel::vault::MANAGED_BY_APP, pointer, .. } => {
+                json!({"error": ferrum_kernel::vault::MANAGED_BY_APP, "message": e.to_string(), "app": pointer})
+            }
             Error::Refused { pointer: Some(pointer), .. } => json!({"error": e.code(), "message": e.to_string(), "pointer": pointer}),
             _ => json!({"error": e.code(), "message": e.to_string()}),
         };

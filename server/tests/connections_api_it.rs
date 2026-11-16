@@ -86,7 +86,11 @@ async fn scenario() {
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/alert.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let alerts = ferrum_meta::catalog::load_package_files(&files).expect("package");
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), public_url: Some("https://ferrum.example.test".into()), ..Default::default() };
+    let settings = KernelSettings {
+        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]),
+        public_url: Some("https://ferrum.example.test".into()),
+        ..Default::default()
+    };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, alerts]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
     let admin = workspace(&k, "acme").await;
 

@@ -87,9 +87,9 @@ transaction: a secret field written there first has them made on the vault's own
 on another connection before the caller commits never waits on it (an app's `ready()` that made its keys first on a
 connection of its own is not needed).
 
-**What it made with the old key (R1 only).** An app that sealed or keyed things of its own with the old key
-(`settings.secret_key`, deprecated) keeps them working through its handle until they lapse, with no key in its hands and
-nothing wider. Each names a context of the app's own: its id, then one of ` -.:/|`, then more (`cloud-dns-key`,
+**What it made with the old key (R1 only).** The old key is the kernel's alone: `KernelSettings::old_key` holds it and
+gives nothing back (`secret_key` and `retired_secret_keys` are inputs only, emptied as a kernel takes them). An app that sealed or keyed things of its own with it (through `settings.secret_key`, public until
+platform 0.3.x) keeps them working through its handle until they lapse, with no key in its hands and nothing wider. Each names a context of the app's own: its id, then one of ` -.:/|`, then more (`cloud-dns-key`,
 `helpdesk mail token`, `pos snapshot`); not one that another app's longer id also begins (`cloud-ops-…` is `cloud-ops`'s,
 not `cloud`'s), not one that begins with a workspace's id, and never for an app whose id is a word the platform's own
 labels begin with (`message`, `connection`, `ferrum`, …). Anything else is refused. They work from the copies the vault
@@ -102,12 +102,41 @@ legacy_key`, and they go in R2 with the key:
 | `seal_old(k, context, plain)` | `plain` sealed with the old key for the column the app's previous release reads, while the key is in the environment; `None` once it is gone |
 | `old_fingerprints(k, context, data)` | `data`'s fingerprint under each old key, as `SecretKey::fingerprint` made it: to check what the app issued, never to issue anything new |
 
-What each compiled-in app does in its repository: Commerce asks `Kernel::seals_secret_values()` in place of whether the
-old key is set (a message's secret values are sealed with the vault now); Helpdesk checks the mail tokens 0.11 issued with
-`old_fingerprints` (`helpdesk mail token`, `helpdesk mail token hash`); POS signs its snapshots with a key it derives
-(`derive`), the server never checks their old signatures, and a till comparing one sees it change once; Cloud opens and
-writes what it sealed with `open_old` and `seal_old` (its contexts begin `cloud-`). Until each has, the old key's field
-stays public: apps that still read it are given the same key once it is gone from the environment.
+What the apps that read the key did in their repositories: Commerce asks `Kernel::seals_secret_values()` in place of
+whether the old key is set (a message's secret values are sealed with the vault now, 0.11.1); Helpdesk checks the mail
+tokens 0.11 issued with `old_fingerprints` (`helpdesk mail token`, `helpdesk mail token hash`, 0.12.1); POS signs its
+snapshots with a key it derives (`derive`, 0.7.5), the server never checks their old signatures, and a till comparing one
+sees it change once; Cloud opens and writes what it sealed with `open_old` and `seal_old` (its contexts begin `cloud-`).
+
+**A test with the old key.** An app's suite that gives a kernel the old key as before (`KernelSettings { secret_key: …,
+retired_secret_keys: … }`) keeps working unchanged: the kernel takes those fields in as it boots and empties them, so
+nothing reads the key back from its settings.
+
+## Files an app keeps for its own work
+
+What an app keeps for its own work in the platform's file store (built artifacts, databases' backups, a customer's
+managed objects) is the workspace's, counted and deleted as any file, but not the workspace's content to hand out: it
+is a kind of file the app declares in its registration, `<app id>.<name>`, and keeps with that kind's handle.
+
+```rust
+// Inside HookRegistry::app("cloud", …): the kind is the app's, and only its handle reaches files of it.
+let backups = h.file_kind("backup"); // cloud.backup
+// Later, with the kernel and the workspace: tied to an id of the app's choosing (the project, the build).
+let kept = backups.keep(k, tenant, project, "db.dump.0", "application/octet-stream", &bytes).await?; // {id, file_name, size, sha256}
+let (name, content_type, bytes) = backups.read(k, tenant, file).await?; // or info(), to answer with it as a stream
+backups.release(k, &mut tx, tenant, &files).await?; // in the caller's transaction: the bytes go after the deletion lag
+```
+
+- **Nobody else reaches them.** The platform's routes for files refuse a file of a kind to everyone, administrators
+  included, as a file that is not there: no download, copy, deletion, print or tie to a record by its id, and no
+  listing names it. Another app's handle finds nothing of it. A kind whose app left the build stays so.
+- **Their only way out is the app's.** An app answers with one from its own site (`SiteResponse::file`, streamed by the
+  server: from a site of the app that declared the kind, and no other), to the people its own rules let have it. The
+  workspace's export leaves them out (`files_left_out` in its manifest, per kind), so the app owes its customer a way
+  to have them: a download of a backup, an artifact, an object, from its own pages.
+- **Counted and deleted as any file**: the workspace's storage quota, the deletion lag, a move, a sandbox, the
+  workspace's deletion, the doctor and the restore drill treat them as they treat every file.
+- A kind is declared once, by one app, inside its registration; anything else stops the server.
 
 ## A companion's sign-in
 

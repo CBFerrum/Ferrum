@@ -284,7 +284,10 @@ async fn scenario() {
     assert_eq!(signed, ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_bytes()), b"header.payload").as_ref());
     // People's and the operator's routes leave it to its app.
     let e = k.vault_regenerate(Scope::Installation, "talk", "meet.secret").await.unwrap_err();
-    assert!(matches!(e, Error::Conflict(_)) && e.to_string().contains("managed by its app, talk"), "{e}");
+    assert!(
+        matches!(&e, Error::Refused { code: "managed_by_app", pointer: Some(app), .. } if app == "talk") && e.to_string().contains("managed by its app, talk"),
+        "{e}"
+    );
 
     // ── what is refused: a secret kept for signing, a person's under a name the vault makes, a service's own records ──
     peek.set(&k, Scope::Installation, "signing.key", New::Random(32), Rule::default()).await.unwrap();

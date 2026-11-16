@@ -17,7 +17,6 @@
 //!
 //! With the vault closed, nothing here falls back to anything else: what needs the vault's keys is refused, saying why.
 
-use super::seal::derive_info;
 use super::secrets::{opened, rows};
 use super::{New, Rule, Scope, Vault};
 use crate::db::{Db, with_retry};
@@ -74,7 +73,7 @@ impl Keyed {
     fn what(self) -> &'static str {
         match self {
             Keyed::OptOut => "a promotional message's opt-out link",
-            Keyed::ErasedOptOut => "an erased person's opt-out",
+            Keyed::ErasedOptOut => "erasing someone who opted out",
             Keyed::SignInState => "signing in to an account",
             Keyed::FileAddress => "a public address of a file",
             Keyed::ConnectorAccount => "a connector's account",
@@ -119,7 +118,7 @@ fn key_of(d: &super::Derived) -> Result<SecretKey> {
 
 impl Kernel {
     /// The environment's old key (`FERRUM_SECRET_KEY`), for what is still sealed with it beside the vault: what the
-    /// previous build reads. Not what apps are given in `KernelSettings::secret_key` ([`at_boot`]).
+    /// previous build reads.
     pub(crate) fn env_key(&self) -> Option<&SecretKey> {
         self.env_key.as_ref()
     }
@@ -207,8 +206,37 @@ impl Kernel {
 // The old key's end. Each key the environment configures is adopted into the vault once, as a secret of the platform's
 // in the installation's scope (`legacy.key.<id>`), used and never revealed: what the old key made keeps being checked
 // and opened with it after the environment no longer has it. The key the environment last had as its current one is
-// noted (`legacy_key_use`, `current key`), so that apps still reading `KernelSettings::secret_key` are given the same key
-// once it is gone from the environment.
+// noted (`legacy_key_use`, `current key`): the previous build gives its apps that still read the old key that one, from
+// the vault's copy, once it is gone from the environment.
+
+/// The old master key and the keys it retired, handed to the kernel and read by nothing else: no function gives a key
+/// back, so a kernel's settings are no way to the old key for an app (docs/plan/stateless.md, D5).
+#[derive(Debug, Clone, Default)]
+pub struct OldKey {
+    pub(crate) current: Option<SecretKey>,
+    /// Keys being rotated out: values they sealed still open, until [`Kernel::reseal_secrets`] has moved them to the
+    /// current key.
+    pub(crate) retired: Vec<SecretKey>,
+}
+
+impl OldKey {
+    /// The old key and the keys it retired, as an installation from before the vault configures them: what the server
+    /// reads from `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS`, and what a test gives a kernel that is to start
+    /// as such an installation.
+    pub fn configured(current: Option<SecretKey>, retired: Vec<SecretKey>) -> Self {
+        OldKey { current, retired }
+    }
+}
+
+/// Where a kernel takes its settings: the old key given in the input fields (`secret_key`, `retired_secret_keys`, as
+/// suites gave it before [`OldKey`]) taken into `old_key` when that holds none, and the fields emptied either way, so
+/// nothing an app reaches holds a key.
+pub(crate) fn take_old_key_inputs(settings: &mut KernelSettings) {
+    let (current, retired) = (settings.secret_key.take(), std::mem::take(&mut settings.retired_secret_keys));
+    if settings.old_key.current.is_none() && settings.old_key.retired.is_empty() {
+        settings.old_key = OldKey { current, retired };
+    }
+}
 
 /// The adopted keys' names: `legacy.key.<id>`. The vault's verbs refuse them (secrets.rs, `check_name`).
 pub(super) const ADOPTED: &str = "legacy.key.";
@@ -219,10 +247,6 @@ pub(crate) struct OldKeys {
     pub(crate) env: Option<SecretKey>,
     /// Every old key there is: the environment's (current, then retired), then those adopted into the vault.
     pub(crate) all: Vec<SecretKey>,
-    /// What `KernelSettings::secret_key` holds for the apps that still read it (deprecated): the environment's key; else
-    /// the one it last had, adopted; else the first retired key it configures; else, on an installation that never had
-    /// one, a key of the platform's own.
-    pub(crate) for_apps: Option<SecretKey>,
     /// Builds that check with the old key only are refused here ([`OLD_KEY_FLOOR`], or `COMPATIBLE_FROM` past it).
     pub(crate) retired: bool,
 }
@@ -262,40 +286,6 @@ async fn adopted(db: &Db) -> Result<Vec<SecretKey>> {
     .await
 }
 
-/// A key of the platform's own for apps that still read `KernelSettings::secret_key` on an installation that never
-/// had an old key: derived for `apps-old-key` from the first version of the platform's key of the installation, which
-/// is kept from then on (`outside`), so it stays the same through rotations.
-async fn for_apps(db: &Db) -> Result<SecretKey> {
-    with_retry(|| async {
-        let mut tx = db.vault_tx(None).await?;
-        let first: Option<i32> =
-            sqlx::query_scalar("select min(version) from vault.key where scope = $1 and owner = 'platform'").bind(Uuid::nil()).fetch_one(&mut *tx).await?;
-        let (version, key) = match first {
-            Some(v) => (v, db.vault.owner_key(db, &mut tx, Uuid::nil(), "platform", v).await?),
-            None => {
-                let (v, _, key) = db.vault.current_owner_key(db, &mut tx, Uuid::nil(), "platform").await?;
-                (v, key)
-            }
-        };
-        sqlx::query("update vault.key set outside = true where scope = $1 and owner = 'platform' and version = $2")
-            .bind(Uuid::nil())
-            .bind(version)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok(SecretKey::new(*key.derive(&derive_info(Uuid::nil(), "platform", version, "apps-old-key")).bytes()))
-    })
-    .await
-}
-
-/// The key the environment last had as its current one, by its id (`legacy_key_use`, `current key`), among `all`.
-async fn last_current(db: &Db, all: &[SecretKey]) -> Result<Option<SecretKey>> {
-    let mut tx = db.system_tx().await?;
-    let ids: Vec<String> = sqlx::query_scalar("select caller from legacy_key_use where what = 'current key' order by last_at desc").fetch_all(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(ids.iter().find_map(|id| all.iter().find(|k| &k.id == id)).cloned())
-}
-
 async fn note_current(db: &Db, key: &SecretKey) -> Result<()> {
     let mut tx = db.system_tx().await?;
     sqlx::query("insert into legacy_key_use (what, caller) values ('current key', $1) on conflict (what, caller) do update set last_at = now()")
@@ -317,14 +307,13 @@ pub(crate) async fn older_builds_refused(db: &Db) -> Result<bool> {
 }
 
 /// As the kernel boots: with the vault open, each key the environment configures adopted once and every adopted key
-/// opened; the key apps are given worked out; and whether older builds are refused. With the vault closed: the
-/// environment's keys, as before.
+/// opened; and whether older builds are refused. With the vault closed: the environment's keys, as before.
 pub(crate) async fn at_boot(db: &Db, settings: &KernelSettings) -> Result<OldKeys> {
-    let env = settings.secret_key.clone();
-    let mut all: Vec<SecretKey> = env.iter().chain(&settings.retired_secret_keys).cloned().collect();
+    let env = settings.old_key.current.clone();
+    let mut all: Vec<SecretKey> = env.iter().chain(&settings.old_key.retired).cloned().collect();
     let retired = older_builds_refused(db).await?;
     if db.vault.installation().is_err() {
-        return Ok(OldKeys { env: env.clone(), all, for_apps: env, retired });
+        return Ok(OldKeys { env, all, retired });
     }
     for key in all.clone() {
         if adopt(db, &format!("{ADOPTED}{}", key.id), &key).await? {
@@ -339,13 +328,7 @@ pub(crate) async fn at_boot(db: &Db, settings: &KernelSettings) -> Result<OldKey
             all.push(key);
         }
     }
-    let for_apps = match (&env, last_current(db, &all).await?, settings.retired_secret_keys.first()) {
-        (Some(key), _, _) => key.clone(),
-        (None, Some(key), _) => key,
-        (None, None, Some(key)) => key.clone(),
-        (None, None, None) => for_apps(db).await?,
-    };
-    Ok(OldKeys { env, all, for_apps: Some(for_apps), retired })
+    Ok(OldKeys { env, all, retired })
 }
 
 /// The ids of the keys adopted into the vault (`ferrum task legacy_key`).
@@ -567,8 +550,8 @@ impl Vault {
     }
 }
 
-// R1 only, and gone in R2 with the old key: what an app sealed or keyed with the old key itself (`settings.secret_key`,
-// deprecated) keeps working through the app's own handle, from the copies adopted into the vault once the key is gone
+// R1 only, and gone in R2 with the old key: what an app sealed or keyed with the old key itself (through
+// `settings.secret_key`, while that was public) keeps working through the app's own handle, from the copies adopted into the vault once the key is gone
 // from the environment, and never anything wider. Each names a context of the app's own ([`app_context`]); each use is
 // noted for `ferrum task legacy_key` and the doctor, as the other readers past the vault are.
 
@@ -640,7 +623,7 @@ impl Vault {
 
 impl Kernel {
     /// Whether a message's secret values can be sealed here while they wait: what an app asks before it makes something
-    /// it sends that way, in place of asking whether the old key is set (`settings.secret_key`, deprecated).
+    /// it sends that way, in place of asking whether the old key is set (the kernel's alone).
     pub fn seals_secret_values(&self) -> bool {
         self.old_making().is_some() || self.db.vault.installation().is_ok()
     }

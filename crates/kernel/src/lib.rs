@@ -107,6 +107,7 @@ pub use hooks::{ApprovalDecided, DocAccess, DocHook, DocHost, EventSink, HookCtx
 pub use process::load_calendar;
 pub use query::{Filter, ListQuery, Op, Page};
 pub use registry::Registry;
+pub use vault::OldKey;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -162,19 +163,19 @@ pub struct KernelSettings {
     pub ctx_ttl: Duration,
     /// Processed outbox events and delivered webhooks are kept this long.
     pub event_retention_days: i32,
-    /// The old master key (`FERRUM_SECRET_KEY`), as the server configures it. Deprecated for apps: what it sealed is
-    /// each owner's in the vault (docs/plan/stateless.md, D5), and an app reads its own with its vault handle. Once the
-    /// kernel has booted with the vault open, it holds what apps that still read it are given: the environment's key,
-    /// else the one adopted into the vault, else (an installation that never had one) a key of the platform's own; the
-    /// kernel's own code uses the vault's keys. It stops being public in the next release; scripts/secret_paths.py lists
-    /// the apps that still read it.
+    /// The old master key (`FERRUM_SECRET_KEY`) and the keys it retired (`FERRUM_RETIRED_SECRET_KEYS`), as the server
+    /// configures them: the kernel's alone ([`OldKey`] gives neither back). What it sealed is each owner's in the vault
+    /// (docs/plan/stateless.md, D5); an app opens or checks what it made with it through its own handle
+    /// (`Vault::open_old`, `seal_old`, `old_fingerprints`).
+    pub old_key: OldKey,
+    /// An input, for suites that give a kernel the old key this way: taken into `old_key` (when that holds none) where a
+    /// kernel takes its settings, and emptied there, so a kernel's settings never hold it. It goes with the old key.
     pub secret_key: Option<secret::SecretKey>,
     /// The ClamAV daemon uploads pass through (`host:port`); without one they are stored unscanned.
     pub clamd: Option<String>,
     /// The scanner's `StreamMaxLength`: files past it are stored unscanned.
     pub clamd_max_bytes: u64,
-    /// Keys being rotated out: values they sealed still open, until [`Kernel::reseal_secrets`] has
-    /// moved them to `secret_key`.
+    /// An input beside `secret_key`, the keys it retired: taken and emptied as it is. It goes with the old key.
     pub retired_secret_keys: Vec<secret::SecretKey>,
     /// Base URL of a Gotenberg-compatible PDF renderer; without it there are no PDFs.
     pub pdf_url: Option<String>,
@@ -259,6 +260,7 @@ impl Default for KernelSettings {
             sso_allow_private: false,
             ctx_ttl: Duration::from_secs(30),
             event_retention_days: 30,
+            old_key: OldKey::default(),
             secret_key: None,
             clamd: None,
             clamd_max_bytes: 25 << 20,
@@ -340,7 +342,7 @@ pub struct Kernel {
     /// Every old key: the environment's (current, then retired), then those adopted into the vault (crate::vault::keyed).
     pub(crate) old_keys: Vec<secret::SecretKey>,
     /// The environment's old key (`FERRUM_SECRET_KEY`): what is still sealed with it beside the vault, for the previous
-    /// build. `settings.secret_key` is what apps are given (crate::vault::keyed::at_boot).
+    /// build.
     pub(crate) env_key: Option<secret::SecretKey>,
     /// What this process knows of the restore marker (recovery.rs).
     pub(crate) marker: recovery::Marker,
@@ -381,7 +383,8 @@ impl Kernel {
     }
 
     /// Migrates the kernel schema, syncs entity tables for the catalog, and returns a ready kernel.
-    pub async fn boot(db: Db, catalog: Catalog, mut hooks: HookRegistry, settings: KernelSettings, mailer: Option<Arc<dyn Mailer>>) -> Result<Arc<Kernel>> {
+    pub async fn boot(db: Db, catalog: Catalog, mut hooks: HookRegistry, mut settings: KernelSettings, mailer: Option<Arc<dyn Mailer>>) -> Result<Arc<Kernel>> {
+        vault::take_old_key_inputs(&mut settings);
         // Customer logic's rules run in every workspace's saves, after the apps' own hooks (logic.rs).
         hooks.register("*", Arc::new(logic::TenantRules));
         // Active releases' processes start on, and wait for, the workspace's events (process.rs).
@@ -478,10 +481,8 @@ impl Kernel {
         }
         // The vault, when it could not be opened before its tables were there (crate::vault::open).
         vault::finish(&db).await?;
-        // The old key's end (crate::vault::keyed): each key the environment configures adopted into the vault once, and
-        // what the apps that still read `secret_key` are given once it is gone from the environment.
+        // The old key's end (crate::vault::keyed): each key the environment configures adopted into the vault once.
         let old = vault::at_boot(&db, &settings).await?;
-        let settings = KernelSettings { secret_key: old.for_apps.clone(), ..settings };
         if booted.guest.is_some() || !settings.migrate_at_start {
             ddl::words(&full)?;
         }
@@ -613,7 +614,8 @@ impl Kernel {
     }
 
     /// The server, when a setting that applies at once changed: `settings` in place of those it had.
-    pub fn set_live(&self, settings: KernelSettings) {
+    pub fn set_live(&self, mut settings: KernelSettings) {
+        vault::take_old_key_inputs(&mut settings);
         *self.live.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(settings);
     }
 

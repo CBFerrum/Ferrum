@@ -185,7 +185,8 @@ async fn single_sign_on() {
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     common::reset(&db.pool).await;
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages")).expect("catalog");
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([9u8; 32])), sso_allow_private: true, ..Default::default() };
+    let settings =
+        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([9u8; 32])), vec![]), sso_allow_private: true, ..Default::default() };
     let k = Kernel::boot(db, catalog, HookRegistry::default(), settings, None).await.expect("boot");
     let idp = start_idp().await;
     let issuer = idp.lock().unwrap().issuer.clone();

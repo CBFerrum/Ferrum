@@ -10,7 +10,22 @@ use loco_rs::task::{Task, TaskInfo, Tasks, Vars};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-const MANIFEST: &str = "id: elsewhere\nname: Elsewhere\nversion: 0.1.0\n";
+/// A native app's manifest, with a setting of its own (`operator_settings`), as Cloud's declares them.
+const MANIFEST: &str = "id: elsewhere
+name: Elsewhere
+version: 0.1.0
+publisher: ferrum
+summary: An app built in elsewhere
+categories: [developer]
+license: AGPL-3.0-or-later
+homepage: https://elsewhere.example
+support: help@elsewhere.example
+runtime: native
+platform: \">=0.3.9, <0.4\"
+packages: [elsewhere]
+operator_settings:
+  - {key: scratch, env: FERRUM_ELSEWHERE_SCRATCH, doc: Where it keeps what it makes for a while.}
+";
 static UI: &[(&str, &[u8])] = &[("index.html", b"<p>elsewhere</p>")];
 
 fn packages() -> Result<Vec<ferrum_meta::Package>, ferrum_meta::MetaError> {
@@ -65,6 +80,12 @@ fn an_app_built_in_elsewhere_reaches_the_server() {
     let packages = ferrum_server::packages::native_packages().expect("packages");
     assert!(packages.iter().any(|p| p.name() == "elsewhere"), "its packages");
     assert!(ferrum_server::packages::native_manifests().contains(&MANIFEST), "its manifest");
+    ferrum_apps::AppManifest::parse(MANIFEST).expect("a manifest the server reads");
+    // Its settings are the server's, each once: its manifest is read once, so it does not clash with itself (a server
+    // built with Cloud as an extension stopped, "declared twice: by the app cloud and by the app cloud").
+    assert_eq!(ferrum_server::settings::clash(), None, "no clash");
+    let ours: Vec<_> = ferrum_server::settings::registry().iter().filter(|d| d.env == "FERRUM_ELSEWHERE_SCRATCH").collect();
+    assert_eq!(ours.iter().map(|d| (d.key.as_str(), d.app.as_deref())).collect::<Vec<_>>(), [("elsewhere.scratch", Some("elsewhere"))], "once");
     assert!(ferrum_server::packages::native_uis().iter().any(|(id, files)| *id == "elsewhere" && files.len() == 1), "its interface");
 
     let mut hooks = HookRegistry::default();
