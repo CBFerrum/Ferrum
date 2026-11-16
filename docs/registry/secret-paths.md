@@ -29,7 +29,7 @@ for a while, or reads it to move what it sealed, and goes as each moves.
 | `crates/kernel/src/workspace_move.rs` | 9 | a move opens what the source's old keys sealed, and seals the previous build's columns here |
 | `ferrum-app-commerce:gateways/stripe/src/lib.rs` | 1 | Stripe's own `secret_key` (the name of a plugin's credential), not the old key |
 | `server/src/app.rs` | 14 | reads the old keys from the environment for the kernel to adopt and for the previous build's columns |
-| `server/src/doctor.rs` | 8 | says whether the old key is set, and how |
+| `server/src/doctor.rs` | 7 | says whether the old key is set, and how |
 | `server/src/state.rs` | 2 | the old keys' settings |
 | `server/src/tasks.rs` | 7 | `kms_wrap` prints the old keys wrapped by the key-management service |
 

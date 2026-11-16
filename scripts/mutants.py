@@ -457,7 +457,7 @@ MUTANTS = [
     ("restricted-title-shown", "crates/kernel/src/doc.rs", "Reference::Restricted => match row_scope(ctx, tent, Action::Read) {", "Reference::Restricted => match Ok::<_, Error>(crate::ctx::RowScope::default()) {", RULES),
     ("restricted-title-ignores-rows", "crates/kernel/src/doc.rs", "            if let Some(scope) = &scope {\n                scope.push_sql(&mut qb, \"a\");\n            }\n            let rows: Vec<(Uuid, String)>", "            let _ = &scope;\n            let rows: Vec<(Uuid, String)>", RULES),
     ("explanation-ignores-the-record", "crates/kernel/src/access.rs", "let reached = by.is_some();", "let reached = true;", RULES),
-    ("retired-key-forgotten", "crates/kernel/src/vault/keyed.rs", "env.iter().chain(&settings.retired_secret_keys).cloned().collect()", "env.iter().chain(&[]).cloned().collect()", SECRETS),
+    ("retired-key-forgotten", "crates/kernel/src/vault/keyed.rs", "env.iter().chain(&settings.old_key.retired).cloned().collect()", "env.iter().chain(&[]).cloned().collect()", SECRETS),
     ("lost-key-blanks-values", "crates/kernel/src/secret.rs", "                *unopened += 1;\n                Ok(None)", "                *unopened += 1;\n                current.seal(aad, \"\").map(Some)", SECRETS),
     ("webhook-secret-stays-plain", "crates/kernel/src/secret.rs", 'None => Some(format!("{SEALED_WEBHOOK}{}", current.seal(&label, &stored)?)),', "None => None,", SECRETS),
     ("privacy-hold-on-a-person-ignored", "crates/kernel/src/privacy.rs", 'if person_held(&mut tx, ctx.tenant, &emails).await? {\n            return Err(Error::Conflict', 'if false {\n            return Err(Error::Conflict', PRIVACY),

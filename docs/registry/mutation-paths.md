@@ -27,16 +27,16 @@ progress after a lesson changes.
   its parameters) before its handler runs, so what an action's handler then writes directly is
   under that entry.
 
-## The 162 statements, by kind
+## The 163 statements, by kind
 
 | Kind | How many | What keeps them right |
 |---|---|---|
-| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 99 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
+| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 100 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
 | Consequence of an audited document operation (a hook of submit, cancel, save or an action) | 41 | The operation that runs the hook is on the record |
 | A person's action on a public link: opens and clicks, subscribe, confirm, unsubscribe, viewing a shared file | 14 | The record they change carries its evidence (the consent's source and time, the link's views) |
 | Records its own audit or activity entry | 8 | Drive's activity log ("Link Created", "Link Revoked", "Shared With Guest", "Share Expired", "Delete"), Edge's and MES's audit entries |
 
-By app: Campaigns 43, Drive 23, Comms 18, ERP 11, POS 10, CRM 8, Helpdesk 8, Commerce 6, Live 6, Projects 6, HR 5, LMS 5, Edge 4, Itsm 3, Objectives 2,
+By app: Campaigns 43, Drive 23, Comms 18, ERP 11, POS 10, CRM 8, Helpdesk 8, Commerce 6, HR 6, Live 6, Projects 6, LMS 5, Edge 4, Itsm 3, Objectives 2,
 and one each in Bookings, DAM, Field Service and Forms.
 
 ## Findings
@@ -113,8 +113,8 @@ and one each in Bookings, DAM, Field Service and Forms.
 | commerce | `src/coupon.rs:163` | `update e_coupon_code` | `release` | engine work: statuses, counts, queues, upkeep |
 | commerce | `src/payment.rs:677` | `update e_payment_request` | `on_cancel` | consequence of an audited document operation (hook) |
 | commerce | `src/store.rs:373` | `update e_item` | `mark_delivery_charge` | engine work: statuses, counts, queues, upkeep |
-| commerce | `src/upkeep.rs:292` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
-| commerce | `src/upkeep.rs:315` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
+| commerce | `src/upkeep.rs:296` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
+| commerce | `src/upkeep.rs:319` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/calendars.rs:163` | `update e_calendar_event` | `ensure_default` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/calendars.rs:327` | `update e_calendar` | `change` | consequence of an audited document operation (hook) |
 | comms | `src/calendars.rs:339` | `update e_calendar` | `change` | consequence of an audited document operation (hook) |
@@ -129,7 +129,7 @@ and one each in Bookings, DAM, Field Service and Forms.
 | comms | `src/mail.rs:862` | `update e_communication` | `retry_due` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/newsletter.rs:123` | `update e_newsletter` | `run` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/newsletter.rs:147` | `update e_newsletter` | `update_counts` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/newsletter.rs:407` | `update e_email_group_member` | `unsubscribe` | a person's action on a public link (tracking, consent, viewing) |
+| comms | `src/newsletter.rs:412` | `update e_email_group_member` | `unsubscribe` | a person's action on a public link (tracking, consent, viewing) |
 | comms | `src/subscribe.rs:268` | `update e_calendar` | `refresh` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/subscribe.rs:284` | `update e_calendar` | `refresh` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/subscribe.rs:352` | `update e_calendar` | `subscribe` | consequence of an audited document operation (hook) |
@@ -155,16 +155,16 @@ and one each in Bookings, DAM, Field Service and Forms.
 | drive | `src/ops.rs:1187` | `insert into e_drive_star` | `star` | engine work: statuses, counts, queues, upkeep |
 | drive | `src/ops.rs:1198` | `delete from e_drive_star` | `star` | engine work: statuses, counts, queues, upkeep |
 | drive | `src/ops.rs:1301` | `update e_drive_comment` | `resolve_comment` | records its own audit or activity entry |
-| drive | `src/sharing.rs:168` | `update e_drive_link` | `share_with_guest` | records its own audit or activity entry |
-| drive | `src/sharing.rs:229` | `insert into e_drive_link` | `insert_link` | engine work: statuses, counts, queues, upkeep |
-| drive | `src/sharing.rs:438` | `update e_drive_link` | `create_link` | consequence of an audited document operation (hook) |
-| drive | `src/sharing.rs:480` | `update e_drive_link` | `revoke_link` | records its own audit or activity entry |
-| drive | `src/sharing.rs:709` | `update e_drive_link` | `view` | a person's action on a public link (tracking, consent, viewing) |
-| drive | `src/sharing.rs:739` | `update e_drive_link` | `unlock` | a person's action on a public link (tracking, consent, viewing) |
-| drive | `src/sharing.rs:750` | `update e_drive_link` | `unlock` | a person's action on a public link (tracking, consent, viewing) |
-| drive | `src/sharing.rs:793` | `update e_drive_link` | `fetch` | a person's action on a public link (tracking, consent, viewing) |
+| drive | `src/sharing.rs:169` | `update e_drive_link` | `share_with_guest` | records its own audit or activity entry |
+| drive | `src/sharing.rs:230` | `insert into e_drive_link` | `insert_link` | engine work: statuses, counts, queues, upkeep |
+| drive | `src/sharing.rs:439` | `update e_drive_link` | `create_link` | consequence of an audited document operation (hook) |
+| drive | `src/sharing.rs:481` | `update e_drive_link` | `revoke_link` | records its own audit or activity entry |
+| drive | `src/sharing.rs:721` | `update e_drive_link` | `view` | a person's action on a public link (tracking, consent, viewing) |
+| drive | `src/sharing.rs:753` | `update e_drive_link` | `unlock` | a person's action on a public link (tracking, consent, viewing) |
+| drive | `src/sharing.rs:764` | `update e_drive_link` | `unlock` | a person's action on a public link (tracking, consent, viewing) |
+| drive | `src/sharing.rs:807` | `update e_drive_link` | `fetch` | a person's action on a public link (tracking, consent, viewing) |
 | drive | `src/tree.rs:587` | `insert into e_drive_activity` | `log` | engine work: statuses, counts, queues, upkeep |
-| drive | `src/upkeep.rs:109` | `delete from e_drive_share` | `expire_shares` | engine work: statuses, counts, queues, upkeep |
+| drive | `src/upkeep.rs:113` | `delete from e_drive_share` | `expire_shares` | engine work: statuses, counts, queues, upkeep |
 | edge | `src/facts.rs:280` | `update e_edge_condition` | `condition` | engine work: statuses, counts, queues, upkeep |
 | edge | `src/reports.rs:220` | `update e_edge_report_schedule` | `noted` | engine work: statuses, counts, queues, upkeep |
 | edge | `src/site.rs:374` | `update e_device_definition` | `allow_joining` | records its own audit or activity entry |
@@ -187,11 +187,12 @@ and one each in Bookings, DAM, Field Service and Forms.
 | helpdesk | `src/merge.rs:79` | `update e_ticket__conversation` | `merge` | consequence of an audited document operation (hook) |
 | helpdesk | `src/merge.rs:115` | `insert into e_ticket__conversation` | `merge` | consequence of an audited document operation (hook) |
 | helpdesk | `src/merge.rs:133` | `update e_ticket__conversation` | `merge` | consequence of an audited document operation (hook) |
-| helpdesk | `src/outgoing.rs:338` | `update e_ticket__conversation` | `dispatch` | engine work: statuses, counts, queues, upkeep |
+| helpdesk | `src/outgoing.rs:347` | `update e_ticket__conversation` | `dispatch` | engine work: statuses, counts, queues, upkeep |
 | helpdesk | `src/survey.rs:131` | `update e_ticket` | `send_due` | engine work: statuses, counts, queues, upkeep |
-| helpdesk | `src/ticket.rs:808` | `update e_ticket` | `verdicts` | engine work: statuses, counts, queues, upkeep |
+| helpdesk | `src/ticket.rs:814` | `update e_ticket` | `verdicts` | engine work: statuses, counts, queues, upkeep |
 | hr | `src/attendance.rs:582` | `update e_employee_checkin` | `on_cancel` | consequence of an audited document operation (hook) |
 | hr | `src/documents.rs:97` | `update e_employee_document` | `warn_expiring` | engine work: statuses, counts, queues, upkeep |
+| hr | `src/leave.rs:610` | `update e_leave_policy` | `accrue_leaves` | engine work: statuses, counts, queues, upkeep |
 | hr | `src/payroll/mod.rs:358` | `update e_employee_tax_exemption_declaration__declarations` | `action` | consequence of an audited document operation (hook) |
 | hr | `src/talent.rs:68` | `delete from e_training_record` | `on_cancel` | consequence of an audited document operation (hook) |
 | hr | `src/talent.rs:80` | `update e_job_opening` | `close_openings` | engine work: statuses, counts, queues, upkeep |
@@ -201,11 +202,11 @@ and one each in Bookings, DAM, Field Service and Forms.
 | live | `src/links.rs:99` | `update e_broadcast_link` | `revoke_all` | consequence of an audited document operation (hook) |
 | live | `src/links.rs:110` | `update e_broadcast_link` | `take` | a person's action on a public link (tracking, consent, viewing) |
 | live | `src/links.rs:127` | `update e_broadcast_link` | `action` | consequence of an audited document operation (hook) |
-| live | `src/session.rs:139` | `update e_broadcast` | `watch` | engine work: statuses, counts, queues, upkeep |
-| live | `src/session.rs:201` | `update e_broadcast` | `present` | engine work: statuses, counts, queues, upkeep |
-| live | `src/upkeep.rs:104` | `delete from e_broadcast_link` | `retain` | engine work: statuses, counts, queues, upkeep |
+| live | `src/session.rs:150` | `update e_broadcast` | `watch` | engine work: statuses, counts, queues, upkeep |
+| live | `src/session.rs:215` | `update e_broadcast` | `present` | engine work: statuses, counts, queues, upkeep |
+| live | `src/upkeep.rs:107` | `delete from e_broadcast_link` | `retain` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/catalog.rs:316` | `update e_lms_course` | `refresh_course_stats` | consequence of an audited document operation (hook) |
-| lms | `src/certificate.rs:164` | `update e_lms_certificate` | `expire_all` | engine work: statuses, counts, queues, upkeep |
+| lms | `src/certificate.rs:170` | `update e_lms_certificate` | `expire_all` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/enrollment.rs:444` | `update e_lms_enrollment` | `refresh_course` | consequence of an audited document operation (hook) |
 | lms | `src/enrollment.rs:692` | `update e_lms_enrollment` | `send_due_reminders` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/live.rs:78` | `update e_lms_cohort__sessions` | `sync` | consequence of an audited document operation (hook) |
