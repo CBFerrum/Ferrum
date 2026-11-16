@@ -24,6 +24,11 @@ use tokio::sync::watch;
 
 pub struct App;
 
+/// Apps a test or a rehearsal registers beside the ones compiled in, before the server boots: a stand-in for an app it
+/// cannot compile in (the Cloud app's companion, server/tests/oidc_it.rs and scripts/oidc_rehearsal.sh). Nothing in a
+/// release sets it.
+pub static EXTRA_APPS: std::sync::OnceLock<fn(&mut HookRegistry)> = std::sync::OnceLock::new();
+
 /// Loco's storage over the store `settings` name (a move's source, tests): the server's own is made from the objects
 /// crate::store decides on as it starts ([`storage_of`]).
 pub(crate) fn build_storage(settings: &Settings) -> Result<Storage> {
@@ -246,6 +251,9 @@ impl Hooks for App {
         }
         ferrum_domain::register(&mut hooks);
         crate::packages::register(&mut hooks).map_err(|e| Error::Message(format!("apps: {e}")))?;
+        if let Some(extra) = EXTRA_APPS.get() {
+            extra(&mut hooks);
+        }
         let plugins = ferrum_plugins::PluginHost::new(settings.webhooks_allow_private).map_err(|e| Error::Message(format!("plugins: {e}")))?;
         // Each plugin's handle is made with the platform's: its secrets go on its requests, to nobody else.
         plugins.use_vault(platform.clone());
@@ -735,6 +743,7 @@ impl Hooks for App {
             .add_route(controllers::compat::routes())
             .add_route(controllers::mcp::routes())
             .add_route(controllers::oauth::routes())
+            .add_route(controllers::oidc::routes())
             .add_route(controllers::legacy::routes())
             .add_route(controllers::lists::routes())
             .add_route(controllers::links::routes())

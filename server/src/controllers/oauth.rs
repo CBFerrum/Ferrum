@@ -144,7 +144,7 @@ async fn authorize(Auth(ctx): Auth, State(app): State<AppContext>, headers: Head
 }
 
 /// The client's redirect URI with `params` added (empty values left out).
-fn back_to(redirect_uri: &str, params: &[(&str, &str)]) -> String {
+pub(crate) fn back_to(redirect_uri: &str, params: &[(&str, &str)]) -> String {
     let mut url = redirect_uri.to_string();
     for (k, v) in params.iter().filter(|(_, v)| !v.is_empty()) {
         url.push(if url.contains('?') { '&' } else { '?' });
@@ -263,7 +263,7 @@ fn consent_page(status: StatusCode, body: &str, lang: &str) -> Response {
     no_store(page_response(status, html, csp))
 }
 
-fn refused(problem: &str) -> Response {
+pub(crate) fn refused(problem: &str) -> Response {
     let lang = crate::shell_words::page_language(None);
     consent_page(
         StatusCode::BAD_REQUEST,
@@ -288,6 +288,10 @@ async fn signed_in(st: &crate::state::AppState, method: &Method, headers: &Heade
 /// (anyone else signs in first and comes back).
 async fn consent(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query(req): Query<ConsentReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    // A program beside Ferrum that an installed app declared (oidc.rs): no consent page, and its own checks.
+    if let Some(client) = st.kernel.companion_client(&req.client_id).await? {
+        return super::oidc::authorize(&st, &headers, &uri, client).await;
+    }
     let Some(ctx) = signed_in(&st, &Method::GET, &headers).await? else {
         let here = uri.path_and_query().map_or("/oauth/authorize", |p| p.as_str());
         return Ok(Redirect::to(&format!("/login?next={}", urlencode(here))).into_response());
@@ -371,7 +375,7 @@ async fn consent_answer(State(app): State<AppContext>, headers: HeaderMap, Form(
     Ok(no_store(Redirect::to(&to).into_response()))
 }
 
-fn urlencode(s: &str) -> String {
+pub(crate) fn urlencode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
@@ -381,18 +385,21 @@ fn urlencode(s: &str) -> String {
 }
 
 #[derive(Deserialize)]
-struct TokenReq {
-    grant_type: String,
+pub(crate) struct TokenReq {
+    pub(crate) grant_type: String,
     #[serde(default)]
-    code: Option<String>,
+    pub(crate) code: Option<String>,
     #[serde(default)]
-    redirect_uri: Option<String>,
+    pub(crate) redirect_uri: Option<String>,
     #[serde(default)]
-    code_verifier: Option<String>,
+    pub(crate) code_verifier: Option<String>,
     #[serde(default)]
     refresh_token: Option<String>,
     #[serde(default)]
-    client_id: Option<String>,
+    pub(crate) client_id: Option<String>,
+    /// A companion's secret, when it sends it in the form (oidc.rs); API clients have none.
+    #[serde(default)]
+    pub(crate) client_secret: Option<String>,
 }
 
 async fn token(State(app): State<AppContext>, headers: HeaderMap, Form(req): Form<TokenReq>) -> Response {
@@ -400,6 +407,10 @@ async fn token(State(app): State<AppContext>, headers: HeaderMap, Form(req): For
         Ok(st) => st,
         Err(e) => return e.into_response(),
     };
+    // A program beside Ferrum (oidc.rs) authenticates and is answered its own way; every other client as before.
+    if let Some(answer) = super::oidc::token(&st, &headers, &req).await {
+        return answer;
+    }
     if st.login_limiter.check(&format!("oauth-token|{}", client_ip(&headers))).await.is_err() {
         return oauth_error(StatusCode::TOO_MANY_REQUESTS, "slow_down", "too many token requests; try again shortly");
     }

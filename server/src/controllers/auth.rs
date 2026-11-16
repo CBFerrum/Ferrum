@@ -88,11 +88,20 @@ pub(crate) async fn accounts_for(st: &AppState, headers: &HeaderMap) -> Result<O
 /// cookie alone, a bearer token bound to that session for the pages that still send one.
 /// `method` names how they signed in, for the audit trail (`password`, `passkey`, `sso`, `code`, `accounts`).
 pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &HeaderMap, cookie_only: bool, method: &str) -> ApiResult<Response> {
-    session_response_with(st, s, headers, cookie_only, method, None).await
+    session_response_with(st, s, headers, cookie_only, method, None, &[method]).await
 }
 
-/// [`session_response`], keeping on the browser session what a SAML sign-in's logout needs.
-async fn session_response_with(st: &AppState, s: &Session, headers: &HeaderMap, cookie_only: bool, method: &str, saml: Option<&Value>) -> ApiResult<Response> {
+/// [`session_response`], keeping on the browser session what a SAML sign-in's logout needs, and the steps by which its
+/// person proved who they are (`proof`: an ID token's `amr`, ferrum_kernel::oidc).
+async fn session_response_with(
+    st: &AppState,
+    s: &Session,
+    headers: &HeaderMap,
+    cookie_only: bool,
+    method: &str,
+    saml: Option<&Value>,
+    proof: &[&str],
+) -> ApiResult<Response> {
     // Zones (crate::zone): every way of signing in ends here, so a staff account gets no session and
     // no token where its zone admits no staff; refused as a wrong password is, before anything below
     // could say more about the account.
@@ -122,7 +131,7 @@ async fn session_response_with(st: &AppState, s: &Session, headers: &HeaderMap, 
     st.shell.check_host(headers, s.tenant).await?;
     let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
     let ttl = st.shell.session_ttl();
-    let sid = st.kernel.open_session_with(s, ttl, ua, &client_ip(headers), None, entry.name(), saml).await?;
+    let sid = st.kernel.open_session_proved(s, ttl, ua, &client_ip(headers), None, entry.name(), saml, proof).await?;
     let mut body = json!({"cookie": true, "session_expires_in": ttl.as_secs()});
     if !cookie_only {
         let expiration = st.live_settings.now().jwt_expiration;
@@ -191,7 +200,7 @@ async fn login_second_factor(State(app): State<AppContext>, headers: HeaderMap, 
     let from = crate::zone::arrival(&st, &headers).await;
     let s = st.kernel.second_factor_from(tenant, user, tv, &req.code, &from).await?;
     st.kernel.record_sign_in(tenant, user, "second_step", "authenticator", &from).await?;
-    session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "password").await
+    session_response_with(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "password", None, &["password", "authenticator"]).await
 }
 
 #[derive(Deserialize)]
@@ -310,7 +319,7 @@ async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req)
         return Err(ApiError(Error::Unauthorized("sign in again".into())));
     }
     let (s, saml) = st.kernel.sso_finish_full(&req.state, &req.code, &req.binding).await?;
-    session_response_with(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "sso", saml.as_ref()).await
+    session_response_with(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "sso", saml.as_ref(), &["sso"]).await
 }
 
 /// `GET /api/auth/saml/{workspace}`: the workspace's SAML metadata, for identity providers to load:
