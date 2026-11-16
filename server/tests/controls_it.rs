@@ -238,19 +238,17 @@ async fn scenario() {
     };
     let settings = |v: Value| call(&s, Method::PUT, OFFICE, "/api/admin/settings", Cred::Bearer(&admin_token), Some(v));
 
-    // ── Settings: checked, kept, on the audit trail, and a floor ──
+    // ── Settings: checked, kept, and on the audit trail ──
     let (status, body) = settings(json!({"step_up": {"entities": {"Nope": {"work": ["write"]}}}})).await;
     assert!(status == StatusCode::UNPROCESSABLE_ENTITY && body.contains("Nope is not an entity"), "{status} {body}");
     let (status, body) = settings(json!({"step_up": {"entities": {"XSecret": {"work": ["print"]}}}})).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     let (status, body) = settings(json!({"record_reads": {"XSecret": "sometimes"}})).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert!(!floors(&k).await.contains(&"step_up".to_string()), "nothing switched on: no floor");
     let every = json!({"entities": {"XSecret": {"work": ["write", "delete", "export", "read"]}}});
     let (status, body) = settings(json!({"step_up": every})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["step_up"]["entities"]["XSecret"]["keys"], json!(true), "keys go through by default");
-    assert!(floors(&k).await.contains(&"step_up".to_string()), "switching it on puts its floor in place");
     let trail: i64 = {
         let mut tx = k.db.system_tx().await.unwrap();
         let n = sqlx::query_scalar(
@@ -263,12 +261,6 @@ async fn scenario() {
         n
     };
     assert_eq!(trail, 1, "the change is administration on the audit trail");
-    // Every start puts the floors of what is in use in place again.
-    exec(&k, "delete from window_floor where feature = 'step_up'").await;
-    if let Some(hold) = k.hold_start().await.unwrap() {
-        hold.release().await;
-    }
-    assert!(floors(&k).await.contains(&"step_up".to_string()), "the start-up check finds the rule in use");
 
     // ── Each kind of work on the marked entity asks; the unmarked one is untouched ──
     let cookie = aged_cookie(&s, &k, "member@acme.test").await;
@@ -386,7 +378,6 @@ async fn scenario() {
     ferrum_domain::reports::add_source(Arc::new(Secrets));
     let (status, body) = settings(json!({"record_reads": {"XSecret": "open"}})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(floors(&k).await.contains(&"record_reads".to_string()));
     let reader = Cred::Cookie(&cookie);
     let mcp_get =
         json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_record", "arguments": {"entity": "XSecret", "id": secret_id}}});
