@@ -308,14 +308,45 @@ fn settle_entity(entity: &str, hooks: &[ScopedHook]) -> std::result::Result<Vec<
 struct ScopedHook {
     /// `None`: runs for every tenant; otherwise only for tenants with one of these packages.
     packages: Option<Arc<[String]>>,
+    /// The app whose registration added it ([`HookRegistry::app`]); none: the platform's.
+    app: Option<String>,
     hook: Arc<dyn DocHook>,
+}
+
+/// A document hook an app runs on records another package defines, or on every record (`*`)
+/// ([`HookRegistry::foreign_hooks`]).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub struct ForeignHook {
+    pub app: String,
+    pub entity: String,
+    /// Its name (`{app}.{what}`), empty when it gives none.
+    pub hook: &'static str,
 }
 
 impl HookRegistry {
     pub fn register(&mut self, entity: &str, hook: Arc<dyn DocHook>) -> &mut Self {
-        let packages = self.scope.clone();
-        self.by_entity.entry(entity.to_string()).or_default().push(ScopedHook { packages, hook });
+        let (packages, app) = (self.scope.clone(), self.app.clone());
+        self.by_entity.entry(entity.to_string()).or_default().push(ScopedHook { packages, app, hook });
         self
+    }
+
+    /// The document hooks apps registered on an entity of a package their app does not own (the platform's, another
+    /// app's, or every entity), among those that run in a workspace with the `installed` packages; `package_of` says
+    /// which package defines an entity there. Sorted by app, entity and name; the platform's own hooks are no app's.
+    pub fn foreign_hooks(&self, installed: &[String], package_of: impl Fn(&str) -> Option<String>) -> Vec<ForeignHook> {
+        let mut out: Vec<ForeignHook> = self
+            .by_entity
+            .iter()
+            .flat_map(|(entity, hooks)| hooks.iter().map(move |h| (entity, h)))
+            .filter(|(_, h)| h.packages.as_ref().is_none_or(|ps| ps.iter().any(|p| installed.contains(p))))
+            .filter_map(|(entity, h)| {
+                let app = h.app.as_deref()?;
+                let own = package_of(entity).is_some_and(|p| self.package_owner(&p) == Some(app));
+                (!own).then(|| ForeignHook { app: app.to_string(), entity: entity.clone(), hook: h.hook.name() })
+            })
+            .collect();
+        out.sort();
+        out
     }
 
     /// Registers what `f` adds as belonging to `packages`: those document hooks run only for
@@ -822,6 +853,38 @@ mod tests {
         });
         assert_eq!(plain.scopes(), [("Invoice".to_string(), None)], "no packages: every workspace, as before");
         assert!(plain.settle().is_ok());
+    }
+
+    #[test]
+    fn the_hooks_an_app_runs_on_others_records_are_listed() {
+        let mut r = HookRegistry::default();
+        r.register("Item", Arc::new(Named("platform.stock", &[], &[])));
+        r.app("crm", &["crm".to_string()], |h| {
+            h.register("Lead", Arc::new(Named("crm.lead", &[], &[])));
+            h.register("Customer", Arc::new(Named("crm.customer", &[], &[])));
+            h.register("*", Arc::new(Named("crm.every", &[], &[])));
+        });
+        r.app("erp", &[], |h| {
+            h.register("Invoice", Arc::new(Named("erp.invoice", &[], &[])));
+            h.register("Lead", Arc::new(Named("erp.lead", &[], &[])));
+        });
+        r.own("crm", &["crm".to_string()]).own("erp", &["selling".to_string()]);
+        let package_of = |e: &str| match e {
+            "Lead" => Some("crm".to_string()),
+            "Customer" => Some("parties".to_string()),
+            "Invoice" => Some("selling".to_string()),
+            "Item" => Some("products".to_string()),
+            _ => None,
+        };
+        let listed = |installed: &[&str]| {
+            let installed: Vec<String> = installed.iter().map(|p| p.to_string()).collect();
+            r.foreign_hooks(&installed, package_of).into_iter().map(|f| (f.app, f.entity, f.hook)).collect::<Vec<_>>()
+        };
+        let row = |app: &str, entity: &str, hook: &'static str| (app.to_string(), entity.to_string(), hook);
+        // Each by the app that registered it: on a record another package defines, or on every one; never its own, nor
+        // the platform's hooks.
+        assert_eq!(listed(&["crm", "selling"]), [row("crm", "*", "crm.every"), row("crm", "Customer", "crm.customer"), row("erp", "Lead", "erp.lead")]);
+        assert_eq!(listed(&["selling"]), [row("erp", "Lead", "erp.lead")], "CRM's run only where one of its packages is");
     }
 
     #[test]
