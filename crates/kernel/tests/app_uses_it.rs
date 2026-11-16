@@ -324,6 +324,13 @@ async fn scenario() {
     assert_eq!(count(&ws, "select count(*) from e_shipment").await, 4, "the inner shipment went with the outer refusal");
     assert_eq!(count(&ws, "select count(*) from logic_effect").await, 5, "and so did both receipts");
 
+    // Finding an operation shows which app made each call in it.
+    let op = "op-shop-quote-me";
+    let traced = ferrum_kernel::Trace { correlation: op.into(), ..Default::default() }.scope(call(&kit, "shop", &pat, ship("DHL").key("traced"))).await;
+    traced.expect("shipped");
+    let found = k.operation(&ws.admin, op).await.unwrap();
+    assert_eq!((found["effects"][0]["capability"].as_str(), found["effects"][0]["caller"].as_str()), (Some("carrier.parcel.ship"), Some("shop")), "{found}");
+
     // Disabling the shop takes its packages out of the workspace, and its uses with them: nothing else withdraws them.
     k.disable_packages(&ws.admin, &["shop".to_string()]).await.unwrap();
     let pat = k.load_ctx(ws.tenant, pat.user, None, "it".into()).await.unwrap();

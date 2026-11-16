@@ -500,7 +500,7 @@ impl HookRegistry {
     }
 
     /// The app that owns `package`, when one claimed it ([`HookRegistry::own`]).
-    pub(crate) fn package_owner(&self, package: &str) -> Option<&str> {
+    pub fn package_owner(&self, package: &str) -> Option<&str> {
         self.package_owners.get(package).map(String::as_str)
     }
 

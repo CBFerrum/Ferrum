@@ -159,7 +159,11 @@ let receipt = k.call_tx(&handle, ctx, tx, &ask.key(format!("deposit:{booking}"))
   inside another app's operation is undone alone, and a refusal of the outer one takes the inner ones with it. A
   caller that does not carry on rolls back as usual, and everything goes together. The cost is two statements per call
   (`savepoint`, then `release`), three on a refusal.
-- **Recorded.** The receipt names the app (`logic_effect.caller`) beside the person.
+- **Recorded.** The receipt names the app (`logic_effect.caller`) beside the person, and finding an operation
+  (`GET /api/admin/operations/{id}`) shows it as each effect's `caller`.
+- **Seen.** `GET /api/admin/apps/connections` (administrators, docs/api.md) lists, for the workspace, what each
+  installed package uses with its range and the version installed, the hooks apps run on other packages' records, and
+  each app's calls of the last 30 days by capability, with a count and the latest time.
 
 The handle is what proves which app calls: keep it inside the app's crate (`pub(crate)`), never handed to another.
 

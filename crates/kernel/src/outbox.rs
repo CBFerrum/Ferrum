@@ -570,7 +570,7 @@ impl Kernel {
         .fetch_all(&mut *tx)
         .await?;
         let effects = all("select jsonb_build_object('capability', capability, 'status', status, 'record_entity', record_entity, 'record_id', record_id, \
-               'created_at', created_at) from logic_effect where tenant_id = $1 and correlation_id = $2 order by created_at limit 200")
+               'caller', caller, 'created_at', created_at) from logic_effect where tenant_id = $1 and correlation_id = $2 order by created_at limit 200")
         .fetch_all(&mut *tx)
         .await?;
         let deliveries = all("select jsonb_build_object('id', d.id, 'webhook_name', w.name, 'topic', d.topic, 'status', d.status, 'attempts', d.attempts, \

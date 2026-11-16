@@ -526,6 +526,42 @@ async fn list_capabilities(Auth(ctx): Auth, State(app): State<AppContext>) -> Ap
     Ok(Json(capabilities(&app_state(&app)?.kernel, &ctx)?).into_response())
 }
 
+/// `GET /api/admin/apps/connections`: how the workspace's apps use each other (docs/app-contract.md, *Using another app's
+/// operations*). `uses`: each installed package's declared uses, with its app, the range and the version installed here
+/// (null where none is); `hooks`: the hooks apps run on records another package defines; `calls`: the calls apps made
+/// in the last 30 days, by app and capability, with a count and the latest time.
+pub async fn connections(k: &Kernel, ctx: &Ctx) -> ApiResult<Value> {
+    admin(ctx)?;
+    let catalog = k.registry.catalog();
+    let uses: Vec<Value> = ctx
+        .schema
+        .packages
+        .iter()
+        .filter_map(|p| catalog.package(p))
+        .flat_map(|p| p.manifest.uses.iter().map(move |u| (p, u)))
+        .map(|(p, u)| {
+            let installed = k.capability(ctx, &u.capability).ok().map(|c| c.version);
+            json!({"app": k.hooks.package_owner(p.name()), "package": p.name(), "capability": u.capability, "range": u.version, "installed": installed})
+        })
+        .collect();
+    let hooks = k.hooks.foreign_hooks(&ctx.schema.packages, |e| ctx.schema.entity(e).map(|x| x.package.clone()));
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let calls: Vec<Value> = sqlx::query_scalar(
+        "select jsonb_build_object('app', caller, 'capability', capability, 'count', count(*), 'latest', max(created_at)) from logic_effect \
+         where tenant_id = $1 and caller is not null and created_at > now() - interval '30 days' group by caller, capability order by caller, capability",
+    )
+    .bind(ctx.tenant)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(Error::from)?;
+    tx.commit().await.map_err(Error::from)?;
+    Ok(json!({"uses": uses, "hooks": hooks, "calls": calls}))
+}
+
+async fn list_connections(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(connections(&app_state(&app)?.kernel, &ctx).await?).into_response())
+}
+
 async fn get_pack(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<PackQuery>) -> ApiResult<Response> {
     Ok(Json(export_pack(&app_state(&app)?.kernel, &ctx, &q).await?).into_response())
 }
@@ -1012,6 +1048,7 @@ pub fn routes() -> Routes {
         .add("/admin/pack/install", post(post_pack_install).layer(DefaultBodyLimit::max(2 * ferrum_kernel::pack::MAX_PACK)))
         .add("/admin/packs", get(list_packs))
         .add("/admin/capabilities", get(list_capabilities))
+        .add("/admin/apps/connections", get(list_connections))
         .add("/admin/support", get(support_grants).post(grant_support))
         .add("/admin/support/{id}", delete(revoke_support))
         .add("/admin/support/{id}/requests", get(support_activity))
