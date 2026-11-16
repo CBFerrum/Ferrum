@@ -180,7 +180,7 @@ services:
     # One replica, or none when FERRUM_PDF_URL is set but empty (an own renderer: PDF_REPLICAS=0).
     deploy:
       replicas: ${PDF_REPLICAS:-${FERRUM_PDF_URL+0}${FERRUM_PDF_URL-1}}
-    command: ["gotenberg", "--chromium-disable-javascript=true", "--chromium-allow-list=^(data:|file:///tmp/).*", "--api-timeout=60s"]
+    command: ["gotenberg", "--chromium-disable-javascript=true", "--chromium-allow-list=^(data:|file:///tmp/).*", "--api-timeout=30s"]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
 
