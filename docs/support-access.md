@@ -39,7 +39,8 @@ This limits what the product gives support. It is not a claim that nobody else c
 
 Whoever runs the servers can reach what is on them. Someone with the database's credentials reads every
 workspace, because row-level security binds the application's role and not an administrator of the
-database. Someone with `FERRUM_SECRET_KEY` as well opens sealed values. On Ferrum Cloud that is the
+database. Someone with a key that opens the vault as well (its key file, the key-management service, the database
+password or the recovery key) opens sealed values. On Ferrum Cloud that is the
 operator, and on a partner's hosting, the partner. Backups hold the same data. A customer who needs
 stronger separation needs a dedicated deployment they control, with keys they hold.
 

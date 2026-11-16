@@ -15,8 +15,7 @@ What it does, as `server/src/app.rs` and `server/src/packages.rs` do:
   vault handle; then sets every app's reports at once, with who gives each;
 - keeps mail and files in memory, and runs each app's upkeep once.
 
-It refuses an old master key in the settings (`secret_key`, `retired_secret_keys`, `old_key`), and fails when the vault
-does not open.
+It fails when the vault does not open.
 
 ## A suite before and after
 

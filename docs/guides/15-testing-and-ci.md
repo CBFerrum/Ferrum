@@ -50,8 +50,7 @@ async fn scenario() {
   of them (ERP's for every workspace), it takes its own vault handle, and `Vault::field` reads its secret fields
   ([08](08-secrets-and-the-vault.md)).
 - The vault is opened before the kernel with its credential slot, from the address's password (it must hold one), with
-  a cheap `vault::Kdf` ([08](08-secrets-and-the-vault.md), *Tests*). The kit gives no old master key: it refuses one in
-  the settings.
+  a cheap `vault::Kdf` ([08](08-secrets-and-the-vault.md), *Tests*).
 - Several replicas: `kit.replica()` starts another server on the same database. Run the same work on both at once and
   check it happened once. Metrics' `external_it` runs its upkeep four times at once, as replicas starting together
   would, and checks the environment's token was kept in the vault once.
@@ -162,7 +161,7 @@ rehearsal that matches what they changed.
 |---|---|---|
 | `scripts/app_ci.sh` | An app's fmt, clippy, tests on real PostgreSQL, interface build and tests | Before every push of the app |
 | `scripts/check_apps.py` | Every compiled app: manifest fields, licence, README named, CHANGELOG with the version, a scenario test, `ui/dist` built with `.source`, launcher icons the shell draws; operator settings sound and read through `ferrum_kernel::env::var` | When the platform pins the app |
-| `scripts/secret_paths.py` | No app names the vault's tables, opens the vault or calls people's and operators' vault functions; no new cryptography crate or `unsafe`; no reading past the vault; the old key only where the baseline says | At the pin |
+| `scripts/secret_paths.py` | No app names the vault's tables, opens the vault or calls people's and operators' vault functions; no new cryptography crate or `unsafe` | At the pin |
 | `scripts/settings.py` | The settings' registry against what reads it; the apps' declarations merged, one owner each; the operations guide's table; the environment-only baseline only shrinks | At the pin |
 | `scripts/licenses.py check` | Every Rust dependency's licence accepted; images deployed are approved engines | At the pin |
 | `scripts/mutation_paths.py` | Every direct write to an `e_*` table in an app is listed and given a kind | At the pin |

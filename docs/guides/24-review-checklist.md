@@ -46,7 +46,7 @@ lock.
   **(reviewed)**. ([06](06-events-jobs-and-logic.md))
 - [ ] Operator settings declared in `operator_settings` and read with `ferrum_kernel::env::var` (`check_apps.py`);
   nothing on local disk; no session state on a pooled connection **(reviewed)**. ([07](07-stateless-apps.md))
-- [ ] Secrets only through the app's vault handle; no `Kernel::secret` in new code; no cryptography crate or `unsafe`
+- [ ] Secrets only through the app's vault handle; no cryptography crate or `unsafe`
   of the app's own (`scripts/secret_paths.py`); no secret in a setting, log, error, event or test output
   **(reviewed)**. ([08](08-secrets-and-the-vault.md))
 - [ ] Files through the file store or a declared file kind; no store or keys of the app's own **(reviewed)**.

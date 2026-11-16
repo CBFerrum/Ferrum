@@ -39,18 +39,14 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 **The vault** ([operations](operations.md#the-vault))
 * It keeps the keys and passwords of the platform and of every app, sealed with AES-256-GCM in the server (never by
   SQL). Each value's associated data names its workspace, owner, name and version and the version of the key that
-  sealed it, so a value copied to any other place does not open. What `FERRUM_SECRET_KEY` sealed in stores of its own
-  is in it too, each value its owner's: a secret field the declaring app's, the rest the platform's. While the key is
-  configured those stores still hold each value sealed with it as well, for a rollback; the release after drops them.
+  sealed it, so a value copied to any other place does not open. The kernel's own stores keep their values in it too,
+  each value its owner's (a secret field the declaring app's, the rest the platform's): their tables keep only that a
+  value is set.
 * What the platform keys or seals for a while (opt-out links, erased people's opt-outs, sign-ins to accounts, public
   addresses of files, connectors' account fingerprints, receipts' digests, messages waiting with secret values,
   processes' payloads) uses keys it derives from its own key in the vault, one per use, a workspace's where the thing is
-  a workspace's. A new installation has no old key (`FERRUM_SECRET_KEY`) at all; one that had it keeps it adopted in
-  the vault, used and never shown, so what it made is still checked and opened after the variable is gone
-  ([Retiring the old key](operations.md#retiring-the-old-key)). With the vault closed, each of these is refused. The
-  old key is the kernel's alone: no app is given it (its settings' field gives nothing back), and an app opens or checks
-  what it once made with it only through its own handle, for contexts of its own (`open_old`, `seal_old`,
-  `old_fingerprints`).
+  a workspace's ([What the platform keys and seals](operations.md#what-the-platform-keys-and-seals)). With the vault
+  closed, each of these is refused.
   Plugins' settings are sealed under each plugin's own key, never stored plain.
 * Keys form a hierarchy: a slot's key, the installation key, a workspace key, an owner key (`platform`, an app, a
   plugin), the secret. Every key below a slot is random, versioned and stored only wrapped: a dump holds no key that
@@ -230,7 +226,7 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   visited region keeps the `state` and verifier in a `__Host-` cookie, holds no credentials for the
   visiting account (password, two-factor sign-in and passkeys are refused there), and never lets a
   visitor take the address of an account of its own.
-* Two-factor sign-in: TOTP secrets sealed with the server key; each code accepted once; recovery
+* Two-factor sign-in: TOTP secrets kept in the vault; each code accepted once; recovery
   codes stored as hashes; wrong codes count toward the lockout, and a correct password does not
   clear the count while the second step is pending; the ticket between the steps is no session;
   a workspace can require it, and then a session without it can only set it up.
@@ -251,7 +247,7 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   one-time code, only to an address of this server's own, and the browser that started the sign-in
   finishes it. SAML never says whether an address was checked, so a SAML provider needs its email
   domains listed. Each workspace signs its requests (RSA-SHA256) with a key of its own, made when
-  first wanted and sealed by the server key, whose certificate its metadata publishes. A server
+  first wanted, its private half kept in the vault, whose certificate its metadata publishes. A server
   built with SAML checks at `doctor` that xmlsec1 signs and verifies.
 * SAML encrypted assertions (crates/saml/src/xmlenc.rs): opened by xmlsec1 with a workspace key kept
   for encryption alone (made, sealed and published like the signing key; replaced by a task, the old
@@ -398,7 +394,7 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   workspace hosts are one site), or, without that header, when `Origin` names this host (`may_change`).
 * Notifications on devices (Web Push, [operations](operations.md#notifications-on-devices-web-push)):
   each message is encrypted for the one device (RFC 8291), so the push service carries what it
-  cannot read, and signed with the server's VAPID key, sealed with the secret key. A device's
+  cannot read, and signed with the server's VAPID key, kept in the vault. A device's
   subscription belongs to its browser session and ends with it (signing out there or everywhere,
   the person made inactive); someone acting as another person cannot subscribe to their
   notifications; a subscription another person's browser session registered last is theirs. The

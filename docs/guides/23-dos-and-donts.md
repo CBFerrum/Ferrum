@@ -89,8 +89,7 @@ contract (`docs/app-contract.md`) is the rule where they say the same. Everythin
 |---|---|---|
 | Do take the vault handle inside your registration (`h.vault()`) and keep it | a handle asked for elsewhere is accepted by nothing and the server does not start | the server |
 | Don't call the vault's ways that are not your handle, or name its tables | an owner opens only its own | `scripts/secret_paths.py` |
-| Don't read the old key (`secret_key`, `FERRUM_SECRET_KEY`) | it is the kernel's alone | `scripts/secret_paths.py` |
-| Don't use `Kernel::secret` in new code; read your secret fields with `Vault::field` | the old way goes in the next release | `scripts/secret_paths.py` baseline |
+| Do read your secret fields with `Vault::field` | an app reads only the fields its own packages declare | the vault refuses another's |
 | Don't add a cryptography crate of your own (one that keys, seals or signs) or `unsafe` code | cryptography only through the vault | `scripts/secret_paths.py` |
 | Do bind a secret to the hosts it may go to and send it with `carry` | moving an address never moves the secret | the vault refuses other hosts |
 | Do set a secret after the business transaction commits | a verb runs in its own transaction | reviewed |
