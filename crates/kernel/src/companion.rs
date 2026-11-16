@@ -93,6 +93,9 @@ pub struct Rendering<'a> {
     settings: &'a (dyn Fn(&str) -> Option<String> + Sync),
     /// The secrets' values given to this render: no file that says it holds no secret may hold one.
     given: Mutex<Vec<Zeroizing<Vec<u8>>>>,
+    /// A rotation's render ([`Kernel::rotate_companion`]): what it made anew. Its files are not written, and it is given
+    /// no secret's value.
+    rotated: Option<Mutex<Vec<Described>>>,
 }
 
 impl Rendering<'_> {
@@ -131,6 +134,9 @@ impl Rendering<'_> {
         if !self.made.contains(&name) {
             return Err(Error::Invalid(format!("the service {} does not declare that the vault makes {name} for it", self.service)));
         }
+        if self.rotated.is_some() {
+            return self.renew(name, rule).await;
+        }
         self.vault.make_for(self.kernel, name, rule, self.service).await.map(|_| ())
     }
 
@@ -142,13 +148,27 @@ impl Rendering<'_> {
         if !self.made.contains(&name) {
             return Err(Error::Invalid(format!("the service {} does not declare that the vault keeps {name} for it", self.service)));
         }
+        if self.rotated.is_some() {
+            return self.renew(name, rule).await;
+        }
         self.vault.keep_for(self.kernel, name, rule, self.service).await.map(|_| ())
+    }
+
+    /// In a rotation's render: `name` made anew, once, under `rule` as the service declares it now.
+    async fn renew(&self, name: &str, rule: Rule) -> Result<()> {
+        let rotated = self.rotated.as_ref().ok_or_else(|| Error::Internal("not a rotation".into()))?;
+        if rotated.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|d| d.name == name) {
+            return Ok(());
+        }
+        let d = self.vault.rotate_made(self.kernel, name, self.service, Some(rule)).await?;
+        rotated.lock().unwrap_or_else(|e| e.into_inner()).push(d);
+        Ok(())
     }
 
     /// The current value of its owner's secret `name` of the installation, for a file: only where the secret's rule lets
     /// its owner read it. On the record as `render`, naming the service; never the value.
     pub async fn secret(&self, name: &str) -> Result<Zeroizing<Vec<u8>>> {
-        Ok(self.given(name, false).await?.remove(0).value)
+        Ok(self.given(name, false).await?.into_iter().next().map_or_else(|| Zeroizing::new(Vec::new()), |v| v.value))
     }
 
     /// [`Rendering::secret`], and after it the version before while the rotation's overlap lasts: for a program that
@@ -158,6 +178,9 @@ impl Rendering<'_> {
     }
 
     async fn given(&self, name: &str, previous: bool) -> Result<Vec<Version>> {
+        if self.rotated.is_some() {
+            return Ok(Vec::new());
+        }
         let versions = match self.vault.rendered(self.kernel, name, self.service, previous).await {
             Err(Error::NotFound(_)) => {
                 return Err(Error::Invalid(format!(
@@ -268,7 +291,8 @@ impl Kernel {
         settings: &'a (dyn Fn(&str) -> Option<String> + Sync),
     ) -> Result<Rendering<'a>> {
         self.db.vault.installation()?;
-        Ok(Rendering { kernel: self, vault: crate::vault::handle_of(self, owner)?, service: name, made: companion.made(), settings, given: Mutex::default() })
+        let vault = crate::vault::handle_of(self, owner)?;
+        Ok(Rendering { kernel: self, vault, service: name, made: companion.made(), settings, given: Mutex::default(), rotated: None })
     }
 
     /// Refused, saying why, where the service says this installation may not have it rendered.
@@ -294,19 +318,27 @@ impl Kernel {
     }
 
     /// New values of the secrets the vault keeps for the service `name` ([`Companion::made`]), for the operator (`ferrum
-    /// task vault_rotate level:service`): each of the same kind, its rule kept, so that the version before still verifies
-    /// and is given to the service's renders for the rule's overlap. Only secrets the vault keeps for a service (their app
-    /// manages them), and refused, changing nothing, where the service may not be rendered here.
+    /// task vault_rotate level:service`): each of the same kind, under the rule the service declares now (its render is
+    /// run, told they are not there yet, and its files are not written: the hosts it binds a secret to come from the
+    /// settings as they are, so an address that moved takes the new value and no other), so that the version before still
+    /// verifies, under its own rule, and is given to the service's renders for the overlap. One whose rule the service
+    /// does not declare keeps its rule. A render alone never changes a secret's rule. Only secrets the vault keeps for a
+    /// service (their app manages them), and refused, changing nothing, where the service may not be rendered here.
     pub async fn rotate_companion(&self, name: &str, settings: &(dyn Fn(&str) -> Option<String> + Sync)) -> Result<Vec<Described>> {
         let (owner, companion) = self.companion(name)?;
-        let r = self.rendering(name, owner, companion, settings)?;
+        let mut r = self.rendering(name, owner, companion, settings)?;
         self.may_render(name, companion, &r).await?;
         if companion.made().is_empty() {
             return Err(Error::Invalid(format!("the vault keeps none of the service {name}'s secrets: nothing to rotate here")));
         }
-        let mut out = Vec::new();
+        r.vault = r.vault.renewing(companion.made());
+        r.rotated = Some(Mutex::default());
+        companion.render(&r).await?;
+        let mut out = r.rotated.take().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner())).unwrap_or_default();
         for secret in companion.made() {
-            out.push(r.vault.rotate_made(self, secret, name).await?);
+            if !out.iter().any(|d| d.name == *secret) {
+                out.push(r.vault.rotate_made(self, secret, name, None).await?);
+            }
         }
         Ok(out)
     }
