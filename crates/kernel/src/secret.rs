@@ -39,15 +39,15 @@ impl SecretKey {
         SecretKey { key, id }
     }
 
-    /// The key as it is configured: base64 of its 32 bytes.
+    /// Its 32 bytes as base64, as [`SecretKey::from_base64`] takes them.
     pub fn to_base64(&self) -> String {
         B64.encode(self.key)
     }
 
-    /// From base64 (32 random bytes), as configured.
+    /// From base64 (32 random bytes), as a key-management service, a key command or a move's transfer gives it.
     pub fn from_base64(s: &str) -> Result<Self> {
-        let bytes = B64.decode(s.trim()).map_err(|_| Error::invalid("the secret key must be base64"))?;
-        let key: [u8; 32] = bytes.try_into().map_err(|_| Error::invalid("the secret key must be 32 bytes (openssl rand -base64 32)"))?;
+        let bytes = B64.decode(s.trim()).map_err(|_| Error::invalid("a key must be base64"))?;
+        let key: [u8; 32] = bytes.try_into().map_err(|_| Error::invalid("a key must be 32 bytes (openssl rand -base64 32)"))?;
         Ok(SecretKey::new(key))
     }
 

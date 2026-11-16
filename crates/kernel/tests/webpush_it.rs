@@ -376,7 +376,7 @@ async fn notifications_reach_subscribed_devices() {
     mention(&replaced, acme, ana_id, "Hal mentioned you", record).await;
     drain(&replaced).await;
     assert!(svc.take().is_empty());
-    assert_eq!(replaced.push_status(&ana3, Some(den)).await.unwrap().devices, 0, "forgotten: made with the old key");
+    assert_eq!(replaced.push_status(&ana3, Some(den)).await.unwrap().devices, 0, "forgotten: made with the key the vault lost");
 
     // ── Turning it off on a device. ──
     let mut on_den = Device::new();

@@ -107,7 +107,7 @@ async fn scenario() {
     ] {
         assert!(e.to_string().starts_with("the vault is closed: nothing here can make its first slot"), "every use says so: {e}");
     }
-    // Erasing someone who opted out, with neither the vault nor the old key: refused, saying what to do; nothing is erased.
+    // Erasing someone who opted out, with the vault closed: refused, saying what to do; nothing is erased.
     let session = k.login("closed", "admin@closed.test", "Correct-Horse-9").await.unwrap();
     let admin = k.load_ctx(w, session.user, None, "it".into()).await.unwrap();
     k.set_message_opt_out(&admin, "zoe@example.com", "email", true).await.unwrap();
@@ -405,7 +405,7 @@ async fn keys_and_handles(no_file: &Path) {
     let other = crm_a.derive(&a, ws, "other").await.unwrap();
     let inst = crm_a.derive(&a, Scope::Installation, "links").await.unwrap();
     assert!(hr_x.bytes() != x.bytes() && other.bytes() != x.bytes() && inst.bytes() != x.bytes() && first.as_slice() != x.bytes());
-    // No key of the platform's is made at start for apps any more: the old key is the kernel's alone.
+    // No key of the platform's is made at start for apps.
     assert_eq!(as_vault(&db, "select count(*) from vault.key where scope = '00000000-0000-0000-0000-000000000000'").await, 2);
     assert_eq!(crm_a.derive_at(&a, ws, "links", 1).await.unwrap().bytes(), x.bytes());
     assert!(matches!(crm_a.derive_at(&a, ws, "links", 2).await, Err(Error::NotFound(_))), "a version that is not there");

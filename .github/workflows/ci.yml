@@ -78,7 +78,7 @@ jobs:
           nohup moto_server -p 9000 > moto.log 2>&1 &
           for i in $(seq 1 30); do curl -fs http://localhost:9000/ > /dev/null && break; sleep 1; done
           AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test python3 -c "import boto3; boto3.client('s3', endpoint_url='http://localhost:9000', region_name='us-east-1').create_bucket(Bucket='ferrum-ci')"
-      # The secret key through a key-management service (crates/kernel/tests/kms_it.rs): OpenBao's
+      # A key through a key-management service (crates/kernel/tests/kms_it.rs, vault_it.rs): OpenBao's
       # Transit engine, from its release by digest.
       - name: OpenBao
         run: |

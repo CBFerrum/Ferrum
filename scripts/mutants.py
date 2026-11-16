@@ -532,7 +532,7 @@ MUTANTS = [
     ("saml-logout-any-provider", "crates/kernel/src/saml_logout.rs", "saml->>'provider' = any($2) and", "", SAML),
     ("saml-logout-other-replicas-keep-it", "crates/kernel/src/saml_logout.rs", "crate::auth::notify_users(&mut tx, tenant, Some(*user)).await?;", "let _ = user;", SAML),
     ("saml-logout-out-unasked", "crates/kernel/src/saml_logout.rs", "and p.enabled and p.slo_out\"", "and p.enabled\"", SAML),
-    # The secret key from a key-management service.
+    # The vault's key from a key-management service.
     ("kms-ciphertext-taken-for-a-key", "crates/kernel/src/kms.rs", "    if !is_wrapped(value) {\n        return SecretKey::from_base64(value);", "    if true {\n        return SecretKey::from_base64(value);", KMS),
     ("kms-any-service-will-do", "crates/kernel/src/kms.rs", 'let v = self.call(&client, &format!("{}/decrypt/{}", self.mount, self.key)', 'let v = self.call(&client, &format!("{}/decrypt/{}", self.mount, "ferrum")', KMS),
     # Workflows that cross systems.

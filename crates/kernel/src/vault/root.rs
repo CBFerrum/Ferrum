@@ -79,7 +79,7 @@ pub struct Opener {
     pub file: PathBuf,
     /// The kms slot through Transit.
     pub transit: Option<kms::Transit>,
-    /// The kms slot through a command (asked first, as for the secret key).
+    /// The kms slot through a command (asked before Transit).
     pub command: Option<String>,
     /// Argon2id's costs for a credential slot made here (a slot keeps its own).
     pub kdf: Kdf,
