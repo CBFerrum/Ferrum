@@ -65,6 +65,8 @@ tokio = { workspace = true }
 ferrum-saml = { path = "../saml", features = ["testing"] }
 # A browser's cookies, through Keycloak's login page (saml_keycloak_it.rs).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "cookies"] }
+# A suite that boots as the server does, the platform's packages and the vault included (docs/testkit.md).
+ferrum-testkit = { path = "../testkit" }
 
 [lints]
 workspace = true

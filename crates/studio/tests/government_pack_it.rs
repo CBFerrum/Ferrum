@@ -20,25 +20,13 @@
 use chrono::{Duration, Utc};
 use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::pack::ExportOptions;
-use ferrum_kernel::tenant::NewTenant;
-use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery, Site, SiteRequest, automation};
-use ferrum_meta::{Catalog, PermissionDef};
+use ferrum_kernel::{Ctx, Doc, Error, Kernel, ListQuery, Site, SiteRequest, automation};
+use ferrum_meta::PermissionDef;
+use ferrum_testkit::{Kit, Workspace, app, database, obj, refused, run, uid};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
-
-fn obj(v: Value) -> Doc {
-    v.as_object().cloned().unwrap()
-}
-
-fn id_of(d: &Doc) -> Uuid {
-    d["id"].as_str().unwrap().parse().unwrap()
-}
-
-fn uid(v: &Value) -> Uuid {
-    v.as_str().unwrap_or_else(|| panic!("not an id: {v}")).parse().unwrap()
-}
 
 fn dec(v: &Value) -> f64 {
     v.as_str().map(|s| s.parse().unwrap()).or_else(|| v.as_f64()).unwrap_or_else(|| panic!("not a number: {v}"))
@@ -49,22 +37,6 @@ fn message(e: &Error) -> String {
         Error::Validation(v) => v.iter().map(|f| format!("{}: {}", f.field, f.message)).collect::<Vec<_>>().join("; "),
         other => other.to_string(),
     }
-}
-
-/// Refused as `kind` (invalid, forbidden, not found, conflict), saying `says`.
-fn refused<V: std::fmt::Debug>(r: Result<V, Error>, kind: &str, says: &str) {
-    let msg = match &r {
-        Err(e) => message(e),
-        Ok(v) => format!("{v:?}"),
-    };
-    let ok = matches!(
-        (&r, kind),
-        (Err(Error::Invalid(_) | Error::Validation(_)), "invalid")
-            | (Err(Error::Forbidden(_)), "forbidden")
-            | (Err(Error::NotFound(_)), "not found")
-            | (Err(Error::Conflict(_)), "conflict")
-    );
-    assert!(ok && msg.contains(says), "expected {kind} saying {says:?}, got {msg}");
 }
 
 fn pack_path() -> PathBuf {
@@ -712,18 +684,16 @@ fn space() -> Value {
 struct W {
     k: Arc<Kernel>,
     tenant: Uuid,
-    user: Uuid,
-    slug: String,
+    ws: Workspace,
 }
 
 impl W {
+    /// The administrator as the workspace is now (the pack's entities and roles included).
     async fn admin(&self) -> Ctx {
-        self.k.load_ctx(self.tenant, self.user, None, "it".into()).await.unwrap()
+        self.k.load_ctx(self.tenant, self.ws.admin.user, None, "it".into()).await.unwrap()
     }
     async fn user(&self, email: &str, roles: &[&str]) -> Ctx {
-        let roles: Vec<String> = roles.iter().map(|r| r.to_string()).collect();
-        let id = self.k.create_user(&self.admin().await, email, email, None, &roles, false).await.expect("user");
-        self.k.load_ctx(self.tenant, id, None, "it".into()).await.unwrap()
+        self.ws.user(email, roles).await
     }
     /// A portal person holding the pack's portal role.
     async fn citizen(&self, email: &str, name: &str) -> Ctx {
@@ -787,26 +757,15 @@ impl W {
     }
 }
 
-async fn workspace(k: &Arc<Kernel>, slug: &str) -> W {
-    let tenant = k
-        .create_tenant(NewTenant {
-            slug: slug.into(),
-            name: slug.into(),
-            admin_email: format!("admin@{slug}.test"),
-            admin_password: "Correct-Horse-9".into(),
-            admin_name: None,
-            packages: vec!["selling".into(), "studio".into()],
-            settings: Some(json!({"timezone": "UTC"})),
-        })
-        .await
-        .expect("workspace");
-    let session = k.login(slug, &format!("admin@{slug}.test"), "Correct-Horse-9").await.unwrap();
-    W { k: k.clone(), tenant, user: session.user, slug: slug.into() }
+async fn workspace(kit: &Kit, slug: &str) -> W {
+    let ws = kit.workspace(slug, &["selling", "studio"], json!({"timezone": "UTC"})).await;
+    W { k: ws.k.clone(), tenant: ws.tenant, ws }
 }
 
 /// The workspace built by configuration, exported (without the moment it was made).
-async fn build(k: &Arc<Kernel>) -> Value {
-    let src = workspace(k, "government-source").await;
+async fn build(kit: &Kit) -> Value {
+    let k = &kit.k;
+    let src = workspace(kit, "government-source").await;
     let admin = src.admin().await;
     let mut ops: Vec<NewCustomization> = vec![];
     let mut defined = std::collections::HashSet::new();
@@ -858,30 +817,15 @@ async fn build(k: &Arc<Kernel>) -> Value {
 
 #[test]
 fn government_as_a_pack() {
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
-    rt.block_on(async { tokio::spawn(scenario()).await.unwrap() });
+    run(scenario());
 }
 
 async fn scenario() {
-    let url = std::env::var("FERRUM_STUDIO_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_studio_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 12, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
-    let mut packages = ferrum_domain::packages().expect("platform packages");
-    packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
-    packages.extend(ferrum_studio::packages().expect("studio packages"));
-    let mut hooks = HookRegistry::default();
-    ferrum_domain::register(&mut hooks);
-    // As the server registers each app: by its id, so that it takes its own vault handle, owning its packages.
-    let erp: Vec<String> = ferrum_app_erp::packages().expect("ERP's packages").iter().map(|p| p.name().to_string()).collect();
-    hooks.app("erp", &[], ferrum_app_erp::register).own("erp", &erp);
-    let studio: Vec<String> = ferrum_studio::packages().expect("studio packages").iter().map(|p| p.name().to_string()).collect();
-    hooks.app("studio", &studio, ferrum_studio::register).own("studio", &studio);
-    let k: Arc<Kernel> = Kernel::boot(db, Catalog::from_packages(packages).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot");
-    ferrum_domain::maintenance(&k).await.expect("partitions");
-    ferrum_app_erp::maintenance(&k).await.expect("partitions");
+    let kit = Kit::boot(&database("FERRUM_STUDIO_TEST_DATABASE_URL"), &[app!("erp", ferrum_app_erp), app!("studio", ferrum_studio)]).await;
+    let k = kit.k.clone();
 
     // ───────────── the committed pack is what the builder produces ─────────────
-    let built = build(&k).await;
+    let built = build(&kit).await;
     let text = serde_json::to_string_pretty(&built).unwrap() + "\n";
     if std::env::var("FERRUM_WRITE_PACKS").is_ok_and(|v| v == "1") {
         std::fs::write(pack_path(), &text).expect("write the pack");
@@ -928,7 +872,7 @@ async fn scenario() {
     );
 
     // ───────────── installed in a fresh workspace, from the committed file ─────────────
-    let t = workspace(&k, "town").await;
+    let t = workspace(&kit, "town").await;
     let admin = t.admin().await;
     let plan = k.plan_pack(&admin, &pack).await.expect("plan");
     assert_eq!(plan["can_install"], json!(true), "{plan}");
@@ -943,23 +887,22 @@ async fn scenario() {
         () => {{
             clock += Duration::days(1);
             while k.scan_schedules_at(clock, ferrum_kernel::schedule::PAGE).await.unwrap() {}
-            while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+            t.ws.drain().await;
         }};
     }
 
     // ───────────── the books, the permits and the categories ─────────────
     let inr = t.find_one("Currency", json!({"code": "INR"})).await;
-    let company = id_of(&t.insert(&a, "Company", json!({"company_name": "Riverton Town Hall", "abbr": "RT", "default_currency": inr["id"]})).await);
+    let company = uid(&t.insert(&a, "Company", json!({"company_name": "Riverton Town Hall", "abbr": "RT", "default_currency": inr["id"]})).await);
     let services = t.find_one("ItemGroup", json!({"group_name": "Services"})).await;
     let nos = t.find_one("Uom", json!({"uom_name": "Nos"})).await;
-    let fee_item = id_of(
-        &t.insert(
+    let fee_item = uid(&t
+        .insert(
             &a,
             "Item",
             json!({"item_code": "PERMIT-FEE", "item_name": "Permit fee", "item_group": services["id"], "stock_uom": nos["id"], "is_stock_item": false}),
         )
-        .await,
-    );
+        .await);
     let manager = t.user("manager@town.test", &["Services Manager"]).await;
     let officer = t.user("officer@town.test", &["Permit Officer"]).await;
     let caseworker = t.user("cases@town.test", &["Case Officer"]).await;
@@ -971,7 +914,7 @@ async fn scenario() {
         v.as_object_mut().unwrap().extend(books.as_object().unwrap().clone());
         v
     };
-    let building = id_of(
+    let building = uid(
         &t.insert(
             &manager,
             "XPermitType",
@@ -979,12 +922,12 @@ async fn scenario() {
         )
         .await,
     );
-    let party = id_of(&t.insert(&manager, "XPermitType", json!({"type_name": "Street party", "fee": "0", "valid_months": 1})).await);
+    let party = uid(&t.insert(&manager, "XPermitType", json!({"type_name": "Street party", "fee": "0", "valid_months": 1})).await);
     let stall =
-        id_of(&t.insert(&manager, "XPermitType", with_books(json!({"type_name": "Market stall", "fee": "50", "valid_months": 3, "active": false}))).await);
-    let signage = id_of(&t.insert(&manager, "XPermitType", with_books(json!({"type_name": "Signage", "fee": "100", "valid_months": 12}))).await);
-    let potholes = id_of(&t.insert(&manager, "XCaseCategory", json!({"category_name": "Potholes", "days_to_resolve": 5})).await);
-    let noise = id_of(&t.insert(&manager, "XCaseCategory", json!({"category_name": "Noise", "days_to_resolve": 3})).await);
+        uid(&t.insert(&manager, "XPermitType", with_books(json!({"type_name": "Market stall", "fee": "50", "valid_months": 3, "active": false}))).await);
+    let signage = uid(&t.insert(&manager, "XPermitType", with_books(json!({"type_name": "Signage", "fee": "100", "valid_months": 12}))).await);
+    let potholes = uid(&t.insert(&manager, "XCaseCategory", json!({"category_name": "Potholes", "days_to_resolve": 5})).await);
+    let noise = uid(&t.insert(&manager, "XCaseCategory", json!({"category_name": "Noise", "days_to_resolve": 3})).await);
 
     // ───────────── a citizen applies on the portal ─────────────
     let ria = t.citizen("ria@home.test", "Ria Sen").await;
@@ -996,7 +939,7 @@ async fn scenario() {
     // person's email and roles, not their name). Her address is filled, read from her sign-in.
     let draft =
         t.insert(&ria, "XPermitApplication", json!({"permit_type": building.to_string(), "applicant_name": "Ria Sen", "details": "A rear extension"})).await;
-    let app = id_of(&draft);
+    let app = uid(&draft);
     assert_eq!((draft["status"].as_str(), draft["applicant_email"].as_str()), (Some("Draft"), Some("ria@home.test")));
     // DIFFERENT: refused, but not saying which documents are still needed (a check's message is fixed words).
     refused(t.act(&ria, "XPermitApplication", app, "submit_with_fee", json!({})).await, "invalid", "still needed");
@@ -1038,23 +981,22 @@ async fn scenario() {
     // DIFFERENT (G9): her next fee is invoiced to the same customer, because the customer is made once per address
     // (the effect's key); a customer ERP already had under her address is not found, and an applicant who gives
     // another name under the same address is refused (the key's input changed).
-    let sign = id_of(&t.insert(&ria, "XPermitApplication", json!({"permit_type": signage.to_string(), "applicant_name": "Ria Sen"})).await);
+    let sign = uid(&t.insert(&ria, "XPermitApplication", json!({"permit_type": signage.to_string(), "applicant_name": "Ria Sen"})).await);
     t.act(&ria, "XPermitApplication", sign, "submit_with_fee", json!({})).await.expect("the second");
     let sign_fee = t.get("XPermitApplication", sign).await["fee_invoice"].clone();
     assert_eq!(t.get("SalesInvoice", uid(&sign_fee)).await["customer"], fee["customer"], "one customer a citizen");
     // SAME (G5): a closed type takes no applications.
-    let closed = id_of(&t.insert(&officer, "XPermitApplication", json!({"permit_type": stall.to_string(), "applicant_name": "Walk-in"})).await);
+    let closed = uid(&t.insert(&officer, "XPermitApplication", json!({"permit_type": stall.to_string(), "applicant_name": "Walk-in"})).await);
     refused(t.act(&officer, "XPermitApplication", closed, "submit_with_fee", json!({})).await, "invalid", "not open for applications");
     // SAME (G6): a document named without its file is still needed.
-    let counter = id_of(
-        &t.insert(
+    let counter = uid(&t
+        .insert(
             &officer,
             "XPermitApplication",
             json!({"permit_type": building.to_string(), "applicant_name": "Counter Visitor",
                    "documents": [{"document": "Site plan"}, {"document": "Proof of ownership", "file": "/files/deed-on-paper"}]}),
         )
-        .await,
-    );
+        .await);
     refused(t.act(&officer, "XPermitApplication", counter, "submit_with_fee", json!({})).await, "invalid", "still needed");
 
     // ───────────── review, the fee, and the permit ─────────────
@@ -1065,7 +1007,7 @@ async fn scenario() {
     assert_eq!(t.get("XPermitApplication", app).await["officer"], "officer@town.test");
     // SAME (G10): approval waits for the fee, issued and paid in ERP.
     refused(t.act(&officer, "XPermitApplication", app, "approve", json!({})).await, "invalid", "the fee is not paid yet");
-    let fee_id = id_of(&fee);
+    let fee_id = uid(&fee);
     k.submit(&a, "SalesInvoice", fee_id, None).await.expect("the fee invoice submitted");
     refused(t.act(&officer, "XPermitApplication", app, "approve", json!({})).await, "invalid", "the fee is not paid yet");
     let payment = k.run_action(&a, "SalesInvoice", fee_id, "make_payment", Value::Null).await.expect("a payment");
@@ -1097,7 +1039,7 @@ async fn scenario() {
     let apply = |who: &Ctx, kind: Uuid, name: &str| {
         let (who, name) = (who.clone(), name.to_string());
         let t = &t;
-        async move { id_of(&t.insert(&who, "XPermitApplication", json!({"permit_type": kind.to_string(), "applicant_name": name})).await) }
+        async move { uid(&t.insert(&who, "XPermitApplication", json!({"permit_type": kind.to_string(), "applicant_name": name})).await) }
     };
     let p1 = apply(&ria, party, "Ria Sen").await;
     t.act(&ria, "XPermitApplication", p1, "submit_application", json!({})).await.unwrap();
@@ -1194,10 +1136,9 @@ async fn scenario() {
     t.age(&[a3], "appeal_until", -31).await;
     refused(t.act(&ana, "XPermitApplication", a3, "appeal", json!({"grounds": "Late"})).await, "invalid", "the days to appeal it have ended");
     // SAME (G27): a renewable permit is not renewed before its type's days before it ends; the permit shows from when.
-    let cafe = id_of(
-        &t.insert(&manager, "XPermitType", json!({"type_name": "Cafe licence", "fee": "0", "valid_months": 24, "renewable": true, "renew_within_days": 60}))
-            .await,
-    );
+    let cafe = uid(&t
+        .insert(&manager, "XPermitType", json!({"type_name": "Cafe licence", "fee": "0", "valid_months": 24, "renewable": true, "renew_within_days": 60}))
+        .await);
     let a4 = apply(&ana, cafe, "Ana Roy").await;
     t.act(&ana, "XPermitApplication", a4, "submit_application", json!({})).await.unwrap();
     t.act(&officer, "XPermitApplication", a4, "take_up", json!({})).await.unwrap();
@@ -1227,20 +1168,19 @@ async fn scenario() {
     let planner = t.user("planner@town.test", &["Permit Officer", "Planning Officer", "Inspector"]).await;
     let inspector = t.user("inspector@town.test", &["Permit Officer", "Inspector"]).await;
     let kim = t.citizen("kim@home.test", "Kim Roy").await;
-    let kiosk = id_of(
-        &t.insert(
+    let kiosk = uid(&t
+        .insert(
             &manager,
             "XPermitType",
             json!({"type_name": "Kiosk", "fee": "0", "valid_months": 1, "renewable": true, "renew_within_days": 60, "in_register": true,
                    "register_holder": "Published", "register_conditions": "Published",
                    "stages": [{"stage": "Planning review", "role": "Planning Officer"}, {"stage": "Site visit", "role": "Inspector", "inspection": true}]}),
         )
-        .await,
-    );
+        .await);
     let steps: Vec<i64> = t.get("XPermitType", kiosk).await["stages"].as_array().unwrap().iter().map(|s| s["step"].as_i64().unwrap()).collect();
     assert_eq!(steps, [1, 2], "each stage its own step");
     let k1 =
-        id_of(&t.insert(&kim, "XPermitApplication", json!({"permit_type": kiosk.to_string(), "applicant_name": "Kim Roy", "details": "A coffee kiosk"})).await);
+        uid(&t.insert(&kim, "XPermitApplication", json!({"permit_type": kiosk.to_string(), "applicant_name": "Kim Roy", "details": "A coffee kiosk"})).await);
     t.act(&kim, "XPermitApplication", k1, "submit_application", json!({})).await.unwrap();
     t.act(&officer, "XPermitApplication", k1, "take_up", json!({})).await.unwrap();
     // SAME (G12): it waits for the first stage, and approval for every stage.
@@ -1286,7 +1226,7 @@ async fn scenario() {
     assert!(k1_titles[0].ends_with("is submitted") && k1_titles[1].ends_with("is approved") && k1_titles[2].ends_with("is issued"), "{k1_titles:?}");
     // SAME (G33), read without signing in: the register holds the kiosk's permit, with its holder and conditions;
     // the types not on it are not.
-    let register = || async { k.published_list(&t.slug, "permits").await.unwrap().expect("the register") };
+    let register = || async { k.published_list(&t.ws.slug, "permits").await.unwrap().expect("the register") };
     let listed = register().await;
     assert_eq!(listed.rows.len(), 1, "{:?}", listed.json());
     let row = &listed.rows[0];
@@ -1359,7 +1299,7 @@ async fn scenario() {
     // SAME: a type that does not renew refuses a renewal (the app's test does not try it).
     refused(t.act(&ria, "XPermit", short, "renew", json!({})).await, "invalid", "not renewed");
     // SAME: a stage that fails rejects the application, saying why.
-    let k2 = id_of(&t.insert(&kim, "XPermitApplication", json!({"permit_type": kiosk.to_string(), "applicant_name": "Kim Roy"})).await);
+    let k2 = uid(&t.insert(&kim, "XPermitApplication", json!({"permit_type": kiosk.to_string(), "applicant_name": "Kim Roy"})).await);
     t.act(&kim, "XPermitApplication", k2, "submit_application", json!({})).await.unwrap();
     t.act(&officer, "XPermitApplication", k2, "take_up", json!({})).await.unwrap();
     // DIFFERENT (configuration): Reject It is two configured actions, one shown while a stage waits (it adds the
@@ -1390,16 +1330,15 @@ async fn scenario() {
     assert!(twice.is_ok(), "the app refuses \"Check\" and \"check\"; the pack takes them");
     // SAME (G12, G14): stages side by side: fire safety and health together, in any order, each by its own people
     // and no one passing both; then a final review.
-    let market = id_of(
-        &t.insert(
+    let market = uid(&t
+        .insert(
             &manager,
             "XPermitType",
             json!({"type_name": "Fair Stall", "fee": "0", "valid_months": 1,
                    "stages": [{"stage": "Fire safety", "role": "Fire Officer"}, {"stage": "Health check", "role": "Health Officer", "alongside": true},
                               {"stage": "Final review", "role": "Planning Officer"}]}),
         )
-        .await,
-    );
+        .await);
     let health = t.user("health@town.test", &["Permit Officer", "Health Officer"]).await;
     let both = t.user("both@town.test", &["Permit Officer", "Fire Officer", "Health Officer"]).await;
     let lee = t.citizen("lee@home.test", "Lee Park").await;
@@ -1436,27 +1375,26 @@ async fn scenario() {
     // citizen types her name.
     let raised = t.insert(&ria, "XCase", json!({"category": potholes.to_string(), "subject": "Pothole on Mill Lane", "citizen_name": "Ria Sen"})).await;
     assert_eq!((raised["due_on"].as_str(), raised["citizen_email"].as_str()), (Some((today + Duration::days(5)).to_string().as_str()), Some("ria@home.test")));
-    let pothole = id_of(&raised);
+    let pothole = uid(&raised);
     refused(t.set(&caseworker, "XCase", pothole, json!({"status": "Resolved"})).await, "invalid", "says how");
     t.set(&caseworker, "XCase", pothole, json!({"status": "Resolved", "resolution": "Filled on Tuesday"})).await.unwrap();
     assert_eq!(t.get("XCase", pothole).await["resolved_on"], json!(today.to_string()));
     t.set(&caseworker, "XCase", pothole, json!({"description": "Mill Lane, by the bridge"})).await.unwrap();
     assert_eq!(t.get("XCase", pothole).await["resolved_on"], json!(today.to_string()), "keeps its day");
-    let loud = id_of(
-        &t.insert(
+    let loud = uid(&t
+        .insert(
             &caseworker,
             "XCase",
             json!({"category": noise.to_string(), "subject": "Late music", "citizen_name": "Sam Lee", "citizen_email": "sam@home.test"}),
         )
-        .await,
-    );
+        .await);
     assert_eq!(t.get("XCase", loud).await["due_on"], json!((today + Duration::days(3)).to_string()));
     // SAME (G30): open past its day, it is overdue at the midnight run (the harness ages it ten days).
     t.age(&[loud, pothole], "opened_on", -10).await;
     day!();
     assert_eq!(t.get("XCase", loud).await["overdue"], true, "open past its day");
     assert_eq!(t.get("XCase", pothole).await["overdue"], false, "resolved in time");
-    let old_case = id_of(&t.insert(&caseworker, "XCase", json!({"category": noise.to_string(), "subject": "Old complaint", "citizen_name": "Sam Lee"})).await);
+    let old_case = uid(&t.insert(&caseworker, "XCase", json!({"category": noise.to_string(), "subject": "Old complaint", "citizen_name": "Sam Lee"})).await);
     t.age(&[old_case], "opened_on", -20).await;
     t.set(&caseworker, "XCase", old_case, json!({"status": "In Progress"})).await.unwrap();
     assert_eq!(t.get("XCase", old_case).await["overdue"], true, "open, twenty days on");
@@ -1509,7 +1447,7 @@ async fn scenario() {
     // without declarations; a draft she never put to the office is not erased while what she put to it is kept,
     // each saying why.
     let unsent =
-        id_of(&t.insert(&ria, "XPermitApplication", json!({"permit_type": signage.to_string(), "applicant_name": "Ria Sen", "details": "A shop sign"})).await);
+        uid(&t.insert(&ria, "XPermitApplication", json!({"permit_type": signage.to_string(), "applicant_name": "Ria Sen", "details": "A shop sign"})).await);
     let asked = k.personal_data(&a, "ria@home.test").await.unwrap();
     let records = asked["records"].as_array().cloned().unwrap_or_default();
     println!("personal data found for ria: {}", records.iter().map(|r| r["entity"].as_str().unwrap_or("?").to_string()).collect::<Vec<_>>().join(", "));

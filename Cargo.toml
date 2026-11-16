@@ -9,6 +9,7 @@ members = ["crates/calc", "crates/meta", "crates/kernel", "crates/domain", "crat
     "crates/logic",
     "crates/process",
     "crates/ops",
+    "crates/testkit",
     "server", "server/migration"]
 # Vendored crates are dependencies, not members: yrs with a fix (third_party/yrs/FERRUM.md).
 exclude = ["third_party"]

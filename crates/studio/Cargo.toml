@@ -31,6 +31,8 @@ ferrum-mcp = { path = "../mcp" }
 ferrum-app-erp = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main" }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 tokio = { workspace = true }
+# Its suites boot as the server does (docs/testkit.md).
+ferrum-testkit = { path = "../testkit" }
 
 [lints]
 workspace = true

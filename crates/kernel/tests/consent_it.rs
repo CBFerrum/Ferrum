@@ -7,78 +7,29 @@
 
 use ferrum_kernel::capability::Invocation;
 use ferrum_kernel::retention::Purpose;
-use ferrum_kernel::tenant::NewTenant;
-use ferrum_kernel::vault::{self, Kdf, Opener};
-use ferrum_kernel::{Db, DbConfig, Doc, HookRegistry, Kernel, KernelSettings, automation};
-use ferrum_meta::Catalog;
+use ferrum_kernel::{KernelSettings, automation};
+use ferrum_testkit::{Kit, database, obj, run};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 const PACKAGE: &str = "package: leads\nversion: 0.1.0\ndepends: [core]\npersonal_data:\n  - {entity: Lead, match: email, erase: [email]}\nroles:\n  - name: Seller\n    permissions:\n      - {entity: Lead, read: true, write: true, create: true}\n";
 const ENTITIES: &str =
     "name: Lead\nlabel: Lead\nkind: master\ntitle_field: title\nfields:\n  - {name: title, type: data, required: true}\n  - {name: email, type: email}\n";
 
-/// What the server's mailer was asked to send: (to, subject).
-static SENT: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
-
-struct Captured;
-
-#[async_trait::async_trait]
-impl ferrum_kernel::Mailer for Captured {
-    async fn send(&self, to: &str, subject: &str, _html: &str) -> ferrum_kernel::Result<()> {
-        SENT.lock().unwrap().push((to.to_string(), subject.to_string()));
-        Ok(())
-    }
-}
-
-fn obj(v: Value) -> Doc {
-    v.as_object().cloned().unwrap()
-}
-
-async fn drain(k: &Kernel) {
-    while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
-}
-
-fn sent(to: &str, subject: &str) -> usize {
-    SENT.lock().unwrap().iter().filter(|(t, s)| t == to && s == subject).count()
-}
-
 #[test]
 fn marketing_stops_where_consent_ends() {
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
-    rt.block_on(async { tokio::spawn(scenario()).await.unwrap() });
+    run(scenario());
 }
 
 async fn scenario() {
-    let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
-    // Opened as a server opens it (erasing someone who opted out needs it), with the database's password.
-    let opener = Opener { database_url: url, file: PathBuf::from("/nonexistent/root.key"), transit: None, command: None, kdf: Kdf { m_kib: 64, t: 1, p: 1 } };
-    vault::open(&db, opener, false).await.expect("the vault opens");
-    let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/lead.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let leads = ferrum_meta::catalog::load_package_files(&files).expect("package");
-    let k = Kernel::boot(db, Catalog::from_packages(vec![core, leads]).unwrap(), HookRegistry::default(), KernelSettings::default(), Some(Arc::new(Captured)))
-        .await
-        .expect("boot");
-    let tenant = k
-        .create_tenant(NewTenant {
-            slug: "shop".into(),
-            name: "Shop".into(),
-            admin_email: "admin@shop.test".into(),
-            admin_password: "Correct-Horse-9".into(),
-            admin_name: None,
-            packages: vec!["leads".into()],
-            settings: None,
-        })
-        .await
-        .unwrap();
-    let session = k.login("shop", "admin@shop.test", "Correct-Horse-9").await.unwrap();
-    let admin = k.load_ctx(tenant, session.user, None, "it".into()).await.unwrap();
+    // As a server boots, with the vault open: erasing someone who opted out needs it.
+    let kit = Kit::boot_with(&database("FERRUM_TEST_DATABASE_URL"), &[], vec![leads], KernelSettings::default()).await;
+    let ws = kit.workspace("shop", &["leads"], Value::Null).await;
+    let (k, tenant, admin) = (kit.k.clone(), ws.tenant, ws.admin.clone());
+    let sent = |to: &str, subject: &str| kit.mail().iter().filter(|m| m.to == to && m.subject == subject).count();
     let (pat, bo) = ("pat@example.com", "bo@example.com");
 
     // An automation sends each new lead an offer (marketing) and an acknowledgement (transactional).
@@ -96,7 +47,7 @@ async fn scenario() {
     tx.commit().await.unwrap();
     // Pat withdraws their consent to marketing while all of it waits.
     k.record_consent(&admin, pat, Purpose::Marketing, false, "Unsubscribed from the spring campaign").await.expect("withdrawn");
-    drain(&k).await;
+    ws.drain().await;
     assert_eq!((sent(pat, "Autumn offer"), sent(pat, "Your invoice")), (0, 1), "queued before the withdrawal, asked as it went");
     assert_eq!((sent(pat, "Spring offer"), sent(pat, "We have your enquiry")), (0, 1), "the automation's offer stops; its acknowledgement goes");
     assert_eq!(sent(bo, "Spring offer") + sent(bo, "We have your enquiry"), 2, "Bo gets both");
@@ -114,7 +65,7 @@ async fn scenario() {
     let notice = |subject: &str, key: &str| Invocation::new("ferrum.mail", json!({"to": pat, "subject": subject, "body": "Hello"})).key(key);
     k.invoke(&admin, marketing("Process offer", "mk-1")).await.expect("the capability answers");
     k.invoke(&admin, notice("Process notice", "tx-1")).await.expect("the capability answers");
-    drain(&k).await;
+    ws.drain().await;
     assert_eq!((sent(pat, "Process offer"), sent(pat, "Process notice")), (0, 1), "a process's marketing respects it too");
     assert!(k.catalog(&admin).iter().any(|c| c.id == "ferrum.mail.marketing"), "listed beside ferrum.mail");
 
@@ -123,7 +74,7 @@ async fn scenario() {
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     k.queue_mail_for(&mut tx, tenant, pat, "Welcome back", "<p>Hi</p>", &[], Purpose::Marketing).await.unwrap();
     tx.commit().await.unwrap();
-    drain(&k).await;
+    ws.drain().await;
     assert_eq!(sent(pat, "Welcome back"), 1);
 
     // A restriction placed after a notice was queued stops the notice as it goes.
@@ -131,7 +82,7 @@ async fn scenario() {
     k.queue_mail_for(&mut tx, tenant, bo, "Your receipt", "<p>Receipt</p>", &[], Purpose::Transactional).await.unwrap();
     tx.commit().await.unwrap();
     k.restrict_processing(&admin, bo, "Disputes how their data is used").await.expect("restricted");
-    drain(&k).await;
+    ws.drain().await;
     assert_eq!(sent(bo, "Your receipt"), 0, "asked as it went");
 
     // Only marketing takes consent; the record says where it was given.

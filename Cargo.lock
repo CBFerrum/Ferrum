@@ -3626,6 +3626,7 @@ dependencies = [
  "ferrum-logic",
  "ferrum-meta",
  "ferrum-saml",
+ "ferrum-testkit",
  "futures",
  "hex",
  "hickory-resolver",
@@ -4041,6 +4042,7 @@ dependencies = [
  "ferrum-logic",
  "ferrum-mcp",
  "ferrum-meta",
+ "ferrum-testkit",
  "futures",
  "rust_decimal",
  "rust_xlsxwriter",
@@ -4051,6 +4053,22 @@ dependencies = [
  "tracing",
  "uuid",
  "zip",
+]
+
+[[package]]
+name = "ferrum-testkit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "ferrum-ops",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
