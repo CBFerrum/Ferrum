@@ -175,14 +175,18 @@ fn apps_in(baseline: &str, heading: &str) -> Vec<String> {
 /// password elsewhere (docs/operations.md, "Any PostgreSQL").
 pub fn stored_host_findings(st: &AppState, database_url: &str) -> Vec<Finding> {
     let now = st.live_settings.start.clone();
-    ["database_direct_host", "database_read_host"]
+    let hosts = &st.settings.database_address;
+    // A host the address itself gives wins over the table's, which is then not used at all.
+    [("database_direct_host", &hosts.direct_host), ("database_read_host", &hosts.read_host)]
         .into_iter()
+        .filter(|(_, in_address)| in_address.is_empty())
+        .map(|(key, _)| key)
         .filter_map(|key| {
             crate::settings::stored_host_refused(&now.snapshot, key, database_url).err().map(|why| {
                 Finding::warning(
                     if key == "database_direct_host" { "database.direct_host" } else { "database.read_host" },
                     format!("the setting {key} from the database is not used: {why}"),
-                    "Give the host in the environment (FERRUM_DATABASE_DIRECT_HOST, FERRUM_DATABASE_READ_HOST), mount the database's certificate authority, or remove the setting.",
+                    "Give the host in DATABASE_URL itself (ferrum_direct_host=…, ferrum_read_host=…), mount the database's certificate authority, or remove the setting.",
                 )
             })
         })

@@ -46,12 +46,17 @@ pub fn configured(def: &Def, config: &Config) -> Option<String> {
 }
 
 /// The host a secret is sent to, as `snapshot`'s settings say (the address marked `sends:` it in the registry): the mail
-/// server's for its password, the model provider's for its key. `None`: it goes to no address of a setting.
+/// server's for its password, the model provider's for its key, the trace collector's for its headers. `None`: it goes
+/// to no address of a setting.
 pub fn sent_to(key: &str, snapshot: &Snapshot) -> Option<String> {
     let setting = |k: &str| snapshot.get(k).1.map(str::to_string).or_else(|| crate::settings::find(k).map(|d| d.default.clone())).unwrap_or_default();
     match key {
         "mailer_password" => Some(setting("mailer_host").trim().to_ascii_lowercase()).filter(|h| !h.is_empty()),
         "assistant_api_key" => reqwest::Url::parse(setting("assistant_url").trim()).ok()?.host_str().map(str::to_ascii_lowercase),
+        "otel_exporter_otlp_headers" => {
+            let traces = crate::telemetry::traces(&|k| Some(setting(k)), None)?;
+            reqwest::Url::parse(&traces.endpoint).ok()?.host_str().map(str::to_ascii_lowercase)
+        }
         _ => None,
     }
 }

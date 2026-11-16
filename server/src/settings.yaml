@@ -164,8 +164,10 @@
   path: settings.secret_key_command
   secret: true
   doc: >-
-    In place of `FERRUM_SECRET_KEY`: a command (run with `sh -c`, 30 seconds at most) that prints the key, such as a
-    KMS's own CLI.
+    In place of `FERRUM_SECRET_KEY`, and as the vault's `kms` slot: a command (run with `sh -c`, 30 seconds at most)
+    that prints the key, such as a KMS's own CLI. Only ever from the environment, and outside the boot contract: a
+    command line is never read from the database, where whoever writes a row would run a program. Prefer the key file
+    (`/run/ferrum/root.key`) or the key-management service (`kms_transit`).
 - key: retired_secret_keys
   env: FERRUM_RETIRED_SECRET_KEYS
   path: settings.retired_secret_keys
@@ -176,28 +178,30 @@
   env: FERRUM_KMS_TRANSIT
   path: settings.kms_transit
   doc: >-
-    The OpenBao or Vault Transit key that unwraps `FERRUM_SECRET_KEY` and retired keys given as ciphertext:
-    `https://host:8200/<mount>/<key>`. Signs in with `FERRUM_KMS_TOKEN_FILE`, `BAO_TOKEN` or `VAULT_TOKEN`, or as the
-    pod's service account (`FERRUM_KMS_KUBERNETES_ROLE`, `FERRUM_KMS_KUBERNETES_MOUNT`); `FERRUM_KMS_CA_FILE` and
-    `FERRUM_KMS_NAMESPACE` when needed.
+    The OpenBao or Vault Transit key of the vault's `kms` slot: `https://host:8200/<mount>/<key>`. It signs in with the
+    token mounted at `/run/ferrum/kms.token`, or as the pod's service account (`kms_kubernetes_role`); its certificate
+    is checked against `/run/ferrum/kms-ca.pem` too when that is there. The slot keeps the address it was made with,
+    and the token goes nowhere else: changed here, the slot is not asked until it is made again
+    (`ferrum task vault_add_slot kind:kms`). Keys from the environment given as its ciphertext (`FERRUM_SECRET_KEY`,
+    retired keys) are unwrapped only at an address the environment gives.
 - key: kms_token_file
   env: FERRUM_KMS_TOKEN_FILE
-  environment: the key-management client
+  environment: the key-management client (through R1; the token's file is /run/ferrum/kms.token from now on)
   doc: >-
-    A file a Vault Agent keeps the Transit token in, read at each use.
+    A file a Vault Agent keeps the Transit token in, read at each use. Mount it at `/run/ferrum/kms.token` instead.
 - key: bao_token
   env: BAO_TOKEN
   secret: true
   doc: >-
-    The OpenBao token for `FERRUM_KMS_TRANSIT`.
+    The OpenBao token for `kms_transit`, through R1: give it as the file `/run/ferrum/kms.token` instead.
 - key: vault_token
   env: VAULT_TOKEN
   secret: true
   doc: >-
-    The Vault token for `FERRUM_KMS_TRANSIT`, when `BAO_TOKEN` is not set.
+    The Vault token for `kms_transit`, when `BAO_TOKEN` is not set, through R1: give it as the file
+    `/run/ferrum/kms.token` instead.
 - key: kms_kubernetes_role
   env: FERRUM_KMS_KUBERNETES_ROLE
-  environment: the key-management client
   doc: >-
     Signs in to Transit as the pod's service account, with this role, when no token is mounted. The service account's
     token is read at its standard path.
@@ -205,21 +209,23 @@
   env: FERRUM_KMS_KUBERNETES_MOUNT
   default: kubernetes
   doc: >-
-    The Kubernetes auth mount for `FERRUM_KMS_KUBERNETES_ROLE`.
+    The Kubernetes auth mount for `kms_kubernetes_role`.
 - key: kms_kubernetes_token_file
   env: FERRUM_KMS_KUBERNETES_TOKEN_FILE
   default: /var/run/secrets/kubernetes.io/serviceaccount/token
+  environment: the key-management client (through R1; a file the server sends is never named by the database)
   doc: >-
     The service account's token file, where it is not at its standard path.
 - key: kms_ca_file
   env: FERRUM_KMS_CA_FILE
-  environment: the key-management client (through R1; a file the server sends is never named by the database)
+  environment: the key-management client (through R1; the file is /run/ferrum/kms-ca.pem from now on)
   doc: >-
-    A certificate authority (PEM) Transit's certificate is checked against, beside the usual ones.
+    A certificate authority (PEM) Transit's certificate is checked against, beside the usual ones. Mount it at
+    `/run/ferrum/kms-ca.pem` instead.
 - key: kms_namespace
   env: FERRUM_KMS_NAMESPACE
   doc: >-
-    The Vault namespace of `FERRUM_KMS_TRANSIT`.
+    The Vault namespace of `kms_transit`.
 - key: bootstrap_token
   env: FERRUM_BOOTSTRAP_TOKEN
   path: settings.bootstrap_token
@@ -847,26 +853,34 @@
   doc: >-
     Activities one workspace may have at once on a replica; default from its database pool.
 
-# Traces, read by the OpenTelemetry SDK itself (docs/operations.md, Monitoring).
+# Traces (docs/operations.md, Monitoring), applied in code as the log is set up, once the settings are read: until then
+# nothing is sent. The SDK still reads its other OTEL_* variables itself (sampling, batching, timeouts).
 - key: otel_exporter_otlp_endpoint
   env: OTEL_EXPORTER_OTLP_ENDPOINT
-  environment: the OpenTelemetry SDK, with its other OTEL_* settings (a token among them)
+  sends: OTEL_EXPORTER_OTLP_HEADERS
   doc: >-
     The collector traces go to (`http://otel-collector:4318`; the server adds `/v1/traces`).
 - key: otel_exporter_otlp_traces_endpoint
   env: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-  environment: the OpenTelemetry SDK
+  sends: OTEL_EXPORTER_OTLP_HEADERS
   doc: >-
     The collector's traces address, in place of the one above.
+- key: otel_exporter_otlp_headers
+  env: OTEL_EXPORTER_OTLP_HEADERS
+  secret: true
+  vault: library
+  doc: >-
+    Headers the collector wants, `name=value,name=value` with each value percent-encoded (`Authorization=Bearer%20…`,
+    a service's key): a secret, given only to the collector's host it was set for.
 - key: otel_sdk_disabled
   env: OTEL_SDK_DISABLED
+  type: bool
+  default: "false"
   doc: >-
     `true` turns traces off.
 - key: otel_service_name
   env: OTEL_SERVICE_NAME
   default: ferrum
-  type: bool
-  default: "false"
   doc: >-
     The name traces carry.
 
@@ -875,11 +889,13 @@
 - key: move_source_database_url
   env: FERRUM_MOVE_SOURCE_DATABASE_URL
   secret: true
+  input: move_workspace
   doc: >-
     The source installation's database.
 - key: move_source_secret_keys
   env: FERRUM_MOVE_SOURCE_SECRET_KEYS
   secret: true
+  input: move_workspace
   doc: >-
     The source's `FERRUM_SECRET_KEY`, then its retired keys, comma-separated.
 - key: move_source_files
@@ -890,12 +906,10 @@
 - key: move_source_files_dir
   env: FERRUM_MOVE_SOURCE_FILES_DIR
   input: move_workspace
-  input: move_workspace
   doc: >-
     The source's file directory.
 - key: move_source_s3_bucket
   env: FERRUM_MOVE_SOURCE_S3_BUCKET
-  input: move_workspace
   input: move_workspace
   doc: >-
     The source's bucket.
@@ -924,169 +938,169 @@
 - key: drive.office_url
   env: FERRUM_OFFICE_URL
   environment: Drive
+  app: drive
   doc: >-
     With online editing: the editor server as the server reaches it (docs/operations.md, Online editing).
 - key: drive.office_wopi_url
   env: FERRUM_OFFICE_WOPI_URL
   environment: Drive
+  app: drive
   doc: >-
     With online editing: this server as the editor server reaches it.
 - key: drive.office_ips
   env: FERRUM_OFFICE_IPS
   environment: Drive
+  app: drive
   doc: >-
     Optional: the only addresses WOPI calls are accepted from.
 - key: drive.editors_url
   env: FERRUM_EDITORS_URL
-  app: drive
   environment: Drive
+  app: drive
   doc: >-
     The browser editors' server as browsers reach it (docs/operations.md, Browser editors).
 - key: drive.max_file_mb
   env: FERRUM_DRIVE_MAX_FILE_MB
-  app: drive
   environment: Drive
+  app: drive
   doc: >-
     Largest file in one request to Drive: an upload, a new version or an editor save. Default 32, at most 1024. A
     replica holds each such file in memory while storing it, so allow `uploads at once × this` of memory per
     replica. Workspaces set their own limit within it. Raise any proxy's body limit in front with it.
-  app: drive
 - key: drive.max_zip_mb
   env: FERRUM_DRIVE_MAX_ZIP_MB
   environment: Drive
+  app: drive
   doc: >-
     The largest folder Drive downloads as one zip.
-  app: drive
 - key: comms.meet_url
   env: FERRUM_MEET_URL
   environment: Comms
+  app: comms
+  sends: FERRUM_MEET_SECRET
   doc: >-
     LiveKit as browsers reach it, `wss://meet.example.com` (docs/operations.md, Meetings).
-  app: drive
 - key: comms.meet_key
   env: FERRUM_MEET_KEY
   secret: true
+  app: comms
   doc: >-
     LiveKit's API key (a name).
 - key: comms.meet_secret
   env: FERRUM_MEET_SECRET
-  app: drive
   secret: true
+  app: comms
   doc: >-
     LiveKit's API secret.
 - key: comms.meet_recordings
   env: FERRUM_MEET_RECORDINGS
-  app: comms
-  sends: FERRUM_MEET_SECRET
   environment: Comms
+  app: comms
   doc: >-
     `true` once LiveKit Egress runs beside LiveKit with its storage.
 - key: comms.meet_api_url
   env: FERRUM_MEET_API_URL
-  app: comms
   environment: Comms
+  app: comms
+  sends: FERRUM_MEET_SECRET
   doc: >-
     LiveKit's server API as Ferrum reaches it, when that is not `FERRUM_MEET_URL` over http(s).
 - key: comms.mail_url
   env: FERRUM_MAIL_URL
-  app: comms
   environment: Comms
+  app: comms
+  sends: FERRUM_MAIL_ADMIN_SECRET
   doc: >-
     Stalwart's HTTP address as the server reaches it (docs/operations.md, Hosted mail).
 - key: comms.mail_admin
   env: FERRUM_MAIL_ADMIN
-  app: comms
   environment: Comms
+  app: comms
+  sends: FERRUM_MAIL_ADMIN_SECRET
   doc: >-
     A Stalwart administrator.
 - key: comms.mail_admin_secret
   env: FERRUM_MAIL_ADMIN_SECRET
-  app: comms
-  sends: FERRUM_MEET_SECRET
   secret: true
+  app: comms
   doc: >-
     That administrator's password.
 - key: comms.mail_host
   env: FERRUM_MAIL_HOST
-  app: comms
-  sends: FERRUM_MAIL_ADMIN_SECRET
   environment: Comms
+  app: comms
   doc: >-
     Optional: the mail server's public host name, shown to people setting up mail programs.
 - key: metrics.engine_url
   env: FERRUM_METRICS_ENGINE_URL
-  app: comms
-  sends: FERRUM_MAIL_ADMIN_SECRET
   environment: Metrics
+  app: metrics
+  sends: FERRUM_METRICS_ENGINE_TOKEN
   doc: >-
     Metrics' engine for external sources (docs/operations.md, Metrics' engine for external sources).
 - key: metrics.engine_token
   env: FERRUM_METRICS_ENGINE_TOKEN
-  app: comms
   secret: true
+  app: metrics
   doc: >-
     The engine's token, at least 32 characters.
 - key: eu.vies_url
   env: FERRUM_EU_VIES_URL
-  app: comms
   environment: ERP's EU add-on
+  app: eu
   doc: >-
     Another address for the EU's VAT number service (a test server).
 - key: eu.tedb_url
   env: FERRUM_EU_TEDB_URL
-  app: metrics
-  sends: FERRUM_METRICS_ENGINE_TOKEN
   environment: ERP's EU add-on
+  app: eu
   doc: >-
     Another address for the EU's taxes database (a test server).
 - key: gb.hmrc_url
   env: FERRUM_GB_HMRC_URL
-  app: metrics
   environment: ERP's GB add-on
+  app: gb
   doc: >-
     Another address for HMRC's Making Tax Digital API (its sandbox).
 - key: gb.public_ip
   env: FERRUM_PUBLIC_IP
-  app: eu
   environment: ERP's GB add-on
+  app: gb
   doc: >-
     The server's public address, sent in HMRC's fraud-prevention headers.
 - key: my.myinvois_url
   env: FERRUM_MY_MYINVOIS_URL
-  app: eu
   environment: ERP's Malaysia add-on
+  app: my
   doc: >-
     Another address for MyInvois (its sandbox).
 - key: ro.anaf_url
   env: FERRUM_RO_ANAF_URL
-  app: gb
   environment: ERP's Romania add-on
+  app: ro
   doc: >-
     Another address for ANAF's e-Factura (its test system).
 - key: us.avatax_url
   env: FERRUM_US_AVATAX_URL
-  app: gb
   environment: ERP's US add-on
+  app: us
   doc: >-
     Another address for AvaTax (its sandbox).
 - key: pt.certificate
   env: FERRUM_PT_CERTIFICATE
-  app: my
   environment: ERP's Portugal add-on
+  app: pt
   doc: >-
     The software certificate number for certified invoices (docs/operations.md, Portugal: certified invoices).
 - key: pt.key_version
   env: FERRUM_PT_KEY_VERSION
-  app: ro
   environment: ERP's Portugal add-on
+  app: pt
   doc: >-
     The signing key's version.
 - key: pt.signing_key
   env: FERRUM_PT_SIGNING_KEY
-  app: us
   secret: true
+  app: pt
   doc: >-
     The key certified invoices are signed with.
-  app: pt
-  app: pt
-  app: pt

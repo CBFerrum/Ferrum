@@ -16,8 +16,8 @@ placeholder() { case "$1" in "" | *[Cc][Hh][Aa][Nn][Gg][Ee]* | *example* | *repl
 
 if [ "${1:-}" = "--generate" ]; then
   [ -f .env ] || cp .env.example .env
-  # No FERRUM_SECRET_KEY: a new installation needs none (the vault keeps and keys everything).
-  for pair in JWT_SECRET:48 POSTGRES_PASSWORD:24 FERRUM_DB_PASSWORD:24 FERRUM_METRICS_TOKEN:32; do
+  # The database's two passwords and nothing else: the vault (in the database) keeps and makes every other secret.
+  for pair in POSTGRES_PASSWORD:24 FERRUM_DB_PASSWORD:24; do
     name=${pair%:*} bytes=${pair#*:}
     if placeholder "$(value "$name")"; then
       generated=$(openssl rand -base64 "$bytes" | tr -d '\n')
@@ -48,7 +48,7 @@ else
     ------) ok "deploy/.env is readable only by its owner" ;;
     *) warning "deploy/.env can be read by others" "chmod 600 deploy/.env" ;;
   esac
-  for name in JWT_SECRET POSTGRES_PASSWORD FERRUM_DB_PASSWORD; do
+  for name in POSTGRES_PASSWORD FERRUM_DB_PASSWORD; do
     if placeholder "$(value "$name")"; then
       blocker "$name is missing, or a placeholder" "Run deploy/preflight.sh --generate."
     else
@@ -72,7 +72,7 @@ else
     "") warning "PUBLIC_URL is not set" "Set it to the https address people open: links in mail and sign-in redirects use it." ;;
     *) warning "PUBLIC_URL is not https" "Put TLS in front of Ferrum: session cookies and passkeys need it." ;;
   esac
-  [ -n "$(value FERRUM_METRICS_TOKEN)" ] && ok "metrics need a token" || warning "FERRUM_METRICS_TOKEN is not set" "Run deploy/preflight.sh --generate."
+  [ -n "$(value FERRUM_METRICS_TOKEN)" ] && ok "metrics need a token" || warning "the metrics token is not in deploy/.env" "Once Ferrum runs: docker compose exec ferrum ferrum task secret_set name:metrics_token (it shows the token once), unless one is in the vault already."
   [ -n "$(value MAILER_HOST)" ] && ok "a mail server is set" || warning "MAILER_HOST is not set" "Invitations and password resets will not go out."
   [ -n "$(value FERRUM_CLAMAV_ADDR)" ] && ok "a malware scanner is set" || warning "FERRUM_CLAMAV_ADDR is not set" "Uploads will not be scanned (docs/operations.md, Malware scanning)."
 fi

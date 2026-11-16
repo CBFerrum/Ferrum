@@ -818,6 +818,19 @@ pub fn stored_host_refused(snapshot: &Snapshot, key: &str, database_url: &str) -
     }
 }
 
+/// The direct or read host a replica uses for `key` (`database_direct_host`, `database_read_host`): the environment's
+/// variable's (R1), else the one `DATABASE_URL` itself gives (`in_address`), else the setting's (`setting`: the table's,
+/// there), with whether it is the table's, which may be used only where it cannot draw the password elsewhere.
+pub fn host_to_use<'a>(snapshot: &Snapshot, key: &str, setting: &'a str, in_address: &'a str) -> Option<(&'a str, bool)> {
+    let from_environment = snapshot.get(key).0 == Source::Environment && !setting.trim().is_empty();
+    match (from_environment, in_address.trim().is_empty(), setting.trim().is_empty()) {
+        (true, _, _) => Some((setting, false)),
+        (false, false, _) => Some((in_address, false)),
+        (false, true, false) => Some((setting, true)),
+        (false, true, true) => None,
+    }
+}
+
 /// A per-replica budget's share: the pool's `limit` divided among its `replicas` (0 stays no limit).
 pub fn share(limit: u32, replicas: u32) -> u32 {
     if limit == 0 { 0 } else { limit.div_ceil(replicas.max(1)).max(1) }
@@ -1036,6 +1049,9 @@ pub async fn change_with(
         if let Some(who) = &def.environment {
             return Err(Error::Invalid(format!("{} is read from the environment by {who}: set {} there", def.key, def.env)));
         }
+        if let Some(task) = &def.input {
+            return Err(Error::Invalid(format!("{} is an input of ferrum task {task}, given in its environment when it runs: no replica reads it", def.key)));
+        }
         let pool = match (def.scope, c.pool.as_deref().map(str::trim).filter(|p| !p.is_empty())) {
             (Scope::Pool, Some(p)) => Some(plain_pool(p).map_err(Error::Invalid)?),
             (Scope::Pool, None) => {
@@ -1049,9 +1065,6 @@ pub async fn change_with(
             def.check(v).map_err(Error::Invalid)?;
         }
         if planned.iter().any(|(d, p, _)| d.key == def.key && *p == pool) {
-        if let Some(task) = &def.input {
-            return Err(Error::Invalid(format!("{} is an input of ferrum task {task}, given in its environment when it runs: no replica reads it", def.key)));
-        }
             return Err(Error::Invalid(format!("{} is named twice", def.key)));
         }
         planned.push((def, pool, value));
@@ -1269,6 +1282,8 @@ pub async fn listing(st: &AppState) -> ferrum_kernel::Result<Value> {
                 "secret": d.secret,
                 "environment": d.environment,
                 "sends": d.sends,
+                "app": d.app,
+                "input": d.input,
                 "source": source,
                 "value": if d.secret { None } else { value },
                 "set": set,
@@ -1282,8 +1297,6 @@ pub async fn listing(st: &AppState) -> ferrum_kernel::Result<Value> {
     )
     .fetch_all(&mut *tx)
     .await?;
-                "app": d.app,
-                "input": d.input,
     tx.commit().await?;
     let replicas: Vec<Value> = rows
         .into_iter()
@@ -1369,19 +1382,6 @@ mod tests {
         assert_eq!(pools, ["db_max_connections", "run_background", "zone"], "a pool's own: the connection budget, background work, the zone pin");
         assert_eq!(find("FERRUM_SESSION_DAYS").map(|d| d.key.as_str()), Some("session_days"), "found by variable or key");
         assert!(find("DATABASE_URL").is_none(), "the boot contract is not a setting");
-    }
-
-    #[test]
-    fn the_address_names_the_pool() {
-        assert_eq!(pool_name("postgres://u:p@db:5432/ferrum").unwrap(), "default");
-        assert_eq!(pool_name("postgres://u:p@db:5432/ferrum?sslmode=require&application_name=pool:web").unwrap(), "web");
-        assert_eq!(pool_name("postgres://u:p@db/ferrum?application_name=pool%3Abackground").unwrap(), "background", "as the address encodes it");
-        assert_eq!(pool_name("postgres://u:p@db/ferrum?application_name=main").unwrap(), "default", "another application name");
-        for bad in ["pool:Web", "pool:", "pool:-a", "pool:a_b"] {
-            assert!(pool_name(&format!("postgres://db/f?application_name={bad}")).is_err(), "{bad}");
-        }
-    }
-
         assert!(clash().is_none(), "{:?}", clash());
         let inputs: Vec<&str> = r.iter().filter(|d| d.input.is_some()).map(|d| d.key.as_str()).collect();
         assert_eq!(inputs.len(), 8, "the move task's inputs: {inputs:?}");
@@ -1449,6 +1449,19 @@ mod tests {
             (Source::Environment, Some("16".to_string())),
             "R1: the environment still wins"
         );
+    }
+
+    #[test]
+    fn the_address_names_the_pool() {
+        assert_eq!(pool_name("postgres://u:p@db:5432/ferrum").unwrap(), "default");
+        assert_eq!(pool_name("postgres://u:p@db:5432/ferrum?sslmode=require&application_name=pool:web").unwrap(), "web");
+        assert_eq!(pool_name("postgres://u:p@db/ferrum?application_name=pool%3Abackground").unwrap(), "background", "as the address encodes it");
+        assert_eq!(pool_name("postgres://u:p@db/ferrum?application_name=main").unwrap(), "default", "another application name");
+        for bad in ["pool:Web", "pool:", "pool:-a", "pool:a_b"] {
+            assert!(pool_name(&format!("postgres://db/f?application_name={bad}")).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn a_pools_own_settings_come_from_its_row() {
         let rows = vec![
@@ -1574,6 +1587,22 @@ mod tests {
             let taken = format!("{:?}", live_view(&start, &new)) != format!("{start:?}");
             assert_eq!(taken, def.applies == Applies::Live && def.scope == Scope::Installation, "{}: applies {:?}", def.key, def.applies);
         }
+    }
+
+    #[test]
+    fn a_host_in_the_address_wins_over_the_tables_and_is_trusted_as_the_address_is() {
+        let table = stored(&[("database_direct_host", "db.elsewhere:5432")]);
+        let none = Snapshot::resolve(&table, "default", &|_| None);
+        assert_eq!(host_to_use(&none, "database_direct_host", "db.elsewhere:5432", ""), Some(("db.elsewhere:5432", true)), "the table's, checked");
+        assert_eq!(
+            host_to_use(&none, "database_direct_host", "db.elsewhere:5432", "db-rw:5432"),
+            Some(("db-rw:5432", false)),
+            "the address's, as trusted as it"
+        );
+        let env = |n: &str| (n == "FERRUM_DATABASE_DIRECT_HOST").then(|| "db-env".to_string());
+        let from_env = Snapshot::resolve(&table, "default", &env);
+        assert_eq!(host_to_use(&from_env, "database_direct_host", "db-env", "db-rw:5432"), Some(("db-env", false)), "R1: the variable still wins");
+        assert_eq!(host_to_use(&Snapshot::resolve(&Stored::default(), "default", &|_| None), "database_direct_host", "", ""), None);
     }
 
     #[test]

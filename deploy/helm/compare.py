@@ -28,7 +28,13 @@ def containers(d):
     return d["spec"]["template"]["spec"]["containers"]
 
 
+# What only the chart has: the vault's key Secret, which it makes once (templates/vault-key.yaml); with deploy/k8s it is
+# made by hand (secret.example.yaml), as a kustomization cannot make a random key once and keep it.
+CHART_ONLY = {("Secret", "ferrum-vault-key")}
+
 kust, chart = load(sys.argv[1]), load(sys.argv[2])
+for k in CHART_ONLY:
+    chart.pop(k, None)
 bad = []
 for k in sorted(kust.keys() - chart.keys()):
     bad.append(f"{k[0]}/{k[1]}: in deploy/k8s, missing from the chart")

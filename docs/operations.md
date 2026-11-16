@@ -316,6 +316,36 @@ come from the table, and the two move together: a change of the address gives th
 (`ferrum task set key:mailer_host value:… secret:stdin`, or `secret` over HTTP) or clears it from the vault, and the
 vault gives it only to the host it was set for.
 
+**Apps' settings.** An app compiled into the server declares the settings it reads in its manifest
+(`operator_settings`, docs/app-contract.md): each is kept as `<app>.<key>` (`drive.max_file_mb`), changed like any
+other, and listed under its app in the table above. The server adds them before it reads any setting, and does not
+start when two owners declare one key or variable, naming both. The apps pinned in this release still read their
+variables with the environment alone, so their entries in the table are the environment's until each app's release
+declares them; an address that is given a secret says so (`sends:`), as the platform's do.
+
+**A task's inputs.** What one task is told as it runs (`move_workspace`'s and `copy_workspace from:`'s source,
+`FERRUM_MOVE_SOURCE_*`) is given in that task's environment: no replica reads it, so it is neither stored nor counted
+among the settings the environment decides.
+
+### What a replica still reads from its environment
+
+A replica needs `DATABASE_URL`, and reads these files at fixed paths when they are there: `/run/ferrum/root.key` (the
+vault's key file), `/run/ferrum/db-ca.pem` (the database's certificate authority), `/run/ferrum/kms.token` and
+`/run/ferrum/kms-ca.pem` (the key-management service's token and certificate authority). The direct and read hosts may
+be the address's own parameters (`…?ferrum_direct_host=db-rw:5432&ferrum_read_host=db-ro`), taken out before it
+connects. In this release it still reads every variable of the table above, so that one set there wins and a rollback
+behaves; the release after stops. What stays in the environment after that, each for a reason
+(`scripts/settings.py` keeps the list, which may only shrink):
+
+- `LOCO_ENV` (the image sets it): which configuration file the program reads, not a value an operator chooses.
+- `FERRUM_SECRET_KEY_COMMAND`: a command line is never read from the database, where whoever writes a row would run a
+  program. Prefer the key file or the key-management service.
+- The old keys and the secrets of the apps that still read their own (`FERRUM_SECRET_KEY`, `FERRUM_RETIRED_SECRET_KEYS`,
+  `FERRUM_MEET_SECRET`, …), until the old key retires and each app keeps its own in its vault.
+- What the libraries read themselves: PostgreSQL's driver its `PG*` variables (the parts `DATABASE_URL` leaves out),
+  the log's filter `RUST_LOG`, the OpenTelemetry SDK its other `OTEL_*` variables, the object store's client its
+  `AWS_*` profile. Leave them unset.
+
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
 isolation, so the server refuses to start with them. CloudNativePG's `ferrum` application user and
@@ -1038,8 +1068,12 @@ remembered:
   service's administrator can give, for as long as each runs).
 - With a pooler in transaction mode in front (RDS Proxy, PgBouncer, Supabase's or Neon's pooled address): that address
   as `DATABASE_URL`, and PostgreSQL itself as `FERRUM_DATABASE_DIRECT_HOST` (`host` or `host:port`) for the listeners,
-  session locks and migrations (*Connection pooler*). The direct address carries `DATABASE_URL`'s role, password,
-  database and TLS options. Where the two differ in more than the host, give `FERRUM_DATABASE_DIRECT_URL` whole.
+  session locks and migrations (*Connection pooler*), or as the address's own parameter
+  (`DATABASE_URL=…?ferrum_direct_host=db.internal:5432`, likewise `ferrum_read_host`), which the server takes out before
+  it connects and trusts as it trusts the address: the one way that needs no other variable. Keep a host there (or in
+  the environment) rather than in the settings table where a provider's certificate authority signs every customer's
+  instances. The direct address carries `DATABASE_URL`'s role, password, database and TLS options. Where the two differ
+  in more than the host, give `FERRUM_DATABASE_DIRECT_URL` whole.
 - The service's certificate authority at `/run/ferrum/db-ca.pem` (`database.external.caSecret` in the chart), so that
   every connection checks the database's certificate (*Configuration*). Connecting by IP address, put
   `sslmode=verify-ca` in the address: the certificate names a host, not the address.
@@ -1112,10 +1146,16 @@ key then living only in the server's memory:
   `ferrum task kms_wrap` prints `FERRUM_SECRET_KEY=vault:v1:…` (and `FERRUM_RETIRED_SECRET_KEYS`, if
   any): configure those in its place and restart. It never prints a key. When the service rotates its
   Transit key, what it wrapped before still opens; run `kms_wrap` again to move to the newest version.
-  In Kubernetes, sign in as the pod (`FERRUM_KMS_KUBERNETES_ROLE`, the Kubernetes auth method) or
-  through a Vault Agent's token file (`FERRUM_KMS_TOKEN_FILE`).
+  Keys from the environment given as ciphertext are unwrapped, and `kms_wrap` wraps, only at an address the
+  environment gives beside them (`FERRUM_KMS_TRANSIT`), never at one a row of the database chose.
+  The token is never a setting: mount it at `/run/ferrum/kms.token` (a Secret, or a Vault Agent's file; the chart's
+  `vault.kms.tokenSecret`), or sign in as the pod (the setting `kms_kubernetes_role`, the Kubernetes auth method; the
+  chart's `vault.kms.serviceAccount`). `BAO_TOKEN`, `VAULT_TOKEN` and `FERRUM_KMS_TOKEN_FILE` still work through this
+  release, and win.
 * **A command.** `FERRUM_SECRET_KEY_COMMAND` runs once at start and must print the key, as
-  PostgreSQL's `ssl_passphrase_command` does. Any KMS's own tool works, for example
+  PostgreSQL's `ssl_passphrase_command` does. It stays in the environment, outside the boot contract: a command line
+  is never read from the database, where whoever writes a row would run a program. Prefer the key file
+  (`/run/ferrum/root.key`, *The vault*) or the service above. Any KMS's own tool works, for example
   `aws kms decrypt --ciphertext-blob fileb:///etc/ferrum/key.enc --query Plaintext --output text`
   (the file holding `aws kms encrypt`'s output for the key's 32 bytes). What it prints on stderr is
   not logged.
@@ -1158,6 +1198,15 @@ has no vault yet, the first start (or `ferrum task migrate`) makes the installat
 one is mounted, else the key-management service if one is set, else the database password. Replicas starting together
 make one key between them.
 
+**A server's start keeps the slots whole by itself.** Once the vault is open, a server (not a task) adds a `file` slot
+when the key file is mounted and the vault has none, so an installation that had only its credential slot gains it at
+its next start with nothing to do; and where the credential slot no longer opens with `DATABASE_URL`'s password while
+another slot opened the vault, it makes the credential slot again for this password, the one the database takes now.
+Replicas starting together do each once, and the vault's record says so (`slot_added`, `credential_remade`). It never
+adds a credential slot where none is (an operator who removed it keeps it removed), nor replaces a file slot whose key
+is another than the one mounted (the doctor says so). The Helm chart mounts a key file in every pod and Job: one it
+makes once and keeps, or the Secret `vault.keySecret` names.
+
 When none of the three is there (`DATABASE_URL` has no password, there is no key file, no key-management service is
 set), the vault has no slot to be made with: the server starts with it closed, one warning in the log says so and
 names the three ways to give it a root, the doctor says so too, and everything that asks the vault is refused with
@@ -1197,19 +1246,20 @@ recovery key. Without the recovery key and without another slot's key, what the 
 whole: `deploy/dump.sh`, the chart's `import`, `pg_dump` of the whole database, a service's snapshot or clone. Where the
 role has the password it had, it opens as before. A new cluster or server often gives the role a new one:
 CloudNativePG does for `import` (and from memory for `copy` and `recovery`, setting the new cluster's own), and a role
-made anew by hand for `deploy/dump.sh restore` has whatever it was given. The credential slot then does not open, and
-unless another slot opens the vault the server stops, saying *the database password in DATABASE_URL is not the one it
-was made with*, as does every task but `doctor`, `vault_status` and `vault_rewrap`. With the new `DATABASE_URL`, do one
-of these:
+made anew by hand for `deploy/dump.sh restore` has whatever it was given. The credential slot then does not open. With
+a `file` slot (its key file mounted where the server runs: with the chart, name a copy of the old cluster's key Secret
+in `vault.keySecret`) or a `kms` slot (the same service), the vault opens with it, the server starts, and makes the
+credential slot again for the new password by itself. Without one, the server stops, saying *the database password in
+DATABASE_URL is not the one it was made with*, as does every task but `doctor`, `vault_status`, `vault_rewrap` and
+`vault_add_slot`. With the new `DATABASE_URL`, do one of these:
 
 1. With the old password at hand (the old installation's `DATABASE_URL`, or its `ferrum-db-app` Secret):
-   `ferrum task vault_rewrap`, and type it.
-2. With the recovery key: `ferrum task vault_rewrap with:recovery`, and type it.
-3. With a `file` slot (its key file mounted where this server runs) or a `kms` slot (the same service set here): the
-   vault opens with it and the server starts. Make the credential slot again for the new password:
-   `ferrum task vault_remove_slot kind:credential`, then `ferrum task vault_add_slot kind:credential`. A task does
-   not replace a credential slot its own password does not open, so the old one goes first; until then the doctor
-   warns that it does not open here.
+   `ferrum task vault_rewrap`, and type it; or, as a Job can, `ferrum task vault_rewrap file:/run/secrets/old-password`.
+2. With the recovery key: `ferrum task vault_rewrap with:recovery` (`file:<path>` too).
+3. With a `file` or `kms` slot here: start a server, which makes the credential slot again; until then the doctor
+   warns that it does not open here. `ferrum task vault_add_slot kind:credential with:password file:<path>` does the
+   same as a task (a task never replaces a credential slot its own password does not open without the old password
+   or the recovery key).
 
 Then start the servers. `crates/kernel/tests/dump_it.rs` restores a vault with every kind of slot through
 `deploy/dump.sh` and takes each way, the key-management service's too; the planned move and the restore marker run on
@@ -1230,10 +1280,13 @@ deletes, under the same cap on uses (a hundred an hour for each secret and verb,
 * `vault_status [format:json]`: the slots, the keys' versions and ages, the secrets, what is being sealed again; never a
   key.
 * `vault_events [limit:<n>] [before:<id>] [format:json]`: the installation's own record, newest first; never a value.
-* `vault_add_slot kind:file|kms|credential|recovery`: adds a slot, or makes the one of that kind again with a new key.
+* `vault_add_slot kind:file|kms|credential|recovery [with:password|recovery] [file:<path>]`: adds a slot, or makes the
+  one of that kind again with a new key; a credential slot this password does not open only with the old password or
+  the recovery key (from standard input, or the file).
 * `vault_remove_slot kind:…`: never the last one a server opens with (`file`, `kms` or `credential`).
 * `vault_recovery`: a new recovery key, printed once; the one before it opens nothing from then on.
-* `vault_rewrap [with:password|recovery]`: above.
+* `vault_rewrap [with:password|recovery] [file:<path>]`: above; the old password or the recovery key from standard
+  input, or from the file (a mounted Secret), as a Job can.
 * `vault_rotate level:…`: a new key at one level, with no moment at which anything cannot be opened.
   * `level:slot kind:…`: one slot with a new key (one row changes).
   * `level:installation [recovery:keep|new]`: a new installation key. Every slot and every workspace key is wrapped
@@ -1332,9 +1385,9 @@ it. The first rotation run where `JWT_SECRET` is no longer set gives the copy an
    callers hold if they were ever seen elsewhere (`secret_set name:metrics_token overlap:…`, and so on).
 4. `ferrum task doctor` says which secrets the environment still decides, and warns while the vault is closed.
 
-The environment keeps working through this release; the release after it stops reading these variables. The chart and
-Compose still require `JWT_SECRET` in this release (they let it go with that release): with them, leave it set, and
-the vault holds its copy meanwhile.
+The environment keeps working through this release; the release after it stops reading these variables. The chart,
+`deploy/k8s` and Compose no longer require `JWT_SECRET` or any other of these: a new installation gives them none, and
+one that has them keeps them while it may roll back, the vault holding its copies meanwhile.
 
 ### Rolling back with the secrets in the vault
 
@@ -1702,13 +1755,16 @@ slow down, or one class of it (`records` reports, `app` endpoints) needing other
 shapes"). `ferrum_db_pool_idle` at 0 and `ferrum_tenant_refused_total` rising say whether the database or one
 workspace is the limit instead, which a pool does not fix.
 
-Traces go to an OpenTelemetry collector when the deployment names one: set
-`OTEL_EXPORTER_OTLP_ENDPOINT` (for example `http://otel-collector:4318`; the server adds `/v1/traces`)
-or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, and the SDK's other settings apply (`OTEL_EXPORTER_OTLP_HEADERS`
-for a token, `OTEL_TRACES_SAMPLER`, `OTEL_BSP_SCHEDULE_DELAY`; `OTEL_SDK_DISABLED=true` turns them off).
-They travel over OTLP/HTTP as protobuf, as `OTEL_SERVICE_NAME` (`ferrum` unless set). Each request is a
-span with its method and path (never its query), and a caller's W3C `traceparent` makes it part of the
-caller's trace. Without an endpoint nothing is sent and the log is as before.
+Traces go to an OpenTelemetry collector when the settings name one: `otel_exporter_otlp_endpoint` (for example
+`http://otel-collector:4318`; the server adds `/v1/traces`) or `otel_exporter_otlp_traces_endpoint`, as `otel_service_name`
+(`ferrum` unless set); `otel_sdk_disabled` turns them off. These are settings like any other (their `OTEL_*` variables
+still win in this release), applied as the log is set up, once a replica has read its settings: until then nothing is
+sent. A collector that wants a token in a header has it as a secret, `otel_exporter_otlp_headers`
+(`ferrum task secret_set name:otel_exporter_otlp_headers`, `Authorization=Bearer%20…`), given only to the collector's
+host it was set for; moving the address takes it again or clears it. The SDK still reads its other variables itself
+(`OTEL_TRACES_SAMPLER`, `OTEL_BSP_SCHEDULE_DELAY`). They travel over OTLP/HTTP as protobuf. Each request is a span
+with its method and path (never its query), and a caller's W3C `traceparent` makes it part of the caller's trace.
+Without an endpoint nothing is sent and the log is as before.
 
 Logs are JSON. Clients may send an `x-request-id` header to correlate their calls with the logs;
 5xx bodies carry an `error_id` that appears in the log line with the full cause.

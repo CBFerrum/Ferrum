@@ -827,6 +827,41 @@ async fn rotation_under_use(dir: &Path, no_file: &Path) {
     assert_eq!(level(&never.vault_findings().await.unwrap(), "vault"), Some(Level::Off), "a process that never opened it");
     vault::remove_slot(&d.db, SlotKind::Recovery).await.unwrap();
     assert_eq!(level(&d.vault_findings().await.unwrap(), "vault.recovery"), Some(Level::Warning), "no recovery key");
+
+    // ── a server's start keeps the slots whole by itself: the mounted key file gains its slot, and a changed password
+    //    its credential slot again, each once however many replicas start together ──
+    let key = key_file(dir, "settle.key");
+    let first = replica().await;
+    assert_eq!(vault::open(&first, opener(Some("ferrum"), &key, None), false).await.unwrap(), Opened::With(SlotKind::Credential));
+    assert_eq!(vault::settle(&first).await.unwrap().len(), 1, "an installation that had only its credential slot gains a file slot");
+    assert!(vault::settle(&first).await.unwrap().is_empty(), "once");
+    // The password changes (an import, a copy, a recovery, a provider's reset): the file slot opens the vault, and two
+    // replicas starting together make the credential slot again for the new password once.
+    let (r1, r2) = (replica().await, replica().await);
+    for r in [&r1, &r2] {
+        assert_eq!(vault::open(r, opener(Some("n3w-pass"), &key, None), false).await.unwrap(), Opened::With(SlotKind::File));
+    }
+    let k_changed = Kernel::boot(replica().await, core(), HookRegistry::default(), KernelSettings::default(), None).await.unwrap();
+    vault::open(&k_changed.db, opener(Some("n3w-pass"), &key, None), false).await.unwrap();
+    let advice = k_changed.vault_findings().await.unwrap().into_iter().find(|f| f.check == "vault.slot.credential").unwrap();
+    assert!(advice.level == Level::Warning && advice.fix.is_some_and(|f| f.contains("Start a server")), "advice that works: {advice:?}");
+    let (a1, a2) = tokio::join!(vault::settle(&r1), vault::settle(&r2));
+    assert_eq!(a1.unwrap().len() + a2.unwrap().len(), 1, "made again once");
+    assert_eq!(as_vault(&db, "select count(*) from vault.event where action = 'credential_remade'").await, 1);
+    assert_eq!(
+        vault::open(&replica().await, opener(Some("n3w-pass"), no_file, None), false).await.unwrap(),
+        Opened::With(SlotKind::Credential),
+        "the new password opens it alone"
+    );
+    // A key file other than the slot's is left alone; a credential slot an operator removed stays removed.
+    let other = key_file(dir, "other.key");
+    let elsewhere = replica().await;
+    assert_eq!(vault::open(&elsewhere, opener(Some("n3w-pass"), &other, None), false).await.unwrap(), Opened::With(SlotKind::Credential));
+    assert!(vault::settle(&elsewhere).await.unwrap().is_empty(), "the file slot is not replaced");
+    vault::remove_slot(&elsewhere, SlotKind::Credential).await.unwrap();
+    let after = replica().await;
+    assert_eq!(vault::open(&after, opener(Some("an0ther"), &key, None), false).await.unwrap(), Opened::With(SlotKind::File));
+    assert!(vault::settle(&after).await.unwrap().is_empty(), "none is made where none is");
 }
 
 /// Opens what the vault sealed, as its format says (nonce, ciphertext, tag; the place as associated data): what

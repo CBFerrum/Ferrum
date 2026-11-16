@@ -67,7 +67,7 @@ pub(crate) use keyed::{Keyed, PLUGIN_VAULT, Ring, adopted_ids, at_boot, older_bu
 pub(crate) use root::{CHANNEL, Root, finish};
 pub use root::{
     Opened, Opener, Printed, ROOT_FILE, RecoveryKey, Resealing, Rewrap, SlotKind, SlotStatus, Status, open, put_slot, remove_slot, rewrap,
-    rotate_installation_key, status,
+    rotate_installation_key, settle, status,
 };
 pub use scope::transfer_out;
 pub(crate) use scope::{carry_in, digest, drop_scope, may_carry};

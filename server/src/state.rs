@@ -241,6 +241,10 @@ pub struct Settings {
     /// `FERRUM_DATABASE_READ_HOST`: a read replica as `host[:port]`, as the direct host. `database_read_url` wins.
     #[serde(default)]
     pub database_read_host: String,
+    /// The direct and read hosts given in `DATABASE_URL` itself (`ferrum_direct_host`, `ferrum_read_host`), taken out of
+    /// it as the configuration loads (`App::load_config`): as trusted as the address.
+    #[serde(default)]
+    pub database_address: ferrum_kernel::db::AddressHosts,
     /// `FERRUM_DATABASE_READ_MAX_LAG_SECS`: past this replay lag, they read from the primary.
     #[serde(default = "default_read_max_lag")]
     pub database_read_max_lag_secs: u64,
