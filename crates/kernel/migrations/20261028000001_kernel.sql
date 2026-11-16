@@ -217,7 +217,6 @@ create table webhook (
   id uuid not null,
   name text not null,
   url text not null check (url ~ '^https?://'),
-  secret text not null,
   topics text[] not null,
   is_active boolean not null default true,
   created_by uuid,

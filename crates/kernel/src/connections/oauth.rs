@@ -683,19 +683,16 @@ impl Kernel {
                 kept[n.as_str()] = v.clone();
             }
         }
-        let sealed = self
-            .keep(tx, &token_place(conn.tenant, conn.id, owner), &json!({"access_token": access, "refresh_token": refresh, "kept": kept}).to_string())
-            .await?;
+        self.keep(tx, &token_place(conn.tenant, conn.id, owner), &json!({"access_token": access, "refresh_token": refresh, "kept": kept}).to_string()).await?;
         sqlx::query(
-            "insert into conn_token (tenant_id, conn_id, user_id, sealed, expires_at, account, status, told, connected_by) values ($1, $2, $3, $4, $5, $6, 'connected', false, $7) \
-             on conflict (tenant_id, conn_id, user_id) do update set sealed = excluded.sealed, expires_at = excluded.expires_at, \
+            "insert into conn_token (tenant_id, conn_id, user_id, expires_at, account, status, told, connected_by) values ($1, $2, $3, $4, $5, 'connected', false, $6) \
+             on conflict (tenant_id, conn_id, user_id) do update set expires_at = excluded.expires_at, \
              account = coalesce(excluded.account, conn_token.account), status = 'connected', told = false, \
              connected_by = coalesce(excluded.connected_by, conn_token.connected_by), updated_at = now()",
         )
         .bind(conn.tenant)
         .bind(conn.id)
         .bind(owner)
-        .bind(sealed)
         .bind(expires)
         .bind(&account)
         .bind(by)
@@ -724,15 +721,14 @@ impl Kernel {
         }
         let owner = Self::token_owner(conn, ctx)?;
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
-        let row: Option<(Option<String>, String)> =
-            sqlx::query_as("select account, sealed from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3")
-                .bind(conn.tenant)
-                .bind(conn.id)
-                .bind(owner)
-                .fetch_optional(&mut *tx)
-                .await?;
-        let Some((account, sealed)) = row else { return Ok((Value::Null, json!({}))) };
-        let open: Value = serde_json::from_str(&self.kept(&mut tx, &token_place(conn.tenant, conn.id, owner), &sealed).await?).map_err(Error::internal)?;
+        let row: Option<Option<String>> = sqlx::query_scalar("select account from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3")
+            .bind(conn.tenant)
+            .bind(conn.id)
+            .bind(owner)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(account) = row else { return Ok((Value::Null, json!({}))) };
+        let open: Value = serde_json::from_str(&self.kept(&mut tx, &token_place(conn.tenant, conn.id, owner)).await?).map_err(Error::internal)?;
         tx.commit().await?;
         Ok((json!(account), open.get("kept").cloned().unwrap_or_else(|| json!({}))))
     }
@@ -741,15 +737,15 @@ impl Kernel {
     pub(crate) async fn access_token(&self, conn: &Loaded, ctx: &Ctx, force: bool) -> Result<String> {
         let owner = Self::token_owner(conn, ctx)?;
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
-        let row: Option<(String, Option<DateTime<Utc>>, String)> =
-            sqlx::query_as("select sealed, expires_at, status from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3")
+        let row: Option<(Option<DateTime<Utc>>, String)> =
+            sqlx::query_as("select expires_at, status from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3")
                 .bind(conn.tenant)
                 .bind(conn.id)
                 .bind(owner)
                 .fetch_optional(&mut *tx)
                 .await?;
         tx.commit().await?;
-        let (sealed, expires, status) = match row {
+        let (expires, status) = match row {
             Some(r) => r,
             // A session signs itself in, the first time it is needed.
             None if matches!(conn.desc.auth, Auth::Session { .. }) => return self.session_sign_in(conn, ctx).await,
@@ -758,7 +754,7 @@ impl Kernel {
         if status != "connected" {
             return Err(Error::invalid(format!("{} needs reconnecting: the provider no longer accepts its sign-in", conn.name)));
         }
-        let open: Value = serde_json::from_str(&self.kept_alone(&token_place(conn.tenant, conn.id, owner), &sealed).await?).map_err(Error::internal)?;
+        let open: Value = serde_json::from_str(&self.kept_alone(&token_place(conn.tenant, conn.id, owner)).await?).map_err(Error::internal)?;
         let token = open["access_token"].as_str().unwrap_or_default();
         if force || expires.is_some_and(|e| e < Utc::now() + chrono::Duration::seconds(CALL_AHEAD_SECS)) {
             return self.refresh_tokens(conn, owner, force.then_some(token)).await;
@@ -771,18 +767,18 @@ impl Kernel {
     /// marks it "needs reconnecting" and tells its owner once. The new access token.
     async fn refresh_tokens(&self, conn: &Loaded, owner: Uuid, stale: Option<&str>) -> Result<String> {
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
-        let row: Option<(String, Option<DateTime<Utc>>, String)> =
-            sqlx::query_as("select sealed, expires_at, status from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3 for update")
+        let row: Option<(Option<DateTime<Utc>>, String)> =
+            sqlx::query_as("select expires_at, status from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3 for update")
                 .bind(conn.tenant)
                 .bind(conn.id)
                 .bind(owner)
                 .fetch_optional(&mut *tx)
                 .await?;
-        let (sealed, expires, status) = row.ok_or_else(|| Error::invalid(format!("{} is not connected to an account", conn.name)))?;
+        let (expires, status) = row.ok_or_else(|| Error::invalid(format!("{} is not connected to an account", conn.name)))?;
         if status != "connected" {
             return Err(Error::invalid(format!("{} needs reconnecting", conn.name)));
         }
-        let open: Value = serde_json::from_str(&self.kept(&mut tx, &token_place(conn.tenant, conn.id, owner), &sealed).await?).map_err(Error::internal)?;
+        let open: Value = serde_json::from_str(&self.kept(&mut tx, &token_place(conn.tenant, conn.id, owner)).await?).map_err(Error::internal)?;
         let fresh = expires.is_none_or(|e| e > Utc::now() + chrono::Duration::seconds(CALL_AHEAD_SECS));
         let now = open["access_token"].as_str().unwrap_or_default();
         if fresh && stale.is_none_or(|s| s != now) {
@@ -871,16 +867,19 @@ impl Kernel {
         }
         let owner = Self::token_owner(&conn, ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let sealed: Option<String> = sqlx::query_scalar("delete from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3 returning sealed")
+        let gone = sqlx::query("delete from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3")
             .bind(ctx.tenant)
             .bind(id)
             .bind(owner)
-            .fetch_optional(&mut *tx)
-            .await?;
-        let Some(sealed) = sealed else { return Err(Error::NotFound("a connected account".into())) };
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if gone == 0 {
+            return Err(Error::NotFound("a connected account".into()));
+        }
         // Opened before they go from the vault with the row, to be revoked at the provider.
         let place = token_place(ctx.tenant, id, owner);
-        let tokens = self.kept(&mut tx, &place, &sealed).await?;
+        let tokens = self.kept(&mut tx, &place).await?;
         crate::vault::kept::forget(&mut tx, &place).await?;
         audit::record_admin(&mut tx, ctx, "Connection", id, "disconnect", None, json!({"owner": if owner.is_nil() { "workspace" } else { "person" }})).await?;
         tx.commit().await?;
@@ -1002,18 +1001,17 @@ impl Kernel {
     async fn session_sign_in(&self, conn: &Loaded, ctx: &Ctx) -> Result<String> {
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
         sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))").bind(format!("conn_session:{}", conn.id)).execute(&mut *tx).await?;
-        let here: Option<(String, String)> = sqlx::query_as("select sealed, status from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3")
+        let here: Option<String> = sqlx::query_scalar("select status from conn_token where tenant_id = $1 and conn_id = $2 and user_id = $3")
             .bind(conn.tenant)
             .bind(conn.id)
             .bind(Uuid::nil())
             .fetch_optional(&mut *tx)
             .await?;
-        if let Some((sealed, status)) = here {
+        if let Some(status) = here {
             if status != "connected" {
                 return Err(Error::invalid(format!("{} needs reconnecting: the service no longer accepts its sign-in", conn.name)));
             }
-            let open: Value =
-                serde_json::from_str(&self.kept(&mut tx, &token_place(conn.tenant, conn.id, Uuid::nil()), &sealed).await?).map_err(Error::internal)?;
+            let open: Value = serde_json::from_str(&self.kept(&mut tx, &token_place(conn.tenant, conn.id, Uuid::nil())).await?).map_err(Error::internal)?;
             tx.commit().await?;
             return Ok(open["access_token"].as_str().unwrap_or_default().to_string());
         }
@@ -1026,17 +1024,14 @@ impl Kernel {
             }
             Granted::Later(why) => Err(Error::Unavailable(format!("{} did not sign in: {why}", conn.name))),
             Granted::Refused(why) => {
-                let stored = self.keep(&mut tx, &token_place(conn.tenant, conn.id, Uuid::nil()), "{}").await?;
-                sqlx::query(
-                    "insert into conn_token (tenant_id, conn_id, user_id, sealed, status, told, connected_by) values ($1, $2, $3, $4, 'connected', false, $5)",
-                )
-                .bind(conn.tenant)
-                .bind(conn.id)
-                .bind(Uuid::nil())
-                .bind(stored)
-                .bind(by)
-                .execute(&mut *tx)
-                .await?;
+                self.keep(&mut tx, &token_place(conn.tenant, conn.id, Uuid::nil()), "{}").await?;
+                sqlx::query("insert into conn_token (tenant_id, conn_id, user_id, status, told, connected_by) values ($1, $2, $3, 'connected', false, $4)")
+                    .bind(conn.tenant)
+                    .bind(conn.id)
+                    .bind(Uuid::nil())
+                    .bind(by)
+                    .execute(&mut *tx)
+                    .await?;
                 self.needs_reconnecting(&mut tx, conn, Uuid::nil()).await?;
                 tx.commit().await?;
                 Err(Error::invalid(format!("{} needs reconnecting: the service refused its sign-in ({why})", conn.name)))

@@ -1,8 +1,8 @@
 -- Connections to outside services (crates/kernel/src/connections, docs/builder/decisions.md BD-29 to BD-33): a
 -- described HTTP service a workspace calls, is called by, pulls from and signs in to. No provider is named in code.
 
--- A connection: its description (address, authentication, operations, inbound, pulls), its secrets sealed with the
--- server's key (`sealed`, never read back), off until an administrator turns it on. `source` says where the
+-- A connection: its description (address, authentication, operations, inbound, pulls), its secrets kept in the vault
+-- (`has_secrets`, never read back), off until an administrator turns it on. `source` says where the
 -- description came from (`pack:<name>`, `package:<name>`), null for one made here. `refused` counts inbound calls
 -- refused; `debug_until` turns on a short-lived, redacted capture of requests and answers in the call log.
 create table conn (
@@ -11,7 +11,7 @@ create table conn (
   name text not null check (name ~ '^[a-z][a-z0-9_]{0,62}$'),
   label text not null check (length(label) between 1 and 100),
   description jsonb not null,
-  sealed text,
+  has_secrets boolean not null default false,
   enabled boolean not null default false,
   source text,
   refused integer not null default 0,
@@ -23,13 +23,12 @@ create table conn (
 );
 
 -- Tokens a person's sign-in at a provider gave (BD-32): the workspace's account (`user_id` nil) or a person's own.
--- `sealed` holds the access and refresh tokens, sealed; nothing reads them back out. `told` says the owner heard that
--- it needs reconnecting, so they hear it once.
+-- The access and refresh tokens are kept in the vault; nothing reads them back out. `told` says the owner heard that it
+-- needs reconnecting, so they hear it once.
 create table conn_token (
   tenant_id uuid not null,
   conn_id uuid not null,
   user_id uuid not null,
-  sealed text not null,
   expires_at timestamptz,
   account text check (account is null or length(account) <= 200),
   status text not null default 'connected' check (status in ('connected', 'needs_reconnecting')),

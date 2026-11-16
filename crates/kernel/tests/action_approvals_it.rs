@@ -203,10 +203,7 @@ async fn scenario() {
     }
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let rows: Vec<String> =
-        sqlx::query_scalar("select t::text from audit_event t union all select r.params::text || coalesce(r.sealed::text, '') from approval_request r")
-            .fetch_all(&mut *tx)
-            .await
-            .unwrap();
+        sqlx::query_scalar("select t::text from audit_event t union all select r::text from approval_request r").fetch_all(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     assert!(rows.iter().any(|r| r.contains("[redacted]")) && rows.iter().all(|r| !r.contains(PIN)), "no table keeps the secret in the clear");
 

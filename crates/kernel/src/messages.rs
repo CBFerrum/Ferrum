@@ -1330,8 +1330,8 @@ pub(crate) fn channel_place(tenant: Uuid, id: Uuid) -> crate::vault::kept::Place
     crate::vault::kept::Place::platform(crate::vault::kept::Store::Channel, tenant, id)
 }
 
-/// What `POST /api/admin/messages/channels` takes. `secrets` are sealed and never read back; left out, the ones there
-/// are stay.
+/// What `POST /api/admin/messages/channels` takes. `secrets` are kept in the vault and never read back; left out, the
+/// ones there are stay.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelInput {
@@ -1450,15 +1450,15 @@ impl Kernel {
             tx.commit().await?;
             return Err(Error::Wait("quiet hours".into(), secs));
         }
-        let channel: Option<(Value, Option<String>)> =
-            sqlx::query_as("select description, sealed from message_channel where tenant_id = $1 and id = $2 and enabled and kind = $3")
+        let channel: Option<(Value, bool)> =
+            sqlx::query_as("select description, has_secrets from message_channel where tenant_id = $1 and id = $2 and enabled and kind = $3")
                 .bind(tenant)
                 .bind(channel_id)
                 .bind(&kind)
                 .fetch_optional(&mut *tx)
                 .await?;
         tx.commit().await?;
-        let Some((desc, sealed)) = channel else {
+        let Some((desc, has_secrets)) = channel else {
             self.settle(tenant, id, "failed", None, Some("the channel was removed or turned off"), None).await?;
             return Ok(json!({"failed": "no channel"}));
         };
@@ -1484,9 +1484,9 @@ impl Kernel {
             self.settle(tenant, id, "delivered", Some(&format!("test-{id}")), None, Some(json!({"to": to, "message": content}))).await?;
             return Ok(json!({"delivered": "test"}));
         }
-        let secrets: Value = match sealed {
-            Some(s) => serde_json::from_str(&self.kept_alone(&channel_place(tenant, channel_id.unwrap_or_default()), &s).await?).map_err(Error::internal)?,
-            None => json!({}),
+        let secrets: Value = match has_secrets {
+            true => serde_json::from_str(&self.kept_alone(&channel_place(tenant, channel_id.unwrap_or_default())).await?).map_err(Error::internal)?,
+            false => json!({}),
         };
         let vars = json!({"to": to, "text": message["text"], "template_name": message["template_name"], "values": message["values"],
                           "from": desc.from, "secret": secrets, "language": pending["language"]});
@@ -1538,7 +1538,7 @@ impl Kernel {
         }
     }
 
-    /// Adds a channel connection, or changes one. Its secrets are sealed; a description that is wrong is refused.
+    /// Adds a channel connection, or changes one. Its secrets are kept in the vault; a description that is wrong is refused.
     pub async fn save_message_channel(&self, ctx: &Ctx, id: Option<Uuid>, input: &ChannelInput) -> Result<Uuid> {
         admin_only(ctx)?;
         if !matches!(input.kind.as_str(), "text" | "chat") {
@@ -1557,10 +1557,9 @@ impl Kernel {
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         // Kept in the transaction that saves the channel.
-        let sealed = match &input.secrets {
-            Some(s) => Some(self.keep(&mut tx, &channel_place(ctx.tenant, id), &serde_json::to_string(s).map_err(Error::internal)?).await?),
-            None => None,
-        };
+        if let Some(s) = &input.secrets {
+            self.keep(&mut tx, &channel_place(ctx.tenant, id), &serde_json::to_string(s).map_err(Error::internal)?).await?;
+        }
         if input.enabled {
             sqlx::query("update message_channel set enabled = false where tenant_id = $1 and kind = $2 and id <> $3")
                 .bind(ctx.tenant)
@@ -1570,16 +1569,16 @@ impl Kernel {
                 .await?;
         }
         sqlx::query(
-            "insert into message_channel (tenant_id, id, kind, name, description, sealed, enabled) values ($1, $2, $3, $4, $5, $6, $7) \
+            "insert into message_channel (tenant_id, id, kind, name, description, has_secrets, enabled) values ($1, $2, $3, $4, $5, $6, $7) \
              on conflict (tenant_id, id) do update set kind = excluded.kind, name = excluded.name, description = excluded.description, \
-             sealed = coalesce(excluded.sealed, message_channel.sealed), enabled = excluded.enabled",
+             has_secrets = excluded.has_secrets or message_channel.has_secrets, enabled = excluded.enabled",
         )
         .bind(ctx.tenant)
         .bind(id)
         .bind(&input.kind)
         .bind(name)
         .bind(serde_json::to_value(&input.description).map_err(Error::internal)?)
-        .bind(sealed)
+        .bind(input.secrets.is_some())
         .bind(input.enabled)
         .execute(&mut *tx)
         .await?;
@@ -1595,7 +1594,7 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows = sqlx::query_scalar(
             "select jsonb_build_object('id', id, 'kind', kind, 'name', name, 'description', description, 'enabled', enabled, \
-               'has_secrets', sealed is not null, 'refused', refused, 'inbound', '/api/messages/inbound/' || id) \
+               'has_secrets', has_secrets, 'refused', refused, 'inbound', '/api/messages/inbound/' || id) \
              from message_channel where tenant_id = $1 order by kind, name",
         )
         .bind(ctx.tenant)
@@ -1623,19 +1622,18 @@ impl Kernel {
     /// or wrongly signed is refused and counted, and so is a reply that recorded a choice sent again.
     pub async fn message_inbound(&self, channel: Uuid, headers: &BTreeMap<String, String>, query: &BTreeMap<String, String>, body: &[u8]) -> Result<Value> {
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(Uuid, String, Value, Option<String>)> =
-            sqlx::query_as("select tenant_id, kind, description, sealed from message_channel where id = $1 and enabled")
+        let row: Option<(Uuid, String, Value, bool)> =
+            sqlx::query_as("select tenant_id, kind, description, has_secrets from message_channel where id = $1 and enabled")
                 .bind(channel)
                 .fetch_optional(&mut *tx)
                 .await?;
         tx.commit().await?;
-        let found = row.and_then(|(t, k, d, s)| Some((t, k, serde_json::from_value::<ChannelDesc>(d).ok()?.inbound?, s?)));
-        let Some((tenant, kind, inbound, sealed)) = found else {
+        let found = row.filter(|r| r.3).and_then(|(t, k, d, _)| Some((t, k, serde_json::from_value::<ChannelDesc>(d).ok()?.inbound?)));
+        let Some((tenant, kind, inbound)) = found else {
             REFUSED_UNKNOWN.fetch_add(1, Ordering::Relaxed);
             return Err(Error::NotFound("channel".into()));
         };
-        let secrets: BTreeMap<String, String> =
-            serde_json::from_str(&self.kept_alone(&channel_place(tenant, channel), &sealed).await?).map_err(Error::internal)?;
+        let secrets: BTreeMap<String, String> = serde_json::from_str(&self.kept_alone(&channel_place(tenant, channel)).await?).map_err(Error::internal)?;
         let header = |h: &str| headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(h)).map(|(_, v)| v.trim().to_string());
         let secret = secrets.get(&inbound.secret).cloned().unwrap_or_default();
         let ok = !secret.is_empty()

@@ -9,8 +9,8 @@ shape. It reads the sources (not the tests) of this repository's crates and serv
 in (`cargo metadata`, as scripts/mutation_paths.py reads them), and checks:
 
 * the vault's tables and its setting (`vault.root_slot`, `vault.key`, `vault.secret`, `vault.use_count`,
-  `vault.event`, `vault.transfer`, `vault.kept`, `ferrum.vault`) are named only by the kernel's vault module, its migrations, and the
-  transaction `Db::vault_tx` opens for it (packages' SQL is read too);
+  `vault.event`, `vault.transfer`, `vault.managed`, `ferrum.vault`) are named only by the kernel's vault module, its migrations, and
+  the transaction `Db::vault_tx` opens for it (packages' SQL is read too);
 * no app calls the ways into the vault that are not its own handle: opening it, and the functions for people and
   operators that name an owner (the platform's code, the kernel and the server, calls them);
 * no app has `unsafe` code, nor a cryptography crate of its own (one that keys, seals or signs: hashes alone are not
@@ -32,13 +32,12 @@ VAULT_TX = (
     "crates/kernel/migrations/20261119000201_vault.sql",
     "crates/kernel/migrations/20261119000202_vault_event.sql",
     "crates/kernel/migrations/20261119000401_vault_transfer.sql",
-    "crates/kernel/migrations/20261119000501_vault_kept.sql",
     "crates/kernel/migrations/20261119000801_vault_managed.sql",
 )
 # Apps in this workspace (the rest come from their own repositories): their packages are compiled in as apps.
 WORKSPACE_APPS = {"ferrum-studio", "ferrum-ops"}
 
-TABLES = re.compile(r"\bvault\.(root_slot|key|secret|use_count|event|transfer|kept|managed)\b|\bferrum\.vault\b")
+TABLES = re.compile(r"\bvault\.(root_slot|key|secret|use_count|event|transfer|managed)\b|\bferrum\.vault\b")
 WAYS_IN = re.compile(
     r"\bvault::(open|rewrap|put_slot|remove_slot|rotate_installation_key|events)\s*\(|\bvault::(\{[^}]*\b)?Opener\b"
     r"|\.(vault_set|vault_rotate|vault_rule|vault_remove|vault_secrets|vault_setters|vault_regenerate|vault_reseal|rotate_owner_key|rotate_workspace_key)\s*\("

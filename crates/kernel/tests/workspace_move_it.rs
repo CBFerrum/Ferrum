@@ -285,11 +285,10 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     assert!(file["id"].is_string());
     let hook = Uuid::now_v7();
     let mut tx = a.db.system_tx().await.unwrap();
-    let signing = a.keep_webhook_secret(&mut tx, t, hook, "whsec").await.unwrap();
-    sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, $2, 'books', 'https://books.example/hook', $3, array['never'])")
+    a.keep_webhook_secret(&mut tx, t, hook, "whsec").await.unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, topics) values ($1, $2, 'books', 'https://books.example/hook', array['never'])")
         .bind(t)
         .bind(hook)
-        .bind(signing)
         .execute(&mut *tx)
         .await
         .unwrap();

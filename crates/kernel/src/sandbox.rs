@@ -467,9 +467,11 @@ impl Kernel {
             let Value::Object(r) = whole else { unreachable!("an object stays one") };
             *row = r;
             renumber_events(t, row, &events);
-            let mut null = |column: &str| {
-                if row.get(column).is_some_and(|v| !v.is_null()) {
-                    row.insert(column.into(), Value::Null);
+            // A column set to `to`, counted where it held something: a secret's flag set off, its value being one the
+            // sandbox's vault does not have (by its rule).
+            let mut blank = |column: &str, to: Value| {
+                if row.get(column).is_some_and(|v| !v.is_null() && *v != to) {
+                    row.insert(column.into(), to);
                     emptied += 1;
                 }
             };
@@ -477,23 +479,23 @@ impl Kernel {
                 // What signing in needs: the second factor, which the sandbox's vault keeps by its rule (crate::vault::kept).
                 // Ferrum accounts stay behind. (A webhook's secret is made anew there, by its rule: nobody has seen it.)
                 "app_user" => {
-                    null("identity_id");
-                    if text_opt(row, "totp_secret").is_some() {
+                    blank("identity_id", Value::Null);
+                    if row.get("totp_set") == Some(&Value::Bool(true)) {
                         carried += 1;
                     }
                 }
                 "connection" => {
-                    null("sealed");
-                    null("account_key");
+                    blank("has_credentials", json!(false));
+                    blank("account_key", Value::Null);
                 }
-                "conn" | "message_channel" => null("sealed"),
-                "sso_provider" => null("client_secret"),
+                "conn" | "message_channel" => blank("has_secrets", json!(false)),
+                "sso_provider" => blank("has_client_secret", json!(false)),
                 // A sandbox's work is judged by the zone its own requests arrive in, not the one the live workspace's did.
                 "approval_request" => {
-                    null("sealed");
-                    null("zone");
+                    blank("secret_params", json!([]));
+                    blank("zone", Value::Null);
                 }
-                "message_send" => null("pending"),
+                "message_send" => blank("pending", Value::Null),
                 "plugin" => {
                     if let Some(Value::Object(config)) = row.get_mut("config") {
                         for v in config.values_mut().filter(|v| v.get(crate::vault::PLUGIN_VAULT).is_some()) {

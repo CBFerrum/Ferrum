@@ -1,6 +1,6 @@
 -- A short-lived public address of a stored file, for a service that pulls media by address (docs/builder/decisions.md
 -- BD-64): which file, for which call (the connection, operation, key and the record it is about), for whom, until
--- when, and when it was ended early. The address is `/files/pull/{id}?s=<HMAC of the id under the server's key>`.
+-- when, and when it was ended early. The address is `/files/pull/{id}?s=<HMAC of the id under the workspace's key>`.
 create table conn_file_address (
   tenant_id uuid not null,
   id uuid not null primary key,

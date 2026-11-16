@@ -2,12 +2,11 @@
 -- device's subscription with its browser's push service, and "push" as a way a kind of
 -- notification reaches people (in the bar and on the devices where they turned it on).
 
--- Keys the server makes for itself, sealed with its secret key. `vapid` signs what it sends to
--- push services (RFC 8292); `public` is the half browsers subscribe with.
+-- Keys the server makes for itself, the private half kept in the vault (the installation's). `vapid` signs what it
+-- sends to push services (RFC 8292); `public` is the half browsers subscribe with.
 create table server_key (
   name text primary key check (length(name) between 1 and 40),
   public text not null default '' check (length(public) <= 200),
-  sealed text not null check (length(sealed) between 1 and 4000),
   created_at timestamptz not null default now()
 );
 alter table server_key enable row level security;

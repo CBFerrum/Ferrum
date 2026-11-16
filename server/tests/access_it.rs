@@ -884,13 +884,11 @@ async fn scenario() {
     assert!(kinds("records").await.contains(&"Currency".to_string()), "saves are records");
     // And with an audit webhook on records, a save queues its event (the schema knows at once).
     let mut tx = k.db.tenant_tx(quiet).await.unwrap();
-    sqlx::query(
-        "insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, gen_random_uuid(), 'r', 'https://example.test', 'x', '{audit.records}')",
-    )
-    .bind(quiet)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, topics) values ($1, gen_random_uuid(), 'r', 'https://example.test', '{audit.records}')")
+        .bind(quiet)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     ferrum_kernel::Registry::bump_version(&mut tx, quiet).await.unwrap();
     tx.commit().await.unwrap();
     k.registry.invalidate(quiet);

@@ -291,16 +291,16 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     let (hook, conn, old_conn, channel, provider) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     let mut tx = a.db.system_tx().await.unwrap();
     // The webhook's signing secret kept in the vault, as the admin route keeps it; the other stores' rows as the kernel
-    // writes them, each saying the vault keeps its value.
-    let signing = a.keep_webhook_secret(&mut tx, t, hook, "whsec").await.unwrap();
+    // writes them, each saying its value is set (the vault keeps it).
+    a.keep_webhook_secret(&mut tx, t, hook, "whsec").await.unwrap();
     for q in [
-        format!("insert into record_secret (tenant_id, entity, record_id, field, sealed, key_id) values ($1, 'Contact', '{contact}', 'token', 'vault', 'vault')"),
-        format!("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, '{hook}', 'books', '{hook_url}', '{signing}', array['*'])"),
-        format!("insert into connection (tenant_id, id, provider, name, sealed) values ($1, '{old_conn}', 'books', 'Books', 'vault')"),
-        format!("insert into conn (tenant_id, id, name, label, description, sealed) values ($1, '{conn}', 'pay', 'Payments', '{{}}', 'vault')"),
-        format!("insert into conn_token (tenant_id, conn_id, user_id, sealed) values ($1, '{conn}', '{pat}', 'vault')"),
-        format!("insert into message_channel (tenant_id, id, kind, name, description, sealed) values ($1, '{channel}', 'text', 'Texts', '{{}}', 'vault')"),
-        format!("insert into sso_provider (tenant_id, id, label, issuer, client_id, client_secret) values ($1, '{provider}', 'Company', 'https://idp.example', 'ferrum', 'vault')"),
+        format!("insert into record_secret (tenant_id, entity, record_id, field) values ($1, 'Contact', '{contact}', 'token')"),
+        format!("insert into webhook (tenant_id, id, name, url, topics) values ($1, '{hook}', 'books', '{hook_url}', array['*'])"),
+        format!("insert into connection (tenant_id, id, provider, name, has_credentials) values ($1, '{old_conn}', 'books', 'Books', true)"),
+        format!("insert into conn (tenant_id, id, name, label, description, has_secrets) values ($1, '{conn}', 'pay', 'Payments', '{{}}', true)"),
+        format!("insert into conn_token (tenant_id, conn_id, user_id) values ($1, '{conn}', '{pat}')"),
+        format!("insert into message_channel (tenant_id, id, kind, name, description, has_secrets) values ($1, '{channel}', 'text', 'Texts', '{{}}', true)"),
+        format!("insert into sso_provider (tenant_id, id, label, issuer, client_id, has_client_secret) values ($1, '{provider}', 'Company', 'https://idp.example', 'ferrum', true)"),
         "insert into contact_consent (tenant_id, email, purpose, granted, source) values ($1, 'no-mail@buyer.test', 'marketing', false, 'it')".to_string(),
         "insert into tenant_host (host, tenant_id, kind, target, is_primary, verify_token, verified_at) values ('erp.acme.example', $1, 'custom', 'shell', true, 'x', now())".to_string(),
         // A name under the base with what it shows, and short paths (docs/operations.md, "Addresses of a workspace").
@@ -423,8 +423,8 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
         assert_eq!(mark[0], (Some(t), "Acme (sandbox)".to_string()));
         let sealed: Vec<(i64, i64, i64, i64)> = sql(
             k,
-            "select (select count(*) from connection where tenant_id = $1 and sealed is not null), (select count(*) from conn where tenant_id = $1 and sealed is not null), \
-             (select count(*) from message_channel where tenant_id = $1 and sealed is not null), (select count(*) from sso_provider where tenant_id = $1 and client_secret is not null)",
+            "select (select count(*) from connection where tenant_id = $1 and has_credentials), (select count(*) from conn where tenant_id = $1 and has_secrets), \
+             (select count(*) from message_channel where tenant_id = $1 and has_secrets), (select count(*) from sso_provider where tenant_id = $1 and has_client_secret)",
             id,
         )
         .await;

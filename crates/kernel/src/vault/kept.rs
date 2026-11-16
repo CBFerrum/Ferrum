@@ -1,7 +1,7 @@
 //! The kernel's own stores of secrets, in the vault (docs/operations.md, "The vault"): a secret field's value, a
 //! connection's credentials, a webhook's signing secret and the rest ([`Store`]), each a secret of its owner in the
 //! vault, in its workspace's scope (the push key in the installation's), named after its place: `field.<digest>`, …
-//! The value is the vault's alone: its table's column holds [`MARKER`] where it is set. With the vault closed, nothing
+//! The value is the vault's alone: its table keeps only that it is set (a row, or a flag). With the vault closed, nothing
 //! is kept or read.
 
 use super::secrets::{opened, rows};
@@ -13,35 +13,32 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-/// What a store's column holds where the vault keeps the value.
-pub(crate) const MARKER: &str = "vault";
-
 /// The kernel's stores of secrets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Store {
-    /// `record_secret.sealed`: a secret field's value.
+    /// A secret field's value (a `record_secret` row says it is set).
     Field,
-    /// `webhook.secret`: a webhook's signing secret.
+    /// A webhook's signing secret.
     Webhook,
-    /// `app_user.totp_secret`: a person's second factor.
+    /// A person's second factor (`app_user.totp_set`).
     Totp,
-    /// `connection.sealed`: a connector's credentials.
+    /// A connector's credentials (`connection.has_credentials`).
     Connector,
-    /// `conn.sealed`: a connection's secrets.
+    /// A connection's secrets (`conn.has_secrets`).
     Conn,
-    /// `conn_token.sealed`: the tokens a sign-in to an account gave a connection.
+    /// The tokens a sign-in to an account gave a connection (a `conn_token` row).
     ConnToken,
-    /// `message_channel.sealed`: a message channel's secrets.
+    /// A message channel's secrets (`message_channel.has_secrets`).
     Channel,
-    /// `sso_provider.client_secret`.
+    /// A single sign-on provider's client secret (`sso_provider.has_client_secret`).
     Sso,
-    /// `saml_sp_key.private_key`: the workspace's SAML signing key.
+    /// The workspace's SAML signing key (a `saml_sp_key` row).
     SamlSp,
-    /// `saml_enc_key.private_key`: a SAML encryption key.
+    /// A SAML encryption key (a `saml_enc_key` row).
     SamlEnc,
-    /// `approval_request.sealed`: a secret parameter of an action waiting for approval.
+    /// A secret parameter of an action waiting for approval (`approval_request.secret_params`).
     Approval,
-    /// `server_key.sealed`: the push key (VAPID), the installation's.
+    /// The push key (VAPID), the installation's (a `server_key` row).
     Push,
 }
 
@@ -79,21 +76,21 @@ impl Store {
         }
     }
 
-    /// Where it is set, in a refusal.
+    /// What it is, in a refusal.
     pub(crate) fn what(self) -> &'static str {
         match self {
-            Store::Field => "record_secret.sealed",
-            Store::Webhook => "webhook.secret",
-            Store::Totp => "app_user.totp_secret",
-            Store::Connector => "connection.sealed",
-            Store::Conn => "conn.sealed",
-            Store::ConnToken => "conn_token.sealed",
-            Store::Channel => "message_channel.sealed",
-            Store::Sso => "sso_provider.client_secret",
-            Store::SamlSp => "saml_sp_key.private_key",
-            Store::SamlEnc => "saml_enc_key.private_key",
-            Store::Approval => "approval_request.sealed",
-            Store::Push => "server_key.sealed",
+            Store::Field => "a secret field's value",
+            Store::Webhook => "a webhook's signing secret",
+            Store::Totp => "a second factor",
+            Store::Connector => "a connector's credentials",
+            Store::Conn => "a connection's secrets",
+            Store::ConnToken => "a sign-in's tokens",
+            Store::Channel => "a channel's secrets",
+            Store::Sso => "a single sign-on client secret",
+            Store::SamlSp => "the workspace's SAML key",
+            Store::SamlEnc => "a SAML encryption key",
+            Store::Approval => "a secret parameter waiting for approval",
+            Store::Push => "the push key",
         }
     }
 
@@ -109,11 +106,6 @@ impl Store {
             },
             ..Default::default()
         }
-    }
-
-    /// What its column holds where the vault keeps the value.
-    pub(crate) fn marker(self) -> &'static str {
-        if self == Store::Webhook { "sealed:vault" } else { MARKER }
     }
 }
 
@@ -297,32 +289,30 @@ impl Kernel {
         self.db.vault.installation().map(|_| ()).map_err(|e| Error::Unavailable(format!("{what} needs the vault, and {e}")))
     }
 
-    /// Keeps `plain` at `place` in the vault, in the caller's transaction, and returns what its store's column holds
-    /// from now on ([`Store::marker`]). Refused with the vault closed.
-    pub(crate) async fn keep(&self, tx: &mut Tx, place: &Place, plain: &str) -> Result<String> {
+    /// Keeps `plain` at `place` in the vault, in the caller's transaction (its store's row says it is set in it too).
+    /// Refused with the vault closed.
+    pub(crate) async fn keep(&self, tx: &mut Tx, place: &Place, plain: &str) -> Result<()> {
         self.vault_open(place.store.what())?;
         entered(tx).await?;
         let out = put(self, tx, place, plain.as_bytes()).await;
-        leaving(tx, out).await?;
-        Ok(place.store.marker().to_string())
+        leaving(tx, out).await
     }
 
-    /// The value the vault keeps at `place` (its store's column holds `stored`, the marker). For the platform's own use:
-    /// never handed to an app.
-    pub(crate) async fn kept(&self, tx: &mut Tx, place: &Place, stored: &str) -> Result<Zeroizing<String>> {
-        Ok(self.kept_with_rule(tx, place, stored).await?.0)
+    /// The value the vault keeps at `place`. For the platform's own use: never handed to an app.
+    pub(crate) async fn kept(&self, tx: &mut Tx, place: &Place) -> Result<Zeroizing<String>> {
+        Ok(self.kept_with_rule(tx, place).await?.0)
     }
 
     /// [`Kernel::kept`] in a transaction of its own (what was read in another, already committed).
-    pub(crate) async fn kept_alone(&self, place: &Place, stored: &str) -> Result<Zeroizing<String>> {
+    pub(crate) async fn kept_alone(&self, place: &Place) -> Result<Zeroizing<String>> {
         let mut tx = self.db.system_tx().await?;
-        let value = self.kept(&mut tx, place, stored).await?;
+        let value = self.kept(&mut tx, place).await?;
         tx.commit().await?;
         Ok(value)
     }
 
     /// [`Kernel::kept`], and the rule the vault holds it under.
-    pub(crate) async fn kept_with_rule(&self, tx: &mut Tx, place: &Place, _stored: &str) -> Result<(Zeroizing<String>, Rule)> {
+    pub(crate) async fn kept_with_rule(&self, tx: &mut Tx, place: &Place) -> Result<(Zeroizing<String>, Rule)> {
         self.vault_open(place.store.what())?;
         entered(tx).await?;
         let found = current_now(self, tx, place).await;
@@ -346,19 +336,15 @@ impl Kernel {
 const HELD: &[(Store, &str)] = &[
     (Store::Field, "select tenant_id, entity || '/' || record_id || '/' || field from record_secret"),
     (Store::Webhook, "select tenant_id, id::text from webhook"),
-    (Store::Totp, "select tenant_id, id::text from app_user where totp_secret is not null"),
-    (Store::Connector, "select tenant_id, id::text from connection where sealed is not null"),
-    (Store::Conn, "select tenant_id, id::text from conn where sealed is not null"),
+    (Store::Totp, "select tenant_id, id::text from app_user where totp_set"),
+    (Store::Connector, "select tenant_id, id::text from connection where has_credentials"),
+    (Store::Conn, "select tenant_id, id::text from conn where has_secrets"),
     (Store::ConnToken, "select tenant_id, conn_id || '/' || user_id from conn_token"),
-    (Store::Channel, "select tenant_id, id::text from message_channel where sealed is not null"),
-    (Store::Sso, "select tenant_id, id::text from sso_provider where client_secret is not null"),
+    (Store::Channel, "select tenant_id, id::text from message_channel where has_secrets"),
+    (Store::Sso, "select tenant_id, id::text from sso_provider where has_client_secret"),
     (Store::SamlSp, "select tenant_id, 'sp' from saml_sp_key"),
     (Store::SamlEnc, "select tenant_id, id::text from saml_enc_key"),
-    (
-        Store::Approval,
-        "select tenant_id, id || '/' || p.key from approval_request, jsonb_each(sealed) p \
-         where status = 'pending' and sealed is not null and jsonb_typeof(p.value) = 'string'",
-    ),
+    (Store::Approval, "select tenant_id, id || '/' || p from approval_request, unnest(secret_params) p where status = 'pending'"),
     (Store::Push, "select '00000000-0000-0000-0000-000000000000'::uuid, name from server_key"),
 ];
 
@@ -425,17 +411,19 @@ impl Kernel {
 
     /// A secret field's value, read in `tx` as `owner` (its owner, checked by the caller); recorded as a reveal of it.
     pub(crate) async fn field_value(&self, tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid, field: &str, owner: &str) -> Result<Option<String>> {
-        let stored: Option<String> =
-            sqlx::query_scalar("select sealed from record_secret where tenant_id = $1 and entity = $2 and record_id = $3 and field = $4")
+        let set: bool =
+            sqlx::query_scalar("select exists (select 1 from record_secret where tenant_id = $1 and entity = $2 and record_id = $3 and field = $4)")
                 .bind(tenant)
                 .bind(entity)
                 .bind(record)
                 .bind(field)
-                .fetch_optional(&mut **tx)
+                .fetch_one(&mut **tx)
                 .await?;
-        let Some(stored) = stored else { return Ok(None) };
+        if !set {
+            return Ok(None);
+        }
         let place = Place::field(tenant, owner, entity, record, field);
-        let value = self.kept(tx, &place, &stored).await?;
+        let value = self.kept(tx, &place).await?;
         entered(tx).await?;
         let out = super::secrets::revealed(tx, place.scope, &place.owner, &place.name()).await;
         leaving(tx, out).await?;
@@ -473,7 +461,6 @@ mod tests {
             assert!(HELD.iter().any(|(x, _)| *x == s), "{s:?}: what it no longer holds goes from the vault");
             assert!(name_of(s, "1").len() <= 100);
         }
-        assert_eq!(Store::Webhook.marker(), "sealed:vault");
         assert!(Store::Field.rule().reveal && !Store::Conn.rule().reveal && Store::Totp.rule().sandbox == Sandbox::Keep);
     }
 }

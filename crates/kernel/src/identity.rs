@@ -353,7 +353,6 @@ impl Kernel {
             email: String,
             full_name: String,
             password_hash: Option<String>,
-            totp_secret: Option<String>,
             totp_on: bool,
             totp_last_step: Option<i64>,
             token_version: i32,
@@ -361,7 +360,7 @@ impl Kernel {
             identity_id: Option<Uuid>,
         }
         let u: U = sqlx::query_as(
-            "select u.email::text as email, u.full_name, u.password_hash, u.totp_secret, u.totp_enabled_at is not null as totp_on, u.totp_last_step, \
+            "select u.email::text as email, u.full_name, u.password_hash, u.totp_enabled_at is not null as totp_on, u.totp_last_step, \
                u.token_version, u.is_active and u.kind = 'member' and t.status = 'active' as usable, u.identity_id \
              from app_user u join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2 for update of u",
         )
@@ -391,13 +390,11 @@ impl Kernel {
             Error::Conflict(_) => again(),
             other => other,
         })?;
-        if u.totp_on
-            && let Some(sealed) = &u.totp_secret
-        {
-            sqlx::query("update app_user set totp_secret = $3, totp_enabled_at = now(), totp_last_step = $4 where tenant_id = $1 and id = $2")
+        if u.totp_on {
+            self.copy_totp(tx, (m.tenant, m.user), (dir, id)).await?;
+            sqlx::query("update app_user set totp_set = true, totp_enabled_at = now(), totp_last_step = $3 where tenant_id = $1 and id = $2")
                 .bind(dir)
                 .bind(id)
-                .bind(self.copy_totp(tx, (m.tenant, m.user), (dir, id), sealed).await?)
                 .bind(u.totp_last_step)
                 .execute(&mut **tx)
                 .await?;

@@ -80,8 +80,8 @@ struct Request {
     failure: Option<String>,
     /// On running the entity's action `action` (BD-34), not a transition or the document pipeline.
     on_action: bool,
-    /// Its secret parameters, each kept in the vault ([`seal_secrets`]).
-    sealed: Option<Value>,
+    /// The names of its secret parameters, each kept in the vault ([`seal_secrets`]).
+    secret_params: Vec<String>,
     /// The zone it was asked for in, when that zone narrows staff (crate::zones, level 2): it completes there.
     zone: Option<String>,
 }
@@ -94,7 +94,7 @@ async fn in_zone(tx: &mut Tx, zone: Option<&str>) -> Result<Option<String>> {
 }
 
 const COLUMNS: &str =
-    "id, entity, record_id, action, from_state, requester, params, policy, steps, status, created_at, document, failure, on_action, sealed, zone";
+    "id, entity, record_id, action, from_state, requester, params, policy, steps, status, created_at, document, failure, on_action, secret_params, zone";
 
 impl Request {
     fn parts(&self) -> Result<(ApprovalPolicy, Vec<Step>)> {
@@ -156,25 +156,26 @@ fn satisfied(step: &Step, of: &[&Decision], requester: Uuid, allow_requester: bo
 }
 
 /// `params` of action `def` as a request keeps them: each secret parameter given shown as `[redacted]`, and its value
-/// kept apart in the vault (`{name: the marker}`), which only completing the request opens. Refused with the vault
+/// kept apart in the vault, which only completing the request opens; the names of those kept. Refused with the vault
 /// closed: it is never kept in the clear.
-async fn seal_secrets(k: &Kernel, tx: &mut Tx, tenant: Uuid, request: Uuid, def: &ferrum_meta::ActionDef, params: &Value) -> Result<(Value, Value)> {
-    let mut sealed = serde_json::Map::new();
+async fn seal_secrets(k: &Kernel, tx: &mut Tx, tenant: Uuid, request: Uuid, def: &ferrum_meta::ActionDef, params: &Value) -> Result<(Value, Vec<String>)> {
+    let mut kept = Vec::new();
     for p in def.params.iter().filter(|p| p.secret) {
         let Some(v) = params.get(&p.name).filter(|v| !v.is_null()) else { continue };
         k.vault_open("an action with a secret parameter waiting for approval")?;
-        sealed.insert(p.name.clone(), json!(k.keep(tx, &Place::approval(tenant, request, &p.name), &v.to_string()).await?));
+        k.keep(tx, &Place::approval(tenant, request, &p.name), &v.to_string()).await?;
+        kept.push(p.name.clone());
     }
-    Ok((def.redacted(params), Value::Object(sealed)))
+    Ok((def.redacted(params), kept))
 }
 
 /// The parameters request `r` was asked with, its secret ones opened again.
 async fn unsealed(k: &Kernel, tx: &mut Tx, tenant: Uuid, r: &Request) -> Result<Value> {
     let mut params = r.params.clone();
-    if let (Some(Value::Object(sealed)), Some(out)) = (&r.sealed, params.as_object_mut()) {
-        for (name, s) in sealed {
-            let plain = k.kept(tx, &Place::approval(tenant, r.id, name), s.as_str().unwrap_or_default()).await?;
-            out.insert(name.clone(), serde_json::from_str(&plain).map_err(|e| Error::internal(format!("sealed parameter {name}: {e}")))?);
+    if let Some(out) = params.as_object_mut() {
+        for name in &r.secret_params {
+            let plain = k.kept(tx, &Place::approval(tenant, r.id, name)).await?;
+            out.insert(name.clone(), serde_json::from_str(&plain).map_err(|e| Error::internal(format!("secret parameter {name}: {e}")))?);
         }
     }
     Ok(params)
@@ -488,19 +489,16 @@ impl Kernel {
         }
         let request = Uuid::now_v7();
         let params = if params.is_null() { &json!({}) } else { params };
-        let (params, sealed) = match on_action {
-            Some(def) => {
-                let (shown, sealed) = seal_secrets(self, tx, ctx.tenant, request, def, params).await?;
-                (shown, Some(sealed))
-            }
-            None => (params.clone(), None),
+        let (params, secret_params) = match on_action {
+            Some(def) => seal_secrets(self, tx, ctx.tenant, request, def, params).await?,
+            None => (params.clone(), Vec::new()),
         };
         let params = &params;
         let on = On { ent, record: id, doc, request, requester: ctx.user, action, policy };
         open_next(self, ctx, tx, &on, &mut steps).await?;
         let steps_json = serde_json::to_value(&steps).map_err(|e| Error::internal(e.to_string()))?;
         sqlx::query(
-            "insert into approval_request (tenant_id, id, entity, record_id, action, from_state, requester, params, policy, steps, next_due, document, on_action, sealed) \
+            "insert into approval_request (tenant_id, id, entity, record_id, action, from_state, requester, params, policy, steps, next_due, document, on_action, secret_params) \
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(ctx.tenant)
@@ -516,7 +514,7 @@ impl Kernel {
         .bind(next_due(&steps))
         .bind(document)
         .bind(on_action.is_some())
-        .bind(&sealed)
+        .bind(&secret_params)
         .execute(&mut **tx)
         .await?;
         crate::audit::record(tx, ctx, &ent.def.name, id, "approval:requested", None, json!({"request": request, "action": action, "params": params})).await?;

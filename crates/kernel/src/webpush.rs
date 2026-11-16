@@ -181,19 +181,18 @@ impl Kernel {
         let (der, fresh) = Vapid::generate()?;
         let mut tx = self.db.system_tx().await?;
         // The row first: the replica whose row it is keeps its key.
-        let made_here = sqlx::query("insert into server_key (name, public, sealed) values ('vapid', $1, $2) on conflict (name) do nothing")
+        let made_here = sqlx::query("insert into server_key (name, public) values ('vapid', $1) on conflict (name) do nothing")
             .bind(&fresh.public)
-            .bind(crate::vault::kept::MARKER)
             .execute(&mut *tx)
             .await?
             .rows_affected()
             == 1;
         if made_here {
-            let stored = self.keep(&mut tx, &place, &B64URL.encode(&der)).await?;
-            sqlx::query("update server_key set sealed = $1 where name = 'vapid'").bind(stored).execute(&mut *tx).await?;
+            self.keep(&mut tx, &place, &B64URL.encode(&der)).await?;
         }
-        let stored: String = sqlx::query_scalar("select sealed from server_key where name = 'vapid' for update").fetch_one(&mut *tx).await?;
-        let opened = match self.kept(&mut tx, &place, &stored).await {
+        // One replica at a time reads it, and replaces it if it must.
+        sqlx::query("select 1 from server_key where name = 'vapid' for update").execute(&mut *tx).await?;
+        let opened = match self.kept(&mut tx, &place).await {
             Ok(b) => B64URL.decode(b.as_bytes()).ok().and_then(|der| Vapid::from_pkcs8(&der).ok()),
             Err(_) => None,
         };
@@ -201,12 +200,8 @@ impl Kernel {
             Some(v) => v,
             None => {
                 tracing::error!("the stored VAPID key cannot be opened (were the vault's rows lost?); made a new one, devices subscribe again");
-                let stored = self.keep(&mut tx, &place, &B64URL.encode(&der)).await?;
-                sqlx::query("update server_key set public = $1, sealed = $2, created_at = now() where name = 'vapid'")
-                    .bind(&fresh.public)
-                    .bind(stored)
-                    .execute(&mut *tx)
-                    .await?;
+                self.keep(&mut tx, &place, &B64URL.encode(&der)).await?;
+                sqlx::query("update server_key set public = $1, created_at = now() where name = 'vapid'").bind(&fresh.public).execute(&mut *tx).await?;
                 fresh
             }
         };

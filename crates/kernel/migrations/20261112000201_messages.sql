@@ -12,15 +12,15 @@ create table message_template (
   primary key (tenant_id, key)
 );
 
--- A text-message or chat-app gateway a workspace connects: its request described, never named in code; its secrets
--- sealed (`sealed`, never read back). One enabled for each kind. `refused` counts inbound calls refused.
+-- A text-message or chat-app gateway a workspace connects: its request described, never named in code; its secrets kept
+-- in the vault (`has_secrets`, never read back). One enabled for each kind. `refused` counts inbound calls refused.
 create table message_channel (
   tenant_id uuid not null references tenant (id) on delete cascade,
   id uuid not null,
   kind text not null check (kind in ('text', 'chat')),
   name text not null check (length(name) between 1 and 100),
   description jsonb not null,
-  sealed text,
+  has_secrets boolean not null default false,
   enabled boolean not null default true,
   refused integer not null default 0,
   created_at timestamptz not null default now(),

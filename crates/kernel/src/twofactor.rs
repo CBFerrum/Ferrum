@@ -91,15 +91,15 @@ impl Kernel {
     }
 
     /// An authenticator secret kept for one person, kept again for another (an identity taking the credentials of the
-    /// membership it was made from), in `tx`: what the other's row holds.
-    pub(crate) async fn copy_totp(&self, tx: &mut crate::db::Tx, from: (Uuid, Uuid), to: (Uuid, Uuid), stored: &str) -> Result<String> {
+    /// membership it was made from), in `tx`.
+    pub(crate) async fn copy_totp(&self, tx: &mut crate::db::Tx, from: (Uuid, Uuid), to: (Uuid, Uuid)) -> Result<()> {
         self.totp_kept()?;
-        let secret = self.kept(tx, &Place::totp(from.0, from.1), stored).await?;
+        let secret = self.kept(tx, &Place::totp(from.0, from.1)).await?;
         self.keep(tx, &Place::totp(to.0, to.1), &secret).await
     }
 
-    async fn open_secret(&self, tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid, stored: &str) -> Result<Vec<u8>> {
-        let b32 = self.kept(tx, &Place::totp(tenant, user), stored).await?;
+    async fn open_secret(&self, tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid) -> Result<Vec<u8>> {
+        let b32 = self.kept(tx, &Place::totp(tenant, user)).await?;
         BASE32_NOPAD.decode(b32.as_bytes()).map_err(|_| Error::Internal("corrupt two-factor secret".into()))
     }
 
@@ -107,13 +107,12 @@ impl Kernel {
     /// are left; and whether the workspace requires it.
     pub async fn two_factor_status(&self, ctx: &Ctx) -> Result<Value> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let (enabled, pending): (bool, bool) = sqlx::query_as(
-            "select totp_enabled_at is not null, totp_secret is not null and totp_enabled_at is null from app_user where tenant_id = $1 and id = $2",
-        )
-        .bind(ctx.tenant)
-        .bind(ctx.user)
-        .fetch_one(&mut *tx)
-        .await?;
+        let (enabled, pending): (bool, bool) =
+            sqlx::query_as("select totp_enabled_at is not null, totp_set and totp_enabled_at is null from app_user where tenant_id = $1 and id = $2")
+                .bind(ctx.tenant)
+                .bind(ctx.user)
+                .fetch_one(&mut *tx)
+                .await?;
         let left: i64 = sqlx::query_scalar("select count(*) from user_recovery_code where tenant_id = $1 and user_id = $2 and used_at is null")
             .bind(ctx.tenant)
             .bind(ctx.user)
@@ -133,8 +132,8 @@ impl Kernel {
     pub async fn begin_two_factor(&self, ctx: &Ctx) -> Result<Value> {
         self.totp_kept()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let (email, enabled, pending, workspace): (String, bool, Option<String>, String) = sqlx::query_as(
-            "select u.email::text, u.totp_enabled_at is not null, u.totp_secret, t.name from app_user u join tenant t on t.id = u.tenant_id \
+        let (email, enabled, pending, workspace): (String, bool, bool, String) = sqlx::query_as(
+            "select u.email::text, u.totp_enabled_at is not null, u.totp_set, t.name from app_user u join tenant t on t.id = u.tenant_id \
              where u.tenant_id = $1 and u.id = $2 for update of u",
         )
         .bind(ctx.tenant)
@@ -146,8 +145,8 @@ impl Kernel {
         }
         let place = Place::totp(ctx.tenant, ctx.user);
         let shown = match pending {
-            Some(stored) => self.kept(&mut tx, &place, &stored).await.ok().map(|s| s.to_string()),
-            None => None,
+            true => self.kept(&mut tx, &place).await.ok().map(|s| s.to_string()),
+            false => None,
         };
         let secret = match shown {
             Some(secret) => secret,
@@ -155,11 +154,10 @@ impl Kernel {
                 let mut raw = [0u8; 20];
                 rand::rng().fill(&mut raw);
                 let secret = BASE32_NOPAD.encode(&raw);
-                let stored = self.keep(&mut tx, &place, &secret).await?;
-                sqlx::query("update app_user set totp_secret = $3, totp_last_step = null, updated_at = now() where tenant_id = $1 and id = $2")
+                self.keep(&mut tx, &place, &secret).await?;
+                sqlx::query("update app_user set totp_set = true, totp_last_step = null, updated_at = now() where tenant_id = $1 and id = $2")
                     .bind(ctx.tenant)
                     .bind(ctx.user)
-                    .bind(stored)
                     .execute(&mut *tx)
                     .await?;
                 secret
@@ -174,8 +172,8 @@ impl Kernel {
     /// (shown once).
     pub async fn enable_two_factor(&self, ctx: &Ctx, code: &str) -> Result<Vec<String>> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let (sealed, enabled): (Option<String>, bool) =
-            sqlx::query_as("select totp_secret, totp_enabled_at is not null from app_user where tenant_id = $1 and id = $2 for update")
+        let (set, enabled): (bool, bool) =
+            sqlx::query_as("select totp_set, totp_enabled_at is not null from app_user where tenant_id = $1 and id = $2 for update")
                 .bind(ctx.tenant)
                 .bind(ctx.user)
                 .fetch_one(&mut *tx)
@@ -183,8 +181,10 @@ impl Kernel {
         if enabled {
             return Err(Error::invalid("two-factor sign-in is already on"));
         }
-        let sealed = sealed.ok_or_else(|| Error::invalid("start the setup first"))?;
-        let secret = self.open_secret(&mut tx, ctx.tenant, ctx.user, &sealed).await?;
+        if !set {
+            return Err(Error::invalid("start the setup first"));
+        }
+        let secret = self.open_secret(&mut tx, ctx.tenant, ctx.user).await?;
         let step = matching_step(&secret, code, now_seconds()).ok_or_else(|| Error::field("code", "not the code your app shows now"))?;
         sqlx::query("update app_user set totp_enabled_at = now(), totp_last_step = $3, updated_at = now() where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)
@@ -214,14 +214,14 @@ impl Kernel {
     /// New recovery codes in place of the old ones, confirmed with a code from the app.
     pub async fn new_recovery_codes(&self, ctx: &Ctx, code: &str) -> Result<Vec<String>> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let (sealed, last): (Option<String>, Option<i64>) =
-            sqlx::query_as("select totp_secret, totp_last_step from app_user where tenant_id = $1 and id = $2 and totp_enabled_at is not null for update")
+        let last: Option<i64> =
+            sqlx::query_scalar("select totp_last_step from app_user where tenant_id = $1 and id = $2 and totp_enabled_at is not null for update")
                 .bind(ctx.tenant)
                 .bind(ctx.user)
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or_else(|| Error::invalid("two-factor sign-in is off"))?;
-        let secret = self.open_secret(&mut tx, ctx.tenant, ctx.user, &sealed.unwrap_or_default()).await?;
+        let secret = self.open_secret(&mut tx, ctx.tenant, ctx.user).await?;
         let step = matching_step(&secret, code, now_seconds())
             .filter(|s| last.is_none_or(|l| *s as i64 > l))
             .ok_or_else(|| Error::field("code", "not the code your app shows now"))?;
@@ -240,18 +240,17 @@ impl Kernel {
     /// app (someone who signs in through single sign-on has no password).
     pub async fn disable_two_factor(&self, ctx: &Ctx, password: Option<&str>, code: Option<&str>) -> Result<()> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let (hash, sealed, last): (Option<String>, Option<String>, Option<i64>) = sqlx::query_as(
-            "select password_hash, totp_secret, totp_last_step from app_user where tenant_id = $1 and id = $2 and totp_enabled_at is not null for update",
-        )
-        .bind(ctx.tenant)
-        .bind(ctx.user)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| Error::invalid("two-factor sign-in is off"))?;
+        let (hash, last): (Option<String>, Option<i64>) =
+            sqlx::query_as("select password_hash, totp_last_step from app_user where tenant_id = $1 and id = $2 and totp_enabled_at is not null for update")
+                .bind(ctx.tenant)
+                .bind(ctx.user)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| Error::invalid("two-factor sign-in is off"))?;
         let confirmed = match (password, code) {
             (Some(p), _) if !p.is_empty() => crate::auth::verify_password(p.to_string(), hash.unwrap_or_default()).await,
             (_, Some(c)) => {
-                let secret = self.open_secret(&mut tx, ctx.tenant, ctx.user, &sealed.unwrap_or_default()).await?;
+                let secret = self.open_secret(&mut tx, ctx.tenant, ctx.user).await?;
                 matching_step(&secret, c, now_seconds()).is_some_and(|s| last.is_none_or(|l| s as i64 > l))
             }
             _ => false,
@@ -293,7 +292,7 @@ impl Kernel {
 
     async fn clear_two_factor(&self, tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid) -> Result<()> {
         let done = sqlx::query(
-            "update app_user set totp_secret = null, totp_enabled_at = null, totp_last_step = null, updated_at = now() where tenant_id = $1 and id = $2",
+            "update app_user set totp_set = false, totp_enabled_at = null, totp_last_step = null, updated_at = now() where tenant_id = $1 and id = $2",
         )
         .bind(tenant)
         .bind(user)
@@ -327,7 +326,6 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         #[derive(sqlx::FromRow)]
         struct U {
-            totp_secret: Option<String>,
             enabled: bool,
             last_step: Option<i64>,
             token_version: i32,
@@ -335,7 +333,7 @@ impl Kernel {
             locked: bool,
         }
         let u: U = sqlx::query_as(
-            "select u.totp_secret, u.totp_enabled_at is not null as enabled, u.totp_last_step as last_step, u.token_version, \
+            "select u.totp_enabled_at is not null as enabled, u.totp_last_step as last_step, u.token_version, \
                u.is_active and t.status = 'active' as active, coalesce(u.locked_until > now(), false) as locked \
              from app_user u join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2 for update of u",
         )
@@ -350,7 +348,7 @@ impl Kernel {
         if u.locked {
             return Err(Error::TooManyRequests(format!("too many failed attempts; try again in {} minutes", crate::auth::LOCK_MINUTES)));
         }
-        let secret = self.open_secret(&mut tx, tenant, user, u.totp_secret.as_deref().unwrap_or_default()).await?;
+        let secret = self.open_secret(&mut tx, tenant, user).await?;
         let step = matching_step(&secret, code, now_seconds()).filter(|s| u.last_step.is_none_or(|l| *s as i64 > l));
         let given = if step.is_some() { "authenticator" } else { "recovery_code" };
         let ok = match step {

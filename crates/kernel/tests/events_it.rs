@@ -227,12 +227,11 @@ async fn scenario() {
     });
     let mut tx = k.db.tenant_tx(quiet).await.unwrap();
     let hook = Uuid::now_v7();
-    let signing = k.keep_webhook_secret(&mut tx, quiet, hook, "s3cret").await.unwrap();
-    sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, $2, 'slow', $3, $4, '{hooked}')")
+    k.keep_webhook_secret(&mut tx, quiet, hook, "s3cret").await.unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, topics) values ($1, $2, 'slow', $3, '{hooked}')")
         .bind(quiet)
         .bind(hook)
         .bind(&endpoint)
-        .bind(signing)
         .execute(&mut *tx)
         .await
         .unwrap();

@@ -124,7 +124,7 @@ async fn secrets_are_write_only_kept_in_the_vault_and_bound() {
     assert_eq!(reveal(&k, &platform, tenant, id).await.unwrap().as_deref(), Some("rotated-value"));
 
     // Never stored in the clear, nor in the audit trail or published events.
-    let leaks = "select (select count(*) from record_secret where tenant_id = $1 and (sealed like '%s3cret%' or sealed like '%rotated%')) \
+    let leaks = "select (select count(*) from record_secret r where tenant_id = $1 and (r::text like '%s3cret%' or r::text like '%rotated%')) \
                  + (select count(*) from outbox where tenant_id = $1 and (payload::text like '%s3cret%' or payload::text like '%rotated%'))";
     assert_eq!(count(&k, tenant, leaks).await, 0);
     let trail = k.audit_trail(&ctx, "Integration", id).await.unwrap().to_string();

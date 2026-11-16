@@ -758,13 +758,12 @@ async fn create_webhook(Auth(ctx): Auth, State(app): State<AppContext>, Json(w):
     let id = Uuid::now_v7();
     let secret: String = hex::encode(uuid::Uuid::new_v4().as_bytes()) + &hex::encode(uuid::Uuid::new_v4().as_bytes());
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
-    let stored = st.kernel.keep_webhook_secret(&mut tx, ctx.tenant, id, &secret).await?;
-    sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics, created_by) values ($1, $2, $3, $4, $5, $6, $7)")
+    st.kernel.keep_webhook_secret(&mut tx, ctx.tenant, id, &secret).await?;
+    sqlx::query("insert into webhook (tenant_id, id, name, url, topics, created_by) values ($1, $2, $3, $4, $5, $6)")
         .bind(ctx.tenant)
         .bind(id)
         .bind(w.name.trim())
         .bind(&w.url)
-        .bind(stored)
         .bind(&w.topics)
         .bind(ctx.user)
         .execute(&mut *tx)

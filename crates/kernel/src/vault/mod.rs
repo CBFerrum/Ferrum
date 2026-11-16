@@ -49,7 +49,7 @@
 //! // ... nor is a store's place in the vault made, or read, outside the kernel.
 //! async fn read(k: &ferrum_kernel::Kernel, tx: &mut ferrum_kernel::Tx) {
 //!     let place = ferrum_kernel::vault::kept::Place::webhook(uuid::Uuid::nil(), uuid::Uuid::nil());
-//!     let _ = k.kept(tx, &place, "sealed:vault").await;
+//!     let _ = k.kept(tx, &place).await;
 //! }
 //! ```
 

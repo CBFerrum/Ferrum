@@ -1113,7 +1113,7 @@ async fn erasing(k: &Kernel, admin: &Ctx, seen: &Seen, store: Arc<Memory>) {
     // A restore from before the erasure brings her rows back; the erasure's journal takes them again.
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     sqlx::query("update app_user set email = 'ivy@depot.test' where tenant_id = $1 and id = $2").bind(tenant).bind(ivy_id).execute(&mut *tx).await.unwrap();
-    sqlx::query("insert into conn_token (tenant_id, conn_id, user_id, sealed) values ($1, $2, $3, 'restored')")
+    sqlx::query("insert into conn_token (tenant_id, conn_id, user_id) values ($1, $2, $3)")
         .bind(tenant)
         .bind(mailbox)
         .bind(ivy_id)

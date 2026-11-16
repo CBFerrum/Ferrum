@@ -230,11 +230,10 @@ fn connection_input(secret: &str) -> ConnectionInput {
 async fn webhook(k: &Kernel, tenant: Uuid, secret: &str) -> Uuid {
     let hook = Uuid::now_v7();
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
-    let stored = k.keep_webhook_secret(&mut tx, tenant, hook, secret).await.unwrap();
-    sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, $2, 'h', 'https://hooks.test/x', $3, '{*}')")
+    k.keep_webhook_secret(&mut tx, tenant, hook, secret).await.unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, topics) values ($1, $2, 'h', 'https://hooks.test/x', '{*}')")
         .bind(tenant)
         .bind(hook)
-        .bind(&stored)
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -308,16 +307,17 @@ async fn scenario() {
     let f = populate(&a).await;
     reads_every_value(&a, &f, "kept").await;
     reads_every_value(&b, &f, "kept").await;
-    let marks: Vec<(String,)> = sql(
+    // Each store's row says only that its value is set; the vault alone holds the value.
+    let set: Vec<(String,)> = sql(
         &a.k,
-        "select sealed from record_secret union all select totp_secret from app_user where totp_secret is not null union all select sealed from message_channel \
-         union all select sealed from conn where sealed is not null union all select secret from webhook union all select sealed from server_key",
+        "select field from record_secret union all select 'totp' from app_user where totp_set union all select 'channel' from message_channel where has_secrets \
+         union all select 'conn' from conn where has_secrets union all select 'webhook' from webhook union all select name from server_key",
         &[],
     )
     .await;
-    assert!(marks.iter().all(|(m,)| m == "vault" || m == "sealed:vault"), "only the vault's mark: {marks:?}");
-    assert_eq!(marks.len(), 8, "three fields, a second factor, a channel, a connection, a webhook and the push key");
+    assert_eq!(set.len(), 8, "three fields, a second factor, a channel, a connection, a webhook and the push key: {set:?}");
     let held = kept(&a.k).await;
+    assert_eq!(held.len(), 8, "each value in the vault: {held:?}");
     let owners: Vec<&str> = held.iter().filter(|(_, n, _)| n.starts_with("field.")).map(|(o, _, _)| o.as_str()).collect();
     assert_eq!(owners, ["crm", "hr", "hr"], "a field is its declaring app's, the one hr adds to crm's lead included");
     nowhere_in_the_clear(&a.k, PLAIN).await;
@@ -515,9 +515,9 @@ async fn moves_and_sandboxes() {
     };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     a.k.second_factor(s, sandbox_user, st.token_version, &ferrum_kernel::twofactor::code(&totp, now).unwrap()).await.expect("the same second factor");
-    let blanks: Vec<(Option<String>,)> =
-        sql(&a.k, "select sealed from message_channel where tenant_id = $1 union all select sealed from conn where tenant_id = $1", &[s]).await;
-    assert!(blanks.len() == 2 && blanks.iter().all(|(v,)| v.is_none()), "channels and connections come blank: {blanks:?}");
+    let blanks: Vec<(bool,)> =
+        sql(&a.k, "select has_secrets from message_channel where tenant_id = $1 union all select has_secrets from conn where tenant_id = $1", &[s]).await;
+    assert!(blanks.len() == 2 && blanks.iter().all(|(v,)| !v), "channels and connections come blank: {blanks:?}");
     let said = said.lock().unwrap().join("\n");
     assert!(said.contains("1 secrets kept, 1 made anew"), "the second factor kept, the webhook's made anew: {said}");
     assert_eq!(webhook_row(&a.k, s).await.len(), 1, "a webhook's secret of its own");

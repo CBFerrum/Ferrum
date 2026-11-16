@@ -247,11 +247,20 @@ async fn scenario() {
     assert!(!text.contains("wrong") && !text.contains("sealed\":\""), "credentials are never read back: {text}");
     k.save_connection(&admin, Some(id), input("right", "review", "keep", false)).await.unwrap();
     assert_eq!(k.test_connection(&admin, id).await.unwrap(), "account 42");
-    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
-    let sealed: String =
-        sqlx::query_scalar("select sealed from connection where tenant_id = $1 and id = $2").bind(tenant).bind(id).fetch_one(&mut *tx).await.unwrap();
+    // The row says they are set; the vault alone keeps them, sealed.
+    let mut tx = k.db.pool.begin().await.unwrap();
+    sqlx::query("select set_config('ferrum.system', 'on', true), set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
+    let (set, sealed): (bool, Vec<u8>) = sqlx::query_as(
+        "select c.has_credentials, s.sealed from connection c join vault.secret s on s.scope = c.tenant_id \
+         and s.name = 'connector.' || left(encode(sha256(convert_to(c.id::text, 'UTF8')), 'hex'), 40) where c.tenant_id = $1 and c.id = $2",
+    )
+    .bind(tenant)
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
-    assert!(!sealed.contains("right"), "sealed at rest");
+    assert!(set && !String::from_utf8_lossy(&sealed).contains("right"), "sealed at rest, in the vault");
     assert!(matches!(k.connections(&clerk).await, Err(Error::Forbidden(_))));
     assert!(k.connections(&outsider).await.unwrap().is_empty(), "another workspace");
     assert!(matches!(k.test_connection(&outsider, id).await, Err(Error::NotFound(_))));

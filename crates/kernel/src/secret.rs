@@ -135,19 +135,15 @@ impl Kernel {
             let place = crate::vault::kept::Place::field(ctx.tenant, &self.field_owner(entity, field).await?, entity, record, field);
             match value {
                 Some(plain) => {
-                    let sealed = self.keep(tx, &place, plain).await?;
-                    let key_id = crate::vault::kept::MARKER;
+                    self.keep(tx, &place, plain).await?;
                     sqlx::query(
-                        "insert into record_secret (tenant_id, entity, record_id, field, sealed, key_id, updated_by) values ($1, $2, $3, $4, $5, $6, $7) \
-                         on conflict (tenant_id, entity, record_id, field) do update set sealed = excluded.sealed, key_id = excluded.key_id, \
-                         updated_at = now(), updated_by = excluded.updated_by",
+                        "insert into record_secret (tenant_id, entity, record_id, field, updated_by) values ($1, $2, $3, $4, $5) \
+                         on conflict (tenant_id, entity, record_id, field) do update set updated_at = now(), updated_by = excluded.updated_by",
                     )
                     .bind(ctx.tenant)
                     .bind(entity)
                     .bind(record)
                     .bind(field)
-                    .bind(sealed)
-                    .bind(key_id)
                     .bind((!ctx.user.is_nil()).then_some(ctx.user))
                     .execute(&mut **tx)
                     .await?;
@@ -188,8 +184,8 @@ impl Kernel {
     }
 
     /// Keeps a webhook's new signing secret in the vault (the platform's, in the workspace), in the transaction that
-    /// stores the webhook, and returns what its row holds (docs/plan/stateless.md, D5).
-    pub async fn keep_webhook_secret(&self, tx: &mut Tx, tenant: Uuid, webhook: Uuid, secret: &str) -> Result<String> {
+    /// stores the webhook (docs/plan/stateless.md, D5).
+    pub async fn keep_webhook_secret(&self, tx: &mut Tx, tenant: Uuid, webhook: Uuid, secret: &str) -> Result<()> {
         self.keep(tx, &crate::vault::kept::Place::webhook(tenant, webhook), secret).await
     }
 
@@ -198,12 +194,9 @@ impl Kernel {
         crate::vault::kept::forget(tx, &crate::vault::kept::Place::webhook(tenant, webhook)).await
     }
 
-    /// A webhook's signing secret, from the vault (its row holds the marker).
-    pub(crate) async fn webhook_secret(&self, tenant: Uuid, webhook: Uuid, stored: &str) -> Result<Zeroizing<String>> {
-        let mut tx = self.db.system_tx().await?;
-        let secret = self.kept(&mut tx, &crate::vault::kept::Place::webhook(tenant, webhook), stored).await?;
-        tx.commit().await?;
-        Ok(secret)
+    /// A webhook's signing secret, from the vault.
+    pub(crate) async fn webhook_secret(&self, tenant: Uuid, webhook: Uuid) -> Result<Zeroizing<String>> {
+        self.kept_alone(&crate::vault::kept::Place::webhook(tenant, webhook)).await
     }
 }
 

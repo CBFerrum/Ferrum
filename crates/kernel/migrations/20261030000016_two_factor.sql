@@ -1,7 +1,7 @@
--- Two-factor sign-in with an authenticator app (TOTP): the secret sealed with the server key, the
--- last time step accepted (each code works once), and single-use recovery codes kept as hashes.
+-- Two-factor sign-in with an authenticator app (TOTP): whether a secret was made (`totp_set`; the secret is kept in the
+-- vault), the last time step accepted (each code works once), and single-use recovery codes kept as hashes.
 alter table app_user
-  add column totp_secret text,
+  add column totp_set boolean not null default false,
   add column totp_enabled_at timestamptz,
   add column totp_last_step bigint;
 

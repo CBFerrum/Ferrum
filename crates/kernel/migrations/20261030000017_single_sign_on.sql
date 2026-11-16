@@ -1,5 +1,5 @@
 -- Single sign-on through OpenID Connect providers (Microsoft Entra ID, Okta, Google Workspace,
--- Keycloak, Auth0…), set up per workspace with the client secret sealed by the server key; the
+-- Keycloak, Auth0…), set up per workspace with the client secret kept in the vault (`has_client_secret`); the
 -- sign-ins on their way through a provider (state, nonce and PKCE verifier, ten minutes); and each
 -- person's link to their identity at the provider, so a reused email address cannot take over an
 -- account.
@@ -9,7 +9,7 @@ create table sso_provider (
   label text not null check (length(label) between 1 and 60),
   issuer text not null,
   client_id text not null,
-  client_secret text,
+  has_client_secret boolean not null default false,
   domains text[] not null default '{}',
   auto_create boolean not null default false,
   default_roles text[] not null default '{}',
