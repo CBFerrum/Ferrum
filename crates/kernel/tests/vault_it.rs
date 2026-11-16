@@ -107,6 +107,21 @@ async fn scenario() {
     ] {
         assert!(e.to_string().starts_with("the vault is closed: nothing here can make its first slot"), "every use says so: {e}");
     }
+    // Erasing someone who opted out, with neither the vault nor the old key: refused, saying what to do; nothing is erased.
+    let session = k.login("closed", "admin@closed.test", "Correct-Horse-9").await.unwrap();
+    let admin = k.load_ctx(w, session.user, None, "it".into()).await.unwrap();
+    k.set_message_opt_out(&admin, "zoe@example.com", "email", true).await.unwrap();
+    let zoe = ferrum_kernel::privacy::Person { email: "zoe@example.com".into(), ..Default::default() };
+    let e = k.erase_personal_data_of(&admin, &zoe, "request 1").await.unwrap_err();
+    let said = e.to_string();
+    assert!(matches!(e, Error::Unavailable(_)), "{said}");
+    assert!(
+        said.starts_with("erasing someone who opted out needs the vault, and the vault is closed: nothing here can make its first slot")
+            && said.contains("Give it one of these, and the next start makes it"),
+        "what to do, in plain words: {said}"
+    );
+    let kept = k.message_opt_outs(&admin, None, None, 10, 0).await.unwrap();
+    assert_eq!(kept["opt_outs"][0]["address"], json!("zoe@example.com"), "nothing erased: {kept}");
     let found = k.vault_findings().await.unwrap();
     assert!(
         found.len() == 1 && found[0].level == ferrum_kernel::doctor::Level::Warning && found[0].detail.contains("first slot"),
@@ -593,7 +608,9 @@ async fn secrets_and_people(no_file: &Path) {
 
     // ── a secret its app manages: people's ways leave it to the app and say so; the app goes on using and changing it ──
     fn refused(r: Result<(), Error>) -> bool {
-        matches!(r, Err(Error::Conflict(m)) if m.contains("managed by its app, crm"))
+        // A code and the app's id of its own, for a screen to say it in the person's language; the sentence for the rest.
+        matches!(&r, Err(e @ Error::Refused { code: "managed_by_app", status: 409, pointer: Some(app), .. })
+            if app == "crm" && e.to_string().contains("managed by its app, crm"))
     }
     crm.set(&k, ws, "issuer.key", New::Ed25519, Rule::default()).await.unwrap();
     crm.manage(&k, ws, "issuer.key", true).await.unwrap();

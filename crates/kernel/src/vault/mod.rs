@@ -72,7 +72,7 @@ pub use root::{
 pub use scope::transfer_out;
 pub(crate) use scope::{carry_in, digest, drop_scope, may_carry};
 pub use seal::Kdf;
-pub use secrets::{Carry, Changed, Described, Kind, MAX_OVERLAP_SECS, New, Origin, Rule, Sandbox, USES_PER_HOUR, carried};
+pub use secrets::{Carry, Changed, Described, Kind, MANAGED_BY_APP, MAX_OVERLAP_SECS, New, Origin, Rule, Sandbox, USES_PER_HOUR, carried};
 pub(crate) use secrets::{handler, of_owner as handle_of, sandbox as sandbox_secrets, secret_name_ok, upkeep};
 /// What holds a key, a password or a secret's value, zeroed when dropped: the vault's own type, for its callers.
 pub use zeroize::Zeroizing;

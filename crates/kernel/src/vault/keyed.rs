@@ -73,7 +73,7 @@ impl Keyed {
     fn what(self) -> &'static str {
         match self {
             Keyed::OptOut => "a promotional message's opt-out link",
-            Keyed::ErasedOptOut => "an erased person's opt-out",
+            Keyed::ErasedOptOut => "erasing someone who opted out",
             Keyed::SignInState => "signing in to an account",
             Keyed::FileAddress => "a public address of a file",
             Keyed::ConnectorAccount => "a connector's account",

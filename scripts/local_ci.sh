@@ -52,6 +52,12 @@
 #   editors not run here: it needs Docker and Playwright's browsers. The image job and the cluster workflow need
 #           Docker too: docs/operations.md, "Running the image and cluster checks on your own machine".
 #
+# A job run only when named needs software of its own: PostgreSQL 17's programs (replica, managed; PG_BIN), PgBouncer
+# (managed; PGBOUNCER), SeaweedFS's `weed` (objects, oneinput, companions; window's object-storage step), moto 5.0.28
+# with boto3 in a virtualenv (objects; OBJECT_PYTHON), a C compiler (oneinput), Forgejo 17 and sqlite3 (oidc; FORGEJO).
+# Where it is not there, the job says so in one line, SKIP, and passes. LiveKit (`livekit-server`) is the rust job's:
+# companions_it starts it where installed.
+#
 # Settings: PG (Postgres as the `ferrum` role; default postgres://ferrum:ferrum@localhost:5432), LOCALCI_SUFFIX (added to
 # every database name; default _localci, so another run's database is never reset), NO_DEBUG=1 (tests without debug
 # info: a fraction of the disk), CARGO_TARGET_DIR, LOCALCI_LOGS (where each step's log goes), LOCALCI_MIN_GB (stop below
@@ -103,6 +109,18 @@ room() {
   echo "FAIL disk: ${free} GB free under $TARGET, less than $MIN_GB; stopping"
   exit 1
 }
+# A job whose software is not there: one plain line, and no failure.
+skip() { echo "SKIP $1: needs $2"; }
+has() { command -v "$1" >/dev/null 2>&1; }
+# PostgreSQL 17's own programs, where the rehearsals look for them (their PG_BIN), and whether each is there.
+pg17() {
+  local bin=${PG_BIN:-}
+  [ -n "$bin" ] || { [ -x /opt/homebrew/opt/postgresql@17/bin/pg_ctl ] && bin=/opt/homebrew/opt/postgresql@17/bin; }
+  [ -n "$bin" ] || bin=$(dirname "$(command -v pg_ctl || echo /no/pg_ctl)")
+  local tool
+  for tool in "$@"; do [ -x "$bin/$tool" ] || return 1; done
+}
+WEED_NEEDED="SeaweedFS's weed on the PATH (brew install seaweedfs)"
 # The test executables a log's run used, deleted: hundreds of MB each.
 tidy() { grep -oE 'deps/[a-z0-9_]+-[0-9a-f]{16}\)' "$1" | tr -d ')' | sort -u | while read -r p; do rm -f "$TARGET/debug/$p"; done; }
 
@@ -238,6 +256,7 @@ job_move() {
 
 job_replica() {
   local dir code
+  pg17 initdb pg_ctl pg_basebackup psql || { skip replica "PostgreSQL 17's own programs, initdb, pg_ctl and pg_basebackup (brew install postgresql@17, or set PG_BIN)"; return; }
   dir=$(mktemp -u "${TMPDIR:-/tmp}/ferrum-pair.XXXXXX")
   run "replica pair up" scripts/replica_pair.sh up "$dir" || { scripts/replica_pair.sh down "$dir" >/dev/null 2>&1; return; }
   # The addresses in a shell of their own; `run` has already said how it went, its code says whether it failed.
@@ -249,6 +268,10 @@ job_replica() {
 
 job_managed() {
   local dir
+  pg17 initdb pg_ctl psql || { skip managed "PostgreSQL 17's own programs, initdb and pg_ctl (brew install postgresql@17, or set PG_BIN)"; return; }
+  local bouncer=${PGBOUNCER:-}
+  [ -n "$bouncer" ] || bouncer=$([ -x /opt/homebrew/bin/pgbouncer ] && echo /opt/homebrew/bin/pgbouncer || command -v pgbouncer || true)
+  [ -x "$bouncer" ] || { skip managed "PgBouncer 1.21 or later (brew install pgbouncer, or set PGBOUNCER)"; return; }
   dir=$(mktemp -u "${TMPDIR:-/tmp}/ferrum-managed.XXXXXX")
   run "managed build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
   run "managed up" scripts/managed_pg.sh up "$dir" || { scripts/managed_pg.sh down "$dir" >/dev/null 2>&1; return; }
@@ -298,26 +321,35 @@ managed_tests() { # name args...
 }
 
 job_window() {
+  has weed || echo "     note: no $WEED_NEEDED: the rehearsal leaves out its object-storage step"
   run "window build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --example oidc_rehearsal --locked || return
   run "window rehearsal" scripts/window_rehearsal.sh "${WINDOW_OLD:-8a34644e}" "ferrum_windowrehearsal$SFX"
 }
 
 job_objects() {
+  has weed || { skip objects "$WEED_NEEDED"; return; }
+  "${OBJECT_PYTHON:-python3}" -c 'import boto3, moto' 2>/dev/null \
+    || { skip objects "moto 5.0.28 with boto3 in a virtualenv: python3 -m venv v && v/bin/pip install 'moto[server]==5.0.28' boto3, then OBJECT_PYTHON=v/bin/python"; return; }
   run "objects build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
   run "objects rehearsal" scripts/object_store_rehearsal.sh "ferrum_objrehearsal$SFX"
 }
 
 job_oneinput() {
+  has weed || { skip oneinput "$WEED_NEEDED"; return; }
+  has cc || { skip oneinput "a C compiler (cc), for the library that traces getenv"; return; }
   run "oneinput build (with its apps)" cargo build -p ferrum-server --bin ferrum --locked || return
   run "oneinput proof" scripts/one_input.sh "ferrum_oneinput$SFX"
 }
 
 job_oidc() {
+  [ -x "${FORGEJO:-/opt/homebrew/bin/forgejo}" ] || { skip oidc "Forgejo 17 (brew install forgejo, or set FORGEJO)"; return; }
+  has sqlite3 || { skip oidc "sqlite3, which the rehearsal's Forgejo keeps its database in"; return; }
   run "oidc build (no apps)" cargo build -p ferrum-server --no-default-features --example oidc_rehearsal --locked || return
   run "oidc rehearsal" scripts/oidc_rehearsal.sh "ferrum_oidcrehearsal$SFX"
 }
 
 job_companions() {
+  has weed || { skip companions "$WEED_NEEDED"; return; }
   run "companions build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
   run "companions rehearsal" scripts/companions_rehearsal.sh "ferrum_companions$SFX"
 }

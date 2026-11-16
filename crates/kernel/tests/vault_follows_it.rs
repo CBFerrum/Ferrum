@@ -231,7 +231,10 @@ async fn scenario() {
     assert_eq!(by_operator.details["by"], json!("operator"));
     // Managed by its app: the operator's ways refuse it, naming the app, until the app lets go.
     a.crm.manage(&a.k, Scope::Installation, "license", true).await.unwrap();
-    let managed = |e: Error| matches!(&e, Error::Conflict(m) if m.contains("managed by its app, crm"));
+    let managed = |e: Error| {
+        matches!(&e, Error::Refused { code: "managed_by_app", status: 409, pointer: Some(app), .. } if app == "crm")
+            && e.to_string().contains("managed by its app, crm")
+    };
     assert!(managed(a.platform.operator_set(&a.k, "crm", "license", value("x"), Rule::default()).await.unwrap_err()));
     assert!(managed(a.platform.operator_rotate(&a.k, "crm", "license", value("x")).await.unwrap_err()));
     assert!(managed(a.platform.operator_rule(&a.k, "crm", "license", Rule::default()).await.unwrap_err()));
