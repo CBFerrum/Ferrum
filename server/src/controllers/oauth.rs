@@ -290,10 +290,8 @@ async fn consent(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Qu
     let st = app_state(&app)?;
     // A program beside Ferrum that an installed app declared (oidc.rs): no consent page, and its own checks. Turned off
     // (`openid`), it is a client this endpoint does not know.
-    if super::oidc::on(&st)
-        && let Some(client) = st.kernel.companion_client(&req.client_id).await?
-    {
-        return super::oidc::authorize(&st, &headers, &uri, client).await;
+    if super::oidc::on(&st) && req.client_id.starts_with(ferrum_kernel::oidc::CLIENT_PREFIX) {
+        return super::oidc::authorize(&st, &headers, &uri, &req.client_id).await;
     }
     let Some(ctx) = signed_in(&st, &Method::GET, &headers).await? else {
         let here = uri.path_and_query().map_or("/oauth/authorize", |p| p.as_str());

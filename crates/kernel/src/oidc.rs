@@ -59,6 +59,8 @@ const PLATFORM_CLAIMS: [&str; 17] =
 const KEY: &str = "oidc.signing";
 /// The app's own secret that holds its companion's client secret: `oidc-client.<companion>`.
 pub const CLIENT_SECRET: &str = "oidc-client.";
+/// How a companion's client id starts (an API client's never does): unique within its workspace, never across them.
+pub const CLIENT_PREFIX: &str = "fo_";
 /// How often a replica that runs background work looks for sign-ins whose session ended.
 const SWEEP_EVERY: Duration = Duration::from_secs(15);
 
@@ -151,10 +153,10 @@ impl Vault {
         let client_id = match &before {
             Some((id, uris, digest)) if uris.as_slice() == redirect_uris && *digest == secret_hash => id.clone(),
             _ => {
-                let id = before.as_ref().map_or_else(|| random_secret("fo_")[..27].to_string(), |b| b.0.clone());
+                let id = before.as_ref().map_or_else(|| random_secret(CLIENT_PREFIX)[..27].to_string(), |b| b.0.clone());
                 sqlx::query(
                     "insert into oauth_companion (client_id, tenant_id, app, name, redirect_uris, secret_hash) values ($1, $2, $3, $4, $5, $6) \
-                     on conflict (client_id) do update set redirect_uris = excluded.redirect_uris, secret_hash = excluded.secret_hash, updated_at = now()",
+                     on conflict (tenant_id, client_id) do update set redirect_uris = excluded.redirect_uris, secret_hash = excluded.secret_hash, updated_at = now()",
                 )
                 .bind(&id)
                 .bind(tenant)
@@ -207,9 +209,10 @@ async fn take_away(tx: &mut crate::Tx, tenant: Uuid, client_id: &str, by: Option
         .await?;
     let Some((app, name)) = found else { return Ok(None) };
     let ended: Vec<(Uuid, Uuid, Option<String>)> = sqlx::query_as(
-        "update oidc_sign_in i set ended_at = now() where i.client_id = $1 and i.ended_at is null \
+        "update oidc_sign_in i set ended_at = now() where i.tenant_id = $1 and i.client_id = $2 and i.ended_at is null \
          returning i.session_id, i.user_id, (select subject from oidc_subject x where x.tenant_id = i.tenant_id and x.user_id = i.user_id)",
     )
+    .bind(tenant)
     .bind(client_id)
     .fetch_all(&mut **tx)
     .await?;
@@ -218,7 +221,7 @@ async fn take_away(tx: &mut crate::Tx, tenant: Uuid, client_id: &str, by: Option
             json!({"user": user, "subject": subject, "client_id": client_id, "app": app, "companion": name, "session": session, "reason": "client_removed"});
         outbox::enqueue(tx, tenant, SIGNED_OUT_TOPIC, Some("User"), Some(user), payload).await?;
     }
-    sqlx::query("delete from oauth_companion where client_id = $1").bind(client_id).execute(&mut **tx).await?;
+    sqlx::query("delete from oauth_companion where tenant_id = $1 and client_id = $2").bind(tenant).bind(client_id).execute(&mut **tx).await?;
     let mut diff = json!({"client_id": client_id, "app": app, "companion": name});
     if let Some(by) = by {
         diff["by"] = json!(by);
@@ -258,10 +261,16 @@ impl Kernel {
     /// A workspace's published signing keys: the version that signs, then the one before it while it still verifies.
     /// The first is made now, once however many replicas ask at once. Refused, saying why, while the vault is closed.
     pub async fn openid_keys(&self, tenant: Uuid) -> Result<Vec<PublicKey>> {
+        self.signing_keys(tenant, true).await
+    }
+
+    /// [`Kernel::openid_keys`]; with `make` false, none where none was made (what an operator looks at makes nothing).
+    async fn signing_keys(&self, tenant: Uuid, make: bool) -> Result<Vec<PublicKey>> {
         let platform = Vault::kernel("platform");
         let scope = Scope::Workspace(tenant);
         let current = match platform.describe(self, scope, KEY).await? {
             Some(d) => d,
+            None if !make => return Ok(Vec::new()),
             None => {
                 let rule = Rule { overlap_secs: KEY_OVERLAP_SECS, ..Default::default() };
                 platform.adopt(self, scope, KEY, New::Ed25519, rule, "openid").await?;
@@ -472,14 +481,16 @@ async fn session_proof(k: &Kernel, ctx: &Ctx, session: Uuid) -> Result<(Option<D
 }
 
 impl Kernel {
-    /// The companion's client `client_id`, when it is one (`None`: an API client's, or nobody's).
-    pub async fn companion_client(&self, client_id: &str) -> Result<Option<Client>> {
-        if !client_id.starts_with("fo_") {
+    /// The companion's client `client_id` in workspace `tenant` (the issuer's), when it is one there (`None`: an API
+    /// client's, another workspace's, or nobody's): a client's id is unique within its workspace only.
+    pub async fn companion_client(&self, tenant: Uuid, client_id: &str) -> Result<Option<Client>> {
+        if !client_id.starts_with(CLIENT_PREFIX) {
             return Ok(None);
         }
         let mut tx = self.db.system_tx().await?;
         let row: Option<(String, Uuid, String, String, Vec<String>, String)> =
-            sqlx::query_as("select client_id, tenant_id, app, name, redirect_uris, secret_hash from oauth_companion where client_id = $1")
+            sqlx::query_as("select client_id, tenant_id, app, name, redirect_uris, secret_hash from oauth_companion where tenant_id = $1 and client_id = $2")
+                .bind(tenant)
                 .bind(client_id)
                 .fetch_optional(&mut *tx)
                 .await?;
@@ -593,7 +604,7 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let (client_id, redirect_uri, max_age, prompt_login, asked_at, state) = row.ok_or_else(gone)?;
-        let client = self.companion_client(&client_id).await?.ok_or_else(gone)?;
+        let client = self.companion_client(ctx.tenant, &client_id).await?.ok_or_else(gone)?;
         if self.let_in(ctx, &client).is_err() {
             return Err(Error::Forbidden("you may not sign in to this program".into()));
         }
@@ -603,45 +614,61 @@ impl Kernel {
         }
         let code = random_secret("");
         sqlx::query(
-            "update oidc_code set code_hash = $2, waiting = false, auth_time = $3, amr = $4, expires_at = now() + make_interval(secs => $5) where code_hash = $1",
+            "update oidc_code set code_hash = $2, waiting = false, auth_time = $3, amr = $4, expires_at = now() + make_interval(secs => $5) \
+             where tenant_id = $6 and code_hash = $1",
         )
         .bind(hash(waiting))
         .bind(hash(&code))
         .bind(at)
         .bind(proof)
         .bind(CODE_SECS as f64)
+        .bind(ctx.tenant)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
         Ok((redirect_uri, code, state))
     }
 
-    /// The tokens endpoint, for a companion: `client_id` authenticated by `secret`, then the code (once), checked against
-    /// that client, `redirect_uri` exactly, PKCE's `verifier`, `issuer` (the address it is asked at) and the browser
-    /// session it came from. A client that is not one, or a wrong secret: `Unauthorized("invalid_client")`; anything wrong
+    /// The tokens endpoint, for a companion: `client_id` of workspace `tenant` (the issuer's) authenticated by `secret`,
+    /// then the code (once), checked against that client, `redirect_uri` exactly, PKCE's `verifier`, `issuer` (the address
+    /// it is asked at) and the browser session it came from. A client that is not one, or a wrong secret: `Unauthorized("invalid_client")`; anything wrong
     /// with the code, the same `Invalid("invalid_grant")` whatever it was. The sign-in is on the person's trail.
-    pub async fn openid_token(&self, client_id: &str, secret: &str, code: &str, redirect_uri: &str, verifier: &str, issuer: &str) -> Result<Tokens> {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn openid_token(
+        &self,
+        tenant: Uuid,
+        client_id: &str,
+        secret: &str,
+        code: &str,
+        redirect_uri: &str,
+        verifier: &str,
+        issuer: &str,
+    ) -> Result<Tokens> {
         let bad_client = || Error::Unauthorized("invalid_client".into());
         let bad_grant = || Error::Invalid("invalid_grant".into());
-        let client = self.companion_client(client_id).await?.ok_or_else(bad_client)?;
+        let client = self.companion_client(tenant, client_id).await?.ok_or_else(bad_client)?;
         if !crate::messages::subtle_eq(hex::encode(Sha256::digest(secret.as_bytes())).as_bytes(), client.secret_hash.as_bytes()) {
             return Err(bad_client());
         }
-        let mut tx = self.db.system_tenant_tx(client.tenant).await?;
-        type Row =
-            (String, Uuid, Uuid, Uuid, i32, String, String, String, String, Option<String>, Option<DateTime<Utc>>, Option<Vec<String>>, bool, bool, bool);
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        type Row = (String, Uuid, Uuid, i32, String, String, String, String, Option<String>, Option<DateTime<Utc>>, Option<Vec<String>>, bool, bool, bool);
         let row: Option<Row> = sqlx::query_as(
-            "select client_id, tenant_id, user_id, session_id, token_version, issuer, redirect_uri, code_challenge, scope, nonce, auth_time, amr, \
+            "select client_id, user_id, session_id, token_version, issuer, redirect_uri, code_challenge, scope, nonce, auth_time, amr, \
                     waiting, used_at is not null, expires_at <= now() \
-               from oidc_code where code_hash = $1 for update",
+               from oidc_code where tenant_id = $1 and code_hash = $2 for update",
         )
+        .bind(tenant)
         .bind(hash(code))
         .fetch_optional(&mut *tx)
         .await?;
-        let (cid, tenant, user, session, tv, iss, redirect, challenge, scope, nonce, auth_time, amr, waiting, used, expired) = row.ok_or_else(bad_grant)?;
+        let (cid, user, session, tv, iss, redirect, challenge, scope, nonce, auth_time, amr, waiting, used, expired) = row.ok_or_else(bad_grant)?;
         if used && cid == client.client_id {
             // A code used twice leaked: what it gave stops answering, and the person's trail says so.
-            sqlx::query("update oidc_code set access_expires_at = now() where code_hash = $1").bind(hash(code)).execute(&mut *tx).await?;
+            sqlx::query("update oidc_code set access_expires_at = now() where tenant_id = $1 and code_hash = $2")
+                .bind(tenant)
+                .bind(hash(code))
+                .execute(&mut *tx)
+                .await?;
             gate::event(&mut tx, tenant, user, "companion_code_replayed", json!({"client_id": cid, "app": client.app, "companion": client.name})).await?;
             tx.commit().await?;
             return Err(bad_grant());
@@ -649,7 +676,7 @@ impl Kernel {
         if cid != client.client_id || waiting || used || expired || redirect != redirect_uri || iss != issuer || !pkce_matches(verifier, &challenge) {
             return Err(bad_grant());
         }
-        sqlx::query("update oidc_code set used_at = now() where code_hash = $1").bind(hash(code)).execute(&mut *tx).await?;
+        sqlx::query("update oidc_code set used_at = now() where tenant_id = $1 and code_hash = $2").bind(tenant).bind(hash(code)).execute(&mut *tx).await?;
         if !self.session_live(&mut tx, tenant, session, user, tv).await? {
             return Err(bad_grant());
         }
@@ -676,10 +703,11 @@ impl Kernel {
         }
         let id_token = self.openid_sign(tenant, &Value::Object(claims)).await?;
         let access_token = random_secret("fa_");
-        sqlx::query("update oidc_code set access_hash = $2, access_expires_at = now() + make_interval(secs => $3) where code_hash = $1")
+        sqlx::query("update oidc_code set access_hash = $2, access_expires_at = now() + make_interval(secs => $3) where tenant_id = $4 and code_hash = $1")
             .bind(hash(code))
             .bind(hash(&access_token))
             .bind(TOKEN_SECS as f64)
+            .bind(tenant)
             .execute(&mut *tx)
             .await?;
         sqlx::query(
@@ -699,23 +727,24 @@ impl Kernel {
         Ok(Tokens { id_token, access_token, scope })
     }
 
-    /// What the user-info endpoint answers for `access_token`, asked at `issuer`: while its browser session is live.
-    /// Anything else, the same `Unauthorized("invalid_token")`.
-    pub async fn openid_userinfo(&self, access_token: &str, issuer: &str) -> Result<Map<String, Value>> {
+    /// What the user-info endpoint answers for `access_token`, asked at `issuer` (workspace `tenant`'s): while its browser
+    /// session is live. Anything else, the same `Unauthorized("invalid_token")`.
+    pub async fn openid_userinfo(&self, tenant: Uuid, access_token: &str, issuer: &str) -> Result<Map<String, Value>> {
         let bad = || Error::Unauthorized("invalid_token".into());
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(String, Uuid, Uuid, Uuid, i32, String)> = sqlx::query_as(
-            "select client_id, tenant_id, user_id, session_id, token_version, scope from oidc_code \
-             where access_hash = $1 and access_expires_at > now() and issuer = $2",
+        let row: Option<(String, Uuid, Uuid, i32, String)> = sqlx::query_as(
+            "select client_id, user_id, session_id, token_version, scope from oidc_code \
+             where tenant_id = $3 and access_hash = $1 and access_expires_at > now() and issuer = $2",
         )
         .bind(hash(access_token))
         .bind(issuer)
+        .bind(tenant)
         .fetch_optional(&mut *tx)
         .await?;
-        let (client_id, tenant, user, session, tv, scope) = row.ok_or_else(bad)?;
+        let (client_id, user, session, tv, scope) = row.ok_or_else(bad)?;
         let live = self.session_live(&mut tx, tenant, session, user, tv).await?;
         tx.commit().await?;
-        let client = self.companion_client(&client_id).await?.filter(|_| live).ok_or_else(bad)?;
+        let client = self.companion_client(tenant, &client_id).await?.filter(|_| live).ok_or_else(bad)?;
         let subject = self.subject(tenant, user).await?;
         self.openid_claims(tenant, user, &subject, &scope, &client).await
     }
@@ -789,9 +818,18 @@ impl Kernel {
 impl Kernel {
     /// Every sign-in to a companion whose browser session has ended, whichever way it ended (by this build or another,
     /// one device or all of them, the person or the workspace gone): marked ended, and its app told
-    /// ([`SIGNED_OUT_TOPIC`]) in the same transaction, once however many replicas look at once. How many.
+    /// ([`SIGNED_OUT_TOPIC`]) in the same transaction, once however many replicas look at once. How many. A workspace
+    /// that is moving is left alone until it has arrived (its sign-ins travel, and the side it lives on tells), and a
+    /// sandbox never tells anyone: any client a copy of every table brought into one goes, with its codes and sign-ins
+    /// (they are the live workspace's, which go on).
     pub async fn openid_sweep(&self) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
+        sqlx::query(
+            "delete from oauth_companion where (tenant_id, client_id) in (select c.tenant_id, c.client_id from oauth_companion c \
+             join tenant t on t.id = c.tenant_id where t.sandbox_of is not null for update of c skip locked)",
+        )
+        .execute(&mut *tx)
+        .await?;
         let ended: Vec<(Uuid, Uuid, String, Uuid, String, String, String, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "with gone as ( \
                select i.tenant_id, i.session_id, i.client_id, \
@@ -803,9 +841,9 @@ impl Kernel {
                  left join user_session s on s.tenant_id = i.tenant_id and s.id = i.session_id \
                  left join app_user u on u.tenant_id = i.tenant_id and u.id = i.user_id \
                  left join tenant t on t.id = i.tenant_id \
-                where i.ended_at is null and not coalesce({}, false) \
+                where i.ended_at is null and t.sandbox_of is null and not ferrum_workspace_held(i.tenant_id) and not coalesce({}, false) \
                 order by i.signed_in_at limit 500 for update of i skip locked) \
-             update oidc_sign_in i set ended_at = now() from gone g join oauth_companion c on c.client_id = g.client_id \
+             update oidc_sign_in i set ended_at = now() from gone g join oauth_companion c on c.tenant_id = g.tenant_id and c.client_id = g.client_id \
               where i.tenant_id = g.tenant_id and i.session_id = g.session_id and i.client_id = g.client_id \
              returning i.tenant_id, i.session_id, i.client_id, i.user_id, g.reason, c.app, c.name, \
                        (select subject from oidc_subject x where x.tenant_id = i.tenant_id and x.user_id = i.user_id)",
@@ -839,16 +877,20 @@ impl Kernel {
     }
 
     /// Drops what is a day past its end (requests, codes and access tokens: a client's nonces are kept that long), and
-    /// sign-ins a week after their app was told they ended.
+    /// sign-ins a week after their app was told they ended; nothing of a workspace that is moving.
     pub async fn openid_purge(&self) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
         let n = sqlx::query(
-            "delete from oidc_code where expires_at < now() - interval '1 day' and (access_expires_at is null or access_expires_at < now() - interval '1 day')",
+            "delete from oidc_code where expires_at < now() - interval '1 day' and (access_expires_at is null or access_expires_at < now() - interval '1 day') \
+             and not ferrum_workspace_held(tenant_id)",
         )
         .execute(&mut *tx)
         .await?
         .rows_affected()
-            + sqlx::query("delete from oidc_sign_in where ended_at < now() - interval '7 days'").execute(&mut *tx).await?.rows_affected();
+            + sqlx::query("delete from oidc_sign_in where ended_at < now() - interval '7 days' and not ferrum_workspace_held(tenant_id)")
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
         tx.commit().await?;
         Ok(n)
     }
@@ -870,15 +912,15 @@ impl Kernel {
         let companions: Vec<Value> = sqlx::query_scalar(
             "select jsonb_build_object('client_id', c.client_id, 'app', c.app, 'companion', c.name, 'redirect_uris', c.redirect_uris, \
                'declared_at', c.created_at, 'changed_at', c.updated_at, \
-               'last_sign_in', (select max(signed_in_at) from oidc_sign_in i where i.client_id = c.client_id), \
-               'signed_in_now', (select count(*) from oidc_sign_in i where i.client_id = c.client_id and i.ended_at is null)) \
+               'last_sign_in', (select max(signed_in_at) from oidc_sign_in i where i.tenant_id = c.tenant_id and i.client_id = c.client_id), \
+               'signed_in_now', (select count(*) from oidc_sign_in i where i.tenant_id = c.tenant_id and i.client_id = c.client_id and i.ended_at is null)) \
              from oauth_companion c where c.tenant_id = $1 order by c.app, c.name",
         )
         .bind(tenant)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
-        let keys = self.openid_keys(tenant).await?.iter().map(|k| json!({"kid": k.kid, "version": k.version, "until": k.until})).collect();
+        let keys = self.signing_keys(tenant, false).await?.iter().map(|k| json!({"kid": k.kid, "version": k.version, "until": k.until})).collect();
         Ok(Overview { companions, keys })
     }
 

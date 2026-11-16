@@ -4633,6 +4633,19 @@ doctor` says which it is and how many programs' clients there are, in how many w
 client, and switch the program off in its app (Cloud's own setting), or the app declares it again. The signing key is
 rotated with the task above; rotate twice within a day only if the key before must stop verifying at once.
 
+**Copies of a workspace.** A program's client is unique within its workspace, never across the installation (the
+address a request comes to says which workspace it is for), so a copy of a workspace in the same database never meets
+the original's. A sandbox has no program's client, codes or sign-ins, nor the signing key or the client's secret (the
+vault leaves both blank there), and its addresses answer nothing: a sandbox made by this build copies none of them (the
+build before makes no sandbox on a database this one migrated), and should a copy of every table of a workspace bring
+them, this build takes them away within 15 seconds, telling nobody (they are the live workspace's sign-ins, which go
+on). The people's subjects are
+copied, and name nobody to any program there. A move (`move_workspace`) carries the client, the sign-ins, the subjects
+and, with the workspace's vault, the signing key and the client's secret, still its app's: the program goes on signing
+people in at the same address with nothing changed. Codes and access tokens stay behind, with the sessions; since the
+sessions do not travel, the target tells each program's app once that the sign-ins it carried ended (`signed_out`),
+after the workspace arrived, and the source, moved away, tells nobody.
+
 **Limits.** The authorization endpoint counts each request against the person's address, and the token endpoint and
 the user-info each failure against the caller's, as failed sign-ins are (20 a minute, shared by the replicas); a
 program's successful sign-ins are not counted, so a busy forge is not held up by its own people. Codes live a minute,
@@ -4640,8 +4653,8 @@ ID tokens and access tokens five minutes; a request waiting for its person to co
 
 **When someone leaves.** Every replica that runs background work looks every 15 seconds for sign-ins whose browser
 session ended, however it ended (also by an older build, or an erasure), marks each ended, and tells its app once
-(`ferrum.companion.signed_out`, in the outbox, in the same transaction), however many replicas look at once. The
-program's own sessions are the app's to end on that event.
+(`ferrum.companion.signed_out`, in the outbox, in the same transaction), however many replicas look at once; a
+workspace that is moving waits until it has arrived. The program's own sessions are the app's to end on that event.
 
 ## Industrial sites
 

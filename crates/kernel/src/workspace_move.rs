@@ -84,9 +84,9 @@ pub(crate) const LEFT_BEHIND: &[&str] = &[
     "file_upload",
     "saml_logout",
     "tenant_slug_retired",
-    // A sign-in to a companion in progress, and the sessions that signed in to one (crate::oidc): the browser's.
+    // A sign-in to a companion in progress, and its access token (crate::oidc): minutes, and the browser's. The sign-ins
+    // through companions travel: the target tells their apps that they ended, as the sessions they came from stay here.
     "oidc_code",
-    "oidc_sign_in",
 ];
 
 /// Columns a read changes (when a key or a person was last seen): left out of the comparison that proves nothing changed

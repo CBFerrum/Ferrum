@@ -68,8 +68,9 @@ const NOT_COPIED: &[&str] = &[
     "saml_sp_key",
     "published_key",
     "saml_enc_key",
-    // A companion's client (crate::oidc): a sandbox signs nobody in to a program outside.
+    // A companion's client and the sign-ins through it (crate::oidc): a sandbox signs nobody in to a program outside.
     "oauth_companion",
+    "oidc_sign_in",
 ];
 
 /// Tables whose rows the outside world calls by their id alone (a provider's callback, a channel's inbound messages,

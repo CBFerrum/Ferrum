@@ -447,6 +447,17 @@ Ferrum is an OpenID Connect provider for the programs installed apps run beside 
   no workspace's, and answers nothing. A forwarding address serves nothing, and answers nothing. A sandbox answers
   nothing either, rather than being an issuer of its own: nothing a sandbox does reaches outside (`Kernel::outward`),
   and a companion is outside; its companions' clients are not copied, so none could be given a code there.
+- **Keys unique within a workspace, never across the installation.** A client's id, a code, an access token and a
+  nonce are looked up under the workspace the issuer names. The copier takes every table with a `tenant_id` unless a
+  table is named to be left out, and refuses one with a key unique across workspaces: with keys like these, a copy
+  that does not know these tables (an older build's) finishes, and this build takes the client it brought into a
+  sandbox away, with its codes and sign-ins, telling nobody (they are the live workspace's). The build before
+  (8a34644e) in fact makes no sandbox at all on a database this one migrated: it is a guest there, and refuses
+  (scripts/window_rehearsal.sh shows it, and leaves nothing). Rejected: naming the workspace in another column, which
+  every copy refuses as "named outside" its tables. A move carries the
+  client, the sign-ins and the subjects, and the vault the signing key and the client's secret: the program goes on
+  unchanged at the same address; the target tells the apps that the sign-ins it carried ended, their sessions having
+  stayed behind.
 - **An operator can turn it off**: the stored setting `openid`, at once; off, nothing of it answers and API clients'
   OAuth is as it was. The doctor says which, and how many clients there are.
 - **A companion's client is its app's**, declared in code per workspace (`Vault::companion`), its secret the app's own

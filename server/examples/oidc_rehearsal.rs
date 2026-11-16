@@ -59,15 +59,25 @@ async fn kernel() -> Result<Arc<Kernel>, String> {
     Ok(ctx.shared_store.get::<AppState>().ok_or("no state")?.kernel.clone())
 }
 
+/// The workspace `slug` and its first administrator, as the system acts for them.
+async fn administrator(k: &Kernel, slug: &str) -> Result<(Uuid, ferrum_kernel::Ctx), String> {
+    let (tenant, _) = k.tenant_by_slug(slug).await.map_err(|e| e.to_string())?;
+    let mut tx = k.db.system_tx().await.map_err(|e| e.to_string())?;
+    let first: Uuid = sqlx::query_scalar("select id from app_user where tenant_id = $1 and is_admin and is_active order by created_at limit 1")
+        .bind(tenant)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok((tenant, k.load_ctx(tenant, first, None, "rehearsal".into()).await.map_err(|e| e.to_string())?))
+}
+
 async fn setup(slug: &str, redirect: &str) -> Result<Value, String> {
     let k = kernel().await?;
-    let (tenant, _) = k.tenant_by_slug(slug).await.map_err(|e| e.to_string())?;
+    let (tenant, admin) = administrator(&k, slug).await?;
     let forge = FORGE.get().ok_or("the stand-in did not register")?;
     let client = forge.companion(&k, tenant, "forge", &[redirect.to_string()]).await.map_err(|e| e.to_string())?;
     let secret = forge.reveal(&k, Scope::Workspace(tenant), &client.secret).await.map_err(|e| e.to_string())?;
-    let admin_email = format!("admin@{slug}.test");
-    let s = k.login(slug, &admin_email, "Correct-Horse-9").await.map_err(|e| e.to_string())?;
-    let admin = k.load_ctx(tenant, s.user, None, "rehearsal".into()).await.map_err(|e| e.to_string())?;
     // Someone the app lets in (a role that reads letter heads) with no account at the forge yet, and someone it does not.
     let rule = serde_json::from_value(json!({"entity": "LetterHead", "read": true})).map_err(|e| e.to_string())?;
     k.set_role_permission(&admin, "Developer", &rule).await.map_err(|e| e.to_string())?;
@@ -77,7 +87,7 @@ async fn setup(slug: &str, redirect: &str) -> Result<Value, String> {
     Ok(json!({
         "client_id": client.client_id,
         "secret": String::from_utf8(secret.to_vec()).map_err(|e| e.to_string())?,
-        "admin_login": forge_login(tenant, s.user),
+        "admin_login": forge_login(tenant, admin.user),
         "dev_login": forge_login(tenant, dev),
         "member_login": forge_login(tenant, member),
     }))
@@ -85,9 +95,7 @@ async fn setup(slug: &str, redirect: &str) -> Result<Value, String> {
 
 async fn deactivate(slug: &str, email: &str) -> Result<Value, String> {
     let k = kernel().await?;
-    let (tenant, _) = k.tenant_by_slug(slug).await.map_err(|e| e.to_string())?;
-    let s = k.login(slug, &format!("admin@{slug}.test"), "Correct-Horse-9").await.map_err(|e| e.to_string())?;
-    let admin = k.load_ctx(tenant, s.user, None, "rehearsal".into()).await.map_err(|e| e.to_string())?;
+    let (tenant, admin) = administrator(&k, slug).await?;
     let mut tx = k.db.system_tx().await.map_err(|e| e.to_string())?;
     let user: Uuid = sqlx::query_scalar("select id from app_user where tenant_id = $1 and email = $2")
         .bind(tenant)

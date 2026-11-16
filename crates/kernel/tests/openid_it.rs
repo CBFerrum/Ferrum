@@ -193,7 +193,159 @@ async fn trail(k: &Kernel, tenant: Uuid, action: &str) -> Vec<Value> {
 #[test]
 fn companions_sign_in_through_ferrum() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
-    rt.block_on(async { tokio::spawn(scenario()).await.unwrap() });
+    rt.block_on(async {
+        tokio::spawn(scenario()).await.unwrap();
+        tokio::spawn(copied_and_moved()).await.unwrap();
+    });
+}
+
+/// Files in a directory, as a single host keeps them (a move's source names where its files are).
+struct DirFiles(std::path::PathBuf);
+
+#[async_trait]
+impl ferrum_kernel::files::FileStore for DirFiles {
+    async fn put(&self, key: &str, data: &[u8]) -> ferrum_kernel::Result<()> {
+        let path = self.0.join(key);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, data).map_err(|e| Error::Unavailable(e.to_string()))
+    }
+    async fn get(&self, key: &str) -> ferrum_kernel::Result<Vec<u8>> {
+        std::fs::read(self.0.join(key)).map_err(|_| Error::NotFound(key.into()))
+    }
+    async fn delete(&self, key: &str) -> ferrum_kernel::Result<()> {
+        let _ = std::fs::remove_file(self.0.join(key));
+        Ok(())
+    }
+}
+
+/// An installation on `url`, reset, its vault opened with the database's password, with app `forgeapp` and its handle.
+async fn installation(url: &str, key: &ferrum_kernel::secret::SecretKey, files: &Path) -> (Arc<Kernel>, Vault) {
+    let db = Db::connect(DbConfig { url: url.to_string(), max_connections: 8, ..Default::default() }).await.expect("connect");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let opener = Opener { database_url: url.to_string(), file: files.join("absent.key"), kdf: Kdf { m_kib: 64, t: 1, p: 1 }, ..Default::default() };
+    vault::open(&db, opener, false).await.expect("opened");
+    let mut hooks = HookRegistry::default();
+    let mut forge = None;
+    hooks.app("forgeapp", &[], |h| {
+        forge = Some(h.vault());
+        h.companion("forge", Arc::new(Forge));
+    });
+    let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
+    let k = Kernel::boot(db, catalog, hooks, KernelSettings { secret_key: Some(key.clone()), ..Default::default() }, None).await.expect("boot");
+    k.set_file_store(Arc::new(DirFiles(files.to_path_buf())));
+    k.ensure_directory().await.unwrap();
+    (k, forge.unwrap())
+}
+
+/// How many rows of the four tables a workspace has: clients, codes, sign-ins, subjects.
+async fn rows_of(k: &Kernel, w: Uuid) -> (i64, i64, i64, i64) {
+    let mut tx = k.db.system_tx().await.unwrap();
+    let n = sqlx::query_as(
+        "select (select count(*) from oauth_companion where tenant_id = $1), (select count(*) from oidc_code where tenant_id = $1), \
+                (select count(*) from oidc_sign_in where tenant_id = $1), (select count(*) from oidc_subject where tenant_id = $1)",
+    )
+    .bind(w)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    n
+}
+
+/// A sign-in of `email` to `client` at installation `k`, through a browser session: the ID token's claims.
+async fn signs_in(k: &Kernel, forge: &Vault, slug: &str, email: &str, client: &ferrum_kernel::oidc::Client) -> Value {
+    let secret = String::from_utf8(forge.reveal(k, Scope::Workspace(client.tenant), &client.secret).await.unwrap().to_vec()).unwrap();
+    let (ctx, sid) = signed_in(k, slug, email).await;
+    let c = code(k, &ctx, sid, client, &request(&client.client_id, None)).await;
+    let t = k.openid_token(client.tenant, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
+    verified(k, client.tenant, &t.id_token, &client.client_id).await
+}
+
+/// This build's sandbox of a workspace with a declared companion, and a move of it to another installation. The sandbox
+/// copies no client, code or sign-in, has no signing key and no client secret (their rules leave them blank) and serves
+/// nobody; what a copy of every table with a `tenant_id` brings into one (a copier that does not know these tables) goes
+/// at the next sweep, and nobody is told. The move carries the client, the sign-ins and the subjects, and the workspace's vault (the signing key and
+/// the client's secret, still its app's to manage), leaving the codes: the target tells the app, once, that the sign-ins
+/// ended (their sessions stayed behind), and the companion goes on signing people in there as it did, unchanged.
+async fn copied_and_moved() {
+    let dir = std::env::temp_dir().join(format!("ferrum-openid-moves-{}", std::process::id()));
+    let (files_a, files_b) = (dir.join("a"), dir.join("b"));
+    std::fs::create_dir_all(&files_a).unwrap();
+    std::fs::create_dir_all(&files_b).unwrap();
+    let url_b = std::env::var("FERRUM_RESTORE_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_restore_test".into());
+    let key_a = ferrum_kernel::secret::SecretKey::new([3; 32]);
+    let (a, forge_a) = installation(&url(), &key_a, &files_a).await;
+    let (b, forge_b) = installation(&url_b, &ferrum_kernel::secret::SecretKey::new([4; 32]), &files_b).await;
+    let t = workspace(&a, "acme").await;
+    let client = forge_a.companion(&a, t, "forge", &[BACK.into()]).await.unwrap();
+    let before = signs_in(&a, &forge_a, "acme", "admin@acme.test", &client).await;
+    assert_eq!(rows_of(&a, t).await, (1, 1, 1, 1), "a client, a code, a sign-in and a subject");
+
+    // This build's sandbox: none of its rows, no key and no client secret of the live workspace's.
+    let until = chrono::Utc::now().date_naive() + chrono::Duration::days(10);
+    let copy = ferrum_kernel::sandbox::Copy { from: None, until, base_domain: None, not_sealed: vec![], resume: false, halt: None };
+    a.copy_workspace("acme", "acme-try", &copy, &|_: &str| {}).await.expect("a sandbox");
+    let mut tx = a.db.system_tx().await.unwrap();
+    let sandbox: Uuid = sqlx::query_scalar("select id from tenant where slug = 'acme-try'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(rows_of(&a, sandbox).await, (0, 0, 0, 1), "only the subject, which serves nobody there");
+    assert!(forge_a.describe(&a, Scope::Workspace(sandbox), &client.secret).await.unwrap().is_none(), "no client secret: its rule leaves it blank");
+    let o = a.openid_overview(sandbox).await.unwrap();
+    assert!(o.companions.is_empty() && o.keys.is_empty(), "no companion, and no signing key: {o:?}");
+    assert_eq!(rows_of(&a, t).await, (1, 1, 1, 1), "the live workspace's untouched");
+    // What a copy of every table with a `tenant_id` brings, under the sandbox's id (the keys are unique within it).
+    let mut tx = a.db.system_tx().await.unwrap();
+    for table in ["oauth_companion", "oidc_code", "oidc_sign_in"] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "insert into {table} select (jsonb_populate_record(null::{table}, to_jsonb(r) || jsonb_build_object('tenant_id', $2::uuid))).* from {table} r where r.tenant_id = $1"
+        )))
+        .bind(t)
+        .bind(sandbox)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+    assert_eq!(rows_of(&a, sandbox).await, (1, 1, 1, 1));
+    let told = signed_out_events(&a).await.len();
+    assert_eq!(a.openid_sweep().await.unwrap(), 0, "nothing ended");
+    assert_eq!(rows_of(&a, sandbox).await, (0, 0, 0, 1), "a sandbox has no companion client, whoever copied it");
+    assert_eq!(signed_out_events(&a).await.len(), told, "and nobody is told: the live workspace's sign-ins go on");
+    assert_eq!(rows_of(&a, t).await, (1, 1, 1, 1));
+    assert_eq!(signs_in(&a, &forge_a, "acme", "admin@acme.test", &client).await["sub"], before["sub"], "and it signs people in as before");
+    assert_eq!(rows_of(&a, t).await, (1, 2, 2, 1));
+
+    // A move: the client, the sign-ins, the subjects and the vault go; the codes stay.
+    let transfer = ferrum_kernel::secret::SecretKey::from_base64(&vault::transfer_out(&a, t).await.unwrap()).unwrap();
+    let source = ferrum_kernel::workspace_move::MoveSource {
+        url: url(),
+        keys: vec![key_a.clone(), transfer],
+        files: Some(Arc::new(DirFiles(files_a.clone())) as Arc<dyn ferrum_kernel::files::FileStore>),
+        regions: None,
+        base_domain: None,
+        wait: Duration::ZERO,
+        not_sealed: vec![],
+        stop_after: None,
+    };
+    b.move_workspace("acme", &source, ferrum_kernel::workspace_move::Run::Start, &|_: &str| {}).await.expect("moved");
+    assert_eq!(rows_of(&b, t).await, (1, 0, 2, 1), "the client, the sign-ins and the subject came; no code did");
+    assert_eq!(a.openid_sweep().await.unwrap(), 0, "the source, moved away, tells nobody");
+    let (one, two) = tokio::join!(b.openid_sweep(), b.openid_sweep());
+    assert_eq!(one.unwrap() + two.unwrap(), 2, "the target tells the app that both sign-ins ended, once");
+    let told = signed_out_events(&b).await;
+    assert_eq!(
+        told.iter().map(|e| (e["reason"].as_str(), e["client_id"].as_str())).collect::<Vec<_>>(),
+        [(Some("signed_out"), Some(client.client_id.as_str())); 2]
+    );
+    assert_eq!(b.openid_sweep().await.unwrap(), 0);
+    let secret = forge_b.describe(&b, Scope::Workspace(t), &client.secret).await.unwrap().expect("the client's secret came with the vault");
+    assert_eq!(secret.managed_by.as_deref(), Some("forgeapp"), "still its app's to manage");
+    let kid = b.openid_overview(t).await.unwrap().keys.first().map(|k| k["kid"].clone()).expect("the signing key came with the vault");
+    assert_eq!(kid, json!(a.openid_keys(t).await.unwrap()[0].kid), "the same key");
+    assert_eq!(forge_b.companion(&b, t, "forge", &[BACK.into()]).await.unwrap().client_id, client.client_id, "the app's declaration finds its client");
+    let after = signs_in(&b, &forge_b, "acme", "admin@acme.test", &client).await;
+    assert_eq!(after["sub"], before["sub"], "the same client, secret and key sign the same person in, with the same subject");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 async fn scenario() {
@@ -250,7 +402,7 @@ async fn scenario() {
     // ── a member with the right signs in: the ID token verifies, and says who and how ──
     let (dev_ctx, dev_sid) = signed_in(&a, "acme", "dev@acme.test").await;
     let c = code(&a, &dev_ctx, dev_sid, &client, &request(&client.client_id, Some("n-1"))).await;
-    let t = b.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
+    let t = b.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
     let claims = verified(&a, acme, &t.id_token, &client.client_id).await;
     assert_eq!(claims["azp"], json!(client.client_id));
     assert_eq!(claims["nonce"], json!("n-1"));
@@ -261,13 +413,13 @@ async fn scenario() {
     assert!((claims["iat"].as_i64().unwrap() - claims["auth_time"].as_i64().unwrap()).abs() < 60, "the session's sign-in, a moment ago");
     let sub = claims["sub"].as_str().unwrap().to_string();
     assert!(sub.len() >= 43 && !sub.contains(&dev.to_string()), "a subject that says nothing else about them");
-    let info = a.openid_userinfo(&t.access_token, ISSUER).await.unwrap();
+    let info = a.openid_userinfo(acme, &t.access_token, ISSUER).await.unwrap();
     assert_eq!((info["sub"].as_str(), info["preferred_username"].as_str()), (Some(sub.as_str()), Some(login_of(acme, dev).as_str())));
     assert_eq!(trail(&a, acme, "companion_signed_in").await.len(), 1, "on the person's trail");
     assert!(!trail(&a, acme, "companion_signed_in").await[0].to_string().contains(&c), "never a code or a token");
     // The same person again: the same subject.
     let c = code(&a, &dev_ctx, dev_sid, &client, &request(&client.client_id, None)).await;
-    let again = a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
+    let again = a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
     assert_eq!(verified(&a, acme, &again.id_token, &client.client_id).await["sub"], json!(sub));
 
     // ── refused: each the specification's way, saying nothing more ──
@@ -279,43 +431,63 @@ async fn scenario() {
     assert_eq!(refused(a.openid_authorize(&out_ctx, out_sid, &client, &request(&client.client_id, None), ISSUER).await), "access_denied", "from outside");
     let _ = plain;
     let c = code(&a, &dev_ctx, dev_sid, &client, &request(&client.client_id, None)).await;
-    let first = a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
-    assert_eq!(grant_refused(a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await), "invalid_grant", "a code used twice");
-    assert!(a.openid_userinfo(&first.access_token, ISSUER).await.is_err(), "and what it gave stops");
+    let first = a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
+    assert_eq!(grant_refused(a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await), "invalid_grant", "a code used twice");
+    assert!(a.openid_userinfo(acme, &first.access_token, ISSUER).await.is_err(), "and what it gave stops");
     assert_eq!(trail(&a, acme, "companion_code_replayed").await.len(), 1);
-    assert_eq!(grant_refused(b.openid_token(&beta_client.client_id, &beta_secret, "made-up", BACK, VERIFIER, ISSUER).await), "invalid_grant", "no such code");
+    const BETA: &str = "https://beta.example";
+    assert_eq!(
+        grant_refused(b.openid_token(beta, &beta_client.client_id, &beta_secret, "made-up", BACK, VERIFIER, BETA).await),
+        "invalid_grant",
+        "no such code"
+    );
     let c = code(&a, &dev_ctx, dev_sid, &client, &request(&client.client_id, None)).await;
     assert_eq!(
-        grant_refused(b.openid_token(&beta_client.client_id, &beta_secret, &c, BACK, VERIFIER, ISSUER).await),
+        grant_refused(b.openid_token(beta, &beta_client.client_id, &beta_secret, &c, BACK, VERIFIER, BETA).await),
         "invalid_grant",
-        "redeemed by another client"
+        "redeemed by another workspace's client, at its own address"
     );
     assert_eq!(
-        grant_refused(a.openid_token(&client.client_id, &secret, &c, &format!("{BACK}x"), VERIFIER, ISSUER).await),
+        grant_refused(b.openid_token(acme, &beta_client.client_id, &beta_secret, &c, BACK, VERIFIER, ISSUER).await),
+        "invalid_client",
+        "another workspace's client at this one's address: no client here"
+    );
+    assert_eq!(
+        grant_refused(a.openid_token(acme, &client.client_id, &secret, &c, &format!("{BACK}x"), VERIFIER, ISSUER).await),
         "invalid_grant",
         "one character more"
     );
-    assert_eq!(grant_refused(a.openid_token(&client.client_id, &secret, &c, &BACK[..BACK.len() - 1], VERIFIER, ISSUER).await), "invalid_grant", "one less");
     assert_eq!(
-        grant_refused(a.openid_token(&client.client_id, &secret, &c, BACK, "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXX", ISSUER).await),
+        grant_refused(a.openid_token(acme, &client.client_id, &secret, &c, &BACK[..BACK.len() - 1], VERIFIER, ISSUER).await),
+        "invalid_grant",
+        "one less"
+    );
+    assert_eq!(
+        grant_refused(a.openid_token(acme, &client.client_id, &secret, &c, BACK, "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXX", ISSUER).await),
         "invalid_grant",
         "a wrong verifier"
     );
     assert_eq!(
-        grant_refused(a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, "https://sales--acme.example").await),
+        grant_refused(a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, "https://sales--acme.example").await),
         "invalid_grant",
         "another issuer"
     );
-    assert_eq!(grant_refused(a.openid_token(&client.client_id, "wrong", &c, BACK, VERIFIER, ISSUER).await), "invalid_client", "a wrong secret");
-    assert_eq!(grant_refused(a.openid_token("fo_nobody", &secret, &c, BACK, VERIFIER, ISSUER).await), "invalid_client", "nobody's: the same answer");
-    assert!(a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.is_ok(), "none of those used the code up");
-    assert!(a.openid_userinfo("fa_nothing", ISSUER).await.is_err());
-    assert!(a.openid_userinfo(&again.access_token, "https://sales--acme.example").await.is_err(), "user-info at another issuer");
+    assert_eq!(grant_refused(a.openid_token(acme, &client.client_id, "wrong", &c, BACK, VERIFIER, ISSUER).await), "invalid_client", "a wrong secret");
+    assert_eq!(grant_refused(a.openid_token(acme, "fo_nobody", &secret, &c, BACK, VERIFIER, ISSUER).await), "invalid_client", "nobody's: the same answer");
+    assert!(a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.is_ok(), "none of those used the code up");
+    assert!(a.openid_userinfo(acme, "fa_nothing", ISSUER).await.is_err());
+    assert!(a.openid_userinfo(acme, &again.access_token, "https://sales--acme.example").await.is_err(), "user-info at another issuer");
     // An app's claim that is the platform's never reaches a token.
     let greedy = forge.companion(&a, acme, "greedy", &[BACK.into()]).await.unwrap();
     let greedy_secret = String::from_utf8(forge.reveal(&a, Scope::Workspace(acme), &greedy.secret).await.unwrap().to_vec()).unwrap();
+    let c = code(&a, &dev_ctx, dev_sid, &client, &request(&client.client_id, None)).await;
+    assert_eq!(
+        grant_refused(a.openid_token(acme, &greedy.client_id, &greedy_secret, &c, BACK, VERIFIER, ISSUER).await),
+        "invalid_grant",
+        "redeemed by another client of the workspace"
+    );
     let c = code(&a, &dev_ctx, dev_sid, &greedy, &request(&greedy.client_id, None)).await;
-    assert!(a.openid_token(&greedy.client_id, &greedy_secret, &c, BACK, VERIFIER, ISSUER).await.is_err(), "sub is the platform's");
+    assert!(a.openid_token(acme, &greedy.client_id, &greedy_secret, &c, BACK, VERIFIER, ISSUER).await.is_err(), "sub is the platform's");
 
     // ── max_age and prompt=login: the person confirms it is them, in one of their ways, never assumed ──
     let mut login = request(&client.client_id, None);
@@ -327,7 +499,7 @@ async fn scenario() {
     assert!(matches!(a.openid_confirm(&dev_ctx, dev_sid, &waiting, ISSUER).await, Err(Error::Refused { code: "step_up", .. })), "not yet");
     assert!(matches!(a.openid_confirm(&plain_ctx, plain_sid, &waiting, ISSUER).await, Err(Error::NotFound(_))), "someone else's");
     assert_eq!(
-        grant_refused(a.openid_token(&client.client_id, &secret, &waiting, BACK, VERIFIER, ISSUER).await),
+        grant_refused(a.openid_token(acme, &client.client_id, &secret, &waiting, BACK, VERIFIER, ISSUER).await),
         "invalid_grant",
         "a waiting request is no code"
     );
@@ -337,7 +509,7 @@ async fn scenario() {
     a.stepped_up(&who, "passkey", &Arrival::default()).await.unwrap();
     let (back, c, state) = a.openid_confirm(&dev_ctx, dev_sid, &waiting, ISSUER).await.unwrap();
     assert_eq!((back.as_str(), state.as_str()), (BACK, "s1"));
-    let t = a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
+    let t = a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
     let claims = verified(&a, acme, &t.id_token, &client.client_id).await;
     assert!(claims["auth_time"].as_i64().unwrap() >= asked, "proved after the request");
     assert_eq!(claims["amr"], json!(["passkey"]), "the way they confirmed it");
@@ -354,11 +526,11 @@ async fn scenario() {
     let c = code(&a, &dev_ctx, dev_sid, &client, &request(&client.client_id, None)).await;
     a.end_session(acme, dev_sid).await.unwrap();
     assert_eq!(
-        grant_refused(a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await),
+        grant_refused(a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await),
         "invalid_grant",
         "a code from a session signed out"
     );
-    assert!(a.openid_userinfo(&again.access_token, ISSUER).await.is_err(), "user-info for it");
+    assert!(a.openid_userinfo(acme, &again.access_token, ISSUER).await.is_err(), "user-info for it");
     assert!(a.openid_authorize(&dev_ctx, dev_sid, &client, &request(&client.client_id, None), ISSUER).await.is_err(), "no new code through it");
     let (one, two) = tokio::join!(a.openid_sweep(), b.openid_sweep());
     assert_eq!(one.unwrap() + two.unwrap(), 1, "told once, by whichever replica looked");
@@ -373,14 +545,14 @@ async fn scenario() {
     // Signing out everywhere, and being deactivated.
     let (dev_ctx, dev_sid) = signed_in(&a, "acme", "dev@acme.test").await;
     let c = code(&a, &dev_ctx, dev_sid, &client, &request(&client.client_id, None)).await;
-    a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
+    a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
     a.logout_everywhere(&dev_ctx).await.unwrap();
     let admin2 = a.create_user(&admin, "second@acme.test", "Second", Some(PASSWORD), &[], true).await.unwrap();
     let (second_ctx, second_sid) = signed_in(&a, "acme", "second@acme.test").await;
     let c = code(&a, &second_ctx, second_sid, &client, &request(&client.client_id, None)).await;
-    let t = a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
+    let t = a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
     a.set_user_active(&admin, admin2, false).await.unwrap();
-    assert!(a.openid_userinfo(&t.access_token, ISSUER).await.is_err(), "deactivated: user-info refused at once");
+    assert!(a.openid_userinfo(acme, &t.access_token, ISSUER).await.is_err(), "deactivated: user-info refused at once");
     assert_eq!(a.openid_sweep().await.unwrap(), 2);
     let reasons: Vec<Value> = signed_out_events(&a).await.into_iter().map(|e| e["reason"].clone()).collect();
     assert_eq!(reasons, [json!("signed_out"), json!("signed_out_everywhere"), json!("access_ended")]);
@@ -403,7 +575,7 @@ async fn scenario() {
     assert_eq!(published, [rotated.kid.clone(), before.clone()]);
     let (ctx, sid) = signed_in(&a, "acme", "admin@acme.test").await;
     let c = code(&a, &ctx, sid, &client, &request(&client.client_id, None)).await;
-    let t = a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
+    let t = a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
     assert_eq!(jsonwebtoken::decode_header(&t.id_token).unwrap().kid.as_deref(), Some(rotated.kid.as_str()));
     a.openid_rotate(acme).await.unwrap();
     assert!(!a.openid_keys(acme).await.unwrap().iter().any(|k| k.kid == before), "two rotations on, the first is gone");
@@ -413,8 +585,8 @@ async fn scenario() {
     let told = signed_out_events(&a).await;
     assert_eq!(told.len(), before_removal + 1, "the one live sign-in through it ended");
     assert_eq!(told.last().unwrap()["reason"], json!("client_removed"));
-    assert!(a.companion_client(&client.client_id).await.unwrap().is_none());
-    assert_eq!(grant_refused(a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await), "invalid_client", "its codes went with it");
+    assert!(a.companion_client(acme, &client.client_id).await.unwrap().is_none());
+    assert_eq!(grant_refused(a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await), "invalid_client", "its codes went with it");
     assert!(matches!(forge.describe(&a, Scope::Workspace(acme), &client.secret).await, Ok(None)), "and its secret");
     assert_eq!(a.openid_purge().await.unwrap(), 0, "nothing is a day old");
     let _ = std::fs::remove_dir_all(&dir);

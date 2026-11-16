@@ -292,7 +292,7 @@ managed_tests() { # name args...
 }
 
 job_window() {
-  run "window build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
+  run "window build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --example oidc_rehearsal --locked || return
   run "window rehearsal" scripts/window_rehearsal.sh "${WINDOW_OLD:-8a34644e}" "ferrum_windowrehearsal$SFX"
 }
 

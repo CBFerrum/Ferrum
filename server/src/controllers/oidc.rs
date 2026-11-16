@@ -14,7 +14,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use base64::Engine as _;
 use ferrum_kernel::Error;
-use ferrum_kernel::oidc::{AuthRequest, Authorized, Client, SCOPES, TOKEN_SECS};
+use ferrum_kernel::oidc::{AuthRequest, Authorized, CLIENT_PREFIX, Client, SCOPES, TOKEN_SECS};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde::Deserialize;
@@ -124,13 +124,13 @@ async fn userinfo(State(app): State<AppContext>, headers: HeaderMap) -> Response
         res.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_str(&value).unwrap_or_else(|_| HeaderValue::from_static("Bearer")));
         res
     };
-    let iss = match issuer(&st, &headers).await {
-        Ok(Some((_, iss))) => iss,
+    let (tenant, iss) = match issuer(&st, &headers).await {
+        Ok(Some(found)) => found,
         Ok(None) => return not_here(),
         Err(e) => return e.into_response(),
     };
     let Some(token) = crate::extract::bearer(&headers) else { return bearer_error("") };
-    match st.kernel.openid_userinfo(&token, &iss).await {
+    match st.kernel.openid_userinfo(tenant, &token, &iss).await {
         Ok(claims) => no_store(Json(Value::Object(claims)).into_response()),
         Err(Error::Unauthorized(_)) => counted(&st, &headers, "userinfo", bearer_error("invalid_token")).await,
         Err(e) => ApiError(e).into_response(),
@@ -144,16 +144,14 @@ fn back(redirect_uri: &str, params: &[(&str, &str)]) -> Response {
     res
 }
 
-/// The authorization endpoint for a companion's `client` (oauth.rs sends it here): no consent page, the code only to a
-/// member its app lets in, through a browser session of theirs at one of the workspace's addresses. Until its return
-/// address is known to be the client's own, a refusal is a page; after, the client is told at that address.
-pub(crate) async fn authorize(st: &AppState, headers: &HeaderMap, uri: &Uri, client: Client) -> ApiResult<Response> {
+/// The authorization endpoint for a companion's client `client_id` (oauth.rs sends it here): no consent page, the code
+/// only to a member its app lets in, through a browser session of theirs at one of the workspace's addresses. Until its
+/// return address is known to be the client's own, a refusal is a page; after, the client is told at that address.
+pub(crate) async fn authorize(st: &AppState, headers: &HeaderMap, uri: &Uri, client_id: &str) -> ApiResult<Response> {
     let refused = super::oauth::refused;
     let Some((tenant, iss)) = issuer(st, headers).await? else { return Ok(refused("This address signs nobody in to other programs.")) };
-    // A client of another workspace is no client here.
-    if client.tenant != tenant {
-        return Ok(refused("This app is not registered with Ferrum."));
-    }
+    // Only this workspace's: a client's id is unique within its workspace, never across them.
+    let Some(client) = st.kernel.companion_client(tenant, client_id).await? else { return Ok(refused("This app is not registered with Ferrum.")) };
     let Ok(Query(r)) = Query::<AuthRequest>::try_from_uri(uri) else { return Ok(refused("This sign-in link is not valid.")) };
     if !client.redirect_uris.contains(&r.redirect_uri) {
         return Ok(refused("This app asked to return to an address it did not register. For your safety, nothing was shared."));
@@ -284,15 +282,15 @@ pub(crate) async fn token(st: &AppState, headers: &HeaderMap, form: &super::oaut
         Some((id, secret)) => (id, Some(secret)),
         None => (form.client_id.clone()?, form.client_secret.clone()),
     };
-    if !client_id.starts_with("fo_") {
+    if !client_id.starts_with(CLIENT_PREFIX) {
         return None;
     }
     Some(companion_token(st, headers, form, &client_id, secret.as_deref()).await)
 }
 
 async fn companion_token(st: &AppState, headers: &HeaderMap, form: &super::oauth::TokenReq, client_id: &str, secret: Option<&str>) -> Response {
-    let iss = match issuer(st, headers).await {
-        Ok(Some((_, iss))) => iss,
+    let (tenant, iss) = match issuer(st, headers).await {
+        Ok(Some(found)) => found,
         Ok(None) => return not_here(),
         Err(e) => return e.into_response(),
     };
@@ -305,7 +303,7 @@ async fn companion_token(st: &AppState, headers: &HeaderMap, form: &super::oauth
     let (Some(code), Some(redirect), Some(verifier)) = (form.code.as_deref(), form.redirect_uri.as_deref(), form.code_verifier.as_deref()) else {
         return oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "code, redirect_uri and code_verifier are required");
     };
-    match st.kernel.openid_token(client_id, secret, code, redirect, verifier, &iss).await {
+    match st.kernel.openid_token(tenant, client_id, secret, code, redirect, verifier, &iss).await {
         Ok(t) => no_store(
             Json(json!({"access_token": t.access_token, "token_type": "Bearer", "expires_in": TOKEN_SECS, "id_token": t.id_token, "scope": t.scope}))
                 .into_response(),

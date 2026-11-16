@@ -1,11 +1,17 @@
 -- Ferrum as an OpenID Connect provider for the programs that run beside it (crates/kernel/src/oidc.rs; docs/api.md,
 -- "Signing in to programs beside Ferrum"; docs/plan/stateless.md, D8). New tables and one new column: nothing an older
 -- build reads changes, and an older build never answers for these clients (it does not know them).
+--
+-- Every key here is unique within its workspace, never across the installation (the issuer a request comes to says
+-- which workspace it is for), so that a copy of a workspace into this database that takes every table with a
+-- `tenant_id` (the copier's rule, unless a table is named to be left out) never meets the original's keys. A sandbox
+-- has no companion client: this build copies none, and takes away any such a copy brought (crates/kernel/src/oidc.rs).
+-- (The build before makes no sandbox on a database this one migrated: it is a guest there.)
 
 -- A program an installed app runs beside Ferrum (its companion), declared by the app's own code for a workspace: a
 -- confidential client whose secret the vault made as the app's own. Only the secret's SHA-256 digest is here.
 create table oauth_companion (
-  client_id text primary key,
+  client_id text not null,
   tenant_id uuid not null references tenant(id) on delete cascade,
   app text not null,
   name text not null,
@@ -13,6 +19,7 @@ create table oauth_companion (
   secret_hash text not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  primary key (tenant_id, client_id),
   unique (tenant_id, app, name)
 );
 
@@ -20,9 +27,9 @@ create table oauth_companion (
 -- one-time code (a minute), then the access token's digest (five minutes). Codes and tokens are stored only as SHA-256
 -- digests. Kept a day after it ends, so that a client never has a nonce taken twice.
 create table oidc_code (
-  code_hash text primary key,
-  client_id text not null references oauth_companion(client_id) on delete cascade,
-  tenant_id uuid not null references tenant(id) on delete cascade,
+  code_hash text not null,
+  client_id text not null,
+  tenant_id uuid not null,
   user_id uuid not null,
   session_id uuid not null,
   token_version int not null,
@@ -37,13 +44,16 @@ create table oidc_code (
   waiting boolean not null default false,
   auth_time timestamptz,
   amr text[],
-  access_hash text unique,
+  access_hash text,
   access_expires_at timestamptz,
   created_at timestamptz not null default now(),
   expires_at timestamptz not null,
-  used_at timestamptz
+  used_at timestamptz,
+  primary key (tenant_id, code_hash),
+  unique (tenant_id, access_hash),
+  foreign key (tenant_id, client_id) references oauth_companion (tenant_id, client_id) on delete cascade
 );
-create unique index oidc_code_nonce on oidc_code (client_id, nonce) where nonce is not null;
+create unique index oidc_code_nonce on oidc_code (tenant_id, client_id, nonce) where nonce is not null;
 
 -- The subject a workspace's ID tokens name a person by: random, so that it says nothing else about them, and kept, so
 -- that it never changes.
@@ -59,14 +69,15 @@ create table oidc_subject (
 -- (`ferrum.companion.signed_out`), and a week after. It outlives its session's row, so that a session deleted (an
 -- erasure) is still told.
 create table oidc_sign_in (
-  tenant_id uuid not null references tenant(id) on delete cascade,
+  tenant_id uuid not null,
   session_id uuid not null,
-  client_id text not null references oauth_companion(client_id) on delete cascade,
+  client_id text not null,
   user_id uuid not null,
   token_version int not null,
   signed_in_at timestamptz not null default now(),
   ended_at timestamptz,
-  primary key (tenant_id, session_id, client_id)
+  primary key (tenant_id, session_id, client_id),
+  foreign key (tenant_id, client_id) references oauth_companion (tenant_id, client_id) on delete cascade
 );
 create index oidc_sign_in_live on oidc_sign_in (signed_in_at) where ended_at is null;
 
