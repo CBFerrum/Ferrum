@@ -140,9 +140,9 @@ impl Def {
 /// `app.yaml`); or, when two owners declare one key or variable, the platform's alone and why the server does not start.
 static REGISTRY: LazyLock<(Vec<Def>, Option<String>)> = LazyLock::new(|| {
     let platform: Vec<Def> = serde_yaml::from_str(include_str!("settings.yaml")).expect("server/src/settings.yaml is the registry");
+    // Every compiled-in app's manifest once: the apps built in elsewhere (crate::extensions) are among them already.
     let apps: Vec<(String, Vec<ferrum_apps::OperatorSetting>)> = crate::packages::native_manifests()
         .into_iter()
-        .chain(crate::extensions::all().iter().map(|e| e.manifest))
         // A manifest that does not parse leaves its app out of the server (crate::appmgr::compiled_natives says so).
         .filter_map(|yaml| ferrum_apps::AppManifest::parse(yaml).ok())
         .filter(|m| !m.operator_settings.is_empty())
