@@ -412,36 +412,6 @@ async fn status(k: &Kernel, tenant: Uuid, run: Uuid) -> String {
     scalar(k, tenant, "select status from logic_run where id = $1", run).await
 }
 
-/// A draft request changed once, and the outbox event of the change.
-async fn updated(k: &Kernel, who: &Ctx, reference: &str) -> OutboxEvent {
-    let r = k.insert(who, "Request", obj(json!({"reference": reference, "total": "1"}))).await.unwrap();
-    let id: Uuid = r["id"].as_str().unwrap().parse().unwrap();
-    k.update(who, "Request", id, obj(json!({"total": "2"})), None).await.unwrap();
-    let mut tx = k.db.tenant_tx(who.tenant).await.unwrap();
-    let e: (i64, String, Option<String>, Option<Uuid>, Value) =
-        sqlx::query_as("select id, topic, entity, record_id, payload from outbox where topic = 'Request.updated' and record_id = $1")
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
-    OutboxEvent { id: e.0, tenant_id: who.tenant, topic: e.1, entity: e.2, record_id: e.3, payload: e.4, ..Default::default() }
-}
-
-/// What became of an event of an automation's: its record of the event, and the runs it started.
-async fn outcome(k: &Kernel, tenant: Uuid, automation: Uuid, event: i64) -> (Option<String>, i64) {
-    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
-    let status: Option<String> = sqlx::query_scalar("select status from automation_run where automation_id = $1 and outbox_id = $2")
-        .bind(automation)
-        .bind(event)
-        .fetch_optional(&mut *tx)
-        .await
-        .unwrap();
-    let runs: i64 = sqlx::query_scalar("select count(*) from logic_run where trigger_event = $1").bind(event).fetch_one(&mut *tx).await.unwrap();
-    tx.commit().await.unwrap();
-    (status, runs)
-}
-
 #[test]
 fn processes_keep_their_business_records() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -946,87 +916,6 @@ async fn scenario() {
     }
     assert_eq!(counts().await, before, "nothing ran, changed or was kept");
     assert_eq!(code(&k.shadow_solution(&reviewer, Some(&candidate.to_string()), None, 5, &BTreeMap::new()).await.unwrap_err()), "forbidden");
-
-    // One writer at the cutover from an automation (FLC-MIG-003). Each of its events is run by it or by the
-    // solution imported from it, never both and never neither, whichever of the two comes to the event first:
-    // before the activation, while it commits, or after it, and however often the event comes again.
-    let told = user(&k, &admin, "told@acme.test", &["Reviewer"], false).await;
-    let saved = obj(json!({"name": "Tell about changes", "entity": "Request", "event": "updated",
-        "actions": [{"type": "notify", "to": format!("user:{}", told.user), "title": "\"Changed\"", "body": "doc.reference"}]}));
-    let automation = ferrum_kernel::automation::save(&k, &admin, &saved).await.unwrap();
-    let imported = k.import_automations(&admin).await.unwrap();
-    let mine = imported.iter().find(|i| i["automation"] == json!(automation)).expect("imported").clone();
-    assert_eq!(mine["check"]["ok"], json!(true), "{mine}");
-    let draft = k.logic_draft(&admin, mine["draft"]["id"].as_str().unwrap().parse().unwrap()).await.unwrap();
-    let text = draft["source"].as_str().unwrap().to_string();
-    assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["processes"][0]["trigger"]["business_key"], "event.id", "a run per event, as it ran");
-    let kept = k.save_release(&admin, &text).await.unwrap();
-    let imported_release: Uuid = kept["id"].as_str().unwrap().parse().unwrap();
-    let growth: Vec<String> = k.logic_release_review(&admin2, imported_release).await.unwrap()["diff"]["privilege_growth"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-    k.review_release_consenting(&admin2, imported_release, kept["artifact_digest"].as_str().unwrap(), &growth, true, "").await.unwrap();
-    let e1 = updated(&k, &requester, "C-1").await;
-    let e2 = updated(&k, &requester, "C-2").await;
-    let e6 = updated(&k, &requester, "C-6").await;
-    ferrum_kernel::automation::run_for_event(&k, &e1).await.unwrap();
-    k.accept_event(&e2).await.unwrap();
-    // Before it takes over, the imported solution is compared with what the automation did, event by event.
-    let beside = k.shadow_solution(&admin, Some(&text), None, 20, &BTreeMap::new()).await.unwrap();
-    assert_eq!(beside["against"]["kind"], "automation", "{beside}");
-    let first = beside["cases"].as_array().unwrap().iter().find(|c| c["event"] == json!(e1.id)).expect("the event the automation ran").clone();
-    assert_eq!(
-        (first["now"]["outcome"].as_str(), first["candidate"]["outcome"].as_str(), first["same"].as_bool()),
-        (Some("acted"), Some("acted"), Some(true)),
-        "{first}"
-    );
-    let (activated, a6, l6) =
-        tokio::join!(k.activate_release_explained(&admin, imported_release, None), ferrum_kernel::automation::run_for_event(&k, &e6), k.accept_event(&e6));
-    let activated = activated.unwrap();
-    a6.unwrap();
-    l6.unwrap();
-    assert_eq!(activated["handed_over"]["automation"], json!(automation), "{activated}");
-    assert!(!scalar::<bool>(&k, admin.tenant, "select is_active from automation where id = $1", automation).await, "turned off in the same step");
-    k.accept_event(&e1).await.unwrap();
-    ferrum_kernel::automation::run_for_event(&k, &e2).await.unwrap();
-    let e3 = updated(&k, &requester, "C-3").await;
-    let e4 = updated(&k, &requester, "C-4").await;
-    let e5 = updated(&k, &requester, "C-5").await;
-    k.accept_event(&e3).await.unwrap();
-    ferrum_kernel::automation::run_for_event(&k, &e3).await.unwrap();
-    ferrum_kernel::automation::run_for_event(&k, &e4).await.unwrap();
-    k.accept_event(&e4).await.unwrap();
-    let (a5, l5) = tokio::join!(ferrum_kernel::automation::run_for_event(&k, &e5), k.accept_event(&e5));
-    a5.unwrap();
-    l5.unwrap();
-    // Delivered again, as the outbox may: nothing more is run.
-    for e in [&e1, &e2, &e3, &e4, &e5, &e6] {
-        ferrum_kernel::automation::run_for_event(&k, e).await.unwrap();
-        k.accept_event(e).await.unwrap();
-    }
-    d.settle().await;
-    assert_eq!(outcome(&k, admin.tenant, automation, e1.id).await, (Some("done".into()), 0), "the automation ran it before the cutover");
-    for e in [&e2, &e3, &e4, &e5] {
-        assert_eq!(outcome(&k, admin.tenant, automation, e.id).await, (Some("handed_over".into()), 1), "the solution's: event {}", e.id);
-    }
-    let during = outcome(&k, admin.tenant, automation, e6.id).await;
-    assert!(during == (Some("done".into()), 0) || during == (Some("handed_over".into()), 1), "one of the two, during the activation: {during:?}");
-    for reference in ["C-1", "C-2", "C-3", "C-4", "C-5", "C-6"] {
-        let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
-        let told_once: i64 = sqlx::query_scalar("select count(*) from notification where user_id = $1 and body = $2")
-            .bind(told.user)
-            .bind(reference)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(told_once, 1, "told once about {reference}");
-    }
-    // Never both: the automation stays off while the solution runs in its place.
-    let mut again = saved.clone();
-    again.insert("id".into(), json!(automation));
-    assert_eq!(code(&ferrum_kernel::automation::save(&k, &admin, &again).await.unwrap_err()), "conflict");
 
     // An app taken out of the workspace while a run waits (FLC-OPS-007): the step that would use its capability
     // is neither done nor failed. It waits; administrators see why and may end the run instead; and once the app

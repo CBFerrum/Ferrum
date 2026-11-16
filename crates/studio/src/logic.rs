@@ -9,7 +9,6 @@
 //! | `PUT /solutions/drafts/{id}` | `If-Match: "v{version}"`, `{source}` → `{version}`; 409 when another save came first |
 //! | `DELETE /solutions/drafts/{id}` | `If-Match: "{version}"` |
 //! | `POST /solutions/drafts/{id}/release` | `If-Match: "{version}"` → the kept release |
-//! | `POST /solutions/import/automations` | each automation as a draft Solution (administrators) |
 //! | `POST /solutions/import/pack` | `{pack}` → `{draft, check, to_map}`: a pack from another workspace, as a draft |
 //! | `POST /solutions/compile` | `{source}` → `{ok, release?, diagnostics}`; keeps nothing |
 //! | `POST /solutions/simulate` | `{source \| release, scenario}` → the timeline; reaches nothing |
@@ -17,7 +16,7 @@
 //! | `GET /solutions/releases/{id}` | → the release, what runs now, reviews, and the semantic diff |
 //! | `GET /solutions/releases/{id}/pack` | → the release as a pack: source, digests, needs, review evidence; no secret |
 //! | `POST /solutions/releases/{id}/review` | `{digest, privileges, approve, reason}` |
-//! | `POST /solutions/releases/{id}/activate` | `{expected_generation}` → `{generation, replaced, handed_over, open_elsewhere, kept}` |
+//! | `POST /solutions/releases/{id}/activate` | `{expected_generation}` → `{generation, replaced, open_elsewhere, kept}` |
 //! | `POST /solutions/{solution}/deactivate` | `{expected_generation}` |
 //! | `GET /solutions/refusals` | evidence of saves the rules refused |
 //! | `GET /runs` | `?cursor=` → `{runs, cursor, resync}`: the runs, or those that changed since the cursor |
@@ -108,8 +107,6 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
             ok(json!({}))
         }
         ("POST", ["solutions", "drafts", d, "release"]) => ok(k.release_logic_draft(ctx, id(d, "draft")?, if_match(req)?).await?),
-        // Each automation as a draft Solution, for a person to finish and someone else to review (FLC-MIG-001).
-        ("POST", ["solutions", "import", "automations"]) => ok(json!({"imported": k.import_automations(ctx).await?})),
         ("POST", ["solutions", "compile"]) => {
             let b = body(req)?;
             let source = text(&b, "source");

@@ -1894,21 +1894,10 @@ A history that does not replay means the new build would decide those runs diffe
 running them, and say so in the release notes. Replay opens the payloads as the runtime does: with the vault
 open, and the old key (or the vault's copy of it) for what it sealed.
 
-**From automations.** Studio's `POST /api/app/studio/solutions/import/automations` (administrators) turns each
-automation into a draft Solution: the same event, the condition as written, the actions as steps through
-capabilities, a run per event as the automation ran, and where it came from. It is a draft: someone finishes
-what did not map, keeps it as a release, and another administrator reviews and consents to what it may change.
-A scheduled automation is not imported (a solution starts on a record's event); it keeps running as it is.
-Activating that release turns the automation off in the same step, and from then on each of its events is
-claimed once, by the solution or by the automation's runner, whichever comes to it first: never run by both,
-never by neither, however the events and the activation interleave. While the solution runs, the automation
-cannot be turned back on; to go back, deactivate the solution first.
-
 **Comparing before it runs.** On a release's page in Studio (or `POST /api/app/studio/solutions/shadow`),
 recent work is replayed against the release and against what runs now: the last runs of its solution, with
-the answers, decisions and events they met, or, for a solution imported from an automation that has not taken
-over yet, the automation's recent events and what it did. Each case says what differs. Nothing runs, changes or
-is kept, so it is safe on production data; a step the candidate adds has no recorded answer and says so.
+the answers, decisions and events they met. Each case says what differs. Nothing runs, changes or is kept, so
+it is safe on production data; a step the candidate adds has no recorded answer and says so.
 
 **Going back.** Going back to an earlier release is activating it again: a new generation, new runs start under
 it, runs started under the later one go on under theirs, and nothing any run did is undone. The activation

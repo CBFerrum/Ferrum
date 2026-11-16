@@ -468,29 +468,14 @@ impl Kernel {
     }
 
     /// [`Kernel::activate_release`], answering what changed with it: its generation, the release it replaced,
-    /// the automation it took over from, and what stays as it was. Going back to an earlier release is this
-    /// too, a new generation selecting it: runs started under another release go on under theirs, and nothing
-    /// any run did is undone (FLC-MIG-006). A solution imported from an automation turns the automation off in
-    /// the same step, so each of its events is run by one of the two (FLC-MIG-003).
+    /// and what stays as it was. Going back to an earlier release is this too, a new generation selecting it:
+    /// runs started under another release go on under theirs, and nothing any run did is undone (FLC-MIG-006).
     pub async fn activate_release_explained(&self, ctx: &Ctx, release: Uuid, expected: Option<i64>) -> Result<Value> {
         require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         // One activation at a time in a workspace: two at once could each miss the other's rules.
         sqlx::query("select pg_advisory_xact_lock(hashtext('ferrum.logic.activation'), hashtext($1))").bind(ctx.tenant.to_string()).execute(&mut *tx).await?;
         let r = reviewed(&mut tx, ctx.tenant, release).await?;
-        // The automation it was imported from, locked before anything else is written, as the automation's runner
-        // and its saving lock it.
-        let automation = crate::authoring::automation_of(&r.solution);
-        let replacing: Option<(bool, String)> = match automation {
-            Some(a) => {
-                sqlx::query_as("select is_active, name from automation where tenant_id = $1 and id = $2 for update")
-                    .bind(ctx.tenant)
-                    .bind(a)
-                    .fetch_optional(&mut *tx)
-                    .await?
-            }
-            None => None,
-        };
         let replaced: Option<(Uuid, String)> = sqlx::query_as(
             "select r.id, r.version from logic_activation a join logic_release r on r.tenant_id = a.tenant_id and r.id = a.release_id \
              where a.tenant_id = $1 and a.solution = $2",
@@ -567,17 +552,6 @@ impl Kernel {
         let Some(generation) = generation else {
             return Err(Error::Conflict(format!("what runs for {} changed meanwhile: look again", r.solution)));
         };
-        let handed_over = match (automation, &replacing) {
-            (Some(a), Some((true, name))) => {
-                sqlx::query("update automation set is_active = false, updated_at = now() where tenant_id = $1 and id = $2")
-                    .bind(ctx.tenant)
-                    .bind(a)
-                    .execute(&mut *tx)
-                    .await?;
-                json!({"automation": a, "name": name})
-            }
-            _ => Value::Null,
-        };
         let elsewhere: i64 =
             sqlx::query_scalar("select count(*) from logic_run where tenant_id = $1 and solution = $2 and release_id <> $3 and finished_at is null")
                 .bind(ctx.tenant)
@@ -595,7 +569,7 @@ impl Kernel {
             "activate",
             None,
             json!({"solution": r.solution, "version": r.version, "artifact_digest": r.digest, "generation": generation, "replaced": replaced,
-                   "handed_over": handed_over, "account": account}),
+                   "account": account}),
         )
         .await?;
         // Every replica takes up the workspace's rules afresh: this one now, the others when told.
@@ -612,7 +586,7 @@ impl Kernel {
             "New runs of {} start under {}. {open}, and nothing a run did is undone: an effect that happened stays, for a person to decide about.",
             r.solution, r.version
         );
-        Ok(json!({"generation": generation, "replaced": replaced, "handed_over": handed_over, "open_elsewhere": elsewhere, "kept": kept}))
+        Ok(json!({"generation": generation, "replaced": replaced, "open_elsewhere": elsewhere, "kept": kept}))
     }
 
     /// Stops a solution's release running (administrators); `expected` is the generation the caller saw.

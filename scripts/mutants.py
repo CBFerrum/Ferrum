@@ -308,11 +308,8 @@ MUTANTS = [
     ("related-runs-unchecked", "crates/kernel/src/process.rs", '        self.get(ctx, entity, record, false).await?;', '        let _ = self.get(ctx, entity, record, false).await;', STUDIO_SOLUTIONS),
     ("diff-shows-old-as-new", "crates/logic/src/diff.rs", "[shown(ao.get(k)), shown(bo.get(k))]", "[shown(ao.get(k)), shown(ao.get(k))]", LOGIC_UNIT),
     ("effect-ignores-restore-hold", "crates/kernel/src/process.rs", "if changes && (self.db.fenced() || self.holding().await?) {", "if false && changes && (self.db.fenced() || self.holding().await?) {", PROCESS_RECORDS),
-    ("automation-imported-twice", "crates/kernel/src/authoring.rs", "if existing.contains(&solution) {", "if false && existing.contains(&solution) {", STUDIO_SOLUTIONS),
-    # W8: one writer at a cutover, rollback truth, shadows that run nothing, steps that wait for a capability out of
+    # W8: the generation a run starts under, rollback truth, shadows that run nothing, steps that wait for a capability out of
     # service, packs checked on arrival, moves approved by a second person and refused over a decision.
-    ("cutover-runs-both", "crates/kernel/src/process.rs", "                && !claim_handover(&mut tx, tenant, automation, ev.id).await?\n", "                && automation.is_nil()\n", PROCESS_RECORDS),
-    ("cutover-leaves-automation-on", "crates/kernel/src/logic.rs", '"update automation set is_active = false, updated_at = now() where tenant_id = $1 and id = $2"', '"update automation set updated_at = now() where tenant_id = $1 and id = $2"', PROCESS_RECORDS),
     ("run-forgets-its-generation", "crates/kernel/src/process.rs", "    .bind(generation)\n    .fetch_optional(&mut **tx)", "    .bind(None::<i64>.or(Some(generation)).filter(|_| false))\n    .fetch_optional(&mut **tx)", PROCESS_RECORDS),
     ("shadow-forgets-what-happened", "crates/kernel/src/authoring.rs", "s.results.insert(activation.clone(), answer_met(output));", "let _ = (activation, output);", PROCESS_RECORDS),
     ("shadow-replays-refusal-as-success", "crates/kernel/src/authoring.rs", '        (Some(e), _) => Invoked::Refused {', '        (Some(e), _) if e.is_null() => Invoked::Refused {', PROCESS_RECORDS),
