@@ -36,13 +36,15 @@ fn repairs_vault(args: impl IntoIterator<Item = String>) -> bool {
 /// slots' keys come from where they are read today: `DATABASE_URL`'s password, the file at its fixed path,
 /// `FERRUM_SECRET_KEY_COMMAND` and `FERRUM_KMS_TRANSIT`. A vault that does not open stops the start, saying why; only a
 /// task that reports on it or repairs it runs with it closed. A vault that has no slot yet, with none of these here to
-/// make one, leaves the server to start with it closed, and says so: what needs it is refused, and production needs
-/// FERRUM_SECRET_KEY. Whether it opens (now, or once the kernel has migrated the database).
+/// make one, leaves the server to start with it closed outside production, and says so: what needs it is refused. In
+/// production, which keeps every secret in it, that stops the start too. Whether it opens (now, or once the kernel has
+/// migrated the database).
 pub async fn open_vault(
     db: &ferrum_kernel::Db,
     settings: &crate::state::Settings,
     database_url: &str,
     transit: Option<&ferrum_kernel::kms::Transit>,
+    production: bool,
 ) -> Result<bool> {
     use ferrum_kernel::vault::{Opened, Opener};
     let opener = Opener {
@@ -60,57 +62,18 @@ pub async fn open_vault(
         }
         // Not yet migrated: opened once the kernel has (or the start fails, saying why).
         Ok(Opened::Later) => Ok(true),
-        // No slot possible here: said, and the server starts with the vault closed.
+        // No slot possible here: said, and the server starts with the vault closed (not in production).
+        Ok(Opened::Closed) if production && !tolerate => Err(Error::Message(
+            "the vault: nothing here can make its first slot, and production keeps every secret in it. Give it a root: a password in \
+             DATABASE_URL, a key file at /run/ferrum/root.key, or a key-management service (docs/operations.md, \"The vault\")"
+                .into(),
+        )),
         Ok(Opened::Closed) => Ok(false),
         Err(e) if tolerate => {
             tracing::error!("the vault is closed: {e}");
             Ok(false)
         }
         Err(e) => Err(Error::Message(format!("the vault: {e}"))),
-    }
-}
-
-/// `kms_wrap`: the configured secret keys as ciphertext of the Transit key `FERRUM_KMS_TRANSIT`
-/// names, to configure in their place (crates/kernel/src/kms.rs). Keys given as ciphertext already
-/// are wrapped again by the Transit key's newest version, after it was rotated. It prints no key.
-pub struct KmsWrap;
-
-#[async_trait]
-impl Task for KmsWrap {
-    fn task(&self) -> TaskInfo {
-        TaskInfo {
-            name: "kms_wrap".into(),
-            detail: "Prints FERRUM_SECRET_KEY and FERRUM_RETIRED_SECRET_KEYS as ciphertext of the key-management service's Transit key".into(),
-        }
-    }
-    async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
-        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
-        // The keys go only to an address the environment gives beside them, never to one a row in the database chose.
-        let Some(transit) = crate::app::kms_transit_of_the_environment(&st.settings)? else {
-            return Err(Error::Message(
-                "set FERRUM_KMS_TRANSIT in the environment to the Transit key that is to wrap them (https://host:8200/<mount>/<key>)".into(),
-            ));
-        };
-        let wrap = |value: String| {
-            let transit = transit.clone();
-            async move {
-                let key = ferrum_kernel::kms::resolve(&value, Some(&transit)).await?;
-                transit.wrap(&key.to_base64()).await
-            }
-        };
-        let main = st.settings.secret_key.trim().to_string();
-        if main.is_empty() {
-            return Err(Error::Message("FERRUM_SECRET_KEY is not set: there is nothing to wrap".into()));
-        }
-        println!("FERRUM_SECRET_KEY={}", wrap(main).await.map_err(refused)?);
-        let mut retired = Vec::new();
-        for k in st.settings.retired_secret_keys.split(',').map(str::trim).filter(|k| !k.is_empty()) {
-            retired.push(wrap(k.to_string()).await.map_err(refused)?);
-        }
-        if !retired.is_empty() {
-            println!("FERRUM_RETIRED_SECRET_KEYS={}", retired.join(","));
-        }
-        Ok(())
     }
 }
 
@@ -1033,8 +996,8 @@ impl Task for FilesMove {
 }
 
 /// What `move_workspace` is told about the source, from the environment (never the command line, never printed):
-/// `FERRUM_MOVE_SOURCE_DATABASE_URL`, `FERRUM_MOVE_SOURCE_SECRET_KEYS` (its `FERRUM_SECRET_KEY`, then its retired keys,
-/// comma-separated), its files (`FERRUM_MOVE_SOURCE_FILES=same`, or `FERRUM_MOVE_SOURCE_FILES_DIR`, or
+/// `FERRUM_MOVE_SOURCE_DATABASE_URL`, `FERRUM_MOVE_SOURCE_SECRET_KEYS` (the transfer key `vault_transfer` printed there,
+/// comma-separated with any others), its files (`FERRUM_MOVE_SOURCE_FILES=same`, or `FERRUM_MOVE_SOURCE_FILES_DIR`, or
 /// `FERRUM_MOVE_SOURCE_S3_BUCKET` with `FERRUM_MOVE_SOURCE_S3_REGION` and `FERRUM_MOVE_SOURCE_S3_ENDPOINT`), and
 /// `FERRUM_MOVE_SOURCE_REGION`.
 async fn move_source(st: &crate::state::AppState, vars: &Vars) -> Result<ferrum_kernel::workspace_move::MoveSource> {
@@ -1268,90 +1231,6 @@ pub fn register_vault(tasks: &mut loco_rs::task::Tasks) {
     tasks.register(VaultRecovery);
     tasks.register(VaultRewrap);
     tasks.register(VaultRotate);
-    tasks.register(VaultMove);
-    tasks.register(LegacyKey);
-}
-
-/// `vault_move`: moves into the vault, now, what the old key's stores hold that it does not (the hourly upkeep does it
-/// too), and says what it did. Safe beside the servers, and on several at once.
-pub struct VaultMove;
-
-#[async_trait]
-impl Task for VaultMove {
-    fn task(&self) -> TaskInfo {
-        TaskInfo { name: "vault_move".into(), detail: "Moves into the vault what the old key's stores still hold (format:json); never a value".into() }
-    }
-    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
-        let k = kernel(ctx)?;
-        let done = k.vault_move().await.map_err(refused)?;
-        if vars.cli_arg("format").is_ok_and(|f| f == "json") {
-            println!("{}", serde_json::to_string_pretty(&done).map_err(refused)?);
-            return Ok(());
-        }
-        println!("{} values moved into the vault; {} left; {} removed (their rows are gone)", done.moved, done.left, done.removed);
-        for (what, n) in &done.unopened {
-            println!("{n} values of {what} open with no configured key: they stay where they are (ferrum task doctor names them)");
-        }
-        Ok(())
-    }
-}
-
-/// `legacy_key [retire:yes] [format:json]`: where the old key's end stands (FERRUM_SECRET_KEY): adopted into the vault,
-/// what waits to move, whether builds that check with it only are refused, and whether it can go; with `retire:yes`,
-/// those builds are refused from now on, once every key is adopted and every value moved (docs/operations.md, Retiring
-/// the old key).
-pub struct LegacyKey;
-
-#[async_trait]
-impl Task for LegacyKey {
-    fn task(&self) -> TaskInfo {
-        TaskInfo {
-            name: "legacy_key".into(),
-            detail: "Where the old master key's end stands; retire:yes refuses the builds that need it from now on (format:json)".into(),
-        }
-    }
-    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
-        let k = kernel(ctx)?;
-        let l = match vars.cli_arg("retire") {
-            Ok("yes") => k.retire_old_key().await.map_err(refused)?,
-            Ok(other) => return Err(Error::Message(format!("retire:{other}: say retire:yes"))),
-            Err(_) => k.legacy_key(crate::doctor::apps_reading_the_old_key()).await.map_err(refused)?,
-        };
-        if vars.cli_arg("format").is_ok_and(|f| f == "json") {
-            println!("{}", serde_json::to_string_pretty(&l).map_err(refused)?);
-            return Ok(());
-        }
-        println!("the old master key {}; the vault {}", if l.configured { "is set" } else { "is not set" }, if l.vault_open { "is open" } else { "is closed" });
-        for id in &l.adopted {
-            println!("in the vault: key {id}");
-        }
-        for id in &l.not_adopted {
-            println!("not in the vault yet: key {id} (a start with the vault open adopts it)");
-        }
-        for (what, n) in &l.waiting {
-            println!("waiting to move: {n} values of {what}");
-        }
-        match l.moved_since {
-            Some(at) => println!("nothing has waited to move since {}", at.format("%Y-%m-%d %H:%M UTC")),
-            None => println!("the move has not yet found everything moved (ferrum task vault_move)"),
-        }
-        println!(
-            "{}",
-            if l.older_builds_refused {
-                "builds before the old key's end are refused here: what the platform makes, it makes with the vault's keys"
-            } else {
-                "builds before this one may still run here: what the platform makes, it makes with the old key (legacy_key retire:yes ends that)"
-            }
-        );
-        for app in &l.apps {
-            println!("reads the key itself: {app} (given the vault's copy once it is gone)");
-        }
-        for (what, caller, last) in &l.uses {
-            println!("used: {what}{}, last {}", if caller.is_empty() { String::new() } else { format!(" by {caller}") }, last.format("%Y-%m-%d %H:%M UTC"));
-        }
-        println!("retirable: {}", l.retirable);
-        Ok(())
-    }
 }
 
 fn slot_kind(vars: &Vars) -> Result<ferrum_kernel::vault::SlotKind> {
@@ -1726,7 +1605,7 @@ impl Task for VaultTransfer {
         let (id, _) = k.tenant_by_slug(slug).await.map_err(refused)?;
         let key = ferrum_kernel::vault::transfer_out(&k, id).await.map_err(refused)?;
         println!(
-            "The transfer key of {slug}, shown this once:\n\n    {}\n\nAdd it to FERRUM_MOVE_SOURCE_SECRET_KEYS where the move runs, after this installation's keys. It opens nothing but this transfer; a new one replaces it.",
+            "The transfer key of {slug}, shown this once:\n\n    {}\n\nGive it as FERRUM_MOVE_SOURCE_SECRET_KEYS where the move runs. It opens nothing but this transfer; a new one replaces it.",
             key.as_str()
         );
         Ok(())
@@ -2010,7 +1889,7 @@ mod tests {
     fn only_the_tasks_that_report_on_the_vault_or_repair_it_run_with_it_closed() {
         let args = |a: &[&str]| repairs_vault(a.iter().map(|s| s.to_string()));
         assert!(args(&["ferrum", "task", "vault_rewrap"]) && args(&["ferrum", "-e", "production", "task", "doctor"]));
-        assert!(!args(&["ferrum", "start"]) && !args(&["ferrum", "task", "migrate"]) && !args(&["ferrum", "task", "kms_wrap", "doctor"]));
+        assert!(!args(&["ferrum", "start"]) && !args(&["ferrum", "task", "migrate"]) && !args(&["ferrum", "task", "vault_events", "doctor"]));
     }
 }
 
@@ -2031,7 +1910,7 @@ impl Task for LogicReplay {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        // Opened as the runtime opens them: with the platform's key for processes, or the old key it sealed them with.
+        // Opened as the runtime opens them: with the platform's key for processes, the version each names.
         let keys = std::sync::Arc::new(ferrum_process::Keys::default());
         keys.ready(&k, app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?.vault);
         let mut results: Vec<(String, std::result::Result<(), String>)> = Vec::new();

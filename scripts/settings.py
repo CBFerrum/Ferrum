@@ -333,8 +333,6 @@ def environment_only(entries):
 
 
 SECRETS_WHY = {
-    "secret_key": "the old master key, until it retires (docs/operations.md, Retiring the old key)",
-    "retired_secret_keys": "the old master key's retired ones, until it retires",
     "secret_key_command": "a command line, never read from the database, where whoever writes a row would run a program",
     "bao_token": "through R1: the key-management service's token is the file /run/ferrum/kms.token",
     "vault_token": "through R1: the key-management service's token is the file /run/ferrum/kms.token",

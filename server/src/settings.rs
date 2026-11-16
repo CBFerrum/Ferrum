@@ -1497,18 +1497,19 @@ mod tests {
 
     #[test]
     fn the_environment_wins_over_the_table_which_wins_over_the_default() {
-        let table = stored(&[("session_days", "7"), ("pdf_url", "http://pdf:3000"), ("secret_key", "from-the-table"), ("drive.office_url", "http://o")]);
+        let table =
+            stored(&[("session_days", "7"), ("pdf_url", "http://pdf:3000"), ("secret_key_command", "from-the-table"), ("drive.office_url", "http://o")]);
         let env = |name: &str| match name {
             "FERRUM_SESSION_DAYS" => Some("3".to_string()),
-            "FERRUM_SECRET_KEY" => Some("from-the-environment".to_string()),
+            "FERRUM_SECRET_KEY_COMMAND" => Some("from-the-environment".to_string()),
             _ => None,
         };
         let s = Snapshot::resolve(&table, "default", &env);
         assert_eq!(s.get("session_days"), (Source::Environment, Some("3")));
         assert_eq!(s.get("pdf_url"), (Source::Database, Some("http://pdf:3000")));
         assert_eq!(s.get("host_leaving_days"), (Source::Default, None));
-        assert_eq!(s.get("secret_key"), (Source::Environment, Some("from-the-environment")), "a secret is never the table's");
-        assert_eq!(Snapshot::resolve(&table, "default", &|_| None).get("secret_key"), (Source::Default, None));
+        assert_eq!(s.get("secret_key_command"), (Source::Environment, Some("from-the-environment")), "a secret is never the table's");
+        assert_eq!(Snapshot::resolve(&table, "default", &|_| None).get("secret_key_command"), (Source::Default, None));
         // Drive declares it (operator_settings): the table's value reaches it, as the platform's own do.
         #[cfg(feature = "drive")]
         assert_eq!(s.get("drive.office_url"), (Source::Database, Some("http://o")));

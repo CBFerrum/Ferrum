@@ -177,11 +177,7 @@ async fn the_binary() {
     // Its pool's own budget: a small one, above the floor the replica's own loops need (POOL_FLOOR).
     row(&st, "pool", "default", "db_max_connections", Some("12")).await;
     st.kernel.db.close().await;
-    let secrets = vec![
-        ("DATABASE_URL", url()),
-        ("JWT_SECRET", "c2V0dGluZ3MtaXQtand0LXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg==".to_string()),
-        ("FERRUM_SECRET_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=".to_string()),
-    ];
+    let secrets = vec![("DATABASE_URL", url()), ("JWT_SECRET", "c2V0dGluZ3MtaXQtand0LXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg==".to_string())];
 
     // Only the database's address and the secrets: everything else from the table.
     let log = dir.join("only-the-address.log");

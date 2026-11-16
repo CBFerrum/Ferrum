@@ -217,14 +217,11 @@ fn digest(s: &str) -> String {
 
 /// Where `user`'s tokens of a connection are kept (the workspace's: the nil id): the platform's, in the workspace.
 pub(crate) fn token_place(tenant: Uuid, conn: Uuid, user: Uuid) -> crate::vault::kept::Place {
-    crate::vault::kept::Place::platform(crate::vault::kept::Store::ConnToken, tenant, format!("{conn}/{user}"), token_label(tenant, conn, user))
+    crate::vault::kept::Place::platform(crate::vault::kept::Store::ConnToken, tenant, format!("{conn}/{user}"))
 }
 
-pub(crate) fn token_label(tenant: Uuid, conn: Uuid, user: Uuid) -> String {
-    format!("conn_token:{tenant}:{conn}:{user}")
-}
-
-fn signin_label(tenant: Uuid, state_digest: &str) -> String {
+/// What a sign-in's verifier is sealed for while it waits.
+fn signin_context(tenant: Uuid, state_digest: &str) -> String {
     format!("conn_signin:{tenant}:{state_digest}")
 }
 
@@ -356,7 +353,7 @@ impl Kernel {
             }
         };
         let redirect = self.connection_callback()?;
-        self.sealing_ready(Keyed::SignInState).await?;
+        self.keyed_ready(Keyed::SignInState)?;
         // A provider that registers its clients: registered once, the first time anyone connects.
         let conn = if provider.client_id.trim().is_empty() { self.register_client(&conn, &redirect).await? } else { conn };
         let (provider, _) = oauth(&conn)?;
@@ -369,8 +366,8 @@ impl Kernel {
         let verifier = random();
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let state_digest = digest(&state);
-        let label = signin_label(ctx.tenant, &state_digest);
-        let sealed = self.seal_for_platform(Scope::Workspace(ctx.tenant), &label, &label, &verifier, Keyed::SignInState).await?;
+        let context = signin_context(ctx.tenant, &state_digest);
+        let sealed = self.seal_for_platform(Scope::Workspace(ctx.tenant), &context, &verifier, Keyed::SignInState).await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query(
             "insert into conn_signin (state_digest, tenant_id, conn_id, user_id, owner_id, session_id, verifier, expires_at) \
@@ -432,8 +429,8 @@ impl Kernel {
             return Err(Error::invalid(format!("the provider did not connect the account: {said}")));
         }
         let code = code.filter(|c| !c.is_empty() && c.len() <= 2048).ok_or_else(|| Error::invalid("the provider sent no code"))?;
-        let label = signin_label(ctx.tenant, &state_digest);
-        let verifier = self.open_for_platform(Scope::Workspace(ctx.tenant), &label, &label, &sealed, Keyed::SignInState).await?;
+        let context = signin_context(ctx.tenant, &state_digest);
+        let verifier = self.open_for_platform(Scope::Workspace(ctx.tenant), &context, &sealed, Keyed::SignInState).await?;
         let conn = self.load_connection(ctx.tenant, &conn_id.to_string()).await?;
         let (provider, _) = oauth(&conn)?;
         let form = [("grant_type", "authorization_code"), ("code", code), ("redirect_uri", &self.connection_callback()?), ("code_verifier", &verifier)];
@@ -673,9 +670,7 @@ impl Kernel {
             _ => None,
         };
         let account = super::at(&seen, account_at).map(|a| a.chars().take(200).collect::<String>());
-        if !self.kept_here() {
-            return Err(Error::Unavailable("tokens are kept in the vault or sealed with the server's secret key, and this server has neither".into()));
-        }
+        self.vault_open("a sign-in's tokens")?;
         // What the sign-in keeps (`auth.<name>`): this answer's, else what was kept before.
         let names: &[String] = match &conn.desc.auth {
             Auth::Oauth { provider, .. } => &provider.keep,

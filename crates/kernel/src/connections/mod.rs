@@ -4,7 +4,7 @@
 //!
 //! * **A connection** is an address, a way to authenticate (none, a header holding a secret, basic, bearer, a request
 //!   signed with a stated scheme, or tokens a person's sign-in gave), default headers, the hosts it may reach, time and
-//!   size limits, and who may use it (roles, apps). Its secrets are sealed with the server's key and never read back.
+//!   size limits, and who may use it (roles, apps). Its secrets are kept in the vault and never read back.
 //! * **Operations** are named calls on it: method, path, query, headers, a body or form, each a template over
 //!   `inputs` and `secret`; where the results and the error are in the answer; which statuses mean "later"; the header
 //!   that carries an idempotency key.
@@ -1260,7 +1260,7 @@ pub(crate) async fn lock_secrets(tx: &mut Tx, k: &Kernel, tenant: Uuid, id: Uuid
 
 /// Where a connection's secrets are kept: the platform's, in the workspace, sent only to the hosts it reaches.
 pub(crate) fn place(tenant: Uuid, id: Uuid) -> Place {
-    Place::platform(Store::Conn, tenant, id, sealed_label(tenant, id))
+    Place::platform(Store::Conn, tenant, id)
 }
 
 /// The hosts a description reaches (its base's and those it adds): what its secrets may be sent to.
@@ -1273,17 +1273,15 @@ pub(crate) fn reach_hosts(desc: &Description) -> Vec<String> {
 }
 
 /// Whether secrets kept under `rule` may go where `desc` reaches: the hosts they were given for, exactly. Changing them
-/// asks for the secrets again. Those not in the vault yet (no rule) go where the description reaches, as before.
-pub(crate) fn given_for(rule: Option<&crate::vault::Rule>, desc: &Description) -> bool {
+/// asks for the secrets again.
+pub(crate) fn given_for(rule: &crate::vault::Rule, desc: &Description) -> bool {
     let set = |hosts: &[String]| hosts.iter().map(|h| h.to_ascii_lowercase()).collect::<std::collections::BTreeSet<_>>();
-    rule.is_none_or(|r| set(&r.hosts) == set(&reach_hosts(desc)))
+    set(&rule.hosts) == set(&reach_hosts(desc))
 }
 
 /// Keeps `secrets` as the connection's in `tx`, bound to the hosts its stored description reaches: what its row holds.
 async fn keep_secrets(tx: &mut Tx, k: &Kernel, tenant: Uuid, id: Uuid, desc: &Description, secrets: &BTreeMap<String, String>) -> Result<String> {
-    if !k.kept_here() {
-        return Err(Error::Unavailable("connection secrets need the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
-    }
+    k.vault_open("a connection's secrets")?;
     let hosts = reach_hosts(desc).into_iter().map(|h| h.to_ascii_lowercase()).collect();
     k.keep(tx, &place(tenant, id).sent_to(hosts), &serde_json::to_string(secrets).map_err(Error::internal)?).await
 }
@@ -1316,10 +1314,6 @@ pub(crate) async fn store_secrets(
 /// dropped by an administrator's save.
 fn kept_by_platform(name: &str) -> bool {
     name.starts_with('_')
-}
-
-pub(crate) fn sealed_label(tenant: Uuid, id: Uuid) -> String {
-    format!("conn:{tenant}:{id}")
 }
 
 /// A connection, loaded for the length of a call: its secrets open.
@@ -1377,7 +1371,7 @@ impl Kernel {
         let secrets = match sealed {
             Some(s) => {
                 let (open, rule) = self.kept_with_rule(tx, &place(tenant, id), &s).await?;
-                if given_for(rule.as_ref(), &desc) { serde_json::from_str(&open).map_err(Error::internal)? } else { BTreeMap::new() }
+                if given_for(&rule, &desc) { serde_json::from_str(&open).map_err(Error::internal)? } else { BTreeMap::new() }
             }
             None => BTreeMap::new(),
         };
@@ -2674,10 +2668,9 @@ mod tests {
         };
         let rule = |hosts: &[&str]| crate::vault::Rule { hosts: hosts.iter().map(|h| h.to_string()).collect(), ..Default::default() };
         let acme = desc("https://api.acme.test/v1", &["files.acme.test"]);
-        assert!(super::given_for(None, &acme), "not in the vault yet: as before");
-        assert!(super::given_for(Some(&rule(&["files.acme.test", "API.acme.test"])), &acme), "the same hosts, any order or case");
-        assert!(!super::given_for(Some(&rule(&["api.acme.test"])), &acme), "a host added: asked again");
-        assert!(!super::given_for(Some(&rule(&["api.acme.test", "files.acme.test"])), &desc("https://api.other.test", &["files.acme.test"])), "moved");
+        assert!(super::given_for(&rule(&["files.acme.test", "API.acme.test"]), &acme), "the same hosts, any order or case");
+        assert!(!super::given_for(&rule(&["api.acme.test"]), &acme), "a host added: asked again");
+        assert!(!super::given_for(&rule(&["api.acme.test", "files.acme.test"]), &desc("https://api.other.test", &["files.acme.test"])), "moved");
     }
 
     use super::*;

@@ -157,11 +157,7 @@ async fn scenario() {
     ] {
         set(&st, key, Some(&value)).await;
     }
-    let secrets = vec![
-        ("DATABASE_URL", url()),
-        ("JWT_SECRET", "aG9zdHMtaXQtand0LXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM=".to_string()),
-        ("FERRUM_SECRET_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=".to_string()),
-    ];
+    let secrets = vec![("DATABASE_URL", url()), ("JWT_SECRET", "aG9zdHMtaXQtand0LXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM=".to_string())];
 
     // Another host, from the table, with no certificate checked: not used, never connected to; said in the log and by the
     // doctor. The server starts on DATABASE_URL alone, as without the setting.

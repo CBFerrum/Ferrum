@@ -32,8 +32,6 @@ Written by `python3 scripts/settings.py --write`, which refuses to add to it: it
 | `FERRUM_MOVE_SOURCE_S3_REGION` | an input of `ferrum task move_workspace`, given in its environment as it runs |
 | `FERRUM_MOVE_SOURCE_SECRET_KEYS` | an input of `ferrum task move_workspace`, given in its environment as it runs |
 | `FERRUM_PT_SIGNING_KEY` | `pt`'s own secret, kept in its own vault: it adopts the environment's while it is set, until its release stops reading it |
-| `FERRUM_RETIRED_SECRET_KEYS` | the old master key's retired ones, until it retires |
-| `FERRUM_SECRET_KEY` | the old master key, until it retires (docs/operations.md, Retiring the old key) |
 | `FERRUM_SECRET_KEY_COMMAND` | a command line, never read from the database, where whoever writes a row would run a program |
 | `FERRUM_TEST_RUN_DIR` | a debug build only: where a test puts the files of /run/ferrum (a release build never reads it) |
 | `HOME` | PostgreSQL's driver and the object store's client: where a user's own files would be (~/.pgpass, ~/.aws) |

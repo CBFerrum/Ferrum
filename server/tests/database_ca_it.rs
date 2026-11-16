@@ -32,7 +32,6 @@ fn start(url: &str, run_dir: &std::path::Path, port: u16, files: &std::path::Pat
             ("FERRUM_FILES_DIR", files.to_string_lossy().into_owned()),
             ("LOG_LEVEL", "warn".to_string()),
             ("JWT_SECRET", "Y2EtaXQtand0LXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY=".to_string()),
-            ("FERRUM_SECRET_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=".to_string()),
         ])
         .stdout(out.try_clone().unwrap())
         .stderr(out)

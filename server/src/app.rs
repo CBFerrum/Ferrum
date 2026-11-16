@@ -243,9 +243,8 @@ impl Hooks for App {
         // the platform's secrets the configuration does not set, read from it into the places the environment's would be
         // (crate::secrets): the mail password, the audit sink's key, the object store's and the model provider's keys.
         let transit = kms_transit(&settings)?;
-        let vault_opens = crate::tasks::open_vault(&db, &settings, &ctx.config.database.uri, transit.as_ref()).await?;
-        // The old keys, given as ciphertext, are unwrapped only at an address the environment gives beside them.
-        let transit = kms_transit_of_the_environment(&settings)?;
+        let vault_opens =
+            crate::tasks::open_vault(&db, &settings, &ctx.config.database.uri, transit.as_ref(), ctx.environment == Environment::Production).await?;
         let mut hooks = HookRegistry::default();
         let platform = hooks.platform_vault();
         let revealed = crate::secrets::at_start(&db, &hooks, &platform, &mut ctx.config, &snapshot).await.map_err(Error::Message)?;
@@ -291,12 +290,6 @@ impl Hooks for App {
             .map_err(Error::Message)?;
         let mailer: Option<Arc<dyn Mailer>> = ctx.mailer.clone().map(|sender| Arc::new(LocoMailer { sender, from: None, smtp }) as Arc<dyn Mailer>);
         let jwt = ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).ok_or_else(|| Error::Message("auth.jwt is not configured".into()))?;
-        let (secret_key, derived) = secret_key(&settings, transit.as_ref(), &jwt.secret, &ctx.environment, vault_opens).await?;
-        // Development's key from before the vault: what it sealed still opens (and is adopted into the vault).
-        let mut retired: Vec<_> = derived.into_iter().collect();
-        for k in settings.retired_secret_keys.split(',').map(str::trim).filter(|k| !k.is_empty()) {
-            retired.push(ferrum_kernel::kms::resolve(k, transit.as_ref()).await.map_err(|e| Error::Message(format!("settings.retired_secret_keys: {e}")))?);
-        }
         let processes = crate::process::configure(&mut hooks).await.map_err(Error::Message)?;
         if kernel_live.signup.open && mailer.is_none() {
             return Err(Error::Message("FERRUM_SIGNUP=open needs mail (settings.mailer): sign-up proves addresses with emailed codes".into()));
@@ -310,7 +303,6 @@ impl Hooks for App {
             KernelSettings {
                 webhooks_allow_private: settings.webhooks_allow_private,
                 sso_allow_private: settings.sso_allow_private,
-                old_key: ferrum_kernel::OldKey::configured(secret_key, retired),
                 public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
                 accounts_host: crate::shell::accounts_host(&settings),
                 hooks_url: crate::shell::hooks_url(&settings, &ctx.config.server.host),
@@ -351,12 +343,6 @@ impl Hooks for App {
             return Err(Error::Message(format!("FERRUM_SIGNUP_PACKAGES: {e}")));
         }
         crate::process::ready(&kernel, &platform);
-        match kernel.reseal_secrets().await {
-            Ok(done) if done.unopened > 0 => tracing::error!(moved = done.moved, unopened = done.unopened, "secrets remain that no configured key opens"),
-            Ok(done) if done.moved > 0 => tracing::info!(moved = done.moved, "moved stored secrets to the current key"),
-            Ok(_) => {}
-            Err(e) => tracing::warn!("resealing stored secrets: {e}"),
-        }
         // Loco signs with the base64-decoded secret: reject anything that is not valid base64 at boot.
         if !jwt.secret.trim().is_empty() {
             if loco_rs::auth::jwt::JWT::new(&jwt.secret).generate_token(60, "probe".into(), serde_json::Map::new()).is_err() {
@@ -789,7 +775,6 @@ impl Hooks for App {
         #[cfg(feature = "process")]
         tasks.register(crate::tasks::LogicReplay);
         tasks.register(crate::tasks::Doctor);
-        tasks.register(crate::tasks::KmsWrap);
         crate::tasks::register_vault(tasks);
         tasks.register(crate::tasks::AccountState);
         tasks.register(crate::tasks::SetPlan);
@@ -1202,47 +1187,13 @@ pub fn kms_transit(settings: &Settings) -> Result<Option<ferrum_kernel::kms::Tra
 }
 
 /// [`kms_transit`] where the environment itself gives its address (`FERRUM_KMS_TRANSIT`), else none: what keys from the
-/// environment given as ciphertext are unwrapped with, and the old key wrapped (the old keys, a move's source keys).
-/// An address from the database is never sent such a key, nor a token to unwrap one: a row there would choose where.
+/// environment given as ciphertext are unwrapped with (a move's source keys). An address from the database is never sent
+/// such a key, nor a token to unwrap one: a row there would choose where.
 pub fn kms_transit_of_the_environment(settings: &Settings) -> Result<Option<ferrum_kernel::kms::Transit>> {
     if std::env::var("FERRUM_KMS_TRANSIT").ok().is_none_or(|v| v.trim().is_empty()) {
         return Ok(None);
     }
     kms_transit(settings)
-}
-
-/// The old master key (`FERRUM_SECRET_KEY`): printed by `FERRUM_SECRET_KEY_COMMAND`, or configured (itself or as
-/// Transit ciphertext). Where the vault opens it is not needed: what it sealed is the vault's, and what it made before
-/// is checked with the copy the kernel adopts into the vault (crates/kernel/src/vault/keyed.rs). Where the vault cannot
-/// open, production requires it and development derives one from the JWT secret, as before. With the vault open,
-/// development's derived key is the second value: given as a retired key, so that what it sealed still opens.
-async fn secret_key(
-    settings: &Settings,
-    transit: Option<&ferrum_kernel::kms::Transit>,
-    jwt_secret: &str,
-    env: &Environment,
-    vault_opens: bool,
-) -> Result<(Option<ferrum_kernel::secret::SecretKey>, Option<ferrum_kernel::secret::SecretKey>)> {
-    if !settings.secret_key_command.trim().is_empty() {
-        return ferrum_kernel::kms::from_command(&settings.secret_key_command).await.map(|k| (Some(k), None)).map_err(|e| Error::Message(e.to_string()));
-    }
-    if !settings.secret_key.trim().is_empty() {
-        return ferrum_kernel::kms::resolve(&settings.secret_key, transit)
-            .await
-            .map(|k| (Some(k), None))
-            .map_err(|e| Error::Message(format!("settings.secret_key: {e}")));
-    }
-    if *env == Environment::Production {
-        if vault_opens {
-            return Ok((None, None));
-        }
-        return Err(Error::Message(
-            "FERRUM_SECRET_KEY (or FERRUM_SECRET_KEY_COMMAND) is required in production while the vault cannot open (docs/operations.md, \"The vault\")".into(),
-        ));
-    }
-    use sha2::Digest;
-    let derived = ferrum_kernel::secret::SecretKey::new(sha2::Sha256::digest(format!("ferrum-secret-fields:{jwt_secret}")).into());
-    Ok(if vault_opens { (None, Some(derived)) } else { (Some(derived), None) })
 }
 
 #[cfg(test)]

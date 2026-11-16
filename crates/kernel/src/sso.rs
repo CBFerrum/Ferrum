@@ -289,23 +289,11 @@ impl SpNames {
     }
 }
 
-pub(crate) fn saml_enc_label(tenant: Uuid, id: Uuid) -> String {
-    format!("saml-enc|{tenant}|{id}")
-}
-
 /// How long a replaced encryption key is still published and accepted.
 const ENC_KEY_OVERLAP_DAYS: i32 = 30;
 
 fn admin_only(ctx: &Ctx) -> Result<()> {
     if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("single sign-on is set up by administrators".into())) }
-}
-
-pub(crate) fn sealed_label(tenant: Uuid, id: Uuid) -> String {
-    format!("sso|{tenant}|{id}")
-}
-
-pub(crate) fn saml_key_label(tenant: Uuid) -> String {
-    format!("saml-sp|{tenant}")
 }
 
 /// An email domain as listed: lower case, no `@`.
@@ -428,7 +416,7 @@ impl Kernel {
     }
 
     /// The workspace's keys assertions may be encrypted to, the current one first, made the first time
-    /// wanted (one current key at most, whichever replica makes it), each sealed by the server key.
+    /// wanted (one current key at most, whichever replica makes it), each kept in the vault.
     pub(crate) async fn saml_enc_keys(&self, tenant: Uuid) -> Result<Vec<ferrum_saml::SpKey>> {
         type Row = (Uuid, String, String, bool);
         let read = || async {
@@ -461,9 +449,7 @@ impl Kernel {
     /// accepted for 30 days more, else none is replaced (and a key made at the same time elsewhere
     /// wins). Two replacements at once: one fails, on the one current key the database allows.
     async fn add_saml_enc_key(&self, tenant: Uuid, replace: bool) -> Result<Uuid> {
-        if !self.kept_here() {
-            return Err(Error::Unavailable("SAML needs the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
-        }
+        self.vault_open("SAML")?;
         let made = tokio::task::spawn_blocking(move || ferrum_saml::new_sp_key(&format!("Ferrum {tenant} encryption")))
             .await
             .map_err(|e| Error::Unavailable(format!("making the workspace's SAML key stopped: {e}")))?
@@ -526,7 +512,7 @@ impl Kernel {
     }
 
     /// The workspace's own SAML key, made the first time it is wanted (by whichever replica gets
-    /// there first), its private half sealed by the server key.
+    /// there first), its private half kept in the vault.
     pub(crate) async fn saml_key(&self, tenant: Uuid) -> Result<ferrum_saml::SpKey> {
         let place = Place::saml_sp(tenant);
         let read = || async {
@@ -539,9 +525,7 @@ impl Kernel {
         let row = match read().await? {
             Some(row) => row,
             None => {
-                if !self.kept_here() {
-                    return Err(Error::Unavailable("SAML needs the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
-                }
+                self.vault_open("SAML")?;
                 let made = tokio::task::spawn_blocking(move || ferrum_saml::new_sp_key(&format!("Ferrum {tenant}")))
                     .await
                     .map_err(|e| Error::Unavailable(format!("making the workspace's SAML key stopped: {e}")))?
@@ -731,9 +715,7 @@ impl Kernel {
                 (idp.entity_id, String::new(), Some(source.to_string()))
             }
         };
-        if !self.kept_here() {
-            return Err(Error::Unavailable("single sign-on needs the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
-        }
+        self.vault_open("single sign-on")?;
         let given: Option<Option<&str>> = match input.client_secret.as_deref().map(str::trim) {
             _ if input.protocol == Protocol::Saml => Some(None),
             Some("") => Some(None),

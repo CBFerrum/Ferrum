@@ -2,11 +2,6 @@
 //! the vault (crate::vault::kept), and bound to their tenant, entity, record and field (so a value cannot be moved to
 //! another record). Documents, lists, events, the audit trail and exports only ever show whether one is set (`true`); an
 //! app reads the value of its own with its vault handle ([`crate::vault::Vault::field`]).
-//!
-//! The old master key (`FERRUM_SECRET_KEY`) still seals each value beside the vault while it is configured, for the
-//! previous build. Rotating it: set the new key as `FERRUM_SECRET_KEY` and the old one in `FERRUM_RETIRED_SECRET_KEYS`.
-//! Values open with either, and [`Kernel::reseal_secrets`] moves them all to the new key. Losing a key loses what only it
-//! sealed: docs/operations.md says what that means.
 
 use crate::db::Tx;
 use crate::error::{Error, Result};
@@ -24,7 +19,8 @@ use zeroize::Zeroizing;
 /// Longest secret accepted (certificates and service-account JSON fit).
 pub const MAX_SECRET: usize = 16 * 1024;
 
-/// The encryption key and a short id naming it (stored with each value, for rotation).
+/// A key of 32 bytes: what the platform derives from the vault for what it keys or seals outside it
+/// (crate::vault::keyed), and what a key-management service or a move's transfer gives back.
 #[derive(Clone)]
 pub struct SecretKey {
     key: [u8; 32],
@@ -103,25 +99,6 @@ impl SecretKey {
     }
 }
 
-pub(crate) fn aad(tenant: Uuid, entity: &str, record: Uuid, field: &str) -> String {
-    format!("{tenant}/{entity}/{record}/{field}")
-}
-
-/// How a sealed webhook secret is told from one stored before they were sealed.
-pub(crate) const SEALED_WEBHOOK: &str = "sealed:";
-
-pub(crate) fn webhook_label(tenant: Uuid, webhook: Uuid) -> String {
-    format!("{tenant}/webhook/{webhook}")
-}
-
-/// What [`Kernel::reseal_secrets`] did.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Resealed {
-    pub moved: u64,
-    /// Values none of the configured keys opens. Above zero, keep the retired keys.
-    pub unopened: u64,
-}
-
 /// A change requested in input: set (`Some`) or clear (`None`).
 pub type SecretChange = (String, Option<String>);
 
@@ -158,12 +135,8 @@ impl Kernel {
             let place = crate::vault::kept::Place::field(ctx.tenant, &self.field_owner(entity, field).await?, entity, record, field);
             match value {
                 Some(plain) => {
-                    if !self.kept_here() {
-                        return Err(Error::Unavailable("secret fields need the vault or a configured secret key (FERRUM_SECRET_KEY)".into()));
-                    }
                     let sealed = self.keep(tx, &place, plain).await?;
-                    // The key that sealed it beside the vault, or the vault's mark where the vault alone keeps it.
-                    let key_id = self.env_key().map_or(crate::vault::kept::MARKER, |k| k.id.as_str());
+                    let key_id = crate::vault::kept::MARKER;
                     sqlx::query(
                         "insert into record_secret (tenant_id, entity, record_id, field, sealed, key_id, updated_by) values ($1, $2, $3, $4, $5, $6, $7) \
                          on conflict (tenant_id, entity, record_id, field) do update set sealed = excluded.sealed, key_id = excluded.key_id, \
@@ -214,74 +187,6 @@ impl Kernel {
         Ok(())
     }
 
-    /// A secret field's value, whichever app declares the field: what apps read before each read its own through its
-    /// vault handle. It still works in this release, and notes the code that called it (`ferrum task legacy_key`, the
-    /// doctor); it goes in the release after. Never return a value to a client or put it in a document, event or log.
-    #[deprecated(note = "read your app's own secret fields with its vault handle: `Vault::field` (docs/plan/stateless.md, D5)")]
-    #[track_caller]
-    pub fn secret<'a>(
-        &'a self,
-        tx: &'a mut Tx,
-        tenant: Uuid,
-        entity: &'a str,
-        record: Uuid,
-        field: &'a str,
-    ) -> impl std::future::Future<Output = Result<Option<String>>> + Send + 'a {
-        let caller = caller_of(std::panic::Location::caller());
-        async move {
-            self.note_old_key_by("reader:Kernel::secret", &caller);
-            let owner = self.field_owner(entity, field).await?;
-            self.field_value(tx, tenant, entity, record, field, &owner).await
-        }
-    }
-
-    /// Every old key: the environment's (`FERRUM_SECRET_KEY`, then those being rotated out), then those adopted into the
-    /// vault, which keep opening what they sealed once the environment no longer has them (crate::vault::keyed).
-    pub(crate) fn secret_keys(&self) -> impl Iterator<Item = &SecretKey> {
-        self.old_keys.iter()
-    }
-
-    /// Opens what was sealed with the server's key or one being rotated out. AES-GCM tells the right
-    /// key from a wrong one, so a value need not say which sealed it.
-    pub(crate) fn open_sealed(&self, aad: &str, sealed: &str) -> Result<String> {
-        let mut last = Error::Unavailable("nothing can be opened without the server's secret key (FERRUM_SECRET_KEY)".into());
-        for key in self.secret_keys() {
-            match key.open(aad, sealed) {
-                Ok(plain) => return Ok(plain),
-                Err(e) => last = e,
-            }
-        }
-        Err(last)
-    }
-
-    /// `sealed` under the current key, when another sealed it; `None` when it is current already.
-    /// A value no key opens is counted and left as it is: it may yet open with a key configured later.
-    fn moved(&self, aad: &str, sealed: &str, unopened: &mut u64) -> Result<Option<String>> {
-        let Some(current) = self.env_key() else { return Ok(None) };
-        // Only the vault keeps it: nothing here to seal again.
-        if sealed == crate::vault::kept::MARKER || current.open(aad, sealed).is_ok() {
-            return Ok(None);
-        }
-        match self.open_sealed(aad, sealed) {
-            Ok(plain) => current.seal(aad, &plain).map(Some),
-            Err(_) => {
-                *unopened += 1;
-                Ok(None)
-            }
-        }
-    }
-
-    /// What is stored for a webhook's signing secret, with nothing kept in the vault: sealed with the old key when the
-    /// server has one; else the vault's mark with the vault open (a sandbox's, which the vault makes by its rule), or the
-    /// secret itself with neither, as before the vault. [`Kernel::keep_webhook_secret`] is what keeps a new one.
-    pub fn seal_webhook_secret(&self, tenant: Uuid, webhook: Uuid, secret: &str) -> Result<String> {
-        match self.env_key() {
-            Some(key) => Ok(format!("{SEALED_WEBHOOK}{}", key.seal(&webhook_label(tenant, webhook), secret)?)),
-            None if self.db.vault.installation().is_ok() => Ok(crate::vault::kept::Store::Webhook.marker().to_string()),
-            None => Ok(secret.to_string()),
-        }
-    }
-
     /// Keeps a webhook's new signing secret in the vault (the platform's, in the workspace), in the transaction that
     /// stores the webhook, and returns what its row holds (docs/plan/stateless.md, D5).
     pub async fn keep_webhook_secret(&self, tx: &mut Tx, tenant: Uuid, webhook: Uuid, secret: &str) -> Result<String> {
@@ -293,204 +198,12 @@ impl Kernel {
         crate::vault::kept::forget(tx, &crate::vault::kept::Place::webhook(tenant, webhook)).await
     }
 
-    /// A webhook's signing secret, from what its row holds: the vault's, or the row's (sealed, or plain from before
-    /// they were sealed) until the move has taken it.
+    /// A webhook's signing secret, from the vault (its row holds the marker).
     pub(crate) async fn webhook_secret(&self, tenant: Uuid, webhook: Uuid, stored: &str) -> Result<Zeroizing<String>> {
         let mut tx = self.db.system_tx().await?;
         let secret = self.kept(&mut tx, &crate::vault::kept::Place::webhook(tenant, webhook), stored).await?;
         tx.commit().await?;
         Ok(secret)
-    }
-
-    /// Moves everything sealed with a retired key to the current one, and seals webhook secrets
-    /// stored in the clear. Safe to repeat and beside traffic: a value changed meanwhile is left for
-    /// the next run. Plugins' settings are their host's (`PluginHost::seal_stored`).
-    pub async fn reseal_secrets(&self) -> Result<Resealed> {
-        let mut done = Resealed::default();
-        let Some(current) = self.env_key() else { return Ok(done) };
-        let mut tx = self.db.system_tx().await?;
-        let hooks: Vec<(Uuid, Uuid, String)> = sqlx::query_as("select tenant_id, id, secret from webhook").fetch_all(&mut *tx).await?;
-        for (tenant, id, stored) in hooks {
-            let label = webhook_label(tenant, id);
-            let plain = match stored.strip_prefix(SEALED_WEBHOOK) {
-                Some(sealed) => self.moved(&label, sealed, &mut done.unopened)?.map(|s| format!("{SEALED_WEBHOOK}{s}")),
-                None => Some(format!("{SEALED_WEBHOOK}{}", current.seal(&label, &stored)?)),
-            };
-            if let Some(new) = plain {
-                done.moved += sqlx::query("update webhook set secret = $3 where tenant_id = $1 and id = $2 and secret = $4")
-                    .bind(tenant)
-                    .bind(id)
-                    .bind(new)
-                    .bind(&stored)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected();
-            }
-        }
-        if self.secret_keys().any(|k| k.id != current.id) {
-            let fields: Vec<(Uuid, String, Uuid, String, String)> =
-                sqlx::query_as("select tenant_id, entity, record_id, field, sealed from record_secret where key_id <> $1")
-                    .bind(&current.id)
-                    .fetch_all(&mut *tx)
-                    .await?;
-            for (tenant, entity, record, field, sealed) in fields {
-                let Some(new) = self.moved(&aad(tenant, &entity, record, &field), &sealed, &mut done.unopened)? else { continue };
-                done.moved += sqlx::query(
-                    "update record_secret set sealed = $5, key_id = $6 where tenant_id = $1 and entity = $2 and record_id = $3 and field = $4 and sealed = $7",
-                )
-                .bind(tenant)
-                .bind(&entity)
-                .bind(record)
-                .bind(&field)
-                .bind(new)
-                .bind(&current.id)
-                .bind(&sealed)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
-            }
-            let people: Vec<(Uuid, Uuid, String)> =
-                sqlx::query_as("select tenant_id, id, totp_secret from app_user where totp_secret is not null").fetch_all(&mut *tx).await?;
-            for (tenant, user, sealed) in people {
-                let Some(new) = self.moved(&crate::twofactor::sealed_label(tenant, user), &sealed, &mut done.unopened)? else { continue };
-                done.moved += sqlx::query("update app_user set totp_secret = $3 where tenant_id = $1 and id = $2 and totp_secret = $4")
-                    .bind(tenant)
-                    .bind(user)
-                    .bind(new)
-                    .bind(&sealed)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected();
-            }
-            let connections: Vec<(Uuid, Uuid, String)> =
-                sqlx::query_as("select tenant_id, id, sealed from connection where sealed is not null").fetch_all(&mut *tx).await?;
-            for (tenant, id, sealed) in connections {
-                let Some(new) = self.moved(&crate::connect::sealed_label(tenant, id), &sealed, &mut done.unopened)? else { continue };
-                done.moved += sqlx::query("update connection set sealed = $3 where tenant_id = $1 and id = $2 and sealed = $4")
-                    .bind(tenant)
-                    .bind(id)
-                    .bind(new)
-                    .bind(&sealed)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected();
-            }
-            let channels: Vec<(Uuid, Uuid, String)> =
-                sqlx::query_as("select tenant_id, id, sealed from message_channel where sealed is not null").fetch_all(&mut *tx).await?;
-            for (tenant, id, sealed) in channels {
-                let Some(new) = self.moved(&crate::messages::sealed_label(tenant, id), &sealed, &mut done.unopened)? else { continue };
-                done.moved += sqlx::query("update message_channel set sealed = $3 where tenant_id = $1 and id = $2 and sealed = $4")
-                    .bind(tenant)
-                    .bind(id)
-                    .bind(new)
-                    .bind(&sealed)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected();
-            }
-            let conns: Vec<(Uuid, Uuid, String)> =
-                sqlx::query_as("select tenant_id, id, sealed from conn where sealed is not null").fetch_all(&mut *tx).await?;
-            for (tenant, id, sealed) in conns {
-                let Some(new) = self.moved(&crate::connections::sealed_label(tenant, id), &sealed, &mut done.unopened)? else { continue };
-                done.moved += sqlx::query("update conn set sealed = $3 where tenant_id = $1 and id = $2 and sealed = $4")
-                    .bind(tenant)
-                    .bind(id)
-                    .bind(new)
-                    .bind(&sealed)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected();
-            }
-            let tokens: Vec<(Uuid, Uuid, Uuid, String)> =
-                sqlx::query_as("select tenant_id, conn_id, user_id, sealed from conn_token").fetch_all(&mut *tx).await?;
-            for (tenant, conn, user, sealed) in tokens {
-                let Some(new) = self.moved(&crate::connections::oauth::token_label(tenant, conn, user), &sealed, &mut done.unopened)? else { continue };
-                done.moved += sqlx::query("update conn_token set sealed = $4 where tenant_id = $1 and conn_id = $2 and user_id = $3 and sealed = $5")
-                    .bind(tenant)
-                    .bind(conn)
-                    .bind(user)
-                    .bind(new)
-                    .bind(&sealed)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected();
-            }
-            let providers: Vec<(Uuid, Uuid, String)> =
-                sqlx::query_as("select tenant_id, id, client_secret from sso_provider where client_secret is not null").fetch_all(&mut *tx).await?;
-            for (tenant, id, sealed) in providers {
-                let Some(new) = self.moved(&crate::sso::sealed_label(tenant, id), &sealed, &mut done.unopened)? else { continue };
-                done.moved += sqlx::query("update sso_provider set client_secret = $3 where tenant_id = $1 and id = $2 and client_secret = $4")
-                    .bind(tenant)
-                    .bind(id)
-                    .bind(new)
-                    .bind(&sealed)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected();
-            }
-            let saml: Vec<(Uuid, String)> = sqlx::query_as("select tenant_id, private_key from saml_sp_key").fetch_all(&mut *tx).await?;
-            for (tenant, sealed) in saml {
-                let Some(new) = self.moved(&crate::sso::saml_key_label(tenant), &sealed, &mut done.unopened)? else { continue };
-                done.moved += sqlx::query("update saml_sp_key set private_key = $2 where tenant_id = $1 and private_key = $3")
-                    .bind(tenant)
-                    .bind(new)
-                    .bind(&sealed)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected();
-            }
-            let saml: Vec<(Uuid, Uuid, String)> = sqlx::query_as("select tenant_id, id, private_key from saml_enc_key").fetch_all(&mut *tx).await?;
-            for (tenant, id, sealed) in saml {
-                let Some(new) = self.moved(&crate::sso::saml_enc_label(tenant, id), &sealed, &mut done.unopened)? else { continue };
-                done.moved += sqlx::query("update saml_enc_key set private_key = $3 where tenant_id = $1 and id = $2 and private_key = $4")
-                    .bind(tenant)
-                    .bind(id)
-                    .bind(new)
-                    .bind(&sealed)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected();
-            }
-            // A pending approval's secret action parameters (BD-34), each sealed apart.
-            let waiting: Vec<(Uuid, Uuid, serde_json::Value)> =
-                sqlx::query_as("select tenant_id, id, sealed from approval_request where status = 'pending' and sealed is not null and sealed <> '{}'::jsonb")
-                    .fetch_all(&mut *tx)
-                    .await?;
-            for (tenant, id, sealed) in waiting {
-                let mut now = sealed.clone();
-                let mut any = false;
-                for (name, value) in now.as_object_mut().into_iter().flatten() {
-                    let Some(old) = value.as_str() else { continue };
-                    if let Some(new) = self.moved(&crate::approvals::sealed_label(tenant, id, name), old, &mut done.unopened)? {
-                        *value = serde_json::Value::String(new);
-                        any = true;
-                    }
-                }
-                if any {
-                    done.moved += sqlx::query("update approval_request set sealed = $3 where tenant_id = $1 and id = $2 and sealed = $4")
-                        .bind(tenant)
-                        .bind(id)
-                        .bind(&now)
-                        .bind(&sealed)
-                        .execute(&mut *tx)
-                        .await?
-                        .rows_affected();
-                }
-            }
-            let server: Vec<(String, String)> = sqlx::query_as("select name, sealed from server_key").fetch_all(&mut *tx).await?;
-            for (name, sealed) in server {
-                let Some(new) = self.moved(crate::webpush::VAPID_LABEL, &sealed, &mut done.unopened)? else { continue };
-                done.moved += sqlx::query("update server_key set sealed = $2 where name = $1 and sealed = $3")
-                    .bind(name)
-                    .bind(new)
-                    .bind(&sealed)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected();
-            }
-        }
-        tx.commit().await?;
-        Ok(done)
     }
 }
 
@@ -521,116 +234,5 @@ mod tests {
         assert_eq!(changes, vec![("pw".to_string(), Some("s3cret".to_string())), ("pw".to_string(), None)]);
         assert!(SecretKey::from_base64("short").is_err());
         assert_eq!(SecretKey::from_base64(&B64.encode([1u8; 32])).unwrap().id.len(), 8);
-    }
-}
-
-/// Where a call came from, as `ferrum task legacy_key` names it: an app's repository and file (a dependency checked out
-/// by cargo), or the path in this workspace.
-pub(crate) fn caller_of(at: &std::panic::Location<'_>) -> String {
-    let file = at.file().replace('\\', "/");
-    let named = match file.split_once("/checkouts/") {
-        Some((_, rest)) => {
-            let mut parts = rest.splitn(3, '/');
-            let repo = parts.next().unwrap_or_default();
-            // `<repository>-<16 hex>/<revision>/<path>`
-            let repo = repo.rsplit_once('-').filter(|(_, h)| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit())).map_or(repo, |(r, _)| r);
-            format!("{repo} {}", parts.nth(1).unwrap_or_default())
-        }
-        None => file,
-    };
-    format!("{named}:{}", at.line()).chars().take(300).collect()
-}
-
-/// Sealed values of one kind that no configured key opens ([`Kernel::unopened_secrets`]): never the values.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct Unopened {
-    /// `Entity.field` for secret fields, else where it is kept (`webhook.secret`).
-    pub what: String,
-    pub count: u64,
-    /// A few of the records, by id.
-    pub examples: Vec<String>,
-}
-
-/// How many values outside secret fields one check tries to open, at most (`Unopened`; `complete` says when it stopped).
-pub const UNOPENED_BUDGET: i64 = 20_000;
-
-/// Where values are sealed besides secret fields: the query gives each row's ids, a name (an approval's parameter) and
-/// the sealed value; the label is what it was sealed with (as `reseal_secrets` has them).
-type Store = (&'static str, &'static str, fn(&[Uuid], &str) -> String);
-
-const STORES: &[Store] = &[
-    ("webhook.secret", "select array[tenant_id, id], '', substr(secret, 8) from webhook where secret like 'sealed:%'", |i, _| webhook_label(i[0], i[1])),
-    ("app_user.totp_secret", "select array[tenant_id, id], '', totp_secret from app_user where totp_secret is not null", |i, _| {
-        crate::twofactor::sealed_label(i[0], i[1])
-    }),
-    ("connection.sealed", "select array[tenant_id, id], '', sealed from connection where sealed is not null", |i, _| crate::connect::sealed_label(i[0], i[1])),
-    ("message_channel.sealed", "select array[tenant_id, id], '', sealed from message_channel where sealed is not null", |i, _| {
-        crate::messages::sealed_label(i[0], i[1])
-    }),
-    ("conn.sealed", "select array[tenant_id, id], '', sealed from conn where sealed is not null", |i, _| crate::connections::sealed_label(i[0], i[1])),
-    ("conn_token.sealed", "select array[tenant_id, conn_id, user_id], '', sealed from conn_token", |i, _| {
-        crate::connections::oauth::token_label(i[0], i[1], i[2])
-    }),
-    ("sso_provider.client_secret", "select array[tenant_id, id], '', client_secret from sso_provider where client_secret is not null", |i, _| {
-        crate::sso::sealed_label(i[0], i[1])
-    }),
-    ("saml_sp_key.private_key", "select array[tenant_id], '', private_key from saml_sp_key", |i, _| crate::sso::saml_key_label(i[0])),
-    (
-        "approval_request.sealed",
-        "select array[tenant_id, id], p.key, p.value #>> '{}' from approval_request, jsonb_each(sealed) p \
-         where status = 'pending' and sealed is not null and jsonb_typeof(p.value) = 'string'",
-        |i, name| crate::approvals::sealed_label(i[0], i[1], name),
-    ),
-    ("server_key.sealed", "select array[]::uuid[], '', sealed from server_key", |_, _| crate::webpush::VAPID_LABEL.to_string()),
-    ("saml_enc_key.private_key", "select array[tenant_id, id], '', private_key from saml_enc_key", |i, _| crate::sso::saml_enc_label(i[0], i[1])),
-];
-
-impl Kernel {
-    /// Sealed values none of the configured keys (`FERRUM_SECRET_KEY`, `FERRUM_RETIRED_SECRET_KEYS`) opens, by where they
-    /// are kept, with a few record ids each and never a value: what a move without the source's keys breaks. Secret fields
-    /// are counted by the key that sealed them, in SQL, whole; the rest are opened, at most [`UNOPENED_BUDGET`] of them
-    /// (`false`: it stopped there). Reads only.
-    pub async fn unopened_secrets(&self) -> Result<(Vec<Unopened>, bool)> {
-        let ids: Vec<String> = self.secret_keys().map(|k| k.id.clone()).collect();
-        let mut tx = self.db.system_tx().await?;
-        sqlx::query("set transaction read only").execute(&mut *tx).await?;
-        let fields: Vec<(String, String, i64, Vec<String>)> = sqlx::query_as(
-            "select s.entity, s.field, count(*), (select array_agg(e.record_id::text) from (select record_id from record_secret x \
-               where x.entity = s.entity and x.field = s.field and not (x.key_id = any($1)) order by record_id limit 3) e) \
-             from record_secret s where not (s.key_id = any($1)) and s.sealed <> 'vault' group by s.entity, s.field order by 1, 2",
-        )
-        .bind(&ids)
-        .fetch_all(&mut *tx)
-        .await?;
-        let mut out: Vec<Unopened> =
-            fields.into_iter().map(|(entity, field, count, examples)| Unopened { what: format!("{entity}.{field}"), count: count as u64, examples }).collect();
-        let mut budget = UNOPENED_BUDGET;
-        let mut complete = true;
-        for (n, (what, sql, label)) in STORES.iter().enumerate() {
-            if budget == 0 {
-                // Stopped before the rest (whether they hold anything is not known).
-                complete = n == STORES.len();
-                break;
-            }
-            let rows: Vec<(Vec<Uuid>, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!("{sql} limit {}", budget + 1))).fetch_all(&mut *tx).await?;
-            let take = (rows.len() as i64).min(budget);
-            complete &= rows.len() as i64 == take;
-            budget -= take;
-            let mut found = Unopened { what: what.to_string(), count: 0, examples: Vec::new() };
-            for (ids, name, sealed) in rows.iter().take(take as usize) {
-                // What only the vault keeps is not the old store's to open.
-                if sealed != crate::vault::kept::MARKER && self.open_sealed(&label(ids, name), sealed).is_err() {
-                    found.count += 1;
-                    if found.examples.len() < 3 {
-                        found.examples.push(ids.last().map(Uuid::to_string).unwrap_or_default());
-                    }
-                }
-            }
-            if found.count > 0 {
-                out.push(found);
-            }
-        }
-        tx.commit().await?;
-        Ok((out, complete))
     }
 }

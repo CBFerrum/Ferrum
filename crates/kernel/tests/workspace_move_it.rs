@@ -1,8 +1,10 @@
 //! One workspace moving from one installation to another and back, against two real PostgreSQL databases
-//! (`FERRUM_TEST_DATABASE_URL` and `FERRUM_RESTORE_TEST_DATABASE_URL`, both reset first), each with its own secret key and
-//! its own files in a directory of its own. A crash between two steps is a run told to stop there.
+//! (`FERRUM_TEST_DATABASE_URL` and `FERRUM_RESTORE_TEST_DATABASE_URL`, both reset first), each with its own vault and its
+//! own files in a directory of its own: the workspace's vault goes with it through a transfer made at the source. A crash
+//! between two steps is a run told to stop there.
 
 use async_trait::async_trait;
+use ferrum_kernel::auth::SignIn;
 use ferrum_kernel::jobs::{Job, JobHandler, NewJob};
 use ferrum_kernel::outbox::{self, Event};
 use ferrum_kernel::secret::SecretKey;
@@ -86,14 +88,34 @@ fn catalog() -> Catalog {
     Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog")
 }
 
-async fn installation(url: &str, key: &SecretKey, seen: &Arc<Seen>, files: &Path) -> Arc<Kernel> {
+/// The vault of the database at `url`, opened as a server opens it.
+async fn open_vault(db: &Db, url: &str) {
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url.to_string(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(db, opener, false).await.expect("the vault");
+}
+
+/// The key of a transfer of workspace `tenant`'s vault, made at `k` (the source of a move).
+async fn transfer(k: &Kernel, tenant: Uuid) -> SecretKey {
+    SecretKey::from_base64(&ferrum_kernel::vault::transfer_out(k, tenant).await.unwrap()).unwrap()
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+async fn installation(url: &str, seen: &Arc<Seen>, files: &Path) -> Arc<Kernel> {
     let db = Db::connect(DbConfig { url: url.to_string(), max_connections: 8, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    open_vault(&db, url).await;
     let mut hooks = HookRegistry::default();
     hooks.add_event_sink(Arc::new(Sink(seen.clone())));
     hooks.add_job_handler(Arc::new(Counted(seen.clone())));
-    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(key.clone()), vec![]), ..Default::default() };
-    let k = Kernel::boot(db, catalog(), hooks, settings, None).await.expect("boot");
+    let k = Kernel::boot(db, catalog(), hooks, KernelSettings::default(), None).await.expect("boot");
     k.set_file_store(Arc::new(DirFiles(files.to_path_buf())));
     k.ensure_directory().await.unwrap();
     k
@@ -224,12 +246,11 @@ fn a_workspace_moves() {
 
 async fn a_workspace_moves_to_another_installation_and_back() {
     let (a_url, b_url) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
-    let (key_a, key_b) = (SecretKey::new([1; 32]), SecretKey::new([2; 32]));
     let dirs = std::env::temp_dir().join(format!("ferrum-move-{}", Uuid::now_v7()));
     let (dir_a, dir_b) = (dirs.join("a"), dirs.join("b"));
     let seen = Arc::new(Seen::default());
-    let a = installation(&a_url, &key_a, &seen, &dir_a).await;
-    let b = installation(&b_url, &key_b, &seen, &dir_b).await;
+    let a = installation(&a_url, &seen, &dir_a).await;
+    let b = installation(&b_url, &seen, &dir_b).await;
     // Without the grant on session_replication_role (D7): moves and copies run as the server's own role.
     for u in [&a_url, &b_url] {
         as_superuser(u, "do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
@@ -243,8 +264,8 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     }
     drain(&b).await;
 
-    // Acme, at A: records with lines, a file, sealed values, a legal hold, an erasure, an API key, a custom host, a
-    // member linked to a Ferrum account, an event handled and one waiting, and a queued job.
+    // Acme, at A: records with lines, a file, secrets in its vault (a webhook's, a second factor), a legal hold, an erasure,
+    // an API key, a custom host, a member linked to a Ferrum account, an event handled and one waiting, and a queued job.
     let acme = workspace(&a, "acme").await;
     let t = acme.tenant;
     let contact = a
@@ -262,21 +283,13 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let file = a.store_file(&acme, Some(("Contact", contact)), "notes.txt", "text/plain", b"kept with the workspace").await.unwrap();
     let (file_key,): (String,) = sql(&a, "select storage_key from file_object where tenant_id = $1", t).await.remove(0);
     assert!(file["id"].is_string());
-    let sealed = key_a.seal(&format!("{t}/Contact/{contact}/token"), "s3cret").unwrap();
     let hook = Uuid::now_v7();
     let mut tx = a.db.system_tx().await.unwrap();
-    sqlx::query("insert into record_secret (tenant_id, entity, record_id, field, sealed, key_id) values ($1, 'Contact', $2, 'token', $3, $4)")
-        .bind(t)
-        .bind(contact)
-        .bind(&sealed)
-        .bind(&key_a.id)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    let signing = a.keep_webhook_secret(&mut tx, t, hook, "whsec").await.unwrap();
     sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, $2, 'books', 'https://books.example/hook', $3, array['never'])")
         .bind(t)
         .bind(hook)
-        .bind(a.seal_webhook_secret(t, hook, "whsec").unwrap())
+        .bind(signing)
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -304,6 +317,11 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     sqlx::query("update app_user set identity_id = $2 where tenant_id = $1 and id = $3").bind(t).bind(ann).bind(acme.user).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     a.place_legal_hold(&acme, Some("subject@acme.test"), None, "Matter 12").await.unwrap();
+    // Pat's second factor, kept in the vault.
+    let pat = a.create_user(&acme, "pat@acme.test", "Pat", Some(PASSWORD), &[], false).await.unwrap();
+    let pat_ctx = a.load_ctx(t, pat, None, "it".into()).await.unwrap();
+    let totp = a.begin_two_factor(&pat_ctx).await.unwrap()["secret"].as_str().unwrap().to_string();
+    a.enable_two_factor(&pat_ctx, &ferrum_kernel::twofactor::code(&totp, now()).unwrap()).await.unwrap();
     a.create_user(&acme, "forget-me@acme.test", "Forget Me", Some(PASSWORD), &[], false).await.unwrap();
     a.erase_personal_data(&acme, "forget-me@acme.test", "Asked to be forgotten").await.unwrap();
     let (_, api_key) = a.create_api_key(&acme, acme.user, "integration", None, None).await.unwrap();
@@ -335,9 +353,11 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let (anchored,): (i64,) = sql(&a, "select max(id) from audit_event where tenant_id = $1", t).await.remove(0);
     let bravo_before = rows_of(&b, bravo.tenant).await;
 
+    // The workspace's vault goes with it through a transfer made at the source, given as the source's keys.
+    let keys_a = Mutex::new(vec![transfer(&a, t).await]);
     let from = |stop: Option<Stop>| MoveSource {
         url: direct(&a_url),
-        keys: vec![key_a.clone()],
+        keys: keys_a.lock().unwrap().clone(),
         files: Some(Arc::new(DirFiles(dir_a.clone())) as Arc<dyn ferrum_kernel::files::FileStore>),
         regions: Some(("eu".into(), "us".into())),
         base_domain: None,
@@ -346,7 +366,7 @@ async fn a_workspace_moves_to_another_installation_and_back() {
         stop_after: stop,
     };
     let refused = |r: Result<Value>, says: &str| match r {
-        Err(Error::Conflict(m)) | Err(Error::Unavailable(m)) => assert!(m.contains(says), "{m}"),
+        Err(Error::Conflict(m)) | Err(Error::Unavailable(m)) | Err(Error::Invalid(m)) => assert!(m.contains(says), "{m}"),
         other => panic!("expected a refusal saying {says:?}, got {other:?}"),
     };
 
@@ -366,7 +386,7 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     sqlx::query("update e_contact set notes = $3 where tenant_id = $1 and id = $2")
         .bind(t)
         .bind(contact)
-        .bind(key_a.seal(&format!("{t}/notes/{contact}"), "kept by an app").unwrap())
+        .bind(SecretKey::new([1; 32]).seal(&format!("{t}/notes/{contact}"), "kept by an app").unwrap())
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -375,9 +395,9 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let mut tx = a.db.system_tx().await.unwrap();
     sqlx::query("update e_contact set notes = 'a plain note' where tenant_id = $1").bind(t).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
-    // Without the source's key nothing moves.
-    let keyless = MoveSource { keys: vec![key_b.clone()], ..from(None) };
-    refused(b.move_workspace("acme", &keyless, Run::Start, &quiet).await, "no key in FERRUM_MOVE_SOURCE_SECRET_KEYS opens");
+    // Without the key of its vault's transfer nothing moves.
+    let keyless = MoveSource { keys: vec![SecretKey::new([2; 32])], ..from(None) };
+    refused(b.move_workspace("acme", &keyless, Run::Start, &quiet).await, "is the key of this workspace's transfer");
 
     // Stopped once frozen: nothing at A takes changes or runs, reading works; a second move and a second run are refused.
     b.move_workspace("acme", &from(Some(Stop::Frozen)), Run::Start, &quiet).await.expect("frozen");
@@ -445,17 +465,11 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     // B's own workspace: not a row touched.
     assert_eq!(rows_of(&b, bravo.tenant).await, bravo_before);
 
-    // Everything is at B, and B's key opens what A's sealed.
+    // Everything is at B, its vault too.
     let at_b = b.load_ctx(t, acme.user, None, "it".into()).await.unwrap();
     let doc = b.read_record(&at_b, "Contact", contact, false).await.unwrap();
     assert_eq!((doc["emails"].as_array().unwrap().len(), doc["phones"].as_array().unwrap().len()), (1, 1), "{doc:?}");
     assert_eq!(std::fs::read(dir_b.join(&file_key)).unwrap(), b"kept with the workspace");
-    let mut tx = b.db.system_tx().await.unwrap();
-    #[allow(deprecated)]
-    let token = b.secret(&mut tx, t, "Contact", contact, "token").await.unwrap();
-    assert_eq!(token.as_deref(), Some("s3cret"));
-    tx.commit().await.unwrap();
-    assert!(b.unopened_secrets().await.unwrap().0.is_empty(), "every sealed value opens with B's key");
     let kept: Vec<(i64, i64)> =
         sql(&b, "select (select count(*) from legal_hold where tenant_id = $1), (select count(*) from privacy_erasure where tenant_id = $1)", t).await;
     assert_eq!(kept[0], (1, 1), "the legal hold and the erasure's record moved too");
@@ -465,6 +479,10 @@ async fn a_workspace_moves_to_another_installation_and_back() {
         sql(&b, "select (select count(*) from known_device where tenant_id = $1), (select coalesce(sum(n), 0) from sign_in_failure where tenant_id = $1)", t)
             .await;
     assert_eq!(kept, vec![(1, 2)], "known devices and counted failures travel");
+    let SignIn::SecondFactor(ticket) = b.sign_in("acme", "pat@acme.test", PASSWORD).await.unwrap() else { panic!("a second step") };
+    b.second_factor(t, pat, ticket.token_version, &ferrum_kernel::twofactor::code(&totp, now() + 30).unwrap())
+        .await
+        .expect("Pat's second factor, from B's vault");
     assert_eq!(session.tenant, t);
     assert_eq!(b.route_host("erp.acme.example").await.unwrap(), HostRoute::Serve { tenant: t, target: "shell".into() });
     assert_eq!(a.route_host("erp.acme.example").await.unwrap(), HostRoute::Moved { tenant: t, to: None }, "the address still points at A");
@@ -504,7 +522,7 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     // And back to A, once A lets go of what it kept.
     let back = MoveSource {
         url: direct(&b_url),
-        keys: vec![key_b.clone()],
+        keys: vec![transfer(&b, t).await],
         files: Some(Arc::new(DirFiles(dir_b.clone()))),
         regions: Some(("us".into(), "eu".into())),
         base_domain: Some("eu.example".into()),
@@ -536,15 +554,8 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     // Another replica of A, running while the move (a task, a process of its own) brings the workspace back, which looked
     // at its address before: nothing there then.
     let replica = Db::connect(DbConfig { url: a_url.clone(), max_connections: 4, ..Default::default() }).await.expect("connect");
-    let a2 = Kernel::boot(
-        replica,
-        catalog(),
-        HookRegistry::default(),
-        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(key_a.clone()), vec![]), ..Default::default() },
-        None,
-    )
-    .await
-    .expect("a second replica of A");
+    open_vault(&replica, &a_url).await;
+    let a2 = Kernel::boot(replica, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("a second replica of A");
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let listening = a2.spawn_listeners(stopped);
     assert_eq!(a2.route_host("acme.eu.example").await.unwrap(), HostRoute::Unknown);
@@ -596,12 +607,14 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     // There and back again with a base domain on both sides: each lets go of the names under the other's base, and takes
     // its own back when the workspace returns (a name it let go of is its own to take back), rather than leaving it let go.
     b.finish_move("acme", "checked at A").await.expect("finished at B");
+    *keys_a.lock().unwrap() = vec![transfer(&a, t).await];
     let away = MoveSource { base_domain: Some("us.example".into()), ..from(None) };
     b.move_workspace("acme", &away, Run::Start, &quiet).await.expect("away to B again");
     assert_eq!(b.route_host("sales--acme.us.example").await.unwrap(), HostRoute::Serve { tenant: t, target: "shell".into() }, "B's name again");
     let let_go: Vec<(bool,)> = sql(&b, "select released_at is not null from tenant_host where host = 'sales--acme.eu.example' and tenant_id = $1", t).await;
     assert_eq!(let_go, vec![(true,)], "B lets go of the name under A's base");
     a.finish_move("acme", "checked at B again").await.expect("finished at A");
+    let back = MoveSource { keys: vec![transfer(&b, t).await], ..back };
     a.move_workspace("acme", &back, Run::Start, &quiet).await.expect("back at A again");
     assert_eq!(a.route_host("sales--acme.eu.example").await.unwrap(), HostRoute::Serve { tenant: t, target: "shell".into() }, "A's name again");
     let shown = a.host_shown("sales--acme.eu.example").await.unwrap().expect("a shell address");

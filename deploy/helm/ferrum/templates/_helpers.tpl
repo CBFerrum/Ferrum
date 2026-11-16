@@ -70,12 +70,10 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{- end }}
 {{- end }}
 {{ include "ferrum.secretEnv" (list . "JWT_SECRET" true) }}
-{{ include "ferrum.secretEnv" (list . "FERRUM_SECRET_KEY" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_CLAMAV_ADDR" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_CLAMAV_MAX_MB" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_CONNECTION_UPLOAD_MB" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_OPS_TELEMETRY_DAYS" true) }}
-{{ include "ferrum.secretEnv" (list . "FERRUM_RETIRED_SECRET_KEYS" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_AUDIT_SINK_URL" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_AUDIT_SINK_SECRET" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_BOOTSTRAP_TOKEN" true) }}

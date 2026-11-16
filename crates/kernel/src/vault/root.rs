@@ -106,8 +106,8 @@ pub enum Opened {
     Later,
     /// The vault has no slot yet, and nothing here can make its first one: no password in `DATABASE_URL`, no key
     /// file, no key-management service. It stays closed, saying so, and everything that asks it is refused; a later
-    /// start with one of them makes it. The server starts all the same, with what the environment gives in its place
-    /// (`JWT_SECRET`, and in production the old key), or refuses, saying which it lacks.
+    /// start with one of them makes it. Outside production the server starts all the same (sessions signed with
+    /// `JWT_SECRET`); in production it refuses, saying so.
     Closed,
 }
 

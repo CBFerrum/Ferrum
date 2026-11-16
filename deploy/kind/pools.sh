@@ -99,7 +99,6 @@ kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/d
 secret() { k create secret generic "$@" --dry-run=client -o yaml | k apply -f - >/dev/null; }
 secret ferrum-secrets \
   --from-literal=JWT_SECRET="$(openssl rand -base64 48 | tr -d '\n')" \
-  --from-literal=FERRUM_SECRET_KEY="$(openssl rand -base64 32 | tr -d '\n')" \
   --from-literal=FERRUM_BOOTSTRAP_TOKEN="" \
   --from-literal=FERRUM_METRICS_TOKEN="$(openssl rand -hex 32)" \
   --from-literal=AWS_ACCESS_KEY_ID=test --from-literal=AWS_SECRET_ACCESS_KEY=test

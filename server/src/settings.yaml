@@ -148,32 +148,15 @@
   path: auth.jwt.expiration
   doc: >-
     How long a bearer token from signing in lasts, in seconds (default 8 hours).
-- key: secret_key
-  env: FERRUM_SECRET_KEY
-  path: settings.secret_key
-  secret: true
-  doc: >-
-    The old master key. A new installation leaves it out: where the vault opens, the vault keeps and keys everything.
-    One that has it keeps it until `ferrum task legacy_key` says it may go ([Retiring the old key](#retiring-the-old-key));
-    where the vault cannot open, production requires it. Base64 of exactly 32 random bytes (`openssl rand -base64 32`),
-    or that key as a key-management service's ciphertext (`vault:v1:…`,
-    [below](#the-secret-key-from-a-key-management-service)); every replica needs the same key. Back it up while you
-    keep backups taken with it: values sealed with a lost key must be entered again.
 - key: secret_key_command
   env: FERRUM_SECRET_KEY_COMMAND
   path: settings.secret_key_command
   secret: true
   doc: >-
-    In place of `FERRUM_SECRET_KEY`, and as the vault's `kms` slot: a command (run with `sh -c`, 30 seconds at most)
-    that prints the key, such as a KMS's own CLI. Only ever from the environment, and outside the boot contract: a
-    command line is never read from the database, where whoever writes a row would run a program. Prefer the key file
-    (`/run/ferrum/root.key`) or the key-management service (`kms_transit`).
-- key: retired_secret_keys
-  env: FERRUM_RETIRED_SECRET_KEYS
-  path: settings.retired_secret_keys
-  secret: true
-  doc: >-
-    Keys being rotated out, comma-separated: see *Rotating the secret key*.
+    The vault's `kms` slot through a command (run with `sh -c`, 30 seconds at most) that prints its key, such as a
+    KMS's own CLI. Only ever from the environment, and outside the boot contract: a command line is never read from the
+    database, where whoever writes a row would run a program. Prefer the key file (`/run/ferrum/root.key`) or the
+    key-management service (`kms_transit`).
 - key: kms_transit
   env: FERRUM_KMS_TRANSIT
   path: settings.kms_transit
@@ -182,8 +165,8 @@
     token mounted at `/run/ferrum/kms.token`, or as the pod's service account (`kms_kubernetes_role`); its certificate
     is checked against `/run/ferrum/kms-ca.pem` too when that is there. The slot keeps the address it was made with,
     and the token goes nowhere else: changed here, the slot is not asked until it is made again
-    (`ferrum task vault_add_slot kind:kms`). Keys from the environment given as its ciphertext (`FERRUM_SECRET_KEY`,
-    retired keys) are unwrapped only at an address the environment gives.
+    (`ferrum task vault_add_slot kind:kms`). A move's source keys given as its ciphertext are unwrapped only at an address
+    the environment gives.
 - key: kms_token_file
   env: FERRUM_KMS_TOKEN_FILE
   environment: the key-management client (through R1; the token's file is /run/ferrum/kms.token from now on)
@@ -958,7 +941,8 @@
   secret: true
   input: move_workspace
   doc: >-
-    The source's `FERRUM_SECRET_KEY`, then its retired keys, comma-separated.
+    The key `ferrum task vault_transfer` printed at the source for the workspace's vault (comma-separated with any
+    others); itself, or as the key-management service's ciphertext.
 - key: move_source_files
   env: FERRUM_MOVE_SOURCE_FILES
   input: move_workspace

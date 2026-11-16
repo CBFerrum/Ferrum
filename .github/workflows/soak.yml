@@ -55,7 +55,6 @@ jobs:
             echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
             echo "FERRUM_DB_PASSWORD=$(openssl rand -hex 16)"
             echo "JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')"
-            echo "FERRUM_SECRET_KEY=$(openssl rand -base64 32 | tr -d '\n')"
             echo "SOAK_PASSWORD=Soak-$(openssl rand -hex 8)"
           } >> "$GITHUB_ENV"
       - name: The stack, and three workspaces of different weight

@@ -101,8 +101,7 @@ COMPANIONS = ("-p", "ferrum-kernel", "--test", "companions_it")
 COMPANION_UNIT = ("-p", "ferrum-kernel", "--lib", "companion::tests")
 VAULT_FOLLOWS = ("-p", "ferrum-kernel", "--test", "vault_follows_it")
 VAULT_STORES = ("-p", "ferrum-kernel", "--test", "vault_stores_it")
-OLD_KEY = ("-p", "ferrum-kernel", "--test", "old_key_it")
-KEYED_UNIT = ("-p", "ferrum-kernel", "--lib", "vault::keyed::tests")
+PULLED_FILES = ("-p", "ferrum-server", "--test", "pulled_files_it")
 CONNECTIONS_UNIT = ("-p", "ferrum-kernel", "--lib", "connections::tests")
 SESSIONS_UNIT = ("-p", "ferrum-server", "--lib", "sessions::tests")
 PLATFORM_SECRETS = ("-p", "ferrum-server", "--test", "secrets_it")
@@ -173,7 +172,7 @@ MUTANTS = [
     ('conn-blocked-ranges-shrunk', 'crates/kernel/src/connections/mod.rs', 'if crate::outbox::is_private(ip) {\n        return true;\n    }', 'if crate::outbox::is_private(ip) {\n        return false;\n    }', CONNECTIONS_UNIT),
     ('conn-other-host-reached', 'crates/kernel/src/connections/mod.rs', 'if !reach.any && !reach.hosts.is_empty() && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', 'if false && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', CONNECTIONS),
     # BD-64, BD-65: a public address's signature checked; reading any host only for a description without credentials.
-    ('conn-pulled-signature-ignored', 'crates/kernel/src/connections/public.rs', '.any(|(_, k)| same(&k.fingerprint("pulled-file", &id), signature))', '.any(|_| true)', OLD_KEY),
+    ('conn-pulled-signature-ignored', 'crates/kernel/src/connections/public.rs', '.any(|(_, k)| same(&k.fingerprint("pulled-file", &id), signature))', '.any(|_| true)', PULLED_FILES),
     ('conn-any-host-with-auth', 'crates/kernel/src/connections/mod.rs', 'if !matches!(self.auth, Auth::None) {', 'if false {', CONNECTIONS),
     ('conn-plain-http-called', 'crates/kernel/src/connections/mod.rs', '"http" if open => {}', '"http" => {}', CONNECTIONS),
     ('conn-answer-unbounded', 'crates/kernel/src/connections/mod.rs', 'max_bytes: self.desc.max_bytes.unwrap_or(DEFAULT_MAX_BYTES),', 'max_bytes: MAX_BYTES,', CONNECTIONS),
@@ -362,7 +361,6 @@ MUTANTS = [
     ("workspace-move-carries-unknown-sealed", "crates/kernel/src/workspace_move.rs", "        if !unknown.is_empty() {\n", "        if false {\n", WORKSPACE_MOVE),
     ("workspace-move-sign-in-looks-first", "crates/kernel/src/auth.rs", "        self.refuse_if_moving_slug(tenant_slug).await?;\n        let email = email.trim().to_lowercase();\n        let mut tx", "        let email = email.trim().to_lowercase();\n        let mut tx", WORKSPACE_MOVE),
     ("workspace-move-claims-the-held", "crates/kernel/src/outbox.rs", "where tenant_id is not null and not ferrum_workspace_held(tenant_id) order by random()) w \\\n               cross join lateral (select o.id", "where tenant_id is not null order by random()) w \\\n               cross join lateral (select o.id", WORKSPACE_MOVE),
-    ("move-unopened-unsaid", "crates/kernel/src/secret.rs", "if sealed != crate::vault::kept::MARKER && self.open_sealed(&label(ids, name), sealed).is_err() {", "if false {", RECOVERY),
     ("extract-what-went-out-unsaid", "crates/kernel/src/recovery.rs", "processed_at > coalesce($2, '-infinity'::timestamptz)", "processed_at <= coalesce($2, '-infinity'::timestamptz)", RECOVERY),
     ("extract-forgets-erasures", "crates/kernel/src/recovery.rs", '"contact_consent", "privacy_erasure"]', '"contact_consent"]', RECOVERY),
     ("extract-sets-aside-everyone", "crates/kernel/src/recovery.rs", "        self.set_aside(&mut tx, Some(tenant)).await?;\n", "        self.set_aside(&mut tx, None).await?;\n", RECOVERY),
@@ -454,9 +452,6 @@ MUTANTS = [
     ("restricted-title-shown", "crates/kernel/src/doc.rs", "Reference::Restricted => match row_scope(ctx, tent, Action::Read) {", "Reference::Restricted => match Ok::<_, Error>(crate::ctx::RowScope::default()) {", RULES),
     ("restricted-title-ignores-rows", "crates/kernel/src/doc.rs", "            if let Some(scope) = &scope {\n                scope.push_sql(&mut qb, \"a\");\n            }\n            let rows: Vec<(Uuid, String)>", "            let _ = &scope;\n            let rows: Vec<(Uuid, String)>", RULES),
     ("explanation-ignores-the-record", "crates/kernel/src/access.rs", "let reached = by.is_some();", "let reached = true;", RULES),
-    ("retired-key-forgotten", "crates/kernel/src/vault/keyed.rs", "env.iter().chain(&settings.old_key.retired).cloned().collect()", "env.iter().chain(&[]).cloned().collect()", SECRETS),
-    ("lost-key-blanks-values", "crates/kernel/src/secret.rs", "                *unopened += 1;\n                Ok(None)", "                *unopened += 1;\n                current.seal(aad, \"\").map(Some)", SECRETS),
-    ("webhook-secret-stays-plain", "crates/kernel/src/secret.rs", 'None => Some(format!("{SEALED_WEBHOOK}{}", current.seal(&label, &stored)?)),', "None => None,", SECRETS),
     ("privacy-hold-on-a-person-ignored", "crates/kernel/src/privacy.rs", 'if person_held(&mut tx, ctx.tenant, &emails).await? {\n            return Err(Error::Conflict', 'if false {\n            return Err(Error::Conflict', PRIVACY),
     # What apps keep of people in tables of their own (FEO-016).
     ("erasure-forgets-app-tables", "crates/kernel/src/privacy.rs", "let n = app.erase(&mut tx, ctx.tenant, account, &emails, reason).await?;", "let n = u64::from(app.app().is_empty());", PRIVACY),
@@ -901,7 +896,6 @@ MUTANTS = [
     ("action-approval-not-asked", "crates/kernel/src/doc.rs", "        if !approved\n            && let Some(a) = ent.document_approvals.get(&DocumentAction::Action(def.name.clone()))", "        if false\n            && let Some(a) = ent.document_approvals.get(&DocumentAction::Action(def.name.clone()))", ACTION_APPROVALS),
     ("action-approval-secret-kept-clear", "crates/kernel/src/approvals.rs", "    Ok((def.redacted(params), Value::Object(sealed)))", "    Ok((params.clone(), Value::Object(sealed)))", ACTION_APPROVALS),
     ("action-approval-runs-as-system", "crates/kernel/src/approvals.rs", "Box::pin(self.action_given(&who, tx, entity, id, &req.action, &params, true))", "Box::pin(self.action_given(&crate::actions::system(&who), tx, entity, id, &req.action, &params, true))", ACTION_APPROVALS),
-    ("action-approval-reseal-skipped", "crates/kernel/src/secret.rs", "                if any {\n                    done.moved += sqlx::query(\"update approval_request", "                if false {\n                    done.moved += sqlx::query(\"update approval_request", ACTION_APPROVALS),
     ("erasure-misses-connections", "crates/kernel/src/privacy.rs", "let conns = crate::connections::personal::erase_held(self, &mut tx, ctx.tenant, account, &emails, &records).await?;", "let conns = crate::connections::personal::Erased::default();", CONNECTIONS),
     ("erasure-leaves-sign-ins-unrevoked", "crates/kernel/src/privacy.rs", "Some(_) if !conns.sign_ins.is_empty() => self.revoke_erased(ctx, conns.sign_ins).await,", "Some(_) if false => vec![],", CONNECTIONS),
     ("connection-capture-encoded-missed", "crates/kernel/src/connections/personal.rs", " or strpos(t, replace(e, '@', '%40')) > 0))", "))", CONNECTIONS),
@@ -1017,20 +1011,12 @@ MUTANTS = [
     ("vault-start-read-by-anyone", "crates/kernel/src/vault/secrets.rs", 'let ours = self.owner() == "platform" && self.mint != 0 && hooks.vault_mint("platform") == Some(self.mint);', "let ours = true;", VAULT_FOLLOWS),
     ("vault-transfer-any-key", "crates/kernel/src/vault/scope.rs", ".find(|k| k.checks(&transfer_check(tenant, *id), check))", ".next()", VAULT_FOLLOWS),
     ("vault-outlives-its-workspace", "crates/kernel/src/vault/scope.rs", 'let secrets = sqlx::query("delete from vault.secret where scope = $1")', 'let secrets = sqlx::query("delete from vault.secret where false and scope = $1")', VAULT_FOLLOWS),
-    # The old key's stores in the vault (D5, second half): an app reads only the fields its packages declare; a value an
-    # older build changed is read from where it changed it; with no old key the old stores get the mark, never the value;
-    # a connection's secrets go only to the hosts they were given for.
+    # The kernel's stores in the vault (D5, second half): an app reads only the fields its packages declare; a connection's
+    # secrets go only to the hosts they were given for.
     ("kept-any-app-reads-any-field", "crates/kernel/src/vault/kept.rs", "if k.field_owner(entity, field).await? != owner {", "if false {", VAULT_STORES),
-    ("kept-older-build-unseen", "crates/kernel/src/vault/kept.rs", "        if of.as_deref() != Some(digest(s).as_str()) {\n", "        if false {\n", VAULT_STORES),
-    ("kept-plain-without-a-key", "crates/kernel/src/vault/kept.rs", "            None => place.store.marker().to_string(),\n        };\n        entered(tx)", "            None => plain.to_string(),\n        };\n        entered(tx)", VAULT_STORES),
-    ("kept-secrets-to-any-host", "crates/kernel/src/connections/mod.rs", "rule.is_none_or(|r| set(&r.hosts) == set(&reach_hosts(desc)))", "rule.is_none_or(|_| true)", CONNECTIONS_UNIT),
-    # The old key's last uses: an opt-out link is honoured only under a key of its workspace's; once older builds are
-    # refused nothing is made with the old key; replicas starting together adopt it once; no app names the kernel's own
-    # labels for it.
-    ("keyed-opt-out-unchecked", "crates/kernel/src/messages.rs", '.any(|(_, k)| subtle_eq(k.fingerprint("message opt-out", &said).as_bytes(), sig.as_bytes()))', ".any(|_| true)", OLD_KEY),
-    ("keyed-old-key-after-retirement", "crates/kernel/src/vault/keyed.rs", "self.env_key().filter(|_| !self.keyed.retired.load(Ordering::Relaxed))", "self.env_key()", OLD_KEY),
-    ("keyed-adopted-twice", "crates/kernel/src/vault/secrets.rs", "write_made(db, scope, owner, name, make(value)?, Some(rule), &who, ADOPT).await.map(|(_, _, wrote)| wrote)", "write_made(db, scope, owner, name, make(value)?, Some(rule), &who, None).await.map(|(_, _, wrote)| wrote)", OLD_KEY),
-    ("keyed-app-names-kernel-labels", "crates/kernel/src/vault/keyed.rs", "        && !KERNEL_WORDS.contains(&id)\n", "\n", KEYED_UNIT),
+    ("kept-secrets-to-any-host", "crates/kernel/src/connections/mod.rs", "set(&rule.hosts) == set(&reach_hosts(desc))", "true", CONNECTIONS_UNIT),
+    # The platform's own keys from the vault: an opt-out link is honoured only under a key of its workspace's.
+    ("keyed-opt-out-unchecked", "crates/kernel/src/messages.rs", '.any(|(_, k)| subtle_eq(k.fingerprint("message opt-out", &said).as_bytes(), sig.as_bytes()))', ".any(|_| true)", MESSAGES),
     ("session-unsigned-verifies", "server/src/sessions.rs", "    ring::hmac::verify(&ring::hmac::Key::new(ring::hmac::HMAC_SHA512, key), signed.as_bytes(), &signature).ok()?;\n", "", SESSIONS_UNIT),
     ("session-key-past-its-end", "server/src/sessions.rs", "self.0.get(&n).filter(|h| h.until.is_none_or(|t| t > Utc::now()))", "self.0.get(&n)", SESSIONS_UNIT),
     ("compared-token-any", "server/src/secrets.rs", "        Ok(false) => Token::Bad,\n", "        Ok(false) => Token::Good,\n", PLATFORM_SECRETS),

@@ -1,5 +1,5 @@
 //! Two-factor sign-in with an authenticator app: TOTP (RFC 6238; HMAC-SHA1, 30-second steps,
-//! six digits), the codes every authenticator app shows. The secret is sealed with the server key;
+//! six digits), the codes every authenticator app shows. The secret is kept in the vault;
 //! a code is accepted within one step either side of now and only once (its step is remembered);
 //! ten single-use recovery codes, kept as hashes, stand in for a lost device. Failed codes count
 //! against the same lockout as failed passwords. A workspace can require it of everyone
@@ -52,10 +52,6 @@ fn now_seconds() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-pub(crate) fn sealed_label(tenant: Uuid, user: Uuid) -> String {
-    format!("totp|{tenant}|{user}")
-}
-
 /// A recovery code as stored: its normalized text's SHA-256.
 fn recovery_hash(code: &str) -> String {
     let norm: String = code.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase();
@@ -89,12 +85,9 @@ fn qr_svg(data: &str) -> Result<String> {
 }
 
 impl Kernel {
-    /// Whether this server can keep authenticator secrets: in the vault, or sealed with the old key.
+    /// Whether this server can keep authenticator secrets: the vault is open.
     fn totp_kept(&self) -> Result<()> {
-        if !self.kept_here() {
-            return Err(Error::Unavailable("two-factor sign-in needs the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
-        }
-        Ok(())
+        self.vault_open("two-factor sign-in")
     }
 
     /// An authenticator secret kept for one person, kept again for another (an identity taking the credentials of the

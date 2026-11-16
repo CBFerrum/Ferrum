@@ -80,7 +80,7 @@ struct Request {
     failure: Option<String>,
     /// On running the entity's action `action` (BD-34), not a transition or the document pipeline.
     on_action: bool,
-    /// Its secret parameters, each sealed with the server's key ([`seal_secrets`]).
+    /// Its secret parameters, each kept in the vault ([`seal_secrets`]).
     sealed: Option<Value>,
     /// The zone it was asked for in, when that zone narrows staff (crate::zones, level 2): it completes there.
     zone: Option<String>,
@@ -155,23 +155,14 @@ fn satisfied(step: &Step, of: &[&Decision], requester: Uuid, allow_requester: bo
     ferrum_logic::approval::satisfied(&plan, "", &decided, 0, 0).is_ok()
 }
 
-/// What binds a request's sealed parameter `name` to it.
-pub(crate) fn sealed_label(tenant: Uuid, request: Uuid, name: &str) -> String {
-    format!("{tenant}/approval/{request}/{name}")
-}
-
 /// `params` of action `def` as a request keeps them: each secret parameter given shown as `[redacted]`, and its value
-/// kept apart (`{name: what its old store holds}`): in the vault, and sealed with the old key while one is configured,
-/// which only completing the request opens. Refused when neither can keep it: it is never kept in the clear.
+/// kept apart in the vault (`{name: the marker}`), which only completing the request opens. Refused with the vault
+/// closed: it is never kept in the clear.
 async fn seal_secrets(k: &Kernel, tx: &mut Tx, tenant: Uuid, request: Uuid, def: &ferrum_meta::ActionDef, params: &Value) -> Result<(Value, Value)> {
     let mut sealed = serde_json::Map::new();
     for p in def.params.iter().filter(|p| p.secret) {
         let Some(v) = params.get(&p.name).filter(|v| !v.is_null()) else { continue };
-        if !k.kept_here() {
-            return Err(Error::Unavailable(
-                "an action with a secret parameter waits for approval only where the server has the vault or its secret key (FERRUM_SECRET_KEY)".into(),
-            ));
-        }
+        k.vault_open("an action with a secret parameter waiting for approval")?;
         sealed.insert(p.name.clone(), json!(k.keep(tx, &Place::approval(tenant, request, &p.name), &v.to_string()).await?));
     }
     Ok((def.redacted(params), Value::Object(sealed)))

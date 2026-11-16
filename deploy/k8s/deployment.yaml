@@ -55,8 +55,6 @@ spec:
               valueFrom: {secretKeyRef: {name: ferrum-db-app, key: uri}}
             - name: JWT_SECRET
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: JWT_SECRET, optional: true}}
-            - name: FERRUM_SECRET_KEY
-              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_SECRET_KEY, optional: true}}
             - name: FERRUM_CLAMAV_ADDR
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_CLAMAV_ADDR, optional: true}}
             - name: FERRUM_CLAMAV_MAX_MB
@@ -65,8 +63,6 @@ spec:
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_CONNECTION_UPLOAD_MB, optional: true}}
             - name: FERRUM_OPS_TELEMETRY_DAYS
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_OPS_TELEMETRY_DAYS, optional: true}}
-            - name: FERRUM_RETIRED_SECRET_KEYS
-              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_RETIRED_SECRET_KEYS, optional: true}}
             - name: FERRUM_AUDIT_SINK_URL
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_AUDIT_SINK_URL, optional: true}}
             - name: FERRUM_AUDIT_SINK_SECRET

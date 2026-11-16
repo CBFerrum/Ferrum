@@ -186,10 +186,6 @@ fn check_name(name: &str) -> Result<()> {
     if super::kept::Store::ALL.iter().any(|s| name.strip_prefix(s.kind()).is_some_and(|rest| rest.starts_with('.'))) {
         return Err(Error::field("name", "this name is one the kernel's stores keep: change the value where it is set"));
     }
-    // The old keys adopted into the vault (keyed.rs): what they made is checked with them, and nothing else sets them.
-    if name.starts_with(super::keyed::ADOPTED) {
-        return Err(Error::field("name", "this name is the kernel's, for an old key it adopted"));
-    }
     Ok(())
 }
 
@@ -653,16 +649,6 @@ async fn list(k: &Kernel, scope: Scope, owner: Option<&str>) -> Result<Vec<Descr
 
 /// Code's own changes and uses: nobody behind them but the owner.
 const CODE: Who<'static> = Who { actor: None, request: "", by: None, service: None };
-
-/// Sets `name` of `owner` in `scope` only where it has no current version, as [`Vault::adopt`] does, before the kernel
-/// has booted (keyed.rs: the old keys adopted into the vault as the kernel boots); whether this wrote it. Recorded as
-/// `adopt` by `old key`.
-pub(super) async fn adopt_at_boot(db: &Db, scope: Scope, owner: &str, name: &str, value: New, rule: Rule) -> Result<bool> {
-    valid_name(name)?;
-    let request = crate::db::Trace::operation().unwrap_or_default();
-    let who = Who { actor: None, request: &request, by: Some("old key"), service: None };
-    write_made(db, scope, owner, name, make(value)?, Some(rule), &who, ADOPT).await.map(|(_, _, wrote)| wrote)
-}
 
 impl Vault {
     /// Sets `name` in `scope` to `value` under `rule`: a new secret, or a new version of one (its rule replaced).
@@ -1312,13 +1298,11 @@ pub(crate) async fn upkeep(k: &Kernel) -> Result<()> {
             tracing::warn!(%owner, "sealing secrets again with a newer key: {e}");
         }
     }
-    // What the kernel's old stores hold that the vault does not yet (kept.rs): moved, and what they no longer hold, gone.
-    match k.vault_move().await {
-        Ok(m) if m.moved + m.removed > 0 || !m.unopened.is_empty() => {
-            tracing::info!(moved = m.moved, removed = m.removed, left = m.left, "the old stores' values moved into the vault")
-        }
-        Ok(_) => {}
-        Err(e) => tracing::warn!("moving the old stores' values into the vault: {e}"),
+    // What the kernel's stores no longer hold (kept.rs): gone from the vault.
+    match super::kept::forget_gone(k).await {
+        Ok(0) => {}
+        Ok(gone) => tracing::info!(gone, "values the kernel's stores no longer hold went from the vault"),
+        Err(e) => tracing::warn!("removing from the vault what the kernel's stores no longer hold: {e}"),
     }
     Ok(())
 }

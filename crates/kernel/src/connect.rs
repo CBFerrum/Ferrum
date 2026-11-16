@@ -235,11 +235,7 @@ fn admin_only(ctx: &Ctx) -> Result<()> {
 
 /// Where a connector's credentials are kept: the platform's, in the workspace.
 pub(crate) fn connector_place(tenant: Uuid, id: Uuid) -> crate::vault::kept::Place {
-    crate::vault::kept::Place::platform(crate::vault::kept::Store::Connector, tenant, id, sealed_label(tenant, id))
-}
-
-pub(crate) fn sealed_label(tenant: Uuid, connection: Uuid) -> String {
-    format!("connection:{tenant}:{connection}")
+    crate::vault::kept::Place::platform(crate::vault::kept::Store::Connector, tenant, id)
 }
 
 /// What a record's mapped fields come to, to tell a real change from a repeat.
@@ -473,8 +469,8 @@ impl Kernel {
             }
         }
         let connection = id.unwrap_or_else(Uuid::now_v7);
-        if input.credentials.is_some() && !self.kept_here() {
-            return Err(Error::Unavailable("connections need the vault or a configured secret key (FERRUM_SECRET_KEY)".into()));
+        if input.credentials.is_some() {
+            self.vault_open("a connection's credentials")?;
         }
         // The account they open, known by a fingerprint: connections on one account wait together (FEO-067). Without a
         // key to make it with (crate::vault::keyed), they wait apart, as before.

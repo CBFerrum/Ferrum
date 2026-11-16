@@ -26,25 +26,18 @@ pub fn settings_findings(production: bool, jwt_secret: &str, st: &crate::state::
     } else {
         Finding::ok("secrets.jwt", "JWT_SECRET is set")
     });
-    out.push(if !st.secret_key_command.trim().is_empty() {
-        Finding::ok("secrets.seal", "the secret key comes from FERRUM_SECRET_KEY_COMMAND")
-    } else if st.secret_key.trim().is_empty() {
-        // The old key: where the vault opens, nothing needs it (docs/operations.md, "Retiring the old key"). Where it does
-        // not, what needs one of the two is refused, erasing someone who opted out among it: said before anyone tries.
-        match vault_open {
-            true => Finding::ok("secrets.seal", "the old key is not set: the vault keeps and keys what the platform makes"),
-            false => blocker_in_production(
-                "secrets.seal",
-                "the old key is not set, and the vault is closed: secret fields, connections' credentials, opt-out links, \
-                 sign-ins to accounts and public addresses of files are refused, and so is erasing someone who opted out",
-                "Give the vault a root: a password in DATABASE_URL, a key file at /run/ferrum/root.key, or a key-management \
-                 service. The next start opens it (the line `vault` says why it is closed; docs/operations.md, \"The vault\").",
-            ),
-        }
-    } else if ferrum_kernel::kms::is_wrapped(&st.secret_key) {
-        Finding::ok("secrets.seal", "FERRUM_SECRET_KEY is wrapped by the key-management service (FERRUM_KMS_TRANSIT)")
+    // Every secret is kept in the vault: closed, what needs one is refused, erasing someone who opted out among it. Said
+    // before anyone tries.
+    out.push(if vault_open {
+        Finding::ok("secrets.seal", "the vault is open: it keeps and keys every secret")
     } else {
-        Finding::ok("secrets.seal", "FERRUM_SECRET_KEY is set")
+        blocker_in_production(
+            "secrets.seal",
+            "the vault is closed: secret fields, connections' credentials, opt-out links, sign-ins to accounts and public addresses of files \
+             are refused, and so is erasing someone who opted out",
+            "Give the vault a root: a password in DATABASE_URL, a key file at /run/ferrum/root.key, or a key-management service. The next \
+             start opens it (the line `vault` says why it is closed; docs/operations.md, \"The vault\").",
+        )
     });
     out.push(if st.metrics_token.trim().is_empty() {
         Finding::warning("secrets.metrics", "/metrics needs no token", "Set FERRUM_METRICS_TOKEN.")
@@ -150,28 +143,6 @@ pub async fn database_settings_findings(st: &AppState) -> Vec<Finding> {
         )
     });
     out
-}
-
-/// The apps this build compiles in that read the old key (`settings.secret_key`) themselves, as scripts/secret_paths.py
-/// found them when the build was made (docs/registry/secret-paths.md): until each moves onto its own vault handle, the
-/// old key cannot go (docs/operations.md, Retiring the old key).
-pub fn apps_reading_the_old_key() -> Vec<String> {
-    apps_in(include_str!("../../docs/registry/secret-paths.md"), "## Apps that read the old key")
-}
-
-/// The apps (`package:path` rows) listed under `heading` in the secret paths' baseline, once each.
-fn apps_in(baseline: &str, heading: &str) -> Vec<String> {
-    let mut apps: Vec<String> = baseline
-        .split(heading)
-        .nth(1)
-        .unwrap_or_default()
-        .lines()
-        .skip(1)
-        .take_while(|l| !l.starts_with("## "))
-        .filter_map(|l| l.strip_prefix("| `")?.split_once(':').map(|(app, _)| app.to_string()))
-        .collect();
-    apps.dedup();
-    apps
 }
 
 /// A direct or read host from the settings table that this replica does not use, because it could draw the database's
@@ -283,7 +254,6 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     out.extend(database_settings_findings(st).await);
     out.extend(st.kernel.doctor(st.settings.db_max_connections).await?);
     out.extend(st.kernel.vault_findings().await?);
-    out.extend(st.kernel.legacy_key_findings(apps_reading_the_old_key()).await?);
     // A planned move holds outward work too, and says so itself (`move_findings`).
     out.push(if st.kernel.restore_held().await? {
         Finding::blocker(
@@ -479,8 +449,8 @@ const MOVE_QUIET: std::time::Duration = std::time::Duration::from_secs(3600);
 /// How many of the newest files the doctor looks for in storage (`ferrum task check_files` looks for all).
 const NEWEST_FILES: u32 = 200;
 
-/// What moving the installation can break, and a move in progress: sealed values no configured key opens, files the
-/// database names that storage lacks (bounded: see `unopened_secrets` and `check_files`). Never a value.
+/// What moving the installation can break, and a move in progress: files the database names that storage lacks (bounded:
+/// see `check_files`). Never a value.
 pub async fn move_findings(k: &ferrum_kernel::Kernel) -> Result<Vec<Finding>, ferrum_kernel::Error> {
     let mut out = Vec::new();
     if let Some((m, source)) = k.move_standing().await? {
@@ -530,19 +500,6 @@ pub async fn move_findings(k: &ferrum_kernel::Kernel) -> Result<Vec<Finding>, fe
             "Delete each with `ferrum task delete_sandbox tenant:<slug>`, or make it again (docs/operations.md, A sandbox of a workspace).",
         ));
     }
-    let (unopened, complete) = k.unopened_secrets().await?;
-    let total: u64 = unopened.iter().map(|u| u.count).sum();
-    let partly = if complete { "" } else { " (of those checked: the check stops after 20000 values)" };
-    out.push(if total == 0 {
-        Finding::ok("secrets.unopened", format!("every sealed value opens with a configured key{partly}"))
-    } else {
-        let listed: Vec<String> = unopened.iter().map(|u| format!("{} {} (e.g. {})", u.what, u.count, u.examples.join(", "))).collect();
-        Finding::warning(
-            "secrets.unopened",
-            format!("{total} sealed values open with no configured key{partly}: {}", listed.join("; ")),
-            "Configure the key that sealed them: FERRUM_SECRET_KEY, or the old one in FERRUM_RETIRED_SECRET_KEYS (after a move: the source's keys).",
-        )
-    });
     let mut missing = Vec::new();
     let mut count = 0u64;
     let checked = match k
@@ -696,15 +653,6 @@ pub fn render(findings: &[Finding]) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn the_apps_that_read_the_old_key_come_from_the_baseline() {
-        let doc = "## Apps that read secret fields past the vault\n\n| Where | Calls |\n|---|---|\n| `crm:src/a.rs` | 1 |\n\n\
-                   ## Apps that read the old key\n\n| Where | Uses |\n|---|---|\n| `ferrum-app-pos:src/a.rs` | 1 |\n| `ferrum-app-pos:src/b.rs` | 2 |\n\
-                   | `ferrum-app-commerce:src/c.rs` | 1 |\n";
-        assert_eq!(super::apps_in(doc, "## Apps that read the old key"), ["ferrum-app-pos", "ferrum-app-commerce"]);
-        assert!(super::apps_in("| (none) | |", "## Apps that read the old key").is_empty());
-    }
-
     #[tokio::test]
     async fn the_doctor_checks_public_addresses_through_zone() {
         assert!(super::zone_findings(&[]).await.is_empty(), "no addresses: no calls");
@@ -779,7 +727,7 @@ mod tests {
     use super::*;
 
     fn settings() -> crate::state::Settings {
-        serde_json::from_value(serde_json::json!({"secret_key": "c2VjcmV0", "metrics_token": "t"})).unwrap()
+        serde_json::from_value(serde_json::json!({"metrics_token": "t"})).unwrap()
     }
 
     fn level(findings: &[Finding], check: &str) -> Option<Level> {
@@ -789,26 +737,24 @@ mod tests {
     #[test]
     fn unsafe_defaults_are_blockers_in_production_and_warnings_elsewhere() {
         let good = "x".repeat(40);
-        let fine = settings_findings(true, &good, &settings(), "https://erp.example.com", false);
+        let fine = settings_findings(true, &good, &settings(), "https://erp.example.com", true);
         assert!(fine.iter().all(|f| f.level == Level::Ok), "{fine:?}");
         let mut open = settings();
         open.webhooks_allow_private = true;
-        open.secret_key = String::new();
         for (production, want) in [(true, Level::Blocker), (false, Level::Warning)] {
             let f = settings_findings(production, "change-me-change-me-change-me-change-me", &open, "http://erp.example.com", false);
             for check in ["secrets.jwt", "secrets.seal", "network.public_url", "network.webhooks"] {
                 assert_eq!(level(&f, check), Some(want), "{check}");
             }
-            // Where the vault opens, the old key is not needed.
             let f = settings_findings(production, &good, &open, "https://erp.example.com", true);
             assert_eq!(level(&f, "secrets.seal"), Some(Level::Ok));
         }
-        // With neither the old key nor the vault, it says before anyone tries what is refused, erasing someone who opted
-        // out among it, and what to do.
+        // With the vault closed, it says before anyone tries what is refused, erasing someone who opted out among it, and
+        // what to do.
         let closed = settings_findings(true, &good, &open, "https://erp.example.com", false);
         let seal = closed.iter().find(|f| f.check == "secrets.seal").unwrap();
         assert!(seal.detail.contains("erasing someone who opted out"), "{seal:?}");
-        assert!(seal.fix.is_some_and(|f| f.starts_with("Give the vault a root") && !f.contains("FERRUM_SECRET_KEY")), "{seal:?}");
+        assert!(seal.fix.is_some_and(|f| f.starts_with("Give the vault a root")), "{seal:?}");
         assert_eq!(level(&settings_findings(false, &good, &settings(), "http://localhost:5150", true), "network.public_url"), Some(Level::Warning));
     }
 
@@ -816,7 +762,7 @@ mod tests {
     fn a_report_holds_no_secret() {
         let secret = "s3cr3t-value-that-must-not-print-anywhere";
         let mut s = settings();
-        s.secret_key = secret.into();
+        s.secret_key_command = secret.into();
         s.metrics_token = secret.into();
         s.bootstrap_token = secret.into();
         let text = render(&settings_findings(true, secret, &s, "https://erp.example.com", true));

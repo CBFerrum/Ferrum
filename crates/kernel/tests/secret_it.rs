@@ -1,9 +1,10 @@
 //! Secret fields against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`, default
-//! `postgres://ferrum:ferrum@localhost:5432/ferrum_test`): sealed apart from the record, never
-//! shown, logged or published, bound to their record and key.
+//! `postgres://ferrum:ferrum@localhost:5432/ferrum_test`), the vault opened as a server opens it: kept in the vault
+//! apart from the record, never shown, logged or published, read by their owner's handle alone, refused with the vault
+//! closed, and gone from the vault with the value.
 
-use ferrum_kernel::secret::{Resealed, SecretKey};
 use ferrum_kernel::tenant::NewTenant;
+use ferrum_kernel::vault::{Scope, Vault};
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings, ListQuery};
 use ferrum_meta::Catalog;
 use serde_json::{Value, json};
@@ -32,27 +33,40 @@ fn catalog() -> Catalog {
     c
 }
 
-async fn kernel(key: Option<SecretKey>, reset: bool) -> Arc<Kernel> {
-    let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+fn url() -> String {
+    std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into())
+}
+
+/// A server on the test database, its vault opened (`open`) or not, and the platform's handle on it (whose the
+/// package's field is: it is the platform's own).
+async fn kernel(open: bool, reset: bool) -> (Arc<Kernel>, Vault) {
+    let db = Db::connect(DbConfig { url: url(), max_connections: 10, ..Default::default() }).await.expect("connect");
     if reset {
         sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;")
             .execute(&db.pool)
             .await
             .expect("reset");
     }
-    Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings { old_key: ferrum_kernel::OldKey::configured(key, vec![]), ..Default::default() }, None)
-        .await
-        .expect("boot")
+    if open {
+        let opener = ferrum_kernel::vault::Opener {
+            database_url: url(),
+            file: "/nonexistent/root.key".into(),
+            kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+            ..Default::default()
+        };
+        ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
+    }
+    let mut hooks = HookRegistry::default();
+    let platform = hooks.platform_vault();
+    (Kernel::boot(db, catalog(), hooks, KernelSettings::default(), None).await.expect("boot"), platform)
 }
 
-/// Through the reader apps used before each read its own with its vault handle: deprecated, still working in this release.
-#[allow(deprecated)]
-async fn reveal(k: &Kernel, tenant: Uuid, id: Uuid) -> ferrum_kernel::Result<Option<String>> {
+/// The field's value, as its owner reads it.
+async fn reveal(k: &Kernel, platform: &Vault, tenant: Uuid, id: Uuid) -> ferrum_kernel::Result<Option<String>> {
     let mut tx = k.db.tenant_tx(tenant).await?;
-    let v = k.secret(&mut tx, tenant, "Integration", id, "api_key").await;
+    let v = platform.field(k, &mut tx, tenant, "Integration", id, "api_key").await;
     tx.commit().await?;
-    v
+    v.map(|v| v.map(|s| s.to_string()))
 }
 
 async fn count(k: &Kernel, tenant: Uuid, sql: &str) -> i64 {
@@ -62,10 +76,19 @@ async fn count(k: &Kernel, tenant: Uuid, sql: &str) -> i64 {
     n
 }
 
+/// How many secret fields' values the vault keeps in `tenant`'s workspace.
+async fn in_the_vault(k: &Kernel, tenant: Uuid) -> i64 {
+    let mut tx = k.db.pool.begin().await.unwrap();
+    sqlx::query("select set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
+    let n: i64 =
+        sqlx::query_scalar("select count(*) from vault.secret where scope = $1 and name like 'field.%'").bind(tenant).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    n
+}
+
 #[tokio::test]
-async fn secrets_are_write_only_sealed_and_bound() {
-    let key = SecretKey::new([42u8; 32]);
-    let k = kernel(Some(key.clone()), true).await;
+async fn secrets_are_write_only_kept_in_the_vault_and_bound() {
+    let (k, platform) = kernel(true, true).await;
     let tenant = k
         .create_tenant(NewTenant {
             slug: "vault".into(),
@@ -86,18 +109,19 @@ async fn secrets_are_write_only_sealed_and_bound() {
     assert_eq!(created["api_key"], json!(true));
     let id: Uuid = created["id"].as_str().unwrap().parse().unwrap();
     assert_eq!(k.get(&ctx, "Integration", id, false).await.unwrap()["api_key"], json!(true));
-    assert_eq!(reveal(&k, tenant, id).await.unwrap().as_deref(), Some("s3cret-value"));
+    assert_eq!(reveal(&k, &platform, tenant, id).await.unwrap().as_deref(), Some("s3cret-value"));
+    assert_eq!(in_the_vault(&k, tenant).await, 1);
     let listed = k.list(&ctx, "Integration", &ListQuery::default()).await.unwrap();
     assert!(!listed.rows[0].get("api_key").is_some_and(|v| v.is_string()), "lists never carry the value");
     assert!(k.insert(&ctx, "Integration", obj(json!({"title": "Bad", "api_key": 7}))).await.is_err());
 
     // Echoing the marker back changes nothing; text replaces; null clears.
     k.update(&ctx, "Integration", id, obj(json!({"title": "Mail (EU)", "api_key": true})), None).await.unwrap();
-    assert_eq!(reveal(&k, tenant, id).await.unwrap().as_deref(), Some("s3cret-value"));
+    assert_eq!(reveal(&k, &platform, tenant, id).await.unwrap().as_deref(), Some("s3cret-value"));
     k.update(&ctx, "Integration", id, obj(json!({"title": "Mail (EU)"})), None).await.unwrap();
-    assert_eq!(reveal(&k, tenant, id).await.unwrap().as_deref(), Some("s3cret-value"), "absent means unchanged");
+    assert_eq!(reveal(&k, &platform, tenant, id).await.unwrap().as_deref(), Some("s3cret-value"), "absent means unchanged");
     k.update(&ctx, "Integration", id, obj(json!({"api_key": "rotated-value"})), None).await.unwrap();
-    assert_eq!(reveal(&k, tenant, id).await.unwrap().as_deref(), Some("rotated-value"));
+    assert_eq!(reveal(&k, &platform, tenant, id).await.unwrap().as_deref(), Some("rotated-value"));
 
     // Never stored in the clear, nor in the audit trail or published events.
     let leaks = "select (select count(*) from record_secret where tenant_id = $1 and (sealed like '%s3cret%' or sealed like '%rotated%')) \
@@ -111,79 +135,23 @@ async fn secrets_are_write_only_sealed_and_bound() {
     let copy = ferrum_kernel::doc::copy_for_new(ctx.schema.entity("Integration").unwrap(), &ctx.schema, &k.get(&ctx, "Integration", id, false).await.unwrap());
     assert!(copy.get("api_key").is_none());
 
-    // Bound to the key: another key cannot open it.
-    let other = kernel(Some(SecretKey::new([7u8; 32])), false).await;
-    assert!(matches!(reveal(&other, tenant, id).await, Err(Error::Unavailable(_))));
-    let keyless = kernel(None, false).await;
-    assert!(matches!(keyless.insert(&ctx, "Integration", obj(json!({"title": "No key", "api_key": "x"}))).await, Err(Error::Unavailable(_))));
+    // Read by its owner's handle alone, on any server whose vault opens, also after the keys keeping it rotate.
+    let (other, other_platform) = kernel(true, false).await;
+    assert!(matches!(reveal(&other, &platform, tenant, id).await, Err(Error::Forbidden(_))), "a handle another server gave out");
+    k.rotate_owner_key(Scope::Workspace(tenant), "platform").await.unwrap();
+    assert_eq!(reveal(&other, &other_platform, tenant, id).await.unwrap().as_deref(), Some("rotated-value"), "another server, after a rotation");
+    // With the vault closed: neither read nor set.
+    let (closed, closed_platform) = kernel(false, false).await;
+    assert!(matches!(reveal(&closed, &closed_platform, tenant, id).await, Err(Error::Unavailable(_))));
+    assert!(matches!(closed.insert(&ctx, "Integration", obj(json!({"title": "No vault", "api_key": "x"}))).await, Err(Error::Unavailable(_))));
 
-    // Rotation: a new key with the old one retired. Everything sealed moves, and keeps working.
-    let new_key = SecretKey::new([9u8; 32]);
-    let settings = |current: Option<SecretKey>, retired: Vec<SecretKey>| KernelSettings {
-        old_key: ferrum_kernel::OldKey::configured(current, retired),
-        ..Default::default()
-    };
-    let boot = |s: KernelSettings| async move {
-        let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-        let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-        Kernel::boot(db, catalog(), HookRegistry::default(), s, None).await.expect("boot")
-    };
-    // The key given the way suites gave it before `old_key` (an app's suite does): taken in and used, what it sealed
-    // opening, and nothing of it left in the kernel's settings.
-    let old_way = boot(KernelSettings { secret_key: Some(key.clone()), retired_secret_keys: vec![SecretKey::new([3u8; 32])], ..Default::default() }).await;
-    assert_eq!(reveal(&old_way, tenant, id).await.unwrap().as_deref(), Some("rotated-value"), "what the key sealed opens");
-    assert!(old_way.settings.secret_key.is_none() && old_way.settings.retired_secret_keys.is_empty(), "nothing read back");
-    assert!(old_way.live().secret_key.is_none() && old_way.live().retired_secret_keys.is_empty(), "nor from the settings as they are now");
-    drop(old_way);
-    let hook = Uuid::now_v7();
-    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
-    sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, $2, 'old', 'https://hooks.test/x', 'plain-signing-secret', '{*}')")
-        .bind(tenant)
-        .bind(hook)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query("update app_user set totp_secret = $3 where tenant_id = $1 and id = $2")
-        .bind(tenant)
-        .bind(ctx.user)
-        .bind(key.seal(&format!("totp|{tenant}|{}", ctx.user), "JBSWY3DPEHPK3PXP").unwrap())
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let stored_hook = |k: Arc<Kernel>| async move {
-        let mut tx = k.db.system_tx().await.unwrap();
-        let (s,): (String,) = sqlx::query_as("select secret from webhook where id = $1").bind(hook).fetch_one(&mut *tx).await.unwrap();
-        s
-    };
-    assert_eq!(k.reseal_secrets().await.unwrap().moved, 1, "webhook secrets are sealed even with no rotation under way");
-    let sealed_hook = stored_hook(k.clone()).await;
-    assert!(sealed_hook.starts_with("sealed:") && !sealed_hook.contains("plain-signing-secret"), "{sealed_hook}");
-    assert_eq!(k.reseal_secrets().await.unwrap().moved, 0, "nothing more to do");
-
-    let rotating = boot(settings(Some(new_key.clone()), vec![key.clone()])).await;
-    assert_eq!(reveal(&rotating, tenant, id).await.unwrap().as_deref(), Some("rotated-value"), "a retired key still opens what it sealed");
-    let done = rotating.reseal_secrets().await.unwrap();
-    assert_eq!(done, Resealed { moved: 3, unopened: 0 }, "the field, the authenticator secret and the webhook");
-    assert_eq!(rotating.reseal_secrets().await.unwrap(), Resealed::default(), "safe to repeat");
-    assert_ne!(stored_hook(k.clone()).await, sealed_hook);
-    let moved = boot(settings(Some(new_key.clone()), vec![])).await;
-    assert_eq!(reveal(&moved, tenant, id).await.unwrap().as_deref(), Some("rotated-value"), "and the old key is no longer needed");
-    assert_eq!(moved.reseal_secrets().await.unwrap(), Resealed::default());
-    // The old server, without the new key, now opens nothing: a rotation has one direction.
-    assert!(matches!(reveal(&k, tenant, id).await, Err(Error::Unavailable(_))));
-    // Without any key that opens them, values are counted and left, never destroyed.
-    let lost = boot(settings(Some(SecretKey::new([1u8; 32])), vec![SecretKey::new([2u8; 32])])).await;
-    let left = lost.reseal_secrets().await.unwrap();
-    assert_eq!((left.moved, left.unopened), (0, 3), "{left:?}");
-    assert_eq!(reveal(&moved, tenant, id).await.unwrap().as_deref(), Some("rotated-value"), "untouched: the right key still opens them");
-    let k = moved;
-
-    // Clearing and deleting remove the sealed value.
+    // Clearing and deleting remove the value, from the vault too.
     k.update(&ctx, "Integration", id, obj(json!({"api_key": null})), None).await.unwrap();
     assert_eq!(k.get(&ctx, "Integration", id, false).await.unwrap()["api_key"], Value::Null);
-    assert_eq!(reveal(&k, tenant, id).await.unwrap(), None);
+    assert_eq!(reveal(&k, &platform, tenant, id).await.unwrap(), None);
+    assert_eq!(in_the_vault(&k, tenant).await, 0);
     k.update(&ctx, "Integration", id, obj(json!({"api_key": "again"})), None).await.unwrap();
     k.delete(&ctx, "Integration", id, None).await.unwrap();
     assert_eq!(count(&k, tenant, "select count(*) from record_secret where tenant_id = $1").await, 0);
+    assert_eq!(in_the_vault(&k, tenant).await, 0);
 }

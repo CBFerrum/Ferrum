@@ -811,15 +811,12 @@ pub(crate) const ERASED: &str = "erased:";
 
 /// A keyed digest of the workspace, channel and address (normalised: an e-mail address in lower case, a number in
 /// international form), so an erased opt-out still stops a promotional message to that address on that channel
-/// while nothing shows the address, and trying addresses without the key finds nothing (BD-20). Under the old key
-/// `erased:<digest>`; under the workspace's key for these, made from version `v` of the platform's key in its vault,
-/// `erased:v<v>:<digest>` (crate::vault::keyed).
-fn erased_mark(version: Option<i32>, key: &crate::secret::SecretKey, tenant: Uuid, channel: &str, address: &str) -> String {
+/// while nothing shows the address, and trying addresses without the key finds nothing (BD-20): under the workspace's
+/// key for these, made from version `v` of the platform's key in its vault, `erased:v<v>:<digest>`
+/// (crate::vault::keyed).
+fn erased_mark(version: i32, key: &crate::secret::SecretKey, tenant: Uuid, channel: &str, address: &str) -> String {
     let digest = key.fingerprint("erased opt-out", &format!("{tenant}|{channel}|{}", address.trim().to_lowercase()));
-    match version {
-        None => format!("{ERASED}{digest}"),
-        Some(v) => format!("{ERASED}v{v}:{digest}"),
-    }
+    format!("{ERASED}v{version}:{digest}")
 }
 
 impl Kernel {
@@ -891,11 +888,6 @@ async fn record(
     Ok(Sent { id, channel: channel.into(), state: state.into(), reason: reason.map(str::to_string) })
 }
 
-/// What the outbox and the delivery log hold of a message with secret values: sealed under this label while it waits.
-pub(crate) fn sealed_message(tenant: Uuid) -> String {
-    format!("{tenant}/message")
-}
-
 /// The text of `m`'s secret values, in every form they can be printed in; refused, saying why, when nothing here can
 /// seal them while they wait.
 async fn secret_values(k: &Kernel, m: &Message) -> Result<Vec<String>> {
@@ -909,7 +901,7 @@ async fn secret_values(k: &Kernel, m: &Message) -> Result<Vec<String>> {
     if masks.is_empty() {
         return Ok(masks);
     }
-    k.sealing_ready(Keyed::Message).await?;
+    k.keyed_ready(Keyed::Message)?;
     Ok(encodings(&masks))
 }
 
@@ -1335,11 +1327,7 @@ impl ChannelDesc {
 
 /// Where a channel's secrets are kept: the platform's, in the workspace.
 pub(crate) fn channel_place(tenant: Uuid, id: Uuid) -> crate::vault::kept::Place {
-    crate::vault::kept::Place::platform(crate::vault::kept::Store::Channel, tenant, id, sealed_label(tenant, id))
-}
-
-pub(crate) fn sealed_label(tenant: Uuid, id: Uuid) -> String {
-    format!("message_channel:{tenant}:{id}")
+    crate::vault::kept::Place::platform(crate::vault::kept::Store::Channel, tenant, id)
 }
 
 /// What `POST /api/admin/messages/channels` takes. `secrets` are sealed and never read back; left out, the ones there
@@ -1382,7 +1370,7 @@ impl Kernel {
     /// What a message with secret values holds sealed (`{message, mask}`, or a mail's `{subject, html, mask}`), opened.
     pub(crate) async fn open_message(&self, tenant: Uuid, sealed: &Value) -> Result<(Value, Vec<String>)> {
         let sealed = sealed.as_str().unwrap_or_default();
-        let open = self.open_for_platform(Scope::Workspace(tenant), "message", &sealed_message(tenant), sealed, Keyed::Message).await?;
+        let open = self.open_for_platform(Scope::Workspace(tenant), "message", sealed, Keyed::Message).await?;
         let open: Value = serde_json::from_str(&open).map_err(Error::internal)?;
         let mask = open["mask"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
         Ok((open, mask))
@@ -1390,7 +1378,7 @@ impl Kernel {
 
     /// `plain` sealed as a message with secret values is while it waits.
     pub(crate) async fn seal_message(&self, tenant: Uuid, plain: &Value) -> Result<String> {
-        self.seal_for_platform(Scope::Workspace(tenant), "message", &sealed_message(tenant), &plain.to_string(), Keyed::Message).await
+        self.seal_for_platform(Scope::Workspace(tenant), "message", &plain.to_string(), Keyed::Message).await
     }
 }
 
@@ -1564,8 +1552,8 @@ impl Kernel {
             return Err(Error::field("description", p));
         }
         let id = id.unwrap_or_else(Uuid::now_v7);
-        if input.secrets.is_some() && !self.kept_here() {
-            return Err(Error::Unavailable("channel secrets need the vault or a configured secret key (FERRUM_SECRET_KEY)".into()));
+        if input.secrets.is_some() {
+            self.vault_open("a channel's secrets")?;
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         // Kept in the transaction that saves the channel.
@@ -1774,7 +1762,8 @@ async fn record_choice(tx: &mut Tx, tenant: Uuid, by: Option<Uuid>, address: &st
     .await
 }
 
-/// A signed link's token: the workspace, channel and address, and their HMAC under the server's key.
+/// A signed link's token: the workspace, channel and address, and their HMAC under the workspace's key for opt-out
+/// links (crate::vault::keyed).
 fn opt_out_token(key: &crate::secret::SecretKey, tenant: Uuid, channel: &str, address: &str) -> String {
     use base64::Engine as _;
     let said = format!("{tenant}|{channel}|{address}");

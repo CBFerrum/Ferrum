@@ -1078,8 +1078,8 @@ pub struct ActionParam {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// A secret (a card's PIN): the handler reads it, and the audit log, the receipts and error messages show it as
-    /// [`REDACTED`]; the digest a receipt is claimed with holds it only keyed with the server's secret key. An action's
-    /// only: a transition keeps what it is given.
+    /// [`REDACTED`]; the digest a receipt is claimed with holds it only keyed with the workspace's key for receipts. An
+    /// action's only: a transition keeps what it is given.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secret: bool,
     /// A `files` parameter (BD-44): the files at most (1 to 10; 1 without it), each at most `max_bytes` (10 MB at most

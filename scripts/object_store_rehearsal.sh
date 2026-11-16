@@ -77,9 +77,8 @@ for db in "${DBS[@]}"; do
   psql "$APP/postgres" -v ON_ERROR_STOP=1 -qc "drop database if exists $db with (force)" -c "create database $db owner ferrum" >/dev/null
 done
 
-export JWT_SECRET FERRUM_SECRET_KEY
+export JWT_SECRET
 JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-FERRUM_SECRET_KEY=$(openssl rand -base64 32 | tr -d '\n')
 export LOG_LEVEL=warn FERRUM_BOOTSTRAP_TOKEN=rehearsal-token FERRUM_REQUIRE_OBJECT_STORAGE=false
 PASSWORD='Rehearsal-Passw0rd'
 mkdir -p "$work/files" "$work/run"
