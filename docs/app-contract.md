@@ -63,6 +63,12 @@ server does not start.
 
 `Kernel::secret` (any app's secret field) still works and is noted, and goes in the next release.
 
+**A secret it manages itself.** `manage(k, scope, name, true)` marks a secret of the app's own as the app's to manage
+(a published signing key, a token it rotates on its own schedule); `false` gives it back to people. While marked, the
+administrator's and operator's routes refuse to set, rotate, remove it or change its rule, and an operator's regenerate
+too, each with `409` naming the app; the app's own handle keeps using and changing it, and every description says
+`managed_by`. The mark travels with the workspace's vault (a move, a sandbox) and goes when the secret does.
+
 `sign_at` signs with a version the app names (none: the current one) and says which it used, and `public_key` gives a
 kept version's public half, so an app that publishes its keys (a token issuer's) names each signature's key. `key_version`
 says which version of its own key `seal` seals with now, and `Vault::sealed_version` which one sealed what it kept: an

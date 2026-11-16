@@ -226,6 +226,15 @@ async fn scenario() {
     assert!(listed.contains("\"license\"") && listed.contains("\"mailer_password\"") && !listed.contains("Lc-7777") && !listed.contains("Mp-1357"), "{listed}");
     let by_operator = vault::events(&a.k.db, None, 100).await.unwrap().into_iter().find(|e| e.name == "license" && e.action == "set").unwrap();
     assert_eq!(by_operator.details["by"], json!("operator"));
+    // Managed by its app: the operator's ways refuse it, naming the app, until the app lets go.
+    a.crm.manage(&a.k, Scope::Installation, "license", true).await.unwrap();
+    let managed = |e: Error| matches!(&e, Error::Conflict(m) if m.contains("managed by its app, crm"));
+    assert!(managed(a.platform.operator_set(&a.k, "crm", "license", value("x"), Rule::default()).await.unwrap_err()));
+    assert!(managed(a.platform.operator_rotate(&a.k, "crm", "license", value("x")).await.unwrap_err()));
+    assert!(managed(a.platform.operator_rule(&a.k, "crm", "license", Rule::default()).await.unwrap_err()));
+    assert!(managed(a.platform.operator_remove(&a.k, "crm", "license").await.unwrap_err()));
+    assert!(a.platform.installation_secrets(&a.k).await.unwrap().iter().any(|d| d.name == "license" && d.managed_by.as_deref() == Some("crm")));
+    a.crm.manage(&a.k, Scope::Installation, "license", false).await.unwrap();
     assert!(a.platform.operator_remove(&a.k, "crm", "license").await.unwrap());
 
     deleted(&a, &mut needles).await;
@@ -320,6 +329,7 @@ async fn moved(a: &Installation, b: &Installation, needles: &mut Vec<String>) {
     let t = workspace(&a.k, "mover").await;
     let ws = Scope::Workspace(t);
     a.crm.set(&a.k, ws, "api", value("Mv-7070-carried-over"), Rule { reveal: true, ..Default::default() }).await.unwrap();
+    a.crm.manage(&a.k, ws, "api", true).await.unwrap();
     a.crm.set(&a.k, ws, "hooks", New::Random(32), Rule { overlap_secs: 600, ..Default::default() }).await.unwrap();
     let signed = a.crm.sign(&a.k, ws, "hooks", b"payload").await.unwrap();
     needles.push("Mv-7070-carried-over".into());
@@ -364,6 +374,7 @@ async fn moved(a: &Installation, b: &Installation, needles: &mut Vec<String>) {
     b.k.move_workspace("mover", &source(a, keys.clone(), Some(Stop::Copied)), Run::Start, &quiet).await.unwrap();
     b.k.move_workspace("mover", &source(a, keys.clone(), None), Run::Resume, &quiet).await.unwrap();
     assert_eq!(shown(b.crm.reveal(&b.k, ws, "api").await.unwrap()), "Mv-7070-carried-over");
+    assert_eq!(b.crm.describe(&b.k, ws, "api").await.unwrap().unwrap().managed_by.as_deref(), Some("crm"), "still its app's to manage");
     assert_eq!(shown(b.crm.reveal(&b.k, ws, "late").await.unwrap()), "Lt-8080-after-the-copy");
     assert!(b.crm.verify(&b.k, ws, "hooks", b"payload", &signed).await.unwrap(), "what it signed there verifies here");
     let arrived = vault::events(&b.k.db, None, 100).await.unwrap().into_iter().find(|e| e.action == "workspace_arrived").expect("recorded");
@@ -379,6 +390,7 @@ async fn moved(a: &Installation, b: &Installation, needles: &mut Vec<String>) {
     let back = SecretKey::from_base64(&vault::transfer_out(&b.k, t).await.unwrap()).unwrap();
     a.k.move_workspace("mover", &source(b, vec![b.key.clone(), back], None), Run::Start, &quiet).await.unwrap();
     assert_eq!(shown(a.crm.reveal(&a.k, ws, "api").await.unwrap()), "Mv-7070-carried-over", "back where it started");
+    assert_eq!(a.crm.describe(&a.k, ws, "api").await.unwrap().unwrap().managed_by.as_deref(), Some("crm"), "and back again");
     b.k.finish_move("mover", "checked back home").await.unwrap();
     assert_eq!(rows_of(&b.k.db, t).await, (0, 0, 0));
 }

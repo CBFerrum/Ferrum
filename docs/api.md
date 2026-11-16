@@ -2291,6 +2291,9 @@ one the vault makes is shown once, in the answer that made it. Never cached.
   `{owner}`: `platform`, an app's id, or `plugin:<name>`. `{name}`: lowercase letters, digits and `_ . -`.
 * `POST /api/admin/secrets/{owner}/{name}/rotate` with one of `value`, `random`, `ed25519` → `{secret, shown?}`: a new
   version under its rule; the one before verifies for its rule's overlap. `404`: no such secret.
+* Each secret says `managed_by`: the app that manages it itself (none: people's to change). For such a secret every
+  route below that changes it (set, rotate, rule, remove), the operator's too, answers `409` with one sentence naming
+  the app.
 * `PUT /api/admin/secrets/{owner}/{name}/rule` with `{"rule": {...}}` → `{secret}`: only its rule changes (the hosts it may
   go to, whether its code may read it, a sandbox's, the overlap, the expiry), its value and version kept. The same right
   and the same confirmed identity as setting it, for every change, stricter or not. `404`: no such secret; `422`: a

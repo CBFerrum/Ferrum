@@ -502,6 +502,21 @@ async fn people(a: &AppState, a_ctx: &AppContext, needles: &mut Vec<String>) {
     assert_eq!(listed.json()["owners"][0]["secrets"][0]["name"], json!("webhook-key"));
     assert!(listed.json()["owners"][0]["secrets"][0]["set_by_name"].is_string(), "who set it, by name beside the id: {}", listed.body);
     assert!(!listed.body.contains(&shown) && !listed.body.contains(&shown_again), "shown once, never listed");
+    // Managed by its owner's code (here the platform's handle stands for an app's): each route refuses, saying so.
+    let ws = ferrum_kernel::vault::Scope::Workspace(tenant);
+    a.vault.manage(&a.kernel, ws, "webhook-key", true).await.unwrap();
+    for (method, path, body) in [
+        (Method::PUT, "/api/admin/secrets/platform/webhook-key", Some(json!({"random": 32}))),
+        (Method::POST, "/api/admin/secrets/platform/webhook-key/rotate", Some(json!({"random": 32}))),
+        (Method::PUT, "/api/admin/secrets/platform/webhook-key/rule", Some(json!({"rule": {}}))),
+        (Method::DELETE, "/api/admin/secrets/platform/webhook-key", None),
+    ] {
+        let r = ask(&boss, method.clone(), path, body).await;
+        assert_eq!(r.status, StatusCode::CONFLICT, "{method} {path}: {}", r.body);
+        assert!(r.body.contains("managed by its app, platform"), "with why: {}", r.body);
+    }
+    assert_eq!(ask(&boss, Method::GET, "/api/admin/secrets", None).await.json()["owners"][0]["secrets"][0]["managed_by"], json!("platform"));
+    a.vault.manage(&a.kernel, ws, "webhook-key", false).await.unwrap();
     let gone = ask(&boss, Method::DELETE, "/api/admin/secrets/platform/webhook-key", None).await;
     assert_eq!(gone.json()["removed"], json!(true));
     needles.extend([shown, shown_again]);

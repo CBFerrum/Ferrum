@@ -40,6 +40,7 @@ VAULT_TX = (
     "crates/kernel/migrations/20261119000202_vault_event.sql",
     "crates/kernel/migrations/20261119000401_vault_transfer.sql",
     "crates/kernel/migrations/20261119000501_vault_kept.sql",
+    "crates/kernel/migrations/20261119000801_vault_managed.sql",
 )
 # Why each file still names the master key (the old key, FERRUM_SECRET_KEY) outside the vault.
 WHY = {
@@ -68,7 +69,7 @@ WHY = {
 # Apps in this workspace (the rest come from their own repositories): their packages are compiled in as apps.
 WORKSPACE_APPS = {"ferrum-studio", "ferrum-ops"}
 
-TABLES = re.compile(r"\bvault\.(root_slot|key|secret|use_count|event|transfer|kept)\b|\bferrum\.vault\b")
+TABLES = re.compile(r"\bvault\.(root_slot|key|secret|use_count|event|transfer|kept|managed)\b|\bferrum\.vault\b")
 WAYS_IN = re.compile(
     r"\bvault::(open|rewrap|put_slot|remove_slot|rotate_installation_key|events)\s*\(|\bvault::(\{[^}]*\b)?Opener\b"
     r"|\.(vault_set|vault_rotate|vault_rule|vault_remove|vault_secrets|vault_setters|vault_regenerate|vault_reseal|rotate_owner_key|rotate_workspace_key)\s*\("

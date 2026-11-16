@@ -590,6 +590,26 @@ async fn secrets_and_people(no_file: &Path) {
     assert!(!serde_json::to_string(&listed).unwrap().contains(&shown) && !serde_json::to_string(&listed).unwrap().contains("relay-pw"));
     let set_by_person = trail(&k, w).await.into_iter().filter(|(a, d)| a == "set" && d["name"] == "partner.token").count();
     assert_eq!(set_by_person, 1);
+
+    // ── a secret its app manages: people's ways leave it to the app and say so; the app goes on using and changing it ──
+    fn refused(r: Result<(), Error>) -> bool {
+        matches!(r, Err(Error::Conflict(m)) if m.contains("managed by its app, crm"))
+    }
+    crm.set(&k, ws, "issuer.key", New::Ed25519, Rule::default()).await.unwrap();
+    crm.manage(&k, ws, "issuer.key", true).await.unwrap();
+    assert_eq!(crm.describe(&k, ws, "issuer.key").await.unwrap().unwrap().managed_by.as_deref(), Some("crm"));
+    assert!(k.vault_secrets(&admin).await.unwrap().iter().any(|d| d.name == "issuer.key" && d.managed_by.as_deref() == Some("crm")));
+    assert!(k.vault_secrets(&admin).await.unwrap().iter().any(|d| d.name == "partner.token" && d.managed_by.is_none()), "people's own");
+    assert!(refused(k.vault_set(&proved, "crm", "issuer.key", New::Ed25519, Rule::default()).await.map(|_| ())));
+    assert!(refused(k.vault_rotate(&proved, "crm", "issuer.key", New::Ed25519).await.map(|_| ())));
+    assert!(refused(k.vault_rule(&proved, "crm", "issuer.key", Rule::default()).await.map(|_| ())));
+    assert!(refused(k.vault_remove(&proved, "crm", "issuer.key").await.map(|_| ())));
+    assert!(refused(k.vault_regenerate(ws, "crm", "issuer.key").await.map(|_| ())), "an operator's regenerate too");
+    assert_eq!(crm.rotate(&k, ws, "issuer.key", New::Ed25519).await.unwrap().managed_by.as_deref(), Some("crm"), "its app rotates it");
+    assert!(crm.sign(&k, ws, "issuer.key", b"m").await.is_ok(), "and uses it");
+    crm.manage(&k, ws, "issuer.key", false).await.unwrap();
+    assert!(k.vault_rule(&proved, "crm", "issuer.key", Rule::default()).await.is_ok(), "people's again once its app lets go");
+    assert!(matches!(crm.manage(&k, ws, "missing", true).await, Err(Error::NotFound(_))));
     for (who, why) in [
         (Ctx { is_admin: false, ..proved.clone() }, "not an administrator"),
         (Ctx { outside: true, ..proved.clone() }, "from outside"),

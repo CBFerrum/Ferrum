@@ -1490,7 +1490,9 @@ deletes, under the same cap on uses (a hundred an hour for each secret and verb,
 * `vault_recovery`: a new recovery key, printed once; the one before it opens nothing from then on.
 * `vault_rewrap [with:password|recovery] [file:<path>]`: above; the old password or the recovery key from standard
   input, or from the file (a mounted Secret), as a Job can.
-* `vault_rotate level:…`: a new key at one level, with no moment at which anything cannot be opened.
+* `vault_rotate level:…`: a new key at one level, with no moment at which anything cannot be opened. A secret its app
+  manages itself (`managed_by`, shown by `vault_status` and the Secrets screen) is refused here and on every route that
+  changes it, naming the app: change it through the app.
   * `level:slot kind:…`: one slot with a new key (one row changes).
   * `level:installation [recovery:keep|new]`: a new installation key. Every slot and every workspace key is wrapped
     again with it, in one transaction, so run it where each slot's key is at hand. A recovery slot needs
