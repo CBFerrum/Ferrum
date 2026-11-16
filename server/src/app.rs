@@ -262,6 +262,8 @@ impl Hooks for App {
             )));
         }
         ferrum_domain::register(&mut hooks);
+        // The platform's own services: the programs beside the server whose files it renders (`ferrum task render`).
+        crate::companions::register(&mut hooks);
         crate::packages::register(&mut hooks).map_err(|e| Error::Message(format!("apps: {e}")))?;
         let plugins = ferrum_plugins::PluginHost::new(settings.webhooks_allow_private).map_err(|e| Error::Message(format!("plugins: {e}")))?;
         // Each plugin's handle is made with the platform's: its secrets go on its requests, to nobody else.
@@ -851,6 +853,8 @@ impl Hooks for App {
         tasks.register(crate::tasks::SecretSet);
         tasks.register(crate::tasks::SecretRemove);
         tasks.register(crate::tasks::VaultTransfer);
+        tasks.register(crate::tasks::ListServices);
+        tasks.register(crate::tasks::Render);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

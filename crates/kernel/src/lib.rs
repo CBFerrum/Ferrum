@@ -20,6 +20,7 @@ pub mod bulk;
 pub mod capability;
 pub mod coedit;
 pub mod collab;
+pub mod companion;
 pub mod connect;
 pub mod connections;
 pub mod controls;

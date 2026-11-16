@@ -1506,6 +1506,9 @@ deletes, under the same cap on uses (a hundred an hour for each secret and verb,
     something it keeps outside the vault.
   * `level:secret workspace:… owner:<id> name:<name>`: a new value of a key code uses and nobody types (a random
     value, an Ed25519 pair), never shown. The version before still verifies for the secret's overlap.
+  * `level:service service:<name>`: new values of the secrets the vault made for a service (*Files for the programs
+    beside the server*), its app's to manage; the version before is still given to the service's renders for the
+    overlap.
 * `secret_set name:<key> [file:<path>] [overlap:<secs>]`, `secret_remove name:<key>`: the platform's own secrets
   (*The platform's secrets*).
 * `vault_transfer workspace:<slug>`: at the source of a move, the workspace's vault made ready to move, its key printed
@@ -1686,6 +1689,54 @@ Its keys and secrets follow the workspace. Deleting it (`delete_tenant`, `delete
 source of a move) removes them in the same transaction as its rows, and says so in the vault's record
 (`workspace_vault_removed`, with why, and how many keys and secrets). A sandbox has each secret as the secret's rule
 says (*A sandbox of a workspace*), with keys of its own. A move carries them (*Moving one workspace*).
+
+## Files for the programs beside the server
+
+Some programs run beside the server and share a secret or a setting with it: the object store Compose bundles, the
+meeting server, the mail server, an app's engine. Each can take what it needs from files written as it starts, from the
+database and the vault alone, instead of a Secret or a `deploy/.env` value typed once for it and once for the server. A
+secret the two share is then made once, by the vault, and typed by nobody.
+
+Each such program is a *service*, declared by its owner: an app for its own programs (docs/app-contract.md, *Declaring a
+service*), the platform for its own. A service names its files and the secrets the vault makes for it. One name with two
+owners stops the server, naming both.
+
+| Task | What it does |
+|---|---|
+| `ferrum task services [format:json]` | the services this build declares: each one's owner, its files and the secrets the vault makes for it; never a value |
+| `ferrum task render service:<name> to:<dir>` | writes the service's files into `<dir>`, from the database and the vault; prints the files' names |
+| `ferrum task vault_rotate level:service service:<name>` | new values of the secrets the vault made for the service, never shown; the ones before stay for their overlap |
+
+**A render** opens the vault as a server does, reads the settings as a server does (the environment's value through this
+release, else the database's), asks the service for its files, then writes them. Run it with the servers'
+`DATABASE_URL` and nothing else: that is its one input. With the vault closed, a setting the service needs and nobody
+set, or a secret it may not have, it refuses, says why, and writes nothing.
+
+- **The first render makes the shared secrets.** A secret the service declares that the vault does not hold yet is made
+  then: 32 random bytes, as 43 characters of base64url, in the installation's scope, owned by the service's owner. Renders
+  and replicas at once make one (the secret's lock). It is marked as its app's to manage, so the Secrets screen and the
+  operator's routes leave it alone. A secret of that name that a person set is refused: the vault makes it only where
+  there is none.
+- **Only what its rule lets out.** A secret reaches a file only through its owner's own handle, and only when its rule
+  lets its owner read it (`reveal`). A secret that is only used (to sign, to check) never goes into a file. A file that
+  says it holds no secret and holds a value the render was given is refused.
+- **On the record.** Each secret given to a render is in the vault's record as `render`, with the owner, the secret, its
+  version and the service, never the value (`ferrum task vault_events`), under the cap on uses: a hundred an hour for
+  each secret, then one summary. A secret the vault makes is recorded as `make`, a rotation as `rotate` by `operator`,
+  each naming the service.
+- **The directory** is made when missing, for its owner alone (or its group too, where the service says so), and is
+  never a link. It must be empty, or hold only what an earlier render of the same service wrote (`.ferrum-render` says
+  which service and which files): anything else there is refused, and left as it was. Each file is written under a
+  temporary name and then renamed to its own, readable by its owner alone (0600; 0640 where the service says a group
+  reads it). Nothing is written through a link, nor outside the directory. What the earlier render wrote and this one
+  does not is removed. Renders into one directory take turns.
+- **Stopped half way.** A render stopped between its renames can leave some files of each render. The program is not
+  started on them (the render failed), and the next render replaces them all.
+
+**Rotating.** A rotated secret reaches the program at its next start: `vault_rotate level:service`, then restart the
+program, whose render then gives it the new value. Where the program can hold two values at once, its render gives it
+the version before too while the secret's overlap lasts, so that the server and the program never refuse each other in
+between. Rotate when the program can be restarted within the overlap.
 
 ## Durable processes
 

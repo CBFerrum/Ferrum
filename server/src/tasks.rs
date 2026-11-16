@@ -1566,6 +1566,8 @@ impl Task for VaultRewrap {
 ///   or here and now with `wait:yes` (and always for the installation's own);
 /// * `level:secret workspace:… owner:<id> name:<name>`: a new value of a secret the vault made (a random value or an
 ///   Ed25519 pair), never shown; the version before still verifies for its rule's overlap.
+/// * `level:service service:<name>`: new values of the secrets the vault made for a service (`ferrum task services` names
+///   them), never shown; the version before is still given to its renders, and verifies, for its rule's overlap.
 pub struct VaultRotate;
 
 #[async_trait]
@@ -1573,7 +1575,7 @@ impl Task for VaultRotate {
     fn task(&self) -> TaskInfo {
         TaskInfo {
             name: "vault_rotate".into(),
-            detail: "A new key at one level of the vault: level:slot|installation|workspace|owner|secret (docs/operations.md)".into(),
+            detail: "A new key at one level of the vault: level:slot|installation|workspace|owner|secret|service (docs/operations.md)".into(),
         }
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
@@ -1625,7 +1627,15 @@ impl Task for VaultRotate {
                     d.previous_until.map(|t| format!("; the version before verifies until {t}")).unwrap_or_default()
                 );
             }
-            _ => return Err(Error::Message("say which: level:slot, level:installation, level:workspace, level:owner or level:secret".into())),
+            "service" => {
+                let service = vars.cli_arg("service").map_err(|_| Error::Message("say which: service:<name> (`ferrum task services` lists them)".into()))?;
+                for d in k.rotate_companion(service).await.map_err(refused)? {
+                    let until = d.previous_until.map(|t| format!("; the version before is still given to its renders, and verifies, until {t}"));
+                    println!("{}'s {} is at version {}{}", d.owner, d.name, d.version, until.unwrap_or_default());
+                }
+                println!("now render {service}'s files and restart it, in the order docs/operations.md gives (\"Files for the programs beside the server\")");
+            }
+            _ => return Err(Error::Message("say which: level:slot, level:installation, level:workspace, level:owner, level:secret or level:service".into())),
         }
         Ok(())
     }
@@ -1719,6 +1729,65 @@ impl Task for VaultTransfer {
             "The transfer key of {slug}, shown this once:\n\n    {}\n\nAdd it to FERRUM_MOVE_SOURCE_SECRET_KEYS where the move runs, after this installation's keys. It opens nothing but this transfer; a new one replaces it.",
             key.as_str()
         );
+        Ok(())
+    }
+}
+
+/// `services [format:json]`: the services declared on this server (docs/operations.md, "Files for the programs beside
+/// the server"), each with its owner, its files and the secrets the vault makes for it. Names only.
+pub struct ListServices;
+
+#[async_trait]
+impl Task for ListServices {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "services".into(), detail: "The programs beside the server whose files `render` writes, with their owners and files".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let all = kernel(ctx)?.companions();
+        if vars.cli_arg("format").is_ok_and(|f| f == "json") {
+            println!("{}", serde_json::to_string_pretty(&all).map_err(refused)?);
+            return Ok(());
+        }
+        for s in &all {
+            let made = if s.made.is_empty() { String::new() } else { format!("; the vault makes {}", s.made.join(", ")) };
+            println!("{} ({}): {}{made}", s.name, s.owner, s.files.join(", "));
+        }
+        if all.is_empty() {
+            println!("no service is declared on this server");
+        }
+        Ok(())
+    }
+}
+
+/// `render service:<name> to:<dir>`: the files of a program that runs beside the server, written from the database and
+/// the vault as it starts (docs/operations.md, "Files for the programs beside the server"). Names only, never what a file
+/// holds.
+pub struct Render;
+
+#[async_trait]
+impl Task for Render {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "render".into(),
+            detail: "Writes a program's files from the database and the vault: service:<name> to:<dir> (`ferrum task services` lists them)".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let service = vars.cli_arg("service").map_err(|_| Error::Message("say which: service:<name> (`ferrum task services` lists them)".into()))?;
+        let dir = vars.cli_arg("to").map_err(|_| Error::Message("say where: to:<directory>".into()))?;
+        // The settings the registry declares, by key or variable, as this process resolved them: a service never reads
+        // past the registry into the environment.
+        let settings = |name: &str| crate::settings::find(name).and_then(|d| ferrum_kernel::env::var(&d.env));
+        let rendered = k.render(service, &settings).await.map_err(refused)?;
+        let written = ferrum_kernel::companion::write(Path::new(dir), &rendered).map_err(refused)?;
+        for (name, secret) in &written.files {
+            println!("{name}{}", if *secret { " (holds a secret)" } else { "" });
+        }
+        for name in &written.removed {
+            println!("{name}: removed, as this render no longer writes it");
+        }
+        println!("the service {service} ({}): {} files in {dir}", rendered.owner, written.files.len());
         Ok(())
     }
 }
