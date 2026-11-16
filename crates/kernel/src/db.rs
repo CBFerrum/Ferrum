@@ -13,8 +13,15 @@ use uuid::Uuid;
 
 pub type Tx = Transaction<'static, Postgres>;
 
-/// Connections in the side pool (see [`Db::side`]); count them in the database's connection budget.
+/// The fewest connections in the side pool (see [`Db::side`]); count them in the database's connection budget.
 pub const SIDE_CONNECTIONS: u32 = 4;
+
+/// The side pool's connections for a main pool of `main`: an eighth of it, and never fewer than [`SIDE_CONNECTIONS`]
+/// (4 with the default pool of 30). The vault's verbs and short side writes (numbering) take one each, outside the
+/// caller's transaction, so the side pool grows with the requests that can ask for one at once.
+pub fn side_connections(main: u32) -> u32 {
+    main.div_ceil(8).max(SIDE_CONNECTIONS)
+}
 
 /// The server's LISTEN loops, each holding one connection of [`Db::direct`] for as long as it runs: metadata and users
 /// (kernel), plugin sockets, live updates and co-editing (server).
@@ -292,7 +299,7 @@ impl Db {
         // without it.
         let main = if direct_url.is_some() { main.extra_float_digits(None) } else { session(main) };
         let side = PgPoolOptions::new()
-            .max_connections(SIDE_CONNECTIONS)
+            .max_connections(side_connections(config.max_connections))
             .min_connections(0)
             .acquire_timeout(config.acquire_timeout)
             .idle_timeout(Some(Duration::from_secs(60)))

@@ -63,6 +63,20 @@ server does not start.
 
 `Kernel::secret` (any app's secret field) still works and is noted, and goes in the next release.
 
+`sign_at` signs with a version the app names (none: the current one) and says which it used, and `public_key` gives a
+kept version's public half, so an app that publishes its keys (a token issuer's) names each signature's key. `key_version`
+says which version of its own key `seal` seals with now, and `Vault::sealed_version` which one sealed what it kept: an
+app seals again what an older version sealed, so that version can go.
+
+**Its own transaction.** Each verb runs in a transaction of its own, on a side pool of connections (an eighth of the
+replica's pool, at least four), never in the caller's: a verb's result and its record stand whether or not the caller's
+transaction then commits. So a `set` made before a business transaction that rolls back leaves the secret set: set it
+after the commit, or remove it when the work fails. A `reveal`, `sign` or `carry` is recorded even when the work it
+served fails. A verb does not see what the caller's open transaction wrote and has not committed. Under load a verb waits
+for a side connection, never for the caller's own, so it cannot hold up the caller's transaction by itself; do not call one
+while holding a lock on what that verb takes (the secret's own lock). The one verb in the caller's transaction is
+`field`, which reads the app's secret field with the record it belongs to.
+
 **What it made with the old key (R1 only).** An app that sealed or keyed things of its own with the old key
 (`settings.secret_key`, deprecated) keeps them working through its handle until they lapse, with no key in its hands and
 nothing wider. Each names a context of the app's own: its id, then one of ` -.:/|`, then more (`cloud-dns-key`,

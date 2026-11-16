@@ -320,6 +320,26 @@ impl Vault {
         .await
     }
 
+    /// The version of this owner's key in `scope` that [`Vault::seal`] seals with now: compared with
+    /// [`Vault::sealed_version`] of what the app keeps, it says what to seal again, so that an older version is retired
+    /// once nothing it sealed is left.
+    pub async fn key_version(&self, k: &Kernel, scope: Scope) -> Result<i32> {
+        let owner = self.bound(k)?;
+        with_retry(|| async {
+            let mut tx = k.db.vault_tx(scope.tenant()).await?;
+            let (version, _, _) = k.db.vault.current_owner_key(&k.db, &mut tx, scope.id(), owner).await?;
+            tx.commit().await?;
+            Ok(version)
+        })
+        .await
+    }
+
+    /// The version of the owner key that sealed `sealed` (what [`Vault::seal`] made), read from it; none when it is
+    /// not one.
+    pub fn sealed_version(sealed: &str) -> Option<i32> {
+        sealed.strip_prefix(SEALED_PREFIX)?.split_once('.')?.0.parse().ok()
+    }
+
     /// What [`Vault::seal`] sealed. Refused when it was sealed for another owner, scope or context, or changed.
     pub async fn open(&self, k: &Kernel, scope: Scope, context: &str, sealed: &str) -> Result<Zeroizing<Vec<u8>>> {
         let owner = self.bound(k)?;
@@ -407,5 +427,6 @@ mod tests {
         assert!(plugin_name_ok("mail.smtp") && !plugin_name_ok("Mail") && !plugin_name_ok(""));
         assert!(check_purpose("share-links").is_ok() && check_purpose("Share").is_err() && check_purpose("").is_err());
         assert!(check_context("drive.share/9f").is_ok() && check_context("a\nb").is_err() && check_context("").is_err());
+        assert_eq!((Vault::sealed_version("fv1.3.AAAA"), Vault::sealed_version("fv1.x.A"), Vault::sealed_version("plain")), (Some(3), None, None));
     }
 }

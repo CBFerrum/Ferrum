@@ -487,9 +487,20 @@ async fn people(a: &AppState, a_ctx: &AppContext, needles: &mut Vec<String>) {
         call(&s, Method::GET, "/api/admin/secrets", &[("cookie", boss.as_str()), ("sec-fetch-site", "same-origin"), ("accept-encoding", "gzip, br")], None)
             .await;
     assert!(gzip.status == StatusCode::OK && gzip.headers.contains_key(header::CONTENT_ENCODING), "as a browser asks: {}", gzip.status);
+    // Its rule alone: the same right and confirmed identity, the value and version kept, on the trail as `rule`.
+    let ruled =
+        ask(&boss, Method::PUT, "/api/admin/secrets/platform/webhook-key/rule", Some(json!({"rule": {"overlap_secs": 60, "hosts": ["hooks.example.com"]}})))
+            .await;
+    assert_eq!(ruled.status, StatusCode::OK, "{}", ruled.body);
+    assert_eq!((ruled.json()["secret"]["version"].clone(), ruled.json()["secret"]["rule"]["hosts"].clone()), (json!(2), json!(["hooks.example.com"])));
+    assert!(!ruled.body.contains(&shown_again), "no value in it");
+    let bad = ask(&boss, Method::PUT, "/api/admin/secrets/platform/webhook-key/rule", Some(json!({"rule": {"hosts": ["Not A Host"]}}))).await;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", bad.body);
+    assert_eq!(ask(&clerk, Method::PUT, "/api/admin/secrets/platform/webhook-key/rule", Some(json!({"rule": {}}))).await.status, StatusCode::FORBIDDEN);
     let listed = ask(&boss, Method::GET, "/api/admin/secrets", None).await;
     assert_eq!(listed.json()["owners"][0]["owner"], json!("platform"));
     assert_eq!(listed.json()["owners"][0]["secrets"][0]["name"], json!("webhook-key"));
+    assert!(listed.json()["owners"][0]["secrets"][0]["set_by_name"].is_string(), "who set it, by name beside the id: {}", listed.body);
     assert!(!listed.body.contains(&shown) && !listed.body.contains(&shown_again), "shown once, never listed");
     let gone = ask(&boss, Method::DELETE, "/api/admin/secrets/platform/webhook-key", None).await;
     assert_eq!(gone.json()["removed"], json!(true));

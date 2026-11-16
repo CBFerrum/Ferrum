@@ -53,6 +53,11 @@ pub const POOL_FLOOR: u32 = 10;
 /// What one server replica opens besides its pool (`FERRUM_DB_MAX_CONNECTIONS`): the side pool's 4 and Loco's own 2
 /// (docs/operations.md, "Database role").
 pub const BESIDE_POOL: u32 = crate::db::SIDE_CONNECTIONS + 2;
+
+/// What a replica with a pool of `pool_size` opens beside it: its side pool ([`crate::db::side_connections`]) and Loco's 2.
+pub fn beside_pool(pool_size: u32) -> u32 {
+    crate::db::side_connections(pool_size) + 2
+}
 /// Read before anyone's workspace is known, so they hold a tenant's id without row-level security:
 /// the host a request came to, and slugs retired for good. Their migrations say why.
 const CLUSTER_TABLES: [&str; 2] = ["tenant_host", "tenant_slug_retired"];
@@ -69,7 +74,7 @@ impl Kernel {
         } else {
             Finding::warning("database.version", format!("PostgreSQL {}, and Ferrum is tested on 17", version / 10000), "Upgrade PostgreSQL to 17.")
         });
-        out.push(if ((pool_size + BESIDE_POOL) * 2 + 20) as i32 <= max_connections {
+        out.push(if ((pool_size + beside_pool(pool_size)) * 2 + 20) as i32 <= max_connections {
             Finding::ok("database.connections", format!("{max_connections} allowed, {pool_size} per replica"))
         } else {
             Finding::warning(
@@ -161,7 +166,7 @@ impl Kernel {
         }
         // The role's own connection limit against what the replicas running now may open.
         let running: i64 = sqlx::query_scalar("select count(*) from replica where seen_at > now() - interval '2 minutes'").fetch_one(&mut *tx).await?;
-        let each = if self.db.pooled() { self.db.config.direct_connections } else { pool_size + BESIDE_POOL };
+        let each = if self.db.pooled() { self.db.config.direct_connections } else { pool_size + beside_pool(pool_size) };
         let may = running.max(1) * i64::from(each);
         out.push(if limit < 0 || may + i64::from(RESERVED_CONNECTIONS) <= i64::from(limit) {
             Finding::ok(

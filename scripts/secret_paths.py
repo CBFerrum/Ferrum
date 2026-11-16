@@ -71,7 +71,7 @@ WORKSPACE_APPS = {"ferrum-studio", "ferrum-ops"}
 TABLES = re.compile(r"\bvault\.(root_slot|key|secret|use_count|event|transfer|kept)\b|\bferrum\.vault\b")
 WAYS_IN = re.compile(
     r"\bvault::(open|rewrap|put_slot|remove_slot|rotate_installation_key|events)\s*\(|\bvault::(\{[^}]*\b)?Opener\b"
-    r"|\.(vault_set|vault_rotate|vault_remove|vault_secrets|vault_regenerate|vault_reseal|rotate_owner_key|rotate_workspace_key)\s*\("
+    r"|\.(vault_set|vault_rotate|vault_rule|vault_remove|vault_secrets|vault_setters|vault_regenerate|vault_reseal|rotate_owner_key|rotate_workspace_key)\s*\("
 )
 UNSAFE = re.compile(r"\bunsafe\s*(\{|fn\b|impl\b|trait\b|extern\b)")
 MASTER = re.compile(

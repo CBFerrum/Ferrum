@@ -511,6 +511,31 @@ async fn remove(k: &Kernel, scope: Scope, owner: &str, name: &str, who: &Who<'_>
     Ok(!gone.is_empty())
 }
 
+/// Changes only the rule of `name`'s current version (its value and version stay as they are), under the secret's lock;
+/// recorded as `rule`, with who did it. Not found when there is no such secret.
+async fn set_rule(k: &Kernel, scope: Scope, owner: &str, name: &str, rule: Rule, who: &Who<'_>) -> Result<Described> {
+    check_name(name)?;
+    rule.check()?;
+    let mut tx = k.db.vault_tx(scope.tenant()).await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("ferrum.vault.secret {}/{owner}/{name}", scope.id()))
+        .execute(&mut *tx)
+        .await?;
+    let version: Option<i32> =
+        sqlx::query_scalar("update vault.secret set rule = $4 where scope = $1 and owner = $2 and name = $3 and valid_until is null returning version")
+            .bind(scope.id())
+            .bind(owner)
+            .bind(name)
+            .bind(serde_json::to_value(&rule).map_err(|e| Error::Internal(e.to_string()))?)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let version = version.ok_or_else(|| Error::NotFound("secret".into()))?;
+    audited(&mut tx, scope, owner, name, "rule", who, version, false).await?;
+    let rows = rows(&mut tx, scope, owner, name).await?;
+    tx.commit().await?;
+    described(scope, owner, name, &rows).ok_or_else(|| Error::NotFound("secret".into()))
+}
+
 async fn list(k: &Kernel, scope: Scope, owner: Option<&str>) -> Result<Vec<Described>> {
     let mut tx = k.db.vault_tx(scope.tenant()).await?;
     let names: Vec<(String, String)> = sqlx::query_as(
@@ -632,6 +657,49 @@ impl Vault {
             Ok(signature)
         })
         .await
+    }
+
+    /// `message` signed with `name`'s version `version` (none: the current one), and the version that signed it: what
+    /// a caller names beside a signature, so that whoever checks it knows which public half to use. A version is one
+    /// still kept: the current, or the one before while the rule's overlap lasts. Recorded as [`Vault::sign`] is.
+    pub async fn sign_at(&self, k: &Kernel, scope: Scope, name: &str, message: &[u8], version: Option<i32>) -> Result<(i32, Vec<u8>)> {
+        let owner = self.bound(k)?;
+        check_name(name)?;
+        with_retry(|| async {
+            let mut tx = k.db.vault_tx(scope.tenant()).await?;
+            let rows = rows(&mut tx, scope, owner, name).await?;
+            let current = current(&rows, name)?;
+            let row = match version {
+                None => current,
+                Some(v) => rows.iter().find(|r| r.version == v).ok_or_else(|| Error::NotFound(format!("{name}, version {v}")))?,
+            };
+            let value = opened(&k.db, &mut tx, scope, owner, name, row).await?;
+            let signature = match row.kind {
+                Kind::Value => seal::hmac_sha256(&value, message),
+                Kind::Ed25519 => seal::ed25519_sign(&value, message)?,
+            };
+            audited(&mut tx, scope, owner, name, "sign", &CODE, row.version, true).await?;
+            used(&mut tx, scope, owner, name, current).await?;
+            tx.commit().await?;
+            Ok((row.version, signature))
+        })
+        .await
+    }
+
+    /// The public half (base64url) of `name`'s Ed25519 version `version` (none: the current one), while that version
+    /// is kept; none for a value, which has no public half.
+    pub async fn public_key(&self, k: &Kernel, scope: Scope, name: &str, version: Option<i32>) -> Result<Option<String>> {
+        let owner = self.bound(k)?;
+        check_name(name)?;
+        let mut tx = k.db.vault_tx(scope.tenant()).await?;
+        let rows = rows(&mut tx, scope, owner, name).await?;
+        tx.commit().await?;
+        let current = current(&rows, name)?;
+        let row = match version {
+            None => current,
+            Some(v) => rows.iter().find(|r| r.version == v).ok_or_else(|| Error::NotFound(format!("{name}, version {v}")))?,
+        };
+        Ok(row.public_key.as_ref().map(|k| B64URL.encode(k)))
     }
 
     /// Whether `signature` is `message` signed with `name`: its current version, or the one before it while the
@@ -981,6 +1049,17 @@ impl Kernel {
         list(self, Scope::Workspace(ctx.tenant), None).await
     }
 
+    /// The names of the workspace's people who set its secrets (`Described::set_by`), for its administrators, who may see
+    /// them: by id, the ones still there.
+    pub async fn vault_setters(&self, ctx: &Ctx, ids: &[Uuid]) -> Result<std::collections::BTreeMap<Uuid, String>> {
+        may_manage(ctx, false)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<(Uuid, String)> =
+            sqlx::query_as("select id, full_name from app_user where tenant_id = $1 and id = any($2)").bind(ctx.tenant).bind(ids).fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// Sets `owner`'s secret `name` in the workspace, for a person: an administrator who has just confirmed it is them.
     /// A value the vault made is returned to show them once.
     pub async fn vault_set(&self, ctx: &Ctx, owner: &str, name: &str, value: New, rule: Rule) -> Result<Changed> {
@@ -1014,6 +1093,14 @@ impl Kernel {
             Kind::Ed25519 => New::Ed25519,
         };
         write(self, scope, owner, name, new, None, &CODE).await.map(|(d, _)| d)
+    }
+
+    /// Changes only the rule of `owner`'s secret `name` in the workspace, for a person, as [`Kernel::vault_set`]: the
+    /// same right, a confirmed identity for every change (stricter or not), on the audit trail as `rule`.
+    pub async fn vault_rule(&self, ctx: &Ctx, owner: &str, name: &str, rule: Rule) -> Result<Described> {
+        may_manage(ctx, true)?;
+        let v = of_owner(self, owner)?;
+        set_rule(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name, rule, &Who { actor: Some(ctx.user), request: &ctx.request_id, by: None }).await
     }
 
     /// Removes `owner`'s secret `name` from the workspace, for a person, as [`Kernel::vault_set`].
@@ -1059,6 +1146,13 @@ impl Vault {
         let who = Who { actor: None, request: &request, by: Some("operator") };
         let (secret, shown) = write(k, Scope::Installation, v.bound(k)?, name, value, None, &who).await?;
         Ok(Changed { secret, shown })
+    }
+
+    /// Changes only the rule of `owner`'s secret `name` of the installation for the operator; recorded as the operator's.
+    pub async fn operator_rule(&self, k: &Kernel, owner: &str, name: &str, rule: Rule) -> Result<Described> {
+        let v = self.for_operator(k, owner)?;
+        let request = crate::db::Trace::operation().unwrap_or_default();
+        set_rule(k, Scope::Installation, v.bound(k)?, name, rule, &Who { actor: None, request: &request, by: Some("operator") }).await
     }
 
     /// Removes `owner`'s secret `name` of the installation for the operator; whether there was one.

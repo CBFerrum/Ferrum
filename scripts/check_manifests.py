@@ -11,9 +11,13 @@ import sys
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-# What each replica opens besides its pool: 4 for short side writes and 2 of Loco's own (BESIDE_POOL in
-# crates/kernel/src/doctor.rs; docs/operations.md, "Database role").
-BESIDE = 6
+# What each replica opens besides its pool: its side pool for short side writes and the vault's verbs (an eighth of the
+# pool, at least 4) and 2 of Loco's own (beside_pool in crates/kernel/src/doctor.rs; docs/operations.md, "Database role").
+def beside(size):
+    return max(-(-size // 8), 4) + 2
+
+
+BESIDE = beside(30)
 # What else uses this role: Cloud's controller at two replicas of ten, when it is deployed.
 OTHERS = 20
 # What PostgreSQL must keep for an administrator and replication (RESERVED_CONNECTIONS in doctor.rs).
@@ -51,7 +55,7 @@ def per_replica(spec, pooler):
         return None
     if pooler and through_pooler(spec):
         return int(pooler["metadata"].get("annotations", {}).get("ferrum.dev/direct-connections-per-replica", 8))
-    return size + BESIDE
+    return size + beside(size)
 
 
 def surge(workload, most):

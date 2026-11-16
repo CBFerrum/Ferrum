@@ -504,6 +504,23 @@ async fn secrets_and_people(no_file: &Path) {
     assert!(crm.verify(&k, ws, "signing", b"document", &sig).await.unwrap() && !crm.verify(&k, ws, "signing", b"other", &sig).await.unwrap());
     assert!(matches!(crm.rotate(&k, ws, "signing", value("not a key pair")).await, Err(Error::Invalid(_))), "another kind under its name");
     assert!(matches!(crm.reveal(&k, ws, "signing").await, Err(Error::Forbidden(_))), "its private half stays");
+    // A signature names its version, and each kept version's public half can be read (Cloud's issuer keys).
+    crm.set(&k, ws, "issuer", New::Ed25519, Rule { overlap_secs: 3600, ..Default::default() }).await.unwrap();
+    crm.rotate(&k, ws, "issuer", New::Ed25519).await.unwrap();
+    let (v2, sig2) = crm.sign_at(&k, ws, "issuer", b"jwt", None).await.unwrap();
+    let (v1, sig1) = crm.sign_at(&k, ws, "issuer", b"jwt", Some(1)).await.unwrap();
+    assert_eq!((v1, v2), (1, 2), "the current one unless asked for another");
+    for (v, sig) in [(1, &sig1), (2, &sig2)] {
+        let half = crm.public_key(&k, ws, "issuer", Some(v)).await.unwrap().unwrap();
+        let half = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, half).unwrap();
+        assert!(ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &half).verify(b"jwt", sig).is_ok(), "version {v}");
+    }
+    assert_eq!(crm.public_key(&k, ws, "issuer", None).await.unwrap(), crm.describe(&k, ws, "issuer").await.unwrap().unwrap().public_key);
+    assert!(matches!(crm.sign_at(&k, ws, "issuer", b"jwt", Some(7)).await, Err(Error::NotFound(_))), "a version not kept");
+    assert_eq!(crm.public_key(&k, ws, "hooks", None).await.unwrap(), None, "a value has no public half");
+    // What an app sealed names the key version, beside the one it seals with now: what to seal again.
+    let sealed = crm.seal(&k, ws, "crm.note/1", b"kept outside").await.unwrap();
+    assert_eq!(Vault::sealed_version(&sealed), Some(crm.key_version(&k, ws).await.unwrap()));
 
     // ── an expired secret is used no more; a removed one is gone ──
     as_vault(&db, &format!("with u as (update vault.secret set rule = rule || '{{\"expires_at\": \"2020-01-01T00:00:00Z\"}}' where scope = '{w}' and name = 'smtp.password' returning 1) select count(*) from u")).await;

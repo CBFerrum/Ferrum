@@ -2269,6 +2269,8 @@ that made it (`shown`).
   `{"rule": {...}}` to set it (without one, a rotation under its rule) → `{secret, shown?}`. `404`: no such owner or
   platform secret; `422`: a value where none is taken, none where one is needed, a rule that is not one; `503`: the
   vault is closed.
+* `PUT /api/operator/secrets/{owner}/{name}/rule` with `{"rule": {...}}` → `{secret}`: only its rule changes, its value
+  and version kept. Not the platform's own (`422`): their rules are the server's, bound to where each is sent.
 * `DELETE /api/operator/secrets/{owner}/{name}` → `{"removed": true|false}`.
 
 Each change is on the vault's own record (`ferrum task vault_events`), `by` `operator`, never a value.
@@ -2281,16 +2283,21 @@ without one, `403` with error `step_up` and the ways to confirm it (*Confirming 
 one the vault makes is shown once, in the answer that made it. Never cached.
 
 * `GET /api/admin/secrets` → `{owners: [{owner, secrets: [...]}]}`, each secret described as above (`workspace` its
-  id). `403`: not an administrator of it.
+  id), with `set_by_name` beside `set_by`: the name of the person who set it, while they are the workspace's (none: set
+  by code, or by someone no longer there). `403`: not an administrator of it.
 * `PUT /api/admin/secrets/{owner}/{name}` with exactly one of `{"value": "…"}`, `{"random": 32}` (bytes, 16 to 64; shown
   once) or `{"ed25519": true}`, and `{"rule": {"reveal": false, "hosts": ["api.example.com"], "sandbox": "blank|regenerate|keep",
   "overlap_secs": 0, "expires_at": null}}` (absent: used, never revealed, blank in a sandbox) → `{secret, shown?}`.
   `{owner}`: `platform`, an app's id, or `plugin:<name>`. `{name}`: lowercase letters, digits and `_ . -`.
 * `POST /api/admin/secrets/{owner}/{name}/rotate` with one of `value`, `random`, `ed25519` → `{secret, shown?}`: a new
   version under its rule; the one before verifies for its rule's overlap. `404`: no such secret.
+* `PUT /api/admin/secrets/{owner}/{name}/rule` with `{"rule": {...}}` → `{secret}`: only its rule changes (the hosts it may
+  go to, whether its code may read it, a sandbox's, the overlap, the expiry), its value and version kept. The same right
+  and the same confirmed identity as setting it, for every change, stricter or not. `404`: no such secret; `422`: a
+  rule that is not one.
 * `DELETE /api/admin/secrets/{owner}/{name}` → `{"removed": true|false}`.
 
-Each change is on the workspace's audit trail (owner, name, verb, version; never a value).
+Each change is on the workspace's audit trail (owner, name, verb, version; never a value); a rule's change as `rule`.
 
 ## ERPNext compatibility
 
