@@ -13,7 +13,7 @@
 //! * the server's start-up writes: the upgrade steps' marker (`upgrades_done` names this build's steps, and the newer
 //!   build's check then fails), compiled apps recorded at this build's versions (`ensure_native`), interfaces
 //!   registered for its versions (a fixed version such as the shell's `1.0.0` would then serve the older files to
-//!   every server), and customizations' baselines taken from its older packages. They run under [`Kernel::hold_start`];
+//!   every server). They run under [`Kernel::hold_start`];
 //! * take work a newer build wrote: events and jobs carry the date of the build that wrote them (`build_date`), and
 //!   a server takes only those no newer than itself, so unknown topics and job kinds wait for a newer replica instead
 //!   of being dead-lettered, failed or marked done;
@@ -62,22 +62,8 @@ pub struct Floor {
 }
 
 /// Every floor this build knows.
-pub const FLOORS: &[&Floor] = &[
-    &crate::zones::FLOOR,
-    &crate::zones::FLOOR_LIMITED,
-    &crate::moves::FLOOR,
-    &crate::gate::STAFF_NETWORKS_FLOOR,
-    &crate::gate::KEY_NETWORKS_FLOOR,
-    &crate::gate::IDLE_FLOOR,
-    &crate::gate::BREAK_GLASS_FLOOR,
-    &crate::workspace_move::FLOOR,
-    &crate::sandbox::FLOOR,
-    &crate::zones::FLOOR_STEP_UP,
-    &crate::controls::STEP_UP_FLOOR,
-    &crate::controls::READS_FLOOR,
-    &crate::shell::PROOF_FLOOR,
-    &crate::vault::OLD_KEY_FLOOR,
-];
+pub const FLOORS: &[&Floor] =
+    &[&crate::zones::FLOOR, &crate::zones::FLOOR_LIMITED, &crate::zones::FLOOR_STEP_UP, &crate::shell::PROOF_FLOOR, &crate::vault::OLD_KEY_FLOOR];
 
 fn parse(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s).map(|d| d.with_timezone(&Utc)).unwrap_or(DateTime::<Utc>::MIN_UTC)
@@ -197,7 +183,7 @@ async fn guest_here(conn: &mut PgConnection) -> Result<bool> {
 }
 
 /// Where a protection is switched on, before it takes effect: from now on no build from before `floor.since` starts on
-/// this database. `holder`: what holds a temporary floor (a move's id or a workspace's), `""` for a lasting one. Inside
+/// this database. `holder`: what holds a temporary floor (the id of the work under way), `""` for a lasting one. Inside
 /// a transaction (it takes a transaction lock, so replicas and requests doing this at once leave one row and the right
 /// value). Done again, nothing changes. A guest of a newer build does it too, for the features it knows: raising a
 /// floor only refuses more, and it leaves the recorded build and that build's own `COMPATIBLE_FROM` alone. Releasing and
@@ -229,8 +215,8 @@ pub async fn require(conn: &mut PgConnection, floor: &Floor, holder: &str) -> Re
     Ok(())
 }
 
-/// A temporary floor's `holder` has ended (a move cancelled, adopted, finished or aborted). The floor goes with its last
-/// holder. Inside a transaction; a no-op for a guest, and when the holder is gone already.
+/// A temporary floor's `holder` has ended (the work that held it is over). The floor goes with its last holder. Inside
+/// a transaction; a no-op for a guest, and when the holder is gone already.
 pub async fn release(conn: &mut PgConnection, floor: &Floor, holder: &str) -> Result<()> {
     lock_floors(conn).await?;
     if guest_here(conn).await? || !have_floors(conn).await? {
@@ -456,55 +442,6 @@ impl Kernel {
         Ok(())
     }
 
-    /// At every start of a build level with the database, under the start hold: the floors of what is in use, whoever
-    /// switched it on (a build from before floors, or one after `allow_older_builds`). Zones are the server's (its
-    /// settings, at start). Only adds: a floor of something no longer in use stays until `allow_older_builds`.
-    /// Cost: one statement. `tenant` (a row per workspace) is read for the three workspace settings, stopping at the
-    /// first match; `api_key` (a few rows per workspace, never the size of the event or audit tables) likewise, a scan
-    /// of milliseconds when no key is pinned; sandboxes go through `tenant_sandbox_of`; `platform_move` holds at most one
-    /// row and `workspace_move` one per move. No index is added: building one would lock `api_key` during the upgrade.
-    async fn floors_in_use(&self) -> Result<()> {
-        let mut tx = self.db.system_tx_through_move().await?;
-        if !have_floors(&mut tx).await? {
-            return Ok(());
-        }
-        type InUse = (bool, bool, bool, bool, Vec<String>, Vec<String>, Vec<String>, bool, bool);
-        let (networks, keys, idle, glass, sandboxes, marks, moves, step_up, reads): InUse = sqlx::query_as(
-            "select \
-               exists (select 1 from tenant where jsonb_typeof(settings->'staff_networks'->'networks') = 'array' \
-                 and jsonb_array_length(settings->'staff_networks'->'networks') > 0), \
-               exists (select 1 from api_key where networks is not null and cardinality(networks) > 0 and revoked_at is null), \
-               exists (select 1 from tenant where jsonb_typeof(settings->'idle_minutes') = 'number' and (settings->>'idle_minutes')::numeric > 0), \
-               exists (select 1 from tenant where jsonb_typeof(settings->'break_glass') = 'array'), \
-               array(select id::text from tenant where sandbox_of is not null), \
-               array(select id::text from platform_move), \
-               array(select workspace::text from workspace_move where finished_at is null and state <> 'arrived'), \
-               exists (select 1 from tenant where jsonb_typeof(settings->'step_up') = 'object'), \
-               exists (select 1 from tenant where jsonb_typeof(settings->'record_reads') = 'object')",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        for (on, floor) in [
-            (networks, &crate::gate::STAFF_NETWORKS_FLOOR),
-            (keys, &crate::gate::KEY_NETWORKS_FLOOR),
-            (idle, &crate::gate::IDLE_FLOOR),
-            (glass, &crate::gate::BREAK_GLASS_FLOOR),
-            (step_up, &crate::controls::STEP_UP_FLOOR),
-            (reads, &crate::controls::READS_FLOOR),
-        ] {
-            if on {
-                require(&mut tx, floor, "").await?;
-            }
-        }
-        for (holders, floor) in [(sandboxes, &crate::sandbox::FLOOR), (marks, &crate::moves::FLOOR), (moves, &crate::workspace_move::FLOOR)] {
-            for h in holders {
-                require(&mut tx, floor, &h).await?;
-            }
-        }
-        tx.commit().await?;
-        Ok(())
-    }
-
     /// The floors in effect and what the database records (the doctor).
     pub async fn floors(&self) -> Result<(Vec<InEffect>, Option<Recorded>)> {
         let mut conn = self.db.pool.acquire().await?;
@@ -568,13 +505,7 @@ impl Kernel {
         let standing = standing_here(&mut conn, &self.db).await;
         let hold = StartHold(conn);
         match standing? {
-            Standing::Level => match self.floors_in_use().await {
-                Ok(()) => Ok(Some(hold)),
-                Err(e) => {
-                    hold.release().await;
-                    Err(e)
-                }
-            },
+            Standing::Level => Ok(Some(hold)),
             Standing::Guest(_) => {
                 hold.release().await;
                 Ok(None)

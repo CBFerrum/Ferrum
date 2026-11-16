@@ -36,10 +36,10 @@ areas:
     confirmed: "Reused (W2): rule phases compile no effects (crates/logic/src/compile.rs) and the rules evaluator has no host; plugins keep their own refusal"
   - area: Automations
     existing: [crates/kernel/src/automation.rs]
-    relationship: migrate
-    how: "Kept running. W2 fixes its e-mail (queued with the outbox in its transaction) and compiles its expressions once; W8 imports each into a draft with its id and history, and turns its saver's administrator rights into a reviewed grant"
-    requirements: [FLC-MIG-001, FLC-HOOK-006, FLC-CAP-005]
-    confirmed: "Migrated (W8): crates/kernel/src/authoring.rs imports each automation as a draft with provenance; activation hands its events over under the automation's lock (automation_run 'handed_over', process_it). Automations stay working until then"
+    relationship: reuse
+    how: "Kept running. W2 fixes its e-mail (queued with the outbox in its transaction) and compiles its expressions once"
+    requirements: [FLC-HOOK-006, FLC-CAP-005]
+    confirmed: "Reused (W2): automations run on the outbox as before and stay the effects engine of buttons, transitions and approvals (BD-11). The W8 import into draft Solutions and its cutover were removed before the first release: there were no automations to move"
   - area: Events and the outbox
     existing: [crates/kernel/src/outbox.rs (enqueue, enqueue_change, queue_mail, first_time), docs/events.md]
     relationship: reuse

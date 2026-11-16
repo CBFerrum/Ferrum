@@ -274,7 +274,7 @@ pub struct Schema {
     /// The tenant's IANA time zone (`Asia/Kolkata`); "today" and "now" are local to it.
     pub timezone: String,
     /// The tenant's people use the shell and apps with interfaces of their own (docs/plan/apps-ui.md):
-    /// every workspace since U4b, whatever its `shell_v2` setting says (kept for the release before).
+    /// every workspace since U4b. The server still says so (`/me`, server/src/shell.rs).
     pub shell_v2: bool,
     /// The workspace's published lists (`publish_list`, BD-15), each checked against its entity.
     pub published_lists: Vec<PublishedList>,

@@ -23,22 +23,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
-/// A workspace's step-up rules: an older build lets marked work through without asking. Dated by the merge of its pull
-/// request.
-pub const STEP_UP_FLOOR: crate::window::Floor = crate::window::Floor {
-    feature: "step_up",
-    since: "2026-11-14T08:54:21Z",
-    what: "marked work asks the person to prove who they are again",
-    temporary: false,
-};
-/// A workspace's recorded reads: an older build reads marked entities without recording it.
-pub const READS_FLOOR: crate::window::Floor = crate::window::Floor {
-    feature: "record_reads",
-    since: "2026-11-14T08:54:21Z",
-    what: "reads of marked entities are recorded, or refused",
-    temporary: false,
-};
-
 /// The kinds of work a step-up rule names.
 pub const WORK: [&str; 4] = ["write", "delete", "export", "read"];
 /// How recent a step-up may be, in minutes: at least and at most.

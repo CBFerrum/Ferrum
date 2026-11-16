@@ -812,7 +812,7 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   (`server/src/appmgr.rs`). Leases on events and jobs are rows, not locks.
 * **What a guest does not do.** It does not migrate, does not sync the schema (nor make an app with packages
   available), and skips the start-up writes that would put its older things back: the one-time upgrade steps and
-  their record, apps recorded at its versions, interfaces registered for them, customizations' baselines. It serves
+  their record, apps recorded at its versions, interfaces registered for them. It serves
   requests on everything it knows, and runs the background work, but takes no event or job a newer build wrote (each
   says which build wrote it): those wait for a newer replica, never failed or dropped. A scheduled automation or a
   service target it cannot read is left as it is. After a full rollback only the newer build's own events and jobs
@@ -850,11 +850,9 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   workspace; this build migrates and, with its background work off, leaves an event and a job waiting; the older build
   starts again with `FERRUM_MIGRATE_AT_START=false`, then `true`, and must run as a guest, read and write records, leave
   the schema exactly as it was (columns, indexes, constraints, functions, migrations and the window's record, compared
-  before and after) and leave that event and job alone, which this build then takes; recorded reads switched on, the
-  older build is refused; `allow_older_builds` lets it start, and this build's next start puts the floor back. Run on
-  15 November 2026 with the merges of pull requests 226 (no floors yet, 18 migrations behind: refused with "Start a
-  build from 2026-11-14T08:54:21Z or newer") and 237 (floors, 4 migrations behind: refused naming `record_reads`, and
-  started with staff networks on, which it enforces). Both passed; nothing needed fixing.
+  before and after) and leave that event and job alone, which this build then takes. Run on 15 November 2026 with the
+  merges of pull requests 226 (18 migrations behind) and 237 (4 migrations behind), when it also had a stage for the
+  floors of workspace settings, since removed with those floors. Both passed; nothing needed fixing.
 
 #### Protections an older build would not enforce
 
@@ -869,17 +867,12 @@ before a floor is refused at start, the older ones included.
 |---|---|---|
 | `zones` | a server starts with zone settings (`FERRUM_ZONES`) | 2026-11-13T23:48:57Z |
 | `zones_limited` | a server starts with a zone that limits staff to some apps, keeps administrators out, or uses `custom` | 2026-11-14T05:59:42Z |
-| `staff_networks` | a workspace saves staff networks | 2026-11-14T03:09:38Z |
-| `idle_timeout` | a workspace saves an idle timeout | 2026-11-14T03:09:38Z |
-| `break_glass` | a workspace saves a break-glass list | 2026-11-14T03:09:38Z |
-| `key_networks` | an API key is given networks | 2026-11-14T03:09:38Z |
-| `step_up` | a workspace saves step-up rules | 2026-11-14T08:54:21Z |
-| `record_reads` | a workspace saves entities whose reads are recorded | 2026-11-14T08:54:21Z |
 | `zones_step_up` | a server starts with a zone that says `step_up: true` | 2026-11-14T08:54:21Z |
-| `move_fence` | `plan_move` marks the database (until cancelled, adopted or not followed) | 2026-11-14T01:33:19Z |
-| `workspace_freeze` | `move_workspace` starts, on both sides (until it arrives, at the target; until `finish_move`, at the source; both at an abort) | 2026-11-14T04:00:04Z |
-| `sandbox` | `copy_workspace` makes a sandbox (until `delete_sandbox` deletes the last one) | 2026-11-14T06:47:14Z |
 | `domain_proof` | a server starts with `FERRUM_DOMAIN_PROOF=record` set (not when it is `record` by default) | 2026-11-15T00:51:00Z |
+
+Workspace settings (staff networks, an idle timeout, a break-glass list, step-up rules, recorded reads), keys pinned
+to networks, planned moves, workspace moves and sandboxes put no floor in place: every build of the first release
+enforces them. A protection added after it brings its floor with it.
 
 * **What a refused rollback says.** The usual refusal (*Start a build from … or newer*), and, from a build that knows
   floors, which protections are switched on and since which build. A build from before floors existed prints only the
@@ -887,21 +880,14 @@ before a floor is refused at start, the older ones included.
 * **The deliberate way down.** `ferrum task allow_older_builds reason:"..." [feature:<name>] [force:yes]`, run with the
   newer build, removes the floors (all, or one feature's), works the recorded value out again, prints exactly which
   protections builds from before those dates will then not enforce and the oldest build that may start, and records
-  `platform.allow_older_builds` on the audit trail as the system's. While a move holds its floor it refuses, unless
-  `force:yes`: finish, cancel or abort the move first, since an older build would not honour it. It lasts until the
-  next start of a build that knows floors (below), which is what a rollback needs: run it, then roll back.
-* **Every start looks at what is in use.** A build level with the database puts floors in place at each start, under the
-  start hold, for what is in use however it got there (saved by a build from before floors, or after
-  `allow_older_builds`): any workspace with staff networks, an idle timeout, a break-glass list, step-up rules or
-  recorded reads, any key pinned to networks, any sandbox, a move mark, and any workspace move not finished; zones, and
-  proof by record when set, from the server's settings. This is one statement: `tenant` (a row per workspace) and `api_key` are
-  read until the first match, sandboxes through their index, and the two move tables hold a row per move.
-* **Turning a protection off does not lower its floor.** A workspace that clears its networks, or zone settings taken
-  out, leave the floor where it is: the operator may turn them on again, and a stale floor costs only that a rollback
-  needs `allow_older_builds`. A floor comes back by itself: zones' when a server starts with them, a workspace's when it
-  saves the setting, a move's when one starts, and all of them at the next start. A guest of a newer build may raise a
-  floor of a protection it knows (that only refuses more) but never removes one or changes the recorded build, and the
-  schema sync never records a value below the floors, whichever build syncs.
+  `platform.allow_older_builds` on the audit trail as the system's. A floor held while some work is under way (a
+  temporary one) it removes only with `force:yes`, since an older build would not honour that work. It lasts until the
+  next start of a server with those settings (below), which is what a rollback needs: run it, then roll back.
+* **Turning a protection off does not lower its floor.** Zone settings taken out leave the floor where it is: the
+  operator may put them back, and a stale floor costs only that a rollback needs `allow_older_builds`. A floor comes
+  back by itself when a server starts with the setting again. A guest of a newer build may raise a floor of a
+  protection it knows (that only refuses more) but never removes one or changes the recorded build, and the schema
+  sync never records a value below the floors, whichever build syncs.
 * **What it does not cover.** Only starts are refused. A replica of an older build that is already running when a
   protection is switched on keeps running and does not enforce it: finish a rollout before switching protections on,
   and switch them on with every replica on a build that enforces them.
@@ -1893,21 +1879,10 @@ A history that does not replay means the new build would decide those runs diffe
 running them, and say so in the release notes. Replay opens the payloads as the runtime does: with the vault
 open, and the old key (or the vault's copy of it) for what it sealed.
 
-**From automations.** Studio's `POST /api/app/studio/solutions/import/automations` (administrators) turns each
-automation into a draft Solution: the same event, the condition as written, the actions as steps through
-capabilities, a run per event as the automation ran, and where it came from. It is a draft: someone finishes
-what did not map, keeps it as a release, and another administrator reviews and consents to what it may change.
-A scheduled automation is not imported (a solution starts on a record's event); it keeps running as it is.
-Activating that release turns the automation off in the same step, and from then on each of its events is
-claimed once, by the solution or by the automation's runner, whichever comes to it first: never run by both,
-never by neither, however the events and the activation interleave. While the solution runs, the automation
-cannot be turned back on; to go back, deactivate the solution first.
-
 **Comparing before it runs.** On a release's page in Studio (or `POST /api/app/studio/solutions/shadow`),
 recent work is replayed against the release and against what runs now: the last runs of its solution, with
-the answers, decisions and events they met, or, for a solution imported from an automation that has not taken
-over yet, the automation's recent events and what it did. Each case says what differs. Nothing runs, changes or
-is kept, so it is safe on production data; a step the candidate adds has no recorded answer and says so.
+the answers, decisions and events they met. Each case says what differs. Nothing runs, changes or is kept, so
+it is safe on production data; a step the candidate adds has no recorded answer and says so.
 
 **Going back.** Going back to an earlier release is activating it again: a new generation, new runs start under
 it, runs started under the later one go on under theirs, and nothing any run did is undone. The activation
@@ -2542,8 +2517,7 @@ admitted with whatever their rights are. Background work runs with staff rights 
 A workspace's administrators can name the networks its staff may work from: an office's addresses, a
 company VPN's. Staff using a password, a session, a token or an app from anywhere else are refused. It is
 the workspace's own setting, in addition to zones (which are the operator's), and checked at the same place,
-on every request. With no networks it is off, as before. Saving networks, an idle timeout or a break-glass list,
-or pinning a key to networks, keeps builds that would ignore them from starting (see "Protections an older build would not enforce").
+on every request. With no networks it is off, as before.
 
 | Workspace setting (`GET`/`PUT /api/admin/settings`) | Meaning | Default |
 |---|---|---|
@@ -2848,9 +2822,8 @@ webhook is, through the outbound guard. A webhook of `*` and an app's webhooks n
 
 `id` is unique across the installation and never reused. `category` is `sign_in`, `administration` (the
 platform's own changes: people, roles, settings, keys, apps, connections and the like), `records` (changes to a
-record of a packaged or a workspace's own entity) or `access` (reads of marked entities, "Recording who read what"), decided by where the event is written, not by its entity's name;
-events written before this release are told apart by name. `entity`
-and `record` say what it is about, `action` what happened, `actor` who did it (none for the system), `details` what
+record of a packaged or a workspace's own entity) or `access` (reads of marked entities, "Recording who read what"), decided by where the event is written, not by its entity's name.
+`entity` and `record` say what it is about, `action` what happened, `actor` who did it (none for the system), `details` what
 changed, and `hash` is the event's place in the record's hash chain. **Personal data:** `actor` and `record` can
 name people; `details` holds the values that changed, which can be anyone's data, and for sign-ins the address and
 browser. An erasure blanks values in the trail here, not in a copy already sent: the receiver's own retention and
@@ -2913,8 +2886,7 @@ from an existing database have not been run at all; the pooler also waits for th
 
 A whole installation (its database, its files and its keys) moves from one place to another: Compose to
 Kubernetes, back, or from one cluster to another. A copy of the database is not the database the server knew,
-so it would be treated as a restore and held. `ferrum task plan_move` says the copy is a move. While a move is
-planned, builds that would ignore its fence may not start on the database (see "Protections an older build would not enforce").
+so it would be treated as a restore and held. `ferrum task plan_move` says the copy is a move.
 
 **What `plan_move` does.** Run it on the source, where the server runs, with its own `DATABASE_URL`:
 
@@ -3043,8 +3015,7 @@ a promoted copy have not been run.
 One workspace moves from one installation to another, with its history, files and waiting work, and nothing
 else moves: to a cell of its own (its own database, files and keys), to another region, or back to a shared
 installation. Both installations keep running. Use "Moving an installation" for everything at once, and
-"Taking one workspace back" to undo one workspace's mistake from a backup. While a workspace moves, builds that
-would ignore its freeze may not start on either installation (see "Protections an older build would not enforce").
+"Taking one workspace back" to undo one workspace's mistake from a backup.
 
 **What it takes.** Both installations run one build (the same image), with the same apps available; the
 workspace's apps at their versions are available at the target. No grant: the copy runs as the server's own role,
@@ -4164,8 +4135,7 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
   the account at `/store/`, `/admin/`, `/account/`, records at `/data/` (an app without an
   interface of its own at `/data/{app}/`, Customize at `/data/customize/`). Today's web app has
   left: its addresses (`/app/…`, in bookmarks and links in mail) lead to their new homes, and its
-  offline worker removes itself. The `shell_v2` setting no longer matters; it is kept for going
-  back to the release before, which still had today's web app.
+  offline worker removes itself.
 * **Comms, Drive and Docs** have interfaces of their own: Mail,
   Chat, Calendar and Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`; Drive at `/drive/` with
   Sheets, Slides and PDF; Docs at `/docs/`. Each app's crate carries its interface, registered at
@@ -4719,10 +4689,7 @@ sign-in page: the bar's sign-out (and the portal's) follows the address `POST /a
 ([api](api.md)); a client that does not is signed out here only. Sessions a provider's logout ends stop
 on every replica at once, as after a step-up. A signed logout request from the provider ends the sessions its sign-ins opened for
 that person (those it names, or all of theirs through that provider), recorded as ended by the provider,
-and is answered, signed. A provider saved before this (and not saved since) has no single logout, and
-while one is left the metadata under `PUBLIC_URL` publishes neither the encryption key nor the logout
-service, as before: a provider that reads it again (AD FS, Shibboleth) would otherwise start encrypting
-or sending logout requests unasked. Save each SAML provider once to turn them on.
+and is answered, signed.
 
 Not supported: sign-ins the provider starts unasked, the artifact binding, logout by the back channel
 (SOAP), NameIDs encrypted in logout requests, and ECDSA signatures on HTTP-Redirect logout messages.

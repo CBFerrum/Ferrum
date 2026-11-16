@@ -238,10 +238,9 @@ pub struct Db {
     /// This region does not hold the right to write (`recovery`): every transaction is read-only, so
     /// nothing has to remember to check.
     fenced: Arc<AtomicBool>,
-    /// This database has `ferrum_moving()` (the planned move's migration is applied), so transactions ask it
-    /// ([`Db::ask_moves`]).
+    /// Transactions ask `ferrum_moving()` ([`Db::ask_moves`]).
     moves: Arc<AtomicBool>,
-    /// This database has `ferrum_workspace_frozen()`, so tenant transactions ask it ([`Db::ask_moves`]).
+    /// Tenant transactions ask `ferrum_workspace_frozen()` ([`Db::ask_moves`]).
     frozen: Arc<AtomicBool>,
     /// The server is starting: a planned move's fence does not apply yet, so that a fenced database's server starts (and
     /// a task runs on it) and then serves read-only. Off unless the server says so.
@@ -385,16 +384,11 @@ impl Db {
         sqlx::migrate!("./migrations").run(&self.direct).await.map_err(|e| Error::Internal(format!("kernel migration failed: {e}")))
     }
 
-    /// Transactions ask `ferrum_moving()` from here on when this database has it (Kernel::boot, once the schema is
-    /// settled; a guest's newer database has it too).
-    pub async fn ask_moves(&self) -> Result<()> {
-        let (there, frozen): (bool, bool) =
-            sqlx::query_as("select to_regprocedure('ferrum_moving()') is not null, to_regprocedure('ferrum_workspace_frozen(text)') is not null")
-                .fetch_one(&self.pool)
-                .await?;
-        self.moves.store(there, Ordering::SeqCst);
-        self.frozen.store(frozen, Ordering::SeqCst);
-        Ok(())
+    /// Transactions ask `ferrum_moving()` and `ferrum_workspace_frozen()` from here on: Kernel::boot says so once the
+    /// schema is settled, before which an empty database has neither.
+    pub fn ask_moves(&self) {
+        self.moves.store(true, Ordering::SeqCst);
+        self.frozen.store(true, Ordering::SeqCst);
     }
 
     fn moves(&self) -> bool {

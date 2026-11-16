@@ -493,7 +493,7 @@ impl Kernel {
                 "a newer build has migrated the database: this server runs on it as a guest, and leaves the schema, the start-up steps and the newer build's work alone"
             );
         }
-        db.ask_moves().await?;
+        db.ask_moves();
         let registry = Arc::new(Registry::new(&catalog, Arc::new(full), db.clone()));
         let live = std::sync::RwLock::new(Arc::new(settings.clone()));
         let kernel = Arc::new(Kernel {
@@ -520,12 +520,6 @@ impl Kernel {
             marker: Default::default(),
         });
         kernel.notice_restore().await?;
-        // From this build's packages: a guest's are older than the database's (window.rs).
-        match if kernel.booted.guest.is_some() { Ok(0) } else { kernel.adopt_customization_baselines().await } {
-            Ok(0) => {}
-            Ok(n) => tracing::info!(customizations = n, "customizations compared from here on with what their packages say now"),
-            Err(e) => tracing::warn!("customizations' baselines: {e}"),
-        }
         Ok(kernel)
     }
 

@@ -844,7 +844,6 @@ struct Automation {
     condition: Option<String>,
     actions: Value,
     created_by: Option<Uuid>,
-    is_active: bool,
 }
 
 /// Whom an automation runs as: the administrator who saved it, read now; or why it may not run.
@@ -898,20 +897,16 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     }
     let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
     let autos: Vec<Automation> = sqlx::query_as(
-        // The active ones, and those off because the solution imported from each runs in its place: their events
-        // are handed over to it (FLC-MIG-003).
-        "select id, condition, actions, created_by, is_active from automation where tenant_id = $1 and entity = $2 and event = $3 \
-           and (is_active or exists (select 1 from logic_activation a where a.tenant_id = automation.tenant_id \
-             and a.solution = 'workspace.automation_' || replace(automation.id::text, '-', ''))) order by created_at",
+        "select id, condition, actions, created_by from automation where tenant_id = $1 and entity = $2 and event = $3 and is_active order by created_at",
     )
     .bind(ev.tenant_id)
     .bind(entity)
     .bind(event)
     .fetch_all(&mut *tx)
     .await?;
-    if depth >= MAX_DEPTH && autos.iter().any(|a| a.is_active) {
+    if depth >= MAX_DEPTH && !autos.is_empty() {
         // Not run, and recorded so an administrator sees which automations answer one another's changes.
-        for a in autos.iter().filter(|a| a.is_active) {
+        for a in &autos {
             sqlx::query(
                 "insert into automation_run (tenant_id, automation_id, outbox_id, status, error) values ($1, $2, $3, 'failed', $4) on conflict do nothing",
             )
@@ -948,7 +943,7 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     for a in autos {
         // Whom it would run as, worked out before its transaction holds anything.
         let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id), ev.zone.as_deref()).await;
-        let res = run_one(k, ev, entity, &a, &who, depth, ev.record_id, (&doc, &cel_doc, cel_old.as_ref()), true).await;
+        let res = run_one(k, ev, entity, &a, &who, depth, ev.record_id, (&doc, &cel_doc, cel_old.as_ref())).await;
         if let Err(e) = res {
             tracing::warn!(automation = %a.id, event = ev.id, "automation failed: {e}");
             first_error.get_or_insert(e);
@@ -984,7 +979,7 @@ async fn run_scheduled(k: &Kernel, ev: &Event, entity: &str, depth: u8) -> Resul
     if !is_active {
         return Ok(());
     }
-    let a = Automation { id, condition, actions, created_by, is_active };
+    let a = Automation { id, condition, actions, created_by };
     let schema = k.registry.schema(ev.tenant_id).await?;
     let Some(ent) = schema.entity(entity).cloned() else { return Ok(()) };
     let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id), ev.zone.as_deref()).await;
@@ -1002,12 +997,11 @@ async fn run_scheduled(k: &Kernel, ev: &Event, entity: &str, depth: u8) -> Resul
         raw = Value::Object(doc);
         cel_doc = ent.cel_view(&raw, &schema);
     }
-    run_one(k, ev, entity, &a, &who, depth, Some(record), (&raw, &cel_doc, None), false).await.map(|_| ())
+    run_one(k, ev, entity, &a, &who, depth, Some(record), (&raw, &cel_doc, None)).await.map(|_| ())
 }
 
-/// One automation's run for one event, in its own transaction: nothing if it is off (or the event was handed
-/// over to the solution imported from it) or ran for this event already; otherwise its condition, then its
-/// actions, recorded with their effects.
+/// One automation's run for one event, in its own transaction: nothing if it is off or ran for this event
+/// already; otherwise its condition, then its actions, recorded with their effects.
 #[allow(clippy::too_many_arguments)]
 async fn run_one(
     k: &Kernel,
@@ -1018,21 +1012,14 @@ async fn run_one(
     depth: u8,
     record: Option<Uuid>,
     (raw, cel_doc, cel_old): (&Value, &Value, Option<&Value>),
-    hand_over: bool,
 ) -> Result<&'static str> {
     let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
-    // Read again under its lock. An activation handing it over to the solution imported from it waits for
-    // this to finish, or went first, and then the event is the solution's: claimed and started here unless
-    // the solution's own subscriber claimed it already. Each event is run by one of the two (FLC-MIG-003).
-    let active: Option<bool> = sqlx::query_scalar("select is_active from automation where tenant_id = $1 and id = $2 for share")
-        .bind(ev.tenant_id)
-        .bind(a.id)
-        .fetch_optional(&mut *tx)
-        .await?;
+    // Read again: one turned off since it was listed does not run.
+    let active: Option<bool> =
+        sqlx::query_scalar("select is_active from automation where tenant_id = $1 and id = $2").bind(ev.tenant_id).bind(a.id).fetch_optional(&mut *tx).await?;
     if active != Some(true) {
-        let handed = hand_over && k.hand_over_automation_event(&mut tx, ev, a.id).await?;
         tx.commit().await?;
-        return Ok(if handed { "handed over" } else { "off" });
+        return Ok("off");
     }
     let done: Option<i32> = sqlx::query_scalar("select 1 from automation_run where tenant_id = $1 and automation_id = $2 and outbox_id = $3")
         .bind(ev.tenant_id)
@@ -1776,22 +1763,6 @@ pub(crate) async fn save_in(ctx: &Ctx, tx: &mut crate::db::Tx, input: &Map<Strin
     }
     let id = input.get("id").and_then(Value::as_str).and_then(|s| s.parse().ok()).unwrap_or_else(Uuid::now_v7);
     let active = input.get("is_active").and_then(Value::as_bool).unwrap_or(true);
-    if active {
-        // Never both: while the solution imported from it runs in its place, it stays off. Its row is locked first,
-        // as an activation handing it over locks it, so the two cannot cross (FLC-MIG-003).
-        sqlx::query("select 1 from automation where tenant_id = $1 and id = $2 for update").bind(ctx.tenant).bind(id).execute(&mut **tx).await?;
-        let solution = crate::authoring::solution_of(id);
-        let running: Option<i32> = sqlx::query_scalar("select 1 from logic_activation where tenant_id = $1 and solution = $2")
-            .bind(ctx.tenant)
-            .bind(&solution)
-            .fetch_optional(&mut **tx)
-            .await?;
-        if running.is_some() {
-            return Err(Error::Conflict(format!(
-                "{solution}, imported from this automation, runs in its place: deactivate it before turning the automation on again"
-            )));
-        }
-    }
     // A schedule starts from now: when it is new, changed (or its entity), or switched on again, no moment
     // already past fires.
     sqlx::query(

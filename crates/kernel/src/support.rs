@@ -128,7 +128,7 @@ impl Kernel {
         sqlx::query("insert into role (tenant_id, name, description) values ($1, $2, $3)").bind(ctx.tenant).bind(&role).bind(reason).execute(&mut *tx).await?;
         sqlx::query("insert into user_role (tenant_id, user_id, role) values ($1, $2, $3)").bind(ctx.tenant).bind(user).bind(&role).execute(&mut *tx).await?;
         for e in &entities {
-            sqlx::query("insert into role_permission (tenant_id, role, entity, can_read, can_write) values ($1, $2, $3, true, $4)")
+            sqlx::query("insert into role_permission (tenant_id, role, entity, can_read, can_write, packaged) values ($1, $2, $3, true, $4, false)")
                 .bind(ctx.tenant)
                 .bind(&role)
                 .bind(e)

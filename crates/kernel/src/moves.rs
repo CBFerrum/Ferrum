@@ -20,15 +20,6 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use uuid::Uuid;
 
-/// The fence of a planned move (pull request 230): an older build never asks `ferrum_moving()` and would write to a
-/// fenced database. Held by the mark's id from `plan_move` until it is cancelled, adopted or not followed.
-pub const FLOOR: crate::window::Floor = crate::window::Floor {
-    feature: "move_fence",
-    since: "2026-11-14T01:33:19Z",
-    what: "a database fenced for a planned move takes no changes",
-    temporary: true,
-};
-
 /// Which database this is: PostgreSQL's system identifier, its timeline, and the database's oid.
 pub type Identity = (i64, i32, u32);
 
@@ -136,7 +127,6 @@ impl Kernel {
             Found::Unfinished | Found::Expired => {
                 let why = if m.fenced_at.is_none() { "it was copied before the source stopped taking changes" } else { "its time ran out" };
                 tracing::error!(r#move = %m.id, valid_until = %m.valid_until, "a mark of a planned move was found and not followed, because {why}: this is treated as a restore, and held");
-                crate::window::release(tx, &FLOOR, &m.id.to_string()).await?;
                 sqlx::query("delete from platform_move").execute(&mut **tx).await?;
                 self.record_move(tx, "platform.move_not_followed", json!({"because": why, "mark": said(&m)})).await?;
                 Ok(Start::Carry)
@@ -156,7 +146,6 @@ impl Kernel {
             .bind(sqlx::postgres::types::Oid(here.2))
             .execute(&mut **tx)
             .await?;
-        crate::window::release(tx, &FLOOR, &m.id.to_string()).await?;
         sqlx::query("delete from platform_move").execute(&mut **tx).await?;
         self.record_move(
             tx,
@@ -206,8 +195,6 @@ impl Kernel {
             Some(m) => m.id,
             None => {
                 let id = Uuid::now_v7();
-                // Before the mark: from here no build that would ignore the fence starts.
-                crate::window::require(&mut tx, &FLOOR, &id.to_string()).await?;
                 sqlx::query(
                     "insert into platform_move (id, valid_until, system_identifier, timeline, database_oid, reason) \
                      values ($1, now() + make_interval(secs => $2), $3, $4, $5, $6)",
@@ -261,7 +248,6 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx_through_move().await?;
         let m = mark(&mut tx).await?.ok_or_else(|| Error::Conflict("no move is planned here".into()))?;
-        crate::window::release(&mut tx, &FLOOR, &m.id.to_string()).await?;
         sqlx::query("delete from platform_move").execute(&mut *tx).await?;
         self.record_move(&mut tx, "platform.move_cancelled", json!({"reason": reason, "mark": said(&m)})).await?;
         tx.commit().await?;

@@ -2,7 +2,7 @@
 //! against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`; the database is reset first). Two packages declare a rule for
 //! the same role and entity with different grants: in either install order the first row stays and the second package
 //! changes nothing of it, again on every later install; the first package's own corrected rule still reaches the
-//! workspace; an administrator's edit survives both; a row of unknown origin is claimed by neither.
+//! workspace; an administrator's edit survives both.
 
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, HookRegistry, Kernel, KernelSettings};
@@ -105,12 +105,6 @@ async fn scenario() {
     assert!(!row(&k, one).await.2, "another package's install does not correct it");
     k.install_packages(one, &["alpha".into()]).await.unwrap();
     assert_eq!(row(&k, one).await, alpha_row, "its own does: a withdrawn grant and a new hide");
-
-    // Of unknown origin (written packaged without a package): no package claims it; an empty `hide` is taken.
-    exec(&k, one, "update role_permission set package = null, can_write = false, can_create = false, hide = '{}' where tenant_id = $1 and role = 'Clerk'")
-        .await;
-    k.install_packages(one, &["beta".into(), "alpha".into()]).await.unwrap();
-    assert_eq!(row(&k, one).await, (true, false, false, vec!["body".into()], Some(true), None));
 
     // An administrator's edit is theirs, through both packages' installs.
     let rule: PermissionDef = serde_json::from_value(serde_json::json!({"entity": "Note", "read": true, "delete": true})).unwrap();
