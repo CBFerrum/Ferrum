@@ -120,6 +120,9 @@ pub struct Vault {
     owner: Owner,
     /// What the registry that gave it out noted for it ([`crate::HookRegistry::app`]), checked at each use.
     mint: u128,
+    /// A rotation's render only (crate::companion): the service's secrets being made anew, which [`Vault::describe`] says
+    /// are not there yet, so that the service declares their rule as at its first render (its hosts as they are now).
+    renewing: &'static [&'static str],
 }
 
 #[derive(Clone)]
@@ -165,12 +168,17 @@ pub(crate) fn plugin_name_ok(name: &str) -> bool {
 
 impl Vault {
     pub(crate) fn app(id: &str, mint: u128) -> Vault {
-        Vault { owner: Owner::App(id.into()), mint }
+        Vault { owner: Owner::App(id.into()), mint, renewing: &[] }
     }
 
     /// The handle of the platform or of a plugin, for the kernel's own use: never handed out.
     pub(crate) fn kernel(owner: &str) -> Vault {
-        Vault { owner: Owner::Kernel(owner.into()), mint: 0 }
+        Vault { owner: Owner::Kernel(owner.into()), mint: 0, renewing: &[] }
+    }
+
+    /// This handle, for a rotation's render of a service whose secrets `renewing` are being made anew.
+    pub(crate) fn renewing(&self, renewing: &'static [&'static str]) -> Vault {
+        Vault { renewing, ..self.clone() }
     }
 
     /// A handle nothing accepts: what is asked for outside an app's registration.

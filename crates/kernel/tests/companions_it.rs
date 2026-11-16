@@ -148,6 +148,33 @@ impl Companion for Handed {
     }
 }
 
+/// An engine whose token is bound to the host of its address, as Metrics declares `metrics-engine`: made at the first
+/// render for the host of `FERRUM_ENGINE_TEST_URL`; a render after that leaves it as it is.
+struct Engine;
+
+#[async_trait::async_trait]
+impl Companion for Engine {
+    fn files(&self) -> &'static [&'static str] {
+        &["token"]
+    }
+    fn made(&self) -> &'static [&'static str] {
+        &["engine.token"]
+    }
+    async fn render(&self, r: &Rendering<'_>) -> Result<Vec<File>> {
+        if r.vault().describe(r.kernel(), Scope::Installation, "engine.token").await?.is_none() {
+            let url = r.needs("FERRUM_ENGINE_TEST_URL")?;
+            let host = reqwest::Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_string)).ok_or_else(|| Error::invalid("an address"))?;
+            r.made("engine.token", Rule { reveal: true, overlap_secs: 3600, hosts: vec![host], ..Default::default() }).await?;
+        }
+        let mut bytes = Zeroizing::new(Vec::new());
+        for v in r.versions("engine.token").await? {
+            bytes.extend_from_slice(&v.value);
+            bytes.push(b'\n');
+        }
+        Ok(vec![File { name: "token".into(), bytes, secret: true }])
+    }
+}
+
 /// The settings the server resolved, as a render is given them.
 fn settings(pairs: Vec<(&'static str, String)>) -> impl Fn(&str) -> Option<String> + Sync {
     move |name: &str| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.clone())
@@ -347,6 +374,32 @@ async fn scenario() {
     assert_eq!((o.verb.as_str(), o.by.as_deref(), o.service.as_deref()), ("rotate", Some("operator"), Some("peek-handed")));
     let both = k.render("peek-handed", &none).await.unwrap();
     assert_eq!(both.files[0].bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()).count(), 2, "the new key and the handed one");
+
+    // ── a secret bound to the host of a setting (Metrics' engine token, Comms' mail password): a render never moves it,
+    // and a rotation makes the new version under the rule the service declares now, for the address as it is ──
+    let mut handle = None;
+    let (km, _, _) = kernel(Some("ferrum"), |h| {
+        h.app("metrics", &[], |h| {
+            handle = Some(h.vault());
+            h.add_companion("engine", Arc::new(Engine));
+        });
+    })
+    .await
+    .expect("a replica with the engine");
+    let metrics = handle.unwrap();
+    let at = |host: &str| settings(vec![("FERRUM_ENGINE_TEST_URL", format!("http://{host}:5180"))]);
+    let hosts = |d: Option<vault::Described>| d.expect("there").rule.hosts;
+    km.render("engine", &at("engine-a")).await.expect("the first render");
+    assert_eq!(hosts(metrics.describe(&km, Scope::Installation, "engine.token").await.unwrap()), ["engine-a"]);
+    km.render("engine", &at("engine-b")).await.expect("a render once the address moved");
+    assert_eq!(hosts(metrics.describe(&km, Scope::Installation, "engine.token").await.unwrap()), ["engine-a"], "a render alone never moves it");
+    let rotated = km.rotate_companion("engine", &at("engine-b")).await.expect("rotate");
+    assert_eq!((rotated.len(), rotated[0].version, rotated[0].rule.hosts.clone()), (1, 2, vec!["engine-b".to_string()]));
+    let carried = |host: &str| reqwest::Url::parse(&format!("http://{host}:5180/v1")).unwrap();
+    let bearer = vault::Carry::Bearer;
+    assert!(metrics.carry(&km, Scope::Installation, "engine.token", &carried("engine-b"), &bearer).await.is_ok(), "the new one to the new address");
+    assert!(metrics.carry(&km, Scope::Installation, "engine.token", &carried("engine-a"), &bearer).await.is_err(), "and to no other");
+    assert_eq!(events(&km, "rotate", "engine.token").await.len(), 1);
 
     // ── the meeting server itself, started on the file written, called with tokens the vault signed ──
     livekit(&k, &talk, &secret).await;

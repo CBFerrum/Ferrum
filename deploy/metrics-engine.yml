@@ -5,8 +5,31 @@
 #   docker compose -f deploy/docker-compose.yml -f deploy/metrics-engine.yml --env-file deploy/.env up -d
 # Its image is built from a checkout of the Metrics repository (engine/Dockerfile) unless one is named. Its
 # configuration and the datasets are mounted read-only. Nothing is published to the host: only Ferrum
-# talks to it, with the token both hold.
+# talks to it, with the token both hold. Before the first start, store the engine's address, whose host the vault binds
+# the token to: `ferrum task set key:metrics.engine_url value:http://metrics-engine:5180`. The token is made by the vault
+# and rendered by a one-shot service before each start of the engine into a volume the two share (docs/operations.md,
+# "Files for the programs beside the server"); `ferrum task vault_rotate level:service service:metrics-engine` rotates
+# it, the one before still taken for a day. If the engine's address moves, store the new one and rotate.
 services:
+  metrics-engine-files:
+    image: ${FERRUM_IMAGE:-ghcr.io/cbferrum/ferrum:latest}
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Its one input: the database's address. What it writes comes from the database and the vault.
+    environment:
+      DATABASE_URL: postgres://ferrum:${FERRUM_DB_PASSWORD}@db:5432/ferrum
+    command: ["task", "render", "service:metrics-engine", "to:/var/lib/ferrum/companion"]
+    volumes:
+      # Owned by the server's user, as the image's directory is; the engine runs as the same user.
+      - metrics-engine-files:/var/lib/ferrum/companion
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
   metrics-engine:
     image: ${FERRUM_METRICS_ENGINE_IMAGE:-ferrum-metrics-engine:local}
     build:
@@ -14,16 +37,22 @@ services:
       dockerfile: engine/Dockerfile
     restart: unless-stopped
     read_only: true
+    depends_on:
+      metrics-engine-files:
+        condition: service_completed_successfully
     environment:
       FERRUM_METRICS_ENGINE_CONFIG: /etc/ferrum/engine.json
-      FERRUM_METRICS_ENGINE_TOKEN: ${FERRUM_METRICS_ENGINE_TOKEN:?set FERRUM_METRICS_ENGINE_TOKEN in deploy/.env, 32 characters or more}
+      FERRUM_METRICS_ENGINE_TOKEN_FILE: /run/metrics-engine-files/token
       FERRUM_METRICS_ENGINE_ADDR: 0.0.0.0:5180
     volumes:
       # The datasets and limits (docs/engine.md); each dataset's path is under /data.
       - ${FERRUM_METRICS_ENGINE_CONFIG_FILE:-./metrics-engine.json}:/etc/ferrum/engine.json:ro
       - ${FERRUM_METRICS_DATASETS:-./datasets}:/data:ro
+      - metrics-engine-files:/run/metrics-engine-files:ro
 
   ferrum:
     environment:
       FERRUM_METRICS_ENGINE_URL: http://metrics-engine:5180
-      FERRUM_METRICS_ENGINE_TOKEN: ${FERRUM_METRICS_ENGINE_TOKEN}
+
+volumes:
+  metrics-engine-files:

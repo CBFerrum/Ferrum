@@ -410,9 +410,9 @@ metricsEngine:
   # Where its token comes from (docs/operations.md, "Files for the programs beside the server"): `secret`, the Secret
   # above, typed once for the engine and once for the server, as before; or `rendered`, a file the vault's token is
   # written to as each engine pod starts (an init container of the server's image, with the database's address as its
-  # one input), and no Secret: only with a Metrics release that declares its service `metrics-engine`, an engine that
-  # reads FERRUM_METRICS_ENGINE_TOKEN_FILE, and a key file or a database password the vault opens with. Empty: `secret`,
-  # and with `environment: minimal`, `rendered` once the server's image declares the service (ferrum.declaredServices).
+  # one input), and no Secret: only with a Metrics release that declares its service `metrics-engine` (0.9.0 on), an
+  # engine that reads FERRUM_METRICS_ENGINE_TOKEN_FILE, and a key file or a database password the vault opens with.
+  # Empty: `secret`, and with `environment: minimal`, `rendered` (the server's image declares the service).
   files: ""
   configMap: ferrum-metrics-engine
   datasetsClaim: ferrum-metrics-datasets
