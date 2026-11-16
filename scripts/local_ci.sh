@@ -40,6 +40,11 @@
 #           a private SeaweedFS for its files, every name it asks its environment for checked against the settings'
 #           registry and scripts/settings.py's baseline; then the previous build (the merge base, made once in
 #           WINDOW_WORK as for `window`) on the same database. Needs SeaweedFS's `weed` and a C compiler.
+#   companions not in the workflow, and only when named: scripts/companions_rehearsal.sh, the server without apps
+#           rendering the bundled store's keys from a fresh database with DATABASE_URL alone (two renders at once, one
+#           key pair), SeaweedFS started on the file by deploy/store/start.sh, servers writing through it, a rotation's
+#           overlap and its end, and a vault that does not open writing nothing. LiveKit on rendered files is the
+#           kernel's companions_it, in the rust job. Needs SeaweedFS's `weed`.
 #   editors not run here: it needs Docker and Playwright's browsers. The image job and the cluster workflow need
 #           Docker too: docs/operations.md, "Running the image and cluster checks on your own machine".
 #
@@ -303,6 +308,11 @@ job_oneinput() {
   run "oneinput proof" scripts/one_input.sh "ferrum_oneinput$SFX"
 }
 
+job_companions() {
+  run "companions build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
+  run "companions rehearsal" scripts/companions_rehearsal.sh "ferrum_companions$SFX"
+}
+
 job_editors() { echo "SKIP editors: needs Docker (its nginx image) and Playwright's browsers; docs/operations.md says how to run it"; }
 
 jobs=("$@")
@@ -310,8 +320,8 @@ jobs=("$@")
 for j in "${jobs[@]}"; do
   case "$j" in
     # Each job in a shell of its own, so what one sets (saml's xmlsec1 and OpenSSL) never reaches the next.
-    rust | saml | audit | move | editors | replica | window | managed | objects | oneinput) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
-    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, managed, objects, oneinput)"; exit 2 ;;
+    rust | saml | audit | move | editors | replica | window | managed | objects | oneinput | companions) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
+    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, managed, objects, oneinput, companions)"; exit 2 ;;
   esac
 done
 echo "== $([ $failed = 0 ] && echo PASS || echo FAIL): ${jobs[*]}"

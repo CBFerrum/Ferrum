@@ -498,6 +498,22 @@ mod tests {
     }
 
     #[test]
+    fn renders_into_one_directory_at_once_take_turns_and_each_is_whole() {
+        let dir = scratch("together");
+        // Large enough that each is still writing while another looks at the directory.
+        let bodies: Vec<String> = (0..8).map(|i| format!("keys: {{ferrum.{i}: {}}}\n", "x".repeat((256 << 10) + i))).collect();
+        std::thread::scope(|s| {
+            for body in &bodies {
+                let dir = &dir;
+                s.spawn(move || write(dir, &rendered("meet", &[("livekit.yaml", body)], false)).expect("each render goes through"));
+            }
+        });
+        assert_eq!(listing(&dir), [".ferrum-render", "livekit.yaml"], "nothing half way left behind");
+        assert!(bodies.contains(&std::fs::read_to_string(dir.join("livekit.yaml")).unwrap()), "one render's file, whole");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_directory_that_is_not_the_services_own_is_refused_and_left_as_it_was() {
         // Something else in it.
         let dir = scratch("foreign");
