@@ -397,7 +397,10 @@ async fn scenario() {
     let described = forge.describe(&a, Scope::Workspace(acme), &client.secret).await.unwrap().unwrap();
     assert_eq!(described.managed_by.as_deref(), Some("forgeapp"), "the app's to manage");
     let e = a.vault_regenerate(Scope::Workspace(acme), "forgeapp", &client.secret).await.unwrap_err();
-    assert!(matches!(e, Error::Conflict(_)), "an operator cannot change it under the companion: {e}");
+    assert!(
+        matches!(&e, Error::Refused { code: "managed_by_app", status: 409, pointer: Some(app), .. } if app == "forgeapp"),
+        "an operator cannot change it under the companion: {e}"
+    );
     let beta_client = forge.companion(&a, beta, "forge", &[BACK.into()]).await.unwrap();
     let beta_secret = String::from_utf8(forge.reveal(&a, Scope::Workspace(beta), &beta_client.secret).await.unwrap().to_vec()).unwrap();
     assert_ne!(beta_client.client_id, client.client_id);
