@@ -74,10 +74,10 @@ fn refused(code: Code, message: impl Into<String>) -> Error {
     Refusal::new(code, message).into()
 }
 
-/// The version an entity's capabilities carry: its package's, or for a workspace's own entity, the
+/// The version capabilities of `package` carry: the package's, or for a workspace's own entity (`tenant`), the
 /// workspace schema's revision.
-fn version_of(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> String {
-    match k.registry.catalog().package(&ent.package) {
+fn version_of(k: &Kernel, ctx: &Ctx, package: &str) -> String {
+    match k.registry.catalog().package(package) {
         Some(p) => p.manifest.version.clone(),
         None => format!("schema-{}", ctx.schema.version),
     }
@@ -187,7 +187,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
     }
     let name = ent.def.name.as_str();
     let label = ent.def.label.as_str();
-    let version = version_of(k, ctx, ent);
+    let version = version_of(k, ctx, &ent.package);
     let owner = ent.package.as_str();
     let prefix = format!("{owner}.{}", snake(name));
     let record = crate::describe::entity_schema(ctx, ent, 0);
@@ -290,6 +290,10 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         if a.hidden && a.contract.is_none() {
             continue;
         }
+        // One another package's overlay added is that package's operation, its code behind it: its id, owner and version.
+        let origin = a.origin.as_deref().unwrap_or(owner);
+        let of = |package: &str| format!("{package}.{}", snake(name));
+        let version = if origin == owner { version.clone() } else { version_of(k, ctx, origin) };
         let contract = a.contract.clone().unwrap_or_default();
         let effect = contract.effect.unwrap_or(if a.read_only { Effect::Query } else { Effect::TransactionalAction });
         let mut params = Map::new();
@@ -311,9 +315,9 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
             .clone()
             .unwrap_or_else(|| if effect.changes() { format!("{} is done, committed with this receipt", a.label) } else { format!("What {} reads", a.label) });
         let mut c = capability(
-            format!("{prefix}.{}", a.name),
+            format!("{}.{}", of(origin), a.name),
             &version,
-            owner,
+            origin,
             Some(name),
             Operation::Action(a.name.clone()),
             a.label.clone(),
@@ -333,7 +337,11 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         if let Some(days) = contract.retention_days {
             c.retention_days = days;
         }
-        c.compensate_with = contract.compensate_with.as_ref().map(|undo| format!("{prefix}.{undo}"));
+        // The undo is named where it comes from: the entity's own action, or the one a package added.
+        c.compensate_with = contract.compensate_with.as_ref().map(|undo| {
+            let from = ent.def.actions.iter().find(|x| &x.name == undo).and_then(|x| x.origin.as_deref()).unwrap_or(owner);
+            format!("{}.{undo}", of(from))
+        });
         out.push(c);
     }
     if let Some(wf) = &ent.workflow {
@@ -471,12 +479,9 @@ impl Kernel {
         let candidates = if id.starts_with("ferrum.") {
             platform_capabilities()
         } else {
-            ctx.schema
-                .entities
-                .values()
-                .filter(|e| id.starts_with(&format!("{}.{}.", e.package, snake(&e.def.name))))
-                .flat_map(|e| entity_capabilities(self, ctx, e))
-                .collect()
+            // `{package}.{entity}.…`: the package is the entity's, or the one whose overlay added the action.
+            let entity = id.split('.').nth(1).unwrap_or_default();
+            ctx.schema.entities.values().filter(|e| snake(&e.def.name) == entity).flat_map(|e| entity_capabilities(self, ctx, e)).collect()
         };
         let found = candidates.into_iter().find(|c| c.id == id).and_then(|c| c.sealed().ok());
         match found {
