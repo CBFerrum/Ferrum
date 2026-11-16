@@ -1739,8 +1739,9 @@ gives). Authenticated as `inbound` says: `hmac` (the body's HMAC-SHA256 under `s
 `header`, `sha256=` before it or not) or `token` (`header`, or the `token` query parameter, equal to the secret). JSON
 or a form. A report (`id_at` and `status_at` present, the status mapped by `statuses`) moves the send forward only
 (`sent`, then `delivered`; `failed` is final); a reply (`from_at`, `text_at`) with a `stop` or `start` word records the
-number's choice for that channel. Unknown, unsigned or wrongly signed calls are refused (404, 401) and counted (the
-channel's `refused`).
+number's choice for that channel, once: the same body sent again is refused as an unsigned call is, so a captured reply
+cannot undo a later choice. Unknown, unsigned or wrongly signed calls are refused (404, 401) and counted (the channel's
+`refused`).
 
 ### Moving an app's fixed wording to templates
 
