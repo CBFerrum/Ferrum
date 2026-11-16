@@ -2177,6 +2177,78 @@ runs isolated with an origin of its own and that they may use, and its one redir
 above), the answer carries `user: {email, name}`, and the token endpoint answers `invalid_grant` once
 the app is gone or the person may no longer use it.
 
+### Signing in to programs beside Ferrum (OpenID Connect)
+
+A program an installed app runs beside Ferrum (its *companion*; the forge, which the Cloud app runs, first) signs people
+in through the workspace with OpenID Connect (crates/kernel/src/oidc.rs). Its client is declared by its app's own code
+for each workspace ([app contract](app-contract.md#a-companions-sign-in)), never registered over the internet: dynamic
+registration above never gives `openid`, and an API client never gets an ID token.
+
+**The issuer is the address of the workspace the request came to**: `https://{host}` (with its port on a development
+server) for any address that serves one workspace's shell: its subdomain, a name under the base domain, a domain of its
+own, an operator's address, or, without a base domain, the installation's one workspace on its own host
+(`FERRUM_DEFAULT_WORKSPACE`). Every such address is an issuer of its own; a code is good only at the one it was asked
+at. Nothing below answers (`404`) on a host shared by several workspaces, a forwarding address, an address in its
+leaving period, the accounts or hooks host, a portal or a site, or a sandbox (nothing a sandbox does reaches outside, and
+a companion is outside). A client's id is its workspace's alone. With the stored setting `openid` off
+([operations](operations.md#programs-beside-ferrum-signing-in-through-it)), nothing below answers either, and the
+authorization and token endpoints answer a companion as a client they do not know.
+
+| Route | What it does |
+|---|---|
+| `GET /.well-known/openid-configuration` | The discovery document: `issuer`, the endpoints below, `code` only, `S256` only, `EdDSA`, `client_secret_basic` and `client_secret_post`, scopes `openid`, `profile`, `email`, `prompt` `none` and `login`, the `iss` parameter on answers |
+| `GET /oauth/jwks` | The workspace's signing keys' public halves (`OKP`, `Ed25519`, `kid` the RFC 7638 thumbprint): the one that signs first, and for a day after a rotation the one before it. `Cache-Control: public, max-age=300` |
+| `GET /oauth/authorize` | As for API clients, when `client_id` is a companion's (`fo_…`): no consent page. Required: `response_type=code`, `redirect_uri` exactly as declared (no loopback port is free), `scope` with `openid`, `code_challenge` with `code_challenge_method=S256`. Optional: `state`, `nonce` (a client never gets one taken twice: `invalid_request`), `prompt` (`none`, `login`), `max_age` |
+| `POST /api/oauth/authorize/confirm` | `{waiting}`: the confirmation page's request (below), from the person's browser session → `{redirect_to}`, or `403` `step_up` with their ways |
+| `POST /oauth/token` | As for API clients, when the client authenticates as a companion's (HTTP Basic, or `client_id` and `client_secret` in the form): `grant_type=authorization_code`, `code`, `redirect_uri`, `code_verifier` → `{access_token, token_type: "Bearer", expires_in: 300, id_token, scope}`. No refresh token |
+| `GET`/`POST /oauth/userinfo` | `Authorization: Bearer <access token>` → the claims below, while the browser session the sign-in came from is live; else `401`, `WWW-Authenticate: Bearer error="invalid_token"` |
+
+**Who gets a code.** A member (never someone from outside) signed in to the workspace at that address, with the right
+the companion's app names (`oidc::Companion::right`, an entity of the app's and what one may do with it: some records are
+enough); anyone else is told `access_denied` at the client's address. Someone not signed in signs in first and comes back
+(`prompt=none`: `login_required`). A code lives a minute, is good once, and only for its client, its return address, its
+PKCE verifier and its issuer; an access token lives five minutes, is opaque, and reaches the user-info and nothing else
+(the REST API, `/mcp` and sockets refuse it). A code used twice stops what it gave.
+
+**`max_age` and `prompt=login`** are met through the person's own confirmation that it is them, never assumed: when
+their session's last proof (signing in, or confirming it is them since) is older than `max_age` seconds, or for
+`prompt=login` made before the request, the authorization endpoint answers a page of the workspace that asks them in
+one of their ways (the same dialog as before sensitive work: a passkey, their password and app code, their identity
+provider) and then goes on to the client; with `prompt=none` it answers `login_required` instead.
+
+**Claims.** The ID token is a JWT signed `EdDSA` with the workspace's key (`kid`): `iss`, `sub`, `aud` and `azp` (the
+client), `exp` (five minutes after `iat`), `iat`, `auth_time` (when the person last proved who they are in the browser
+session, as above), `nonce` when one was sent, and `amr`, how they proved it, every proof they gave together: the
+steps of their sign-in (`password` or `code`, then `authenticator` or `recovery_code` when there was a second step;
+`passkey`, `sso`, `accounts`) or of the last time they confirmed it is them (`password`, with `authenticator` or
+`recovery_code` when that asked for a code too; `passkey`, `accounts_passkey`, `provider`); none for a session an older
+build opened. `sub` is the person's in that
+workspace: random, kept, the same at every address of the workspace, and it says nothing else about them. Scope
+`profile` adds `name`, `email` adds `email` and `email_verified`. Then what the companion's app gives
+(`oidc::Companion::claims`; for the forge, `preferred_username`, the account's name there, and `email`, an address only that
+account has), which never names one of the platform's claims. The user-info answers `sub` and the same claims.
+
+**Refusals.** Until the return address is known to be the client's own (an unknown client, another workspace's client
+at this one's address, an address not declared, one character off included) the answer is a page and nothing is sent
+anywhere. After it, the specification's errors at that address, with `state` and `iss`: `invalid_request`,
+`invalid_scope`, `unsupported_response_type`, `access_denied`, `login_required`, `request_not_supported`,
+`request_uri_not_supported`, `temporarily_unavailable`. The token endpoint answers `invalid_client` (`401`,
+`WWW-Authenticate: Basic`) for a client or secret that is not right, whichever it was, and `invalid_grant` for any code
+that is not good there: unknown, used, expired, another client's, another return address, a wrong verifier, another
+issuer, or a browser session that ended. Each failure at the token endpoint and the user-info counts against the
+caller's address as a failed sign-in does (20 a minute); past it, `429` `slow_down`. The authorization endpoint counts
+each request against the person's address. A sign-in is on the person's trail (sign-in, `companion_signed_in`: the
+client, app, companion, issuer and browser session; never a code or a token), as are someone the app does not let in
+(`companion_refused`) and a code used twice (`companion_code_replayed`).
+
+**Leaving.** Nothing a companion is given outlives the browser session it came from: once that session is signed out,
+revoked, idle past the workspace's limit or expired, or the person signs out everywhere, gets a new password, is
+deactivated or deprovisioned, or the workspace is suspended, its codes and its access tokens are refused at once (there
+are no refresh tokens). Within 15 seconds the app hears it, once, whichever replica sees it first: the outbox event
+`ferrum.companion.signed_out` `{user, subject, client_id, app, companion, session, reason}`, `reason` `signed_out`,
+`signed_out_everywhere`, `access_ended`, `expired`, or `client_removed` (the client was taken away). The companion's own
+session is its app's to end on that event (docs/app-contract.md, *A companion's sign-in*).
+
 ## Files
 
 `POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download, streamed; one `Range: bytes=…` answered with 206; with `files_direct_links` on, `307` to a link signed for the object store instead, working for `files_direct_link_seconds`, never for an entity whose reads are recorded, an outside person or a type a browser would run: docs/operations.md, "Object storage"). Every download carries its type (a file kept without one as `application/octet-stream`), `X-Content-Type-Options: nosniff` and `Content-Disposition: attachment` with its name; a type a browser would run (HTML, SVG, XML, script) also a sandboxing CSP, also on the public route, where other types are inline. A generated document keeps the type it was made as ([BD-37](builder/decisions.md#bd-37-generated-documents-keep-their-type)).

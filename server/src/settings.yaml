@@ -769,6 +769,18 @@
   doc: >-
     How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own
     that people and administrators sign out one by one.
+# Programs beside Ferrum signing in through it (docs/operations.md, "Programs beside Ferrum signing in through it").
+- key: openid
+  env: FERRUM_OPENID
+  type: bool
+  default: "true"
+  applies: live
+  doc: >-
+    `false`: no program an installed app runs beside Ferrum (the forge) signs anyone in through it. The discovery
+    document, the keys, the user-info and those programs' way through the authorization and token endpoints answer as
+    if they were not there (`404`, or the endpoint's answer to a client it does not know); API clients' OAuth goes on as
+    before. On by default, which changes nothing by itself: a program signs anyone in only where an installed app
+    declared it. The doctor says which it is, and how many programs' clients there are.
 - key: office_origin
   env: FERRUM_OFFICE_ORIGIN
   applies: live

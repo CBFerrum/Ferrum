@@ -112,7 +112,7 @@ async fn auth_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)
     let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
     let ttl = st.shell.session_ttl();
     st.kernel.record_sign_in(s.tenant, s.user, "signed_in", "accounts", &crate::zone::arrival(st, headers).await).await?;
-    let sid = st.kernel.open_session_in(&s, ttl, ua, &crate::extract::client_ip(headers), None, entry.name()).await?;
+    let sid = st.kernel.open_session_proved(&s, ttl, ua, &crate::extract::client_ip(headers), None, entry.name(), None, &["accounts"]).await?;
     let mut res = Redirect::to(&shell::safe_next(&next)).into_response();
     let h = res.headers_mut();
     h.append(header::SET_COOKIE, shell::set_cookie(secure, &super::auth::device_token(st, &s, ttl.as_secs(), "sid", sid)?, ttl));

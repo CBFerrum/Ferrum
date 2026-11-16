@@ -27,7 +27,9 @@
 # The database is created and dropped here, so its name must start with ferrum_windowrehearsal_. Settings: FERRUM_BIN
 # (this build; default target/debug/ferrum, built with `cargo build -p ferrum-server --no-default-features --bin ferrum`),
 # WINDOW_WORK (where the older build is made and kept; default ${TMPDIR:-/tmp}/ferrum-window), WINDOW_ADMIN_URL (a
-# superuser, to create the database; default postgres://$USER@localhost:5432), WINDOW_APP_URL (the servers' role;
+# superuser, to create the database; default postgres://$USER@localhost:5432), WINDOW_COMPANION_BIN (this build's server with
+# the stand-in for the Cloud app, server/examples/oidc_rehearsal.rs; default target/debug/examples/oidc_rehearsal; without
+# it the step with a program beside the workspace is skipped), WINDOW_APP_URL (the servers' role;
 # default postgres://ferrum:ferrum@localhost:5432), WINDOW_PORT (default 5395), WINDOW_STORE_PORT (the store's S3 port,
 # and its inner ones from it + 10 and + 10010; default 39400).
 set -euo pipefail
@@ -104,6 +106,7 @@ start() {
   local which=$1 log=$2; shift 2
   local bin=$BIN dir=$ROOT/server
   [ "$which" = old ] && bin=$OLD_BIN dir=$OLD_DIR/src/server
+  [ "$which" = companion ] && bin=$COMPANION_BIN
   (cd "$dir" && exec env DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" PORT="$PORT" BINDING=127.0.0.1 PUBLIC_URL="$URL" \
     ${STORE_ENV[@]+"${STORE_ENV[@]}"} "$@" "$bin" start) >"$work/$log.log" 2>&1 &
   SERVER_PID=$!
@@ -252,6 +255,78 @@ if command -v weed >/dev/null 2>&1; then
   echo "    moved ($(head -1 "$work/move.log")); the older build read its file there, wrote one, and this build reads it"
 else
   echo "    skipped moving files to object storage: no SeaweedFS (weed) on the PATH"
+fi
+# A program an installed app declared beside the workspace (docs/api.md, "Signing in to programs beside Ferrum"), by the
+# stand-in for the Cloud app (server/examples/oidc_rehearsal.rs, WINDOW_COMPANION_BIN), and someone signed in through it.
+# The older build is asked for a sandbox of the workspace and refuses, as it does for any workspace on a database this
+# build migrated (a sandbox needs every replica on the newest build), and leaves nothing. This build's own sandbox has
+# none of the program's rows or secrets but the people's subjects. What a copier that takes every table with a
+# `tenant_id` would bring into a sandbox (these tables' keys are unique within a workspace, so such a copy meets none of
+# the live workspace's) this build, running, takes away within 15 seconds and tells nobody: they are the live
+# workspace's sign-ins, which go on. The live workspace still signs people in through the program; the sandbox goes.
+COMPANION_BIN=$(cd "$ROOT" && realpath "${WINDOW_COMPANION_BIN:-${CARGO_TARGET_DIR:-target}/debug/examples/oidc_rehearsal}" 2>/dev/null || true)
+if [ -n "$COMPANION_BIN" ] && [ -x "$COMPANION_BIN" ]; then
+  step "a program declared beside the workspace, someone signed in through it; a sandbox asked of the older build, then made by this one"
+  stop
+  back="https://forge.window.test/user/oauth2/window/callback"
+  (cd "$ROOT/server" && exec env DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" ${STORE_ENV[@]+"${STORE_ENV[@]}"} "$COMPANION_BIN" setup window "$back") \
+    >"$work/companion.json" 2>"$work/companion.log" || fail "declaring the program: $(tail -3 "$work/companion.log")"
+  CLIENT=$(json 'd["client_id"]' <"$work/companion.json")
+  CLIENT_SECRET=$(json 'd["secret"]' <"$work/companion.json")
+  # Someone signs in to the program: the workspace is the server's one here, so 127.0.0.1 is its address (its issuer).
+  signs_in() {
+    local jar="$work/browser.jar" verifier challenge asked code
+    rm -f "$jar"
+    curl -fsS -o /dev/null -c "$jar" -b "$jar" -H 'content-type: application/json' -H 'sec-fetch-site: same-origin' \
+      -d "{\"tenant\":\"window\",\"email\":\"admin@window.test\",\"password\":\"$PASSWORD\",\"session\":\"cookie\"}" "$URL/api/auth/login" || return 1
+    verifier=$(openssl rand -hex 32)
+    challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+    asked=$(curl -sS -o /dev/null -b "$jar" -w '%{redirect_url}' "$URL/oauth/authorize?response_type=code&client_id=$CLIENT&redirect_uri=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$back")&scope=openid&state=s&code_challenge=$challenge&code_challenge_method=S256")
+    code=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.parse_qs(urllib.parse.urlsplit(sys.argv[1]).query)["code"][0])' "$asked") || return 1
+    curl -fsS -u "$CLIENT:$CLIENT_SECRET" --data-urlencode grant_type=authorization_code --data-urlencode "code=$code" --data-urlencode "redirect_uri=$back" \
+      --data-urlencode "code_verifier=$verifier" "$URL/oauth/token" | json 'd["id_token"].count(".")'
+  }
+  start companion new-companion FERRUM_DEFAULT_WORKSPACE=window || fail "this build did not start with the program declared"
+  [ "$(signs_in)" = 2 ] || fail "nobody signed in through the program before the sandbox"
+  stop
+  WINDOW_ID=$(sql "$DB" "select id from tenant where slug = 'window'")
+  rows() { sql "$DB" "select (select count(*) from oauth_companion where tenant_id = '$1') || ' ' || (select count(*) from oidc_code where tenant_id = '$1') \
+    || ' ' || (select count(*) from oidc_sign_in where tenant_id = '$1') || ' ' || (select count(*) from oidc_subject where tenant_id = '$1')"; }
+  [ "$(rows "$WINDOW_ID")" = "1 1 1 1" ] || fail "the program's rows before the sandbox: $(rows "$WINDOW_ID")"
+  till=$(python3 -c 'import datetime; print(datetime.date.today() + datetime.timedelta(days=10))')
+  here() { (cd "$ROOT/server" && exec env DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" ${STORE_ENV[@]+"${STORE_ENV[@]}"} "$BIN" task "$@"); }
+  if (cd "$OLD_DIR/src/server" && exec env DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" ${STORE_ENV[@]+"${STORE_ENV[@]}"} "$OLD_BIN" task copy_workspace \
+    tenant:window as:window-try until:"$till" from:here) >"$work/old-sandbox.log" 2>&1; then
+    fail "the older build made a sandbox on a database this build migrated"
+  fi
+  grep -q "a sandbox needs every replica on this build" "$work/old-sandbox.log" || fail "the older build's sandbox: $(tail -5 "$work/old-sandbox.log")"
+  [ -z "$(sql "$DB" "select id from tenant where slug = 'window-try'")" ] && [ "$(rows "$WINDOW_ID")" = "1 1 1 1" ] || fail "the older build left something of a sandbox"
+  here copy_workspace tenant:window as:window-try until:"$till" from:here >"$work/sandbox.log" 2>&1 || fail "this build's sandbox: $(tail -5 "$work/sandbox.log")"
+  SANDBOX_ID=$(sql "$DB" "select id from tenant where slug = 'window-try' and sandbox_of is not null")
+  [ -n "$SANDBOX_ID" ] && [ "$(rows "$SANDBOX_ID")" = "0 0 0 1" ] || fail "this build's sandbox: $(rows "${SANDBOX_ID:-none}") (client, codes, sign-ins, subjects)"
+  [ "$(sql "$DB" "select count(*) from vault.secret where scope = '$SANDBOX_ID' and name like 'oidc%'")" = 0 ] || fail "the sandbox has the program's secrets"
+  # What a copier of every table with a `tenant_id` would bring, under the sandbox's id.
+  for t in oauth_companion oidc_code oidc_sign_in; do
+    sql "$DB" "insert into $t select (jsonb_populate_record(null::$t, to_jsonb(r) || jsonb_build_object('tenant_id', '$SANDBOX_ID'::uuid))).* from $t r where r.tenant_id = '$WINDOW_ID'" \
+      || fail "copying $t as a copier would"
+  done
+  [ "$(rows "$SANDBOX_ID")" = "1 1 1 1" ] || fail "the copy: $(rows "$SANDBOX_ID")"
+  # Its background work on by name: the quiet start's FERRUM_RUN_BACKGROUND=false is in the settings table.
+  start companion new-after-sandbox FERRUM_DEFAULT_WORKSPACE=window FERRUM_RUN_BACKGROUND=true || fail "this build did not start with a sandbox"
+  for _ in $(seq 60); do [ "$(rows "$SANDBOX_ID")" = "0 0 0 1" ] && break; sleep 0.5; done
+  [ "$(rows "$SANDBOX_ID")" = "0 0 0 1" ] || fail "this build left the program's rows in the sandbox: $(rows "$SANDBOX_ID")"
+  [ "$(sql "$DB" "select count(*) from outbox where topic = 'ferrum.companion.signed_out'")" = 0 ] || fail "someone was told a sign-in ended"
+  here openid tenant:window-try >"$work/sandbox-openid.log" 2>&1 || fail "ferrum task openid on the sandbox: $(tail -3 "$work/sandbox-openid.log")"
+  grep -q "no program signs this workspace's people in" "$work/sandbox-openid.log" || fail "the sandbox has a program: $(cat "$work/sandbox-openid.log")"
+  [ "$(signs_in)" = 2 ] || fail "the live workspace no longer signs people in through the program"
+  [ "$(rows "$WINDOW_ID")" = "1 2 2 1" ] || fail "the live workspace's rows: $(rows "$WINDOW_ID") (a second sign-in, from a second session)"
+  stop
+  here delete_sandbox tenant:window-try >"$work/sandbox-delete.log" 2>&1 || fail "deleting the sandbox: $(tail -3 "$work/sandbox-delete.log")"
+  [ "$(rows "$SANDBOX_ID")" = "0 0 0 0" ] || fail "the deleted sandbox's rows: $(rows "$SANDBOX_ID")"
+  echo "    the older build refused the sandbox and left nothing; this build's has none of the program's rows or secrets but the subject; what a copier of every workspace table would bring there this build took away, telling nobody; the live workspace still signs people in, and the sandbox is gone"
+  start new new-before-protections || fail "this build did not start again"
+else
+  echo "    skipped a program beside the workspace: no stand-in for the Cloud app at ${WINDOW_COMPANION_BIN:-target/debug/examples/oidc_rehearsal}"
 fi
 T=$(token)
 settings() { curl -sS -o "$work/settings.json" -w '%{http_code}' -X PUT "$URL/api/admin/settings" -H "authorization: Bearer $T" -H 'content-type: application/json' -d "$1"; }

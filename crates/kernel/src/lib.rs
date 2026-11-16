@@ -53,6 +53,7 @@ pub mod moves;
 pub mod notify;
 pub mod numbering;
 pub mod oauth;
+pub mod oidc;
 pub mod outbound;
 pub mod outbox;
 pub mod pack;
@@ -555,7 +556,9 @@ impl Kernel {
             self.spawn_outbox_dispatcher(shutdown.clone()),
             self.spawn_webhook_sender(shutdown.clone()),
             self.spawn_schedule_scanner(shutdown.clone()),
-            self.spawn_job_runner(shutdown),
+            self.spawn_job_runner(shutdown.clone()),
+            // Apps told, within seconds, that a sign-in to their companion ended (crate::oidc).
+            self.spawn_openid_sweep(shutdown),
             maintenance,
         ]
     }
@@ -584,6 +587,7 @@ impl Kernel {
         }
         let purged = self.purge_old_events(self.settings.event_retention_days).await?
             + self.oauth_purge().await?
+            + self.openid_purge().await?
             + self.purge_sessions().await?
             + self.purge_exports().await?
             + self.purge_connection_events().await?

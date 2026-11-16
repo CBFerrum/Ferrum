@@ -234,6 +234,25 @@ pub fn marker_findings(st: &AppState) -> Vec<Finding> {
     vec![marker, timeline]
 }
 
+/// Whether programs beside Ferrum sign people in through it (`openid`, docs/operations.md, "Programs beside Ferrum
+/// signing in through it"), and how many programs' clients the installed apps declared.
+pub async fn openid_findings(st: &AppState) -> Result<Vec<Finding>, ferrum_kernel::Error> {
+    let now = st.live_settings.now();
+    let (source, value) = now.snapshot.get("openid");
+    let from = match source {
+        crate::settings::Source::Environment => "the environment",
+        crate::settings::Source::Database => "the database",
+        _ => "the default",
+    };
+    let (clients, workspaces) = st.kernel.openid_clients().await?;
+    let declared = format!("{clients} program clients in {workspaces} workspaces, each declared by an installed app");
+    Ok(vec![if value.is_none_or(|v| !v.trim().eq_ignore_ascii_case("false")) {
+        Finding::ok("openid", format!("programs beside Ferrum sign people in through it (openid true, from {from}): {declared}"))
+    } else {
+        Finding::off("openid", format!("turned off (openid false, from {from}): no program signs anyone in through Ferrum; {declared} are kept"))
+    }])
+}
+
 /// Object storage beyond the probe (docs/operations.md, "Object storage"): files still in a local directory or moving
 /// from one; how long deletions wait against the backups' reach; and the bucket's versioning, lifecycle rules,
 /// encryption at rest, public access and clock.
@@ -273,6 +292,7 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
         Finding::ok("restore", "no restore is waiting for anyone")
     });
     out.extend(marker_findings(st));
+    out.extend(openid_findings(st).await?);
     out.extend(stored_host_findings(st, &ctx.config.database.uri));
     if st.kernel.db.fenced() {
         out.push(Finding::blocker("authority", "this region does not hold the right to write", "See docs/operations.md, Regions."));
