@@ -394,19 +394,30 @@ impl Hooks for App {
         // refused when neither is there.
         let vault_open = ferrum_kernel::vault::status(&kernel.db).await.is_ok_and(|s| s.open);
         let sessions = crate::sessions::Sessions::start(&jwt.secret, vault_open.then(|| (kernel.clone(), platform.clone()))).await.map_err(Error::Message)?;
-        // A task other than the server's start runs without object storage while the settings name none: on a fresh
-        // installation the settings that name it are what `apply_settings` writes, from the database's address alone
-        // (D1). Whatever then reaches for a file is refused; the server itself never starts without it.
-        let unstored = settings.require_object_storage && settings.s3_bucket.is_empty() && !is_start(std::env::args());
-        let storage = if unstored {
-            tracing::warn!("object storage is not set yet: this task runs without it, and refuses whatever needs a file");
-            Storage::single(storage::drivers::null::new())
+        // A task other than the server's start runs without object storage while the settings name none, or name one it
+        // cannot set up yet: on a fresh installation the settings that name it are what `apply_settings` writes, and its
+        // keys what `secret_set` puts in the vault, from the database's address alone (D1). Whatever then reaches for a
+        // file is refused; the server itself never starts without it.
+        let task = !is_start(std::env::args());
+        let built = if settings.require_object_storage && settings.s3_bucket.is_empty() && task {
+            Err(Error::Message("no object storage is set".into()))
         } else {
-            let storage = build_storage(&settings)?;
-            probe_storage(&storage).await;
-            storage
+            build_storage(&settings)
         };
-        let objects = Arc::new(crate::objects::Objects::new(&settings).map_err(|e| Error::Message(format!("object storage: {e}")))?);
+        let unstored = task && built.is_err();
+        let storage = match built {
+            Ok(storage) => {
+                probe_storage(&storage).await;
+                storage
+            }
+            Err(e) if task => {
+                tracing::warn!("object storage is not set up ({e}): this task runs without it, and refuses whatever needs a file");
+                Storage::single(storage::drivers::null::new())
+            }
+            Err(e) => return Err(e),
+        };
+        let objects = if unstored { crate::objects::Objects::refusing() } else { crate::objects::Objects::new(&settings) };
+        let objects = Arc::new(objects.map_err(|e| Error::Message(format!("object storage: {e}")))?);
         let storage = Arc::new(storage);
         crate::request_metrics::Requests::install(crate::request_metrics::Requests::new(&crate::appmgr::compiled_natives()));
         let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())

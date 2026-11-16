@@ -72,6 +72,14 @@ fn storage_err(e: impl std::fmt::Display) -> Error {
 
 impl Objects {
     /// The store `build_storage` configures for Loco, opened again for streaming and presigning.
+    /// What a task has while object storage is not set yet (crate::app): a store at an address that never resolves
+    /// (`.invalid`), so that whatever reaches for a file is refused, and nothing is written anywhere.
+    pub fn refusing() -> std::result::Result<Objects, String> {
+        opendal::install_default();
+        let s3 = S3::default().bucket("object-storage-is-not-set").region("auto").endpoint("http://object-storage-is-not-set.invalid");
+        Ok(Objects { op: Operator::new(s3).map_err(|e| e.to_string())?, presigns: false })
+    }
+
     pub fn new(settings: &Settings) -> std::result::Result<Objects, String> {
         if settings.s3_bucket.is_empty() {
             let op = Operator::new(Fs::default().root(&settings.files_dir)).map_err(|e| e.to_string())?;

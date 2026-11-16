@@ -2,7 +2,8 @@
 """The settings' registry (server/src/settings.yaml; docs/plan/stateless.md, D2) against what reads them.
 
     scripts/settings.py            # check; exit 1 on any finding
-    scripts/settings.py --write    # write the operations guide's table from the registry, then check
+    scripts/settings.py --write    # write the operations guide's table and the baseline, then check
+    scripts/settings.py --names    # the registry's variables and the baseline's, as JSON (scripts/one_input.sh)
 
 What it checks:
 * every `get_env(name=...)` in server/config/*.yaml names a variable the registry declares, or one of the boot
@@ -17,7 +18,13 @@ What it checks:
 * the apps' own (`operator_settings` in the manifest of each app the lock compiles in, as the server adds them): each
   replaces the platform's entry that moves to its app, and no key or variable has two owners;
 * the table in docs/operations.md between its markers is the one this registry makes, the apps' settings under their
-  app.
+  app;
+* the baseline of what stays in the environment once the registry's variables are no longer read
+  (docs/registry/environment-only.md): each of the registry's entries that the environment alone decides (a secret the
+  vault does not hold, one someone else reads, a task's input), with why, and the names the boot contract and the
+  libraries read themselves (LIBRARIES below). It may only shrink: `--write` refuses to add a name to it, and the check
+  fails while it holds one the registry no longer has. scripts/one_input.sh fails a server that reads a name neither
+  the registry nor this baseline declares.
 """
 
 import json
@@ -59,6 +66,56 @@ TYPES = {"text", "bool", "int", "json", "choice"}
 HELD = {"session", "compared", "library"}
 POOL = ["db_max_connections", "run_background", "zone"]
 APP_ID = re.compile(r"^[a-z][a-z0-9-]{1,39}$")
+BASELINE = ROOT / "docs/registry/environment-only.md"
+# What the program reads from its environment besides the registry's variables, each with why: the boot contract's own,
+# and what the libraries it is built from read themselves (seen by scripts/one_input.sh, which asks libc's getenv).
+LIBRARIES = {
+    "LOCO_ENV": "which configuration file the program reads (the image sets it; `-e production` on the command line does the same)",
+    "RAILS_ENV": "Loco's other names for LOCO_ENV, asked after it",
+    "NODE_ENV": "Loco's other names for LOCO_ENV, asked after it",
+    "LOCO_CONFIG_FOLDER": "Loco: where the configuration files are (the image's /app/config otherwise)",
+    "RUST_LOG": "the log's filter, over the log level (a diagnosing aid)",
+    "RUST_BACKTRACE": "the Rust runtime: how a panic is reported",
+    "RUST_LIB_BACKTRACE": "the Rust runtime: how a panic is reported",
+    "RUST_MIN_STACK": "the Rust runtime: a new thread's stack",
+    "TZ": "the C library: the machine's time zone (the server works in UTC)",
+    "HOME": "PostgreSQL's driver and the object store's client: where a user's own files would be (~/.pgpass, ~/.aws)",
+    "PGHOST": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGHOSTADDR": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGPORT": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGUSER": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGPASSWORD": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGDATABASE": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGSSLMODE": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGSSLROOTCERT": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGSSLCERT": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGSSLKEY": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGAPPNAME": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGOPTIONS": "PostgreSQL's driver (sqlx): what DATABASE_URL leaves out",
+    "PGPASSFILE": "PostgreSQL's driver (sqlx): a password file, where DATABASE_URL has no password",
+    "USER": "PostgreSQL's driver (sqlx): the role, where DATABASE_URL names none",
+    "HTTPS_PROXY": "the HTTP client (reqwest): the system's proxy for the server's outbound requests",
+    "HTTP_PROXY": "the HTTP client (reqwest): the system's proxy for the server's outbound requests",
+    "ALL_PROXY": "the HTTP client (reqwest): the system's proxy for the server's outbound requests",
+    "NO_PROXY": "the HTTP client (reqwest): hosts its outbound requests reach without the proxy",
+    "https_proxy": "the HTTP client (reqwest): the system's proxy, in lower case",
+    "http_proxy": "the HTTP client (reqwest): the system's proxy, in lower case",
+    "all_proxy": "the HTTP client (reqwest): the system's proxy, in lower case",
+    "no_proxy": "the HTTP client (reqwest): hosts reached without the proxy, in lower case",
+    "REQUEST_METHOD": "the HTTP client (reqwest): set under CGI, where it ignores HTTP_PROXY (httpoxy)",
+    "TMPDIR": "the Rust runtime: where temporary files go",
+    "PATH": "where a program the server runs is found (sh, for FERRUM_SECRET_KEY_COMMAND)",
+    "LANG": "the C library: the language of its own messages",
+    "NO_COLOR": "the terminal's colours (Loco's banner and log)",
+    "CLICOLOR": "the terminal's colours (Loco's banner and log)",
+    "CLICOLOR_FORCE": "the terminal's colours (Loco's banner and log)",
+    "TOKIO_WORKER_THREADS": "the async runtime: how many threads it runs",
+    "TOKIO_UNSTABLE_SHARDED_BLOCKING_QUEUE": "the async runtime: how it queues blocking work",
+    "WASMTIME_BACKTRACE_DETAILS": "the plugin runtime (wasmtime): how a plugin's crash is reported",
+    "OPENSSL_armcap": "the cryptography library: which processor instructions it uses",
+    "SSH_AUTH_SOCK": "a library's SSH agent (libgit2), used only for a repository reached over SSH",
+    "FERRUM_TEST_RUN_DIR": "a debug build only: where a test puts the files of /run/ferrum (a release build never reads it)",
+}
 
 
 def registry():
@@ -247,6 +304,71 @@ def rows(entries):
     return "\n".join(rows)
 
 
+def environment_only(entries):
+    """Each name that stays in the environment once the registry's variables are no longer read, with why."""
+    out = dict(LIBRARIES)
+    for e in entries:
+        app, env = e.get("app"), e.get("env")
+        if e.get("input"):
+            out[env] = f"an input of `ferrum task {e['input']}`, given in its environment as it runs"
+        elif e.get("environment") and app:
+            out[env] = f"`{app}` reads it with std::env::var until its release declares it (operator_settings)"
+        elif e.get("environment"):
+            out[env] = f"read by {e['environment']}"
+        elif e.get("secret") and app:
+            out[env] = f"`{app}`'s own secret, until it keeps it in its own vault"
+        elif e.get("secret") and not e.get("vault"):
+            out[env] = SECRETS_WHY.get(e["key"], "a secret the vault does not hold yet")
+    return out
+
+
+SECRETS_WHY = {
+    "secret_key": "the old master key, until it retires (docs/operations.md, Retiring the old key)",
+    "retired_secret_keys": "the old master key's retired ones, until it retires",
+    "secret_key_command": "a command line, never read from the database, where whoever writes a row would run a program",
+    "bao_token": "through R1: the key-management service's token is the file /run/ferrum/kms.token",
+    "vault_token": "through R1: the key-management service's token is the file /run/ferrum/kms.token",
+    "database_direct_url": "a whole address with its password: give the host in DATABASE_URL instead (ferrum_direct_host)",
+    "database_read_url": "a whole address with its password: give the host in DATABASE_URL instead (ferrum_read_host)",
+    "authority_witness_url": "another database's address with its password: a secret the vault does not hold yet",
+}
+
+
+def baseline_read():
+    """The names the baseline file lists, or None when there is none yet."""
+    if not BASELINE.is_file():
+        return None
+    return set(re.findall(r"^\| `([A-Za-z_][A-Za-z0-9_]*)` \|", BASELINE.read_text(), re.M))
+
+
+def baseline_text(only):
+    rows = "\n".join(f"| `{name}` | {cell(why)} |" for name, why in sorted(only.items()))
+    return (
+        "# What stays in the environment\n\n"
+        "Written by `python3 scripts/settings.py --write`, which refuses to add to it: it may only shrink. Each name a "
+        "replica still reads from its environment once the release after this one stops reading the settings' registry "
+        "(server/src/settings.yaml), besides `DATABASE_URL`, with why (docs/operations.md, *What a replica still reads from "
+        "its environment*). `scripts/one_input.sh` fails a server that reads a name neither the registry nor this list "
+        "declares.\n\n| Variable | Why |\n|---|---|\n" + rows + "\n"
+    )
+
+
+def baseline_findings(entries, write):
+    only = environment_only(entries)
+    had = baseline_read()
+    if had is not None:
+        grown = sorted(set(only) - had)
+        if grown:
+            return [f"{BASELINE.relative_to(ROOT)} may only shrink, and these are new to it: {', '.join(grown)}"]
+    text = baseline_text(only)
+    if BASELINE.is_file() and BASELINE.read_text() == text:
+        return []
+    if write:
+        BASELINE.write_text(text)
+        return []
+    return [f"{BASELINE.relative_to(ROOT)} is not the registry's: run python3 scripts/settings.py --write (it can shrink)"]
+
+
 def guide_findings(entries, write):
     text = GUIDE.read_text()
     if BEGIN not in text or END not in text:
@@ -266,7 +388,18 @@ def main():
     write = "--write" in sys.argv[1:]
     platform = registry()
     entries, clashes = merged(platform, apps_declared())
-    found = platform_findings(platform) + clashes + registry_findings(entries) + config_findings(entries) + code_findings(entries) + guide_findings(entries, write)
+    if "--names" in sys.argv[1:]:
+        print(json.dumps({"registry": sorted({e["env"] for e in entries if e.get("env")}), "baseline": environment_only(entries)}))
+        return 0
+    found = (
+        platform_findings(platform)
+        + clashes
+        + registry_findings(entries)
+        + config_findings(entries)
+        + code_findings(entries)
+        + guide_findings(entries, write)
+        + baseline_findings(entries, write)
+    )
     for f in found:
         print(f)
     live = sum(1 for e in entries if e.get("applies") == "live")

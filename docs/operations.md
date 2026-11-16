@@ -343,8 +343,17 @@ behaves; the release after stops. What stays in the environment after that, each
 - The old keys and the secrets of the apps that still read their own (`FERRUM_SECRET_KEY`, `FERRUM_RETIRED_SECRET_KEYS`,
   `FERRUM_MEET_SECRET`, …), until the old key retires and each app keeps its own in its vault.
 - What the libraries read themselves: PostgreSQL's driver its `PG*` variables (the parts `DATABASE_URL` leaves out),
-  the log's filter `RUST_LOG`, the OpenTelemetry SDK its other `OTEL_*` variables, the object store's client its
-  `AWS_*` profile. Leave them unset.
+  the HTTP client the system's proxy (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`: set, every outbound request
+  goes through it), the log's filter `RUST_LOG`, the OpenTelemetry SDK its other `OTEL_*` variables, the object store's
+  client its `AWS_*` profile, the runtime its threads (`TOKIO_WORKER_THREADS`). Leave them unset.
+
+`docs/registry/environment-only.md` lists each such name with why (`python3 scripts/settings.py --write` writes it, and
+refuses to let it grow). `scripts/one_input.sh` proves the rest: the real server, started with `DATABASE_URL` alone in
+its environment, migrates, takes its settings from a document and its secrets from tasks, serves as two replicas, keeps
+a file in object storage, runs a job once, takes a live change on both replicas, keeps a session across a restart and
+has its doctor say the environment decides nothing; every name it asks its environment for (seen in libc's `getenv`)
+is the registry's or on that list, and only `DATABASE_URL` was set; then the previous build starts on the same
+database.
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
@@ -352,7 +361,7 @@ isolation, so the server refuses to start with them. CloudNativePG's `ferrum` ap
 the Compose setup (`deploy/postgres-init`) are already set up this way. The role needs to create the
 trusted extensions `btree_gist`, `citext` and `pg_trgm`, which a database owner can do.
 
-Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 6: 4 for short side writes
+Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 6 (with a pool above 32, plus an eighth of it and 2): 4 for short side writes and the vault
 (document numbering) and 2 of Loco's own. Give the role a connection limit at least 20 below the database's
 `max_connections`, so that however far things scale there are connections left for an administrator,
 replication and a migration: PostgreSQL enforces that one, and `ferrum task doctor` warns without it.
@@ -363,7 +372,7 @@ What one replica holds, with the defaults (counted from the code on 14 November 
 | What | Connects to | At the most | When |
 |---|---|---|---|
 | The pool | `DATABASE_URL` | `FERRUM_DB_MAX_CONNECTIONS` (30) | Requests, background work. Without a direct address the listeners and session locks below come out of it |
-| The side pool | `DATABASE_URL` | 4 | Short writes while a request's own transaction is open (numbering); idle ones close after a minute |
+| The side pool | `DATABASE_URL` | 4 (an eighth of the pool when that is more: 8 with a pool of 64) | Short writes while a request's own transaction is open (numbering), and the vault's verbs; idle ones close after a minute |
 | Loco's own pool | `DATABASE_URL` | 2 | Opened at start to check Loco's migrations (there are none); nothing else uses it. Safe through a pooler: it keeps no session |
 | The settings' first read | `DATABASE_URL` | 2 | At start, before the server's own pools open: reads the `setting` table (*Settings in the database*), then closes. Safe through a pooler |
 | Listeners: metadata, users, plugin sockets, live updates, co-editing | the direct address | 5 | One each, for as long as the replica runs |

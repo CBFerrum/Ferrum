@@ -46,4 +46,8 @@ assert not [f for f in sound if f.startswith(("drive.a", "move_source_region"))]
 assert s.registry_findings([{"key": "a", "env": "FERRUM_A", "app": "drive", "doc": "d"}]), "an app's key is <app>.<key>"
 grouped = s.table(platform + [{"key": "move_source_region", "env": "FERRUM_MOVE_SOURCE_REGION", "input": "move_workspace", "doc": "d"}])
 assert "The app `drive`'s settings:" in grouped and "an input of `ferrum task move_workspace`" in grouped, grouped
+only = s.environment_only(platform + [{"key": "move_source_region", "env": "FERRUM_MOVE_SOURCE_REGION", "input": "move_workspace", "doc": "d"},
+                                      {"key": "pdf_url", "env": "FERRUM_PDF_URL", "doc": "stored"}])
+assert "FERRUM_MOVE_SOURCE_REGION" in only and "FERRUM_DRIVE_MAX_FILE_MB" in only and "FERRUM_PDF_URL" not in only, only
+assert "PGSSLMODE" in only, "the libraries' own reads are in it"
 print("scripts/settings.py reads what it should")
