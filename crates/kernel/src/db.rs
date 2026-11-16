@@ -712,15 +712,20 @@ pub fn database_ca() -> Option<String> {
     run_file(DB_CA).map(|p| p.to_string_lossy().into_owned())
 }
 
-/// A file of the boot contract's at its fixed path under `/run/ferrum` (docs/plan/stateless.md, D1), when it is there. A
-/// debug build (tests, a developer's machine) looks in `FERRUM_TEST_RUN_DIR` instead when that is set, for the file of
-/// the same name; a release build never reads that variable.
-pub fn run_file(fixed: &str) -> Option<std::path::PathBuf> {
+/// Where a file of the boot contract's is read: its fixed path under `/run/ferrum` (docs/plan/stateless.md, D1). A debug
+/// build (tests, a developer's machine, the rehearsals) looks in `FERRUM_TEST_RUN_DIR` instead when that is set, for the
+/// file of the same name; a release build never reads that variable.
+pub fn run_path(fixed: &str) -> std::path::PathBuf {
     let elsewhere = if cfg!(debug_assertions) { std::env::var("FERRUM_TEST_RUN_DIR").ok().filter(|d| !d.trim().is_empty()) } else { None };
-    let path = match elsewhere {
-        Some(dir) => std::path::Path::new(&dir).join(std::path::Path::new(fixed).file_name()?),
-        None => std::path::PathBuf::from(fixed),
-    };
+    match (elsewhere, std::path::Path::new(fixed).file_name()) {
+        (Some(dir), Some(name)) => std::path::Path::new(&dir).join(name),
+        _ => std::path::PathBuf::from(fixed),
+    }
+}
+
+/// A file of the boot contract's ([`run_path`]), when it is there.
+pub fn run_file(fixed: &str) -> Option<std::path::PathBuf> {
+    let path = run_path(fixed);
     path.is_file().then_some(path)
 }
 

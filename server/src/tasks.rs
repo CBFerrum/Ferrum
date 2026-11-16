@@ -47,7 +47,7 @@ pub async fn open_vault(
     use ferrum_kernel::vault::{Opened, Opener};
     let opener = Opener {
         database_url: database_url.to_string(),
-        file: ferrum_kernel::vault::ROOT_FILE.into(),
+        file: ferrum_kernel::db::run_path(ferrum_kernel::vault::ROOT_FILE),
         transit: transit.cloned(),
         command: Some(settings.secret_key_command.trim().to_string()).filter(|c| !c.is_empty()),
         kdf: Default::default(),
