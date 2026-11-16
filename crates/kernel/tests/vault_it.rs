@@ -405,9 +405,8 @@ async fn keys_and_handles(no_file: &Path) {
     let other = crm_a.derive(&a, ws, "other").await.unwrap();
     let inst = crm_a.derive(&a, Scope::Installation, "links").await.unwrap();
     assert!(hr_x.bytes() != x.bytes() && other.bytes() != x.bytes() && inst.bytes() != x.bytes() && first.as_slice() != x.bytes());
-    // The platform's own owner key is there too: a start with no old key makes it, for the apps that still read one
-    // (crates/kernel/src/vault/keyed.rs).
-    assert_eq!(as_vault(&db, "select count(*) from vault.key where scope = '00000000-0000-0000-0000-000000000000'").await, 3);
+    // No key of the platform's is made at start for apps any more: the old key is the kernel's alone.
+    assert_eq!(as_vault(&db, "select count(*) from vault.key where scope = '00000000-0000-0000-0000-000000000000'").await, 2);
     assert_eq!(crm_a.derive_at(&a, ws, "links", 1).await.unwrap().bytes(), x.bytes());
     assert!(matches!(crm_a.derive_at(&a, ws, "links", 2).await, Err(Error::NotFound(_))), "a version that is not there");
     assert_eq!(format!("{x:?}"), "Derived(version 1)", "a derived key never shows itself");
