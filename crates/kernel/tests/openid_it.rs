@@ -239,6 +239,10 @@ async fn scenario() {
     assert_eq!(trail(&a, acme, "companion_declared").await.len(), 1, "and is recorded once");
     let secret = String::from_utf8(forge.reveal(&a, Scope::Workspace(acme), &client.secret).await.unwrap().to_vec()).unwrap();
     assert!(matches!(other.reveal(&a, Scope::Workspace(acme), &client.secret).await, Err(Error::NotFound(_))), "another app's handle has no such secret");
+    let described = forge.describe(&a, Scope::Workspace(acme), &client.secret).await.unwrap().unwrap();
+    assert_eq!(described.managed_by.as_deref(), Some("forgeapp"), "the app's to manage");
+    let e = a.vault_regenerate(Scope::Workspace(acme), "forgeapp", &client.secret).await.unwrap_err();
+    assert!(matches!(e, Error::Conflict(_)), "an operator cannot change it under the companion: {e}");
     let beta_client = forge.companion(&a, beta, "forge", &[BACK.into()]).await.unwrap();
     let beta_secret = String::from_utf8(forge.reveal(&a, Scope::Workspace(beta), &beta_client.secret).await.unwrap().to_vec()).unwrap();
     assert_ne!(beta_client.client_id, client.client_id);
@@ -392,7 +396,7 @@ async fn scenario() {
     a.logout_everywhere(&a.load_ctx(acme, dev, None, "it".into()).await.unwrap()).await.unwrap();
     assert!(a.oauth_refresh(&api.id, &g.refresh_token).await.is_err(), "signing out everywhere ends it");
 
-    // ── rotation: the new key signs, the one before is still published; and an app removes its client ──
+    // ── rotation: the new version signs, the one before is still published; and an app takes its client away ──
     let before = a.openid_keys(acme).await.unwrap()[0].kid.clone();
     let rotated = a.openid_rotate(acme).await.unwrap();
     let published: Vec<String> = a.openid_keys(acme).await.unwrap().into_iter().map(|k| k.kid).collect();
@@ -404,7 +408,11 @@ async fn scenario() {
     a.openid_rotate(acme).await.unwrap();
     assert!(!a.openid_keys(acme).await.unwrap().iter().any(|k| k.kid == before), "two rotations on, the first is gone");
     let c = code(&a, &ctx, sid, &client, &request(&client.client_id, None)).await;
+    let before_removal = signed_out_events(&a).await.len();
     assert!(forge.remove_companion(&a, acme, "forge").await.unwrap());
+    let told = signed_out_events(&a).await;
+    assert_eq!(told.len(), before_removal + 1, "the one live sign-in through it ended");
+    assert_eq!(told.last().unwrap()["reason"], json!("client_removed"));
     assert!(a.companion_client(&client.client_id).await.unwrap().is_none());
     assert_eq!(grant_refused(a.openid_token(&client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await), "invalid_client", "its codes went with it");
     assert!(matches!(forge.describe(&a, Scope::Workspace(acme), &client.secret).await, Ok(None)), "and its secret");

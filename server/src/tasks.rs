@@ -1856,6 +1856,71 @@ impl Task for ApplySettings {
     }
 }
 
+/// `ferrum task openid tenant:<slug>`: the programs beside Ferrum that sign the workspace's people in through it (its
+/// companions: their apps, clients, return addresses, last and live sign-ins) and its published signing keys (docs/api.md,
+/// "Signing in to programs beside Ferrum"). `remove:<client id>` takes a companion's client away: every sign-in through
+/// it ends and its app is told; the app's next declaration makes it again. `rotate:yes` gives the workspace a new
+/// signing key: the one before is still published for a day. `format:json` for a program.
+pub struct Openid;
+
+#[async_trait]
+impl Task for Openid {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "openid".into(),
+            detail: "A workspace's programs that sign people in through it, and its signing keys (tenant:<slug>; remove:<client id>; rotate:yes; format:json)"
+                .into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let (tenant, _) = k.tenant_by_slug(vars.cli_arg("tenant")?).await.map_err(refused)?;
+        if let Ok(client) = vars.cli_arg("remove") {
+            let gone = k.openid_remove(tenant, client).await.map_err(refused)?;
+            println!(
+                "{}",
+                if gone { format!("{client} taken away: its sign-ins ended, and its app is told") } else { format!("{client} is not one of this workspace's") }
+            );
+            return Ok(());
+        }
+        match vars.cli_arg("rotate") {
+            Ok("yes") => {
+                let key = k.openid_rotate(tenant).await.map_err(refused)?;
+                println!("a new signing key, {} (version {}): it signs from now on; the one before is still published for a day", key.kid, key.version);
+                return Ok(());
+            }
+            Ok(other) => return Err(Error::Message(format!("rotate:{other}: say rotate:yes"))),
+            Err(_) => {}
+        }
+        let o = k.openid_overview(tenant).await.map_err(refused)?;
+        if vars.cli_arg("format").is_ok_and(|f| f == "json") {
+            println!("{}", serde_json::to_string_pretty(&o).map_err(refused)?);
+            return Ok(());
+        }
+        if o.companions.is_empty() {
+            println!("no program signs this workspace's people in through it");
+        }
+        for c in &o.companions {
+            println!(
+                "{} {} ({}): returns to {}; {} signed in now, last sign-in {}",
+                c["app"].as_str().unwrap_or_default(),
+                c["companion"].as_str().unwrap_or_default(),
+                c["client_id"].as_str().unwrap_or_default(),
+                c["redirect_uris"].as_array().map(|a| a.iter().filter_map(serde_json::Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
+                c["signed_in_now"],
+                c["last_sign_in"].as_str().unwrap_or("never"),
+            );
+        }
+        for key in &o.keys {
+            match key["until"].as_str() {
+                None => println!("signing key {} (version {}): signs", key["kid"].as_str().unwrap_or_default(), key["version"]),
+                Some(until) => println!("signing key {} (version {}): still published until {until}", key["kid"].as_str().unwrap_or_default(), key["version"]),
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

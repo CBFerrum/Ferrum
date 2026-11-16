@@ -275,6 +275,38 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 * API keys: 256 random bits, stored as SHA-256; OAuth access tokens last an hour, refresh tokens
   rotate.
 
+**Programs beside Ferrum signing in through it** ([api](api.md#signing-in-to-programs-beside-ferrum-openid-connect))
+* A program an installed app runs (its companion: the forge first) is an OpenID Connect client its app declares in its
+  own code, for one workspace; nobody registers one over the internet, and dynamic registration never gives `openid`.
+  Its secret is the app's own in the vault, made there and managed by the app (people's routes refuse to change it);
+  Ferrum keeps only its SHA-256 digest and compares in constant time.
+* The issuer is the address of the workspace the request came to; only addresses that serve one workspace's shell are
+  issuers, and a code, an access token and a user-info are good only at the address they were asked at. A sandbox,
+  a forwarding address, a shared host, the accounts and hooks hosts answer nothing.
+* ID tokens are signed `EdDSA` by a key pair of the workspace's that the platform's vault made and holds (the private
+  half never leaves it; `sign_at` names the version in the token); a rotation keeps the version before published for
+  a day. The real Forgejo 17.0.1 does not check the signature at all (it trusts the TLS answer of the token endpoint:
+  OpenID Connect Core 3.1.3.7, item 6) and accepts any `alg`: it checks the issuer against discovery, the audience,
+  the expiry, and that the user-info's `sub` is the ID token's. Its safety therefore rests on TLS to the token
+  endpoint and on the client's secret; relying parties that do check are given a key they can check with.
+* A code goes only to a member holding the right the app names, through a live browser session of theirs; it is
+  random, single-use, a minute long, and bound to its client, exact return address, PKCE S256 verifier and issuer. A
+  code used twice stops the access token it gave. A nonce is never taken twice by a client. The access token is opaque
+  and five minutes long, and only the user-info takes it. There is no refresh token.
+* `auth_time` is when the person last proved who they are in that browser session; `amr` how. `max_age` and
+  `prompt=login` are met only by the person confirming it is them again through the step-up, never assumed.
+* The subject is random per person and workspace, kept, and says nothing else. A companion's own claims (the forge's
+  account name) are its app's, and never one of the platform's.
+* Leaving: once the browser session ends (signed out, revoked, idle, expired) or the person's access does (signed out
+  everywhere, a new password, deactivated, deprovisioned, erased, the workspace suspended), their codes, access tokens
+  and user-info are refused at once, and within 15 seconds the app is told once (`ferrum.companion.signed_out`). The
+  companion's own session is the app's to end: Forgejo 17 has no call that ends one person's sessions, and keeps a
+  session after its account's password changes; locking the account (`prohibit_login`) refuses its sessions at once,
+  and lifting the lock lets the same sessions back in.
+* The forge links a new subject to an existing account by its name and, failing that, by its email address, across
+  every source it has: a real address in the claims would let a person of one workspace land in another's account of
+  the same address. The forge's companion therefore gives an address only its own account has.
+
 **Data**
 * Secrets (secret fields such as mail passwords, two-factor secrets, single sign-on client
   secrets) are kept in the vault, each its owner's, bound to their record, and never appear in

@@ -109,6 +109,65 @@ old key is set (a message's secret values are sealed with the vault now); Helpde
 writes what it sealed with `open_old` and `seal_old` (its contexts begin `cloud-`). Until each has, the old key's field
 stays public: apps that still read it are given the same key once it is gone from the environment.
 
+## A companion's sign-in
+
+An app that runs a program beside Ferrum (its *companion*: the Cloud app's forge) has people sign in to it through
+the workspace with OpenID Connect (docs/api.md, *Signing in to programs beside Ferrum*), in two steps.
+
+**As it registers**, it says what the companion needs, under a name of its own (lowercase letters, digits and dashes):
+
+```rust
+hooks.app("cloud", &packages, |h| {
+    let vault = h.vault();
+    h.companion("forge", Arc::new(Forge));
+    // …keep `vault` for the declaration below
+});
+
+#[async_trait]
+impl ferrum_kernel::oidc::Companion for Forge {
+    /// Who is let in: a member with this right (some records are enough). Everyone else is told access_denied.
+    fn right(&self) -> (&str, Action) { ("Code Repository", Action::Read) }
+    /// What places the person at the companion: put in the ID token and the user-info beside the platform's claims.
+    async fn claims(&self, k: &Kernel, tenant: Uuid, user: Uuid) -> Result<Map<String, Value>> {
+        let login = forge_login(tenant, user);
+        Ok(json!({"preferred_username": login, "email": format!("{login}@people.ferrum.invalid")}).as_object().cloned().unwrap_or_default())
+    }
+}
+```
+
+A claim the platform sets (`iss`, `sub`, `aud`, `azp`, `exp`, `iat`, `auth_time`, `nonce`, `amr`, …) is refused, and
+the sign-in with it. Registered outside an app's registration, or twice, the server does not start.
+
+**For each workspace**, its code declares the companion's client with its own handle, whenever it starts the companion
+or its address changes, and removes it when the companion goes: `vault.companion(&k, tenant, "forge", &[redirect_uri])`
+→ `Client {client_id, secret, redirect_uris, …}`. The return addresses (one to ten) are `https://…`, or `http://` on
+this machine's loopback, and are matched exactly. The client's secret is the app's own secret `oidc-client.<name>` in
+that workspace, made by the vault once, managed by the app (people's routes refuse to change it), revealed to the app's
+code to hand to the companion: `vault.reveal(&k, Scope::Workspace(tenant), &client.secret)`. Declaring again changes
+nothing that is the same; it is safe from every replica at once. `vault.remove_companion(&k, tenant, "forge")` takes the
+client and its secret away: every sign-in through it ends, and the app is told (below).
+
+**When a sign-in ends** (the person signed out of that browser, everywhere, was deactivated, deprovisioned or erased,
+the workspace suspended, the client taken away), the app hears `ferrum.companion.signed_out` through an event sink:
+`{user, subject, client_id, app, companion, session, reason}`. Ferrum stops answering for it at once; the companion's
+own session is the app's to end.
+
+**The forge, as Cloud configures it** (checked with the real Forgejo 17.0.1, scripts/oidc_rehearsal.sh): an
+authentication source per workspace, `forgejo admin auth add-oauth --name <one per workspace> --provider openidConnect
+--key <client_id> --secret <secret> --auto-discover-url https://<the workspace's main address>/.well-known/openid-configuration
+--scopes openid --scopes profile`, made or brought up to date (`update-oauth`) as the forge starts; and in `app.ini`,
+`[oauth2_client] ENABLE_AUTO_REGISTRATION = true`, `USERNAME = preferred_username`, `ACCOUNT_LINKING = auto` (with
+`[service] DISABLE_REGISTRATION = true` kept: it does not stop this). The forge then finds the account Cloud made by its
+name and links the subject to it; one Cloud has not made yet, the forge makes under that name, bound to the source and
+the subject (a password Cloud gives it afterwards still works for Cloud's calls as that person). The email claim must be an address no other account
+of the forge has, since the forge links a subject it does not know to the account with that address, whichever source
+it came from. On `ferrum.companion.signed_out`, Forgejo 17 has no call that ends one person's sessions (a new password
+leaves them, and a session in use never runs out): the one thing that ends them at once is locking the account
+(`prohibit_login`, as Cloud does on a departure), which refuses every session of it until it is lifted, and lifting it
+lets the same sessions back in. So lock it on every reason; for `access_ended` keep it locked; for the others lift it
+in `claims`, which Ferrum calls only while issuing that person a token for a live session of theirs, before the forge
+signs them in.
+
 ## Operator settings
 
 What an operator chooses for the whole installation and an app's code in the server reads (an address of a service, a

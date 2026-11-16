@@ -56,17 +56,17 @@ create table oidc_subject (
 );
 
 -- Which browser session signed in to which companion, until its app has been told that it ended
--- (`ferrum.companion.signed_out`). Gone with the session.
+-- (`ferrum.companion.signed_out`), and a week after. It outlives its session's row, so that a session deleted (an
+-- erasure) is still told.
 create table oidc_sign_in (
-  tenant_id uuid not null,
+  tenant_id uuid not null references tenant(id) on delete cascade,
   session_id uuid not null,
   client_id text not null references oauth_companion(client_id) on delete cascade,
   user_id uuid not null,
   token_version int not null,
   signed_in_at timestamptz not null default now(),
   ended_at timestamptz,
-  primary key (tenant_id, session_id, client_id),
-  foreign key (tenant_id, session_id) references user_session (tenant_id, id) on delete cascade
+  primary key (tenant_id, session_id, client_id)
 );
 create index oidc_sign_in_live on oidc_sign_in (signed_in_at) where ended_at is null;
 

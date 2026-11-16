@@ -10,8 +10,9 @@
 //!
 //! The issuer is the address of the workspace the request came to; the server decides which addresses are one
 //! (crate::shell). Each workspace signs its ID tokens with a key pair of its own, which the platform's vault makes and
-//! holds (`oidc.<n>`, Ed25519: the private half never leaves the vault). The newest signs; the one before it is still
-//! published for a day after the newer was made. A key is named by its RFC 7638 thumbprint.
+//! holds (`oidc.signing`, Ed25519: the private half never leaves the vault). A rotation makes a new version, which
+//! signs from then on; the version before still verifies, and is still published, for a day (the secret's overlap). A
+//! version is named by its RFC 7638 thumbprint, and each signature by the version that made it (`sign_at`).
 //!
 //! `auth_time` is when the browser session's person last proved who they are (signing in, or the step-up), never the
 //! time of the request; `max_age` and `prompt=login` are met by asking the person to confirm it is them in one of their
@@ -23,7 +24,7 @@
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::oauth::{hash, pkce_matches, random_secret};
-use crate::vault::{Described, New, Rule, Scope, Vault};
+use crate::vault::{New, Rule, Scope, Vault};
 use crate::{Access, Action, Kernel, gate, outbox};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -41,20 +42,21 @@ pub const CODE_SECS: i64 = 60;
 pub const WAIT_SECS: i64 = 600;
 /// How long an ID token and an access token live.
 pub const TOKEN_SECS: i64 = 300;
-/// How long the key before the newest is still published once the newest was made.
+/// How long the version of the signing key before the newest still verifies, and is published, after a rotation.
 pub const KEY_OVERLAP_SECS: i64 = 86_400;
 /// Published (the outbox) once a browser session that signed in to a companion has ended, whichever way it ended:
 /// `{user, subject, client_id, app, companion, session, reason}`, `reason` one of `signed_out` (that device signed out,
 /// or its session was revoked or ended idle), `signed_out_everywhere` (every session of the person ended: signing out
-/// everywhere, a new password), `access_ended` (deactivated, deprovisioned, the workspace suspended) or `expired`.
+/// everywhere, a new password), `access_ended` (deactivated, deprovisioned, the workspace suspended), `expired`, or
+/// `client_removed` (its app or an operator took the companion's client away).
 pub const SIGNED_OUT_TOPIC: &str = "ferrum.companion.signed_out";
 /// The scopes a companion may ask for; others are left out.
 pub const SCOPES: [&str; 3] = ["openid", "profile", "email"];
 /// Claims only the platform sets: an app's claims never name them.
 const PLATFORM_CLAIMS: [&str; 17] =
     ["iss", "sub", "aud", "azp", "exp", "iat", "nbf", "jti", "auth_time", "nonce", "acr", "amr", "at_hash", "c_hash", "sid", "client_id", "scope"];
-/// The vault's names of a workspace's signing keys: `oidc.<n>`.
-const KEY: &str = "oidc.";
+/// The vault's name of a workspace's signing key, a secret of the platform's in that workspace.
+const KEY: &str = "oidc.signing";
 /// The app's own secret that holds its companion's client secret: `oidc-client.<companion>`.
 pub const CLIENT_SECRET: &str = "oidc-client.";
 /// How often a replica that runs background work looks for sign-ins whose session ended.
@@ -73,8 +75,8 @@ pub trait Companion: Send + Sync {
     async fn claims(&self, kernel: &Kernel, tenant: Uuid, user: Uuid) -> Result<Map<String, Value>>;
 }
 
-/// A companion's client, as its app declared it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+/// A companion's client, as its app declared it. Its secret's digest is never shown (not even by `Debug`).
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Client {
     pub client_id: String,
     pub tenant: Uuid,
@@ -86,6 +88,12 @@ pub struct Client {
     pub secret: String,
     #[serde(skip)]
     secret_hash: String,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client").field("client_id", &self.client_id).field("tenant", &self.tenant).field("app", &self.app).field("name", &self.name).finish()
+    }
 }
 
 /// What a companion's name may be: lowercase letters, digits and dashes, up to 40.
@@ -124,6 +132,10 @@ impl Vault {
         if made.is_none() {
             let rule = Rule { reveal: true, ..Default::default() };
             self.adopt(k, scope, &secret, New::Random(32), rule, "companion").await?;
+        }
+        // The app's to manage: the administrator's and operator's routes refuse to change it (the companion holds it).
+        if made.as_ref().is_none_or(|d| d.managed_by.is_none()) {
+            self.manage(k, scope, &secret, true).await?;
         }
         let value = self.reveal(k, scope, &secret).await?;
         let secret_hash = hex::encode(Sha256::digest(&*value));
@@ -169,33 +181,65 @@ impl Vault {
         self.remove(k, scope, &format!("{CLIENT_SECRET}{name}")).await?;
         let app = self.owner().to_string();
         let mut tx = k.db.system_tenant_tx(tenant).await?;
-        let gone: Option<String> = sqlx::query_scalar("delete from oauth_companion where tenant_id = $1 and app = $2 and name = $3 returning client_id")
+        let id: Option<String> = sqlx::query_scalar("select client_id from oauth_companion where tenant_id = $1 and app = $2 and name = $3")
             .bind(tenant)
             .bind(&app)
             .bind(name)
             .fetch_optional(&mut *tx)
             .await?;
-        if let Some(id) = &gone {
-            let diff = json!({"client_id": id, "app": app, "companion": name});
-            crate::audit::record_as(&mut tx, tenant, None, "", crate::audit::ADMIN, "Companion", Uuid::now_v7(), "companion_removed", None, diff).await?;
-        }
+        let gone = match id {
+            Some(id) => take_away(&mut tx, tenant, &id, None).await?.is_some(),
+            None => false,
+        };
         tx.commit().await?;
-        Ok(gone.is_some())
+        Ok(gone)
     }
+}
+
+/// Takes the client `client_id` of workspace `tenant` away in `tx`: each live sign-in through it ends, and its app is
+/// told (`client_removed`), then the client goes, with its codes and access tokens. Recorded, `by` the operator or (none)
+/// its app. Its app and companion, when there was one.
+async fn take_away(tx: &mut crate::Tx, tenant: Uuid, client_id: &str, by: Option<&str>) -> Result<Option<(String, String)>> {
+    let found: Option<(String, String)> = sqlx::query_as("select app, name from oauth_companion where tenant_id = $1 and client_id = $2 for update")
+        .bind(tenant)
+        .bind(client_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let Some((app, name)) = found else { return Ok(None) };
+    let ended: Vec<(Uuid, Uuid, Option<String>)> = sqlx::query_as(
+        "update oidc_sign_in i set ended_at = now() where i.client_id = $1 and i.ended_at is null \
+         returning i.session_id, i.user_id, (select subject from oidc_subject x where x.tenant_id = i.tenant_id and x.user_id = i.user_id)",
+    )
+    .bind(client_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for (session, user, subject) in ended {
+        let payload =
+            json!({"user": user, "subject": subject, "client_id": client_id, "app": app, "companion": name, "session": session, "reason": "client_removed"});
+        outbox::enqueue(tx, tenant, SIGNED_OUT_TOPIC, Some("User"), Some(user), payload).await?;
+    }
+    sqlx::query("delete from oauth_companion where client_id = $1").bind(client_id).execute(&mut **tx).await?;
+    let mut diff = json!({"client_id": client_id, "app": app, "companion": name});
+    if let Some(by) = by {
+        diff["by"] = json!(by);
+    }
+    crate::audit::record_as(tx, tenant, None, "", crate::audit::ADMIN, "Companion", Uuid::now_v7(), "companion_removed", None, diff).await?;
+    Ok(Some((app, name)))
 }
 
 // ── signing keys ──
 
-/// One of a workspace's signing keys, as relying parties see it.
+/// A version of a workspace's signing key, as relying parties see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicKey {
     /// Its RFC 7638 thumbprint, which tokens name it by.
     pub kid: String,
     /// The public half, base64url.
     pub x: String,
-    /// The vault's name of it.
-    pub name: String,
-    pub made_at: DateTime<Utc>,
+    /// The vault's version of `oidc.signing` it is.
+    pub version: i32,
+    /// None: it signs. Else until when it still verifies, and is published.
+    pub until: Option<DateTime<Utc>>,
 }
 
 impl PublicKey {
@@ -210,61 +254,54 @@ pub fn thumbprint(x: &str) -> String {
     B64URL.encode(Sha256::digest(format!(r#"{{"crv":"Ed25519","kty":"OKP","x":"{x}"}}"#).as_bytes()))
 }
 
-/// The signing keys among the platform's secrets of a workspace, newest first.
-fn numbered(listed: Vec<Described>) -> Vec<(u32, PublicKey)> {
-    let mut keys: Vec<(u32, PublicKey)> = listed
-        .into_iter()
-        .filter_map(|d| {
-            let n = d.name.strip_prefix(KEY)?.parse::<u32>().ok().filter(|n| *n > 0)?;
-            let x = d.public_key?;
-            Some((n, PublicKey { kid: thumbprint(&x), x, name: d.name, made_at: d.set_at }))
-        })
-        .collect();
-    keys.sort_by_key(|k| std::cmp::Reverse(k.0));
-    keys
-}
-
-/// What is published at `now`: the newest key, and the one before it until a day after the newest was made.
-fn published(keys: Vec<(u32, PublicKey)>, now: DateTime<Utc>) -> Vec<PublicKey> {
-    let until = keys.first().map(|k| k.1.made_at + chrono::Duration::seconds(KEY_OVERLAP_SECS));
-    keys.into_iter().take(2).enumerate().filter(|(i, _)| *i == 0 || until.is_some_and(|u| now < u)).map(|(_, k)| k.1).collect()
-}
-
 impl Kernel {
-    /// A workspace's published signing keys, the one that signs first. Its first is made now, once however many replicas
-    /// ask at once. Refused, saying why, while the vault is closed.
+    /// A workspace's published signing keys: the version that signs, then the one before it while it still verifies.
+    /// The first is made now, once however many replicas ask at once. Refused, saying why, while the vault is closed.
     pub async fn openid_keys(&self, tenant: Uuid) -> Result<Vec<PublicKey>> {
         let platform = Vault::kernel("platform");
         let scope = Scope::Workspace(tenant);
-        let mut keys = numbered(platform.list(self, scope).await?);
-        if keys.is_empty() {
-            platform.adopt(self, scope, &format!("{KEY}1"), New::Ed25519, Rule::default(), "openid").await?;
-            keys = numbered(platform.list(self, scope).await?);
+        let current = match platform.describe(self, scope, KEY).await? {
+            Some(d) => d,
+            None => {
+                let rule = Rule { overlap_secs: KEY_OVERLAP_SECS, ..Default::default() };
+                platform.adopt(self, scope, KEY, New::Ed25519, rule, "openid").await?;
+                platform.describe(self, scope, KEY).await?.ok_or_else(|| Error::Internal("a signing key just made is not there".into()))?
+            }
+        };
+        let x = current.public_key.ok_or_else(|| Error::Internal(format!("{KEY} holds no key pair")))?;
+        let mut keys = vec![PublicKey { kid: thumbprint(&x), x, version: current.version, until: None }];
+        if let Some(until) = current.previous_until.filter(|t| *t > Utc::now()) {
+            let before = current.version - 1;
+            match platform.public_key(self, scope, KEY, Some(before)).await {
+                Ok(Some(x)) => keys.push(PublicKey { kid: thumbprint(&x), x, version: before, until: Some(until) }),
+                Ok(None) | Err(Error::NotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
         }
-        Ok(published(keys, Utc::now()))
+        Ok(keys)
     }
 
-    /// A new signing key for workspace `tenant`: it signs from now on, and the one it replaces is still published for a
-    /// day; any older one goes. Two at once make one. The new key.
+    /// A new version of workspace `tenant`'s signing key: it signs from now on; the one it replaces still verifies, and
+    /// is published, for a day, and any older one goes. The new one.
     pub async fn openid_rotate(&self, tenant: Uuid) -> Result<PublicKey> {
-        let platform = Vault::kernel("platform");
-        let scope = Scope::Workspace(tenant);
-        let keys = numbered(platform.list(self, scope).await?);
-        let next = keys.first().map_or(1, |k| k.0 + 1);
-        platform.adopt(self, scope, &format!("{KEY}{next}"), New::Ed25519, Rule::default(), "rotation").await?;
-        for (_, older) in keys.iter().skip(1) {
-            platform.remove(self, scope, &older.name).await?;
-        }
-        self.openid_keys(tenant).await?.into_iter().next().ok_or_else(|| Error::Internal("a signing key just made is not there".into()))
+        let before = self.openid_keys(tenant).await?;
+        Vault::kernel("platform").rotate(self, Scope::Workspace(tenant), KEY, New::Ed25519).await?;
+        self.openid_keys(tenant)
+            .await?
+            .into_iter()
+            .next()
+            .filter(|k| before.first().is_none_or(|b| b.version < k.version))
+            .ok_or_else(|| Error::Internal("the signing key did not turn".into()))
     }
 
-    /// `claims` as a JWT signed with the workspace's newest key (the vault's `sign`, recorded as a use).
+    /// `claims` as a JWT signed with the workspace's key: the version that signs now, named in the header, and the
+    /// signature made with that very version (`sign_at`, recorded as a use), even if a rotation came in between.
     async fn openid_sign(&self, tenant: Uuid, claims: &Value) -> Result<String> {
         let keys = self.openid_keys(tenant).await?;
         let key = keys.first().ok_or_else(|| Error::Internal("no signing key".into()))?;
         let header = json!({"alg": "EdDSA", "typ": "JWT", "kid": key.kid});
         let input = format!("{}.{}", B64URL.encode(header.to_string()), B64URL.encode(claims.to_string()));
-        let signature = Vault::kernel("platform").sign(self, Scope::Workspace(tenant), &key.name, input.as_bytes()).await?;
+        let (_, signature) = Vault::kernel("platform").sign_at(self, Scope::Workspace(tenant), KEY, input.as_bytes(), Some(key.version)).await?;
         Ok(format!("{input}.{}", B64URL.encode(signature)))
     }
 }
@@ -307,13 +344,22 @@ impl AuthRequest {
     }
 }
 
-/// What an authorization request comes to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What an authorization request comes to. Neither value is ever shown (not even by `Debug`).
+#[derive(Clone, PartialEq, Eq)]
 pub enum Authorized {
     /// Back to the client with this code.
     Code(String),
     /// Its person confirms it is them first ([`Kernel::openid_confirm`]), for the request this names.
     Confirm(String),
+}
+
+impl std::fmt::Debug for Authorized {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Authorized::Code(_) => "Authorized::Code(..)",
+            Authorized::Confirm(_) => "Authorized::Confirm(..)",
+        })
+    }
 }
 
 /// A refusal the client is told at its own address: the specification's error and what it says.
@@ -327,12 +373,18 @@ fn refusal(error: &'static str, description: &str) -> Refusal {
     Refusal { error, description: description.to_string() }
 }
 
-/// What the tokens endpoint gives a companion.
-#[derive(Debug, Clone)]
+/// What the tokens endpoint gives a companion. Never shown (not even by `Debug`).
+#[derive(Clone)]
 pub struct Tokens {
     pub id_token: String,
     pub access_token: String,
     pub scope: String,
+}
+
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tokens").field("scope", &self.scope).finish_non_exhaustive()
+    }
 }
 
 /// The parts of a request a companion's sign-in checks, read once.
@@ -472,6 +524,11 @@ impl Kernel {
             Err(no) => return Ok(Err(no)),
         };
         if let Err(no) = self.let_in(ctx, client) {
+            // On the person's trail, as a refused sign-in is (the authorization endpoint's limit bounds how often).
+            let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
+            let detail = json!({"client_id": client.client_id, "app": client.app, "companion": client.name, "issuer": issuer, "session": session});
+            gate::event(&mut tx, ctx.tenant, ctx.user, "companion_refused", detail).await?;
+            tx.commit().await?;
             return Ok(Err(no));
         }
         let (at, proof, tv) = session_proof(self, ctx, session).await?;
@@ -781,7 +838,8 @@ impl Kernel {
         })
     }
 
-    /// Drops what is a day past its end: requests, codes and access tokens (a client's nonces are kept that long).
+    /// Drops what is a day past its end (requests, codes and access tokens: a client's nonces are kept that long), and
+    /// sign-ins a week after their app was told they ended.
     pub async fn openid_purge(&self) -> Result<u64> {
         let mut tx = self.db.system_tx().await?;
         let n = sqlx::query(
@@ -789,7 +847,8 @@ impl Kernel {
         )
         .execute(&mut *tx)
         .await?
-        .rows_affected();
+        .rows_affected()
+            + sqlx::query("delete from oidc_sign_in where ended_at < now() - interval '7 days'").execute(&mut *tx).await?.rows_affected();
         tx.commit().await?;
         Ok(n)
     }
@@ -819,7 +878,7 @@ impl Kernel {
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
-        let keys = self.openid_keys(tenant).await?.iter().map(|k| json!({"kid": k.kid, "made_at": k.made_at, "name": k.name})).collect();
+        let keys = self.openid_keys(tenant).await?.iter().map(|k| json!({"kid": k.kid, "version": k.version, "until": k.until})).collect();
         Ok(Overview { companions, keys })
     }
 
@@ -827,15 +886,7 @@ impl Kernel {
     /// through it ends at once, and the app's next declaration makes it again. Recorded. Whether there was one.
     pub async fn openid_remove(&self, tenant: Uuid, client_id: &str) -> Result<bool> {
         let mut tx = self.db.system_tenant_tx(tenant).await?;
-        let gone: Option<(String, String)> = sqlx::query_as("delete from oauth_companion where tenant_id = $1 and client_id = $2 returning app, name")
-            .bind(tenant)
-            .bind(client_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        if let Some((app, name)) = &gone {
-            let diff = json!({"client_id": client_id, "app": app, "companion": name, "by": "operator"});
-            crate::audit::record_as(&mut tx, tenant, None, "", crate::audit::ADMIN, "Companion", Uuid::now_v7(), "companion_removed", None, diff).await?;
-        }
+        let gone = take_away(&mut tx, tenant, client_id, Some("operator")).await?;
         tx.commit().await?;
         Ok(gone.is_some())
     }
@@ -849,18 +900,6 @@ mod tests {
     fn a_key_is_named_by_its_thumbprint() {
         // RFC 8037 appendix A.3: the thumbprint of its Ed25519 example key.
         assert_eq!(thumbprint("11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"), "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k");
-    }
-
-    #[test]
-    fn the_key_before_the_newest_is_published_for_a_day() {
-        let at = |n: u32, made: DateTime<Utc>| (n, PublicKey { kid: format!("k{n}"), x: String::new(), name: format!("oidc.{n}"), made_at: made });
-        let now = Utc::now();
-        let keys = |made: DateTime<Utc>| vec![at(3, made), at(2, made - chrono::Duration::days(30)), at(1, made - chrono::Duration::days(60))];
-        let shown: Vec<String> = published(keys(now - chrono::Duration::hours(1)), now).into_iter().map(|k| k.kid).collect();
-        assert_eq!(shown, ["k3", "k2"], "the newest signs; the one before still verifies; older ones are not published");
-        let shown: Vec<String> = published(keys(now - chrono::Duration::hours(25)), now).into_iter().map(|k| k.kid).collect();
-        assert_eq!(shown, ["k3"], "a day after the newest was made, only it");
-        assert!(published(vec![], now).is_empty());
     }
 
     #[test]
@@ -906,6 +945,14 @@ mod tests {
         assert!(fresh_enough(before, asked, Some(60), false, now), "40 seconds old, max_age 60");
         assert!(!fresh_enough(before, asked, Some(30), false, now), "40 seconds old, max_age 30");
         assert!(!fresh_enough(None, asked, Some(3600), false, now));
+    }
+
+    #[test]
+    fn codes_and_tokens_never_show_themselves() {
+        assert_eq!(format!("{:?}", Authorized::Code("c0de".into())), "Authorized::Code(..)");
+        assert_eq!(format!("{:?}", Authorized::Confirm("w4it".into())), "Authorized::Confirm(..)");
+        let t = Tokens { id_token: "id.tok.en".into(), access_token: "fa_secret".into(), scope: "openid".into() };
+        assert!(!format!("{t:?}").contains("fa_secret") && !format!("{t:?}").contains("id.tok.en"));
     }
 
     #[test]

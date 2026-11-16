@@ -4596,6 +4596,48 @@ a person's sessions here when they sign out there or it disables them. Give it
 audience, event and age are checked, and each token works once. It ends all the person's sessions at
 Ferrum and their refresh tokens, on every replica, not only the session it names. Their API keys stay:
 those are not sign-ins, and removing the person ends them.
+
+### Programs beside Ferrum signing in through it
+
+A program an installed app runs beside Ferrum (the forge, which the Cloud app runs) signs a workspace's people in
+through the workspace with OpenID Connect ([API](api.md#signing-in-to-programs-beside-ferrum-openid-connect)). Nothing
+is set up by hand: the app declares the program's client for each workspace from its own code, and the vault makes
+its secret and the workspace's signing key. Each address of a workspace that serves its shell is an issuer of its own
+(`https://{address}/.well-known/openid-configuration`); without a base domain, the installation's one workspace
+(`FERRUM_DEFAULT_WORKSPACE`) on its own host, or a domain of a workspace's own. A host several workspaces share, a
+forwarding address, the accounts and hooks hosts and sandboxes answer nothing.
+
+What an operator sees:
+
+```bash
+ferrum task openid tenant:acme              # its programs: app, client, return addresses, signed in now, last sign-in;
+                                            # its signing keys: the one that signs, and the one before while it is published
+ferrum task openid tenant:acme format:json
+ferrum task openid tenant:acme rotate:yes   # a new signing key; the one before is still published, and verifies, for a day
+ferrum task openid tenant:acme remove:fo_…  # takes a program's client away: its sign-ins end and its app is told; the
+                                            # app's next declaration (the Cloud app's: at the forge's next start) makes it again
+```
+
+Each sign-in is on the person's trail (sign-in, `companion_signed_in`; `companion_refused` for someone the app does not
+let in, `companion_code_replayed` for a code used twice), and each declaration, change and removal of a client on the
+workspace's (administration, `Companion`). The vault records each signature (`sign` of the platform's `oidc.signing`,
+summed past a hundred an hour) and the client's secret as the app's (`adopt`, `manage`, `reveal`).
+
+**Turning it off.** For one program: remove its client, and switch the program off in its app (Cloud's own setting), or
+the app declares it again. There is no switch for the whole installation: discovery and the keys answer on every
+workspace's address, and nobody signs in anywhere until an app declares a program there. The signing key is rotated with the task above; rotate
+twice within a day only if the key before must stop verifying at once.
+
+**Limits.** The authorization endpoint counts each request against the person's address, and the token endpoint and
+the user-info each failure against the caller's, as failed sign-ins are (20 a minute, shared by the replicas); a
+program's successful sign-ins are not counted, so a busy forge is not held up by its own people. Codes live a minute,
+ID tokens and access tokens five minutes; a request waiting for its person to confirm it is them, ten.
+
+**When someone leaves.** Every replica that runs background work looks every 15 seconds for sign-ins whose browser
+session ended, however it ended (also by an older build, or an erasure), marks each ended, and tells its app once
+(`ferrum.companion.signed_out`, in the outbox, in the same transaction), however many replicas look at once. The
+program's own sessions are the app's to end on that event.
+
 ## Industrial sites
 
 A site runs `ferrum-site` next to its equipment: [running a site](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/gateway.md). Who may command

@@ -31,7 +31,9 @@ pub(crate) async fn issuer(st: &AppState, headers: &HeaderMap) -> ApiResult<Opti
     if st.shell.leaving(headers).await?.is_some() || st.shell.workspace(tenant).await?.sandbox.is_some() {
         return Ok(None);
     }
-    let Some(host) = request_host(headers).and_then(ferrum_kernel::shell::normalize_host) else { return Ok(None) };
+    // Its name, without its port (`localhost` too, a development server's); never an IPv6 literal.
+    let host = request_host(headers).and_then(|h| h.split(':').next()).map(str::to_ascii_lowercase);
+    let Some(host) = host.filter(|h| h == "localhost" || ferrum_kernel::shell::normalize_host(h).as_deref() == Some(h.as_str())) else { return Ok(None) };
     Ok(st.shell.origin_of(&host, headers).map(|origin| (tenant, origin)))
 }
 

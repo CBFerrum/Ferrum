@@ -2234,16 +2234,16 @@ that is not good there: unknown, used, expired, another client's, another return
 issuer, or a browser session that ended. Each failure at the token endpoint and the user-info counts against the
 caller's address as a failed sign-in does (20 a minute); past it, `429` `slow_down`. The authorization endpoint counts
 each request against the person's address. A sign-in is on the person's trail (sign-in, `companion_signed_in`: the
-client, app, companion, issuer and browser session; never a code or a token), as is a code used twice
-(`companion_code_replayed`).
+client, app, companion, issuer and browser session; never a code or a token), as are someone the app does not let in
+(`companion_refused`) and a code used twice (`companion_code_replayed`).
 
 **Leaving.** Nothing a companion is given outlives the browser session it came from: once that session is signed out,
 revoked, idle past the workspace's limit or expired, or the person signs out everywhere, gets a new password, is
 deactivated or deprovisioned, or the workspace is suspended, its codes and its access tokens are refused at once (there
 are no refresh tokens). Within 15 seconds the app hears it, once, whichever replica sees it first: the outbox event
 `ferrum.companion.signed_out` `{user, subject, client_id, app, companion, session, reason}`, `reason` `signed_out`,
-`signed_out_everywhere`, `access_ended` or `expired`. The companion's own session is its app's to end on that event
-(docs/security.md).
+`signed_out_everywhere`, `access_ended`, `expired`, or `client_removed` (the client was taken away). The companion's own
+session is its app's to end on that event (docs/app-contract.md, *A companion's sign-in*).
 
 ## Files
 
