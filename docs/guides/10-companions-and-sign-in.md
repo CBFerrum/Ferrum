@@ -131,7 +131,7 @@ Keep files in `Zeroizing` buffers sized up front, so that no copy of a secret is
 |---|---|
 | `ferrum task services [format:json]` | Each service: owner, files, made secrets, and why it cannot be rendered here; never a value |
 | `ferrum task render service:<name> to:<dir>` | Writes the files into `<dir>` from the database and the vault, with `DATABASE_URL` as its one input |
-| `ferrum task vault_rotate level:service service:<name>` | New values of the secrets the vault made for the service, of the same kind and rule; the ones before stay for their overlap |
+| `ferrum task vault_rotate level:service service:<name>` | New values of the secrets the vault made for the service, of the same kind, under the rule the service declares at that moment (its hosts from the settings as they are then); the ones before keep their rule and stay for their overlap |
 
 The writer (`companion::write`) makes the directory when missing (never a link), refuses one that holds anything but an
 earlier render of the same service (`.ferrum-render` says which), writes each file under a temporary name with
@@ -139,6 +139,11 @@ earlier render of the same service (`.ferrum-render` says which), writes each fi
 directory take turns. In Kubernetes an init container of the server's image renders into a memory-backed volume the
 program mounts read-only (`/run/companion`); in Compose a one-shot service renders into a shared volume. The chart's
 helpers are `ferrum.renderInit`, `ferrum.renderVolumes` and `ferrum.declaredServices`.
+
+**A moved address means a rotation.** A render alone never changes where a secret may go: a changed settings row must
+not redirect an existing secret. When the program's address moves (`comms.mail_url`, `metrics.engine_url`), the operator
+stores the new address and rotates the service; the new secret is tied to the new host, and the old one never goes there
+(`crates/kernel/src/companion.rs`; `crates/kernel/tests/companions_it.rs`, the address that moves).
 
 **Rotation, for your operations notes.** A rotated secret reaches the program at its next start. Where the program holds
 two values, rotate, restart the program within the overlap, and the server presents the version before until then
