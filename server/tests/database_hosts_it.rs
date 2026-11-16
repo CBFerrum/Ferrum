@@ -4,7 +4,8 @@
 //! used and never connected to; the log says so once and the doctor reports it. A host from the environment is used as
 //! before. Against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`, reset), with the server binary started as an operator
 //! starts it: each host is a port on this machine that counts the connections made to it. Last, on an empty database, the
-//! binary's start sets itself up once, and its log says what that did.
+//! binary's start sets itself up once, and its log says what that did; and a replica's set-up leaves the apps' upkeep to
+//! the round of upkeep and its locks.
 
 mod common;
 
@@ -230,5 +231,27 @@ async fn scenario() {
     assert_eq!(said.matches("pretty backtraces are enabled").count(), 1, "one set-up (development's configuration says this once in each): {said}");
     assert_eq!(said.matches("schema synced").count(), 1, "what the start did is in its log: {said}");
 
+    // A replica's set-up does no app's upkeep: that is the round's (crate::packages::round), one replica at a time under
+    // each app's lock. A second replica starting on this database leaves ERP's (here: next year's ledger partition, gone)
+    // as it found it, and the next round does it.
+    let one = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config()).build()).await.expect("a replica");
+    let one = one.shared_store.get::<AppState>().expect("state");
+    let pool = sqlx::PgPool::connect(&url()).await.expect("connect");
+    let next: String = sqlx::query_scalar("select format('journal_line_y%s', extract(year from now())::int + 1)").fetch_one(&pool).await.unwrap();
+    assert!(table(&pool, &next).await, "ERP's ledger has next year's partition");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("drop table {next}"))).execute(&pool).await.unwrap();
+    let two = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config()).build()).await.expect("another replica");
+    two.shared_store.get::<AppState>().expect("state").kernel.db.close().await;
+    assert!(!table(&pool, &next).await, "a replica's start ran ERP's upkeep itself, outside the round and its lock");
+    ferrum_server::packages::round(&one.kernel.db.direct, ferrum_server::packages::upkeep_jobs(&one.kernel), 4, std::time::Duration::from_secs(60)).await;
+    assert!(table(&pool, &next).await, "the round made it again");
+    pool.close().await;
+    one.kernel.db.close().await;
+
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Whether the table `name` is there.
+async fn table(pool: &sqlx::PgPool, name: &str) -> bool {
+    sqlx::query_scalar("select to_regclass($1) is not null").bind(name).fetch_one(pool).await.unwrap()
 }

@@ -347,7 +347,6 @@ impl Hooks for App {
                 Err(e) => tracing::warn!("the vault's slots could not be completed (the next start tries again): {e}"),
             }
         }
-        ferrum_app_erp::maintenance(&kernel).await.map_err(|e| Error::Message(format!("ERP's upkeep: {e}")))?;
         if let Err(e) = kernel.registry.catalog().closure(&kernel.settings.signup.packages) {
             return Err(Error::Message(format!("FERRUM_SIGNUP_PACKAGES: {e}")));
         }
@@ -609,19 +608,7 @@ impl Hooks for App {
             let mut handles = state.kernel.spawn_background(state.shutdown.subscribe());
             // The operator's audit sink, where background work runs.
             handles.extend(state.kernel.spawn_audit_sink(state.shutdown.subscribe()));
-            // ERP's upkeep (journal partitions for the coming year) on the same cadence.
-            let (k, mut stop) = (state.kernel.clone(), state.shutdown.subscribe());
-            handles.push(tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = stop.changed() => return,
-                        _ = tokio::time::sleep(Duration::from_secs(6 * 3600)) => {}
-                    }
-                    if let Err(e) = ferrum_kernel::sandbox::upkeep(ferrum_app_erp::maintenance(&k)).await {
-                        tracing::warn!("ERP's upkeep failed: {e}");
-                    }
-                }
-            }));
+            // Every app's upkeep, ERP's first: one replica at a time, under each app's lock (crate::packages::round).
             handles.push(crate::packages::spawn(state.kernel.clone(), state.shutdown.subscribe()));
             if let Some(worker) = crate::process::spawn(state.kernel.clone(), state.shutdown.subscribe()).await.map_err(Error::Message)? {
                 handles.push(worker);
