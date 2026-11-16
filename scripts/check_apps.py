@@ -7,6 +7,11 @@ launcher icon.
 
 Reads `cargo metadata`, so it checks the very checkouts the build uses: each package from one of
 CBFerrum's app repositories with an `app.yaml` beside its `Cargo.toml` (an app, or an add-on of one).
+
+Every manifest compiled in (`app.yaml`, and the `apps/<code>.yaml` of a crate that holds several) is also checked for
+its `operator_settings` (docs/app-contract.md, *Operator settings*): native only, each with a key, a variable, a known
+type, a doc and no secret's field; the app requiring the platform that reads them (0.3.9); and none of those variables
+read with `std::env::var` in the app's code, which the database's value never reaches.
 """
 
 import json
@@ -85,6 +90,61 @@ def lacks(app_dir: Path, shell_icons: set) -> list:
     return out
 
 
+TYPES = {"text", "bool", "int", "json", "choice"}
+FIELDS_OF_A_SETTING = {"key", "env", "type", "values", "default", "applies", "sends", "doc"}
+# A `platform` requirement whose lowest version reads operator settings (0.3.9) or later.
+PLATFORM_WITH_SETTINGS = re.compile(r">=\s*(0\.3\.(9|[1-9]\d+)|0\.([4-9]|[1-9]\d+)|[1-9])")
+
+
+def operator_settings(manifest: dict, root: Path) -> list:
+    """What is wrong with a manifest's `operator_settings`, its code read under `root`."""
+    block = manifest.get("operator_settings") or []
+    if not block:
+        return []
+    out = []
+    if manifest.get("runtime") != "native":
+        out.append("operator_settings: only an app compiled into the server reads them")
+    if not PLATFORM_WITH_SETTINGS.search(str(manifest.get("platform", ""))):
+        out.append('operator_settings need the platform that reads them: platform: ">=0.3.9, <0.4"')
+    for s in block:
+        key, env = s.get("key"), s.get("env")
+        if not key or not env or not str(s.get("doc", "")).strip():
+            out.append(f"operator_settings: {key or env}: key, env and doc are required")
+        if set(s) - FIELDS_OF_A_SETTING:
+            out.append(f"operator_settings.{key}: {sorted(set(s) - FIELDS_OF_A_SETTING)} are not a setting's (a secret is the app's vault's)")
+        if s.get("type", "text") not in TYPES:
+            out.append(f"operator_settings.{key}: type {s.get('type')} is not one of {sorted(TYPES)}")
+    declared = {s.get("env") for s in block if s.get("env")}
+    reads = re.compile(r"\benv::var(?:_os)?\(\s*\"(" + "|".join(map(re.escape, sorted(declared))) + r")\"") if declared else None
+    for f in sorted(root.rglob("*.rs")) if reads else []:
+        rel = f.relative_to(root)
+        if {"tests", "target", "examples", "benches"} & set(rel.parts) or f.name == "build.rs":
+            continue
+        for n, line in enumerate(f.read_text(errors="ignore").splitlines(), 1):
+            for name in reads.findall(line):
+                if "ferrum_kernel::env::var" not in line:
+                    out.append(f"{rel}:{n} reads {name} with std::env::var: read it with ferrum_kernel::env::var, or the database's value never reaches it")
+    return out
+
+
+def declared_settings(packages: list) -> int:
+    """Every compiled manifest's `operator_settings` checked; how many manifests fall short."""
+    failed, seen = 0, set()
+    for p in sorted(packages, key=lambda p: p["name"]):
+        if not (p.get("source") or "").startswith("git+https://github.com/CBFerrum/"):
+            continue
+        root = Path(p["manifest_path"]).parent
+        for manifest in sorted([root / "app.yaml", *root.glob("apps/*.yaml")]):
+            if manifest in seen or not manifest.is_file():
+                continue
+            seen.add(manifest)
+            wrong = operator_settings(yaml.safe_load(manifest.read_text()) or {}, root)
+            if wrong:
+                failed += 1
+                print(f"{p['name']} ({manifest.relative_to(root)}): " + "; ".join(wrong))
+    return failed
+
+
 def main() -> int:
     run = subprocess.run(["cargo", "metadata", "--format-version", "1", "--locked", "--all-features"], cwd=ROOT, capture_output=True, text=True, check=True)
     packages = json.loads(run.stdout)["packages"]
@@ -100,8 +160,9 @@ def main() -> int:
         missing = lacks(app_dir, shell_icons)
         failed += bool(missing)
         print(f"{p['name']}: " + ("; ".join(missing) if missing else "ok"))
-    print(f"{len(seen)} apps, {failed} short of the contract")
-    return 1 if failed else 0
+    unsound = declared_settings(packages)
+    print(f"{len(seen)} apps, {failed} short of the contract; {unsound} manifests whose operator settings are not sound")
+    return 1 if failed or unsound else 0
 
 
 if __name__ == "__main__":

@@ -17,8 +17,9 @@ through PostgreSQL `NOTIFY`. Any replica can be killed or added at any time.
 
 Production reads `config/production.yaml`. Each setting comes from the environment when the environment sets its
 variable, else from the database's `setting` table, else its default (*Settings in the database*, below). A server
-needs only `DATABASE_URL` to start reading them; the secrets (`JWT_SECRET`, `FERRUM_SECRET_KEY` and the others marked
-so) still come from the environment.
+needs only `DATABASE_URL`: the platform's secrets are the vault's, in the database (*The vault*), and a new
+installation is given nothing else (*What a replica still reads from its environment*, below). The environment still
+wins in this release wherever it sets a variable.
 
 `DATABASE_URL` (required): `postgres://user:pass@host:5432/db`, the database's address; its `application_name`
 names the replica's pool (*Pools*, below). `/run/ferrum/db-ca.pem`, when the file is there (the Helm chart mounts
@@ -50,17 +51,17 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `jwt_secret` | `JWT_SECRET` | text |  | secret: the environment, else the vault (session) | Base64, at least 32 random bytes: `openssl rand -base64 48`. Changing it signs everyone out. Without it the vault's keys sign sessions, each named by the tokens it signs and replaced without signing anyone out (*The key that signs sessions*); then it is required only while the vault is closed. |
 | `jwt_expiration_seconds` | `JWT_EXPIRATION_SECONDS` | int | `28800` | installation, at once | How long a bearer token from signing in lasts, in seconds (default 8 hours). |
 | `secret_key` | `FERRUM_SECRET_KEY` | text |  | secret: the environment | The old master key. A new installation leaves it out: where the vault opens, the vault keeps and keys everything. One that has it keeps it until `ferrum task legacy_key` says it may go ([Retiring the old key](#retiring-the-old-key)); where the vault cannot open, production requires it. Base64 of exactly 32 random bytes (`openssl rand -base64 32`), or that key as a key-management service's ciphertext (`vault:v1:…`, [below](#the-secret-key-from-a-key-management-service)); every replica needs the same key. Back it up while you keep backups taken with it: values sealed with a lost key must be entered again. |
-| `secret_key_command` | `FERRUM_SECRET_KEY_COMMAND` | text |  | secret: the environment | In place of `FERRUM_SECRET_KEY`: a command (run with `sh -c`, 30 seconds at most) that prints the key, such as a KMS's own CLI. |
+| `secret_key_command` | `FERRUM_SECRET_KEY_COMMAND` | text |  | secret: the environment | In place of `FERRUM_SECRET_KEY`, and as the vault's `kms` slot: a command (run with `sh -c`, 30 seconds at most) that prints the key, such as a KMS's own CLI. Only ever from the environment, and outside the boot contract: a command line is never read from the database, where whoever writes a row would run a program. Prefer the key file (`/run/ferrum/root.key`) or the key-management service (`kms_transit`). |
 | `retired_secret_keys` | `FERRUM_RETIRED_SECRET_KEYS` | text |  | secret: the environment | Keys being rotated out, comma-separated: see *Rotating the secret key*. |
-| `kms_transit` | `FERRUM_KMS_TRANSIT` | text |  | the environment (the key-management client) | The OpenBao or Vault Transit key that unwraps `FERRUM_SECRET_KEY` and retired keys given as ciphertext: `https://host:8200/<mount>/<key>`. Signs in with `FERRUM_KMS_TOKEN_FILE`, `BAO_TOKEN` or `VAULT_TOKEN`, or as the pod's service account (`FERRUM_KMS_KUBERNETES_ROLE`, `FERRUM_KMS_KUBERNETES_MOUNT`); `FERRUM_KMS_CA_FILE` and `FERRUM_KMS_NAMESPACE` when needed. |
-| `kms_token_file` | `FERRUM_KMS_TOKEN_FILE` | text |  | the environment (the key-management client) | A file a Vault Agent keeps the Transit token in, read at each use. |
-| `bao_token` | `BAO_TOKEN` | text |  | secret: the environment | The OpenBao token for `FERRUM_KMS_TRANSIT`. |
-| `vault_token` | `VAULT_TOKEN` | text |  | secret: the environment | The Vault token for `FERRUM_KMS_TRANSIT`, when `BAO_TOKEN` is not set. |
-| `kms_kubernetes_role` | `FERRUM_KMS_KUBERNETES_ROLE` | text |  | the environment (the key-management client) | Signs in to Transit as the pod's service account, with this role. |
-| `kms_kubernetes_mount` | `FERRUM_KMS_KUBERNETES_MOUNT` | text | `kubernetes` | the environment (the key-management client) | The Kubernetes auth mount for `FERRUM_KMS_KUBERNETES_ROLE`. |
-| `kms_kubernetes_token_file` | `FERRUM_KMS_KUBERNETES_TOKEN_FILE` | text | `/var/run/secrets/kubernetes.io/serviceaccount/token` | the environment (the key-management client) | The service account's token file. |
-| `kms_ca_file` | `FERRUM_KMS_CA_FILE` | text |  | the environment (the key-management client) | A certificate authority (PEM) Transit's certificate is checked against, beside the usual ones. |
-| `kms_namespace` | `FERRUM_KMS_NAMESPACE` | text |  | the environment (the key-management client) | The Vault namespace of `FERRUM_KMS_TRANSIT`. |
+| `kms_transit` | `FERRUM_KMS_TRANSIT` | text |  | installation, next start | The OpenBao or Vault Transit key of the vault's `kms` slot: `https://host:8200/<mount>/<key>`. It signs in with the token mounted at `/run/ferrum/kms.token`, or as the pod's service account (`kms_kubernetes_role`); its certificate is checked against `/run/ferrum/kms-ca.pem` too when that is there. The slot keeps the address it was made with, and the token goes nowhere else: changed here, the slot is not asked until it is made again (`ferrum task vault_add_slot kind:kms`). Keys from the environment given as its ciphertext (`FERRUM_SECRET_KEY`, retired keys) are unwrapped only at an address the environment gives. |
+| `kms_token_file` | `FERRUM_KMS_TOKEN_FILE` | text |  | the environment (the key-management client (through R1; the token's file is /run/ferrum/kms.token from now on)) | A file a Vault Agent keeps the Transit token in, read at each use. Mount it at `/run/ferrum/kms.token` instead. |
+| `bao_token` | `BAO_TOKEN` | text |  | secret: the environment | The OpenBao token for `kms_transit`, through R1: give it as the file `/run/ferrum/kms.token` instead. |
+| `vault_token` | `VAULT_TOKEN` | text |  | secret: the environment | The Vault token for `kms_transit`, when `BAO_TOKEN` is not set, through R1: give it as the file `/run/ferrum/kms.token` instead. |
+| `kms_kubernetes_role` | `FERRUM_KMS_KUBERNETES_ROLE` | text |  | installation, next start | Signs in to Transit as the pod's service account, with this role, when no token is mounted. The service account's token is read at its standard path. |
+| `kms_kubernetes_mount` | `FERRUM_KMS_KUBERNETES_MOUNT` | text | `kubernetes` | installation, next start | The Kubernetes auth mount for `kms_kubernetes_role`. |
+| `kms_kubernetes_token_file` | `FERRUM_KMS_KUBERNETES_TOKEN_FILE` | text | `/var/run/secrets/kubernetes.io/serviceaccount/token` | the environment (the key-management client (through R1; a file the server sends is never named by the database)) | The service account's token file, where it is not at its standard path. |
+| `kms_ca_file` | `FERRUM_KMS_CA_FILE` | text |  | the environment (the key-management client (through R1; the file is /run/ferrum/kms-ca.pem from now on)) | A certificate authority (PEM) Transit's certificate is checked against, beside the usual ones. Mount it at `/run/ferrum/kms-ca.pem` instead. |
+| `kms_namespace` | `FERRUM_KMS_NAMESPACE` | text |  | installation, next start | The Vault namespace of `kms_transit`. |
 | `bootstrap_token` | `FERRUM_BOOTSTRAP_TOKEN` | text |  | secret: the environment, else the vault (compared) | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it. |
 | `metrics_token` | `FERRUM_METRICS_TOKEN` | text |  | secret: the environment, else the vault (compared) | `/metrics` then requires `Authorization: Bearer <token>`. Recommended. |
 | `migrate_at_start` | `FERRUM_MIGRATE_AT_START` | bool | `true` | installation, next start | Default `true`: the server migrates the database, syncs the schema and runs the upgrade steps as it starts. `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe. Either way, on a database a newer build migrated, the server starts as a guest that changes nothing, or refuses (*Rolling back and the two-version window*). |
@@ -146,45 +147,91 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `temporal_task_queue` | `TEMPORAL_TASK_QUEUE` | text | `ferrum-processes` | installation, next start | The Temporal task queue the replicas work. |
 | `process_steps` | `FERRUM_PROCESS_STEPS` | int |  | installation, next start | Activities one replica runs at once; default from its database pool. |
 | `process_steps_per_workspace` | `FERRUM_PROCESS_STEPS_PER_WORKSPACE` | int |  | installation, next start | Activities one workspace may have at once on a replica; default from its database pool. |
-| `otel_exporter_otlp_endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT` | text |  | the environment (the OpenTelemetry SDK) | The collector traces go to (`http://otel-collector:4318`; the server adds `/v1/traces`). |
-| `otel_exporter_otlp_traces_endpoint` | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | text |  | the environment (the OpenTelemetry SDK) | The collector's traces address, in place of the one above. |
-| `otel_sdk_disabled` | `OTEL_SDK_DISABLED` | text |  | the environment (the OpenTelemetry SDK) | `true` turns traces off. |
-| `otel_service_name` | `OTEL_SERVICE_NAME` | text | `ferrum` | the environment (the OpenTelemetry SDK) | The name traces carry. |
+| `otel_exporter_otlp_endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT` | text |  | installation, next start; not from the table while `OTEL_EXPORTER_OTLP_HEADERS` is in the environment; moving it takes that secret again or clears it | The collector traces go to (`http://otel-collector:4318`; the server adds `/v1/traces`). |
+| `otel_exporter_otlp_traces_endpoint` | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | text |  | installation, next start; not from the table while `OTEL_EXPORTER_OTLP_HEADERS` is in the environment; moving it takes that secret again or clears it | The collector's traces address, in place of the one above. |
+| `otel_exporter_otlp_headers` | `OTEL_EXPORTER_OTLP_HEADERS` | text |  | secret: the environment, else the vault (library) | Headers the collector wants, `name=value,name=value` with each value percent-encoded (`Authorization=Bearer%20…`, a service's key): a secret, given only to the collector's host it was set for. |
+| `otel_sdk_disabled` | `OTEL_SDK_DISABLED` | bool | `false` | installation, next start | `true` turns traces off. |
+| `otel_service_name` | `OTEL_SERVICE_NAME` | text | `ferrum` | installation, next start | The name traces carry. |
 | `move_source_database_url` | `FERRUM_MOVE_SOURCE_DATABASE_URL` | text |  | secret: the environment | The source installation's database. |
 | `move_source_secret_keys` | `FERRUM_MOVE_SOURCE_SECRET_KEYS` | text |  | secret: the environment | The source's `FERRUM_SECRET_KEY`, then its retired keys, comma-separated. |
-| `move_source_files` | `FERRUM_MOVE_SOURCE_FILES` | text |  | the environment (the move task) | `same` when both installations use one storage. |
-| `move_source_files_dir` | `FERRUM_MOVE_SOURCE_FILES_DIR` | text |  | the environment (the move task) | The source's file directory. |
-| `move_source_s3_bucket` | `FERRUM_MOVE_SOURCE_S3_BUCKET` | text |  | the environment (the move task) | The source's bucket. |
-| `move_source_s3_region` | `FERRUM_MOVE_SOURCE_S3_REGION` | text |  | the environment (the move task) | The source bucket's region. |
-| `move_source_s3_endpoint` | `FERRUM_MOVE_SOURCE_S3_ENDPOINT` | text |  | the environment (the move task) | The source bucket's S3-compatible store. |
-| `move_source_region` | `FERRUM_MOVE_SOURCE_REGION` | text |  | the environment (the move task) | The source's region, when people keep their Ferrum account across regions. |
-| `office_url` | `FERRUM_OFFICE_URL` | text |  | the environment (Drive) | With online editing: the editor server as the server reaches it (docs/operations.md, Online editing). |
-| `office_wopi_url` | `FERRUM_OFFICE_WOPI_URL` | text |  | the environment (Drive) | With online editing: this server as the editor server reaches it. |
-| `office_ips` | `FERRUM_OFFICE_IPS` | text |  | the environment (Drive) | Optional: the only addresses WOPI calls are accepted from. |
-| `editors_url` | `FERRUM_EDITORS_URL` | text |  | the environment (Drive) | The browser editors' server as browsers reach it (docs/operations.md, Browser editors). |
-| `drive_max_file_mb` | `FERRUM_DRIVE_MAX_FILE_MB` | text |  | the environment (Drive) | Largest file in one request to Drive: an upload, a new version or an editor save. Default 32, at most 1024. A replica holds each such file in memory while storing it, so allow `uploads at once × this` of memory per replica. Workspaces set their own limit within it. Raise any proxy's body limit in front with it. |
-| `drive_max_zip_mb` | `FERRUM_DRIVE_MAX_ZIP_MB` | text |  | the environment (Drive) | The largest folder Drive downloads as one zip. |
-| `meet_url` | `FERRUM_MEET_URL` | text |  | the environment (Comms) | LiveKit as browsers reach it, `wss://meet.example.com` (docs/operations.md, Meetings). |
-| `meet_key` | `FERRUM_MEET_KEY` | text |  | secret: the environment | LiveKit's API key (a name). |
-| `meet_secret` | `FERRUM_MEET_SECRET` | text |  | secret: the environment | LiveKit's API secret. |
-| `meet_recordings` | `FERRUM_MEET_RECORDINGS` | text |  | the environment (Comms) | `true` once LiveKit Egress runs beside LiveKit with its storage. |
-| `meet_api_url` | `FERRUM_MEET_API_URL` | text |  | the environment (Comms) | LiveKit's server API as Ferrum reaches it, when that is not `FERRUM_MEET_URL` over http(s). |
-| `mail_url` | `FERRUM_MAIL_URL` | text |  | the environment (Comms) | Stalwart's HTTP address as the server reaches it (docs/operations.md, Hosted mail). |
-| `mail_admin` | `FERRUM_MAIL_ADMIN` | text |  | the environment (Comms) | A Stalwart administrator. |
-| `mail_admin_secret` | `FERRUM_MAIL_ADMIN_SECRET` | text |  | secret: the environment | That administrator's password. |
-| `mail_host` | `FERRUM_MAIL_HOST` | text |  | the environment (Comms) | Optional: the mail server's public host name, shown to people setting up mail programs. |
-| `metrics_engine_url` | `FERRUM_METRICS_ENGINE_URL` | text |  | the environment (Metrics) | Metrics' engine for external sources (docs/operations.md, Metrics' engine for external sources). |
-| `metrics_engine_token` | `FERRUM_METRICS_ENGINE_TOKEN` | text |  | secret: the environment | The engine's token, at least 32 characters. |
-| `eu_vies_url` | `FERRUM_EU_VIES_URL` | text |  | the environment (ERP's EU add-on) | Another address for the EU's VAT number service (a test server). |
-| `eu_tedb_url` | `FERRUM_EU_TEDB_URL` | text |  | the environment (ERP's EU add-on) | Another address for the EU's taxes database (a test server). |
-| `gb_hmrc_url` | `FERRUM_GB_HMRC_URL` | text |  | the environment (ERP's GB add-on) | Another address for HMRC's Making Tax Digital API (its sandbox). |
-| `public_ip` | `FERRUM_PUBLIC_IP` | text |  | the environment (ERP's GB add-on) | The server's public address, sent in HMRC's fraud-prevention headers. |
-| `my_myinvois_url` | `FERRUM_MY_MYINVOIS_URL` | text |  | the environment (ERP's Malaysia add-on) | Another address for MyInvois (its sandbox). |
-| `ro_anaf_url` | `FERRUM_RO_ANAF_URL` | text |  | the environment (ERP's Romania add-on) | Another address for ANAF's e-Factura (its test system). |
-| `us_avatax_url` | `FERRUM_US_AVATAX_URL` | text |  | the environment (ERP's US add-on) | Another address for AvaTax (its sandbox). |
-| `pt_certificate` | `FERRUM_PT_CERTIFICATE` | text |  | the environment (ERP's Portugal add-on) | The software certificate number for certified invoices (docs/operations.md, Portugal: certified invoices). |
-| `pt_key_version` | `FERRUM_PT_KEY_VERSION` | text |  | the environment (ERP's Portugal add-on) | The signing key's version. |
-| `pt_signing_key` | `FERRUM_PT_SIGNING_KEY` | text |  | secret: the environment | The key certified invoices are signed with. |
+| `move_source_files` | `FERRUM_MOVE_SOURCE_FILES` | text |  | an input of `ferrum task move_workspace`, from its environment as it runs | `same` when both installations use one storage. |
+| `move_source_files_dir` | `FERRUM_MOVE_SOURCE_FILES_DIR` | text |  | an input of `ferrum task move_workspace`, from its environment as it runs | The source's file directory. |
+| `move_source_s3_bucket` | `FERRUM_MOVE_SOURCE_S3_BUCKET` | text |  | an input of `ferrum task move_workspace`, from its environment as it runs | The source's bucket. |
+| `move_source_s3_region` | `FERRUM_MOVE_SOURCE_S3_REGION` | text |  | an input of `ferrum task move_workspace`, from its environment as it runs | The source bucket's region. |
+| `move_source_s3_endpoint` | `FERRUM_MOVE_SOURCE_S3_ENDPOINT` | text |  | an input of `ferrum task move_workspace`, from its environment as it runs | The source bucket's S3-compatible store. |
+| `move_source_region` | `FERRUM_MOVE_SOURCE_REGION` | text |  | an input of `ferrum task move_workspace`, from its environment as it runs | The source's region, when people keep their Ferrum account across regions. |
+
+The app `comms`'s settings:
+
+| Setting | Variable | Type | Default | Where it lives | Meaning |
+|---|---|---|---|---|---|
+| `comms.meet_url` | `FERRUM_MEET_URL` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | LiveKit as browsers reach it, `wss://meet.example.com` (docs/operations.md, Meetings). |
+| `comms.meet_key` | `FERRUM_MEET_KEY` | text |  | secret: the environment, until `comms` keeps it in its own vault | LiveKit's API key (a name). |
+| `comms.meet_secret` | `FERRUM_MEET_SECRET` | text |  | secret: the environment, until `comms` keeps it in its own vault | LiveKit's API secret. |
+| `comms.meet_recordings` | `FERRUM_MEET_RECORDINGS` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | `true` once LiveKit Egress runs beside LiveKit with its storage. |
+| `comms.meet_api_url` | `FERRUM_MEET_API_URL` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | LiveKit's server API as Ferrum reaches it, when that is not `FERRUM_MEET_URL` over http(s). |
+| `comms.mail_url` | `FERRUM_MAIL_URL` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | Stalwart's HTTP address as the server reaches it (docs/operations.md, Hosted mail). |
+| `comms.mail_admin` | `FERRUM_MAIL_ADMIN` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | A Stalwart administrator. |
+| `comms.mail_admin_secret` | `FERRUM_MAIL_ADMIN_SECRET` | text |  | secret: the environment, until `comms` keeps it in its own vault | That administrator's password. |
+| `comms.mail_host` | `FERRUM_MAIL_HOST` | text |  | the environment (Comms reads it itself); the database's once `comms` declares it | Optional: the mail server's public host name, shown to people setting up mail programs. |
+
+The app `drive`'s settings:
+
+| Setting | Variable | Type | Default | Where it lives | Meaning |
+|---|---|---|---|---|---|
+| `drive.office_url` | `FERRUM_OFFICE_URL` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | With online editing: the editor server as the server reaches it (docs/operations.md, Online editing). |
+| `drive.office_wopi_url` | `FERRUM_OFFICE_WOPI_URL` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | With online editing: this server as the editor server reaches it. |
+| `drive.office_ips` | `FERRUM_OFFICE_IPS` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | Optional: the only addresses WOPI calls are accepted from. |
+| `drive.editors_url` | `FERRUM_EDITORS_URL` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | The browser editors' server as browsers reach it (docs/operations.md, Browser editors). |
+| `drive.max_file_mb` | `FERRUM_DRIVE_MAX_FILE_MB` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | Largest file in one request to Drive: an upload, a new version or an editor save. Default 32, at most 1024. A replica holds each such file in memory while storing it, so allow `uploads at once × this` of memory per replica. Workspaces set their own limit within it. Raise any proxy's body limit in front with it. |
+| `drive.max_zip_mb` | `FERRUM_DRIVE_MAX_ZIP_MB` | text |  | the environment (Drive reads it itself); the database's once `drive` declares it | The largest folder Drive downloads as one zip. |
+
+The app `eu`'s settings:
+
+| Setting | Variable | Type | Default | Where it lives | Meaning |
+|---|---|---|---|---|---|
+| `eu.vies_url` | `FERRUM_EU_VIES_URL` | text |  | the environment (ERP's EU add-on reads it itself); the database's once `eu` declares it | Another address for the EU's VAT number service (a test server). |
+| `eu.tedb_url` | `FERRUM_EU_TEDB_URL` | text |  | the environment (ERP's EU add-on reads it itself); the database's once `eu` declares it | Another address for the EU's taxes database (a test server). |
+
+The app `gb`'s settings:
+
+| Setting | Variable | Type | Default | Where it lives | Meaning |
+|---|---|---|---|---|---|
+| `gb.hmrc_url` | `FERRUM_GB_HMRC_URL` | text |  | the environment (ERP's GB add-on reads it itself); the database's once `gb` declares it | Another address for HMRC's Making Tax Digital API (its sandbox). |
+| `gb.public_ip` | `FERRUM_PUBLIC_IP` | text |  | the environment (ERP's GB add-on reads it itself); the database's once `gb` declares it | The server's public address, sent in HMRC's fraud-prevention headers. |
+
+The app `metrics`'s settings:
+
+| Setting | Variable | Type | Default | Where it lives | Meaning |
+|---|---|---|---|---|---|
+| `metrics.engine_url` | `FERRUM_METRICS_ENGINE_URL` | text |  | the environment (Metrics reads it itself); the database's once `metrics` declares it | Metrics' engine for external sources (docs/operations.md, Metrics' engine for external sources). |
+| `metrics.engine_token` | `FERRUM_METRICS_ENGINE_TOKEN` | text |  | secret: the environment, until `metrics` keeps it in its own vault | The engine's token, at least 32 characters. |
+
+The app `my`'s settings:
+
+| Setting | Variable | Type | Default | Where it lives | Meaning |
+|---|---|---|---|---|---|
+| `my.myinvois_url` | `FERRUM_MY_MYINVOIS_URL` | text |  | the environment (ERP's Malaysia add-on reads it itself); the database's once `my` declares it | Another address for MyInvois (its sandbox). |
+
+The app `pt`'s settings:
+
+| Setting | Variable | Type | Default | Where it lives | Meaning |
+|---|---|---|---|---|---|
+| `pt.certificate` | `FERRUM_PT_CERTIFICATE` | text |  | the environment (ERP's Portugal add-on reads it itself); the database's once `pt` declares it | The software certificate number for certified invoices (docs/operations.md, Portugal: certified invoices). |
+| `pt.key_version` | `FERRUM_PT_KEY_VERSION` | text |  | the environment (ERP's Portugal add-on reads it itself); the database's once `pt` declares it | The signing key's version. |
+| `pt.signing_key` | `FERRUM_PT_SIGNING_KEY` | text |  | secret: the environment, until `pt` keeps it in its own vault | The key certified invoices are signed with. |
+
+The app `ro`'s settings:
+
+| Setting | Variable | Type | Default | Where it lives | Meaning |
+|---|---|---|---|---|---|
+| `ro.anaf_url` | `FERRUM_RO_ANAF_URL` | text |  | the environment (ERP's Romania add-on reads it itself); the database's once `ro` declares it | Another address for ANAF's e-Factura (its test system). |
+
+The app `us`'s settings:
+
+| Setting | Variable | Type | Default | Where it lives | Meaning |
+|---|---|---|---|---|---|
+| `us.avatax_url` | `FERRUM_US_AVATAX_URL` | text |  | the environment (ERP's US add-on reads it itself); the database's once `us` declares it | Another address for AvaTax (its sandbox). |
 <!-- settings: end -->
 
 ### Settings in the database
@@ -1102,7 +1149,7 @@ stores of its own (*The old key's stores in the vault*, below).
 |---|---|---|---|
 | `credential` | the database password in `DATABASE_URL` (through Argon2id) | a dump or a backup alone | someone with a dump *and* the password |
 | `file` | `/run/ferrum/root.key`, mounted where the server runs (`openssl rand -base64 32`) | a dump together with the password | whoever can read that file |
-| `kms` | the key-management service set for the secret key: `FERRUM_SECRET_KEY_COMMAND` first, else `FERRUM_KMS_TRANSIT` | a dump with the password; the service can refuse, and records each use | whoever can ask the service as the server does |
+| `kms` | the key-management service: `FERRUM_SECRET_KEY_COMMAND` first (the environment's only), else the setting `kms_transit` with the token at `/run/ferrum/kms.token` or the pod's identity; the slot keeps the service's address it was made with, and its token is sent nowhere else | a dump with the password; the service can refuse, and records each use | whoever can ask the service as the server does |
 | `recovery` | a key `ferrum task vault_recovery` prints once | the other slots' keys being lost (a password reset by the provider, a key file gone) | whoever finds the printed key |
 
 **At start** a server opens the vault with its `file` slot, then `kms`, then `credential`: the first that opens it

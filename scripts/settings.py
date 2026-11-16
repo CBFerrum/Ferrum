@@ -12,11 +12,17 @@ What it checks:
   and the readers' own `env("X")`, `var("X")`, `some("X")`, `set("X")`, `env!`, `option_env!`) is declared, or on the
   allow-list below: the boot contract, tests' own, and what the build bakes in;
 * the registry itself: each key and variable once, a known type, a choice with its values, a secret neither stored nor
-  live, a vault's kind only on a secret, and the three settings a pool has of its own;
-* the table in docs/operations.md between its markers is the one this registry makes.
+  live, a vault's kind only on a secret, the three settings a pool has of its own, an app's entry under its app (and
+  in the platform's file still read from the environment until that app declares it), a task's input that alone;
+* the apps' own (`operator_settings` in the manifest of each app the lock compiles in, as the server adds them): each
+  replaces the platform's entry that moves to its app, and no key or variable has two owners;
+* the table in docs/operations.md between its markers is the one this registry makes, the apps' settings under their
+  app.
 """
 
+import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -52,11 +58,60 @@ TYPES = {"text", "bool", "int", "json", "choice"}
 # How the vault holds a platform secret (server/src/secrets.rs).
 HELD = {"session", "compared", "library"}
 POOL = ["db_max_connections", "run_background", "zone"]
+APP_ID = re.compile(r"^[a-z][a-z0-9-]{1,39}$")
 
 
 def registry():
     entries = yaml.safe_load(REGISTRY.read_text())
     return entries if isinstance(entries, list) else []
+
+
+def platform_findings(entries):
+    """What only the platform's file must hold: an entry that moves to an app is still read from the environment."""
+    return [f"{e.get('key')}: moves to {e['app']}, and is read from the environment until {e['app']} declares it (environment:)"
+            for e in entries if e.get("app") and not e.get("environment") and not e.get("secret")]
+
+
+def apps_declared():
+    """(app id, its operator_settings) of each app the lock compiles in (`cargo metadata`, as scripts/check_apps.py reads
+    them), once each."""
+    run = subprocess.run(["cargo", "metadata", "--format-version", "1", "--locked", "--all-features"], cwd=ROOT, capture_output=True, text=True)
+    if run.returncode != 0:
+        sys.exit(f"cargo metadata: {run.stderr.strip()}")
+    out, seen = [], set()
+    for p in json.loads(run.stdout)["packages"]:
+        if not (p.get("source") or "").startswith("git+https://github.com/CBFerrum/"):
+            continue
+        root = Path(p["manifest_path"]).parent
+        for manifest in sorted([root / "app.yaml", *root.glob("apps/*.yaml")]):
+            if manifest in seen or not manifest.is_file():
+                continue
+            seen.add(manifest)
+            m = yaml.safe_load(manifest.read_text()) or {}
+            if m.get("operator_settings"):
+                out.append((m["id"], m["operator_settings"]))
+    return sorted(out, key=lambda a: a[0])
+
+
+def merged(entries, apps):
+    """The registry as the server makes it (server/src/settings.rs, `merged`): each app's declarations as `<app>.<key>`,
+    replacing the platform's entry that moves to that app; and what clashes."""
+    entries = [dict(e) for e in entries]
+    found, declared = [], []
+    for app, settings in apps:
+        for s in settings:
+            key = f"{app}.{s.get('key')}"
+            theirs = [e for e in entries if e.get("env") == s.get("env") or e.get("key") == key]
+            for e in theirs:
+                if e.get("app") == app and not e.get("secret"):
+                    entries.remove(e)
+                else:
+                    found.append(f"{s.get('env')} is declared twice: by the platform ({e.get('key')}) and by the app {app} ({key})")
+            for d in declared:
+                if d["env"] == s.get("env") or d["key"] == key:
+                    found.append(f"{s.get('env')} is declared twice: by the app {d['app']} ({d['key']}) and by the app {app} ({key})")
+            declared.append({**{k: v for k, v in s.items() if k != "key"}, "key": key, "app": app})
+    return entries + declared, found
 
 
 def registry_findings(entries):
@@ -86,6 +141,10 @@ def registry_findings(entries):
             found.append(f"{where}: sends {e['sends']}, which is not a secret of the registry")
         if e.get("vault") is not None and (not e.get("secret") or e["vault"] not in HELD):
             found.append(f"{where}: vault is one of {sorted(HELD)}, and only on a secret")
+        if e.get("app") is not None and (not APP_ID.match(str(e["app"])) or not str(key).startswith(f"{e['app']}.")):
+            found.append(f"{where}: an app's setting is <app>.<key>, under an app's id")
+        if e.get("input") is not None and (e.get("environment") or e.get("app") or e.get("applies") == "live" or e.get("scope") == "pool"):
+            found.append(f"{where}: a task's input is that alone: no one else's, no app's, neither live nor a pool's")
     pools = [e.get("key") for e in entries if e.get("scope") == "pool"]
     if pools != POOL:
         found.append(f"a pool's own settings are {POOL}, not {pools}")
@@ -150,6 +209,14 @@ def cell(text):
 
 
 def table(entries):
+    """The platform's settings, then each app's under its name."""
+    out = rows(e for e in entries if not e.get("app"))
+    for app in sorted({e["app"] for e in entries if e.get("app")}):
+        out += f"\n\nThe app `{app}`'s settings:\n\n" + rows(e for e in entries if e.get("app") == app)
+    return out
+
+
+def rows(entries):
     rows = [
         "| Setting | Variable | Type | Default | Where it lives | Meaning |",
         "|---|---|---|---|---|---|",
@@ -161,8 +228,14 @@ def table(entries):
         default = e.get("default", "")
         if e.get("secret") and e.get("vault"):
             where = f"secret: the environment, else the vault ({e['vault']})"
+        elif e.get("secret") and e.get("app"):
+            where = f"secret: the environment, until `{e['app']}` keeps it in its own vault"
         elif e.get("secret"):
             where = "secret: the environment"
+        elif e.get("input"):
+            where = f"an input of `ferrum task {e['input']}`, from its environment as it runs"
+        elif e.get("environment") and e.get("app"):
+            where = f"the environment ({e['environment'].split(',')[0]} reads it itself); the database's once `{e['app']}` declares it"
         elif e.get("environment"):
             where = f"the environment ({e['environment'].split(',')[0]})"
         else:
@@ -191,15 +264,19 @@ def guide_findings(entries, write):
 
 def main():
     write = "--write" in sys.argv[1:]
-    entries = registry()
-    found = registry_findings(entries) + config_findings(entries) + code_findings(entries) + guide_findings(entries, write)
+    platform = registry()
+    entries, clashes = merged(platform, apps_declared())
+    found = platform_findings(platform) + clashes + registry_findings(entries) + config_findings(entries) + code_findings(entries) + guide_findings(entries, write)
     for f in found:
         print(f)
     live = sum(1 for e in entries if e.get("applies") == "live")
     secret = sum(1 for e in entries if e.get("secret"))
     held = sum(1 for e in entries if e.get("vault"))
     elsewhere = sum(1 for e in entries if e.get("environment"))
-    print(f"{len(entries)} settings: {live} apply at once, {secret} secrets ({held} in the vault), {elsewhere} read from the environment by others; {len(found)} findings")
+    inputs = sum(1 for e in entries if e.get("input"))
+    apps = sum(1 for e in entries if e.get("app") and not e.get("environment") and not e.get("secret"))
+    print(f"{len(entries)} settings: {live} apply at once, {secret} secrets ({held} in the vault), {elsewhere} read from the environment by others, "
+          f"{inputs} tasks' inputs, {apps} declared by apps; {len(found)} findings")
     return 1 if found else 0
 
 

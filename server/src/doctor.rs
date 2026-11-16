@@ -97,7 +97,8 @@ pub async fn database_settings_findings(st: &AppState) -> Vec<Finding> {
     let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
     let (mut decided, mut differ) = (Vec::new(), Vec::new());
     for s in all["settings"].as_array().into_iter().flatten() {
-        if s["secret"] == true || !s["environment"].is_null() || s["source"] != "environment" {
+        // A secret, a setting someone else reads, or a task's own input: none of them a replica's setting to count.
+        if s["secret"] == true || !s["environment"].is_null() || !s["input"].is_null() || s["source"] != "environment" {
             continue;
         }
         decided.push(text(&s["key"]));

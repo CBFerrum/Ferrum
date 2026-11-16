@@ -187,6 +187,11 @@ impl Hooks for App {
         let snapshot = crate::settings::Snapshot::resolve(&stored, &pool, &|name| std::env::var(name).ok());
         crate::settings::Base::of(&ctx.config).apply(&snapshot, &mut ctx.config).map_err(Error::Message)?;
         if snapshot.mailer_from_database() {
+        // The apps compiled in declare settings of their own (`operator_settings`): one key or variable with two owners
+        // stops the start, naming both, before any setting is read.
+        if let Some(clash) = crate::settings::clash() {
+            return Err(Error::Message(format!("settings: {clash}")));
+        }
             ctx.mailer = crate::settings::mailer(&ctx.config)?;
         }
         ferrum_kernel::env::set(snapshot.vars());

@@ -86,13 +86,21 @@ pub struct Def {
     pub sends: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault: Option<Held>,
+    /// The app whose setting it is: one that declares it in its manifest (`operator_settings`, kept as `<app>.<key>`),
+    /// or, in the platform's file, the app it moves to once that app declares it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    /// An operator's one-off input to a task (`ferrum task <input>`), read from that task's environment: no replica's
+    /// setting, so neither stored nor counted as decided by the environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
     pub doc: String,
 }
 
 impl Def {
-    /// Kept in the `setting` table: neither a secret nor read from the environment by someone else.
+    /// Kept in the `setting` table: neither a secret, nor read from the environment by someone else, nor a task's input.
     pub fn stored(&self) -> bool {
-        !self.secret && self.environment.is_none()
+        !self.secret && self.environment.is_none() && self.input.is_none()
     }
 
     /// Whether `text` is a value of this setting, said in plain words when it is not.
@@ -128,17 +136,98 @@ impl Def {
     }
 }
 
-static REGISTRY: LazyLock<Vec<Def>> = LazyLock::new(|| serde_yaml::from_str(include_str!("settings.yaml")).expect("server/src/settings.yaml is the registry"));
+/// The platform's settings (`settings.yaml`) and those the apps compiled in declare (`operator_settings` in each one's
+/// `app.yaml`); or, when two owners declare one key or variable, the platform's alone and why the server does not start.
+static REGISTRY: LazyLock<(Vec<Def>, Option<String>)> = LazyLock::new(|| {
+    let platform: Vec<Def> = serde_yaml::from_str(include_str!("settings.yaml")).expect("server/src/settings.yaml is the registry");
+    let apps: Vec<(String, Vec<ferrum_apps::OperatorSetting>)> = crate::packages::native_manifests()
+        .into_iter()
+        .chain(crate::extensions::all().iter().map(|e| e.manifest))
+        // A manifest that does not parse leaves its app out of the server (crate::appmgr::compiled_natives says so).
+        .filter_map(|yaml| ferrum_apps::AppManifest::parse(yaml).ok())
+        .filter(|m| !m.operator_settings.is_empty())
+        .map(|m| (m.id, m.operator_settings))
+        .collect();
+    match merged(platform.clone(), &apps) {
+        Ok(all) => (all, None),
+        Err(clash) => (platform, Some(clash)),
+    }
+});
 
-/// Every setting, as `settings.yaml` declares it.
+/// Every setting: the platform's, as `settings.yaml` declares them, and the apps' (`operator_settings`).
 pub fn registry() -> &'static [Def] {
-    &REGISTRY
+    &REGISTRY.0
+}
+
+/// Why the server does not start: one key or variable declared by two owners (the platform and an app, or two apps),
+/// naming both. Asked before anything reads a setting.
+pub fn clash() -> Option<&'static str> {
+    REGISTRY.1.as_deref()
+}
+
+/// `platform` with the apps' declarations (app id, its `operator_settings`) added, each kept as `<app>.<key>`. A platform
+/// entry marked as moving to an app (`app:`) is replaced by that app's declaration of the same variable or key; any other
+/// key or variable declared twice is refused, naming both owners. An app declares no secret: one of the platform's is
+/// refused, saying so.
+pub(crate) fn merged(mut platform: Vec<Def>, apps: &[(String, Vec<ferrum_apps::OperatorSetting>)]) -> Result<Vec<Def>, String> {
+    let mut declared: Vec<Def> = Vec::new();
+    for (app, settings) in apps {
+        for s in settings {
+            let key = format!("{app}.{}", s.key);
+            let theirs = |d: &Def| d.env == s.env || d.key == key;
+            if let Some(i) = platform.iter().position(theirs) {
+                let p = &platform[i];
+                if p.app.as_deref() != Some(app.as_str()) || p.secret {
+                    let why = if p.secret { ": it is a secret, and an app keeps its secrets in its own vault" } else { "" };
+                    return Err(format!(
+                        "{} is declared twice: by the platform's settings ({}, server/src/settings.yaml) and by the app {app} ({key}){why}",
+                        s.env, p.key
+                    ));
+                }
+                platform.remove(i);
+            }
+            if let Some(other) = declared.iter().find(|d| theirs(d)) {
+                return Err(format!(
+                    "{} is declared twice: by the app {} ({}) and by the app {app} ({key})",
+                    s.env,
+                    other.app.as_deref().unwrap_or("?"),
+                    other.key
+                ));
+            }
+            let kind = match s.kind.as_str() {
+                "bool" => Kind::Bool,
+                "int" => Kind::Int,
+                "json" => Kind::Json,
+                "choice" => Kind::Choice,
+                _ => Kind::Text,
+            };
+            declared.push(Def {
+                key,
+                env: s.env.clone(),
+                kind,
+                values: s.values.clone(),
+                default: s.default.clone(),
+                scope: Scope::Installation,
+                applies: if s.applies == "live" { Applies::Live } else { Applies::Start },
+                path: None,
+                secret: false,
+                environment: None,
+                sends: s.sends.clone(),
+                vault: None,
+                app: Some(app.clone()),
+                input: None,
+                doc: s.doc.clone(),
+            });
+        }
+    }
+    platform.extend(declared);
+    Ok(platform)
 }
 
 /// The setting called `name`, by its key or its environment variable.
 pub fn find(name: &str) -> Option<&'static Def> {
     let name = name.trim();
-    REGISTRY.iter().find(|d| d.key == name || d.env == name)
+    registry().iter().find(|d| d.key == name || d.env == name)
 }
 
 /// Where a setting's value comes from.
@@ -960,6 +1049,9 @@ pub async fn change_with(
             def.check(v).map_err(Error::Invalid)?;
         }
         if planned.iter().any(|(d, p, _)| d.key == def.key && *p == pool) {
+        if let Some(task) = &def.input {
+            return Err(Error::Invalid(format!("{} is an input of ferrum task {task}, given in its environment when it runs: no replica reads it", def.key)));
+        }
             return Err(Error::Invalid(format!("{} is named twice", def.key)));
         }
         planned.push((def, pool, value));
@@ -970,7 +1062,8 @@ pub async fn change_with(
     let mut tied: Vec<&'static Def> = Vec::new();
     for (def, pool, value) in &planned {
         let was = would.row(def, pool.as_deref().unwrap_or(DEFAULT_POOL)).and_then(|r| r.value.clone());
-        if let Some(secret) = def.sends.as_deref().and_then(find).filter(|_| was != *value)
+        // Only the platform's secrets are tied (an app's are its own vault's, bound by their rule to their hosts).
+        if let Some(secret) = def.sends.as_deref().and_then(crate::secrets::find).filter(|_| was != *value)
             && !tied.iter().any(|t| t.key == secret.key)
         {
             tied.push(secret);
@@ -1189,6 +1282,8 @@ pub async fn listing(st: &AppState) -> ferrum_kernel::Result<Value> {
     )
     .fetch_all(&mut *tx)
     .await?;
+                "app": d.app,
+                "input": d.input,
     tx.commit().await?;
     let replicas: Vec<Value> = rows
         .into_iter()
@@ -1248,9 +1343,17 @@ mod tests {
         for d in r {
             assert!(keys.insert(d.key.as_str()), "{} twice", d.key);
             assert!(envs.insert(d.env.as_str()), "{} twice", d.env);
-            assert!(d.key.len() <= 63 && d.key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'), "{}", d.key);
-            let lower = d.env.to_ascii_lowercase();
-            assert_eq!(d.key, lower.strip_prefix("ferrum_").unwrap_or(&lower), "the key is its variable's name in lower case without FERRUM_");
+            // An app's is `<app>.<key>`, the platform's its variable's name in lower case without FERRUM_.
+            let own = match &d.app {
+                Some(app) => d.key.strip_prefix(&format!("{app}.")).unwrap_or_else(|| panic!("{} is the app {app}'s: <app>.<key>", d.key)),
+                None => {
+                    let lower = d.env.to_ascii_lowercase();
+                    assert_eq!(d.key, lower.strip_prefix("ferrum_").unwrap_or(&lower), "the key is its variable's name in lower case without FERRUM_");
+                    d.key.as_str()
+                }
+            };
+            assert!(d.key.len() <= 63 && own.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'), "{}", d.key);
+            assert!(d.input.is_none() || (d.environment.is_none() && d.app.is_none() && !d.stored()), "{}: a task's input is that alone", d.key);
             assert!(!(d.secret && d.environment.is_some()), "{}: a secret or someone else's, not both", d.key);
             assert!(d.vault.is_none() || d.secret, "{}: only a secret is the vault's", d.key);
             assert!(d.stored() || d.applies == Applies::Start, "{}: only what the table holds can apply at once", d.key);
@@ -1279,6 +1382,73 @@ mod tests {
         }
     }
 
+        assert!(clash().is_none(), "{:?}", clash());
+        let inputs: Vec<&str> = r.iter().filter(|d| d.input.is_some()).map(|d| d.key.as_str()).collect();
+        assert_eq!(inputs.len(), 8, "the move task's inputs: {inputs:?}");
+        // The platform names no country (D5's apps): what a country's add-on reads is that add-on's.
+        for d in r.iter().filter(|d| d.app.is_none()) {
+            for country in ["eu_", "gb_", "my_", "ro_", "us_", "pt_", "public_ip"] {
+                assert!(!d.key.starts_with(country), "{} belongs to a country's add-on", d.key);
+            }
+        }
+    }
+
+    fn declared(key: &str, env: &str) -> ferrum_apps::OperatorSetting {
+        ferrum_apps::OperatorSetting {
+            key: key.into(),
+            env: env.into(),
+            kind: "int".into(),
+            values: vec![],
+            default: "32".into(),
+            applies: "live".into(),
+            sends: None,
+            doc: "A setting of an app.".into(),
+        }
+    }
+
+    #[test]
+    fn an_apps_declaration_replaces_the_entry_that_moves_to_it_and_a_clash_names_both() {
+        let platform = || registry().to_vec();
+        let drive = vec![("drive".to_string(), vec![declared("max_file_mb", "FERRUM_DRIVE_MAX_FILE_MB"), declared("thumbnails", "FERRUM_DRIVE_THUMBNAILS")])];
+        let all = merged(platform(), &drive).unwrap();
+        let d = all.iter().find(|d| d.env == "FERRUM_DRIVE_MAX_FILE_MB").unwrap();
+        assert_eq!((d.key.as_str(), d.app.as_deref(), d.kind, d.applies), ("drive.max_file_mb", Some("drive"), Kind::Int, Applies::Live));
+        assert!(d.stored() && d.environment.is_none(), "kept in the table now: the app reads it through ferrum_kernel::env::var");
+        assert_eq!(all.iter().filter(|d| d.env == "FERRUM_DRIVE_MAX_FILE_MB").count(), 1, "the platform's entry is gone");
+        assert!(all.iter().any(|d| d.key == "drive.thumbnails"), "a setting the platform never had");
+        assert_eq!(all.len(), platform().len() + 1);
+        // Two owners of one variable or key: the start stops, naming both.
+        let theirs = merged(platform(), &[("comms".into(), vec![declared("x", "FERRUM_DRIVE_MAX_FILE_MB")])]).unwrap_err();
+        assert!(theirs.contains("drive.max_file_mb") && theirs.contains("comms.x"), "{theirs}");
+        let platform_own = merged(platform(), &[("drive".into(), vec![declared("pdf", "FERRUM_PDF_URL")])]).unwrap_err();
+        assert!(platform_own.contains("pdf_url") && platform_own.contains("drive.pdf"), "{platform_own}");
+        let secret = merged(platform(), &[("comms".into(), vec![declared("meet_secret", "FERRUM_MEET_SECRET")])]).unwrap_err();
+        assert!(secret.contains("own vault"), "an app declares no secret: {secret}");
+        let two = merged(platform(), &[("a1".into(), vec![declared("x", "FERRUM_X_ONE")]), ("b1".into(), vec![declared("y", "FERRUM_X_ONE")])]).unwrap_err();
+        assert!(two.contains("a1.x") && two.contains("b1.y"), "{two}");
+        // Resolved as any setting: the environment, else the table, else the default; a reader takes it from ferrum_kernel::env.
+        let table = Stored {
+            rows: vec![Row { scope: "installation".into(), scope_name: String::new(), key: "drive.max_file_mb".into(), value: Some("64".into()), version: 1 }],
+            version: 1,
+        };
+        let reg = all;
+        let get = |env: &dyn Fn(&str) -> Option<String>| {
+            let def = reg.iter().find(|d| d.key == "drive.max_file_mb").unwrap();
+            match env(&def.env) {
+                Some(v) => (Source::Environment, Some(v)),
+                None => table
+                    .row(def, "default")
+                    .and_then(|r| r.value.clone())
+                    .filter(|_| def.stored())
+                    .map_or((Source::Default, None), |v| (Source::Database, Some(v))),
+            }
+        };
+        assert_eq!(get(&|_| None), (Source::Database, Some("64".to_string())));
+        assert_eq!(
+            get(&|n| (n == "FERRUM_DRIVE_MAX_FILE_MB").then(|| "16".to_string())),
+            (Source::Environment, Some("16".to_string())),
+            "R1: the environment still wins"
+        );
     #[test]
     fn a_pools_own_settings_come_from_its_row() {
         let rows = vec![
@@ -1309,7 +1479,7 @@ mod tests {
 
     #[test]
     fn the_environment_wins_over_the_table_which_wins_over_the_default() {
-        let table = stored(&[("session_days", "7"), ("pdf_url", "http://pdf:3000"), ("secret_key", "from-the-table"), ("office_url", "http://o")]);
+        let table = stored(&[("session_days", "7"), ("pdf_url", "http://pdf:3000"), ("secret_key", "from-the-table"), ("drive.office_url", "http://o")]);
         let env = |name: &str| match name {
             "FERRUM_SESSION_DAYS" => Some("3".to_string()),
             "FERRUM_SECRET_KEY" => Some("from-the-environment".to_string()),
@@ -1321,7 +1491,9 @@ mod tests {
         assert_eq!(s.get("host_leaving_days"), (Source::Default, None));
         assert_eq!(s.get("secret_key"), (Source::Environment, Some("from-the-environment")), "a secret is never the table's");
         assert_eq!(Snapshot::resolve(&table, "default", &|_| None).get("secret_key"), (Source::Default, None));
-        assert_eq!(s.get("office_url"), (Source::Default, None), "Drive reads it from the environment: the table's would not reach it");
+        assert_eq!(s.get("drive.office_url"), (Source::Default, None), "Drive reads it from the environment: the table's would not reach it");
+        let input = stored(&[("move_source_region", "eu")]);
+        assert_eq!(Snapshot::resolve(&input, "default", &|_| None).get("move_source_region"), (Source::Default, None), "a task's input is never the table's");
         assert_eq!(s.var("FERRUM_PDF_URL").as_deref(), Some("http://pdf:3000"));
         assert_eq!(s.var("FERRUM_HOST_LEAVING_DAYS"), None, "the reader's own default");
         let empty = |name: &str| (name == "FERRUM_PDF_URL").then(String::new);
