@@ -574,8 +574,8 @@ impl Kernel {
     /// the installed operation be at a version within a range declared (`capability_unavailable`), and an action's
     /// params be those it declares (`invalid`). It runs through the gate as the system on the person's behalf, within
     /// their zone: the person is its actor, the key is the app's own (`{app}:{key}`), and the receipt names the app.
-    /// What would wait for an approval is refused: a call does the thing or fails. As with every refusal in a
-    /// transaction, `tx` is then the caller's to roll back.
+    /// What would wait for an approval is refused: a call does the thing or fails. A refused call leaves nothing of itself
+    /// in `tx` (a savepoint around it), and what the caller wrote before it stays: the caller may carry on and commit.
     pub async fn call_tx(&self, handle: &Vault, ctx: &Ctx, tx: &mut Tx, inv: &Invocation) -> Result<Receipt> {
         let app = handle.given(self)?;
         let catalog = self.registry.catalog();
@@ -608,11 +608,20 @@ impl Kernel {
             crate::doc::given_params(&a.name, &a.params, inv.input.get("params").unwrap_or(&Value::Null))?;
         }
         let key = inv.effect_key.as_deref().filter(|k| !k.trim().is_empty()).map(|k| format!("{app}:{k}"));
-        let done = self.run_capability(&system, tx, cap, &Invocation { effect_key: key, ..inv.clone() }, Some(app)).await?;
-        if done.result.get("_approval").is_some() {
-            return Err(refused(Code::PermissionDenied, format!("{} waits for an approval here, and a call from {app} does it or fails", done.capability)));
-        }
-        Ok(done)
+        // A refusal takes back all the call wrote, its receipt too, and nothing the caller wrote before it: a caller that
+        // carries on commits none of it. Savepoints nest, so a call made inside another's operation is undone alone.
+        sqlx::query("savepoint app_call").execute(&mut **tx).await?;
+        let done = match self.run_capability(&system, tx, cap, &Invocation { effect_key: key, ..inv.clone() }, Some(app)).await {
+            Ok(done) if done.result.get("_approval").is_some() => {
+                Err(refused(Code::PermissionDenied, format!("{} waits for an approval here, and a call from {app} does it or fails", done.capability)))
+            }
+            done => done,
+        };
+        // Rolled back to, a savepoint stays: released as well, so that a refusal of the call around this one rolls back
+        // to its own savepoint, not to this one.
+        let end = if done.is_ok() { "release savepoint app_call" } else { "rollback to savepoint app_call; release savepoint app_call" };
+        sqlx::raw_sql(end).execute(&mut **tx).await?;
+        done
     }
 
     /// Capability `cap` run in `tx` as `inv` asks, its receipt naming `caller`, the app whose call it is

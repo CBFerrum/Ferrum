@@ -3,13 +3,15 @@
 //! shop and a mall each declare that they use it. A call is the app's own, proved by the vault handle its registration
 //! took, in the caller's transaction: it does only what one of the app's packages installed there declares, at a version
 //! within the range declared, with the params the action declares, for the person it acts for and within their zone;
-//! the key is the app's, the receipt names the app and the person, and an approval it would wait for is refused. An
-//! app repeating its own key is given what it did the first time.
+//! the key is the app's, the receipt names the app and the person, and an approval it would wait for is refused. A
+//! refused call leaves nothing of itself in the caller's transaction, calls nest, and an app repeating its own key is
+//! given what it did the first time.
 
 use async_trait::async_trait;
 use ferrum_kernel::capability::{Invocation, Receipt};
+use ferrum_kernel::vault::Vault;
 use ferrum_kernel::zones::{Credential, Entry, Placed, Zones};
-use ferrum_kernel::{Ctx, Doc, DocHook, HookCtx, HookRegistry, Kernel, Result};
+use ferrum_kernel::{Ctx, Doc, DocHook, Error, HookCtx, HookRegistry, Kernel, Result};
 use ferrum_meta::{MetaError, Package};
 use ferrum_testkit::{App, Kit, Upkeep, Workspace, database, obj, refused, run, uid};
 use serde_json::{Value, json};
@@ -36,6 +38,7 @@ const PARCEL: &str = r#"
         - {name: note, label: Note}
       contract: {completion: "A shipment of the parcel, committed with this receipt", returns: {type: object, properties: {shipment: {type: string}}}}
     - {name: hold, label: Hold, permission: write, hidden: true, contract: {completion: The parcel is held}}
+    - {name: pack, label: Pack, permission: write, hidden: true, contract: {completion: The parcel is packed}}
 - name: Shipment
   label: Shipment
   kind: master
@@ -43,20 +46,40 @@ const PARCEL: &str = r#"
     - {name: parcel, type: link, to: Parcel, required: true}
     - {name: carrier, type: data}
 "#;
-/// What the shop uses: shipping, holding, an operation the carrier does not offer, and reading at a version it is not.
+/// What the shop uses: shipping, holding, packing, the mall's dispatch, an operation the carrier does not offer, and
+/// reading at a version it is not.
 const SHOP: &str = r#"
 package: shop
 version: 0.1.0
-depends: [carrier]
+depends: [carrier, mall]
 uses:
   - {capability: carrier.parcel.ship, version: '^1.2'}
   - {capability: carrier.parcel.hold, version: '^1'}
+  - {capability: carrier.parcel.pack, version: '^1'}
+  - {capability: mall.mall_order.dispatch, version: '^0.1'}
   - {capability: carrier.parcel.weigh, version: '^1'}
   - {capability: carrier.parcel.read, version: '^2'}
 "#;
-const MALL: &str = "package: mall\nversion: 0.1.0\ndepends: [carrier]\nuses:\n  - {capability: carrier.parcel.ship, version: '>=1, <2'}\n";
+const MALL: &str = "package: mall\nversion: 0.1.0\ndepends: [carrier]\nuses:\n  - {capability: carrier.parcel.ship, version: '>=1, <2'}\n  - {capability: carrier.parcel.pack, version: '^1'}\n";
+/// The mall's own operation, which calls the carrier's in turn.
+const MALL_ORDER: &str = r#"
+- name: MallOrder
+  label: Mall order
+  kind: master
+  fields:
+    - {name: parcel, type: link, to: Parcel, required: true}
+  actions:
+    - name: dispatch
+      label: Dispatch
+      permission: write
+      hidden: true
+      params:
+        - {name: then_fail, label: Then fail}
+      contract: {completion: "The order's parcel shipped, committed with this receipt"}
+"#;
 
-/// The carrier's code: a shipment for `ship`, nothing for `hold` (which waits for the desk's approval).
+/// The carrier's code: a shipment for `ship`, nothing for `hold` (which waits for the desk's approval), and for `pack` a
+/// shipment written and then a refusal of its own.
 struct Carrier;
 
 #[async_trait]
@@ -68,8 +91,36 @@ impl DocHook for Carrier {
                 Some(json!({"shipment": made["id"]}))
             }
             "hold" => Some(json!({"held": true})),
+            "pack" => {
+                hc.kernel.insert_tx(hc.ctx, hc.tx, "Shipment", obj(json!({"parcel": doc["id"], "carrier": "Scale"}))).await?;
+                return Err(Error::invalid("the scale is broken"));
+            }
             _ => None,
         })
+    }
+}
+
+/// The mall's code, calling as the mall: dispatching an order tries to pack its parcel, which the carrier refuses, carries
+/// on and ships it; asked to, it then refuses itself.
+struct Mall(Vault);
+
+#[async_trait]
+impl DocHook for Mall {
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if name != "dispatch" {
+            return Ok(None);
+        }
+        let order = doc["id"].as_str().unwrap_or_default();
+        let pack = Invocation::new("carrier.parcel.pack", json!({"id": doc["parcel"], "params": {}})).key(format!("pack:{order}"));
+        if hc.kernel.call_tx(&self.0, hc.ctx, hc.tx, &pack).await.is_ok() {
+            return Err(Error::internal("the carrier packed the parcel"));
+        }
+        let ship = Invocation::new("carrier.parcel.ship", json!({"id": doc["parcel"], "params": {"carrier": "Mall Post"}})).key(format!("ship:{order}"));
+        let shipped = hc.kernel.call_tx(&self.0, hc.ctx, hc.tx, &ship).await?;
+        if params["then_fail"] == "yes" {
+            return Err(Error::invalid("the order was dispatched and then refused"));
+        }
+        Ok(Some(json!({"shipment": shipped.result["shipment"]})))
     }
 }
 
@@ -87,11 +138,16 @@ fn shop_packages() -> Result<Vec<Package>, MetaError> {
 }
 
 fn mall_packages() -> Result<Vec<Package>, MetaError> {
-    load(&[("package.yaml", MALL)])
+    load(&[("package.yaml", MALL), ("entities/order.yaml", MALL_ORDER)])
 }
 
 fn carrier_register(h: &mut HookRegistry) {
     h.register("Parcel", Arc::new(Carrier));
+}
+
+fn mall_register(h: &mut HookRegistry) {
+    let own = h.vault();
+    h.register("MallOrder", Arc::new(Mall(own)));
 }
 
 fn nothing_registered(_: &mut HookRegistry) {}
@@ -134,7 +190,7 @@ fn an_app_calls_what_it_declared_for_the_person_it_acts_for() {
 
 async fn scenario() {
     let apps =
-        [app("carrier", carrier_packages, carrier_register), app("shop", shop_packages, nothing_registered), app("mall", mall_packages, nothing_registered)];
+        [app("carrier", carrier_packages, carrier_register), app("shop", shop_packages, nothing_registered), app("mall", mall_packages, mall_register)];
     let kit = Kit::boot(&database("FERRUM_TEST_DATABASE_URL"), &apps).await;
     let k = kit.k.clone();
     let ws = kit.workspace("acme", &["shop", "mall"], Value::Null).await;
@@ -231,4 +287,41 @@ async fn scenario() {
     assert_eq!(count(&ws, "select count(*) from e_shipment").await, 3, "no refusal shipped anything");
     let callers: Vec<Option<String>> = receipts(&ws).await.into_iter().map(|r| r.0).collect();
     assert_eq!(callers, [Some("shop".to_string()), Some("shop".to_string()), Some("mall".to_string())]);
+
+    // A refused call leaves nothing of itself, even when the caller carries on and commits: neither what the carrier's
+    // own code wrote before it refused, nor an approval parked for a hold. What the caller wrote before the call stays.
+    let mut tx = k.db.tenant_tx(ws.tenant).await.unwrap();
+    k.insert_tx(&ws.admin, &mut tx, "Parcel", obj(json!({"title": "Box 3"}))).await.expect("the caller's own write");
+    let pack = Invocation::new("carrier.parcel.pack", json!({"id": uid(&parcel), "params": {}})).key("pack-1");
+    refused(k.call_tx(&kit.vault("shop"), &pat, &mut tx, &pack).await, "invalid", "the scale is broken");
+    let hold = Invocation::new("carrier.parcel.hold", json!({"id": uid(&parcel), "params": {}})).key("hold-2");
+    refused(k.call_tx(&kit.vault("shop"), &pat, &mut tx, &hold).await, "forbidden", "approval");
+    tx.commit().await.expect("the caller commits all the same");
+    assert_eq!(count(&ws, "select count(*) from e_shipment").await, 3, "the refused packing shipped nothing");
+    assert_eq!(count(&ws, "select count(*) from approval_request").await, 0, "nothing waits for an approval");
+    assert_eq!(count(&ws, "select count(*) from logic_effect").await, 3, "no receipt: the keys are free");
+    assert_eq!(count(&ws, "select count(*) from e_parcel where title = 'Box 3'").await, 1, "the caller's own write stays");
+
+    // Calls nest: the shop's call of the mall's dispatch runs the mall's calls of the carrier inside it. The carrier's
+    // refusal of the packing is undone alone, and the mall ships instead: one shipment, a receipt for each call made.
+    let order = obj(json!({"parcel": uid(&parcel)}));
+    let dispatch = |order: &Doc, then: &str| {
+        Invocation::new("mall.mall_order.dispatch", json!({"id": uid(order), "params": {"then_fail": then}})).key(format!("dispatch:{}", uid(order)))
+    };
+    let first = k.insert(&ws.admin, "MallOrder", order.clone()).await.unwrap();
+    let done = call(&kit, "shop", &pat, dispatch(&first, "no")).await.expect("dispatched");
+    assert!(!done.result["shipment"].is_null(), "{done:?}");
+    assert_eq!(count(&ws, "select count(*) from e_shipment").await, 4);
+    let callers: Vec<(Option<String>, String)> = receipts(&ws).await.into_iter().skip(3).map(|r| (r.0, r.2)).collect();
+    assert_eq!(callers.len(), 2, "{callers:?}");
+    assert!(callers.contains(&(Some("shop".into()), format!("shop:dispatch:{}", uid(&first)))), "{callers:?}");
+    assert!(callers.contains(&(Some("mall".into()), format!("mall:ship:{}", uid(&first)))), "{callers:?}");
+    // The outer operation refusing after its inner call succeeded takes the inner call with it, the caller committing
+    // all the same.
+    let second = k.insert(&ws.admin, "MallOrder", order).await.unwrap();
+    let mut tx = k.db.tenant_tx(ws.tenant).await.unwrap();
+    refused(k.call_tx(&kit.vault("shop"), &pat, &mut tx, &dispatch(&second, "yes")).await, "invalid", "dispatched and then refused");
+    tx.commit().await.unwrap();
+    assert_eq!(count(&ws, "select count(*) from e_shipment").await, 4, "the inner shipment went with the outer refusal");
+    assert_eq!(count(&ws, "select count(*) from logic_effect").await, 5, "and so did both receipts");
 }

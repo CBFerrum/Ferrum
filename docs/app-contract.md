@@ -151,8 +151,14 @@ let receipt = k.call_tx(&handle, ctx, tx, &ask.key(format!("deposit:{booking}"))
   took answers no other. The same key again answers what was done, as the first call's result, whoever the app acts
   for now (a job with no person, another person): the app did it, and may need the id of what it made. With other
   input it is refused (`input_changed`).
-- **Done or refused, never left waiting.** An operation that would wait for an approval is refused. Any refusal leaves
-  the caller's transaction to roll back: the change, its receipt and the caller's own work go together.
+- **Done or refused, never left waiting.** An operation that would wait for an approval is refused. A refused call
+  leaves nothing of itself in the caller's transaction: the call runs inside a savepoint, and on any refusal (the
+  operation's own check failing after it wrote, an approval it would wait for) everything it wrote, its receipt and
+  any approval it parked are rolled back to it, and its key is free again. What the caller wrote before the call stays,
+  so a caller may carry on without it ("no deposit: confirm the booking anyway") and commit. Calls nest: a call made
+  inside another app's operation is undone alone, and a refusal of the outer one takes the inner ones with it. A
+  caller that does not carry on rolls back as usual, and everything goes together. The cost is two statements per call
+  (`savepoint`, then `release`), three on a refusal.
 - **Recorded.** The receipt names the app (`logic_effect.caller`) beside the person.
 
 The handle is what proves which app calls: keep it inside the app's crate (`pub(crate)`), never handed to another.
