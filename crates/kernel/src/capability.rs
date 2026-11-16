@@ -701,10 +701,11 @@ impl Kernel {
         if by.as_deref() != caller {
             return Err(refused(Code::InputChanged, format!("the key {key} was used for {} by another caller: use a new key", cap.id)));
         }
-        // What someone else did is shown as the caller may see it now, never as its first caller saw it.
+        // What someone else did is shown as the caller may see it now, never as its first caller saw it. An app repeating
+        // its own key (checked just above) did it, whoever it acts for now.
         let shown = match (entity, record) {
             (Some(e), Some(id)) => self.get_tx(ctx, tx, &e, id, false).await.map(Value::Object).unwrap_or(Value::Null),
-            _ if actor == Some(ctx.user) => result,
+            _ if actor == Some(ctx.user) || caller.is_some() => result,
             _ => Value::Null,
         };
         let answered_once = match &cap.operation {

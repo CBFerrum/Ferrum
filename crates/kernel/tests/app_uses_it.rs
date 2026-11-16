@@ -3,7 +3,8 @@
 //! shop and a mall each declare that they use it. A call is the app's own, proved by the vault handle its registration
 //! took, in the caller's transaction: it does only what one of the app's packages installed there declares, at a version
 //! within the range declared, with the params the action declares, for the person it acts for and within their zone;
-//! the key is the app's, the receipt names the app and the person, and an approval it would wait for is refused.
+//! the key is the app's, the receipt names the app and the person, and an approval it would wait for is refused. An
+//! app repeating its own key is given what it did the first time.
 
 use async_trait::async_trait;
 use ferrum_kernel::capability::{Invocation, Receipt};
@@ -157,6 +158,14 @@ async fn scenario() {
     // The same key again answers what was done; the same key with other input is refused.
     let again = call(&kit, "shop", &pat, ship("DHL").key("order-1")).await.unwrap();
     assert!(again.repeated && again.result == first.result, "{again:?}");
+    // The shop repeating its own key gets what it did, whoever it acts for now: as a job, with no person, or for
+    // someone else. It made the shipment, and needs its id.
+    let job = Ctx::system(ws.tenant, pat.schema.clone());
+    let sam = ws.user("sam@acme.test", &[]).await;
+    for (who, ctx) in [("a job", &job), ("Sam", &sam)] {
+        let repeated = call(&kit, "shop", ctx, ship("DHL").key("order-1")).await.unwrap();
+        assert!(repeated.repeated && repeated.result == first.result, "for {who}: {repeated:?}");
+    }
     refused(call(&kit, "shop", &pat, ship("UPS").key("order-1")).await, "input changed", "order-1");
     assert_eq!(count(&ws, "select count(*) from e_shipment").await, 1, "once");
     // The key the shop took answers nobody else: an administrator sending it, with the same input, is refused.

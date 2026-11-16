@@ -148,7 +148,9 @@ let receipt = k.call_tx(&handle, ctx, tx, &ask.key(format!("deposit:{booking}"))
   install, stands in for the operation's `permission`, and nothing else is reached through it. The person is the
   receipt's actor, and the maker of what it makes.
 - **Once, and the app's own.** The key is the app's (`{app}:{key}`): two apps never meet on one, and a key one caller
-  took answers no other. The same key again answers what was done; with other input it is refused (`input_changed`).
+  took answers no other. The same key again answers what was done, as the first call's result, whoever the app acts
+  for now (a job with no person, another person): the app did it, and may need the id of what it made. With other
+  input it is refused (`input_changed`).
 - **Done or refused, never left waiting.** An operation that would wait for an approval is refused. Any refusal leaves
   the caller's transaction to roll back: the change, its receipt and the caller's own work go together.
 - **Recorded.** The receipt names the app (`logic_effect.caller`) beside the person.
