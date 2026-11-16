@@ -704,6 +704,9 @@ impl Vault {
     pub async fn describe(&self, k: &Kernel, scope: Scope, name: &str) -> Result<Option<Described>> {
         let owner = self.bound(k)?;
         check_name(name)?;
+        if scope == Scope::Installation && self.renewing.contains(&name) {
+            return Ok(None);
+        }
         let mut tx = k.db.vault_tx(scope.tenant()).await?;
         let rows = rows(&mut tx, scope, owner, name).await?;
         let d = match described(scope, owner, name, &rows) {
@@ -1045,10 +1048,11 @@ impl Vault {
     }
 
     /// A new value of `name`, a secret the vault made for the service `service` (marked as its owner's to manage), for the
-    /// operator: of the same kind (a random value of 32 bytes, or an Ed25519 pair), its rule kept, so that the version
-    /// before still verifies, and is given to the service, for the rule's overlap. Recorded as `rotate` by `operator`,
-    /// naming the service. Refused for a secret the vault did not make (a person's), and not found when there is none.
-    pub(crate) async fn rotate_made(&self, k: &Kernel, name: &str, service: &str) -> Result<Described> {
+    /// operator: of the same kind (a random value of 32 bytes, or an Ed25519 pair), under `rule` (the one the service
+    /// declares now; none: its rule kept), so that the version before still verifies, under its own rule, and is given to
+    /// the service, for the overlap. Recorded as `rotate` by `operator`, naming the service. Refused for a secret the vault
+    /// did not make (a person's), and not found when there is none.
+    pub(crate) async fn rotate_made(&self, k: &Kernel, name: &str, service: &str, rule: Option<Rule>) -> Result<Described> {
         let owner = self.bound(k)?;
         check_name(name)?;
         let scope = Scope::Installation;
@@ -1068,7 +1072,7 @@ impl Vault {
         };
         let request = crate::db::Trace::operation().unwrap_or_default();
         let who = Who { actor: None, request: &request, by: Some("operator"), service: Some(service) };
-        let mut d = write(k, scope, owner, name, new, None, &who).await?.0;
+        let mut d = write(k, scope, owner, name, new, rule, &who).await?.0;
         d.managed_by = Some(owner.to_string());
         Ok(d)
     }

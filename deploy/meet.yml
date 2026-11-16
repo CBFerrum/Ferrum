@@ -4,23 +4,41 @@
 # 7882, or TCP 7881 where UDP is blocked. Open those two ports to the internet; 7880 only through
 # your proxy.
 #   docker compose -f deploy/docker-compose.yml -f deploy/meet.yml --env-file deploy/.env up -d
-# In deploy/.env: FERRUM_MEET_URL, FERRUM_MEET_KEY (a name, such as ferrum) and FERRUM_MEET_SECRET
-# (at least 32 characters: openssl rand -hex 32). LiveKit finds the address it gives browsers by
-# STUN; set FERRUM_MEET_NODE_IP to give it yourself (and FERRUM_MEET_EXTERNAL_IP=false on a
+# In deploy/.env: FERRUM_MEET_URL. LiveKit's configuration file, with its key, is rendered from the server's
+# database and vault by a one-shot service before each start of LiveKit (docs/operations.md, "Files for the programs
+# beside the server"): the vault makes the key at the first render, and `ferrum task vault_rotate level:service
+# service:meet` rotates it. LiveKit finds the address it gives browsers by STUN; to give it yourself, store it before
+# the first start: `ferrum task set key:comms.meet_node_ip value:<address>` (and comms.meet_external_ip false on a
 # network without internet access).
 services:
+  meet-files:
+    image: ${FERRUM_IMAGE:-ghcr.io/cbferrum/ferrum:latest}
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Its one input: the database's address. What it writes comes from the database and the vault.
+    environment:
+      DATABASE_URL: postgres://ferrum:${FERRUM_DB_PASSWORD}@db:5432/ferrum
+    command: ["task", "render", "service:meet", "to:/var/lib/ferrum/companion"]
+    volumes:
+      # Owned by the server's user, as the image's directory is.
+      - meet-files:/var/lib/ferrum/companion
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
   meet:
     image: livekit/livekit-server:v1.13.10
     restart: unless-stopped
-    environment:
-      LIVEKIT_KEYS: "${FERRUM_MEET_KEY:?set FERRUM_MEET_KEY in deploy/.env}: ${FERRUM_MEET_SECRET:?set FERRUM_MEET_SECRET in deploy/.env (at least 32 characters)}"
-      LIVEKIT_CONFIG: |
-        port: 7880
-        rtc:
-          tcp_port: 7881
-          udp_port: 7882
-          use_external_ip: ${FERRUM_MEET_EXTERNAL_IP:-true}
-          node_ip: "${FERRUM_MEET_NODE_IP:-}"
+    depends_on:
+      meet-files:
+        condition: service_completed_successfully
+    command: ["--config", "/run/meet-files/livekit.yaml"]
+    volumes:
+      - meet-files:/run/meet-files:ro
     ports:
       - "${FERRUM_MEET_PORT:-7880}:7880"
       - "7881:7881"
@@ -33,8 +51,9 @@ services:
   ferrum:
     environment:
       FERRUM_MEET_URL: ${FERRUM_MEET_URL:?set FERRUM_MEET_URL in deploy/.env (LiveKit as browsers reach it)}
-      FERRUM_MEET_KEY: ${FERRUM_MEET_KEY}
-      FERRUM_MEET_SECRET: ${FERRUM_MEET_SECRET}
       # Recordings, once LiveKit Egress runs beside LiveKit with its storage (docs/operations.md).
       FERRUM_MEET_RECORDINGS: ${FERRUM_MEET_RECORDINGS:-false}
       FERRUM_MEET_API_URL: ${FERRUM_MEET_API_URL:-}
+
+volumes:
+  meet-files:

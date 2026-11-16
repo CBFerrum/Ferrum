@@ -580,8 +580,12 @@ docs/app-contract.md, "Declaring a service").
 - **Made, not typed**: `Rendering::made` makes a secret the service declares where there is none, 32 random bytes as
   base64url text, marked in `vault.managed` in the same transaction under the secret's lock, so renders and replicas at
   once make one; a current version without the mark (a person's) is refused. The mark refuses people's and the
-  operator's generic routes, so the operator rotates through the service: `vault_rotate level:service` (same kind, rule
-  kept, the version before given to renders for the overlap). `Vault::carry_at` presents a kept version, as `sign_at`
+  operator's generic routes, so the operator rotates through the service: `vault_rotate level:service` (same kind, the
+  version before given to renders for the overlap, under its own rule). The new version takes the rule the service
+  declares now: the rotation runs the service's render, told its secrets are not there yet, given no value, writing
+  nothing, so the hosts it binds a secret to come from the settings as they are and an address that moved takes the new
+  secret alone; a render never changes a secret's hosts (a changed settings row must not send an existing secret
+  elsewhere). Found by the apps' pass: `mail.admin_secret` and `engine.token` could not follow a moved address. `Vault::carry_at` presents a kept version, as `sign_at`
   signs with one: a client keeps presenting the version before while the overlap lasts, so a program not restarted yet
   still takes it. No migration: the tables were all there.
 - **The writer** (`companion::write`): a directory made when missing, never a link; only an earlier render of the same
@@ -620,7 +624,12 @@ docs/app-contract.md, "Declaring a service").
 - **Not run here**: the chart, `deploy/k8s` and Compose (rendered and compared only); the engine's init container; the
   Dockerfile's new directory, which the one-shot's volume takes its owner from.
 
-### For the apps slice: what each app declares
+### For the apps slice: what each app declares (built)
+
+Built as written, with Comms 0.23.0 and Metrics 0.9.0, and one difference: `comms.mail_admin` stays required (no
+default), and Comms still reads `FERRUM_MEET_KEY` and `FERRUM_MEET_SECRET` where the environment sets them. The deploy
+files (`deploy/meet.yml`, `deploy/mail.yml`, `deploy/metrics-engine.yml`) and the chart's `ferrum.declaredServices`
+(`metrics-engine`) were rendered and compared, not run (no Docker here).
 
 Each inside its own registration, its secrets in its own vault; settings in `operator_settings`. The format is the one
 each program reads as it starts.

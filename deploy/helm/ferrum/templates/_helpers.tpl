@@ -167,9 +167,10 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{/* The services the server's image declares (`ferrum task services`) among the companions this chart bundles: with
 `environment: minimal`, these companions take their secrets and settings from files rendered as they start, unless their
 `files` value says otherwise. A companion is added here in the change that makes its owner declare its service: until
-then its owner reads its secret from the environment, and a render would find no such service. */}}
+then its owner reads its secret from the environment, and a render would find no such service. Metrics declares
+`metrics-engine` from its 0.9.0. */}}
 {{- define "ferrum.declaredServices" -}}
-{{- toJson (list) -}}
+{{- toJson (list "metrics-engine") -}}
 {{- end -}}
 
 {{/* "true" when the companion's files are rendered as it starts: its `files` value is `rendered`, or empty with

@@ -1773,10 +1773,24 @@ its old way by default, and a value switches it:
 | Program | Its service (owner) | Switched by | What it is given |
 |---|---|---|---|
 | The store Compose bundles | `object-store` (the platform) | `-f deploy/store-files.yml`, once it has handed its keys over | `s3.json`: the access keys it handed over, both pairs while an overlap of a day lasts |
-| Metrics' engine | `metrics-engine` (Metrics, once its release declares it) | the chart's `metricsEngine.files: rendered`, implied by `environment: minimal` once the image declares the service; `deploy/k8s`: the component `metrics-engine-files` after `metrics-engine` | `token`: one token a line, the current first |
+| Metrics' engine | `metrics-engine` (Metrics 0.9.0 on) | `deploy/metrics-engine.yml`; the chart's `metricsEngine.files: rendered`, implied by `environment: minimal`; `deploy/k8s`: the component `metrics-engine-files` after `metrics-engine` | `token`: one token a line, the current first |
+| The meeting server (LiveKit) | `meet` (Comms 0.23.0 on) | `deploy/meet.yml` (LiveKit started with `--config /run/meet-files/livekit.yaml`) | `livekit.yaml`: its configuration, with a key for each version kept |
+| The mail server (Stalwart) | `mail` (Comms 0.23.0 on) | `deploy/mail.yml`, and in Stalwart's `config.toml` once: `authentication.fallback-admin.user = "admin"`, `authentication.fallback-admin.secret = "%{file:/run/mail-files/admin-secret}%"` | `admin-secret`: the fallback administrator's secret alone (the server's `FERRUM_MAIL_ADMIN` is `admin`) |
 
-The meeting server and the mail server switch when Comms declares their services (docs/plan/stateless.md says what it
-declares). The online editor and the browser editors take no secret of ours, only settings the chart's values give
+**Before the first render**, store what a service binds its secrets to, with the servers' `DATABASE_URL`: the mail
+server's address, `ferrum task set key:comms.mail_url value:http://mail:8080`, and the engine's,
+`ferrum task set key:metrics.engine_url value:http://metrics-engine:5180` (a render refuses, naming the setting, without
+it). The meeting server's own address, when STUN cannot find it: `comms.meet_node_ip` (and `comms.meet_external_ip`
+`false` on a network without internet access). `comms.mail_admin` stays required: `admin` with these files. The vault
+binds the mail server's secret and the engine's token to the host of that address at the first render, and sends them
+there only.
+
+**An address that moves** (the mail server's, the engine's) keeps its secret where it was: a render never changes the
+hosts a secret goes to, so that a changed setting cannot send an existing secret elsewhere. Store the new address, then
+rotate: `vault_rotate level:service` makes the new value under the rule the service declares now, bound to the new
+address alone, and the program takes it at its next start.
+
+The online editor and the browser editors take no secret of ours, only settings the chart's values give
 them; a render would put the database's address into pods that hold no secret today (and, for the editor, into a
 namespace of a lower security level), so they keep their values. None of this was run on a cluster or in Compose: the
 chart and `deploy/k8s` were rendered and compared (`deploy/helm/test.sh`), Compose with `docker compose config`; the
@@ -1802,9 +1816,15 @@ store's switch was rehearsed with its own binary (`scripts/companions_rehearsal.
   kubectl -n ferrum exec deploy/ferrum -- ferrum task vault_rotate level:service service:metrics-engine
   kubectl -n ferrum rollout restart deployment/ferrum-metrics-engine
   ```
-- *The meeting server* holds many keys, one for each version, and is restarted within the overlap; *the mail server*
-  holds one administrator's secret, so it is restarted at once after the rotation. Both as Comms says, once it declares
-  them.
+- *The meeting server* (`meet`) holds a key for each version kept: rotate, then restart it within the overlap (a day).
+  *The mail server* (`mail`) holds one administrator's secret: rotate, then restart it at once.
+  ```bash
+  C="docker compose -f deploy/docker-compose.yml -f deploy/meet.yml -f deploy/mail.yml --env-file deploy/.env"
+  $C exec ferrum ferrum task vault_rotate level:service service:meet
+  $C up -d --force-recreate meet-files meet
+  $C exec ferrum ferrum task vault_rotate level:service service:mail
+  $C up -d --force-recreate mail-files mail
+  ```
 
 ## Durable processes
 
@@ -1924,8 +1944,8 @@ so a heavy query is bounded there and cannot take the server down. The server ne
 docker compose -f deploy/docker-compose.yml -f deploy/metrics-engine.yml --env-file deploy/.env up -d
 ```
 
-- **Configuration.** `deploy/.env` holds `FERRUM_METRICS_ENGINE_TOKEN`, at least 32 characters; Ferrum and the
-  engine hold the same one. `deploy/metrics-engine.json` lists the datasets: each has a name, its workspace by
+- **Configuration.** The engine's token is made by Metrics' vault and rendered as the engine starts (*Files for the
+  programs beside the server*): store `metrics.engine_url` before the first start. `deploy/metrics-engine.json` lists the datasets: each has a name, its workspace by
   slug or id, a format, and a path under `/data`. It also sets the limits: rows, time, memory (nothing spills),
   and queries at once. The datasets directory (`FERRUM_METRICS_DATASETS`) is mounted read-only. Nothing is
   published to the host. Compose builds the image from a Metrics checkout (`FERRUM_METRICS_REPO`) unless
@@ -3738,7 +3758,7 @@ accounts so that they follow the people. The app's README ("Hosted mail") has th
 | Setting | On | Value |
 |---|---|---|
 | `FERRUM_MAIL_URL` | server | Stalwart's HTTP address as the server reaches it, e.g. `http://mail:8080` |
-| `FERRUM_MAIL_ADMIN`, `FERRUM_MAIL_ADMIN_SECRET` | server | a Stalwart administrator |
+| `FERRUM_MAIL_ADMIN` | server | Stalwart's fallback administrator, `admin`; its secret is made by Comms' vault and rendered for Stalwart (*Files for the programs beside the server*) |
 | `FERRUM_MAIL_HOST` | server | optional: the server's public host name, e.g. `mail.example.com`, shown to people setting up mail programs (IMAP 993, SMTP 465) |
 
 **Compose.** `deploy/mail.yml` adds Stalwart:
@@ -3753,8 +3773,8 @@ accounts so that they follow the people. The app's README ("Hosted mail") has th
    * TLS certificates (ACME).
 
    The setup gives you the permanent administrator.
-3. Put that administrator in `deploy/.env` as `FERRUM_MAIL_ADMIN` and `FERRUM_MAIL_ADMIN_SECRET`,
-   then run `up -d` again. Stalwart keeps its setup and mail in the `mail-config` and `mail-data`
+3. Give Stalwart the fallback administrator in its `config.toml` (`authentication.fallback-admin.user = "admin"`,
+   `authentication.fallback-admin.secret = "%{file:/run/mail-files/admin-secret}%"`), then run `up -d` again. Stalwart keeps its setup and mail in the `mail-config` and `mail-data`
    volumes; back them up with the database.
 4. Publish the DNS records Stalwart lists for each domain under Domains: MX, SPF, DKIM, DMARC
    and the rest. Add reverse DNS (PTR) for the server's address.
@@ -3804,11 +3824,11 @@ for any calendar event, and rooms people start from Meet. They run on a
 | Setting | On | Value |
 |---|---|---|
 | `FERRUM_MEET_URL` | server | LiveKit as browsers reach it, `wss://meet.example.com` |
-| `FERRUM_MEET_KEY`, `FERRUM_MEET_SECRET` | server | an API key (a name) and its secret, at least 32 characters (`openssl rand -hex 32`); LiveKit gets the same pair |
+| `comms.meet_node_ip` | stored | optional: the address LiveKit gives browsers, where STUN cannot find it; its key is made by Comms' vault and rendered for LiveKit (*Files for the programs beside the server*) |
 | `FERRUM_MEET_RECORDINGS` | server | `true` once [LiveKit Egress](https://docs.livekit.io/home/egress/overview/) (Apache-2.0) runs beside LiveKit with its storage: anyone in a meeting may then record it |
 | `FERRUM_MEET_API_URL` | server | LiveKit's server API as Ferrum reaches it, when that is not `FERRUM_MEET_URL` over http(s): an address inside your network |
 
-With the three set, Chat shows a call button, Calendar offers "Add video meeting" to organizers,
+With `FERRUM_MEET_URL` set and LiveKit started on its rendered file, Chat shows a call button, Calendar offers "Add video meeting" to organizers,
 and Meet appears under Communication. Only people with a Comms role can join.
 
 **Compose.** `deploy/meet.yml` adds LiveKit:
