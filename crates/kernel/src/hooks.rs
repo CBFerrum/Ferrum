@@ -247,6 +247,9 @@ pub struct HookRegistry {
     package_owners: HashMap<String, String>,
     /// The app whose registration is running.
     app: Option<String>,
+    /// The programs beside the server whose files their owners render ([`HookRegistry::add_companion`]), by name:
+    /// their owner (an app's id, or `platform`) and what renders them.
+    companions: std::collections::BTreeMap<String, (String, Arc<dyn crate::companion::Companion>)>,
     /// What registering apps went wrong, said by [`HookRegistry::settle`], which stops the server.
     problems: Vec<String>,
 }
@@ -414,6 +417,34 @@ impl HookRegistry {
     /// The app that owns `package`, when one claimed it ([`HookRegistry::own`]).
     pub(crate) fn package_owner(&self, package: &str) -> Option<&str> {
         self.package_owners.get(package).map(String::as_str)
+    }
+
+    /// Declares the service `name`, a program that runs beside the server, whose files `companion` renders
+    /// (crate::companion; `ferrum task render`): app `id`'s inside its registration ([`HookRegistry::app`]), given its
+    /// own vault handle as it renders; the platform's outside any. A name is lowercase letters, digits and dashes, and
+    /// unique across the installation: one declared twice, or a declaration that cannot work, stops the server
+    /// ([`HookRegistry::settle`]), naming both owners.
+    pub fn add_companion(&mut self, name: &str, companion: Arc<dyn crate::companion::Companion>) -> &mut Self {
+        let owner = self.app.clone().unwrap_or_else(|| "platform".to_string());
+        let problems = crate::companion::declaration_problems(name, companion.as_ref());
+        if !problems.is_empty() {
+            self.problems.extend(problems);
+        } else if let Some((other, _)) = self.companions.get(name) {
+            self.problems.push(format!("the service {name} is declared twice: by {other} and by {owner}"));
+        } else {
+            self.companions.insert(name.to_string(), (owner, companion));
+        }
+        self
+    }
+
+    /// The service `name`: its owner and what renders it.
+    pub(crate) fn companion(&self, name: &str) -> Option<(&str, &dyn crate::companion::Companion)> {
+        self.companions.get(name).map(|(owner, c)| (owner.as_str(), c.as_ref()))
+    }
+
+    /// Every service, by name, with its owner.
+    pub(crate) fn companions(&self) -> impl Iterator<Item = (&str, &str, &dyn crate::companion::Companion)> {
+        self.companions.iter().map(|(name, (owner, c))| (name.as_str(), owner.as_str(), c.as_ref()))
     }
 
     /// Each document hook's entity and the packages it runs for (`None`: every tenant), in
@@ -743,6 +774,57 @@ mod tests {
         });
         assert_eq!(plain.scopes(), [("Invoice".to_string(), None)], "no packages: every workspace, as before");
         assert!(plain.settle().is_ok());
+    }
+
+    struct Program(&'static [&'static str], &'static [&'static str]);
+
+    #[async_trait]
+    impl crate::companion::Companion for Program {
+        fn files(&self) -> &'static [&'static str] {
+            self.0
+        }
+        fn made(&self) -> &'static [&'static str] {
+            self.1
+        }
+        async fn render(&self, _: &crate::companion::Rendering<'_>) -> Result<Vec<crate::companion::File>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn a_service_is_its_declarers_and_one_name_with_two_owners_stops_the_server() {
+        let mut r = HookRegistry::default();
+        r.add_companion("object-store", Arc::new(Program(&["s3.json"], &["aws_secret_access_key"])));
+        r.app("comms", &[], |h| {
+            h.add_companion("meet", Arc::new(Program(&["livekit.yaml"], &["meet.secret"])));
+        });
+        assert_eq!(r.companion("object-store").map(|c| c.0), Some("platform"), "outside any app's registration: the platform's");
+        assert_eq!(r.companion("meet").map(|c| c.0), Some("comms"), "inside one: the app's");
+        assert_eq!(r.companions().map(|c| c.0).collect::<Vec<_>>(), ["meet", "object-store"]);
+        assert!(r.settle().is_ok());
+        r.app("live", &[], |h| {
+            h.add_companion("meet", Arc::new(Program(&["relay.toml"], &[])));
+        });
+        let problems = r.settle().unwrap_err().join("; ");
+        assert!(problems.contains("the service meet is declared twice: by comms and by live"), "{problems}");
+        assert_eq!(r.companion("meet").map(|c| c.0), Some("comms"), "the first stays; the server does not start anyway");
+        let mut bad = HookRegistry::default();
+        bad.add_companion("Meet", Arc::new(Program(&["a"], &[])));
+        bad.add_companion("none", Arc::new(Program(&[], &[])));
+        bad.add_companion("dots", Arc::new(Program(&[".hidden", "../up", "a", "a"], &["Not A Name", "field.0123"])));
+        let problems = bad.settle().unwrap_err().join("; ");
+        for said in [
+            "\"Meet\" is not a service's name",
+            "the service none declares no file",
+            "the file \".hidden\"",
+            "the file \"../up\"",
+            "the file a twice",
+            "the secret \"Not A Name\"",
+            "the secret \"field.0123\"",
+        ] {
+            assert!(problems.contains(said), "{said}: {problems}");
+        }
+        assert!(bad.companions().next().is_none(), "none of them is declared");
     }
 
     #[test]

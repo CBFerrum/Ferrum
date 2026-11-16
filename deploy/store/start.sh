@@ -8,16 +8,31 @@
 # also asks the server to make the bucket, with versioning, lifecycle rules and default encryption.
 # Then the store runs: S3 on the network, its master, volume server and filer inside the container alone.
 #
+# With STORE_S3_CONFIG (deploy/store-files.yml), the access keys come from the server's vault instead: the ones this
+# store handed over, rendered for each start into that file and rotated by the vault since (`ferrum task render
+# service:object-store`; docs/operations.md, "Files for the programs beside the server"). Nothing is made or handed over
+# here then but the encryption key, where there is none yet.
+#
 # Settings, for running it elsewhere (scripts/object_store_rehearsal.sh runs it with the store's own binary):
 # STORE_DATA (default /data), STORE_HANDOFF (default /handoff), STORE_BIND (default 0.0.0.0), STORE_PORT (default
-# 8333), STORE_OWNER (the user the server runs as, default 10001), STORE_ARGS (more flags for `weed server`).
+# 8333), STORE_OWNER (the user the server runs as, default 10001), STORE_ARGS (more flags for `weed server`),
+# STORE_S3_CONFIG (the rendered keys, above).
 set -eu
 data=${STORE_DATA:-/data}
 handoff=${STORE_HANDOFF:-/handoff}
 conf=$data/ferrum
 umask 077
 hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
-if [ ! -f "$conf/s3.json" ]; then
+s3=$conf/s3.json
+if [ -n "${STORE_S3_CONFIG:-}" ]; then
+  [ -f "$STORE_S3_CONFIG" ] || { echo "no $STORE_S3_CONFIG: the store's keys are rendered before it starts (ferrum task render service:object-store)" >&2; exit 1; }
+  s3=$STORE_S3_CONFIG
+  mkdir -p "$conf"
+  if [ ! -f "$conf/kek" ]; then
+    hex 32 >"$conf/kek.new"
+    mv "$conf/kek.new" "$conf/kek"
+  fi
+elif [ ! -f "$conf/s3.json" ]; then
   mkdir -p "$conf" "$handoff"
   id=FERRUM$(hex 10 | tr 'a-f' 'A-F')
   secret=$(hex 24)
@@ -39,5 +54,5 @@ export WEED_S3_SSE_KEK
 # bucket name is refused, and the server is not ready, saying so.
 # shellcheck disable=SC2086 # STORE_ARGS is a list of flags
 exec weed server -dir="$data" -ip=127.0.0.1 -ip.bind=127.0.0.1 -s3 -s3.ip.bind="${STORE_BIND:-0.0.0.0}" -s3.port="${STORE_PORT:-8333}" \
-  -s3.config="$conf/s3.json" -s3.autoCreateBucket=false -s3.port.iceberg=0 -s3.port.lance=0 -filer.encryptVolumeData -volume.max=0 \
+  -s3.config="$s3" -s3.autoCreateBucket=false -s3.port.iceberg=0 -s3.port.lance=0 -filer.encryptVolumeData -volume.max=0 \
   -master.volumeSizeLimitMB=1024 ${STORE_ARGS:-}

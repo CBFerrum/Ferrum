@@ -161,6 +161,8 @@ struct Who<'a> {
     request: &'a str,
     /// What acted when no person did, said in the record: `operator`, `environment`, `sandbox`.
     by: Option<&'a str>,
+    /// The service whose render made, used or changed it (crate::companion), said in the record.
+    service: Option<&'a str>,
 }
 
 /// A secret's name in its shape: lowercase letters, digits, and _ . -, up to 100.
@@ -170,6 +172,11 @@ fn valid_name(name: &str) -> Result<()> {
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(c));
     if ok { Ok(()) } else { Err(Error::field("name", "lowercase letters, digits, and _ . -, up to 100")) }
+}
+
+/// Whether the verbs take `name` as a secret's name ([`check_name`]): what a service declares the vault makes for it.
+pub(crate) fn secret_name_ok(name: &str) -> bool {
+    check_name(name).is_ok()
 }
 
 /// A name the verbs take: in its shape, and not one of a value the kernel's stores keep.
@@ -249,6 +256,16 @@ async fn with_managed(tx: &mut Tx, scope: Scope, mut d: Described) -> Result<Des
         .await?;
     d.managed_by = managed.then(|| d.owner.clone());
     Ok(d)
+}
+
+/// Whether `owner` manages `name` in `scope` itself, in `tx`.
+async fn is_managed(tx: &mut Tx, scope: Scope, owner: &str, name: &str) -> Result<bool> {
+    Ok(sqlx::query_scalar("select exists (select 1 from vault.managed where scope = $1 and owner = $2 and name = $3)")
+        .bind(scope.id())
+        .bind(owner)
+        .bind(name)
+        .fetch_one(&mut **tx)
+        .await?)
 }
 
 /// Whether `owner` manages `name` in `scope` itself.
@@ -356,6 +373,9 @@ async fn audited(tx: &mut Tx, scope: Scope, owner: &str, name: &str, verb: &'sta
     if let Some(by) = who.by {
         diff["by"] = json!(by);
     }
+    if let Some(service) = who.service {
+        diff["service"] = json!(service);
+    }
     event(tx, scope, who.actor, who.request, category, verb, diff).await
 }
 
@@ -425,8 +445,22 @@ async fn write(
 ) -> Result<(Described, Option<Zeroizing<String>>)> {
     check_name(name)?;
     let made = make(value)?;
-    write_made(&k.db, scope, owner, name, made, rule, who, false).await.map(|(d, shown, _)| (d, shown))
+    write_made(&k.db, scope, owner, name, made, rule, who, None).await.map(|(d, shown, _)| (d, shown))
 }
+
+/// What a write does where the secret has a current version already, when it does not replace it.
+#[derive(Clone, Copy)]
+struct OnlyNew {
+    /// What a write is recorded as: `adopt` (what the environment or a sandbox's source holds), `make` (a value the vault
+    /// makes for a service, crate::companion).
+    verb: &'static str,
+    /// Marked as its owner's to manage as it is made ([`Vault::manage`]); and one there without that mark (a person's)
+    /// is refused rather than left.
+    managed: bool,
+}
+
+/// The `adopt` of [`OnlyNew`]: what is there is left as it is.
+const ADOPT: Option<OnlyNew> = Some(OnlyNew { verb: "adopt", managed: false });
 
 /// [`write`] of a value already made; with `only_new`, only where the secret has no current version (what is there is
 /// left as it is: `false`). Under the secret's lock, so that replicas doing it at once write it once.
@@ -439,7 +473,7 @@ async fn write_made(
     (kind, plain, public, shown): Made,
     rule: Option<Rule>,
     who: &Who<'_>,
-    only_new: bool,
+    only_new: Option<OnlyNew>,
 ) -> Result<(Described, Option<Zeroizing<String>>, bool)> {
     // The shape alone: a sandbox makes the stores' values by their rules here too (the verbs check the rest first).
     valid_name(name)?;
@@ -454,7 +488,12 @@ async fn write_made(
             .await?;
         let before = rows(&mut tx, scope, owner, name).await?;
         let replaced = before.iter().find(|r| r.valid_until.is_none());
-        if only_new && replaced.is_some() {
+        if let (Some(only), Some(_)) = (only_new, replaced) {
+            if only.managed && !is_managed(&mut tx, scope, owner, name).await? {
+                return Err(Error::Conflict(format!(
+                    "{name} was set by a person: the vault makes it for a service only where there is none (remove it to have it made)"
+                )));
+            }
             tx.commit().await?;
             return described(scope, owner, name, &before).map(|d| (d, false)).ok_or_else(|| Error::Internal("a secret there is not".into()));
         }
@@ -511,12 +550,18 @@ async fn write_made(
         .execute(&mut *tx)
         .await
         .map_err(super::keys::raced)?;
-        let verb = if only_new {
-            "adopt"
-        } else if replaced.is_some() {
-            "rotate"
-        } else {
-            "set"
+        if only_new.is_some_and(|o| o.managed) {
+            sqlx::query("insert into vault.managed (scope, owner, name) values ($1, $2, $3) on conflict do nothing")
+                .bind(scope.id())
+                .bind(owner)
+                .bind(name)
+                .execute(&mut *tx)
+                .await?;
+        }
+        let verb = match only_new {
+            Some(o) => o.verb,
+            None if replaced.is_some() => "rotate",
+            None => "set",
         };
         audited(&mut tx, scope, owner, name, verb, who, version, false).await?;
         let after = rows(&mut tx, scope, owner, name).await?;
@@ -593,7 +638,7 @@ async fn list(k: &Kernel, scope: Scope, owner: Option<&str>) -> Result<Vec<Descr
 }
 
 /// Code's own changes and uses: nobody behind them but the owner.
-const CODE: Who<'static> = Who { actor: None, request: "", by: None };
+const CODE: Who<'static> = Who { actor: None, request: "", by: None, service: None };
 
 /// Sets `name` of `owner` in `scope` only where it has no current version, as [`Vault::adopt`] does, before the kernel
 /// has booted (keyed.rs: the old keys adopted into the vault as the kernel boots); whether this wrote it. Recorded as
@@ -601,8 +646,8 @@ const CODE: Who<'static> = Who { actor: None, request: "", by: None };
 pub(super) async fn adopt_at_boot(db: &Db, scope: Scope, owner: &str, name: &str, value: New, rule: Rule) -> Result<bool> {
     valid_name(name)?;
     let request = crate::db::Trace::operation().unwrap_or_default();
-    let who = Who { actor: None, request: &request, by: Some("old key") };
-    write_made(db, scope, owner, name, make(value)?, Some(rule), &who, true).await.map(|(_, _, wrote)| wrote)
+    let who = Who { actor: None, request: &request, by: Some("old key"), service: None };
+    write_made(db, scope, owner, name, make(value)?, Some(rule), &who, ADOPT).await.map(|(_, _, wrote)| wrote)
 }
 
 impl Vault {
@@ -622,8 +667,8 @@ impl Vault {
         let owner = self.bound(k)?;
         check_name(name)?;
         let request = crate::db::Trace::operation().unwrap_or_default();
-        let who = Who { actor: None, request: &request, by: Some(by) };
-        write_made(&k.db, scope, owner, name, make(value)?, Some(rule), &who, true).await.map(|(_, _, wrote)| wrote)
+        let who = Who { actor: None, request: &request, by: Some(by), service: None };
+        write_made(&k.db, scope, owner, name, make(value)?, Some(rule), &who, ADOPT).await.map(|(_, _, wrote)| wrote)
     }
 
     /// A new version of `name`, under its rule: what it signs from now on is signed with it, and the version before
@@ -817,6 +862,41 @@ impl Vault {
         .await
     }
 
+    /// [`Vault::carry`] with `name`'s version `version` (none: the current one), and the version carried: what a client
+    /// of a program that holds two versions at once sends while a rotation's overlap lasts (the version before, which a
+    /// program started before the rotation knows too), so that neither refuses the other until the program has started
+    /// again (docs/operations.md, "Files for the programs beside the server"). A version is one still kept.
+    pub async fn carry_at(
+        &self,
+        k: &Kernel,
+        scope: Scope,
+        name: &str,
+        url: &reqwest::Url,
+        how: &Carry,
+        version: Option<i32>,
+    ) -> Result<(i32, (String, Zeroizing<String>))> {
+        let owner = self.bound(k)?;
+        check_name(name)?;
+        let host = url.host_str().ok_or_else(|| Error::invalid("the address has no host"))?;
+        with_retry(|| async {
+            let mut tx = k.db.vault_tx(scope.tenant()).await?;
+            let rows = rows(&mut tx, scope, owner, name).await?;
+            let current = current(&rows, name)?;
+            let row = match version {
+                None => current,
+                Some(v) => rows.iter().find(|r| r.version == v).ok_or_else(|| Error::NotFound(format!("{name}, version {v}")))?,
+            };
+            let value = opened(&k.db, &mut tx, scope, owner, name, row).await?;
+            let text = std::str::from_utf8(&value).map_err(|_| Error::invalid(format!("{name} is not text: it goes on no request")))?;
+            let header = carried(&row.rule.hosts, host, how, text)?;
+            audited(&mut tx, scope, owner, name, "send", &CODE, row.version, true).await?;
+            used(&mut tx, scope, owner, name, current).await?;
+            tx.commit().await?;
+            Ok((row.version, header))
+        })
+        .await
+    }
+
     /// The platform's secret `name` of the installation, with its rule, as [`Vault::reveal`] gives it, before the
     /// kernel boots: what the server's start makes its mail sender and its audit sink with. Only the server's own handle
     /// ([`crate::HookRegistry::platform_vault`]) asks, of the registry that gave it out. `None`: the vault is not open
@@ -846,6 +926,169 @@ impl Vault {
             used(&mut tx, scope, owner, name, row).await?;
             tx.commit().await?;
             Ok(Some((value, row.rule.clone())))
+        })
+        .await
+    }
+}
+
+// Services: the programs beside the server whose files their owners render (crate::companion). A render is given its
+// owner's secrets of the installation's scope for those files, recorded as `render` with the service's name.
+
+/// How the current version of a secret came to be, as the installation's record of its vault says ([`Vault::origin`]):
+/// never its value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    /// What wrote it: `adopt` (copied from what something else made), `make` (made for a service), `set` or `rotate`.
+    pub verb: String,
+    /// What acted when no person did: `environment`, `operator`, the program that handed it over (`object store`), …
+    pub by: Option<String>,
+    /// The service it was made or rotated for.
+    pub service: Option<String>,
+}
+
+impl Vault {
+    /// How the current version of `name`, a secret of this handle's owner in the installation's scope, was written, as
+    /// the installation's record of its vault says; `None` where there is no current version, or no record of it.
+    pub async fn origin(&self, k: &Kernel, name: &str) -> Result<Option<Origin>> {
+        let owner = self.bound(k)?;
+        check_name(name)?;
+        let mut tx = k.db.vault_tx(None).await?;
+        let rows = rows(&mut tx, Scope::Installation, owner, name).await?;
+        let Some(current) = rows.iter().find(|r| r.valid_until.is_none()) else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let found: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "select action, details->>'by', details->>'service' from vault.event where owner = $1 and name = $2 \
+             and action in ('adopt', 'make', 'set', 'rotate') and details->>'version' = $3 order by id desc limit 1",
+        )
+        .bind(owner)
+        .bind(name)
+        .bind(current.version.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(found.map(|(verb, by, service)| Origin { verb, by, service }))
+    }
+
+    /// Marks `name`, a secret of this handle's owner at the installation's scope that is there already (something other
+    /// than the vault made it), as its owner's to manage, kept for the service `service` under `rule` (its value and
+    /// version as they are): from then on people's routes leave it to the owner, and `vault_rotate level:service` rotates
+    /// it under that rule. Under the secret's lock, so that renders at once mark it once; recorded as `rule` and `manage`,
+    /// naming the service, when it marks it. Nothing is made: not found where there is no current version. Whether it
+    /// marked it.
+    pub(crate) async fn keep_for(&self, k: &Kernel, name: &str, rule: Rule, service: &str) -> Result<bool> {
+        let owner = self.bound(k)?;
+        check_name(name)?;
+        rule.check()?;
+        let rule = serde_json::to_value(&rule).map_err(Error::internal)?;
+        let scope = Scope::Installation;
+        let request = crate::db::Trace::operation().unwrap_or_default();
+        let who = Who { actor: None, request: &request, by: None, service: Some(service) };
+        with_retry(|| async {
+            let mut tx = k.db.vault_tx(None).await?;
+            sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(format!("ferrum.vault.secret {}/{owner}/{name}", scope.id()))
+                .execute(&mut *tx)
+                .await?;
+            let version = current(&rows(&mut tx, scope, owner, name).await?, name)?.version;
+            let marked = sqlx::query("insert into vault.managed (scope, owner, name) values ($1, $2, $3) on conflict do nothing")
+                .bind(scope.id())
+                .bind(owner)
+                .bind(name)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected()
+                > 0;
+            if marked {
+                sqlx::query("update vault.secret set rule = $4 where scope = $1 and owner = $2 and name = $3 and valid_until is null")
+                    .bind(scope.id())
+                    .bind(owner)
+                    .bind(name)
+                    .bind(&rule)
+                    .execute(&mut *tx)
+                    .await?;
+                audited(&mut tx, scope, owner, name, "rule", &who, version, false).await?;
+                audited(&mut tx, scope, owner, name, "manage", &who, version, false).await?;
+            }
+            tx.commit().await?;
+            Ok(marked)
+        })
+        .await
+    }
+
+    /// Makes `name` of this handle's owner at the installation's scope for the service `service`, where it has none: a
+    /// random value of 32 bytes as text (43 characters of base64url) under `rule`, marked as its owner's to manage, in one
+    /// transaction under the secret's lock, so that renders and replicas at once make one. One a person set there (not so
+    /// marked) is refused. Recorded as `make`, naming the service. Whether it made one.
+    pub(crate) async fn make_for(&self, k: &Kernel, name: &str, rule: Rule, service: &str) -> Result<bool> {
+        let owner = self.bound(k)?;
+        check_name(name)?;
+        let request = crate::db::Trace::operation().unwrap_or_default();
+        let who = Who { actor: None, request: &request, by: None, service: Some(service) };
+        let made = OnlyNew { verb: "make", managed: true };
+        write_made(&k.db, Scope::Installation, owner, name, make(New::Random(32))?, Some(rule), &who, Some(made)).await.map(|(_, _, wrote)| wrote)
+    }
+
+    /// A new value of `name`, a secret the vault made for the service `service` (marked as its owner's to manage), for the
+    /// operator: of the same kind (a random value of 32 bytes, or an Ed25519 pair), its rule kept, so that the version
+    /// before still verifies, and is given to the service, for the rule's overlap. Recorded as `rotate` by `operator`,
+    /// naming the service. Refused for a secret the vault did not make (a person's), and not found when there is none.
+    pub(crate) async fn rotate_made(&self, k: &Kernel, name: &str, service: &str) -> Result<Described> {
+        let owner = self.bound(k)?;
+        check_name(name)?;
+        let scope = Scope::Installation;
+        let mut tx = k.db.vault_tx(None).await?;
+        let kind = described(scope, owner, name, &rows(&mut tx, scope, owner, name).await?).map(|d| d.kind);
+        let ours = is_managed(&mut tx, scope, owner, name).await?;
+        tx.commit().await?;
+        let new = match kind {
+            None => return Err(Error::NotFound(format!("{name} of {owner} (the service {service} has not been rendered yet)"))),
+            Some(_) if !ours => {
+                return Err(Error::Conflict(format!(
+                    "{name} is not a secret the vault keeps for the service {service}: render the service first, or change it where it was set"
+                )));
+            }
+            Some(Kind::Value) => New::Random(32),
+            Some(Kind::Ed25519) => New::Ed25519,
+        };
+        let request = crate::db::Trace::operation().unwrap_or_default();
+        let who = Who { actor: None, request: &request, by: Some("operator"), service: Some(service) };
+        let mut d = write(k, scope, owner, name, new, None, &who).await?.0;
+        d.managed_by = Some(owner.to_string());
+        Ok(d)
+    }
+
+    /// The values of this handle's secret `name` of the installation, for the files of the service `service`: the
+    /// current version, and with `previous` the one before it while its overlap lasts, newest first. Only where each
+    /// version's rule lets its owner read it (a secret that is only used never leaves the vault, into a file or
+    /// otherwise), never a plugin's. Each version given is recorded as `render`, naming the service, under the cap on uses.
+    pub(crate) async fn rendered(&self, k: &Kernel, name: &str, service: &str, previous: bool) -> Result<Vec<(i32, Zeroizing<Vec<u8>>)>> {
+        let owner = self.bound(k)?;
+        if owner.starts_with("plugin:") {
+            return Err(Error::Forbidden("a plugin's secrets are used, never revealed: the host adds them to its requests".into()));
+        }
+        check_name(name)?;
+        let scope = Scope::Installation;
+        let request = crate::db::Trace::operation().unwrap_or_default();
+        let who = Who { actor: None, request: &request, by: None, service: Some(service) };
+        with_retry(|| async {
+            let mut tx = k.db.vault_tx(None).await?;
+            let rows = rows(&mut tx, scope, owner, name).await?;
+            let current = current(&rows, name)?;
+            let mut out = Vec::new();
+            for row in rows.iter().filter(|r| r.version == current.version || (previous && r.valid_until.is_some())) {
+                if !row.rule.reveal {
+                    return Err(Error::Forbidden(format!("{name}'s rule keeps its value in the vault: it is used, never written to a file")));
+                }
+                out.push((row.version, opened(&k.db, &mut tx, scope, owner, name, row).await?));
+            }
+            for (version, _) in &out {
+                audited(&mut tx, scope, owner, name, "render", &who, *version, true).await?;
+            }
+            used(&mut tx, scope, owner, name, current).await?;
+            tx.commit().await?;
+            Ok(out)
         })
         .await
     }
@@ -1098,8 +1341,9 @@ fn may_manage(ctx: &Ctx, change: bool) -> Result<()> {
     }
 }
 
-/// The handle of an owner a person names: the platform, an app this server registered, or a plugin. Kept in here.
-fn of_owner(k: &Kernel, owner: &str) -> Result<Vault> {
+/// The handle of an owner a person names: the platform, an app this server registered, or a plugin. Kept in here (and
+/// given to a service of that owner's as it renders, companion.rs).
+pub(crate) fn of_owner(k: &Kernel, owner: &str) -> Result<Vault> {
     if owner == "platform" || owner.strip_prefix("plugin:").is_some_and(super::plugin_name_ok) {
         return Ok(Vault::kernel(owner));
     }
@@ -1133,7 +1377,7 @@ impl Kernel {
         may_manage(ctx, true)?;
         let v = of_owner(self, owner)?;
         not_managed(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name).await?;
-        let who = Who { actor: Some(ctx.user), request: &ctx.request_id, by: None };
+        let who = Who { actor: Some(ctx.user), request: &ctx.request_id, by: None, service: None };
         let (secret, shown) = write(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name, value, Some(rule), &who).await?;
         Ok(Changed { secret, shown })
     }
@@ -1143,7 +1387,7 @@ impl Kernel {
         may_manage(ctx, true)?;
         let v = of_owner(self, owner)?;
         not_managed(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name).await?;
-        let who = Who { actor: Some(ctx.user), request: &ctx.request_id, by: None };
+        let who = Who { actor: Some(ctx.user), request: &ctx.request_id, by: None, service: None };
         let (secret, shown) = write(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name, value, None, &who).await?;
         Ok(Changed { secret, shown })
     }
@@ -1171,7 +1415,15 @@ impl Kernel {
         may_manage(ctx, true)?;
         let v = of_owner(self, owner)?;
         not_managed(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name).await?;
-        set_rule(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name, rule, &Who { actor: Some(ctx.user), request: &ctx.request_id, by: None }).await
+        set_rule(
+            self,
+            Scope::Workspace(ctx.tenant),
+            v.bound(self)?,
+            name,
+            rule,
+            &Who { actor: Some(ctx.user), request: &ctx.request_id, by: None, service: None },
+        )
+        .await
     }
 
     /// Removes `owner`'s secret `name` from the workspace, for a person, as [`Kernel::vault_set`].
@@ -1179,7 +1431,8 @@ impl Kernel {
         may_manage(ctx, true)?;
         let v = of_owner(self, owner)?;
         not_managed(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name).await?;
-        remove(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name, &Who { actor: Some(ctx.user), request: &ctx.request_id, by: None }).await
+        remove(self, Scope::Workspace(ctx.tenant), v.bound(self)?, name, &Who { actor: Some(ctx.user), request: &ctx.request_id, by: None, service: None })
+            .await
     }
 }
 
@@ -1207,7 +1460,7 @@ impl Vault {
         let v = self.for_operator(k, owner)?;
         not_managed(k, Scope::Installation, v.bound(k)?, name).await?;
         let request = crate::db::Trace::operation().unwrap_or_default();
-        let who = Who { actor: None, request: &request, by: Some("operator") };
+        let who = Who { actor: None, request: &request, by: Some("operator"), service: None };
         let (secret, shown) = write(k, Scope::Installation, v.bound(k)?, name, value, Some(rule), &who).await?;
         Ok(Changed { secret, shown })
     }
@@ -1217,7 +1470,7 @@ impl Vault {
         let v = self.for_operator(k, owner)?;
         not_managed(k, Scope::Installation, v.bound(k)?, name).await?;
         let request = crate::db::Trace::operation().unwrap_or_default();
-        let who = Who { actor: None, request: &request, by: Some("operator") };
+        let who = Who { actor: None, request: &request, by: Some("operator"), service: None };
         let (secret, shown) = write(k, Scope::Installation, v.bound(k)?, name, value, None, &who).await?;
         Ok(Changed { secret, shown })
     }
@@ -1227,7 +1480,7 @@ impl Vault {
         let v = self.for_operator(k, owner)?;
         not_managed(k, Scope::Installation, v.bound(k)?, name).await?;
         let request = crate::db::Trace::operation().unwrap_or_default();
-        set_rule(k, Scope::Installation, v.bound(k)?, name, rule, &Who { actor: None, request: &request, by: Some("operator") }).await
+        set_rule(k, Scope::Installation, v.bound(k)?, name, rule, &Who { actor: None, request: &request, by: Some("operator"), service: None }).await
     }
 
     /// Removes `owner`'s secret `name` of the installation for the operator; whether there was one.
@@ -1235,7 +1488,7 @@ impl Vault {
         let v = self.for_operator(k, owner)?;
         not_managed(k, Scope::Installation, v.bound(k)?, name).await?;
         let request = crate::db::Trace::operation().unwrap_or_default();
-        remove(k, Scope::Installation, v.bound(k)?, name, &Who { actor: None, request: &request, by: Some("operator") }).await
+        remove(k, Scope::Installation, v.bound(k)?, name, &Who { actor: None, request: &request, by: Some("operator"), service: None }).await
     }
 }
 
@@ -1254,7 +1507,7 @@ pub(crate) async fn sandbox(k: &Kernel, from: Uuid, to: Uuid) -> Result<Value> {
         .fetch_all(&mut *tx)
         .await?;
     tx.commit().await?;
-    let who = Who { actor: None, request: "", by: Some("sandbox") };
+    let who = Who { actor: None, request: "", by: Some("sandbox"), service: None };
     let (mut kept, mut made, mut blank) = (0, 0, 0);
     for (owner, name) in names {
         let mut tx = k.db.vault_tx(Some(from)).await?;
@@ -1273,7 +1526,7 @@ pub(crate) async fn sandbox(k: &Kernel, from: Uuid, to: Uuid) -> Result<Value> {
             continue;
         };
         let keep = row.rule.sandbox == super::Sandbox::Keep;
-        write_made(&k.db, sandbox, &owner, &name, value, Some(row.rule.clone()), &who, true).await?;
+        write_made(&k.db, sandbox, &owner, &name, value, Some(row.rule.clone()), &who, ADOPT).await?;
         if keep { kept += 1 } else { made += 1 }
     }
     // What its app manages in the workspace it manages in the sandbox too, for each secret the sandbox has.

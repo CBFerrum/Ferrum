@@ -1,6 +1,8 @@
 {{- if .Values.metricsEngine.enabled }}
 {{- $n := printf "%s-metrics-engine" (include "ferrum.fullname" .) }}
 {{- $m := .Values.metricsEngine }}
+{{- $rendered := eq (include "ferrum.renders" (list . "metrics-engine" $m.files)) "true" }}
+{{- /* With its token rendered, its pod reaches the database as it starts, for the render alone. */}}
 # Metrics' engine for external sources, apart from the API so that a heavy query is bounded here.
 # Stateless; only the API may call it, with the token both hold, and it calls nothing.
 apiVersion: apps/v1
@@ -31,6 +33,10 @@ spec:
           labelSelector:
             matchLabels: {app.kubernetes.io/name: {{ $n }}}
       terminationGracePeriodSeconds: 30
+      {{- if $rendered }}
+      initContainers:
+        {{- include "ferrum.renderInit" (list . "metrics-engine") | nindent 8 }}
+      {{- end }}
       containers:
         - name: engine
           image: {{ include "ferrum.image" (list "metricsEngine.image" $m.image) }}
@@ -39,8 +45,13 @@ spec:
           env:
             - {name: FERRUM_METRICS_ENGINE_CONFIG, value: /etc/ferrum/engine.json}
             - {name: FERRUM_METRICS_ENGINE_ADDR, value: "0.0.0.0:5180"}
+            {{- if $rendered }}
+            # The vault's token, one line each: the current, and the one before while a rotation's overlap lasts.
+            - {name: FERRUM_METRICS_ENGINE_TOKEN_FILE, value: /run/companion/token}
+            {{- else }}
             - name: FERRUM_METRICS_ENGINE_TOKEN
               valueFrom: {secretKeyRef: {name: {{ $m.tokenSecret.name }}, key: {{ $m.tokenSecret.key }}}}
+            {{- end }}
           readinessProbe:
             httpGet: {path: /health, port: http}
             periodSeconds: 10
@@ -53,9 +64,15 @@ spec:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}
           volumeMounts:
+            {{- if $rendered }}
+            - {name: companion, mountPath: /run/companion, readOnly: true}
+            {{- end }}
             - {name: config, mountPath: /etc/ferrum, readOnly: true}
             - {name: datasets, mountPath: /data, readOnly: true}
       volumes:
+        {{- if $rendered }}
+        {{- include "ferrum.renderVolumes" . | nindent 8 }}
+        {{- end }}
         - name: config
           configMap: {name: {{ $m.configMap }}, items: [{key: engine.json, path: engine.json}]}
         - name: datasets
@@ -84,7 +101,16 @@ spec:
             {{- include "ferrum.serverPods" . | nindent 12 }}
       ports:
         - {port: 5180}
+  {{- if $rendered }}
+  # The render as the pod starts: the database, and the names that lead to it.
+  egress:
+    {{- include "ferrum.databaseEgress" . | nindent 4 }}
+    - ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+  {{- else }}
   egress: []
+  {{- end }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
