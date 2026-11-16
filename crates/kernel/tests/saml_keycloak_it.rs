@@ -403,8 +403,12 @@ async fn a_sign_in_through_keycloak() {
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     // Keycloak runs on this machine, over plain http: as a provider on the operator's own network.
-    let settings =
-        KernelSettings { secret_key: Some(SecretKey::new([6u8; 32])), sso_allow_private: true, public_url: Some(PUBLIC.into()), ..Default::default() };
+    let settings = KernelSettings {
+        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([6u8; 32])), vec![]),
+        sso_allow_private: true,
+        public_url: Some(PUBLIC.into()),
+        ..Default::default()
+    };
     let k = Kernel::boot(db, catalog, HookRegistry::default(), settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {

@@ -167,7 +167,7 @@ async fn scenario() {
     assert!(err.contains("must be unique and start with 'notes.'"), "{err}");
 
     let settings = KernelSettings {
-        secret_key: Some(SecretKey::new([7u8; 32])),
+        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]),
         webhooks_allow_private: true,
         public_url: Some("https://ferrum.test".into()),
         ..Default::default()

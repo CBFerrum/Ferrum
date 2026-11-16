@@ -201,7 +201,7 @@ async fn scenario() {
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let mut hooks = HookRegistry::default();
     hooks.add_job_handler(Arc::new(Scripted));
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), ..Default::default() };
+    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
     let k = Kernel::boot(db, catalog(), hooks, settings, None).await.expect("boot");
     let files = Arc::new(MemFiles::default());
     k.set_file_store(files.clone());

@@ -39,7 +39,12 @@ fn input(v: Value) -> SsoProviderInput {
 }
 
 fn settings() -> KernelSettings {
-    KernelSettings { secret_key: Some(SecretKey::new([5u8; 32])), sso_allow_private: true, public_url: Some(PUBLIC.into()), ..Default::default() }
+    KernelSettings {
+        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([5u8; 32])), vec![]),
+        sso_allow_private: true,
+        public_url: Some(PUBLIC.into()),
+        ..Default::default()
+    }
 }
 
 /// Where the browser lands after the provider's answer: its `state` and `code`.
@@ -152,10 +157,18 @@ async fn saml_single_sign_on() {
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    let settings =
-        KernelSettings { secret_key: Some(SecretKey::new([5u8; 32])), sso_allow_private: true, public_url: Some(PUBLIC.into()), ..Default::default() };
-    let settings_again =
-        KernelSettings { secret_key: Some(SecretKey::new([5u8; 32])), sso_allow_private: true, public_url: Some(PUBLIC.into()), ..Default::default() };
+    let settings = KernelSettings {
+        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([5u8; 32])), vec![]),
+        sso_allow_private: true,
+        public_url: Some(PUBLIC.into()),
+        ..Default::default()
+    };
+    let settings_again = KernelSettings {
+        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([5u8; 32])), vec![]),
+        sso_allow_private: true,
+        public_url: Some(PUBLIC.into()),
+        ..Default::default()
+    };
     let k = Kernel::boot(db, catalog, HookRegistry::default(), settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {

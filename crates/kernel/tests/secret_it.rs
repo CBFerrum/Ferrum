@@ -41,7 +41,9 @@ async fn kernel(key: Option<SecretKey>, reset: bool) -> Arc<Kernel> {
             .await
             .expect("reset");
     }
-    Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings { secret_key: key, ..Default::default() }, None).await.expect("boot")
+    Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings { old_key: ferrum_kernel::OldKey::configured(key, vec![]), ..Default::default() }, None)
+        .await
+        .expect("boot")
 }
 
 /// Through the reader apps used before each read its own with its vault handle: deprecated, still working in this release.
@@ -117,8 +119,10 @@ async fn secrets_are_write_only_sealed_and_bound() {
 
     // Rotation: a new key with the old one retired. Everything sealed moves, and keeps working.
     let new_key = SecretKey::new([9u8; 32]);
-    let settings =
-        |secret_key: Option<SecretKey>, retired_secret_keys: Vec<SecretKey>| KernelSettings { secret_key, retired_secret_keys, ..Default::default() };
+    let settings = |current: Option<SecretKey>, retired: Vec<SecretKey>| KernelSettings {
+        old_key: ferrum_kernel::OldKey::configured(current, retired),
+        ..Default::default()
+    };
     let boot = |s: KernelSettings| async move {
         let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
         let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");

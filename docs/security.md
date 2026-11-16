@@ -47,7 +47,10 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   processes' payloads) uses keys it derives from its own key in the vault, one per use, a workspace's where the thing is
   a workspace's. A new installation has no old key (`FERRUM_SECRET_KEY`) at all; one that had it keeps it adopted in
   the vault, used and never shown, so what it made is still checked and opened after the variable is gone
-  ([Retiring the old key](operations.md#retiring-the-old-key)). With the vault closed, each of these is refused.
+  ([Retiring the old key](operations.md#retiring-the-old-key)). With the vault closed, each of these is refused. The
+  old key is the kernel's alone: no app is given it (its settings' field gives nothing back), and an app opens or checks
+  what it once made with it only through its own handle, for contexts of its own (`open_old`, `seal_old`,
+  `old_fingerprints`).
   Plugins' settings are sealed under each plugin's own key, never stored plain.
 * Keys form a hierarchy: a slot's key, the installation key, a workspace key, an owner key (`platform`, an app, a
   plugin), the secret. Every key below a slot is random, versioned and stored only wrapped: a dump holds no key that

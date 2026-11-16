@@ -107,7 +107,8 @@ async fn scenario() {
     let board = Arc::new(Board::default());
     let mut hooks = HookRegistry::default();
     hooks.register("Change", board.clone());
-    let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([5u8; 32])), ..Default::default() };
+    let settings =
+        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([5u8; 32])), vec![]), ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {
@@ -275,8 +276,10 @@ async fn scenario() {
             let mut hooks = HookRegistry::default();
             hooks.register("Change", board);
             let settings = KernelSettings {
-                secret_key: Some(ferrum_kernel::secret::SecretKey::new(current)),
-                retired_secret_keys: retired.into_iter().map(ferrum_kernel::secret::SecretKey::new).collect(),
+                old_key: ferrum_kernel::OldKey::configured(
+                    Some(ferrum_kernel::secret::SecretKey::new(current)),
+                    retired.into_iter().map(ferrum_kernel::secret::SecretKey::new).collect(),
+                ),
                 ..Default::default()
             };
             Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, settings, None).await.expect("boot")

@@ -41,7 +41,8 @@ async fn scenario() {
     let db = Db::connect(DbConfig { url, max_connections: 8, ..Default::default() }).await.expect("connect");
     common::reset(&db.pool).await;
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages/core")).expect("core");
-    let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
+    let settings =
+        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
     let acme = k
         .create_tenant(NewTenant {
@@ -79,7 +80,7 @@ async fn connector_return(acme: uuid::Uuid) {
     let db = Db::connect(DbConfig { url, max_connections: 4, ..Default::default() }).await.expect("connect");
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages/core")).expect("core");
     let settings = KernelSettings {
-        secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])),
+        old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), vec![]),
         public_url: Some("https://erp.acme.test".into()),
         connection_hosts: vec!["127.0.0.1".into()],
         ..Default::default()

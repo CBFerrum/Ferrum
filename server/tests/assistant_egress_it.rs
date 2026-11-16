@@ -156,7 +156,7 @@ async fn scenario() {
         ferrum_meta::catalog::load_package_dir(&dir.join("cases")).unwrap(),
     ];
     let _ = std::fs::remove_dir_all(&dir);
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), ..Default::default() };
+    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(packages).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {

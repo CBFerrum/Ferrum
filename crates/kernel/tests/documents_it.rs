@@ -194,8 +194,11 @@ async fn scenario() {
         assert!(err.contains(says), "{says}: {err}");
     }
 
-    let settings =
-        KernelSettings { pdf_url: Some(fake_pdf_renderer().await), secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
+    let settings = KernelSettings {
+        pdf_url: Some(fake_pdf_renderer().await),
+        old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), vec![]),
+        ..Default::default()
+    };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, letters]).unwrap(), HookRegistry::default(), settings, Some(Arc::new(Captured)))
         .await
         .expect("boot");

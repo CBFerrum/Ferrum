@@ -162,20 +162,15 @@ pub struct KernelSettings {
     pub ctx_ttl: Duration,
     /// Processed outbox events and delivered webhooks are kept this long.
     pub event_retention_days: i32,
-    /// The old master key (`FERRUM_SECRET_KEY`), as the server configures it. Deprecated for apps: what it sealed is
-    /// each owner's in the vault (docs/plan/stateless.md, D5), and an app reads its own with its vault handle. Once the
-    /// kernel has booted with the vault open, it holds what apps that still read it are given: the environment's key,
-    /// else the one adopted into the vault, else (an installation that never had one) a key of the platform's own; the
-    /// kernel's own code uses the vault's keys. It stops being public in the next release; scripts/secret_paths.py lists
-    /// the apps that still read it.
-    pub secret_key: Option<secret::SecretKey>,
+    /// The old master key (`FERRUM_SECRET_KEY`) and the keys it retired (`FERRUM_RETIRED_SECRET_KEYS`), as the server
+    /// configures them: the kernel's alone ([`OldKey`] gives neither back). What it sealed is each owner's in the vault
+    /// (docs/plan/stateless.md, D5); an app opens or checks what it made with it through its own handle
+    /// (`Vault::open_old`, `seal_old`, `old_fingerprints`).
+    pub old_key: OldKey,
     /// The ClamAV daemon uploads pass through (`host:port`); without one they are stored unscanned.
     pub clamd: Option<String>,
     /// The scanner's `StreamMaxLength`: files past it are stored unscanned.
     pub clamd_max_bytes: u64,
-    /// Keys being rotated out: values they sealed still open, until [`Kernel::reseal_secrets`] has
-    /// moved them to `secret_key`.
-    pub retired_secret_keys: Vec<secret::SecretKey>,
     /// Base URL of a Gotenberg-compatible PDF renderer; without it there are no PDFs.
     pub pdf_url: Option<String>,
     /// The web app's address as people reach it (`PUBLIC_URL`), for links in mail.
@@ -229,6 +224,25 @@ pub struct KernelSettings {
     pub dns_resolvers: Vec<std::net::SocketAddr>,
 }
 
+/// The old master key and the keys it retired, handed to the kernel and read by nothing else: no function gives a key
+/// back, so a kernel's settings are no way to the old key for an app (docs/plan/stateless.md, D5).
+#[derive(Debug, Clone, Default)]
+pub struct OldKey {
+    pub(crate) current: Option<secret::SecretKey>,
+    /// Keys being rotated out: values they sealed still open, until [`Kernel::reseal_secrets`] has moved them to the
+    /// current key.
+    pub(crate) retired: Vec<secret::SecretKey>,
+}
+
+impl OldKey {
+    /// The old key and the keys it retired, as an installation from before the vault configures them: what the server
+    /// reads from `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS`, and what a test gives a kernel that is to start
+    /// as such an installation.
+    pub fn configured(current: Option<secret::SecretKey>, retired: Vec<secret::SecretKey>) -> Self {
+        OldKey { current, retired }
+    }
+}
+
 impl KernelSettings {
     /// Where other services call back (an OAuth connector's return address, the addresses they pull
     /// files from): the hooks host when it is set, else the public address; none without either.
@@ -259,10 +273,9 @@ impl Default for KernelSettings {
             sso_allow_private: false,
             ctx_ttl: Duration::from_secs(30),
             event_retention_days: 30,
-            secret_key: None,
+            old_key: OldKey::default(),
             clamd: None,
             clamd_max_bytes: 25 << 20,
-            retired_secret_keys: Vec::new(),
             pdf_url: None,
             public_url: None,
             push_services: webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect(),
@@ -340,7 +353,7 @@ pub struct Kernel {
     /// Every old key: the environment's (current, then retired), then those adopted into the vault (crate::vault::keyed).
     pub(crate) old_keys: Vec<secret::SecretKey>,
     /// The environment's old key (`FERRUM_SECRET_KEY`): what is still sealed with it beside the vault, for the previous
-    /// build. `settings.secret_key` is what apps are given (crate::vault::keyed::at_boot).
+    /// build.
     pub(crate) env_key: Option<secret::SecretKey>,
     /// What this process knows of the restore marker (recovery.rs).
     pub(crate) marker: recovery::Marker,
@@ -478,10 +491,8 @@ impl Kernel {
         }
         // The vault, when it could not be opened before its tables were there (crate::vault::open).
         vault::finish(&db).await?;
-        // The old key's end (crate::vault::keyed): each key the environment configures adopted into the vault once, and
-        // what the apps that still read `secret_key` are given once it is gone from the environment.
+        // The old key's end (crate::vault::keyed): each key the environment configures adopted into the vault once.
         let old = vault::at_boot(&db, &settings).await?;
-        let settings = KernelSettings { secret_key: old.for_apps.clone(), ..settings };
         if booted.guest.is_some() || !settings.migrate_at_start {
             ddl::words(&full)?;
         }

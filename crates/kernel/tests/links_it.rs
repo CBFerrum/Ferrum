@@ -162,7 +162,7 @@ async fn scenario() {
         db,
         catalog(),
         HookRegistry::default(),
-        KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([42u8; 32])), ..Default::default() },
+        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([42u8; 32])), vec![]), ..Default::default() },
         None,
     )
     .await

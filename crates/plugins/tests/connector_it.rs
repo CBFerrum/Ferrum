@@ -105,7 +105,7 @@ async fn scenario() {
     let mut hooks = HookRegistry::default();
     hooks.add_event_sink(Arc::new(PluginEvents(host.clone())));
     hooks.set_connector_source(Arc::new(PluginConnectors(host.clone())));
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), ..Default::default() };
+    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([7u8; 32])), vec![]), ..Default::default() };
     let k = Kernel::boot(db, catalog(), hooks, settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {

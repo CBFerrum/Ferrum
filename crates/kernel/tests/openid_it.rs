@@ -231,7 +231,10 @@ async fn installation(url: &str, key: &ferrum_kernel::secret::SecretKey, files: 
         h.openid_companion("forge", Arc::new(Forge));
     });
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    let k = Kernel::boot(db, catalog, hooks, KernelSettings { secret_key: Some(key.clone()), ..Default::default() }, None).await.expect("boot");
+    let k =
+        Kernel::boot(db, catalog, hooks, KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(key.clone()), vec![]), ..Default::default() }, None)
+            .await
+            .expect("boot");
     k.set_file_store(Arc::new(DirFiles(files.to_path_buf())));
     k.ensure_directory().await.unwrap();
     (k, forge.unwrap())

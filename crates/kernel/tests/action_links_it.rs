@@ -117,7 +117,7 @@ async fn scenario() {
     let db = Db::connect(DbConfig { url, max_connections: 12, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let settings = KernelSettings {
-        secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])),
+        old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), vec![]),
         public_url: Some("https://ferrum.test".into()),
         ..Default::default()
     };

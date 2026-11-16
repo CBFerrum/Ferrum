@@ -87,9 +87,9 @@ transaction: a secret field written there first has them made on the vault's own
 on another connection before the caller commits never waits on it (an app's `ready()` that made its keys first on a
 connection of its own is not needed).
 
-**What it made with the old key (R1 only).** An app that sealed or keyed things of its own with the old key
-(`settings.secret_key`, deprecated) keeps them working through its handle until they lapse, with no key in its hands and
-nothing wider. Each names a context of the app's own: its id, then one of ` -.:/|`, then more (`cloud-dns-key`,
+**What it made with the old key (R1 only).** The old key is the kernel's alone: `KernelSettings::old_key` holds it and
+gives nothing back. An app that sealed or keyed things of its own with it (through `settings.secret_key`, public until
+platform 0.3.x) keeps them working through its handle until they lapse, with no key in its hands and nothing wider. Each names a context of the app's own: its id, then one of ` -.:/|`, then more (`cloud-dns-key`,
 `helpdesk mail token`, `pos snapshot`); not one that another app's longer id also begins (`cloud-ops-…` is `cloud-ops`'s,
 not `cloud`'s), not one that begins with a workspace's id, and never for an app whose id is a word the platform's own
 labels begin with (`message`, `connection`, `ferrum`, …). Anything else is refused. They work from the copies the vault
@@ -102,12 +102,15 @@ legacy_key`, and they go in R2 with the key:
 | `seal_old(k, context, plain)` | `plain` sealed with the old key for the column the app's previous release reads, while the key is in the environment; `None` once it is gone |
 | `old_fingerprints(k, context, data)` | `data`'s fingerprint under each old key, as `SecretKey::fingerprint` made it: to check what the app issued, never to issue anything new |
 
-What each compiled-in app does in its repository: Commerce asks `Kernel::seals_secret_values()` in place of whether the
-old key is set (a message's secret values are sealed with the vault now); Helpdesk checks the mail tokens 0.11 issued with
-`old_fingerprints` (`helpdesk mail token`, `helpdesk mail token hash`); POS signs its snapshots with a key it derives
-(`derive`), the server never checks their old signatures, and a till comparing one sees it change once; Cloud opens and
-writes what it sealed with `open_old` and `seal_old` (its contexts begin `cloud-`). Until each has, the old key's field
-stays public: apps that still read it are given the same key once it is gone from the environment.
+What the apps that read the key did in their repositories: Commerce asks `Kernel::seals_secret_values()` in place of
+whether the old key is set (a message's secret values are sealed with the vault now, 0.11.1); Helpdesk checks the mail
+tokens 0.11 issued with `old_fingerprints` (`helpdesk mail token`, `helpdesk mail token hash`, 0.12.1); POS signs its
+snapshots with a key it derives (`derive`, 0.7.5), the server never checks their old signatures, and a till comparing one
+sees it change once; Cloud opens and writes what it sealed with `open_old` and `seal_old` (its contexts begin `cloud-`).
+
+**A test with the old key.** A suite that boots a kernel as an installation from before the vault, with an old key (and
+the keys it retired), gives it so: `KernelSettings { old_key: OldKey::configured(Some(key), vec![]), ..Default::default() }`.
+Nothing reads it back; what it sealed is opened by the kernel, and by the app through the calls above.
 
 ## Files an app keeps for its own work
 

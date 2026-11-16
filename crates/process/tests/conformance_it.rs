@@ -214,7 +214,8 @@ async fn scenario() {
     let mut hooks = HookRegistry::default();
     let platform = hooks.platform_vault();
     hooks.add_event_sink(Arc::new(Dispatch::new(client.clone(), settings.queue.clone()).continuing_after(1)));
-    let settings_k = KernelSettings { process_runtime: true, secret_key: Some(SecretKey::new([9u8; 32])), ..Default::default() };
+    let settings_k =
+        KernelSettings { process_runtime: true, old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new([9u8; 32])), vec![]), ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, settings_k, None).await.expect("boot");
     keys.ready(&k, platform);
     let worker = spawn(k.clone(), settings.clone()).await.expect("worker");

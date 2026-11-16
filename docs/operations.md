@@ -1689,9 +1689,10 @@ What `ferrum task legacy_key` (and the doctor's `legacy_key` finding) says at ea
 | The variable removed | `configured: false`; the ids still `adopted` | the key is gone; what it made is checked with the vault's copy |
 | A new installation | `configured: false`, nothing adopted | the key is not set, and never was |
 
-Apps compiled in that read the old key themselves (`settings.secret_key`, deprecated: the list comes with the build) are
-given the same key once it is gone from the environment, from the vault's copy, so nothing they sealed changes; on an
-installation that never had one, a key of the platform's own. Each moves onto its own vault handle in its repository.
+No app reads the old key itself: it is the kernel's alone. What an app sealed or keyed with it before (Cloud's, Helpdesk's
+mail tokens) the app opens and checks through its own vault handle, with the vault's copies once the key is gone from the
+environment (docs/app-contract.md, *The vault*). The previous build's apps that still read it are given the key noted as
+the environment's last, from the vault's copy, so a rollback changes nothing they sealed.
 
 When the vault's keys make what a key made before: links and addresses made before a rotation of the platform's key
 still check (every version that made one is kept); a receipt's digest and a connector's fingerprint are made with the

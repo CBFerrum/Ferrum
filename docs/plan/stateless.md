@@ -228,10 +228,12 @@ A new installation needs no `FERRUM_SECRET_KEY`, and one that has it takes it ou
   (`legacy.key.<id>`, used, never revealed, its name refused to the verbs), written at the first start with the vault open
   under the secret's lock, so replicas starting together write it once. Whatever the old key sealed or keyed is opened
   and checked with these copies once the environment no longer has it.
-- **Apps.** `settings.secret_key` stays public through R1 (apps compiled in at their pinned revisions read it): it holds
-  the environment's key, else the one it last had (adopted), else a key of the platform's own. An app moves onto its
-  own handle; what it sealed or keyed with the old key itself it keeps through the R1-only calls `open_old`, `seal_old`
-  and `old_fingerprints`, for contexts of its own (docs/app-contract.md, *The vault*).
+- **Apps.** The old key is the kernel's alone since the apps pinned on 16 November stopped reading it:
+  `KernelSettings::old_key` (an `OldKey`, given with `OldKey::configured(current, retired)`) gives nothing back. Two
+  private fields would have refused every `KernelSettings { …, ..Default::default() }` outside the kernel (Rust refuses
+  a functional update past a field the caller cannot see), so it is one public field of a type that hides the key. What
+  an app sealed or keyed with the old key itself it keeps through the R1-only calls `open_old`, `seal_old` and
+  `old_fingerprints`, for contexts of its own (docs/app-contract.md, *The vault*).
 - **Plugins' settings** are sealed under each plugin's own key in the workspace's vault, beside the old key while it is
   configured; the move takes those from before (sealed with the old key, or plain). Never stored plain.
 - **Production** no longer requires the key where the vault opens; development with the vault open no longer derives
