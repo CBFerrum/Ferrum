@@ -184,11 +184,11 @@ templates, CI workflow templates and the developer guide.
 
 * Each native app repository holds a Rust crate (`ferrum-app-<id>`) and its `packages/`. The crate
   depends on the platform crates (`ferrum-kernel`, `ferrum-meta`, `ferrum-domain`; an app that builds
-  on ERP's documents also on `ferrum-app-erp`, erp-repo.md) by git tag and
+  on ERP's documents also on `ferrum-app-erp`, erp-repo.md) by git, `branch = "main"` (the commit is the lock's), and
   embeds its packages at compile time, exposing one entry point (manifest, embedded package files,
   hooks, reports, endpoints, upkeep).
 * The Ferrum server includes official native apps as cargo features pointing at those
-  repositories (pinned tags), with `[patch]` unifying the platform crates; a build without an app
+  repositories (`branch = "main"` in `server/Cargo.toml`; `Cargo.lock` pins each to a commit), with `[patch]` unifying the platform crates; a build without an app
   refuses to start while that app's packages are in use.
 * Each app's CI tests against the platform version it targets; the platform's CI builds the
   official image with every official app except Control (`ferrum-app-control`, a hosting business's fleet
