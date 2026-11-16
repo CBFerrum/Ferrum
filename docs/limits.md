@@ -256,7 +256,7 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 ## Apps
 
 - **POS register** (`/pos/`): sells offline from the register's price book, priced on the device with
-  the server's own engine (`@ferrum/calc`). Sales wait on the device and the server prices each again
+  ERP's pricing code built as WebAssembly (POS's `ui/src/lib/pricing.ts`), the same code the server prices with. Sales wait on the device and the server prices each again
   when it arrives; one whose payments no longer cover it waits for a person. Stock is not reserved
   for an offline till, so two tills can sell the last item. No customer display, cash drawer or card
   terminal integration; receipts print through the browser. Closing a session uses the POS Closing

@@ -603,12 +603,13 @@ docs/app-contract.md, "Declaring a service").
   stays the default, and a new installation starts once without the file.
 - **Deploy.** Chart and `deploy/k8s`: Metrics' engine, the one bundled program in the release's namespace that takes a
   secret of ours (`metricsEngine.files`, the component `metrics-engine-files`); `environment: minimal` implies it only
-  for the services listed in `ferrum.declaredServices`, empty today. Literally, minimal would have stopped every minimal
-  install with the engine on: the pinned Metrics declares no service, so the init container would fail. The online
+  for the services listed in `ferrum.declaredServices` (`metrics-engine`, which the pinned Metrics 0.9.0 declares).
+  Literally, minimal would have stopped every minimal install with the engine on while the pinned Metrics declared no
+  service (before 0.9.0), so the init container would fail. The online
   editor is left as it is: its pod runs in a namespace of its own at the `baseline` level, which must not hold the
   database's address, and its proof key is its own. The browser editors and the PDF renderer take no secret of ours.
 - **The proof.** `crates/kernel/tests/companions_it.rs`: a service of settings, a meeting server declared in the test as
-  Comms is to declare it, two replicas rendering at once (one `make`), the refusals, the cap, a rotation, a closed vault,
+  Comms 0.23.0 declares it, two replicas rendering at once (one `make`), the refusals, the cap, a rotation, a closed vault,
   a clash, and a handed-over key (refused where nobody or a person gave it, kept once by two replicas, rotated);
   LiveKit 1.13.11 started on the written file and called with tokens the vault signs, both versions let in during the
   overlap and the one before refused after it. `scripts/companions_rehearsal.sh` (`scripts/local_ci.sh companions`):

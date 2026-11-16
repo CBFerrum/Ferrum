@@ -377,8 +377,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   are made plain by the one guard the platform's CSV uses.
 
 **Availability**
-* Rate limits held in the database (sign-in, public endpoints, mail) work across replicas and
-  fail open if the database is briefly unreachable. Every client address has a request budget too
+* Rate limits held in the database (sign-in, public endpoints, mail) work across replicas. The server's own limiters
+  fall back to the replica's own count if the database is briefly unreachable (server/src/state.rs); the limit an
+  app asks for (`Kernel::rate_limit`) fails closed instead, refusing the request with the database's error. Every client address has a request budget too
   (6000 a minute in a pool of replicas by default, each replica allowing its share), taken from the entry `FERRUM_PROXY_HOPS` from the
   right of `X-Forwarded-For`: what a client writes there itself is never counted as its address.
 * Every user has a request budget (3000 a minute in a pool of replicas by default, across all their
@@ -389,9 +390,12 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 
 **Browser**
 * The web app's Content Security Policy allows scripts only from its own bundle; responses carry
-  `X-Content-Type-Options: nosniff`, a referrer policy and same-origin framing. Session tokens live
-  in session storage and travel in the `Authorization` header (no cookies, so no cross-site request
-  forgery).
+  `X-Content-Type-Options: nosniff`, a referrer policy and same-origin framing. A browser's session
+  travels in the `__Host-ferrum` cookie (`ferrum_session` on a plain-http development server): `HttpOnly`,
+  `SameSite=Lax`, `Secure`, `Path=/` (server/src/shell.rs); other clients send a token in the
+  `Authorization` header. Against cross-site request forgery, a request the cookie authenticates may
+  change something only when `Sec-Fetch-Site` says `same-origin` (`same-site` is refused: sibling
+  workspace hosts are one site), or, without that header, when `Origin` names this host (`may_change`).
 * Notifications on devices (Web Push, [operations](operations.md#notifications-on-devices-web-push)):
   each message is encrypted for the one device (RFC 8291), so the push service carries what it
   cannot read, and signed with the server's VAPID key, sealed with the secret key. A device's

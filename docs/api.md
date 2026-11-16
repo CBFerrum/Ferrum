@@ -521,7 +521,8 @@ that is not the protocol. Exports: Drive's `GET /api/app/drive/files/{id}/conten
 Apps add HTTP endpoints under `/api/app/{package}/{path}` (signed in, any method) and
 `/api/site/{tenant}/{package}/{path}` (public pages, webhooks; rate-limited per IP, 300/min). Each
 app documents its own in `packages/<package>/README.md` of its repository. Request bodies are
-limited per app (1 MB unless the app allows more, at most 32 MB). `x-ferrum-site-api` and
+limited per app and route (1 MB unless the app allows more, `Site::max_body_for`; at most 1 GiB,
+`server/src/controllers/sites.rs`). `x-ferrum-site-api` and
 `x-ferrum-site-origin` never reach an app from the caller (see public sites below).
 
 The portal's endpoints, for whoever signed in (portal people included), answering by the address
