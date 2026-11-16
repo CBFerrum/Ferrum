@@ -213,8 +213,9 @@ impl Vault {
         self.given(k)
     }
 
-    /// The owner, once `k` has checked that it gave this handle out, the vault open or not.
-    fn given(&self, k: &Kernel) -> Result<&str> {
+    /// The owner, once `k` has checked that it gave this handle out, the vault open or not: how an app proves which app
+    /// it is (`Kernel::call_tx`).
+    pub(crate) fn given(&self, k: &Kernel) -> Result<&str> {
         let ok = match &self.owner {
             Owner::App(id) => self.mint != 0 && k.hooks.vault_mint(id) == Some(self.mint),
             Owner::Kernel(o) => self.mint == 0 && (&**o == "platform" || o.strip_prefix("plugin:").is_some_and(plugin_name_ok)),
