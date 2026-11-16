@@ -13,7 +13,7 @@
 //! * the server's start-up writes: the upgrade steps' marker (`upgrades_done` names this build's steps, and the newer
 //!   build's check then fails), compiled apps recorded at this build's versions (`ensure_native`), interfaces
 //!   registered for its versions (a fixed version such as the shell's `1.0.0` would then serve the older files to
-//!   every server), and customizations' baselines taken from its older packages. They run under [`Kernel::hold_start`];
+//!   every server). They run under [`Kernel::hold_start`];
 //! * take work a newer build wrote: events and jobs carry the date of the build that wrote them (`build_date`), and
 //!   a server takes only those no newer than itself, so unknown topics and job kinds wait for a newer replica instead
 //!   of being dead-lettered, failed or marked done;

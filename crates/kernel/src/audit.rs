@@ -188,57 +188,6 @@ async fn insert(
     Ok(())
 }
 
-/// The category of an event written before events carried one (or by a build from before): told apart by name.
-/// Events written since carry the category of where they were written ([`record`], [`record_admin`]).
-pub const ADMINISTRATION: &[&str] = &[
-    "User",
-    "UserSession",
-    "Tenant",
-    "Workspace",
-    "WorkspaceDomain",
-    "Passkey",
-    "SsoProvider",
-    "ScimGroup",
-    "Role",
-    "SupportGrant",
-    "ApiKey",
-    "Webhook",
-    "WebhookDelivery",
-    "OutboxEvent",
-    "Plugin",
-    "App",
-    "ServiceApp",
-    "Pack",
-    "Platform",
-    "Site",
-    "Connection",
-    "Device",
-    "LegalHold",
-    "PersonalData",
-    "RetentionRule",
-    "MessageChannel",
-    "MessageTemplate",
-    "DocumentTemplate",
-    "LogicRun",
-    "LogicDraft",
-    "LogicTask",
-    "LogicRelease",
-    "Backfill",
-];
-
-/// An event's category by its entity's name alone: only for events that do not carry one.
-pub fn category(entity: &str) -> &'static str {
-    if entity == crate::gate::SIGN_IN {
-        "sign_in"
-    } else if entity == ACCESS_ENTITY {
-        ACCESS
-    } else if ADMINISTRATION.contains(&entity) {
-        "administration"
-    } else {
-        "records"
-    }
-}
-
 /// The columns [`event_json`] reads, of `audit_event e`.
 pub const EVENT_COLUMNS: &str = "e.tenant_id, e.id, e.at, e.actor, e.entity, e.record_id, e.action, e.diff, e.request_id, e.hash, e.category";
 
@@ -249,7 +198,7 @@ pub type EventRow = (Uuid, i64, chrono::DateTime<Utc>, Option<Uuid>, String, Uui
 pub fn event_json(r: &EventRow) -> Value {
     let (tenant, id, at, actor, entity, record, action, diff, request_id, hash, kind) = r;
     json!({
-        "id": id.to_string(), "workspace": tenant, "at": at, "category": kind.as_deref().unwrap_or_else(|| category(entity)), "entity": entity, "record": record, "action": action,
+        "id": id.to_string(), "workspace": tenant, "at": at, "category": kind, "entity": entity, "record": record, "action": action,
         "actor": actor, "request_id": request_id.as_deref().filter(|r| !r.is_empty()), "details": diff, "hash": hex::encode(hash),
     })
 }
@@ -261,25 +210,18 @@ impl crate::Kernel {
         if !ctx.is_admin {
             return Err(Error::Forbidden("administrator access required".into()));
         }
-        let admin: Vec<String> = ADMINISTRATION.iter().map(|e| e.to_string()).collect();
-        // The category an event carries; one written before events carried one, by its entity's name.
-        let filter = match category {
-            None => "true",
-            Some("sign_in") => "coalesce(e.category, case when e.entity = 'SignIn' then 'sign_in' end) = 'sign_in'",
-            Some("administration") => "coalesce(e.category, case when e.entity = any($4) then 'administration' end) = 'administration'",
-            Some("records") => "coalesce(e.category, case when e.entity <> 'SignIn' and not e.entity = any($4) then 'records' end) = 'records'",
-            // Only ever written with its category.
-            Some("access") => "e.category = 'access'",
-            Some(_) => return Err(Error::field("category", "sign_in, administration, records or access")),
-        };
+        if category.is_some_and(|c| ![SIGN_IN, ADMIN, RECORDS, ACCESS].contains(&c)) {
+            return Err(Error::field("category", "sign_in, administration, records or access"));
+        }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<EventRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {EVENT_COLUMNS} from audit_event e where e.tenant_id = $1 and ($2::bigint is null or e.id < $2) and {filter} order by e.id desc limit $3"
+            "select {EVENT_COLUMNS} from audit_event e where e.tenant_id = $1 and ($2::bigint is null or e.id < $2) \
+             and ($4::text is null or e.category = $4) order by e.id desc limit $3"
         )))
         .bind(ctx.tenant)
         .bind(before)
         .bind(limit.clamp(1, 500))
-        .bind(&admin)
+        .bind(category)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;

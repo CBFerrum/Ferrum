@@ -813,7 +813,7 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   (`server/src/appmgr.rs`). Leases on events and jobs are rows, not locks.
 * **What a guest does not do.** It does not migrate, does not sync the schema (nor make an app with packages
   available), and skips the start-up writes that would put its older things back: the one-time upgrade steps and
-  their record, apps recorded at its versions, interfaces registered for them, customizations' baselines. It serves
+  their record, apps recorded at its versions, interfaces registered for them. It serves
   requests on everything it knows, and runs the background work, but takes no event or job a newer build wrote (each
   says which build wrote it): those wait for a newer replica, never failed or dropped. A scheduled automation or a
   service target it cannot read is left as it is. After a full rollback only the newer build's own events and jobs
@@ -2838,9 +2838,8 @@ webhook is, through the outbound guard. A webhook of `*` and an app's webhooks n
 
 `id` is unique across the installation and never reused. `category` is `sign_in`, `administration` (the
 platform's own changes: people, roles, settings, keys, apps, connections and the like), `records` (changes to a
-record of a packaged or a workspace's own entity) or `access` (reads of marked entities, "Recording who read what"), decided by where the event is written, not by its entity's name;
-events written before this release are told apart by name. `entity`
-and `record` say what it is about, `action` what happened, `actor` who did it (none for the system), `details` what
+record of a packaged or a workspace's own entity) or `access` (reads of marked entities, "Recording who read what"), decided by where the event is written, not by its entity's name.
+`entity` and `record` say what it is about, `action` what happened, `actor` who did it (none for the system), `details` what
 changed, and `hash` is the event's place in the record's hash chain. **Personal data:** `actor` and `record` can
 name people; `details` holds the values that changed, which can be anyone's data, and for sign-ins the address and
 browser. An erasure blanks values in the trail here, not in a copy already sent: the receiver's own retention and
@@ -4154,8 +4153,7 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
   the account at `/store/`, `/admin/`, `/account/`, records at `/data/` (an app without an
   interface of its own at `/data/{app}/`, Customize at `/data/customize/`). Today's web app has
   left: its addresses (`/app/…`, in bookmarks and links in mail) lead to their new homes, and its
-  offline worker removes itself. The `shell_v2` setting no longer matters; it is kept for going
-  back to the release before, which still had today's web app.
+  offline worker removes itself.
 * **Comms, Drive and Docs** have interfaces of their own: Mail,
   Chat, Calendar and Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`; Drive at `/drive/` with
   Sheets, Slides and PDF; Docs at `/docs/`. Each app's crate carries its interface, registered at

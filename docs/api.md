@@ -1207,8 +1207,7 @@ Customizations and upgrades: `GET /api/customize/conflicts` → `{conflicts: [{i
 now, gone, suspended}]}`; `POST /api/customize/{id}/keep` keeps one over what its package says now.
 A customization keeps what it replaced (`was`) when it is made or kept: a field's or the entity's
 property, a whole workflow (`set_workflow`) or print template (`set_print_template`), `null` where
-the packages had none. One made before it kept that is compared from what its packages say when this
-version first starts. An app's plan says the same before anyone agrees to it (below).
+the packages had none. An app's plan says the same before anyone agrees to it (below).
 
 ## SCIM 2.0 — `/api/scim/v2` ([identity lifecycle](identity-lifecycle.md))
 

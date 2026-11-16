@@ -504,7 +504,6 @@ MUTANTS = [
     ("workflow-customization-uncompared", "crates/meta/src/effective.rs", "OverlayOp::SetWorkflow { .. } => Some(e.workflow", "OverlayOp::SetWorkflow { .. } if false => Some(e.workflow", CUSTOMIZE),
     ("old-conflicts-blamed-on-the-plan", "crates/kernel/src/customize.rs", "today != (!c.gone).then(|| c.now.clone())", "today.is_some() || today.is_none()", CUSTOMIZE),
     ("open-work-unseen", "crates/kernel/src/customize.rs", "if then.is_some() && then == state_of(&w.def, &state.name) {", "if then.is_some() || then.is_none() {", CUSTOMIZE),
-    ("legacy-customizations-never-compared", "crates/kernel/src/customize.rs", "let Some(base) = packaged.entity(&entity).and_then(|e| effective::replaced_value(e, &op)) else { continue };", "let Some(base) = None::<Value> else { continue };", CUSTOMIZE),
     ("consent-ignores-what-it-parts", "server/src/appmgr.rs", "    for c in parted {\n", "    for c in &parted[..0] {\n", APPS_API),
     ("other-workspaces-changed-silently", "crates/kernel/src/apps.rs", "for tenant in tenants.into_iter().filter(|t| Some(*t) != rel.shown_to) {", "for tenant in tenants.into_iter().filter(|_| false) {", APPS_API),
     ("installer-told-twice", "crates/kernel/src/apps.rs", "for tenant in tenants.into_iter().filter(|t| Some(*t) != rel.shown_to) {", "for tenant in tenants.into_iter().filter(|t| Some(*t) != rel.shown_to || true) {", APPS_API),

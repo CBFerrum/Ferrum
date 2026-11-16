@@ -69,12 +69,7 @@ impl Kernel {
         }
         let packages = self.registry.catalog().closure(&wanted).map_err(|e| Error::field("packages", e.to_string()))?;
         let hash = hash_password(t.admin_password.clone()).await?;
-        // A new workspace uses the shell and apps' own interfaces unless told otherwise (apps-ui.md
-        // U4b); one made before keeps today's web app until it is switched (no `shell_v2`).
-        let mut settings = t.settings.clone().unwrap_or_else(|| serde_json::json!({}));
-        if let Some(s) = settings.as_object_mut() {
-            s.entry("shell_v2").or_insert(serde_json::json!(true));
-        }
+        let settings = t.settings.clone().unwrap_or_else(|| serde_json::json!({}));
         let tenant = Uuid::now_v7();
         let mut tx = self.db.system_tx().await?;
         sqlx::query("insert into tenant (id, slug, name, settings) values ($1, $2, $3, $4)")
@@ -178,9 +173,7 @@ impl Kernel {
                          via = case when role_permission.packaged and role_permission.package = excluded.package then excluded.via else role_permission.via end, \
                          actions = case when role_permission.packaged and role_permission.package = excluded.package then excluded.actions else role_permission.actions end, \
                          shared = case when role_permission.packaged and role_permission.package = excluded.package then excluded.shared else role_permission.shared end, \
-                         hide = case when role_permission.packaged and role_permission.package = excluded.package then excluded.hide \
-                           when (role_permission.packaged is null or (role_permission.packaged and role_permission.package is null)) and role_permission.hide = '{}' then excluded.hide \
-                           else role_permission.hide end",
+                         hide = case when role_permission.packaged and role_permission.package = excluded.package then excluded.hide else role_permission.hide end",
                     )
                     .bind(tenant)
                     .bind(&role.name)
@@ -364,8 +357,7 @@ impl Kernel {
     /// interface's, for everyone who chose none),
     /// `fiscal_year_start_month` (1-12), `require_two_factor` (everyone signs in with an
     /// authenticator app; it applies from each person's next sign-in), `require_sso` (everyone
-    /// but administrators signs in through a single sign-on provider), `shell_v2` (the shell
-    /// and apps with interfaces of their own instead of today's web app) and `assistant` (the
+    /// but administrators signs in through a single sign-on provider) and `assistant` (the
     /// assistant, where the server has one; on unless turned off).
     pub async fn tenant_settings(&self, ctx: &Ctx) -> Result<Value> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
@@ -377,7 +369,6 @@ impl Kernel {
             "fiscal_year_start_month": settings.get("fiscal_year_start_month").cloned().unwrap_or_else(|| serde_json::json!(1)),
             "require_two_factor": settings.get("require_two_factor").and_then(Value::as_bool).unwrap_or(false),
             "require_sso": settings.get("require_sso").and_then(Value::as_bool).unwrap_or(false),
-            "shell_v2": settings.get("shell_v2").and_then(Value::as_bool).unwrap_or(false),
             // The assistant, where the server has one (on unless administrators turn it off).
             "assistant": settings.get("assistant").and_then(Value::as_bool).unwrap_or(true),
             "assistant_model": settings.get("assistant_model").cloned().unwrap_or(Value::Null),
@@ -424,9 +415,7 @@ impl Kernel {
                     let m = v.as_u64().filter(|m| (1..=12).contains(m)).ok_or_else(|| Error::field("fiscal_year_start_month", "must be 1 to 12"))?;
                     clean.insert(k.clone(), serde_json::json!(m));
                 }
-                // `shell_v2`: the workspace's people use the shell and apps with interfaces of their own
-                // (docs/plan/apps-ui.md §14); off, today's web app.
-                "require_two_factor" | "require_sso" | "shell_v2" | "assistant" => {
+                "require_two_factor" | "require_sso" | "assistant" => {
                     let on = v.as_bool().ok_or_else(|| Error::field(k.clone(), "must be true or false"))?;
                     clean.insert(k.clone(), serde_json::json!(on));
                 }

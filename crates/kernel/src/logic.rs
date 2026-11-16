@@ -264,8 +264,8 @@ pub(crate) async fn grant_solution(k: &Kernel, tx: &mut crate::db::Tx, ctx: &Ctx
     for d in rights.values() {
         sqlx::query(
             "insert into role_permission (tenant_id, role, entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, \
-             can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, false, false, $10, $11, null, $12)",
+             can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key, packaged) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, false, false, $10, $11, null, $12, false)",
         )
         .bind(ctx.tenant)
         .bind(&role)
