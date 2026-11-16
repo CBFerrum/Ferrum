@@ -219,6 +219,13 @@ async fn scenario() {
     assert_eq!(d["token_endpoint"], json!("http://acme.test/oauth/token"));
     assert_eq!(d["id_token_signing_alg_values_supported"], json!(["EdDSA"]));
     assert_eq!(call(&r, Method::GET, SALES, "/.well-known/openid-configuration", &[], None).await.json()["issuer"], json!("http://sales.acme.test"));
+    // API clients' authorization server (oauth.rs) names the address the request was routed by too, in the scheme of the
+    // server's public address: what a caller writes in `X-Forwarded-Host` or `X-Forwarded-Proto` is not where it is.
+    let forged = [("x-forwarded-host", "evil.example"), ("x-forwarded-proto", "https")];
+    let m = call(&r, Method::GET, ACME, "/.well-known/oauth-authorization-server", &forged, None).await.json();
+    assert_eq!((&m["issuer"], &m["token_endpoint"]), (&json!("http://acme.test"), &json!("http://acme.test/oauth/token")), "{m}");
+    let p = call(&r, Method::GET, ACME, "/.well-known/oauth-protected-resource", &forged, None).await.json();
+    assert_eq!(p["authorization_servers"], json!(["http://acme.test"]), "{p}");
     let gz = call(&r, Method::GET, ACME, "/.well-known/openid-configuration", &[("accept-encoding", "gzip")], None).await;
     assert!(gz.status == StatusCode::OK && gz.headers.get(header::CONTENT_ENCODING).is_some_and(|v| v == "gzip"), "as a browser asks: {:?}", gz.headers);
     for host in ["localhost", "unknown.test"] {
