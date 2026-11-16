@@ -19,6 +19,8 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 # CEL's parser and interpreter recurse deeply (already in the tree through pest).
 stacker = "0.1"
+# The versions a package's `uses` was built for (types.rs, UseDef): the version the workspace already locks.
+semver = "1"
 
 [dev-dependencies]
 tempfile = "3"

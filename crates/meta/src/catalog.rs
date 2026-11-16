@@ -298,6 +298,20 @@ impl Catalog {
                     return invalid(format!("{name}: document {} is for {}, which is not this package's or a dependency's", d.key, d.entity));
                 }
             }
+            // What its app calls of another's is within what it depends on: the other is installed wherever it is.
+            for u in &p.manifest.uses {
+                let id = &u.capability;
+                if id.split('.').count() < 3 || id.split('.').any(str::is_empty) {
+                    return invalid(format!("{name}: uses {id}: a capability's id is {{package}}.{{entity}}.{{operation}}"));
+                }
+                let package = id.split('.').next().unwrap_or_default();
+                if !deps.iter().any(|d| d == package) {
+                    return invalid(format!("{name}: uses {id}, of {package}, which is not a package it depends on"));
+                }
+                if semver::VersionReq::parse(&u.version).is_err() {
+                    return invalid(format!("{name}: uses {id} at {:?}, which is not a range of versions (^0.6, >=1.2, <2)", u.version));
+                }
+            }
             for ov in &p.manifest.overlays {
                 let Some((owner, _)) = self.entities.get(&ov.entity) else {
                     return invalid(format!("{name}: overlay targets unknown entity {}", ov.entity));
@@ -1617,6 +1631,49 @@ mod tests {
         for name in ["create", "read", "list", "update", "delete", "submit"] {
             assert!(with_actions(&format!("[{{name: {name}, label: X}}]")).is_err(), "{name}");
         }
+    }
+
+    /// `holds` offers `holds.hold.place`; `shop` depends on `depends` and declares `uses`.
+    fn with_uses(depends: &str, uses: &str) -> Result<Catalog, MetaError> {
+        let holds = "[{name: Hold, label: Hold, kind: document, fields: [{name: qty, type: int}], actions: [{name: place, label: Place}]}]";
+        Catalog::from_packages(vec![
+            pkg("{package: core, version: '1'}", CORE),
+            pkg("{package: holds, version: '0.1.0', depends: [core]}", holds),
+            pkg("{package: mid, version: '1.0.0', depends: [holds]}", "[]"),
+            pkg(&format!("{{package: shop, version: '0.1.0', depends: [{depends}], uses: {uses}}}"), "[]"),
+        ])
+    }
+
+    #[test]
+    fn a_use_is_an_operation_of_a_package_it_depends_on() {
+        assert!(with_uses("holds", "[{capability: holds.hold.place, version: '^0.1'}]").is_ok());
+        assert!(with_uses("mid", "[{capability: holds.hold.place, version: '>=0.1, <0.3'}]").is_ok(), "through a dependency's dependency");
+        let refused = |depends: &str, uses: &str| with_uses(depends, uses).unwrap_err().to_string();
+        let outside = refused("core", "[{capability: holds.hold.place, version: '^0.1'}]");
+        assert!(outside.contains("shop: uses holds.hold.place") && outside.contains("depend"), "{outside}");
+        assert!(refused("core", "[{capability: ferrum.mail.send, version: '*'}]").contains("ferrum.mail.send"), "the platform's own are no package's");
+        assert!(refused("holds", "[{capability: holds.place, version: '^0.1'}]").contains("{package}.{entity}.{operation}"));
+        assert!(refused("holds", "[{capability: holds.hold.place, version: latest}]").contains("not a range"));
+        assert!(refused("holds", "[{capability: holds.hold.place, version: ''}]").contains("not a range"));
+        let unknown = serde_yaml::from_str::<PackageManifest>("{package: shop, version: '1', uses: [{capability: holds.hold.place, version: '1', as: admin}]}");
+        assert!(unknown.unwrap_err().to_string().contains("unknown field"), "a use says nothing more");
+    }
+
+    #[test]
+    fn an_action_a_package_adds_to_anothers_entity_is_its_own() {
+        let holds = "[{name: Hold, label: Hold, kind: document, fields: [{name: qty, type: int}], actions: [{name: place, label: Place}]}]";
+        let plus =
+            "{package: plus, version: '0.9.0', depends: [holds], overlays: [{entity: Hold, ops: [{op: add_action, action: {name: weigh, label: Weigh}}]}]}";
+        let cat = Catalog::from_packages(vec![
+            pkg("{package: core, version: '1'}", CORE),
+            pkg("{package: holds, version: '0.1.0', depends: [core]}", holds),
+            pkg(plus, "[]"),
+        ])
+        .unwrap();
+        let schema = crate::effective::build(&cat, &["plus".to_string()], &[], 0).unwrap();
+        let origin = |name: &str| schema.entity("Hold").unwrap().def.actions.iter().find(|a| a.name == name).map(|a| a.origin.clone());
+        assert_eq!((origin("weigh"), origin("place")), (Some(Some("plus".to_string())), Some(None)), "the adder's; the entity's own has none");
+        assert!(serde_yaml::from_str::<ActionDef>("{name: weigh, label: Weigh, origin: holds}").is_err(), "no package says whose an action is");
     }
 
     #[test]
