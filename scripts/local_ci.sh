@@ -40,6 +40,9 @@
 #           a private SeaweedFS for its files, every name it asks its environment for checked against the settings'
 #           registry and scripts/settings.py's baseline; then the previous build (the merge base, made once in
 #           WINDOW_WORK as for `window`) on the same database. Needs SeaweedFS's `weed` and a C compiler.
+#   oidc    not in the workflow, and only when named: scripts/oidc_rehearsal.sh, this build's server (without apps, with
+#           the stand-in for the Cloud app in server/examples/oidc_rehearsal.rs) and a real Forgejo (FORGEJO, default
+#           Homebrew's) on SQLite signing a person in through the workspace's address, then every way of leaving.
 #   companions not in the workflow, and only when named: scripts/companions_rehearsal.sh, the server without apps
 #           rendering the bundled store's keys from a fresh database with DATABASE_URL alone (two renders at once, one
 #           key pair), SeaweedFS started on the file by deploy/store/start.sh, servers writing through it, a rotation's
@@ -294,7 +297,7 @@ managed_tests() { # name args...
 }
 
 job_window() {
-  run "window build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
+  run "window build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --example oidc_rehearsal --locked || return
   run "window rehearsal" scripts/window_rehearsal.sh "${WINDOW_OLD:-8a34644e}" "ferrum_windowrehearsal$SFX"
 }
 
@@ -306,6 +309,11 @@ job_objects() {
 job_oneinput() {
   run "oneinput build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
   run "oneinput proof" scripts/one_input.sh "ferrum_oneinput$SFX"
+}
+
+job_oidc() {
+  run "oidc build (no apps)" cargo build -p ferrum-server --no-default-features --example oidc_rehearsal --locked || return
+  run "oidc rehearsal" scripts/oidc_rehearsal.sh "ferrum_oidcrehearsal$SFX"
 }
 
 job_companions() {
@@ -320,8 +328,8 @@ jobs=("$@")
 for j in "${jobs[@]}"; do
   case "$j" in
     # Each job in a shell of its own, so what one sets (saml's xmlsec1 and OpenSSL) never reaches the next.
-    rust | saml | audit | move | editors | replica | window | managed | objects | oneinput | companions) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
-    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, managed, objects, oneinput, companions)"; exit 2 ;;
+    rust | saml | audit | move | editors | replica | window | managed | objects | oneinput | oidc | companions) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
+    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, managed, objects, oneinput, oidc, companions)"; exit 2 ;;
   esac
 done
 echo "== $([ $failed = 0 ] && echo PASS || echo FAIL): ${jobs[*]}"

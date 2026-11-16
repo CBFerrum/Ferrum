@@ -130,6 +130,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `app_allow_unsigned` | `FERRUM_APP_ALLOW_UNSIGNED` | bool | `false` | installation, next start | `true` accepts uploads no trusted key signed (development default); production default `false`. |
 | `dev_ui` | `FERRUM_DEV_UI` | bool | `false` | installation, next start | Development only: administrators may serve an app's pages from its interface's Vite server on the same machine (`ferrum-app dev --ui`, [Apps with interfaces of their own](#apps-with-interfaces-of-their-own)). The server warns at start when it is on. Never on a server people use. |
 | `session_days` | `FERRUM_SESSION_DAYS` | int | `14` | installation, at once | How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own that people and administrators sign out one by one. |
+| `openid` | `FERRUM_OPENID` | bool | `true` | installation, at once | `false`: no program an installed app runs beside Ferrum (the forge) signs anyone in through it. The discovery document, the keys, the user-info and those programs' way through the authorization and token endpoints answer as if they were not there (`404`, or the endpoint's answer to a client it does not know); API clients' OAuth goes on as before. On by default, which changes nothing by itself: a program signs anyone in only where an installed app declared it. The doctor says which it is, and how many programs' clients there are. |
 | `office_origin` | `FERRUM_OFFICE_ORIGIN` | text |  | installation, at once | With online editing: the editor server as browsers reach it (`https://office.example.com`), when that is not `FERRUM_OFFICE_URL`: Drive's pages frame it and post to it, and their Content-Security-Policy names it (the Compose stack sets it from `OFFICE_PUBLIC_URL`, the Helm chart from `office.host`). |
 | `ops_telemetry_days` | `FERRUM_OPS_TELEMETRY_DAYS` | int | `30` | installation, at once | Days of device measurements kept (default 30). Rollups outlive them. |
 | `plans` | `FERRUM_PLANS` | json |  | installation, at once | The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up). |
@@ -4711,6 +4712,67 @@ a person's sessions here when they sign out there or it disables them. Give it
 audience, event and age are checked, and each token works once. It ends all the person's sessions at
 Ferrum and their refresh tokens, on every replica, not only the session it names. Their API keys stay:
 those are not sign-ins, and removing the person ends them.
+
+### Programs beside Ferrum signing in through it
+
+A program an installed app runs beside Ferrum (the forge, which the Cloud app runs) signs a workspace's people in
+through the workspace with OpenID Connect ([API](api.md#signing-in-to-programs-beside-ferrum-openid-connect)). Nothing
+is set up by hand: the app declares the program's client for each workspace from its own code, and the vault makes
+its secret and the workspace's signing key. Each address of a workspace that serves its shell is an issuer of its own
+(`https://{address}/.well-known/openid-configuration`); without a base domain, the installation's one workspace
+(`FERRUM_DEFAULT_WORKSPACE`) on its own host, or a domain of a workspace's own. A host several workspaces share, a
+forwarding address, the accounts and hooks hosts and sandboxes answer nothing. (These are the programs people sign in
+to; a program whose files the server renders is a service, in "Files for the programs beside the server", and one
+program can be both.)
+
+What an operator sees:
+
+```bash
+ferrum task openid tenant:acme              # its programs: app, client, return addresses, signed in now, last sign-in;
+                                            # its signing keys: the one that signs, and the one before while it is published
+ferrum task openid tenant:acme format:json
+ferrum task openid tenant:acme rotate:yes   # a new signing key; the one before is still published, and verifies, for a day
+ferrum task openid tenant:acme remove:fo_…  # takes a program's client away: its sign-ins end and its app is told; the
+                                            # app's next declaration (the Cloud app's: at the forge's next start) makes it again
+```
+
+Each sign-in is on the person's trail (sign-in, `companion_signed_in`; `companion_refused` for someone the app does not
+let in, `companion_code_replayed` for a code used twice), and each declaration, change and removal of a client on the
+workspace's (administration, `Companion`). The vault records each signature (`sign` of the platform's `oidc.signing`,
+summed past a hundred an hour) and the client's secret as the app's (`adopt`, `manage`, `reveal`).
+
+**Turning it off.** For the whole installation: the stored setting `openid` (`false`; it applies at once, on every
+replica). Off, the discovery document, the keys, the user-info and the programs' way through the authorization and token
+endpoints answer as if they were not there (`404`, or the endpoint's answer to a client it does not know), and API
+clients' OAuth goes on as before; the clients, keys and secrets are kept, and on again, everything answers as it did.
+On (the default) changes nothing by itself: nobody signs in anywhere until an app declares a program there. `ferrum
+doctor` says which it is and how many programs' clients there are, in how many workspaces. For one program: remove its
+client, and switch the program off in its app (Cloud's own setting), or the app declares it again. The signing key is
+rotated with the task above; rotate twice within a day only if the key before must stop verifying at once.
+
+**Copies of a workspace.** A program's client is unique within its workspace, never across the installation (the
+address a request comes to says which workspace it is for), so a copy of a workspace in the same database never meets
+the original's. A sandbox has no program's client, codes or sign-ins, nor the signing key or the client's secret (the
+vault leaves both blank there), and its addresses answer nothing: a sandbox made by this build copies none of them (the
+build before makes no sandbox on a database this one migrated), and should a copy of every table of a workspace bring
+them, this build takes them away within 15 seconds, telling nobody (they are the live workspace's sign-ins, which go
+on). The people's subjects are
+copied, and name nobody to any program there. A move (`move_workspace`) carries the client, the sign-ins, the subjects
+and, with the workspace's vault, the signing key and the client's secret, still its app's: the program goes on signing
+people in at the same address with nothing changed. Codes and access tokens stay behind, with the sessions; since the
+sessions do not travel, the target tells each program's app once that the sign-ins it carried ended (`signed_out`),
+after the workspace arrived, and the source, moved away, tells nobody.
+
+**Limits.** The authorization endpoint counts each request against the person's address, and the token endpoint and
+the user-info each failure against the caller's, as failed sign-ins are (20 a minute, shared by the replicas); a
+program's successful sign-ins are not counted, so a busy forge is not held up by its own people. Codes live a minute,
+ID tokens and access tokens five minutes; a request waiting for its person to confirm it is them, ten.
+
+**When someone leaves.** Every replica that runs background work looks every 15 seconds for sign-ins whose browser
+session ended, however it ended (also by an older build, or an erasure), marks each ended, and tells its app once
+(`ferrum.companion.signed_out`, in the outbox, in the same transaction), however many replicas look at once; a
+workspace that is moving waits until it has arrived. The program's own sessions are the app's to end on that event.
+
 ## Industrial sites
 
 A site runs `ferrum-site` next to its equipment: [running a site](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/gateway.md). Who may command

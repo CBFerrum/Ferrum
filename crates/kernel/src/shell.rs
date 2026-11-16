@@ -522,13 +522,30 @@ impl Kernel {
         zone: Option<&str>,
         saml: Option<&Value>,
     ) -> Result<Uuid> {
+        self.open_session_proved(s, ttl, user_agent, ip, actor, zone, saml, &[]).await
+    }
+
+    /// [`Kernel::open_session_with`], keeping how its person proved who they are as they signed in (`proof`: the
+    /// steps, `password` then `authenticator`, `passkey`, `sso`, `code`, `accounts`; an ID token's `amr`, crate::oidc).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_session_proved(
+        &self,
+        s: &Session,
+        ttl: Duration,
+        user_agent: &str,
+        ip: &str,
+        actor: Option<Uuid>,
+        zone: Option<&str>,
+        saml: Option<&Value>,
+        proof: &[&str],
+    ) -> Result<Uuid> {
         let id = Uuid::now_v7();
         let ua: String = user_agent.chars().filter(|c| !c.is_control()).take(300).collect();
         let ip: String = ip.chars().take(64).collect();
         let mut tx = self.db.tenant_tx(s.tenant).await?;
         sqlx::query(
-            "insert into user_session (tenant_id, id, user_id, actor, step_up_at, expires_at, user_agent, ip, zone, saml) \
-             values ($1, $2, $3, $4, now(), now() + make_interval(secs => $5), $6, $7, $8, $9)",
+            "insert into user_session (tenant_id, id, user_id, actor, step_up_at, expires_at, user_agent, ip, zone, saml, proof) \
+             values ($1, $2, $3, $4, now(), now() + make_interval(secs => $5), $6, $7, $8, $9, $10)",
         )
         .bind(s.tenant)
         .bind(id)
@@ -539,6 +556,7 @@ impl Kernel {
         .bind(ip)
         .bind(zone)
         .bind(saml)
+        .bind((!proof.is_empty()).then_some(proof))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -622,7 +640,8 @@ impl Kernel {
     pub async fn step_up_session(&self, tenant: Uuid, sid: Uuid) -> Result<()> {
         let mut tx = self.db.tenant_tx(tenant).await?;
         let user: Option<Uuid> =
-            sqlx::query_scalar("update user_session set step_up_at = now() where tenant_id = $1 and id = $2 and revoked_at is null returning user_id")
+            // No way is said here: an ID token then says nothing of how (crate::oidc), rather than something untrue.
+            sqlx::query_scalar("update user_session set step_up_at = now(), proof = null where tenant_id = $1 and id = $2 and revoked_at is null returning user_id")
                 .bind(tenant)
                 .bind(sid)
                 .fetch_optional(&mut *tx)
@@ -690,13 +709,23 @@ impl Kernel {
     /// transaction, so that neither is without the other. Only the session of that person, live; nothing else about it
     /// changes (whose it is, when it ends). Every other replica drops what it holds of the person's sessions at once.
     pub async fn stepped_up(&self, who: &StepUp, way: &str, from: &crate::gate::Arrival) -> Result<()> {
+        self.stepped_up_by(who, &[way], from).await
+    }
+
+    /// [`Kernel::stepped_up`] by more than one proof given together (`password` then `authenticator` or
+    /// `recovery_code`): every one is how the session's person last proved who they are (an ID token's `amr`,
+    /// crate::oidc); the trail names the first as the way, as before.
+    pub async fn stepped_up_by(&self, who: &StepUp, ways: &[&str], from: &crate::gate::Arrival) -> Result<()> {
+        let way = ways.first().copied().ok_or_else(|| Error::invalid("a step-up names how the person proved it is them"))?;
         let mut tx = self.db.system_tenant_tx(who.tenant).await?;
         let marked = sqlx::query(
-            "update user_session set step_up_at = now() where tenant_id = $1 and id = $2 and user_id = $3 and revoked_at is null and expires_at > now()",
+            "update user_session set step_up_at = now(), proof = $4 where tenant_id = $1 and id = $2 and user_id = $3 and revoked_at is null \
+             and expires_at > now()",
         )
         .bind(who.tenant)
         .bind(who.session)
         .bind(who.user)
+        .bind(ways)
         .execute(&mut *tx)
         .await?
         .rows_affected();

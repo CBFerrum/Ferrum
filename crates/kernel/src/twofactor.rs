@@ -323,6 +323,12 @@ impl Kernel {
 
     /// [`Kernel::second_factor`] from `from`: a wrong code is on the audit trail with where it came from.
     pub async fn second_factor_from(&self, tenant: Uuid, user: Uuid, token_version: i32, code: &str, from: &crate::gate::Arrival) -> Result<Session> {
+        self.second_step(tenant, user, token_version, code, from).await.map(|(s, _)| s)
+    }
+
+    /// [`Kernel::second_factor_from`], saying which the person gave: `authenticator` (a code from their app) or
+    /// `recovery_code`, as how they proved who they are (an ID token's `amr`, crate::oidc).
+    pub async fn second_step(&self, tenant: Uuid, user: Uuid, token_version: i32, code: &str, from: &crate::gate::Arrival) -> Result<(Session, &'static str)> {
         let again = || Error::Unauthorized("sign in again".into());
         self.refuse_if_moving(tenant).await?;
         let mut tx = self.db.system_tx().await?;
@@ -353,6 +359,7 @@ impl Kernel {
         }
         let secret = self.open_secret(&mut tx, tenant, user, u.totp_secret.as_deref().unwrap_or_default()).await?;
         let step = matching_step(&secret, code, now_seconds()).filter(|s| u.last_step.is_none_or(|l| *s as i64 > l));
+        let given = if step.is_some() { "authenticator" } else { "recovery_code" };
         let ok = match step {
             Some(s) => {
                 sqlx::query("update app_user set totp_last_step = $3 where tenant_id = $1 and id = $2")
@@ -386,7 +393,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(Session { tenant, user, token_version })
+        Ok((Session { tenant, user, token_version }, given))
     }
 }
 

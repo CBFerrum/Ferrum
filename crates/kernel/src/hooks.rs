@@ -245,6 +245,9 @@ pub struct HookRegistry {
     platform_mint: Option<u128>,
     /// Which app owns each package compiled in ([`HookRegistry::own`]): whose the package's secret fields are.
     package_owners: HashMap<String, String>,
+    /// The programs apps run beside Ferrum that sign people in through it, by app and name
+    /// ([`HookRegistry::openid_companion`]).
+    openid_companions: HashMap<(String, String), Arc<dyn crate::oidc::Companion>>,
     /// The app whose registration is running.
     app: Option<String>,
     /// The programs beside the server whose files their owners render ([`HookRegistry::add_companion`]), by name:
@@ -378,6 +381,29 @@ impl HookRegistry {
         let mint = crate::vault::mint();
         self.platform_mint = Some(mint);
         crate::vault::Vault::app("platform", mint)
+    }
+
+    /// Registers `name` (lowercase letters, digits and dashes), a program the app whose registration is running runs
+    /// beside Ferrum and that signs people in through it (crate::oidc): the right that lets a person in, and the claims
+    /// that place them there. The app then declares its client for each workspace with its own vault handle
+    /// (`Vault::companion`). Outside an app's registration, or twice, the server does not start. (A program whose files
+    /// the server renders is declared with [`HookRegistry::add_companion`]; one program can be both.)
+    pub fn openid_companion(&mut self, name: &str, companion: Arc<dyn crate::oidc::Companion>) -> &mut Self {
+        let Some(app) = self.app.clone() else {
+            self.problems.push(format!("companion {name} was registered outside an app's registration"));
+            return self;
+        };
+        if !crate::oidc::name_ok(name) {
+            self.problems.push(format!("app {app}'s companion {name:?}: lowercase letters, digits and dashes, up to 40"));
+        } else if self.openid_companions.insert((app.clone(), name.to_string()), companion).is_some() {
+            self.problems.push(format!("app {app} registered its companion {name} twice"));
+        }
+        self
+    }
+
+    /// App `app`'s companion `name` that signs people in, when it registered one.
+    pub(crate) fn openid_companion_of(&self, app: &str, name: &str) -> Option<&Arc<dyn crate::oidc::Companion>> {
+        self.openid_companions.get(&(app.to_string(), name.to_string()))
     }
 
     /// The apps this registry gave vault handles to.

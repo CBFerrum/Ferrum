@@ -39,6 +39,7 @@ pub fn platform_file(name: &str) -> Option<(&'static str, &'static [u8])> {
         "kill-sw.js" => (js, include_bytes!("../shell/kill-sw.js")),
         "login.js" => (js, include_bytes!("../shell/login.js")),
         "step-up.js" => (js, include_bytes!("../shell/step-up.js")),
+        "companion.js" => (js, include_bytes!("../shell/companion.js")),
         "signup.js" => (js, include_bytes!("../shell/signup.js")),
         "portal.js" => (js, include_bytes!("../shell/portal.js")),
         "isolated.js" => (js, include_bytes!("../shell/isolated.js")),
@@ -58,7 +59,7 @@ pub fn platform_file(name: &str) -> Option<(&'static str, &'static [u8])> {
 /// The platform's files a page names with a digest of their content (`?v=`, [`shell_file_url`]): the browser keeps
 /// such an address for a year, and a server with other files names another. The plain address is still served
 /// (`max-age=300`), for pages from before.
-const DIGESTED: [&str; 5] = ["runtime.js", "portal.js", "login.js", "step-up.js", "pages.css"];
+const DIGESTED: [&str; 6] = ["runtime.js", "portal.js", "login.js", "step-up.js", "companion.js", "pages.css"];
 
 /// The digest a page names one of [`DIGESTED`] with: its content's (the first 12 bytes of SHA-256, hex).
 pub fn file_digest(name: &str) -> Option<&'static str> {
