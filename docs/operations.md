@@ -89,7 +89,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `aws_access_key_id` | `AWS_ACCESS_KEY_ID` | text |  | secret: the environment, else the vault (library) | The object store's key id. |
 | `aws_secret_access_key` | `AWS_SECRET_ACCESS_KEY` | text |  | secret: the environment, else the vault (library) | The object store's secret key. |
 | `aws_session_token` | `AWS_SESSION_TOKEN` | text |  | secret: the environment, else the vault (library) | A session token with the object store's keys, when they are temporary. |
-| `s3_set_up_bucket` | `FERRUM_S3_SET_UP_BUCKET` | bool | `false` | installation, next start | `true`: at start, make the bucket when it is missing, and turn on what the doctor looks for when the bucket has none of it: versioning, lifecycle rules (old versions end after `backup_reach_days`, 30 when not set; unfinished uploads after a day) and default encryption. Never replaces a bucket's own rules. The store Compose bundles asks for this itself at its first start; a bucket of your own is changed only when this is set, with keys allowed to change its configuration. |
+| `s3_set_up_bucket` | `FERRUM_S3_SET_UP_BUCKET` | bool | `false` | installation, next start | `true`: at start, make the bucket when it is missing, and turn on what the doctor looks for when the bucket has none of it: versioning, lifecycle rules (old versions end after `backup_reach_days`, 30 when not set; unfinished uploads after a day) and default encryption. Never replaces a bucket's own rules. The store Compose bundles asks for this itself at its first start; a bucket of your own is changed only when this is set, with keys allowed to change its configuration. A replica is not ready until the set-up has worked (tried again every five seconds). |
 | `files_delete_after_days` | `FERRUM_FILES_DELETE_AFTER_DAYS` | int | `0` | installation, at once | Days a deleted file stays in object storage before it goes (0, the default: at once). At least `backup_reach_days`, so that a database restored to any moment its backups reach finds every file it names (see *Backups of files*). |
 | `backup_reach_days` | `FERRUM_BACKUP_REACH_DAYS` | int | `0` | installation, at once | How many days back the database's backups reach (the chart's `database.backup.retention`; 0: not said). The doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule. |
 | `files_direct_links` | `FERRUM_FILES_DIRECT_LINKS` | bool | `false` | installation, at once | `true`: a download (`/files/{id}`) answers with a short-lived link signed for the object store, which the browser follows, instead of passing the bytes through the server. Never for files of entities whose reads are recorded, for outside people, for types a browser would run, or while files move. Off by default. |
@@ -840,6 +840,9 @@ store does not take a replica out of service, which would take every replica out
 doctor's `storage` line says so, and so do `ferrum_object_storage_up` (0 when this replica's last probe, every thirty
 seconds, failed) and `ferrum_object_storage_probe_failures_total`. The chart has no alert rules for the server; alert on
 `ferrum_object_storage_up == 0` for five minutes. Compose starts the server once the store's health check passes.
+Where the bucket is to be set up (the bundled store's handoff, or `s3_set_up_bucket`), each probe sets it up first,
+one replica at a time, until that has worked: until then the replica is not ready, and its answer and the log say that
+the set-up fails and why, so a store that refused the first start's set-up needs no restart either.
 
 **A local directory** (`files_dir`) is for development and tests. Elsewhere a server without a bucket starts only for
 an installation that already keeps its files there: the newest file its database names (a workspace's newest file,
@@ -946,7 +949,7 @@ process with its own volume. Only its S3 port listens, on Compose's network alon
 (`deploy/store/start.sh`) makes an access key and the key that encrypts what it keeps, in its own volume, and hands the
 access key to the server once (`/run/ferrum/object-store/keys.json`, a volume only the two share): the server keeps it
 in the vault and deletes the file. Nothing goes into `deploy/.env`. The handoff also asks the server to make the bucket
-`ferrum` with versioning, lifecycle rules and encryption, which it does then (and at each start until it has), and only
+`ferrum` with versioning, lifecycle rules and encryption, which it does then (and before each probe until it has: not ready meanwhile), and only
 while it signs with the key handed over: an installation that points Compose at a store of its own signs with that
 store's keys, so its bucket is left as it is even with the bundled store left running (`STORE_REPLICAS=0` stops it).
 The store makes no bucket a write names, so a wrong bucket name is refused, and the server is not ready, saying

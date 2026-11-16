@@ -448,7 +448,7 @@
     none of it: versioning, lifecycle rules (old versions end after `backup_reach_days`, 30 when not set; unfinished
     uploads after a day) and default encryption. Never replaces a bucket's own rules. The store Compose bundles asks
     for this itself at its first start; a bucket of your own is changed only when this is set, with keys allowed to
-    change its configuration.
+    change its configuration. A replica is not ready until the set-up has worked (tried again every five seconds).
 - key: files_delete_after_days
   env: FERRUM_FILES_DELETE_AFTER_DAYS
   type: int

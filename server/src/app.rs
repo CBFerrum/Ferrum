@@ -363,18 +363,18 @@ impl Hooks for App {
         let env_key = std::env::var("AWS_ACCESS_KEY_ID").ok().filter(|v| !v.is_empty());
         let key_id = env_key.as_deref().or_else(|| settings.revealed.get("aws_access_key_id"));
         if (settings.s3_set_up_bucket || crate::store::handed_over().is_some_and(|h| h.sets_up(key_id))) && !guest {
+            // Done by each probe first, until it has worked (crate::store::check).
             match crate::store::Bucket::new(&settings) {
-                Ok(Some(bucket)) => match bucket.set_up(crate::store::keep_versions_days(&settings)).await {
-                    Ok(done) if !done.is_empty() => tracing::info!(done = %done.join(", "), "set up the object store's bucket"),
-                    Ok(_) => {}
-                    Err(e) => tracing::error!("setting up the object store's bucket failed (s3_set_up_bucket): {e}"),
-                },
+                Ok(Some(bucket)) => {
+                    objects.health.ask_set_up(crate::store::SetUp { bucket, keep_days: crate::store::keep_versions_days(&settings), db: kernel.db.clone() })
+                }
                 Ok(None) => {}
                 Err(e) => tracing::error!("setting up the object store's bucket: {e}"),
             }
         }
-        // One write-then-read probe: until one has worked this replica is not ready (/api/ready), and it keeps asking
-        // (crate::store::spawn_health); the start goes on, so that it serves its liveness and says why.
+        // One write-then-read probe (the bucket's set-up first, where asked): until one has worked this replica is not
+        // ready (/api/ready), and it keeps asking (crate::store::spawn_health); the start goes on, so that it serves its
+        // liveness and says why.
         crate::store::check(&objects).await;
         let storage = Arc::new(storage_of(objects.clone()));
         crate::request_metrics::Requests::install(crate::request_metrics::Requests::new(&crate::appmgr::compiled_natives()));

@@ -15,8 +15,9 @@
 #    servers serve every file, each as its row says.
 #    Readiness: with the store stopped after the first answer, a replica stays ready (asked as a browser asks), the
 #    metric and the doctor say so; a server started with the store down is not ready, saying why (the log says it once),
-#    and becomes ready without a restart when the store comes up; one with a wrong bucket never becomes ready, saying
-#    NoSuchBucket (the bundled store makes no bucket a write names).
+#    and becomes ready without a restart when the store comes up, the bucket's set-up its handoff asks for then done
+#    (it fails while the store is down); one whose set-up keeps failing never becomes ready, saying so, nor does one with
+#    a wrong bucket, saying NoSuchBucket (the bundled store makes no bucket a write names).
 # 3. The doctor's lines on moto: versioning, a lifecycle rule for old versions and encryption at rest, bad, then good
 #    once each is switched on (first with the bundled store's handoff beside it, which leaves a bucket of the
 #    installation's own as it is); moto takes requests without keys, and the doctor says the bucket is public.
@@ -235,22 +236,41 @@ line=$(doctor_line "${NAME}_live" storage "${STORE[@]}")
 [[ "$line" == blocker:* ]] || fail "the doctor does not say the store is gone: $line"
 echo "    store gone: still ready (as a browser asks), ferrum_object_storage_up 0, the doctor: ${line:0:90}"
 C="http://127.0.0.1:$((BASE + 5))"
-launch "${NAME}_live" $((BASE + 5)) late "${STORE[@]}" || fail "a server with its store down did not come up alive"
+# Its bucket a new one, whose set-up the store's handoff asks for (as at a first start): it fails while the store is down.
+mkdir -p "$work/late/object-store"
+python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["identities"][0]["credentials"][0]; print(json.dumps({"aws_access_key_id": c["accessKey"], "aws_secret_access_key": c["secretKey"], "set_up_bucket": True}))' \
+  "$work/store/ferrum/s3.json" >"$work/late/object-store/keys.json"
+launch "${NAME}_live" $((BASE + 5)) late "${STORE[@]}" FERRUM_S3_BUCKET=late FERRUM_TEST_RUN_DIR="$work/late" ||
+  fail "a server with its store down did not come up alive"
 C_PID=$SERVED
 [ "$(readiness "$C")" = 503 ] || fail "a server whose store never answered is ready"
 grep -q "object storage has not taken a write and a read" "$work/ready.json" || fail "not ready, without saying why: $(cat "$work/ready.json")"
+grep -q "setting up the bucket failed" "$work/ready.json" || fail "not ready, without saying the set-up fails: $(cat "$work/ready.json")"
 [ "$(grep -c 'did not take a write and a read' "$work/late.log")" = 1 ] || fail "the log does not say it once"
 store_up
 for _ in $(seq 1 30); do [ "$(readiness "$C")" = 200 ] && break; sleep 1; done
 [ "$(readiness "$C")" = 200 ] || fail "the store came up and the server did not become ready without a restart"
 end "$C_PID"
-echo "    a store that comes up late: not ready, then ready, no restart"
+line=$(doctor_line "${NAME}_live" storage.versioning "${STORE[@]}" FERRUM_S3_BUCKET=late)
+[[ "$line" == ok:* ]] || fail "the bucket set up once the store came up: storage.versioning $line"
+echo "    a store that comes up late: not ready (the bucket's set-up fails), then ready with it set up, no restart"
 launch "${NAME}_live" $((BASE + 5)) wrong "${STORE[@]}" FERRUM_S3_BUCKET=nosuch || fail "a server with a wrong bucket did not come up alive"
 C_PID=$SERVED
 sleep 12
 [ "$(readiness "$C")" = 503 ] || fail "a server with a wrong bucket became ready"
 grep -q NoSuchBucket "$work/ready.json" || fail "a wrong bucket, not ready without saying so: $(cat "$work/ready.json")"
 echo "    a wrong bucket: never ready: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["message"][:140])' "$work/ready.json")"
+end "$C_PID"
+# A set-up that keeps failing: keys the store does not know, handed over as the bundled store's.
+mkdir -p "$work/nokeys/object-store"
+printf '{"aws_access_key_id":"FERRUMUNKNOWN","aws_secret_access_key":"unknown","set_up_bucket":true}\n' >"$work/nokeys/object-store/keys.json"
+launch "${NAME}_live" $((BASE + 5)) nokeys "${STORE[@]}" FERRUM_S3_BUCKET=late2 FERRUM_TEST_RUN_DIR="$work/nokeys" \
+  AWS_ACCESS_KEY_ID=FERRUMUNKNOWN AWS_SECRET_ACCESS_KEY=unknown || fail "a server whose set-up fails did not come up alive"
+C_PID=$SERVED
+sleep 12
+[ "$(readiness "$C")" = 503 ] || fail "a server whose bucket set-up keeps failing became ready"
+grep -q "setting up the bucket failed" "$work/ready.json" || fail "not ready, without saying the set-up fails: $(cat "$work/ready.json")"
+echo "    a set-up that keeps failing: never ready: $(python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))["message"]; print(m[m.index("setting up"):][:130])' "$work/ready.json")"
 end "$C_PID"
 
 step "3. the doctor's lines on moto: bad, then good as versioning, lifecycle and encryption are switched on"

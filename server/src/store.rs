@@ -110,9 +110,22 @@ pub struct Health {
     up: std::sync::atomic::AtomicBool,
     failures: AtomicU64,
     cause: std::sync::Mutex<Option<String>>,
+    set_up: std::sync::OnceLock<SetUp>,
+}
+
+/// A bucket set-up asked for (`s3_set_up_bucket`, or the bundled store's handoff), kept to be tried again.
+pub struct SetUp {
+    pub bucket: Bucket,
+    pub keep_days: u64,
+    pub db: Db,
 }
 
 impl Health {
+    /// Has every probe set the bucket up first, until that has worked: before it, the replica is not ready.
+    pub fn ask_set_up(&self, set_up: SetUp) {
+        let _ = self.set_up.set(set_up);
+    }
+
     /// Whether a probe has worked since this replica started.
     pub fn answered(&self) -> bool {
         self.answered.load(Ordering::SeqCst)
@@ -182,7 +195,10 @@ pub enum Change {
 
 /// One write-then-read probe of `objects`, recorded, and said in the log when it changes what is known (once each).
 pub async fn check(objects: &Objects) {
-    let outcome = objects.probe().await.map_err(|e| e.to_string());
+    let outcome = match set_up_first(objects).await {
+        Ok(()) => objects.probe().await.map_err(|e| e.to_string()),
+        Err(e) => Err(e),
+    };
     match (objects.health.record(&outcome), &outcome) {
         (Change::NotReady, Err(e)) => tracing::error!(
             "object storage did not take a write and a read ({e}): this replica is not ready until it does, and asks it again every \
@@ -200,6 +216,28 @@ pub async fn check(objects: &Objects) {
         _ => {}
     }
 }
+
+/// The bucket's set-up, where one was asked for and has not worked yet in this process: one replica at a time (it is
+/// safe to run again), its failure the cause the replica is not ready.
+async fn set_up_first(objects: &Objects) -> std::result::Result<(), String> {
+    let Some(s) = objects.health.set_up.get().filter(|_| !bucket_set_up()) else { return Ok(()) };
+    let failed = |e: String| format!("setting up the bucket failed (making it, then versioning, lifecycle rules and encryption): {e}");
+    let mut conn = s.db.direct.acquire().await.map_err(|e| failed(e.to_string()))?.detach();
+    let mine: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)").bind(SET_UP_LOCK).fetch_one(&mut conn).await.map_err(|e| failed(e.to_string()))?;
+    if !mine {
+        return Err("another replica is setting up the bucket".into());
+    }
+    let done = s.bucket.set_up(s.keep_days).await;
+    let _ = sqlx::query("select pg_advisory_unlock($1)").bind(SET_UP_LOCK).execute(&mut conn).await;
+    let done = done.map_err(failed)?;
+    if !done.is_empty() {
+        tracing::info!(done = %done.join(", "), "set up the object store's bucket");
+    }
+    Ok(())
+}
+
+/// Session advisory lock: one bucket set-up at a time.
+const SET_UP_LOCK: i64 = 0x0FE2_2102;
 
 /// How often a replica asks its store until it has answered, and after.
 const NOT_READY_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
