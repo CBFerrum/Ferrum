@@ -43,6 +43,8 @@ pub async fn seed(k: &Kernel, tenant: Uuid) -> Result<String> {
         None => {
             let mut c = json!({"company_name": "Demo Industries Pvt Ltd", "abbr": "DI", "default_currency": inr["id"]});
             if india {
+                // India's rules are for companies in India: the demo company says where it is.
+                c["country"] = json!("India");
                 c["in_gstin"] = json!("27AAPFU0939F1ZV");
             }
             k.insert(ctx, "Company", obj(c)).await?
@@ -51,7 +53,7 @@ pub async fn seed(k: &Kernel, tenant: Uuid) -> Result<String> {
     let cid = id(&company);
     let cuuid: Uuid = cid.parse().unwrap_or_default();
     if india && company.get("in_gstin").is_none_or(Value::is_null) {
-        k.update(ctx, "Company", cuuid, obj(json!({"in_gstin": "27AAPFU0939F1ZV"})), None).await?;
+        k.update(ctx, "Company", cuuid, obj(json!({"country": "India", "in_gstin": "27AAPFU0939F1ZV"})), None).await?;
     }
     k.run_action(ctx, "Company", cuuid, "setup_chart_of_accounts", json!({})).await?;
     let wh = |name: &'static str| find(k, ctx, "Warehouse", json!({"warehouse_name": name, "company": cid}));

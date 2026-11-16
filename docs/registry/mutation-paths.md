@@ -115,7 +115,6 @@ and one each in Bookings, DAM, Field Service and Forms.
 | commerce | `src/store.rs:373` | `update e_item` | `mark_delivery_charge` | engine work: statuses, counts, queues, upkeep |
 | commerce | `src/upkeep.rs:296` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
 | commerce | `src/upkeep.rs:319` | `update e_shopping_cart` | `carts` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/calendars.rs:163` | `update e_calendar_event` | `ensure_default` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/calendars.rs:327` | `update e_calendar` | `change` | consequence of an audited document operation (hook) |
 | comms | `src/calendars.rs:339` | `update e_calendar` | `change` | consequence of an audited document operation (hook) |
 | comms | `src/calendars.rs:363` | `update e_calendar_event` | `change` | consequence of an audited document operation (hook) |
@@ -127,9 +126,6 @@ and one each in Bookings, DAM, Field Service and Forms.
 | comms | `src/mail.rs:788` | `update e_communication` | `withhold` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/mail.rs:819` | `update e_communication` | `record` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/mail.rs:862` | `update e_communication` | `retry_due` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/newsletter.rs:123` | `update e_newsletter` | `run` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/newsletter.rs:147` | `update e_newsletter` | `update_counts` | engine work: statuses, counts, queues, upkeep |
-| comms | `src/newsletter.rs:412` | `update e_email_group_member` | `unsubscribe` | a person's action on a public link (tracking, consent, viewing) |
 | comms | `src/subscribe.rs:268` | `update e_calendar` | `refresh` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/subscribe.rs:284` | `update e_calendar` | `refresh` | engine work: statuses, counts, queues, upkeep |
 | comms | `src/subscribe.rs:352` | `update e_calendar` | `subscribe` | consequence of an audited document operation (hook) |
@@ -175,7 +171,6 @@ and one each in Bookings, DAM, Field Service and Forms.
 | erp | `addons/finance/src/dunning.rs:395` | `update e_dunning` | `upkeep` | engine work: statuses, counts, queues, upkeep |
 | erp | `addons/finance/src/lib.rs:77` | `update e_supplier` | `erase` | consequence of an audited document operation (hook) |
 | erp | `addons/mes/src/runs.rs:745` | `update e_production_revision` | `approve` | records its own audit or activity entry |
-| erp | `addons/quality/src/lib.rs:229` | `update e_inspection_plan` | `approve_plan` | consequence of an audited document operation (hook) |
 | erp | `addons/wms/src/counts.rs:38` | `update e_storage_bin` | `start` | engine work: statuses, counts, queues, upkeep |
 | erp | `addons/wms/src/counts.rs:210` | `update e_storage_bin` | `unfreeze` | engine work: statuses, counts, queues, upkeep |
 | erp | `addons/wms/src/posting.rs:211` | `update e_managed_warehouse` | `start_managing` | engine work: statuses, counts, queues, upkeep |

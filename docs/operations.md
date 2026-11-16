@@ -172,13 +172,13 @@ The app `comms`'s settings:
 | `comms.meet_key` | `FERRUM_MEET_KEY` | text |  | secret: `comms`'s own vault; the environment's, while set, wins and is adopted there once | LiveKit's API key (a name); Comms keeps it in its vault as `meet.key`. |
 | `comms.meet_secret` | `FERRUM_MEET_SECRET` | text |  | secret: `comms`'s own vault; the environment's, while set, wins and is adopted there once | LiveKit's API secret; Comms keeps it in its vault as `meet.secret`. |
 | `comms.mail_admin_secret` | `FERRUM_MAIL_ADMIN_SECRET` | text |  | secret: `comms`'s own vault; the environment's, while set, wins and is adopted there once | The password of Stalwart's administrator (`comms.mail_admin`); Comms keeps it in its vault as `mail.admin_secret`. |
-| `comms.meet_url` | `FERRUM_MEET_URL` | text |  | installation, at once; not from the table while `FERRUM_MEET_SECRET` is in the environment; moving it takes that secret again or clears it | LiveKit as browsers reach it, wss://meet.example.com. Its key and secret are Comms' secrets meet.key and meet.secret. |
-| `comms.meet_api_url` | `FERRUM_MEET_API_URL` | text |  | installation, at once; not from the table while `FERRUM_MEET_SECRET` is in the environment; moving it takes that secret again or clears it | LiveKit's server API as Ferrum reaches it, when that is not the address above over http(s). |
+| `comms.meet_url` | `FERRUM_MEET_URL` | text |  | installation, at once | LiveKit as browsers reach it, wss://meet.example.com. Its key and secret are Comms' secrets meet.key and meet.secret. |
+| `comms.meet_api_url` | `FERRUM_MEET_API_URL` | text |  | installation, at once | LiveKit's server API as Ferrum reaches it, when that is not the address above over http(s). |
 | `comms.meet_recordings` | `FERRUM_MEET_RECORDINGS` | bool | `false` | installation, at once | true once LiveKit Egress runs beside LiveKit with its storage, so people can record meetings. |
 | `comms.meet_node_ip` | `FERRUM_MEET_NODE_IP` | text |  | installation, at once | Optional. The IP address LiveKit gives browsers, written into its file by the service meet; unset, LiveKit finds it. |
 | `comms.meet_external_ip` | `FERRUM_MEET_EXTERNAL_IP` | bool | `true` | installation, at once | Whether LiveKit finds its public address by STUN, written into its file by the service meet; false on a network without internet access. |
-| `comms.mail_url` | `FERRUM_MAIL_URL` | text |  | installation, at once; not from the table while `FERRUM_MAIL_ADMIN_SECRET` is in the environment; moving it takes that secret again or clears it | Stalwart's HTTP address as the server reaches it, for hosted mailboxes. |
-| `comms.mail_admin` | `FERRUM_MAIL_ADMIN` | text |  | installation, at once; not from the table while `FERRUM_MAIL_ADMIN_SECRET` is in the environment; moving it takes that secret again or clears it | A Stalwart administrator (admin, the fallback administrator, where the service mail renders its password). Its password is Comms' secret mail.admin_secret. |
+| `comms.mail_url` | `FERRUM_MAIL_URL` | text |  | installation, at once | Stalwart's HTTP address as the server reaches it, for hosted mailboxes. |
+| `comms.mail_admin` | `FERRUM_MAIL_ADMIN` | text |  | installation, at once | A Stalwart administrator (admin, the fallback administrator, where the service mail renders its password). Its password is Comms' secret mail.admin_secret. |
 | `comms.mail_host` | `FERRUM_MAIL_HOST` | text |  | installation, at once | Optional. The mail server's public host name, shown to people setting up mail programs. |
 
 The app `drive`'s settings:
@@ -211,7 +211,7 @@ The app `metrics`'s settings:
 | Setting | Variable | Type | Default | Where it lives | Meaning |
 |---|---|---|---|---|---|
 | `metrics.engine_token` | `FERRUM_METRICS_ENGINE_TOKEN` | text |  | secret: `metrics`'s own vault; the environment's, while set, wins and is adopted there once | The token of Metrics' engine, at least 32 characters; Metrics keeps it in its vault as `engine.token`. |
-| `metrics.engine_url` | `FERRUM_METRICS_ENGINE_URL` | text |  | installation, at once; not from the table while `FERRUM_METRICS_ENGINE_TOKEN` is in the environment; moving it takes that secret again or clears it | Metrics' engine for external sources, as the server reaches it (a private address; plain http allowed). Its token is Metrics' secret engine.token, sent only to the host it was given for. |
+| `metrics.engine_url` | `FERRUM_METRICS_ENGINE_URL` | text |  | installation, at once | Metrics' engine for external sources, as the server reaches it (a private address; plain http allowed). Its token is Metrics' secret engine.token, sent only to the host it was given for. |
 
 The app `my`'s settings:
 

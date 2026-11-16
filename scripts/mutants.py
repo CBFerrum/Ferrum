@@ -990,7 +990,7 @@ MUTANTS = [
     ("companion-render-ignores-rule", "crates/kernel/src/vault/secrets.rs", "                if !row.rule.reveal {\n", "                if false {\n", COMPANIONS),
     ("companion-made-every-render", "crates/kernel/src/vault/secrets.rs", "&who, Some(made)).await.map(|(_, _, wrote)| wrote)", "&who, None).await.map(|(_, _, wrote)| wrote)", COMPANIONS),
     ("companion-takes-a-persons-secret", "crates/kernel/src/vault/secrets.rs", "            if only.managed && !is_managed(&mut tx, scope, owner, name).await? {\n", "            if false {\n", COMPANIONS),
-    ("companion-renders-with-the-vault-closed", "crates/kernel/src/companion.rs", "        self.db.vault.installation()?;\n        Ok(Rendering {", "        Ok(Rendering {", COMPANIONS),
+    ("companion-renders-with-the-vault-closed", "crates/kernel/src/companion.rs", "        self.db.vault.installation()?;\n        let vault = crate::vault::handle_of(self, owner)?;\n", "        let vault = crate::vault::handle_of(self, owner)?;\n", COMPANIONS),
     ("companion-renders-where-it-is-refused", "crates/kernel/src/companion.rs", "            Some(why) => Err(Error::Conflict(", "            Some(_) => Ok(()),\n            Some(why) => Err(Error::Conflict(", COMPANIONS),
     ("companion-keeps-twice", "crates/kernel/src/vault/secrets.rs", "                > 0;\n            if marked {", "                >= 0;\n            if marked {", COMPANIONS),
     ("object-store-renders-any-store", "server/src/companions.rs", "    if bundled {\n        return None;", "    if true {\n        return None;", ("-p", "ferrum-server", "--lib", "companions::tests")),
