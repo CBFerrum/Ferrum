@@ -146,8 +146,16 @@ async fn publish(body: Arc<Mutex<String>>) -> String {
     url
 }
 
-#[tokio::test]
-async fn saml_single_sign_on() {
+/// On a thread with the stack the server's runtime threads get (server/src/lib.rs, `THREAD_STACK`, 16 MiB), not a test
+/// thread's 2 MiB: in a debug build the CEL parser's recursion (large unoptimized frames), reached under this scenario's
+/// chain of futures, needs between 2 and 3 MiB, which no server thread is near.
+#[test]
+fn saml_single_sign_on() {
+    let run = || tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(scenario());
+    std::thread::Builder::new().name("saml_single_sign_on".into()).stack_size(16 << 20).spawn(run).unwrap().join().unwrap();
+}
+
+async fn scenario() {
     let url = std::env::var("FERRUM_SAML_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_saml_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
