@@ -779,6 +779,7 @@ fn merge(into: &mut Permissions, p: &Permissions) {
         resources,
         overlays,
         roles,
+        uses,
         sql,
     } = p;
     into.native |= native;
@@ -796,6 +797,7 @@ fn merge(into: &mut Permissions, p: &Permissions) {
     into.subscriptions.extend(subscriptions.iter().cloned());
     into.new_entities.extend(new_entities.iter().cloned());
     into.resources.extend(resources.iter().cloned());
+    into.uses.extend(uses.iter().cloned());
     into.sql.extend(sql.iter().cloned());
 }
 
@@ -938,11 +940,13 @@ impl AppManager {
     }
 
     /// A native app asks for everything (it is reviewed platform code); its consent screen lists
-    /// the entities its packages bring.
+    /// the entities its packages bring and the operations of other apps they use.
     fn native_permissions(&self, m: &AppManifest) -> Permissions {
         let catalog = self.kernel.registry.catalog();
-        let new_entities = m.packages.iter().filter_map(|p| catalog.package(p)).flat_map(|p| p.entities.iter().map(|e| e.name.clone())).collect();
-        Permissions { native: true, new_entities, resources: m.resources.iter().map(|r| r.consent_line()).collect(), ..Permissions::default() }
+        let packages: Vec<_> = m.packages.iter().filter_map(|p| catalog.package(p)).collect();
+        let new_entities = packages.iter().flat_map(|p| p.entities.iter().map(|e| e.name.clone())).collect();
+        let uses = packages.iter().flat_map(|p| p.manifest.uses.iter().map(|u| u.capability.clone())).collect();
+        Permissions { native: true, new_entities, uses, resources: m.resources.iter().map(|r| r.consent_line()).collect(), ..Permissions::default() }
     }
 
     /// Whether the workspace's packages of a native app predate this build's (roles and seed

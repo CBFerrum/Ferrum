@@ -189,8 +189,7 @@ fn an_app_calls_what_it_declared_for_the_person_it_acts_for() {
 }
 
 async fn scenario() {
-    let apps =
-        [app("carrier", carrier_packages, carrier_register), app("shop", shop_packages, nothing_registered), app("mall", mall_packages, mall_register)];
+    let apps = [app("carrier", carrier_packages, carrier_register), app("shop", shop_packages, nothing_registered), app("mall", mall_packages, mall_register)];
     let kit = Kit::boot(&database("FERRUM_TEST_DATABASE_URL"), &apps).await;
     let k = kit.k.clone();
     let ws = kit.workspace("acme", &["shop", "mall"], Value::Null).await;
@@ -324,4 +323,10 @@ async fn scenario() {
     tx.commit().await.unwrap();
     assert_eq!(count(&ws, "select count(*) from e_shipment").await, 4, "the inner shipment went with the outer refusal");
     assert_eq!(count(&ws, "select count(*) from logic_effect").await, 5, "and so did both receipts");
+
+    // Disabling the shop takes its packages out of the workspace, and its uses with them: nothing else withdraws them.
+    k.disable_packages(&ws.admin, &["shop".to_string()]).await.unwrap();
+    let pat = k.load_ctx(ws.tenant, pat.user, None, "it".into()).await.unwrap();
+    refused(call(&kit, "shop", &pat, ship("DHL").key("after")).await, "forbidden", "shop does not use carrier.parcel.ship");
+    assert!(call(&kit, "mall", &pat, ship("DHL").key("after")).await.is_ok(), "the mall's stay");
 }
