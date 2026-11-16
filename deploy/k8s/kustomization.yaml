@@ -21,7 +21,7 @@ resources:
 # Browser editors (docs/operations.md, "Browser editors"): uncomment, and set its hosts in editors/.
 # Metrics' engine for external sources (docs/operations.md, "Metrics' engine for external sources"):
 # uncomment, after creating what metrics-engine/kustomization.yaml lists. Its token rendered from the vault as each of
-# its pods starts, with a Metrics release that declares its service: add metrics-engine-files after it.
+# its pods starts (Metrics 0.9.0 and later declare its service): add metrics-engine-files after it.
 # components:
 #   - editors
 #   - metrics-engine

@@ -51,19 +51,14 @@ kust "$tmp/k8s" "$tmp/k.yaml"
 tpl -f "$tmp/all.yaml" --set metricsEngine.files=rendered > "$tmp/c.yaml"
 python3 deploy/helm/compare.py "$tmp/k.yaml" "$tmp/c.yaml"
 
-echo "the engine's files: its Secret by default and with environment: minimal until the image declares its service; rendered when asked"
+echo "the engine's files: its Secret by default and when asked; rendered with environment: minimal (the image declares its service) and when asked"
 engine=(-f "$tmp/digest.yaml" --set metricsEngine.enabled=true --set metricsEngine.image.tag=abc)
 tpl "${engine[@]}" > "$tmp/e-default.yaml"
 tpl "${engine[@]}" --is-upgrade --set environment=minimal > "$tmp/e-minimal.yaml"
 tpl "${engine[@]}" --set metricsEngine.files=rendered --set database.enabled=false --set database.external.urlSecret.name=db \
   --set database.external.directHost=db-direct.internal:5432 --set-json 'database.external.egress.cidrs=["10.20.0.0/16"]' > "$tmp/e-rendered.yaml"
-# The chart as it is once Metrics declares its service: environment: minimal then renders the engine's files.
-cp -R "$chart" "$tmp/declared"
-sed -i.bak -e 's/{{- toJson (list) -}}/{{- toJson (list "metrics-engine") -}}/' "$tmp/declared/templates/_helpers.tpl"
-grep -q 'list "metrics-engine"' "$tmp/declared/templates/_helpers.tpl"
-helm template ferrum "$tmp/declared" --namespace ferrum "${engine[@]}" --is-upgrade --set environment=minimal > "$tmp/e-declared.yaml"
-helm template ferrum "$tmp/declared" --namespace ferrum "${engine[@]}" --is-upgrade --set environment=minimal --set metricsEngine.files=secret > "$tmp/e-kept.yaml"
-helm template ferrum "$tmp/declared" --namespace ferrum "${engine[@]}" > "$tmp/e-full.yaml"
+grep -q 'list "metrics-engine"' "$chart/templates/_helpers.tpl"
+tpl "${engine[@]}" --is-upgrade --set environment=minimal --set metricsEngine.files=secret > "$tmp/e-kept.yaml"
 python3 - "$tmp" <<'PY'
 import sys, yaml
 tmp = sys.argv[1]
@@ -96,12 +91,12 @@ def rendered(name, egress):
     assert policy["egress"][0] == egress and {"port": 53, "protocol": "UDP"} in policy["egress"][1]["ports"], policy["egress"]
     return init
 own_db = {"to": [{"podSelector": {"matchLabels": {"cnpg.io/cluster": "ferrum-db"}}}], "ports": [{"port": 5432}]}
-for name in ["e-default", "e-minimal", "e-kept", "e-full"]:
+for name in ["e-default", "e-kept"]:
     secret(name)
 init = rendered("e-rendered", {"to": [{"ipBlock": {"cidr": "10.20.0.0/16"}}], "ports": [{"port": 5432}]})
 env = {e["name"]: e for e in init["env"]}
 assert env["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {"name": "db", "key": "uri"} and env["FERRUM_DATABASE_DIRECT_HOST"]["value"] == "db-direct.internal:5432", env
-rendered("e-declared", own_db)
+rendered("e-minimal", own_db)
 PY
 if err=$(tpl "${engine[@]}" --set metricsEngine.files=typed 2>&1); then echo "rendered an engine whose files are neither secret nor rendered"; exit 1; fi
 grep -q "metrics-engine's files are secret or rendered" <<<"$err" || { echo "unexpected error: $err"; exit 1; }
