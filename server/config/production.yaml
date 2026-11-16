@@ -117,6 +117,12 @@ settings:
   pdf_url: "<%= get_env(name="FERRUM_PDF_URL", default="") %>"
   s3_endpoint: "<%= get_env(name="FERRUM_S3_ENDPOINT", default="") %>"
   require_object_storage: <%= get_env(name="FERRUM_REQUIRE_OBJECT_STORAGE", default="true") %>
+  # Object storage only (docs/operations.md, "Object storage").
+  s3_set_up_bucket: <%= get_env(name="FERRUM_S3_SET_UP_BUCKET", default="false") %>
+  files_delete_after_days: <%= get_env(name="FERRUM_FILES_DELETE_AFTER_DAYS", default="0") %>
+  backup_reach_days: <%= get_env(name="FERRUM_BACKUP_REACH_DAYS", default="0") %>
+  files_direct_links: <%= get_env(name="FERRUM_FILES_DIRECT_LINKS", default="false") %>
+  files_direct_link_seconds: <%= get_env(name="FERRUM_FILES_DIRECT_LINK_SECONDS", default="60") %>
   secret_key: "<%= get_env(name="FERRUM_SECRET_KEY", default="") %>"
   secret_key_command: "<%= get_env(name="FERRUM_SECRET_KEY_COMMAND", default="") %>"
   kms_transit: "<%= get_env(name="FERRUM_KMS_TRANSIT", default="") %>"

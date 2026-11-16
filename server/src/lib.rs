@@ -28,6 +28,7 @@ pub mod settings;
 pub mod shell;
 pub mod shell_words;
 pub mod state;
+pub mod store;
 pub mod tasks;
 pub mod telemetry;
 pub mod upgrade;

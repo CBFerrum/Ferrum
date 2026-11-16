@@ -5,6 +5,11 @@ Written by `python3 scripts/settings.py --write`, which refuses to add to it: it
 | Variable | Why |
 |---|---|
 | `ALL_PROXY` | the HTTP client (reqwest): the system's proxy for the server's outbound requests |
+| `AWS_CONTAINER_CREDENTIALS_FULL_URI` | the object store: a container's own credentials (EKS Pod Identity, ECS) in place of keys |
+| `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` | the object store: a container's own credentials (ECS) in place of keys |
+| `AWS_PROFILE` | the object store's client: the AWS profile, where no keys are given |
+| `AWS_SHARED_CREDENTIALS_FILE` | the object store's client: the AWS credentials file, where no keys are given |
+| `AWS_WEB_IDENTITY_TOKEN_FILE` | the object store: a machine's own identity (a web identity, IRSA) in place of keys |
 | `BAO_TOKEN` | through R1: the key-management service's token is the file /run/ferrum/kms.token |
 | `CLICOLOR` | the terminal's colours (Loco's banner and log) |
 | `CLICOLOR_FORCE` | the terminal's colours (Loco's banner and log) |

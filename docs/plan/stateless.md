@@ -245,6 +245,99 @@ checks versioning, lifecycle and encryption at rest. Objects are backed up besid
 both to one moment. Downloads stay through the server; short-lived direct links are a setting, never for entities
 marked for recorded reads.
 
+### D6, decided while building it (16 November 2026)
+
+- **One seam.** Loco's storage is now `Objects` too (`server/src/objects.rs`, `Files`): what handlers, the shell, the
+  App Manager and the kernel's file store keep goes through the same reads, writes and deletions as streams, uploads
+  and presigned links. The store is built once, from the settings, with the same keys for both.
+- **A directory, existing or new** (`server/src/store.rs`, `decide`). Outside development and tests a server without a
+  bucket starts only when the newest object its database names (its newest `file_object`, else the newest interface's
+  first file) is in that directory: a new database names none, a wrong or empty directory lacks it, and a database that
+  has kept its files in a store (`file_store`, written by any start with a bucket) is refused. No setting a mistake can change makes that true. `require_object_storage`
+  still refuses outright.
+- **Moving** (`file_store` 'moving', then 'store'; `file_move`; `ferrum task files_move`). Writes to the store from a
+  start with a bucket on; reads store first, directory second (`Objects::find`, Loco's reads, streams, ranges,
+  journals' listings, parts of an upload begun before); deletions from the directory first, then the store, so a copy
+  made meanwhile sees the file gone and deletes its own. The move: one at a time (a session advisory lock on the direct
+  pool); per file streamed, read back, length and SHA-256 compared, recorded; never written over a different object,
+  never deleting from the directory; uploads, probes and the restore marker left out. Confirmed only with nothing
+  failed, no live `replica` that started before files began to move or is of an older build, and one more pass after
+  that check finding nothing new (at most eight passes). The one writer it cannot see, a build from before `replica`,
+  leaves files in the directory that `files_move` copies when run again.
+- **Keys or identity.** Unchanged for AWS (no endpoint). With an endpoint and no keys the start is refused, as before,
+  unless the machine names an identity (`AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_CONTAINER_CREDENTIALS_FULL_URI` or
+  `_RELATIVE_URI`); then the S3 library's chain finds them. The doctor and `s3_set_up_bucket` sign their bucket
+  requests with the same chain (`reqsign`, the crates OpenDAL uses, at its versions).
+- **One moment.** Names are never used again for other bytes (a workspace's file by a new id; an interface's or an
+  app's by its digest), so a database restored to T needs only that T's objects exist. Deletions wait
+  `files_delete_after_days` (`object_release`, swept every ten minutes, each row held while its object is deleted, never
+  while a restore or a move holds outward work). A key that is written again (an interface's file) is "not there" while
+  its deletion waits, so whoever asks writes it again, which takes the deletion back; a write waits for a sweep holding
+  its row. The backup *relies on versioning* (a lifecycle rule keeps old versions as long as the backups reach): a
+  version is only ever made by a deletion, so it costs nothing until one, where a copy job would double every file,
+  need keys and a schedule, and lag behind; losing the bucket is the provider's replication's. Never roll the bucket
+  back: the restore marker would go back with it. The drill (`deploy/drill.sh`): a dump restored (or a database already
+  restored), then `check_files digest:yes` (every `file_object` read through, length and SHA-256 against its row; app
+  bundles looked for). No chart CronJob: nothing to copy.
+- **The doctor**: `storage.directory` (error-level), `storage.moving`, `storage.deletions` (`files_delete_after_days`
+  against `backup_reach_days`), `storage.versioning`, `storage.lifecycle`, `storage.encryption`, `storage.public` (a
+  request without keys, and the policy's status) and `storage.clock`.
+- **Compose's store: SeaweedFS** (docs/references/object-stores.md: Garage keeps no versions and does not encrypt).
+  `deploy/store/start.sh` makes the keys and the encryption key at its first start and hands the access key over in a
+  volume the two share alone; the server keeps it in the vault and deletes the file; `s3_set_up_bucket` makes the
+  bucket and its protections. The chart keeps taking an outside store: a store in the chart would not be highly
+  available, and the chart's own database is.
+- **Direct links**: off; `307` to a link signed for the store, at most 300 seconds; never for a recorded entity, an
+  outside person, an active type, or while files move.
+- **Not proved here**: IRSA's token taken by AWS STS and a role's policy on the bucket; GKE workload identity (GCS
+  speaks S3 with HMAC keys only); a lifecycle rule taking effect (days); Compose itself (no Docker on this machine:
+  `deploy/smoke.sh` was not run).
+
+### D6, other programs' stores (for the apps slice)
+
+Read on 16 November 2026 (Cloud `b6736e2`, Metrics engine origin/main `a68881e`, Comms `eb19eec`, Live `ce317bf`, Edge
+`5fe1ea1`). Where the seam itself falls short for them: an app reaches files only through `Kernel::store_file`,
+`read_file`, `file_info` and `outbox::release_objects`, whose keys must be `tenants/{tenant}/…`
+(crates/kernel/src/files.rs:129, crates/kernel/src/outbox.rs:202); the raw store is `pub(crate)` (files.rs:95);
+`store_file` takes a whole file in memory, `read_file` refuses one over 256 MiB (files.rs:49); and nothing adopts an
+object another service wrote into the store as a file (recordings need it).
+
+- **Cloud.** Its own OpenDAL client, S3 or a directory, for three stores (`src/controller.rs:47-76,132-135`;
+  `deploy/k8s/controller.yaml:45-50,64-67`: `FERRUM_CLOUD_ARTIFACTS`, `_COPIES`, `_OBJECTS`, keys
+  `FERRUM_CLOUD_S3_ACCESS_KEY_ID`/`_SECRET_ACCESS_KEY` from Secret `cloud-providers`): remove `store()`, the variables
+  and the keys; its kernel already holds the platform's store (server/src/app.rs:494). Build artifacts
+  (`src/build/controller.rs:367-374,454`, `sql/005_build.sql:59-72`) and resources' backups and exports
+  (`src/resources/controller.rs:550-571,618`, `sql/002_resources.sql:114-130`): `store_file` with a system context, a
+  file id in place of `location`, reads over 256 MiB streamed; `FERRUM_CLOUD_COPIES_REGION` (controller.rs:114-115)
+  goes or stays an exception. Apps' object resources (`src/resources/objects.rs:87-113,360-372`,
+  `sql/002_resources.sql:180-199`), with a delete sweep of their own that ignores `files_delete_after_days`: a
+  `file_object` per version deleted through `release_objects`, or a kernel API for a store under a prefix; customers'
+  own buckets (objects.rs:61-85) stay. The forge (`deploy/k8s/forge.yaml:2-3,62,68,89-93`): repositories and SQLite
+  stay on the volume (D8); LFS, attachments and packages to prefix `forge/` by Forgejo's `[storage]` from `s3_*`. The
+  TLS edge's ACME account and customers' certificates on a 1Gi volume (`deploy/k8s/edge.yaml:7-9,21,33-39,94`): Caddy
+  with S3 storage under `edge-tls/` (private keys would then sit in the files bucket: decide first). Serving snapshots
+  and build scratch (`deploy/k8s/serve.yaml:32,49,54-59`, `serve/src/node.rs:92-168`): rebuildable, stay.
+- **The Metrics engine.** Reads CSV and Parquet from local paths, age by mtime, writes nothing (engine
+  `src/lib.rs:95-105,296-297,567-579,667-673`, `src/main.rs:27-29`); here a bind mount and a ReadOnlyMany claim
+  (deploy/metrics-engine.yml:23-24, deploy/k8s/metrics-engine/metrics-engine.yaml:60-67,92, the chart's
+  templates/metrics-engine.yaml:55-62,87, values.yaml:377-386, docs/operations.md "Metrics' engine"): DataFusion's
+  `object_store` with `aws`, `s3://` paths from `s3_*` with read-only keys or a pod identity, age from last-modified,
+  egress to the store. It is the operator's input, not Ferrum's files: it may also stay outside.
+- **Recordings.** Meetings: LiveKit Egress writes `ferrum/{tenant}/{room}/{rec}.mp4` to storage of its own and Ferrum
+  keeps a `location` string (Comms `src/meet.rs:57-66,246-252,325-331`, `sql/005_meet_records.sql:15-28`; no Egress
+  service in deploy/meet.yml): give Egress `file_outputs[].s3` from `s3_*` and the vault's keys (or its own identity)
+  under `tenants/{tenant}/{file id}`, then adopt the object as a `file_object` (size and SHA-256 read as a stream) on
+  the meeting's record: the missing kernel call above. Live records nothing yet (its replay link is a URL on an
+  outside store, `src/broadcast.rs:125-128`, `src/upkeep.rs:88-106`); its relay's TLS and signing keys are files, not
+  objects.
+- **Edge certificates.** The gateway's key and journal (`gateway/src/config.rs:46-48,200-205`, `main.rs:41-81`) and
+  the device ports' certificates, OPC UA PKI and firmware cache (`runtime.rs:168,193-199,517`,
+  `adapters/transport.rs:195-204,512-525`, `adapters/opcua.rs:213,226`) stay on the site's box: it works offline and
+  the key never leaves. Platform side, device firmware is a URL with its SHA-256 (`packages/edge/entities/edge.yaml:207-220`,
+  `src/firmware.rs:32-37,167`): a file field stored with `store_file`, fetched by gateways through a new signed route
+  answered with `read_file` (relay.rs:23-25 lists the routes passed). No CA keys anywhere; device certificates are
+  fingerprints in the database (`src/site.rs:326-333`).
+
 ## D7. Any PostgreSQL
 
 The chart takes an outside database (address, certificate authority, an egress rule). Direct and read addresses are

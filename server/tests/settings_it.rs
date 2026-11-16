@@ -166,7 +166,9 @@ async fn the_binary() {
         ("binding", "127.0.0.1".to_string()),
         ("public_url", format!("http://127.0.0.1:{port}")),
         ("require_object_storage", "false".to_string()),
-        ("files_dir", dir.join("files").to_string_lossy().into_owned()),
+        // Where the set-up above keeps its files: outside development and tests, a server without a bucket starts only
+        // where its database's files are (docs/operations.md, "Object storage").
+        ("files_dir", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&st.settings.files_dir).to_string_lossy().into_owned()),
         ("packages_dir", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages").to_string_lossy().into_owned()),
         ("log_level", "warn".to_string()),
     ] {

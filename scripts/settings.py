@@ -55,6 +55,11 @@ ALLOWED = {
     "FERRUM_DOCX_COMMENTS": "a test's sample files (crates/kernel/src/coedit/docx.rs)",
     "FERRUM_PARITY_STATES": "a test's sample files (crates/kernel/src/coedit/docx.rs)",
     "FERRUM_PARITY_OUT": "a test's sample files (crates/kernel/src/coedit/docx.rs)",
+    # A machine's own identity, which the S3 library reads; the server only asks whether one is named
+    # (server/src/objects.rs, `IDENTITY`).
+    "AWS_WEB_IDENTITY_TOKEN_FILE": "a machine's identity for the object store (IRSA)",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI": "a machine's identity for the object store (EKS Pod Identity, ECS)",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "a machine's identity for the object store (ECS)",
 }
 TEST_NAME = re.compile(r"(^|_)TEST(_|$)|^CARGO_")
 READ = re.compile(r"(?:env::var|env::var_os|\benv|\bvar|\bsome|\bset|option_env!|\benv!)\(\s*\"([A-Z][A-Z0-9_]{2,})\"")
@@ -115,6 +120,11 @@ LIBRARIES = {
     "OPENSSL_armcap": "the cryptography library: which processor instructions it uses",
     "SSH_AUTH_SOCK": "a library's SSH agent (libgit2), used only for a repository reached over SSH",
     "FERRUM_TEST_RUN_DIR": "a debug build only: where a test puts the files of /run/ferrum (a release build never reads it)",
+    "AWS_WEB_IDENTITY_TOKEN_FILE": "the object store: a machine's own identity (a web identity, IRSA) in place of keys",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI": "the object store: a container's own credentials (EKS Pod Identity, ECS) in place of keys",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "the object store: a container's own credentials (ECS) in place of keys",
+    "AWS_PROFILE": "the object store's client: the AWS profile, where no keys are given",
+    "AWS_SHARED_CREDENTIALS_FILE": "the object store's client: the AWS credentials file, where no keys are given",
 }
 
 
