@@ -504,6 +504,23 @@ async fn secrets_and_people(no_file: &Path) {
     assert!(crm.verify(&k, ws, "signing", b"document", &sig).await.unwrap() && !crm.verify(&k, ws, "signing", b"other", &sig).await.unwrap());
     assert!(matches!(crm.rotate(&k, ws, "signing", value("not a key pair")).await, Err(Error::Invalid(_))), "another kind under its name");
     assert!(matches!(crm.reveal(&k, ws, "signing").await, Err(Error::Forbidden(_))), "its private half stays");
+    // A signature names its version, and each kept version's public half can be read (Cloud's issuer keys).
+    crm.set(&k, ws, "issuer", New::Ed25519, Rule { overlap_secs: 3600, ..Default::default() }).await.unwrap();
+    crm.rotate(&k, ws, "issuer", New::Ed25519).await.unwrap();
+    let (v2, sig2) = crm.sign_at(&k, ws, "issuer", b"jwt", None).await.unwrap();
+    let (v1, sig1) = crm.sign_at(&k, ws, "issuer", b"jwt", Some(1)).await.unwrap();
+    assert_eq!((v1, v2), (1, 2), "the current one unless asked for another");
+    for (v, sig) in [(1, &sig1), (2, &sig2)] {
+        let half = crm.public_key(&k, ws, "issuer", Some(v)).await.unwrap().unwrap();
+        let half = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, half).unwrap();
+        assert!(ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &half).verify(b"jwt", sig).is_ok(), "version {v}");
+    }
+    assert_eq!(crm.public_key(&k, ws, "issuer", None).await.unwrap(), crm.describe(&k, ws, "issuer").await.unwrap().unwrap().public_key);
+    assert!(matches!(crm.sign_at(&k, ws, "issuer", b"jwt", Some(7)).await, Err(Error::NotFound(_))), "a version not kept");
+    assert_eq!(crm.public_key(&k, ws, "hooks", None).await.unwrap(), None, "a value has no public half");
+    // What an app sealed names the key version, beside the one it seals with now: what to seal again.
+    let sealed = crm.seal(&k, ws, "crm.note/1", b"kept outside").await.unwrap();
+    assert_eq!(Vault::sealed_version(&sealed), Some(crm.key_version(&k, ws).await.unwrap()));
 
     // ── an expired secret is used no more; a removed one is gone ──
     as_vault(&db, &format!("with u as (update vault.secret set rule = rule || '{{\"expires_at\": \"2020-01-01T00:00:00Z\"}}' where scope = '{w}' and name = 'smtp.password' returning 1) select count(*) from u")).await;
@@ -573,6 +590,26 @@ async fn secrets_and_people(no_file: &Path) {
     assert!(!serde_json::to_string(&listed).unwrap().contains(&shown) && !serde_json::to_string(&listed).unwrap().contains("relay-pw"));
     let set_by_person = trail(&k, w).await.into_iter().filter(|(a, d)| a == "set" && d["name"] == "partner.token").count();
     assert_eq!(set_by_person, 1);
+
+    // ── a secret its app manages: people's ways leave it to the app and say so; the app goes on using and changing it ──
+    fn refused(r: Result<(), Error>) -> bool {
+        matches!(r, Err(Error::Conflict(m)) if m.contains("managed by its app, crm"))
+    }
+    crm.set(&k, ws, "issuer.key", New::Ed25519, Rule::default()).await.unwrap();
+    crm.manage(&k, ws, "issuer.key", true).await.unwrap();
+    assert_eq!(crm.describe(&k, ws, "issuer.key").await.unwrap().unwrap().managed_by.as_deref(), Some("crm"));
+    assert!(k.vault_secrets(&admin).await.unwrap().iter().any(|d| d.name == "issuer.key" && d.managed_by.as_deref() == Some("crm")));
+    assert!(k.vault_secrets(&admin).await.unwrap().iter().any(|d| d.name == "partner.token" && d.managed_by.is_none()), "people's own");
+    assert!(refused(k.vault_set(&proved, "crm", "issuer.key", New::Ed25519, Rule::default()).await.map(|_| ())));
+    assert!(refused(k.vault_rotate(&proved, "crm", "issuer.key", New::Ed25519).await.map(|_| ())));
+    assert!(refused(k.vault_rule(&proved, "crm", "issuer.key", Rule::default()).await.map(|_| ())));
+    assert!(refused(k.vault_remove(&proved, "crm", "issuer.key").await.map(|_| ())));
+    assert!(refused(k.vault_regenerate(ws, "crm", "issuer.key").await.map(|_| ())), "an operator's regenerate too");
+    assert_eq!(crm.rotate(&k, ws, "issuer.key", New::Ed25519).await.unwrap().managed_by.as_deref(), Some("crm"), "its app rotates it");
+    assert!(crm.sign(&k, ws, "issuer.key", b"m").await.is_ok(), "and uses it");
+    crm.manage(&k, ws, "issuer.key", false).await.unwrap();
+    assert!(k.vault_rule(&proved, "crm", "issuer.key", Rule::default()).await.is_ok(), "people's again once its app lets go");
+    assert!(matches!(crm.manage(&k, ws, "missing", true).await, Err(Error::NotFound(_))));
     for (who, why) in [
         (Ctx { is_admin: false, ..proved.clone() }, "not an administrator"),
         (Ctx { outside: true, ..proved.clone() }, "from outside"),
@@ -827,6 +864,41 @@ async fn rotation_under_use(dir: &Path, no_file: &Path) {
     assert_eq!(level(&never.vault_findings().await.unwrap(), "vault"), Some(Level::Off), "a process that never opened it");
     vault::remove_slot(&d.db, SlotKind::Recovery).await.unwrap();
     assert_eq!(level(&d.vault_findings().await.unwrap(), "vault.recovery"), Some(Level::Warning), "no recovery key");
+
+    // ── a server's start keeps the slots whole by itself: the mounted key file gains its slot, and a changed password
+    //    its credential slot again, each once however many replicas start together ──
+    let key = key_file(dir, "settle.key");
+    let first = replica().await;
+    assert_eq!(vault::open(&first, opener(Some("ferrum"), &key, None), false).await.unwrap(), Opened::With(SlotKind::Credential));
+    assert_eq!(vault::settle(&first).await.unwrap().len(), 1, "an installation that had only its credential slot gains a file slot");
+    assert!(vault::settle(&first).await.unwrap().is_empty(), "once");
+    // The password changes (an import, a copy, a recovery, a provider's reset): the file slot opens the vault, and two
+    // replicas starting together make the credential slot again for the new password once.
+    let (r1, r2) = (replica().await, replica().await);
+    for r in [&r1, &r2] {
+        assert_eq!(vault::open(r, opener(Some("n3w-pass"), &key, None), false).await.unwrap(), Opened::With(SlotKind::File));
+    }
+    let k_changed = Kernel::boot(replica().await, core(), HookRegistry::default(), KernelSettings::default(), None).await.unwrap();
+    vault::open(&k_changed.db, opener(Some("n3w-pass"), &key, None), false).await.unwrap();
+    let advice = k_changed.vault_findings().await.unwrap().into_iter().find(|f| f.check == "vault.slot.credential").unwrap();
+    assert!(advice.level == Level::Warning && advice.fix.is_some_and(|f| f.contains("Start a server")), "advice that works: {advice:?}");
+    let (a1, a2) = tokio::join!(vault::settle(&r1), vault::settle(&r2));
+    assert_eq!(a1.unwrap().len() + a2.unwrap().len(), 1, "made again once");
+    assert_eq!(as_vault(&db, "select count(*) from vault.event where action = 'credential_remade'").await, 1);
+    assert_eq!(
+        vault::open(&replica().await, opener(Some("n3w-pass"), no_file, None), false).await.unwrap(),
+        Opened::With(SlotKind::Credential),
+        "the new password opens it alone"
+    );
+    // A key file other than the slot's is left alone; a credential slot an operator removed stays removed.
+    let other = key_file(dir, "other.key");
+    let elsewhere = replica().await;
+    assert_eq!(vault::open(&elsewhere, opener(Some("n3w-pass"), &other, None), false).await.unwrap(), Opened::With(SlotKind::Credential));
+    assert!(vault::settle(&elsewhere).await.unwrap().is_empty(), "the file slot is not replaced");
+    vault::remove_slot(&elsewhere, SlotKind::Credential).await.unwrap();
+    let after = replica().await;
+    assert_eq!(vault::open(&after, opener(Some("an0ther"), &key, None), false).await.unwrap(), Opened::With(SlotKind::File));
+    assert!(vault::settle(&after).await.unwrap().is_empty(), "none is made where none is");
 }
 
 /// Opens what the vault sealed, as its format says (nonce, ciphertext, tag; the place as associated data): what

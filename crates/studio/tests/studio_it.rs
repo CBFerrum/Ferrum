@@ -110,7 +110,8 @@ async fn scenario() {
     let catalog = Catalog::from_packages(packages).expect("catalog");
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
-    ferrum_app_erp::register(&mut hooks);
+    // As the server registers it: as itself, so that it takes its own vault handle.
+    hooks.app("erp", &[], ferrum_app_erp::register);
     ferrum_studio::register(&mut hooks);
     for source in ferrum_app_erp::reports().into_iter().chain(ferrum_studio::reports()) {
         ferrum_domain::reports::add_source(source);

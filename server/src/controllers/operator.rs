@@ -186,6 +186,31 @@ async fn set_secret(
     }))
 }
 
+/// What changes a secret's rule alone: `{"rule": {...}}`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RuleBody {
+    pub(crate) rule: ferrum_kernel::vault::Rule,
+}
+
+/// `PUT /api/operator/secrets/{owner}/{name}/rule` `{"rule": ...}`: changes only the rule of one of the installation's
+/// secrets (another owner's than the platform's, whose rules the server keeps), recorded as the operator's.
+async fn set_rule(
+    State(app): State<AppContext>,
+    headers: HeaderMap,
+    Path((owner, name)): Path<(String, String)>,
+    Json(body): Json<RuleBody>,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    operator(&st, &headers).await?;
+    if owner == "platform" {
+        return Err(ApiError(Error::Invalid(
+            "the platform's secrets keep the rules the server gives them (bound to where each is sent): set the secret again instead".into(),
+        )));
+    }
+    Ok(no_store(Json(json!({"secret": st.vault.operator_rule(&st.kernel, &owner, &name, body.rule).await?})).into_response()))
+}
+
 /// `DELETE /api/operator/secrets/{owner}/{name}`: removes one of the installation's secrets.
 async fn remove_secret(State(app): State<AppContext>, headers: HeaderMap, Path((owner, name)): Path<(String, String)>) -> ApiResult<Response> {
     let st = app_state(&app)?;
@@ -208,4 +233,5 @@ pub fn routes() -> Routes {
         .add("/api/operator/secrets", get(secrets))
         .add("/api/operator/secrets/{owner}/{name}", put(set_secret).delete(remove_secret))
         .add("/api/operator/secrets/{owner}/{name}/rotate", post(set_secret))
+        .add("/api/operator/secrets/{owner}/{name}/rule", put(set_rule))
 }

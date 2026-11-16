@@ -69,7 +69,7 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{- end }}
 {{- end }}
 {{- end }}
-{{ include "ferrum.secretEnv" (list . "JWT_SECRET" false) }}
+{{ include "ferrum.secretEnv" (list . "JWT_SECRET" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_SECRET_KEY" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_CLAMAV_ADDR" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_CLAMAV_MAX_MB" true) }}
@@ -78,11 +78,11 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{ include "ferrum.secretEnv" (list . "FERRUM_RETIRED_SECRET_KEYS" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_AUDIT_SINK_URL" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_AUDIT_SINK_SECRET" true) }}
-{{ include "ferrum.secretEnv" (list . "FERRUM_BOOTSTRAP_TOKEN" false) }}
-{{ include "ferrum.secretEnv" (list . "FERRUM_METRICS_TOKEN" false) }}
+{{ include "ferrum.secretEnv" (list . "FERRUM_BOOTSTRAP_TOKEN" true) }}
+{{ include "ferrum.secretEnv" (list . "FERRUM_METRICS_TOKEN" true) }}
 {{ include "ferrum.secretEnv" (list . "FERRUM_OPERATOR_TOKEN" true) }}
-{{ include "ferrum.secretEnv" (list . "AWS_ACCESS_KEY_ID" false) }}
-{{ include "ferrum.secretEnv" (list . "AWS_SECRET_ACCESS_KEY" false) }}
+{{ include "ferrum.secretEnv" (list . "AWS_ACCESS_KEY_ID" true) }}
+{{ include "ferrum.secretEnv" (list . "AWS_SECRET_ACCESS_KEY" true) }}
 - {name: FERRUM_S3_BUCKET, value: {{ .Values.storage.bucket | quote }}}
 - {name: FERRUM_S3_REGION, value: {{ .Values.storage.region | quote }}}
 {{- with .Values.storage.endpoint }}
@@ -170,31 +170,54 @@ as JSON {name, key}. */}}
 {{- toJson (dict "name" $name "key" (ternary ($e.key | default "uri") ($old.key | default "uri") (not (empty $e.name)))) -}}
 {{- end -}}
 
-{{/* /run/ferrum, the files at fixed paths a pod reads when they are there (docs/plan/stateless.md, D1): the outside
-database's certificate authority as db-ca.pem. Nothing without one. `ferrum.runVolume` goes in a pod's volumes,
-`ferrum.runMount` in its container's volumeMounts. */}}
+{{/* /run/ferrum, the files at fixed paths a pod reads when they are there (docs/plan/stateless.md, D1): the vault's key
+file as root.key (vault.keySecret, or the Secret the chart makes, ferrum.vaultKeySecret), the outside database's
+certificate authority as db-ca.pem, the key-management service's token and certificate authority as kms.token and
+kms-ca.pem. Every source is optional, so a pod starts before the key's Secret exists (a migrate Job on the first upgrade
+to this chart). `ferrum.runVolume` goes in a pod's volumes, `ferrum.runMount` in its container's volumeMounts. */}}
 {{- define "ferrum.runVolume" -}}
 {{- $ca := .Values.database.external.caSecret | default dict -}}
-{{- if and (not .Values.database.enabled) $ca.name }}
+{{- $v := .Values.vault | default dict -}}
+{{- $key := $v.keySecret | default dict -}}
+{{- $kms := $v.kms | default dict -}}
+{{- $token := $kms.tokenSecret | default dict -}}
+{{- $kmsCa := $kms.caSecret | default dict -}}
 - name: run
   projected:
     sources:
+      - secret: {name: {{ include "ferrum.vaultKeySecret" . }}, items: [{key: {{ $key.key | default "root.key" }}, path: root.key}], optional: true}
+      {{- if and (not .Values.database.enabled) $ca.name }}
       - secret: {name: {{ $ca.name }}, items: [{key: {{ $ca.key | default "ca.crt" }}, path: db-ca.pem}]}
-{{- end }}
+      {{- end }}
+      {{- with $token.name }}
+      - secret: {name: {{ . }}, items: [{key: {{ $token.key | default "token" }}, path: kms.token}]}
+      {{- end }}
+      {{- with $kmsCa.name }}
+      - secret: {name: {{ . }}, items: [{key: {{ $kmsCa.key | default "ca.crt" }}, path: kms-ca.pem}]}
+      {{- end }}
 {{- end -}}
 
 {{- define "ferrum.runMount" -}}
-{{- $ca := .Values.database.external.caSecret | default dict -}}
-{{- if and (not .Values.database.enabled) $ca.name }}
 - {name: run, mountPath: /run/ferrum, readOnly: true}
-{{- end }}
+{{- end -}}
+
+{{/* The Secret holding the vault's key file: vault.keySecret.name, or the one the chart makes (vault-key.yaml). */}}
+{{- define "ferrum.vaultKeySecret" -}}
+{{- $key := (.Values.vault | default dict).keySecret | default dict -}}
+{{- $key.name | default (printf "%s-vault-key" (include "ferrum.fullname" .)) -}}
+{{- end -}}
+
+{{/* Whether pods mount their service account's token: only to sign in to the key-management service as the pod. */}}
+{{- define "ferrum.serviceAccountToken" -}}
+{{- ternary "true" "false" (((.Values.vault | default dict).kms | default dict).serviceAccount | default false) -}}
 {{- end -}}
 
 {{/* The variables `environment: minimal` keeps besides the database's address and the secrets: what the address is
-made of (the migrate Job needs the direct host before the settings Job has written anything), and what apps compiled
-into the server read from the environment themselves (server/src/settings.yaml). */}}
+made of, and what apps compiled into the server read from the environment themselves (server/src/settings.yaml, the
+entries that move to their app). The direct and read hosts are not among them: they are the address's own parameters
+there (`ferrum_direct_host`, `ferrum_read_host`, which the server takes out before it connects). */}}
 {{- define "ferrum.envKept" -}}
-{{- toJson (list "FERRUM_DB_USER" "FERRUM_DB_PASSWORD" "FERRUM_DB_NAME" "FERRUM_DATABASE_DIRECT_URL" "FERRUM_DATABASE_READ_URL" "FERRUM_DATABASE_DIRECT_HOST" "FERRUM_DATABASE_READ_HOST" "FERRUM_OFFICE_URL" "FERRUM_OFFICE_WOPI_URL" "FERRUM_EDITORS_URL" "FERRUM_METRICS_ENGINE_URL") -}}
+{{- toJson (list "FERRUM_DB_USER" "FERRUM_DB_PASSWORD" "FERRUM_DB_NAME" "FERRUM_DATABASE_DIRECT_URL" "FERRUM_DATABASE_READ_URL" "FERRUM_OFFICE_URL" "FERRUM_OFFICE_WOPI_URL" "FERRUM_EDITORS_URL" "FERRUM_METRICS_ENGINE_URL") -}}
 {{- end -}}
 
 {{/* A pool's environment with `environment: minimal` (values.yaml): the database's address naming the pool
@@ -206,6 +229,10 @@ pool's own `env` and, while the migrate Job runs, migrate.serverEnv. Call with (
 {{- $kept := include "ferrum.envKept" $root | fromJsonArray -}}
 {{- $extra := dict -}}{{- range $v.extraEnv }}{{ $_ := set $extra .name true }}{{ end -}}
 {{- $pool := printf "application_name=pool:%s" ($p.name | default "default") -}}
+{{- if not $v.database.enabled -}}
+{{- with $v.database.external.directHost }}{{ $pool = printf "%s&ferrum_direct_host=%s" $pool . }}{{ end -}}
+{{- with $v.database.external.readHost }}{{ $pool = printf "%s&ferrum_read_host=%s" $pool . }}{{ end -}}
+{{- end -}}
 {{- $env := list -}}
 {{- range (include "ferrum.env" $root | fromYamlArray) -}}
 {{- if and (eq .name "DATABASE_URL") (hasKey . "valueFrom") -}}
@@ -230,7 +257,7 @@ each pool's own three; `settings` over them. */}}
 {{- $v := .Values -}}
 {{- $doc := dict -}}
 {{- if eq $v.environment "minimal" -}}
-{{- $skip := concat (include "ferrum.envKept" . | fromJsonArray) (list "DATABASE_URL" "FERRUM_DB_MAX_CONNECTIONS" "FERRUM_RUN_BACKGROUND" "FERRUM_ZONE") -}}
+{{- $skip := concat (include "ferrum.envKept" . | fromJsonArray) (list "DATABASE_URL" "FERRUM_DB_MAX_CONNECTIONS" "FERRUM_RUN_BACKGROUND" "FERRUM_ZONE" "FERRUM_DATABASE_DIRECT_HOST" "FERRUM_DATABASE_READ_HOST") -}}
 {{- range $v.extraEnv }}{{ $skip = append $skip .name }}{{ end -}}
 {{- $installation := dict -}}
 {{- range (include "ferrum.env" . | fromYamlArray) -}}

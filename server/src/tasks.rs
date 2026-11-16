@@ -24,7 +24,7 @@ fn kernel(ctx: &AppContext) -> Result<std::sync::Arc<ferrum_kernel::Kernel>> {
 }
 
 /// The tasks that run with the vault closed: they report on it or repair it (docs/operations.md, "The vault").
-const VAULT_REPAIRS: [&str; 3] = ["doctor", "vault_status", "vault_rewrap"];
+const VAULT_REPAIRS: [&str; 4] = ["doctor", "vault_status", "vault_rewrap", "vault_add_slot"];
 
 /// Whether the command line runs one of [`VAULT_REPAIRS`].
 fn repairs_vault(args: impl IntoIterator<Item = String>) -> bool {
@@ -47,7 +47,7 @@ pub async fn open_vault(
     use ferrum_kernel::vault::{Opened, Opener};
     let opener = Opener {
         database_url: database_url.to_string(),
-        file: ferrum_kernel::vault::ROOT_FILE.into(),
+        file: ferrum_kernel::db::run_path(ferrum_kernel::vault::ROOT_FILE),
         transit: transit.cloned(),
         command: Some(settings.secret_key_command.trim().to_string()).filter(|c| !c.is_empty()),
         kdf: Default::default(),
@@ -85,8 +85,11 @@ impl Task for KmsWrap {
     }
     async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
         let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
-        let Some(transit) = crate::app::kms_transit(&st.settings)? else {
-            return Err(Error::Message("set FERRUM_KMS_TRANSIT to the Transit key that is to wrap them (https://host:8200/<mount>/<key>)".into()));
+        // The keys go only to an address the environment gives beside them, never to one a row in the database chose.
+        let Some(transit) = crate::app::kms_transit_of_the_environment(&st.settings)? else {
+            return Err(Error::Message(
+                "set FERRUM_KMS_TRANSIT in the environment to the Transit key that is to wrap them (https://host:8200/<mount>/<key>)".into(),
+            ));
         };
         let wrap = |value: String| {
             let transit = transit.clone();
@@ -1037,7 +1040,7 @@ impl Task for FilesMove {
 async fn move_source(st: &crate::state::AppState, vars: &Vars) -> Result<ferrum_kernel::workspace_move::MoveSource> {
     let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let url = env("FERRUM_MOVE_SOURCE_DATABASE_URL").ok_or_else(|| Error::Message("set FERRUM_MOVE_SOURCE_DATABASE_URL to the source's database".into()))?;
-    let transit = crate::app::kms_transit(&st.settings)?;
+    let transit = crate::app::kms_transit_of_the_environment(&st.settings)?;
     let mut keys = Vec::new();
     for k in env("FERRUM_MOVE_SOURCE_SECRET_KEYS").unwrap_or_default().split(',').map(str::trim).filter(|k| !k.is_empty()) {
         keys.push(ferrum_kernel::kms::resolve(k, transit.as_ref()).await.map_err(|e| Error::Message(format!("FERRUM_MOVE_SOURCE_SECRET_KEYS: {e}")))?);
@@ -1379,6 +1382,29 @@ fn read_once(what: &str) -> Result<ferrum_kernel::vault::Zeroizing<String>> {
     Ok(given)
 }
 
+/// The old password or the recovery key for `vault_rewrap` and `vault_add_slot kind:credential`: from the file `file:`
+/// names (a mounted Secret, so that a Job can run it), else one line from standard input.
+fn given(vars: &Vars, what: &str) -> Result<ferrum_kernel::vault::Zeroizing<String>> {
+    let Ok(path) = vars.cli_arg("file") else { return read_once(what) };
+    let text = ferrum_kernel::vault::Zeroizing::new(std::fs::read_to_string(path).map_err(|e| Error::Message(format!("{what} from {path}: {e}")))?);
+    let value = ferrum_kernel::vault::Zeroizing::new(text.trim_end_matches(['\r', '\n']).to_string());
+    if value.is_empty() {
+        return Err(Error::Message(format!("{path} holds no {what}")));
+    }
+    Ok(value)
+}
+
+/// What `with:` says opens the vault for making the credential slot again: the old password (the default) or the
+/// recovery key, each given once.
+fn rewrap_with(vars: &Vars) -> Result<ferrum_kernel::vault::Rewrap> {
+    use ferrum_kernel::vault::Rewrap;
+    Ok(match vars.cli_arg("with").unwrap_or("password") {
+        "password" => Rewrap::OldPassword(given(vars, "the old database password")?),
+        "recovery" => Rewrap::Recovery(given(vars, "the recovery key")?),
+        other => return Err(Error::Message(format!("with:{other}: say with:password or with:recovery"))),
+    })
+}
+
 fn print_recovery(key: &str) {
     println!(
         "The recovery key, shown this once:\n\n    {key}\n\nWrite it down and keep it offline, apart from the database and its backups. With it, `ferrum task vault_rewrap with:recovery` opens the vault when nothing else does."
@@ -1451,7 +1477,9 @@ impl Task for VaultEvents {
 
 /// `vault_add_slot kind:file|kms|credential|recovery`: adds a slot, or replaces the one of that kind with a new key
 /// (rotating it): `file` from /run/ferrum/root.key here, `kms` from the key-management service set here, `credential`
-/// from this DATABASE_URL's password, `recovery` with a new recovery key, printed once.
+/// from this DATABASE_URL's password, `recovery` with a new recovery key, printed once. A credential slot this
+/// password does not open is replaced only with `with:password` or `with:recovery` (the old password or the recovery
+/// key, from standard input or `file:<path>`), as `vault_rewrap` does: then it runs with the vault closed, as a Job can.
 pub struct VaultAddSlot;
 
 #[async_trait]
@@ -1465,6 +1493,11 @@ impl Task for VaultAddSlot {
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let kind = slot_kind(vars)?;
         let k = kernel(ctx)?;
+        if kind == ferrum_kernel::vault::SlotKind::Credential && vars.cli_arg("with").is_ok() {
+            ferrum_kernel::vault::rewrap(&k.db, rewrap_with(vars)?).await.map_err(refused)?;
+            println!("the credential slot now opens the vault with this DATABASE_URL's password");
+            return Ok(());
+        }
         match ferrum_kernel::vault::put_slot(&k.db, kind).await.map_err(refused)? {
             Some(key) => print_recovery(&key),
             None => println!("the {kind} slot now opens the vault"),
@@ -1504,9 +1537,9 @@ impl Task for VaultRecovery {
     }
 }
 
-/// `vault_rewrap [with:password|recovery]`: after the database password changed (or was lost), makes the credential
-/// slot again for this DATABASE_URL's password, opening the vault with the old password, or the recovery key, read
-/// once from standard input. Runs with the vault closed.
+/// `vault_rewrap [with:password|recovery] [file:<path>]`: after the database password changed (or was lost), makes the
+/// credential slot again for this DATABASE_URL's password, opening the vault with the old password, or the recovery key,
+/// read once from standard input or from the file (a mounted Secret: what a Job runs). Runs with the vault closed.
 pub struct VaultRewrap;
 
 #[async_trait]
@@ -1514,17 +1547,11 @@ impl Task for VaultRewrap {
     fn task(&self) -> TaskInfo {
         TaskInfo {
             name: "vault_rewrap".into(),
-            detail: "After the database password changed: the credential slot made again for this DATABASE_URL, with the old password or the recovery key from standard input".into(),
+            detail: "After the database password changed: the credential slot made again for this DATABASE_URL, with the old password or the recovery key from standard input or file:<path>".into(),
         }
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
-        use ferrum_kernel::vault::Rewrap;
-        let with = match vars.cli_arg("with").unwrap_or("password") {
-            "password" => Rewrap::OldPassword(read_once("the old database password")?),
-            "recovery" => Rewrap::Recovery(read_once("the recovery key")?),
-            other => return Err(Error::Message(format!("with:{other}: say with:password or with:recovery"))),
-        };
-        ferrum_kernel::vault::rewrap(&kernel(ctx)?.db, with).await.map_err(refused)?;
+        ferrum_kernel::vault::rewrap(&kernel(ctx)?.db, rewrap_with(vars)?).await.map_err(refused)?;
         println!("the credential slot now opens the vault with this DATABASE_URL's password: start the servers with it");
         Ok(())
     }

@@ -99,7 +99,10 @@ step ui
 # The interface builds the kit from ../../ferrum/web, so it is built in a layout that has one.
 W=$(mktemp -d "${TMPDIR:-/tmp}/app-ci-ui.XXXXXX")
 mkdir -p "$W/ferrum" "$W/app" && ln -s "$FRONTEND" "$W/ferrum/web"
-rsync -a --exclude node_modules "$APP_DIR/ui/" "$W/app/ui/" && cp "$APP_DIR/app.yaml" "$W/app/"
+# The whole checkout but what is built or fetched: the interface's build and tests read more than ui/ (Commerce's
+# imports from assets/, Cloud's tests read contract/src/ and sdk/typescript/), and a rule that names no folder cannot
+# fall behind what an app reads.
+rsync -a --exclude node_modules --exclude target --exclude .git "$APP_DIR/" "$W/app/"
 # As its workflow runs them: the committed dist/ built from these sources (the kit's check, by their
 # digest: Tailwind's classes depend on what else the build machine has, so bytes differ), then
 # typecheck and tests.

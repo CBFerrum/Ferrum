@@ -42,6 +42,7 @@ pub(crate) async fn drop_scope(tx: &mut Tx, tenant: Uuid, why: &str) -> Result<(
     let secrets = sqlx::query("delete from vault.secret where scope = $1").bind(tenant).execute(&mut **tx).await?.rows_affected();
     sqlx::query("delete from vault.use_count where scope = $1").bind(tenant).execute(&mut **tx).await?;
     sqlx::query("delete from vault.transfer where scope = $1").bind(tenant).execute(&mut **tx).await?;
+    sqlx::query("delete from vault.managed where scope = $1").bind(tenant).execute(&mut **tx).await?;
     // Owner keys first: each names the workspace key that wraps it.
     let keys = sqlx::query("delete from vault.key where scope = $1 and owner <> ''").bind(tenant).execute(&mut **tx).await?.rows_affected()
         + sqlx::query("delete from vault.key where scope = $1").bind(tenant).execute(&mut **tx).await?.rows_affected();
@@ -216,6 +217,20 @@ pub(crate) async fn carry_in(k: &Kernel, src: &mut Tx, tx: &mut Tx, tenant: Uuid
     let secrets: Vec<Value> = sqlx::query_scalar("select to_jsonb(s) from vault.secret s where scope = $1").bind(tenant).fetch_all(&mut **src).await?;
     for row in &secrets {
         sqlx::query("insert into vault.secret select * from jsonb_populate_record(null::vault.secret, $1)").bind(row).execute(&mut **tx).await?;
+    }
+    // Which of them their apps manage (none from a build before the mark).
+    let marked: bool = sqlx::query_scalar("select to_regclass('vault.managed') is not null").fetch_one(&mut **src).await?;
+    if marked {
+        let managed: Vec<(String, String)> =
+            sqlx::query_as("select owner, name from vault.managed where scope = $1").bind(tenant).fetch_all(&mut **src).await?;
+        for (owner, name) in managed {
+            sqlx::query("insert into vault.managed (scope, owner, name) values ($1, $2, $3) on conflict do nothing")
+                .bind(tenant)
+                .bind(owner)
+                .bind(name)
+                .execute(&mut **tx)
+                .await?;
+        }
     }
     super::installation_event(tx, "workspace_arrived", json!({"workspace": tenant, "keys": workspace_keys.len() + owner_keys.len(), "secrets": secrets.len()}))
         .await?;

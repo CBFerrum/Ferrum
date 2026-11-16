@@ -1,0 +1,17 @@
+{{- if not ((.Values.vault | default dict).keySecret | default dict).name }}
+{{- $name := include "ferrum.vaultKeySecret" . }}
+{{- $kept := lookup "v1" "Secret" .Release.Namespace $name }}
+# The key file of the vault's `file` slot (docs/operations.md, "The vault"), mounted at /run/ferrum/root.key: made once
+# with a random key, kept when the release is removed, and never changed by an upgrade, which looks it up and keeps what
+# it holds. With it every cluster has a slot beside the credential one, so a changed database password closes nothing.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels: {{- include "ferrum.labels" (list . $name) | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  root.key: {{ if and $kept $kept.data (index $kept.data "root.key") }}{{ index $kept.data "root.key" }}{{ else }}{{ randBytes 32 | b64enc }}{{ end }}
+{{- end }}

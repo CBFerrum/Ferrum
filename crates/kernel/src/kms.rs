@@ -3,9 +3,11 @@
 //! start-up, or a command the operator names. The unwrapped keys live only in the server's memory.
 //!
 //! * A value `vault:v…:…` is ciphertext of OpenBao's (or HashiCorp Vault's) Transit engine, unwrapped
-//!   by the Transit key `FERRUM_KMS_TRANSIT` names (`https://host:8200/transit/ferrum`: the mount,
-//!   then the key). It signs in with `FERRUM_KMS_TOKEN_FILE` (a Vault Agent's token), `BAO_TOKEN` or
-//!   `VAULT_TOKEN`, or as a Kubernetes service account (`FERRUM_KMS_KUBERNETES_ROLE`).
+//!   by the Transit key the setting `kms_transit` names (`https://host:8200/transit/ferrum`: the mount,
+//!   then the key). It signs in with the token in [`KMS_TOKEN`] (a mounted Secret, or a Vault Agent's
+//!   file), or as the pod's Kubernetes service account (the setting `kms_kubernetes_role`); through R1
+//!   also with `FERRUM_KMS_TOKEN_FILE`, `BAO_TOKEN` or `VAULT_TOKEN` from the environment, which win. The
+//!   token is never a setting: it would be in the database.
 //! * `FERRUM_SECRET_KEY_COMMAND` runs a command whose output is the key: any KMS's own tool
 //!   (`aws kms decrypt …`, `gcloud kms decrypt …`, `az keyvault key decrypt …`), as PostgreSQL's
 //!   `ssl_passphrase_command` does.
@@ -25,6 +27,10 @@ const WAIT: Duration = Duration::from_secs(30);
 /// Starting while the service is briefly away: this many tries, a little longer apart each time.
 const TRIES: u32 = 5;
 const SERVICE_ACCOUNT_TOKEN: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+/// Where the key-management service's token is mounted (the boot contract's fixed path), read at each use.
+pub const KMS_TOKEN: &str = "/run/ferrum/kms.token";
+/// Where a certificate authority the service's certificate is checked against is mounted, beside the usual ones.
+pub const KMS_CA: &str = "/run/ferrum/kms-ca.pem";
 
 /// What `FERRUM_KMS_*` says about the Transit key.
 #[derive(Debug, Clone, Default)]
@@ -58,9 +64,16 @@ pub enum TransitAuth {
 }
 
 impl Transit {
-    /// From `https://host:8200/transit/ferrum` (or `…/v1/transit/ferrum`) and the rest of the
-    /// environment, as `lookup` gives it.
+    /// From `https://host:8200/transit/ferrum` (or `…/v1/transit/ferrum`) and the rest of the settings, as `lookup`
+    /// gives them by variable (the server's resolved settings: the environment's, else the table's), with the token and
+    /// the certificate authority from the files at their fixed paths ([`KMS_TOKEN`], [`KMS_CA`]) where the environment
+    /// names none.
     pub fn from_env(url: &str, lookup: impl Fn(&str) -> Option<String>) -> Result<Transit> {
+        Transit::from_settings(url, lookup, |fixed| crate::db::run_file(fixed).map(|p| p.to_string_lossy().into_owned()))
+    }
+
+    /// [`Transit::from_env`], with `mounted` saying where each file of the boot contract is, when it is there.
+    fn from_settings(url: &str, lookup: impl Fn(&str) -> Option<String>, mounted: impl Fn(&str) -> Option<String>) -> Result<Transit> {
         let bad = || Error::invalid(format!("FERRUM_KMS_TRANSIT is {url:?}: say https://host:8200/<mount>/<key>"));
         let parsed = reqwest::Url::parse(url.trim()).map_err(|_| bad())?;
         if !matches!(parsed.scheme(), "https" | "http") {
@@ -77,6 +90,8 @@ impl Transit {
             TransitAuth::TokenFile(file)
         } else if let Some(token) = some("BAO_TOKEN").or_else(|| some("VAULT_TOKEN")) {
             TransitAuth::Token(token)
+        } else if let Some(file) = mounted(KMS_TOKEN) {
+            TransitAuth::TokenFile(file)
         } else if let Some(role) = some("FERRUM_KMS_KUBERNETES_ROLE") {
             TransitAuth::Kubernetes {
                 role,
@@ -86,8 +101,8 @@ impl Transit {
         } else {
             TransitAuth::None
         };
-        let ca_pem = match some("FERRUM_KMS_CA_FILE") {
-            Some(f) => Some(std::fs::read(&f).map_err(|e| Error::invalid(format!("FERRUM_KMS_CA_FILE {f}: {e}")))?),
+        let ca_pem = match some("FERRUM_KMS_CA_FILE").or_else(|| mounted(KMS_CA)) {
+            Some(f) => Some(std::fs::read(&f).map_err(|e| Error::invalid(format!("the key-management service's certificate authority {f}: {e}")))?),
             None => None,
         };
         Ok(Transit { api: format!("{origin}/v1"), mount: mount.join("/"), key: key.to_string(), namespace: some("FERRUM_KMS_NAMESPACE"), auth, ca_pem })
@@ -239,6 +254,26 @@ mod tests {
         assert!(
             matches!(Transit::from_env("https://b/transit/k", k8s).unwrap().auth, TransitAuth::Kubernetes { role, mount, jwt_file } if role == "ferrum" && mount == "kubernetes" && jwt_file == SERVICE_ACCOUNT_TOKEN)
         );
+    }
+
+    #[test]
+    fn the_token_and_the_authority_are_mounted_files_where_the_environment_names_none() {
+        let dir = std::env::temp_dir().join(format!("ferrum-kms-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("kms.token"), "s.mounted\n").unwrap();
+        let mounted = |fixed: &str| Some(dir.join(std::path::Path::new(fixed).file_name()?)).filter(|p| p.is_file()).map(|p| p.to_string_lossy().into_owned());
+        let k8s = |name: &str| (name == "FERRUM_KMS_KUBERNETES_ROLE").then(|| "ferrum".to_string());
+        let t = Transit::from_settings("https://b/transit/k", k8s, mounted).unwrap();
+        assert!(matches!(&t.auth, TransitAuth::TokenFile(f) if f.ends_with("kms.token")), "the mounted token before the pod's identity");
+        assert!(t.ca_pem.is_none());
+        let env = |name: &str| (name == "BAO_TOKEN").then(|| "s.env".to_string());
+        assert!(
+            matches!(Transit::from_settings("https://b/transit/k", env, mounted).unwrap().auth, TransitAuth::Token(t) if t == "s.env"),
+            "R1: the environment's wins"
+        );
+        std::fs::write(dir.join("kms-ca.pem"), "not a certificate").unwrap();
+        assert!(Transit::from_settings("https://b/transit/k", |_| None, mounted).unwrap().ca_pem.is_some(), "the mounted authority is read");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

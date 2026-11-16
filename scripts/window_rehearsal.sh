@@ -10,11 +10,13 @@
 # kept, so the next run reuses it. The build takes about 3 GB while it runs: it is refused with less than 8 GB free.
 #
 # Then, on a fresh database:
-# 1. the older build starts and makes a workspace with a record; this build starts and migrates; with its background
-#    work off it leaves an event and a job of its own waiting;
+# 1. the older build starts and makes a workspace with a record; this build starts and migrates; it stores telemetry
+#    settings with their collector's secret, the chart's key file is mounted (its next start adds the vault's file
+#    slot), and an app's setting is stored as <app>.<key>; with its background work off it leaves an event and a job of
+#    its own waiting;
 # 2. the older build starts again, with FERRUM_MIGRATE_AT_START=false and then true: each time it must start as a guest,
-#    read and write the records it knows, leave the schema exactly as it was, and leave this build's waiting work alone
-#    (this build then takes it);
+#    read and write the records it knows, leave the schema, the vault and the stored settings exactly as they were, and
+#    leave this build's waiting work alone (this build then takes it);
 # 3. with SeaweedFS on the PATH (deploy/store/start.sh, as Compose runs it): this build moves the files to object
 #    storage (`files_move`) and the directory goes; the older build starts on that database and reads and writes files
 #    there, and this build reads what it wrote. Every start after this one is given the store's settings;
@@ -93,7 +95,9 @@ FERRUM_SECRET_KEY=$(openssl rand -base64 32 | tr -d '\n')
 # Production settings, the only ones that read FERRUM_MIGRATE_AT_START; a files directory in place of a bucket.
 export LOCO_ENV=production LOG_LEVEL=warn FERRUM_BOOTSTRAP_TOKEN=rehearsal-token FERRUM_REQUIRE_OBJECT_STORAGE=false
 PASSWORD='Rehearsal-Passw0rd'
-mkdir -p "$work/files"
+mkdir -p "$work/files" "$work/run"
+# The files of /run/ferrum, where a debug build reads them (the chart's key file, the store's handoff).
+export FERRUM_TEST_RUN_DIR="$work/run"
 
 # Starts a build (old or new) and waits until it answers, or until it ends (a refusal): 0 when it answers.
 start() {
@@ -124,6 +128,13 @@ schema() {
     union all select version::text || ':' || checksum::text from _sqlx_migrations
     union all select key || '=' || value from cluster_state where key like 'schema_%') s(x)"
 }
+# The vault and the stored settings as a digest, which the older build knows nothing of.
+kept() {
+  sql "$DB" "select md5(string_agg(x, '|' order by x)) from (
+    select kind || ':' || md5(wrapped) from vault.root_slot
+    union all select scope::text || '/' || owner || '/' || name || ':' || version || ':' || md5(sealed) from vault.secret
+    union all select scope || '/' || scope_name || '/' || key || '=' || coalesce(value::text, '') || ':' || version from setting) s(x)"
+}
 # Work this build left waiting, which the older build must not take: events not handled and jobs not started.
 waiting() {
   sql "$DB" "select (select count(*) from outbox where processed_at is null and not dead and build_date > to_timestamp($OLD_DATE)) || ' ' ||
@@ -144,7 +155,8 @@ guest() {
   curl -fsS "$URL/metrics" | grep -q '^ferrum_outbox_waiting_newer_build [1-9]' || fail "the guest does not count the newer build's waiting event"
   stop
   [ "$(schema)" = "$SCHEMA" ] || fail "the guest changed the schema (migrate at start: $mode)"
-  echo "    a guest (migrate at start: $mode): read and wrote, left the schema and the newer build's event and job alone"
+  [ "$(kept)" = "$KEPT" ] || fail "the guest changed the vault or the stored settings (migrate at start: $mode)"
+  echo "    a guest (migrate at start: $mode): read and wrote, left the schema, the vault, the stored settings and the newer build's event and job alone"
 }
 
 step "the older build ($SHORT) on a fresh database: a workspace, a record and a file"
@@ -166,7 +178,21 @@ grep -q "files are kept in a local directory" "$work/new-first.log" || fail "thi
 T=$(token)
 [ "$(contact "$T" New-1)" = 201 ] || fail "a record with this build"
 stop
+# Telemetry settings stored with their collector's secret (a port nothing listens on), the chart's key Secret mounted
+# (deploy/helm/ferrum/templates/vault-key.yaml), and an app's setting as <app>.<key>: this build carries no app, so the
+# row is written as a build with Drive declaring office_url (crates/apps, operator_settings) stores it.
+task() { (cd "$ROOT/server" && exec env DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" "$BIN" task "$@") >>"$work/tasks.log" 2>&1 || fail "ferrum task $1: $(tail -3 "$work/tasks.log")"; }
+printf 'authorization=Bearer%%20rehearsal' | task set key:otel_exporter_otlp_endpoint value:"http://127.0.0.1:$((PORT + 1))" secret:stdin
+task set key:otel_service_name value:ferrum-window
+openssl rand -base64 32 | tr -d '\n' >"$work/run/root.key"
+sql "$DB" "insert into setting (scope, scope_name, key, value, updated_by) values ('installation', '', 'drive.office_url', '\"https://office.window.test\"', 'window rehearsal')"
 start new new-quiet FERRUM_RUN_BACKGROUND=false || fail "this build did not start without background work"
+[ "$(sql "$DB" "select string_agg(kind, ' ' order by kind) from vault.root_slot")" = "credential file" ] ||
+  fail "this build's start did not add the key file's slot: $(sql "$DB" "select string_agg(kind, ' ' order by kind) from vault.root_slot")"
+STORED=$(sql "$DB" "select string_agg(key, ' ' order by key) from setting where value is not null and (key like 'otel%' or key like '%.%')")
+[ "$STORED" = "drive.office_url otel_exporter_otlp_endpoint otel_service_name" ] || fail "stored: $STORED"
+[ "$(sql "$DB" "select count(*) from vault.secret where name = 'otel_exporter_otlp_headers'")" = 1 ] || fail "the collector's secret is not in the vault"
+echo "    the vault's slots: credential file; stored: $STORED, and the collector's secret in the vault"
 T=$(token)
 [ "$(contact "$T" Queued)" = 201 ] || fail "the waiting record"
 curl -fsS -o /dev/null "$URL/api/admin/export" -X POST -H "authorization: Bearer $T" || fail "the waiting export"
@@ -176,6 +202,7 @@ read -r events jobs <<<"$WAITING"
 [ "$events" -ge 1 ] && [ "$jobs" -ge 1 ] || fail "this build left no event or no job waiting: $WAITING"
 echo "    waiting for this build: $events events, $jobs jobs"
 SCHEMA=$(schema)
+KEPT=$(kept)
 
 step "the older build again, as a guest"
 guest false

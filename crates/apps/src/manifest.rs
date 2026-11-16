@@ -168,6 +168,53 @@ pub struct SettingDef {
     pub description: Option<String>,
 }
 
+/// Types of an operator setting, as the server's registry has them (server/src/settings.yaml).
+pub const OPERATOR_SETTING_TYPES: &[&str] = &["text", "bool", "int", "json", "choice"];
+
+/// A setting an operator chooses for the whole installation (`operator_settings`), which the app's code in the server
+/// reads with `ferrum_kernel::env::var(env)`: the environment's value when it sets the variable, else the server's
+/// `setting` table's (kept there as `<app id>.<key>`), else nothing (docs/app-contract.md, *Operator settings*). Never a
+/// secret: an app keeps its secrets in its own vault. Not the settings page (`settings`), which each workspace fills.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorSetting {
+    pub key: String,
+    /// The variable the app read before this block: it still works, and wins, through the release after.
+    pub env: String,
+    /// One of [`OPERATOR_SETTING_TYPES`]; `text` when left out.
+    #[serde(rename = "type", default = "text_type")]
+    pub kind: String,
+    /// A `choice` setting's values ("" among them when it may be left empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    /// As the variable would say it; "" for nothing (the app's own default).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default: String,
+    /// `start` (the default): at a replica's next start; `live`: every replica takes a change within seconds.
+    #[serde(default = "start_applies")]
+    pub applies: String,
+    /// The variable of the secret this address is given, while that secret is in the environment: the table's value is
+    /// then not used, so that a row in the database never sends the environment's secret elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sends: Option<String>,
+    /// What it does, for the operations guide.
+    pub doc: String,
+}
+
+fn text_type() -> String {
+    "text".into()
+}
+
+fn start_applies() -> String {
+    "start".into()
+}
+
+/// An environment variable's name: an upper-case letter, then upper-case letters, digits and `_`.
+fn is_variable(s: &str) -> bool {
+    let b = s.as_bytes();
+    (3..=100).contains(&b.len()) && b[0].is_ascii_uppercase() && b.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
+}
+
 /// Classes of resource an app can ask for. A class is a contract about behaviour, not a product.
 pub const RESOURCE_CLASSES: &[&str] = &["relational", "object", "time_series", "search", "cache", "stream"];
 const RESOURCE_ISOLATIONS: &[&str] = &["database", "prefix"];
@@ -310,6 +357,9 @@ pub struct AppManifest {
     pub prefix: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings: Vec<SettingDef>,
+    /// Native apps only: the settings an operator chooses for the installation, which its code reads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operator_settings: Vec<OperatorSetting>,
     /// Points other apps may contribute to, named `<this app's id>.<name>`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extension_points: BTreeMap<String, ExtensionPoint>,
@@ -653,7 +703,65 @@ impl AppManifest {
                 line(&format!("settings.{}.description", s.key), d, 500)?;
             }
         }
+        self.validate_operator_settings()?;
         self.validate_extensions()
+    }
+
+    /// `operator_settings`: each a setting of the server's registry, kept as `<app id>.<key>`, read by the app's own code
+    /// in the server (so only a native app has them), and never a secret's place.
+    fn validate_operator_settings(&self) -> Result<(), AppError> {
+        if self.operator_settings.is_empty() {
+            return Ok(());
+        }
+        if self.runtime != Runtime::Native {
+            return bad(format!("operator_settings: only an app compiled into the server reads them (this app's runtime is {})", self.runtime));
+        }
+        let (mut keys, mut vars) = (BTreeSet::new(), BTreeSet::new());
+        for s in &self.operator_settings {
+            let at = format!("operator_settings.{}", s.key);
+            if !ferrum_meta::is_ident(&s.key) || self.id.len() + 1 + s.key.len() > 63 {
+                return bad(format!("operator_settings: key '{}' must be snake_case, and '{}.{}' at most 63 characters", s.key, self.id, s.key));
+            }
+            if !keys.insert(&s.key) {
+                return bad(format!("operator_settings: key '{}' is declared twice", s.key));
+            }
+            if !is_variable(&s.env) || s.env == "DATABASE_URL" {
+                return bad(format!("{at}.env must be an environment variable's name (FERRUM_…), and not DATABASE_URL, not '{}'", s.env));
+            }
+            if !vars.insert(&s.env) {
+                return bad(format!("operator_settings: {} is declared twice", s.env));
+            }
+            if !OPERATOR_SETTING_TYPES.contains(&s.kind.as_str()) {
+                return bad(format!("{at}: type must be one of {}, not '{}'", OPERATOR_SETTING_TYPES.join(", "), s.kind));
+            }
+            if (s.kind == "choice") == s.values.is_empty() || s.values.iter().collect::<BTreeSet<_>>().len() != s.values.len() {
+                return bad(format!("{at}: a choice has its values, each once, and only a choice has values"));
+            }
+            let t = s.default.trim();
+            let fits = t.is_empty()
+                || match s.kind.as_str() {
+                    "bool" => t == "true" || t == "false",
+                    "int" => t.parse::<u64>().is_ok(),
+                    "json" => serde_json::from_str::<Value>(t).is_ok(),
+                    "choice" => s.values.iter().any(|v| v == t),
+                    _ => true,
+                };
+            if !fits {
+                return bad(format!("{at}: its default '{}' is not a {} value", s.default, s.kind));
+            }
+            if !matches!(s.applies.as_str(), "start" | "live") {
+                return bad(format!("{at}: applies is start or live, not '{}'", s.applies));
+            }
+            if let Some(v) = &s.sends
+                && (!is_variable(v) || self.operator_settings.iter().any(|o| &o.env == v))
+            {
+                return bad(format!("{at}.sends names the variable of the secret this address is given, not '{v}'"));
+            }
+            if s.doc.trim().is_empty() || s.doc.chars().count() > 1000 {
+                return bad(format!("{at}.doc says what it does, in at most 1000 characters"));
+            }
+        }
+        Ok(())
     }
 
     /// A service's address is a plain http(s) URL (the server takes plain http only where it
@@ -880,6 +988,49 @@ uninstall: keep
         assert!(with_resources(twice).unwrap_err().to_string().contains("listed twice"));
         let meta = VALID.replace("runtime: wasm", "runtime: meta").replace("plugin: plugin.json\n", "").replace("uninstall: keep\n", RESOURCE);
         assert!(AppManifest::parse(&meta).unwrap_err().to_string().contains("no code"), "metadata cannot use a database");
+    }
+
+    #[test]
+    fn operator_settings_are_declared_strictly() {
+        let native = |block: &str| {
+            let yaml = VALID
+                .replace("runtime: wasm", "runtime: native")
+                .replace("plugin: plugin.json\n", "")
+                .replace("uninstall: keep\n", &format!("{block}uninstall: keep\n"));
+            AppManifest::parse(&yaml)
+        };
+        let good = "operator_settings:\n  - {key: ocpi_url, env: FERRUM_EV_OCPI_URL, doc: The OCPI hub this server reaches., sends: FERRUM_EV_OCPI_TOKEN}\n  - {key: retries, env: FERRUM_EV_RETRIES, type: int, default: \"3\", applies: live, doc: How often a call is tried.}\n";
+        let m = native(good).unwrap();
+        assert_eq!((m.operator_settings[0].kind.as_str(), m.operator_settings[0].applies.as_str()), ("text", "start"), "text, at start, unless said");
+        assert_eq!(m.operator_settings[1].default, "3");
+        assert!(
+            AppManifest::parse(&VALID.replace("uninstall: keep\n", &format!("{good}uninstall: keep\n")))
+                .unwrap_err()
+                .to_string()
+                .contains("only an app compiled into the server")
+        );
+        for (from, to, said) in [
+            ("key: ocpi_url", "key: OcpiUrl", "snake_case"),
+            ("key: retries", "key: ocpi_url", "declared twice"),
+            ("env: FERRUM_EV_RETRIES", "env: FERRUM_EV_OCPI_URL", "declared twice"),
+            ("env: FERRUM_EV_OCPI_URL", "env: DATABASE_URL", "not DATABASE_URL"),
+            ("env: FERRUM_EV_OCPI_URL", "env: ferrum_ev", "environment variable"),
+            ("type: int", "type: number", "type must be one of"),
+            ("default: \"3\"", "default: three", "not a int value"),
+            ("applies: live", "applies: soon", "start or live"),
+            ("sends: FERRUM_EV_OCPI_TOKEN", "sends: FERRUM_EV_RETRIES", "sends names"),
+            ("doc: How often a call is tried.", "doc: \"\"", "says what it does"),
+            ("type: int, default: \"3\"", "type: choice", "a choice has its values"),
+            ("{key: retries", "{secret: true, key: retries", "unknown field"),
+        ] {
+            let err = native(&good.replacen(from, to, 1)).expect_err(said).to_string();
+            assert!(err.contains(said), "{from} → {to}: expected '{said}' in: {err}");
+        }
+        let choice = "operator_settings:\n  - {key: mode, env: FERRUM_EV_MODE, type: choice, values: [\"\", live, test], doc: Which hub.}\n";
+        assert!(native(choice).is_ok());
+        assert!(native(&choice.replace("values: [\"\", live, test]", "values: [live, live]")).is_err(), "each once");
+        let long = format!("operator_settings:\n  - {{key: {}, env: FERRUM_EV_X, doc: Long.}}\n", "k".repeat(60));
+        assert!(native(&long).unwrap_err().to_string().contains("at most 63"), "app id, a dot and the key fit the table's key");
     }
 
     #[test]

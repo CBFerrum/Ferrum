@@ -37,7 +37,7 @@ spec:
       labels: {app.kubernetes.io/name: {{ $n }}}
       {{- end }}
     spec:
-      automountServiceAccountToken: false
+      automountServiceAccountToken: {{ include "ferrum.serviceAccountToken" . }}
       terminationGracePeriodSeconds: 40
       {{- with $p.priorityClassName }}
       priorityClassName: {{ . }}

@@ -1995,12 +1995,14 @@ CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/s
 workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`. A package that uses any of this
 (`layout_file`, `page`, `letterhead`, `copies`, `enabled`, a LetterHead or PrintSettings record in its seed) needs
 the app API version 0.3.3: its app says `platform: ">=0.3.3, <0.4"` (an older server refuses the fields it does not
-know). The app API is 0.3.8 now: what each version carries is in
+know). The app API is 0.3.9 now: what each version carries is in
 [BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034)
 (0.3.4), [BD-51](builder/decisions.md#bd-51-the-connector-hubs-instances-move-and-the-app-api-035) (0.3.5) and
 [BD-52](builder/decisions.md#bd-52-a-link-limited-by-another-field-of-the-record-and-the-app-api-036) (0.3.6) and
 [BD-62](builder/decisions.md#bd-62-connections-part-three-and-the-app-api-037) (0.3.7) and
-[BD-63](builder/decisions.md#bd-63-a-left-menu-row-for-an-apps-own-page-and-the-app-api-038) to BD-66 (0.3.8).
+[BD-63](builder/decisions.md#bd-63-a-left-menu-row-for-an-apps-own-page-and-the-app-api-038) to BD-66 (0.3.8);
+0.3.9 adds an app's own vault and its `operator_settings` ([docs/app-contract.md](app-contract.md), *The vault* and *Operator
+settings*).
 
 ### Moving an app's print layout or file to a document template
 
@@ -2267,6 +2269,8 @@ that made it (`shown`).
   `{"rule": {...}}` to set it (without one, a rotation under its rule) → `{secret, shown?}`. `404`: no such owner or
   platform secret; `422`: a value where none is taken, none where one is needed, a rule that is not one; `503`: the
   vault is closed.
+* `PUT /api/operator/secrets/{owner}/{name}/rule` with `{"rule": {...}}` → `{secret}`: only its rule changes, its value
+  and version kept. Not the platform's own (`422`): their rules are the server's, bound to where each is sent.
 * `DELETE /api/operator/secrets/{owner}/{name}` → `{"removed": true|false}`.
 
 Each change is on the vault's own record (`ferrum task vault_events`), `by` `operator`, never a value.
@@ -2279,16 +2283,24 @@ without one, `403` with error `step_up` and the ways to confirm it (*Confirming 
 one the vault makes is shown once, in the answer that made it. Never cached.
 
 * `GET /api/admin/secrets` → `{owners: [{owner, secrets: [...]}]}`, each secret described as above (`workspace` its
-  id). `403`: not an administrator of it.
+  id), with `set_by_name` beside `set_by`: the name of the person who set it, while they are the workspace's (none: set
+  by code, or by someone no longer there). `403`: not an administrator of it.
 * `PUT /api/admin/secrets/{owner}/{name}` with exactly one of `{"value": "…"}`, `{"random": 32}` (bytes, 16 to 64; shown
   once) or `{"ed25519": true}`, and `{"rule": {"reveal": false, "hosts": ["api.example.com"], "sandbox": "blank|regenerate|keep",
   "overlap_secs": 0, "expires_at": null}}` (absent: used, never revealed, blank in a sandbox) → `{secret, shown?}`.
   `{owner}`: `platform`, an app's id, or `plugin:<name>`. `{name}`: lowercase letters, digits and `_ . -`.
 * `POST /api/admin/secrets/{owner}/{name}/rotate` with one of `value`, `random`, `ed25519` → `{secret, shown?}`: a new
   version under its rule; the one before verifies for its rule's overlap. `404`: no such secret.
+* Each secret says `managed_by`: the app that manages it itself (none: people's to change). For such a secret every
+  route below that changes it (set, rotate, rule, remove), the operator's too, answers `409` with one sentence naming
+  the app.
+* `PUT /api/admin/secrets/{owner}/{name}/rule` with `{"rule": {...}}` → `{secret}`: only its rule changes (the hosts it may
+  go to, whether its code may read it, a sandbox's, the overlap, the expiry), its value and version kept. The same right
+  and the same confirmed identity as setting it, for every change, stricter or not. `404`: no such secret; `422`: a
+  rule that is not one.
 * `DELETE /api/admin/secrets/{owner}/{name}` → `{"removed": true|false}`.
 
-Each change is on the workspace's audit trail (owner, name, verb, version; never a value).
+Each change is on the workspace's audit trail (owner, name, verb, version; never a value); a rule's change as `rule`.
 
 ## ERPNext compatibility
 

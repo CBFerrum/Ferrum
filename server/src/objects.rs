@@ -141,6 +141,15 @@ impl Objects {
     }
 
     /// A store on a local directory (tests, a single host).
+    /// What a task has while object storage is not set up yet (crate::app): a store at an address that never resolves
+    /// (`.invalid`), so that whatever reaches for a file is refused, and nothing is written anywhere.
+    pub fn refusing() -> std::result::Result<Objects, String> {
+        opendal::install_default();
+        let s3 = S3::default().bucket("object-storage-is-not-set").region("auto").endpoint("http://object-storage-is-not-set.invalid");
+        let op = Operator::new(s3).map_err(|e| e.to_string())?;
+        Ok(Objects { op, presigns: false, directory: None, releases: Arc::default(), health: Default::default() })
+    }
+
     pub fn local(dir: &str) -> std::result::Result<Objects, String> {
         Ok(Objects { op: directory(dir)?, presigns: false, directory: None, releases: Arc::default(), health: Default::default() })
     }

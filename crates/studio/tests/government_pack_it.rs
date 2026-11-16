@@ -871,7 +871,8 @@ async fn scenario() {
     packages.extend(ferrum_studio::packages().expect("studio packages"));
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
-    ferrum_app_erp::register(&mut hooks);
+    // As the server registers it: as itself, so that it takes its own vault handle.
+    hooks.app("erp", &[], ferrum_app_erp::register);
     ferrum_studio::register(&mut hooks);
     let k: Arc<Kernel> = Kernel::boot(db, Catalog::from_packages(packages).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot");
     ferrum_domain::maintenance(&k).await.expect("partitions");

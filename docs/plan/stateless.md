@@ -436,6 +436,56 @@ schedule, with a restore drill. Its administrator is made without a person. The 
 and runs as any number of replicas. A Code app, in its own repository, gives repositories, access by membership,
 tokens, sign-in to the forge through Ferrum and CI runners; Cloud keeps running the forge.
 
+## D1 and D2 closed: the environment's last readers (built)
+
+What still decided anything from the environment after D5, and what a new installation still had to be given besides
+the database's address (server/src/settings.yaml, docs/operations.md "What a replica still reads from its environment").
+
+- **Apps declare their own settings**, in their manifest's `operator_settings` (key, env, type, values, default,
+  applies, sends, doc): not `settings:`, which is already the settings page each workspace fills. Kept as
+  `<app id>.<key>`, read by the app with `ferrum_kernel::env::var`. The server adds every compiled-in app's declarations
+  before it reads a setting; one key or variable with two owners stops the start, naming both; an app that declares a
+  variable the platform holds as a secret is refused (its secrets are its own vault's). Only native apps have them. The
+  platform's 22 entries that belong to apps are under their app (`app:`, keys renamed `<app>.<key>`, never stored
+  before), with `sends:` where an address is given an environment's secret (Meet's addresses `FERRUM_MEET_SECRET`, Hosted
+  mail's `FERRUM_MAIL_ADMIN_SECRET`, Metrics' engine `FERRUM_METRICS_ENGINE_TOKEN`); the apps' secrets likewise. **They
+  stay the environment's**: every app pinned today reads them with `std::env::var`, which a table's value never reaches
+  (Drive's `archive.rs`, `office.rs`, `site.rs`; Comms' `meet.rs`, `hosted.rs`, `dns.rs`, `webmail.rs`; Metrics'
+  `engine.rs`; the EU, GB, US, Malaysia, Romania and Portugal add-ons), so storing them would make the doctor say the
+  table decides what nobody reads. An app's declaration replaces its entry when its release reads them through
+  `ferrum_kernel::env::var` (scripts/check_apps.py fails one that declares and still reads them itself). The platform's
+  file drops them in R2. The app API is 0.3.9 (the vault and operator settings).
+- **A task's inputs** (`input:`): the move task's, neither stored nor counted by the doctor.
+- **The key-management client.** `kms_transit`, `kms_kubernetes_role`, `kms_kubernetes_mount` and `kms_namespace` are
+  stored settings (readable before the vault opens). Its token is never a setting: the file `/run/ferrum/kms.token`, or
+  the pod's service account at its standard path; `FERRUM_KMS_TOKEN_FILE`, `BAO_TOKEN`, `VAULT_TOKEN` through R1. A
+  file the server sends somewhere (a token, the service account's token) or trusts (a certificate authority:
+  `/run/ferrum/kms-ca.pem`) is never named by the database. A stored address could otherwise send the mounted token to
+  whoever wrote the row, so the vault's `kms` slot keeps the address it was made with (`params.api`) and the token goes
+  nowhere else (a slot from before names none and is asked as before); keys from the environment given as ciphertext
+  are unwrapped, and `kms_wrap` wraps, only at an address the environment gives. `FERRUM_SECRET_KEY_COMMAND` stays in
+  the environment: a command line is never read from the database.
+- **Telemetry**: the four `OTEL_*` settings are stored and the headers a `library` secret bound to the collector's host
+  (`sends:` on both addresses); applied in code as Loco sets the log up, which it does after the first set-up's
+  `after_context` has read the settings and opened the vault, so nothing is sent before (D1). The SDK still reads its
+  other variables itself.
+- **A fresh installation**: `JWT_SECRET` and every other secret of the server's Secret are optional (chart, deploy/k8s,
+  Compose with only the database's two passwords). The chart makes `<fullname>-vault-key` once (`lookup` keeps its
+  value, `helm.sh/resource-policy: keep` keeps it past an uninstall; a named Secret instead), and mounts it with the
+  database's and the key-management service's files in one projected volume at `/run/ferrum`, every source optional.
+  A server's start (`vault::settle`, not a task's) adds the `file` slot where the key is mounted and the vault has none,
+  and makes the `credential` slot again where it no longer opens and another slot opened the vault, each once under the
+  root's lock; never one that was removed, never replacing a file slot. `vault_rewrap` and `vault_add_slot
+  kind:credential with:` take `file:<path>`. A task runs while object storage is not set yet (on a fresh database the
+  settings that set it are what `apply_settings` writes); the server does not. The direct and read hosts may be
+  `DATABASE_URL`'s own parameters (`ferrum_direct_host`, `ferrum_read_host`), taken out as the configuration loads and
+  trusted as the address is; `environment: minimal` renders them so. A release build reads no test's variable.
+- **The proof** (`scripts/one_input.sh`, `scripts/local_ci.sh oneinput`): the real binary, `env -i DATABASE_URL=…` with
+  the environment named on its command line, a library in front of libc's `getenv` listing every name asked for; the
+  run fails on any name found set but `DATABASE_URL`, or read and declared neither by the registry (read through R1) nor
+  by the baseline of what stays (docs/registry/environment-only.md, written by scripts/settings.py, which only
+  shrinks).
+
 ## Not doing
 
 pgcrypto, pgsodium or any encryption inside SQL; OpenBao as a required service; a shared filesystem for Git; Redis

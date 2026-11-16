@@ -63,6 +63,30 @@ server does not start.
 
 `Kernel::secret` (any app's secret field) still works and is noted, and goes in the next release.
 
+**A secret it manages itself.** `manage(k, scope, name, true)` marks a secret of the app's own as the app's to manage
+(a published signing key, a token it rotates on its own schedule); `false` gives it back to people. While marked, the
+administrator's and operator's routes refuse to set, rotate, remove it or change its rule, and an operator's regenerate
+too, each with `409` naming the app; the app's own handle keeps using and changing it, and every description says
+`managed_by`. The mark travels with the workspace's vault (a move, a sandbox) and goes when the secret does.
+
+`sign_at` signs with a version the app names (none: the current one) and says which it used, and `public_key` gives a
+kept version's public half, so an app that publishes its keys (a token issuer's) names each signature's key. `key_version`
+says which version of its own key `seal` seals with now, and `Vault::sealed_version` which one sealed what it kept: an
+app seals again what an older version sealed, so that version can go.
+
+**Its own transaction.** Each verb runs in a transaction of its own, on a side pool of connections (an eighth of the
+replica's pool, at least four), never in the caller's: a verb's result and its record stand whether or not the caller's
+transaction then commits. So a `set` made before a business transaction that rolls back leaves the secret set: set it
+after the commit, or remove it when the work fails. A `reveal`, `sign` or `carry` is recorded even when the work it
+served fails. A verb does not see what the caller's open transaction wrote and has not committed. Under load a verb waits
+for a side connection, never for the caller's own, so it cannot hold up the caller's transaction by itself; do not call one
+while holding a lock on what that verb takes (the secret's own lock). The one verb in the caller's transaction is
+`field`, which reads the app's secret field with the record it belongs to; with the vault closed it reads the old store
+with the old key, as the kernel's own readers do. A workspace's key and an owner's key are never made inside a caller's
+transaction: a secret field written there first has them made on the vault's own connection, committed, so a vault call
+on another connection before the caller commits never waits on it (an app's `ready()` that made its keys first on a
+connection of its own is not needed).
+
 **What it made with the old key (R1 only).** An app that sealed or keyed things of its own with the old key
 (`settings.secret_key`, deprecated) keeps them working through its handle until they lapse, with no key in its hands and
 nothing wider. Each names a context of the app's own: its id, then one of ` -.:/|`, then more (`cloud-dns-key`,
@@ -84,6 +108,43 @@ old key is set (a message's secret values are sealed with the vault now); Helpde
 (`derive`), the server never checks their old signatures, and a till comparing one sees it change once; Cloud opens and
 writes what it sealed with `open_old` and `seal_old` (its contexts begin `cloud-`). Until each has, the old key's field
 stays public: apps that still read it are given the same key once it is gone from the environment.
+
+## Operator settings
+
+What an operator chooses for the whole installation and an app's code in the server reads (an address of a service, a
+limit) is a setting of the server's registry, declared in the app's manifest. It is kept in the server's `setting`
+table as `<app id>.<key>`, changed with `ferrum task set`, a settings document or the Operations screen, and listed in
+the operations guide under the app (docs/operations.md, *Configuration*). It is not the settings page (`settings:`), which
+each workspace's administrators fill.
+
+```yaml
+platform: ">=0.3.9, <0.4"        # the platform that reads operator settings
+operator_settings:
+  - key: office_url              # kept as drive.office_url
+    env: FERRUM_OFFICE_URL       # the variable the app read until now: it still works, and wins, through R1
+    type: text                   # text (the default), bool, int, json, or choice (with values)
+    default: ""                  # as the variable would say it; "" for the app's own default
+    applies: start               # start (the default), or live: every replica takes a change within seconds
+    sends: FERRUM_OFFICE_SECRET  # only for an address given an environment's secret (below)
+    doc: The editor server as the server reaches it.
+```
+
+- **Read it with `ferrum_kernel::env::var(env)`**, never `std::env::var`: it gives the environment's value when the
+  environment sets the variable, else the table's, else nothing (the app's own default), and a setting marked `live` as
+  it is now. `std::env::var` sees the environment alone, so the table's value never reaches it; `scripts/check_apps.py`
+  fails an app that declares a variable and reads it that way.
+- **Never a secret.** A manifest has no field for one, and a variable the platform's registry holds as a secret is
+  refused. An app keeps its secrets in its own vault (*The vault*, above), each bound by its rule to the hosts it is
+  sent to (`Rule.hosts`, put on requests with `carry`), so that moving an address never moves the secret with it.
+- **An address given an environment's secret** says so (`sends:` the secret's variable): while that secret is in the
+  environment, the table's value of the address is not used, so that a row in the database never sends the
+  environment's secret elsewhere. A workspace's own credential sent to an address (a connection's, a secret field's)
+  is bound to its host in the vault in the same way.
+- **One owner each.** The server adds every compiled-in app's declarations to its registry before it reads any setting,
+  and does not start when two owners declare one key or variable, naming both. An entry of the platform's registry
+  that moves to an app (`app:` in `server/src/settings.yaml`) is replaced by that app's declaration of the same
+  variable, without a clash: until the app declares it, it is read from the environment only. Only a native app has
+  operator settings.
 
 ## How the check works
 

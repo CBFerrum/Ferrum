@@ -84,15 +84,20 @@ mod testutil;
 pub mod ui;
 
 pub use bundle::Bundle;
-pub use manifest::{AppManifest, CATEGORIES, ExtensionPoint, Runtime, SETTING_TYPES, SettingDef, UI_POINTS, Uninstall, contribution_body};
+pub use manifest::{
+    AppManifest, CATEGORIES, ExtensionPoint, OPERATOR_SETTING_TYPES, OperatorSetting, Runtime, SETTING_TYPES, SettingDef, UI_POINTS, Uninstall,
+    contribution_body,
+};
 pub use permissions::Permissions;
 pub use resolve::{Release, resolve};
 pub use signing::{Role, SignatureEntry, Signatures, Signer, TrustedKey, key_id};
 
 /// Bundle format identifier; the first line hashed into every digest.
 pub const FORMAT: &str = "ferrum-app-v1";
-/// The app API version this platform build provides; apps declare `platform` requirements against it.
-pub const PLATFORM_VERSION: &str = "0.3.8";
+/// The app API version this platform build provides; apps declare `platform` requirements against it. 0.3.9: the vault
+/// (an app's own handle, `HookRegistry::vault`) and `operator_settings` (docs/app-contract.md): an app that uses either
+/// says `platform: ">=0.3.9, <0.4"`.
+pub const PLATFORM_VERSION: &str = "0.3.9";
 
 /// Most bytes a bundle may hold unpacked (50 MiB).
 pub const MAX_UNPACKED: u64 = 50 << 20;
