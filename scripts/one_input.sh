@@ -170,7 +170,7 @@ mkdir -p "$work/weed"
 base=$((PS + 20000))
 "$WEED" server -dir="$work/weed" -ip=127.0.0.1 -ip.bind=127.0.0.1 -master.port=$((base + 1)) -master.port.grpc=$((base + 11)) \
   -volume.port=$((base + 2)) -volume.port.grpc=$((base + 12)) -filer -filer.port=$((base + 3)) -filer.port.grpc=$((base + 13)) \
-  -s3 -s3.port="$PS" -s3.port.grpc=$((base + 14)) -s3.config="$work/s3.json" -volume.max=4 >"$work/weed.log" 2>&1 &
+  -s3 -s3.port="$PS" -s3.port.grpc=$((base + 14)) -s3.config="$work/s3.json" -volume.max=16 -master.volumeSizeLimitMB=64 >"$work/weed.log" 2>&1 &
 pids+=($!)
 for _ in $(seq 1 60); do curl -s -o /dev/null "http://127.0.0.1:$PS/" && break; sleep 1; done
 # The master's address with its gRPC port (`host:port.grpcPort`), as SeaweedFS names one off its default offset.
