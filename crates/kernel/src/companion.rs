@@ -367,17 +367,21 @@ pub fn write(dir: &Path, rendered: &Rendered) -> Result<Written> {
             return Err(Error::Invalid(format!("{:?} is not a file's name a render writes", f.name)));
         }
     }
+    // Made unless something is there (another render may make it at the same moment); whatever is there is then looked at
+    // as it is: mkdir never follows a link.
+    if let Err(e) = std::fs::DirBuilder::new().mode(dir_mode).create(dir)
+        && e.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        return Err(io(&format!("making {shown}"), e));
+    }
     match std::fs::symlink_metadata(dir) {
         Ok(m) if m.file_type().is_symlink() => return Err(Error::Invalid(format!("{shown} is a link: give the directory itself"))),
         Ok(m) if !m.is_dir() => return Err(Error::Invalid(format!("{shown} is not a directory"))),
         Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::DirBuilder::new().mode(dir_mode).create(dir).map_err(|e| io(&format!("making {shown}"), e))?;
-        }
         Err(e) => return Err(io(&shown.to_string(), e)),
     }
-    // Looked at before the lock too, so that a directory that is not one to write in is left as it was.
-    earlier(dir, &rendered.service)?;
+    // Its contents are looked at only once this render holds the lock: before it, another render may be half way through
+    // its renames (its files there, its record not yet), which is no directory to refuse. Nothing is written before.
     let handle = std::fs::File::open(dir).map_err(|e| io(&shown.to_string(), e))?;
     handle.lock().map_err(|e| io(&format!("taking {shown} for this render"), e))?;
     let (before, leftovers) = earlier(dir, &rendered.service)?;
