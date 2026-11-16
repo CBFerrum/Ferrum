@@ -872,7 +872,7 @@ async fn install_plugin(Auth(ctx): Auth, State(app): State<AppContext>, Json(bod
     let st = app_state(&app)?;
     let wasm =
         base64::engine::general_purpose::STANDARD.decode(body.wasm_base64.trim()).map_err(|_| ApiError(Error::field("wasm_base64", "is not valid base64")))?;
-    let id = st.plugins.install(&st.kernel, &ctx, body.plugin, &wasm).await?;
+    let id = st.apps.install_plugin(&ctx, body.plugin, &wasm).await?;
     Ok((StatusCode::CREATED, Json(json!({"id": id}))).into_response())
 }
 
