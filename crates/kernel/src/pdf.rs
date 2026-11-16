@@ -11,8 +11,15 @@ use uuid::Uuid;
 /// Largest PDF accepted from the renderer.
 const MAX_PDF: usize = 50 << 20;
 
-static CLIENT: LazyLock<reqwest::Client> =
-    LazyLock::new(|| reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(60)).build().unwrap_or_default());
+/// A render gives up at half the time PostgreSQL lets a transaction wait between statements (crate::db): a generated
+/// document is rendered inside its caller's transaction (crate::documents::generate), and the other half is for keeping
+/// it (the storage quota, the object store) before that transaction's next statement, which a session the database has
+/// ended never reaches.
+// ponytail: one limit for every render, a person printing outside any transaction too; give those the renderer's whole
+// minute if a document ever needs it.
+static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).timeout(crate::db::IDLE_IN_TRANSACTION / 2).build().unwrap_or_default()
+});
 
 /// A `multipart/form-data` body: the page as `index.html` (with `header.html` and `footer.html` when there are some),
 /// then form fields.
