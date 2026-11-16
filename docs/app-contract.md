@@ -146,6 +146,56 @@ operator_settings:
   variable, without a clash: until the app declares it, it is read from the environment only. Only a native app has
   operator settings.
 
+## Declaring a service
+
+A program an app runs beside the server (a meeting server, a mail server, an engine of its own) that shares a secret or
+a setting with the server takes them from files written as it starts, from the database and the vault alone
+(docs/operations.md, *Files for the programs beside the server*). The app declares it inside its registration: its name,
+the files it writes, the secrets the vault makes for it, and a function that is given the app's own vault handle and the
+settings and returns the files.
+
+```rust
+// Inside HookRegistry::app("comms", …): the service is the app's, and so are its secrets.
+h.add_companion("meet", Arc::new(Meet));
+
+struct Meet;
+
+#[async_trait]
+impl Companion for Meet {
+    fn files(&self) -> &'static [&'static str] { &["livekit.yaml"] }
+    fn made(&self) -> &'static [&'static str] { &["meet.secret"] }
+    async fn render(&self, r: &Rendering<'_>) -> Result<Vec<File>> {
+        r.made("meet.secret", Rule { reveal: true, overlap_secs: 86_400, ..Default::default() }).await?;
+        let mut yaml = Zeroizing::new(String::from("port: 7880\nkeys:\n"));
+        for v in r.versions("meet.secret").await? {
+            yaml.push_str(&format!("  \"ferrum.{}\": \"{}\"\n", v.version, std::str::from_utf8(&v.value).unwrap_or_default()));
+        }
+        Ok(vec![File { name: "livekit.yaml".into(), bytes: Zeroizing::new(yaml.as_bytes().to_vec()), secret: true }])
+    }
+}
+```
+
+- **Names.** A service's name is lowercase letters, digits and dashes, unique on the installation: one declared by two
+  owners stops the server, naming both. Its files are plain names (letters, digits, `.`, `_` and `-`, not beginning
+  with a dot), and a render returns exactly those, each once. `ferrum task services` lists every service, with its owner,
+  files and the secrets the vault makes for it.
+- **Settings**: `r.setting(name)` (the server's value, by key or variable, `None` where nothing sets it) and
+  `r.needs(name)` (refused, naming the setting, where nothing sets it). Declare them in `operator_settings`.
+- **Secrets** of the app's own, in the installation's scope. `r.made(name, rule)` makes one the service declares in
+  `made()`, where there is none: 32 random bytes as 43 characters of base64url, marked as the app's to manage (a secret
+  of that name a person set is refused). `r.secret(name)` gives the current value, `r.versions(name)` the current one and
+  the one before while its overlap lasts. Only where the secret's rule says `reveal: true`; each given is on the record
+  as `render`, naming the service, never the value. A file that holds one says `secret: true`: one that says otherwise
+  and holds a value the render was given is refused.
+- **Rotation.** The operator rotates what the vault made (`ferrum task vault_rotate level:service service:<name>`); the
+  app's code goes on using its handle. A program that can hold two values is given both (`versions`), and the app
+  presents the version before while the overlap lasts (the current `version - 1`, while `describe` says
+  `previous_until` is still to come), with `sign_at` or `carry_at`: a program not restarted yet still takes it.
+- **Its deployment**: in Kubernetes an init container of the server's image runs `ferrum task render service:<name>
+  to:/run/companion` into a memory-backed volume the program mounts read-only; in Compose a one-shot service does, into a
+  volume the two share. The chart's helpers `ferrum.renderInit` and `ferrum.renderVolumes` give a bundled program both,
+  and `ferrum.declaredServices` lists the services the server's image declares.
+
 ## How the check works
 
 `scripts/check_apps.py` reads `cargo metadata` for the packages that come from CBFerrum's app

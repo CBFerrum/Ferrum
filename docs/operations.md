@@ -1050,7 +1050,10 @@ vault makes them at the first render, a one-shot service renders them into a fil
 encryption key. An installation whose store already handed its keys over removes them from the vault first
 (`ferrum task secret_remove name:aws_access_key_id`, then `name:aws_secret_access_key`): the vault makes new ones only
 where there are none, and the store lets in the new ones only. The server then sets the bucket up itself
-(`FERRUM_S3_SET_UP_BUCKET=true` in that file), as the handoff asked it to.
+(`FERRUM_S3_SET_UP_BUCKET=true` in that file), as the handoff asked it to. Render `object-store` for the bundled store
+only: its keys are the server's own (`aws_access_key_id`, `aws_secret_access_key`), so on an installation whose store
+lets the server in by the machine's identity, keys made by a render would be what the server signs with at its next
+start. Keys an operator set for a store of the installation's own are never written out: the render refuses them.
 
 An installation from before this release keeps its `files` volume: with the new Compose file it starts with the store
 set and files moving, reads both, and moves its files with `docker compose exec ferrum ferrum task files_move`. With
@@ -1722,9 +1725,10 @@ set, or a secret it may not have, it refuses, says why, and writes nothing.
 
 - **The first render makes the shared secrets.** A secret the service declares that the vault does not hold yet is made
   then: 32 random bytes, as 43 characters of base64url, in the installation's scope, owned by the service's owner. Renders
-  and replicas at once make one (the secret's lock). It is marked as its app's to manage, so the Secrets screen and the
-  operator's routes leave it alone. A secret of that name that a person set is refused: the vault makes it only where
-  there is none.
+  and replicas at once make one (the secret's lock). It is marked as its owner's to manage: the Secrets screen and the
+  operator's routes for an app's secrets leave it alone, and `vault_rotate level:service` rotates it. (The platform's
+  own are still set or removed with `secret_set` and `secret_remove`; the next render gives the program what they
+  leave.) A secret of that name that a person set is refused: the vault makes it only where there is none.
 - **Only what its rule lets out.** A secret reaches a file only through its owner's own handle, and only when its rule
   lets its owner read it (`reveal`). A secret that is only used (to sign, to check) never goes into a file. A file that
   says it holds no secret and holds a value the render was given is refused.
