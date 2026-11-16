@@ -1046,7 +1046,8 @@ async fn inline(k: &Kernel, tx: &mut Tx, ctx: &Ctx, wants: Vec<Want>) -> Result<
                 .bind(id)
                 .fetch_optional(&mut **tx)
                 .await?;
-        let Some((entity, record, by, size, key, shared)) = row else {
+        // A kind of file an app keeps for its own work prints for nobody: no such file here (crate::files::FileKind).
+        let Some((entity, record, by, size, key, shared)) = row.filter(|r| !r.0.as_deref().is_some_and(crate::files::is_kind)) else {
             warn.push(format!("{}: no such file here", w.url));
             continue;
         };

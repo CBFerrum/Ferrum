@@ -1976,7 +1976,12 @@ customizations and automations, in zip parts of about 128 MB of JSON lines and f
 days or by a personal-data erasure, whichever comes first (the export then says so). Passwords,
 sign-in factors, secret fields, sealed settings, API keys and sessions stay out. `manifest.json` names
 every workspace table it did not carry (`tables_left_out`) and every file the storage no longer had
-(`files_missing`), which it goes on without: read it before relying on an export as a way out.
+(`files_missing`), which it goes on without: read it before relying on an export as a way out. Files an
+app keeps for its own work (Cloud's built artifacts and databases' backups: docs/app-contract.md,
+*Files an app keeps for its own work*) stay out too, its records as before: `files_left_out` names each
+kind with how many files and bytes it held, and its app hands them out its own way. They are the
+workspace's all the same: counted against its storage, moved and copied into a sandbox with it, deleted
+with it after the deletion lag, and read by the restore drill (`check_files`) as any file.
 
 ## Malware scanning
 

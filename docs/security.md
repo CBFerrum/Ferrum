@@ -54,6 +54,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   opens anything without a slot's key. Key material is zeroed when dropped and never formatted, logged or serialised.
 * Its tables are behind row-level security that only the vault's own transactions satisfy (a transaction-local
   setting): the system's transactions, a workspace's and any other query see no row of it.
+* Files an app keeps for its own work (a kind it declares: built artifacts, databases' backups) are reached only through
+  its handle for that kind: the platform's routes for files refuse them to everyone, administrators included, a site of
+  another app cannot answer with one, and a workspace's export leaves them out and says so.
 * An app reaches only its own: it is given a handle bound to its id as it registers, which only the kernel makes and
   which works only with the server that gave it out; no function takes an owner and gives back what is its. Inside one
   process this rests on the shape of the code and on a check in the build (`scripts/secret_paths.py`), not on the

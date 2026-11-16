@@ -109,6 +109,32 @@ old key is set (a message's secret values are sealed with the vault now); Helpde
 writes what it sealed with `open_old` and `seal_old` (its contexts begin `cloud-`). Until each has, the old key's field
 stays public: apps that still read it are given the same key once it is gone from the environment.
 
+## Files an app keeps for its own work
+
+What an app keeps for its own work in the platform's file store (built artifacts, databases' backups, a customer's
+managed objects) is the workspace's, counted and deleted as any file, but not the workspace's content to hand out: it
+is a kind of file the app declares in its registration, `<app id>.<name>`, and keeps with that kind's handle.
+
+```rust
+// Inside HookRegistry::app("cloud", …): the kind is the app's, and only its handle reaches files of it.
+let backups = h.file_kind("backup"); // cloud.backup
+// Later, with the kernel and the workspace: tied to an id of the app's choosing (the project, the build).
+let kept = backups.keep(k, tenant, project, "db.dump.0", "application/octet-stream", &bytes).await?; // {id, file_name, size, sha256}
+let (name, content_type, bytes) = backups.read(k, tenant, file).await?; // or info(), to answer with it as a stream
+backups.release(k, &mut tx, tenant, &files).await?; // in the caller's transaction: the bytes go after the deletion lag
+```
+
+- **Nobody else reaches them.** The platform's routes for files refuse a file of a kind to everyone, administrators
+  included, as a file that is not there: no download, copy, deletion, print or tie to a record by its id, and no
+  listing names it. Another app's handle finds nothing of it. A kind whose app left the build stays so.
+- **Their only way out is the app's.** An app answers with one from its own site (`SiteResponse::file`, streamed by the
+  server: from a site of the app that declared the kind, and no other), to the people its own rules let have it. The
+  workspace's export leaves them out (`files_left_out` in its manifest, per kind), so the app owes its customer a way
+  to have them: a download of a backup, an artifact, an object, from its own pages.
+- **Counted and deleted as any file**: the workspace's storage quota, the deletion lag, a move, a sandbox, the
+  workspace's deletion, the doctor and the restore drill treat them as they treat every file.
+- A kind is declared once, by one app, inside its registration; anything else stops the server.
+
 ## A companion's sign-in
 
 An app that runs a program beside Ferrum (its *companion*: the Cloud app's forge) has people sign in to it through

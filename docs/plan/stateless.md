@@ -338,6 +338,28 @@ object another service wrote into the store as a file (recordings need it).
   answered with `read_file` (relay.rs:23-25 lists the routes passed). No CA keys anywhere; device certificates are
   fingerprints in the database (`src/site.rs:326-333`).
 
+### D6, an app's own files (built, 16 November 2026)
+
+Cloud keeps its built artifacts, resources' backups and managed objects as the workspace's files through the seam above.
+Kept loose (tied to no record, no uploader), they were an administrator's by the rule for loose files: downloadable by
+id through the generic route, tied to any record by naming them in an attach field, and in every export.
+
+- **A kind of file**, declared by its app in its registration (`HookRegistry::file_kind(name)`, `<app id>.<name>`, once,
+  checked by `settle`), and its handle (`files::FileKind`: `keep`, `info`, `read`, `release`), as the platform keeps
+  its own exports (`ferrum.export`). A file of a kind is tied to (the kind, an id of the app's choosing). No entity's
+  name has a dot, so the kind is told apart wherever a file is looked at, declared or not: a kind whose app left the
+  build stays out of reach.
+- **Out of reach**: the generic download, copy, deletion, print of an image, a tie through an attach field (taken as an
+  id naming no file) and the record's listing refuse it to everyone, administrators included, as a file that is not
+  there. A site's answer naming one (`SiteResponse::file`) is streamed only from a site of a package the declaring app
+  owns. Mail an app sends with its own files is its own way out.
+- **The export** leaves them out, its records as before, and says so per kind (`files_left_out`: files, bytes, why).
+  An export has no import in the platform; nothing there to change.
+- **As any file**: the quota (bytes are bytes), the deletion lag (`release` goes through `release_objects`), a move and
+  a sandbox (the app's rows naming them are copied, so the files go with them), the workspace's deletion, readiness,
+  the doctor and the restore drill. A person's erasure touches files of records; a kind's files are no person's record.
+- **Not an entity flag**: Cloud's rows are its own tables, not entities, so a flag on an entity would not reach them.
+
 ## D7. Any PostgreSQL
 
 The chart takes an outside database (address, certificate authority, an egress rule). Direct and read addresses are

@@ -959,7 +959,8 @@ impl Kernel {
                 .bind(file)
                 .fetch_optional(&mut *tx)
                 .await?;
-        let (entity, record, by, key) = row.ok_or_else(|| Error::NotFound("file".into()))?;
+        // A kind of file an app keeps for its own work is its app's to let go (crate::files::FileKind): not found here.
+        let (entity, record, by, key) = row.filter(|r| !r.0.as_deref().is_some_and(crate::files::is_kind)).ok_or_else(|| Error::NotFound("file".into()))?;
         // An attachment belongs to its record: only someone who can edit the record removes it
         // (an uploader who lost access must not delete evidence). Loose uploads are their uploader's.
         let allowed = match (&entity, record) {
