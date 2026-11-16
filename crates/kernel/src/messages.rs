@@ -1631,8 +1631,8 @@ impl Kernel {
     }
 
     /// A provider's call to a channel (`POST /api/messages/inbound/{channel}`, no session): a delivery report moves its
-    /// send on (never back), a reply with a stop or start word records the number's choice. One unknown, unsigned or
-    /// wrongly signed is refused and counted.
+    /// send on (never back), a reply with a stop or start word records the number's choice, once. One unknown, unsigned
+    /// or wrongly signed is refused and counted, and so is a reply that recorded a choice sent again.
     pub async fn message_inbound(&self, channel: Uuid, headers: &BTreeMap<String, String>, query: &BTreeMap<String, String>, body: &[u8]) -> Result<Value> {
         let mut tx = self.db.system_tx().await?;
         let row: Option<(Uuid, String, Value, Option<String>)> =
@@ -1661,7 +1661,7 @@ impl Kernel {
                 }),
                 _ => inbound.header.as_deref().map_or_else(|| query.get("token").cloned(), header).is_some_and(|t| subtle_eq(t.as_bytes(), secret.as_bytes())),
             };
-        if !ok {
+        let refuse = || async {
             let mut tx = self.db.system_tenant_tx(tenant).await?;
             sqlx::query("update message_channel set refused = refused + 1 where tenant_id = $1 and id = $2")
                 .bind(tenant)
@@ -1669,7 +1669,10 @@ impl Kernel {
                 .execute(&mut *tx)
                 .await?;
             tx.commit().await?;
-            return Err(Error::Unauthorized("this call is not signed by the channel's provider".into()));
+            Err::<Value, _>(Error::Unauthorized("this call is not signed by the channel's provider".into()))
+        };
+        if !ok {
+            return refuse().await;
         }
         let form = header("content-type").is_some_and(|c| c.starts_with("application/x-www-form-urlencoded"));
         let said: Value = if form {
@@ -1713,6 +1716,20 @@ impl Kernel {
             };
             let number = international(&from, &cfg).map_err(Error::invalid)?;
             if let Some(granted) = choice {
+                // Taken once: nothing the channel checks has a time in it, so a reply captured and sent again would undo a
+                // later choice. A delivery report needs no such guard: it only ever moves its send forward.
+                let fresh = sqlx::query("insert into message_reply_seen (tenant_id, channel_id, digest) values ($1, $2, $3) on conflict do nothing")
+                    .bind(tenant)
+                    .bind(channel)
+                    .bind(hex::encode(Sha256::digest(body)))
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected()
+                    == 1;
+                if !fresh {
+                    tx.rollback().await?;
+                    return refuse().await;
+                }
                 record_choice(&mut tx, tenant, None, &number, &kind, granted, "a reply to a message").await?;
             }
             tx.commit().await?;

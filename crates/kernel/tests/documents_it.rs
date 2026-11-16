@@ -1,8 +1,8 @@
 //! Document templates (crates/kernel/src/documents.rs, BD-21), against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`;
 //! the database is reset first): a package's defaults and a workspace's edits, what a person printing reads and what a
 //! document generated for outside reads, amounts and words in the document's language and currency, text, CSV and XML
-//! files that hostile values cannot break, labels for many records, and the `generate` effect handing its file to a
-//! `message` that mails it.
+//! files that hostile values cannot break, labels for many records, the `generate` effect handing its file to a
+//! `message` that mails it, and a slow render giving up before the database would end the caller's transaction.
 
 use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::documents::Generate;
@@ -12,7 +12,9 @@ use ferrum_meta::{Catalog, DocumentDef};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use uuid::Uuid;
 
 const PACKAGE: &str = r#"package: letters
@@ -90,9 +92,13 @@ impl ferrum_kernel::Mailer for Captured {
 #[derive(Default)]
 struct MemFiles(Mutex<std::collections::HashMap<String, Vec<u8>>>);
 
+/// How long the stand-in store takes to write an object, in milliseconds (a large file, a store far away).
+static PUT_MS: AtomicU64 = AtomicU64::new(0);
+
 #[async_trait::async_trait]
 impl ferrum_kernel::files::FileStore for MemFiles {
     async fn put(&self, key: &str, data: &[u8]) -> ferrum_kernel::Result<()> {
+        tokio::time::sleep(Duration::from_millis(PUT_MS.load(Ordering::SeqCst))).await;
         self.0.lock().unwrap().insert(key.to_string(), data.to_vec());
         Ok(())
     }
@@ -105,8 +111,8 @@ impl ferrum_kernel::files::FileStore for MemFiles {
     }
 }
 
-/// A stand-in for Gotenberg: records each form it is sent and answers with a tiny PDF.
-async fn fake_pdf_renderer() -> String {
+/// A stand-in for Gotenberg: records each form it is sent and, `after` that, answers with a tiny PDF.
+async fn fake_pdf_renderer(after: Duration) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -130,6 +136,7 @@ async fn fake_pdf_renderer() -> String {
             if let Some(b) = body {
                 RENDERED.lock().unwrap().push(b);
             }
+            tokio::time::sleep(after).await;
             let pdf = b"%PDF-1.7 stand-in";
             let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", pdf.len());
             let _ = sock.write_all(head.as_bytes()).await;
@@ -195,14 +202,15 @@ async fn scenario() {
     }
 
     let settings = KernelSettings {
-        pdf_url: Some(fake_pdf_renderer().await),
+        pdf_url: Some(fake_pdf_renderer(Duration::ZERO).await),
         old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), vec![]),
         ..Default::default()
     };
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, letters]).unwrap(), HookRegistry::default(), settings, Some(Arc::new(Captured)))
         .await
         .expect("boot");
-    k.set_file_store(Arc::new(MemFiles::default()));
+    let files = Arc::new(MemFiles::default());
+    k.set_file_store(files.clone());
     let tenant = k
         .create_tenant(NewTenant {
             slug: "docs".into(),
@@ -394,4 +402,18 @@ async fn scenario() {
     let e = k.run_action(&admin, "Offer", oid, "x_leak", Value::Null).await.unwrap_err();
     assert!(e.to_string().contains("not this record's"), "{e}");
     assert_eq!(other.sha256.len(), 64, "a digest a signing step can check the file by");
+
+    // ── a slow render inside the caller's transaction gives up while that transaction is still there, keeping nothing ──
+    // The renderer answers after 55 s and the store takes 10 s to write: both fall in one wait between two of the
+    // transaction's statements, longer than the database lets it wait (crate::pdf).
+    k.set_live(KernelSettings { pdf_url: Some(fake_pdf_renderer(Duration::from_secs(55)).await), ..k.settings.clone() });
+    PUT_MS.store(10_000, Ordering::SeqCst);
+    let stored = files.0.lock().unwrap().len();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let slow = ferrum_kernel::documents::generate(&k, &mut tx, &admin, &Generate { template: "letters.offer".into(), record: oid, ..Default::default() }).await;
+    PUT_MS.store(0, Ordering::SeqCst);
+    assert!(matches!(slow, Err(Error::Unavailable(_))), "the render gives up, not the database: {slow:?}");
+    sqlx::query("select 1").execute(&mut *tx).await.expect("the caller's transaction is still there");
+    tx.rollback().await.unwrap();
+    assert_eq!(files.0.lock().unwrap().len(), stored, "nothing was kept");
 }

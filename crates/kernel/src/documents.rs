@@ -1552,7 +1552,8 @@ pub async fn generate(k: &Kernel, tx: &mut Tx, ctx: &Ctx, g: &Generate) -> Resul
     let (bytes, content_type, ext, title) = if def.output == DocumentOutput::Page && def.values.is_empty() {
         let ask = PrintAsk { language: g.language.clone(), pdf, ..Default::default() };
         let p = render_page(k, tx, ctx, &def, Some(g.record), &ask, How { reader: Reader::Outside, design: false, design_all: false }).await?;
-        // ponytail: the PDF service is called inside the caller's transaction (up to its 60 s); a job if that ever matters.
+        // ponytail: the PDF service is called inside the caller's transaction (giving up at half the time the database
+        // lets it wait, crate::pdf); a job if that ever matters.
         let (b, t, e) = page_bytes(k, p.html, p.header, p.footer, &p.pdf, pdf).await?;
         (b, t, e, p.title)
     } else {

@@ -36,7 +36,9 @@ pub const DIRECT_LOCKS: u32 = 1;
 /// connection pooler in transaction mode gives each transaction whichever server connection is free, so nothing set on
 /// one session reaches the next transaction.
 const LOCK_TIMEOUT: &str = "10s";
-const IDLE_IN_TRANSACTION: &str = "60s";
+/// The longest a transaction waits between two statements before PostgreSQL ends its session: what a transaction waits
+/// for outside the database (a PDF render, crate::pdf) gives up well within it.
+pub(crate) const IDLE_IN_TRANSACTION: Duration = Duration::from_secs(60);
 
 /// What the work in progress belongs to. Every transaction opened inside [`Trace::scope`] carries
 /// it, and the events written there record it (the columns of `outbox` default to these settings),
@@ -160,11 +162,12 @@ fn carrying(settings: &str, moves: bool, frozen: bool) -> Query<'static, Postgre
     let zone = t.zone.get().filter(|z| z.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')).map_or("", String::as_str);
     // One of three fixed words (Trace::mark_step_up); a poisoned lock writes `no`, so queued work is held to it.
     let step_up = t.step_up.lock().map(|m| *m).unwrap_or("no");
+    let idle = IDLE_IN_TRANSACTION.as_secs();
     sqlx::query(AssertSqlSafe(format!(
         "select set_config('ferrum.correlation', $1, true), set_config('ferrum.causation', $2, true), \
          set_config('ferrum.traceparent', $3, true), set_config('ferrum.priority', $4, true), \
          set_config('ferrum.depth', '{}', true), set_config('ferrum.zone', '{zone}', true), set_config('ferrum.step_up', '{step_up}', true), set_config('lock_timeout', '{LOCK_TIMEOUT}', true), \
-         set_config('idle_in_transaction_session_timeout', '{IDLE_IN_TRANSACTION}', true), {settings}, {} as moving, {} as frozen",
+         set_config('idle_in_transaction_session_timeout', '{idle}s', true), {settings}, {} as moving, {} as frozen",
         t.depth,
         if moves { "ferrum_moving()" } else { "false" },
         if frozen { "ferrum_workspace_frozen($5)" } else { "false" }
@@ -281,9 +284,9 @@ impl Db {
         };
         // A direct connection starts with its session settings; one through a pooler must not send them (PgBouncer
         // refuses startup parameters it does not track) and gets them from each transaction instead (`carrying`).
-        let session = |o: PgConnectOptions| {
-            o.options([("timezone", "UTC"), ("lock_timeout", LOCK_TIMEOUT), ("idle_in_transaction_session_timeout", IDLE_IN_TRANSACTION)])
-        };
+        let idle = format!("{}s", IDLE_IN_TRANSACTION.as_secs());
+        let session =
+            |o: PgConnectOptions| o.options([("timezone", "UTC"), ("lock_timeout", LOCK_TIMEOUT), ("idle_in_transaction_session_timeout", idle.as_str())]);
         // Tests' own direct addresses, read by a debug build only (a release build reads no test's variable).
         let test = |name: &str| if cfg!(debug_assertions) { std::env::var(name).ok() } else { None };
         let direct_url = config

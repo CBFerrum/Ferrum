@@ -439,12 +439,23 @@ async fn scenario() {
     assert_eq!(k.message_inbound(chat_id, &signed, &none, report).await.unwrap(), json!({"updated": 1}));
     assert_eq!(row(&k, &admin, a[0].id).await["state"], "delivered");
     assert_eq!(k.message_channels(&admin).await.unwrap().iter().find(|c| c["id"] == json!(chat_id)).unwrap()["refused"], json!(2));
-    // A reply with a stop word opts the number out of promotional messages on that channel only.
+    // A reply with a start word opts the number in; one with a stop word opts it out of promotional messages on that
+    // channel only.
+    let start = br#"{"from": "+4915199999", "text": "START"}"#;
+    let start_signed = BTreeMap::from([("X-Signature".to_string(), hmac_hex("h00k", start))]);
+    assert_eq!(k.message_inbound(chat_id, &start_signed, &none, start).await.unwrap(), json!({"reply": true, "opted_in": true}));
     let reply = br#"{"from": "+4915199999", "text": " stop "}"#;
     let signed = BTreeMap::from([("X-Signature".to_string(), hmac_hex("h00k", reply))]);
     k.message_inbound(chat_id, &signed, &none, reply).await.unwrap();
     assert_eq!(send(&k, &admin, promo("chat")).await[0].reason.as_deref(), Some("opted out"));
     assert_eq!(send(&k, &admin, promo("text")).await[0].state, "queued");
+    // The start reply, captured and sent again, is refused and counted as an unsigned call is: the stop stands.
+    let again = k.message_inbound(chat_id, &start_signed, &none, start).await;
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    assert!(k.opted_out(&mut tx, tenant, "chat", "+4915199999").await.unwrap(), "the replayed start opted the number back in: {again:?}");
+    tx.commit().await.unwrap();
+    assert!(matches!(again, Err(ferrum_kernel::Error::Unauthorized(_))), "{again:?}");
+    assert_eq!(k.message_channels(&admin).await.unwrap().iter().find(|c| c["id"] == json!(chat_id)).unwrap()["refused"], json!(3));
     // The signed link opts out as well.
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let link: String = sqlx::query_scalar(
