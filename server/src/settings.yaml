@@ -437,6 +437,55 @@
   vault: library
   doc: >-
     A session token with the object store's keys, when they are temporary.
+# Object storage only (docs/plan/stateless.md, D6; docs/operations.md, "Object storage").
+- key: s3_set_up_bucket
+  env: FERRUM_S3_SET_UP_BUCKET
+  type: bool
+  default: "false"
+  path: settings.s3_set_up_bucket
+  doc: >-
+    `true`: at start, make the bucket when it is missing, and turn on what the doctor looks for when the bucket has
+    none of it: versioning, lifecycle rules (old versions end after `backup_reach_days`, 30 when not set; unfinished
+    uploads after a day) and default encryption. Never replaces a bucket's own rules. The store Compose bundles asks
+    for this itself at its first start; a bucket of your own is changed only when this is set, with keys allowed to
+    change its configuration. A replica is not ready until the set-up has worked (tried again every five seconds).
+- key: files_delete_after_days
+  env: FERRUM_FILES_DELETE_AFTER_DAYS
+  type: int
+  default: "0"
+  applies: live
+  path: settings.files_delete_after_days
+  doc: >-
+    Days a deleted file stays in object storage before it goes (0, the default: at once). At least
+    `backup_reach_days`, so that a database restored to any moment its backups reach finds every file it names (see
+    *Backups of files*).
+- key: backup_reach_days
+  env: FERRUM_BACKUP_REACH_DAYS
+  type: int
+  default: "0"
+  applies: live
+  path: settings.backup_reach_days
+  doc: >-
+    How many days back the database's backups reach (the chart's `database.backup.retention`; 0: not said). The
+    doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule.
+- key: files_direct_links
+  env: FERRUM_FILES_DIRECT_LINKS
+  type: bool
+  default: "false"
+  applies: live
+  path: settings.files_direct_links
+  doc: >-
+    `true`: a download (`/files/{id}`) answers with a short-lived link signed for the object store, which the browser
+    follows, instead of passing the bytes through the server. Never for files of entities whose reads are recorded,
+    for outside people, for types a browser would run, or while files move. Off by default.
+- key: files_direct_link_seconds
+  env: FERRUM_FILES_DIRECT_LINK_SECONDS
+  type: int
+  default: "60"
+  applies: live
+  path: settings.files_direct_link_seconds
+  doc: >-
+    How long a direct link works, in seconds (default 60; at most 300).
 - key: direct_upload_max_bytes
   env: FERRUM_DIRECT_UPLOAD_MAX_BYTES
   type: int

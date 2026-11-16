@@ -42,6 +42,9 @@ fn default_proxy_hops() -> usize {
 fn default_files_dir() -> String {
     "storage".into()
 }
+fn default_direct_link_seconds() -> u64 {
+    60
+}
 
 /// The `settings:` section of `config/<env>.yaml`.
 #[derive(Debug, Clone, Deserialize)]
@@ -102,6 +105,21 @@ pub struct Settings {
     /// Refuse to start without object storage, so replicas never keep attachments on local disk.
     #[serde(default)]
     pub require_object_storage: bool,
+    /// Make the bucket and turn on versioning, lifecycle rules and encryption where it has none (crate::store).
+    #[serde(default)]
+    pub s3_set_up_bucket: bool,
+    /// Days a deleted file stays in object storage before it goes (0: at once).
+    #[serde(default)]
+    pub files_delete_after_days: u64,
+    /// How many days back the database's backups reach (0: not said), for the doctor.
+    #[serde(default)]
+    pub backup_reach_days: u64,
+    /// Downloads answer with a short-lived link signed for the object store (crate::controllers::system).
+    #[serde(default)]
+    pub files_direct_links: bool,
+    /// How long such a link works, in seconds (at most 300).
+    #[serde(default = "default_direct_link_seconds")]
+    pub files_direct_link_seconds: u64,
     /// Base64 of 32 random bytes sealing secret fields, or Transit ciphertext of them
     /// (`vault:v1:…`, unwrapped through `kms_transit`); required in production.
     #[serde(default)]

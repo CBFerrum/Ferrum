@@ -4,8 +4,13 @@
 //! them. A file larger than one request may also come through the server in parts, on any store:
 //! after a dropped connection the upload goes on from what has arrived (FERRUM-OPS-006).
 //! Completing an upload checks the object and records it like any other file.
+//!
+//! Loco's storage is these objects too ([`Files`]), so that everything the server stores goes one way: while files move
+//! from the local directory to the store, a read looks in the store first and the directory second, a write goes to the
+//! store, and a deletion takes both; and a deletion waits when `files_delete_after_days` says so (crate::store).
 
 use crate::state::Settings;
+use crate::store::Releases;
 use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -14,8 +19,8 @@ use futures_util::StreamExt;
 use opendal::services::{Fs, S3};
 use opendal::{Operator, Writer};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -62,57 +67,125 @@ pub const PART_BYTES: u64 = 8 << 20;
 pub const PARTS_TTL: Duration = Duration::from_secs(24 * 3600);
 
 pub struct Objects {
-    op: Operator,
+    pub(crate) op: Operator,
     presigns: bool,
+    /// While files move from the local directory to the store (crate::store): read where the store lacks a key, and
+    /// deleted from as well. Never written.
+    pub(crate) directory: Option<Operator>,
+    /// Deletions that wait (`files_delete_after_days`).
+    pub(crate) releases: Arc<Releases>,
+    /// Whether the store has answered since this replica started (readiness, the metric).
+    pub health: crate::store::Health,
 }
 
 fn storage_err(e: impl std::fmt::Display) -> Error {
     Error::Unavailable(format!("storage: {e}"))
 }
 
-impl Objects {
-    /// The store `build_storage` configures for Loco, opened again for streaming and presigning.
-    pub fn new(settings: &Settings) -> std::result::Result<Objects, String> {
-        if settings.s3_bucket.is_empty() {
-            let op = Operator::new(Fs::default().root(&settings.files_dir)).map_err(|e| e.to_string())?;
-            return Ok(Objects { op, presigns: false });
-        }
-        // OpenDAL talks HTTP through a process-wide transport that must be installed first (safe to repeat).
-        opendal::install_default();
-        let region = if settings.s3_region.is_empty() { "auto" } else { settings.s3_region.as_str() };
-        let mut s3 = S3::default().bucket(&settings.s3_bucket).region(region);
-        // The environment's keys, else the vault's (crate::secrets); AWS itself finds the environment's on its own.
-        let given = |k: &str| {
-            let env = std::env::var(k).ok().filter(|v| !v.is_empty() && !settings.s3_endpoint.is_empty());
-            env.or_else(|| settings.revealed.get(&k.to_ascii_lowercase()).map(str::to_string))
-        };
-        if !settings.s3_endpoint.is_empty() {
-            s3 = s3.endpoint(&settings.s3_endpoint);
-        }
-        if let (Some(id), Some(secret)) = (given("AWS_ACCESS_KEY_ID"), given("AWS_SECRET_ACCESS_KEY")) {
+fn not_found(e: &opendal::Error) -> bool {
+    e.kind() == opendal::ErrorKind::NotFound
+}
+
+/// Variables the S3 library reads to find a machine's own identity when no keys are given: a web identity token (IRSA
+/// on EKS, or any OpenID Connect provider an S3-compatible store trusts), or a container's credentials (EKS Pod
+/// Identity, ECS). Read here only to tell a machine that has one from a configuration that forgot the keys.
+const IDENTITY: [&str; 3] = ["AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"];
+
+/// The object store `settings` name, as OpenDAL reaches it (`None` without a bucket). Its keys: the environment's, else
+/// the vault's or those the bundled store handed over (crate::secrets); none, and the S3 library's own chain finds them
+/// where the machine has an identity: AWS's own environment and profile, a web identity (IRSA), a container's or an
+/// instance's role. An S3-compatible store (an endpoint) without keys is refused unless the machine names an identity.
+pub fn s3(settings: &Settings) -> std::result::Result<Option<Operator>, String> {
+    if settings.s3_bucket.is_empty() {
+        return Ok(None);
+    }
+    // OpenDAL talks HTTP through a process-wide transport that must be installed first (safe to repeat).
+    opendal::install_default();
+    let region = if settings.s3_region.is_empty() { "auto" } else { settings.s3_region.as_str() };
+    let mut s3 = S3::default().bucket(&settings.s3_bucket).region(region);
+    let given = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).or_else(|| settings.revealed.get(&k.to_ascii_lowercase()).map(str::to_string));
+    if !settings.s3_endpoint.is_empty() {
+        s3 = s3.endpoint(&settings.s3_endpoint);
+    }
+    match (given("AWS_ACCESS_KEY_ID"), given("AWS_SECRET_ACCESS_KEY")) {
+        (Some(id), Some(secret)) => {
             s3 = s3.access_key_id(&id).secret_access_key(&secret);
+            if let Some(token) = given("AWS_SESSION_TOKEN") {
+                s3 = s3.session_token(&token);
+            }
         }
-        if let Some(token) = given("AWS_SESSION_TOKEN") {
-            s3 = s3.session_token(&token);
+        _ if !settings.s3_endpoint.is_empty() && !IDENTITY.iter().any(|v| std::env::var(v).is_ok_and(|v| !v.trim().is_empty())) => {
+            return Err("the object store at FERRUM_S3_ENDPOINT has no keys: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (or keep them in the \
+                        vault: ferrum task secret_set), or give this machine an identity the store trusts (AWS_WEB_IDENTITY_TOKEN_FILE, \
+                        AWS_CONTAINER_CREDENTIALS_FULL_URI)"
+                .into());
         }
-        Ok(Objects { op: Operator::new(s3).map_err(|e| e.to_string())?, presigns: true })
+        _ => {}
+    }
+    Operator::new(s3).map(Some).map_err(|e| e.to_string())
+}
+
+/// A local directory as a store.
+pub fn directory(dir: &str) -> std::result::Result<Operator, String> {
+    Operator::new(Fs::default().root(dir)).map_err(|e| e.to_string())
+}
+
+impl Objects {
+    /// The store the settings name: S3 when a bucket is set, else the local directory (crate::store decides whether the
+    /// directory may be used, and whether it is read while files move).
+    pub fn new(settings: &Settings) -> std::result::Result<Objects, String> {
+        match s3(settings)? {
+            Some(op) => Ok(Objects { op, presigns: true, directory: None, releases: Arc::default(), health: Default::default() }),
+            None => Objects::local(&settings.files_dir),
+        }
     }
 
     /// A store on a local directory (tests, a single host).
     pub fn local(dir: &str) -> std::result::Result<Objects, String> {
-        Ok(Objects { op: Operator::new(Fs::default().root(dir)).map_err(|e| e.to_string())?, presigns: false })
+        Ok(Objects { op: directory(dir)?, presigns: false, directory: None, releases: Arc::default(), health: Default::default() })
     }
 
-    /// Whether the browser can upload straight to the store (S3 and compatibles; not a local disk).
-    /// The keys under `prefix` (for journals; not for anything a request waits on).
-    pub async fn list(&self, prefix: &str) -> Result<Vec<String>> {
-        match self.op.list_with(prefix).recursive(true).await {
-            Ok(entries) => Ok(entries.into_iter().map(|e| e.path().to_string()).filter(|p| !p.ends_with('/')).collect()),
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(vec![]),
-            Err(e) => Err(storage_err(e)),
+    /// This store, with the local directory `dir` read where it lacks a key and deleted from too, while files move.
+    pub fn reading_directory(mut self, dir: &str) -> std::result::Result<Objects, String> {
+        self.directory = Some(directory(dir)?);
+        Ok(self)
+    }
+
+    /// This store, its deletions waiting as `releases` says.
+    pub fn with_releases(mut self, releases: Arc<Releases>) -> Objects {
+        self.releases = releases;
+        self
+    }
+
+    /// Whether the local directory is read where the store lacks a key (files are moving to the store).
+    pub fn reads_directory(&self) -> bool {
+        self.directory.is_some()
+    }
+
+    /// Where `key` is, and its size: the store, else (while files move) the directory.
+    async fn find(&self, key: &str) -> std::result::Result<(&Operator, u64), opendal::Error> {
+        match (self.op.stat(key).await, &self.directory) {
+            (Ok(m), _) => Ok((&self.op, m.content_length())),
+            (Err(e), Some(dir)) if not_found(&e) => dir.stat(key).await.map(|m| (dir, m.content_length())),
+            (Err(e), _) => Err(e),
         }
     }
 
+    /// The keys under `prefix` (for journals; not for anything a request waits on): the store's, and the directory's
+    /// while files move.
+    pub async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        let mut keys = std::collections::BTreeSet::new();
+        for op in std::iter::once(&self.op).chain(&self.directory) {
+            match op.list_with(prefix).recursive(true).await {
+                Ok(entries) => keys.extend(entries.into_iter().map(|e| e.path().to_string()).filter(|p| !p.ends_with('/'))),
+                Err(e) if not_found(&e) => {}
+                Err(e) => return Err(storage_err(e)),
+            }
+        }
+        Ok(keys.into_iter().collect())
+    }
+
+    /// Whether the browser can upload straight to the store (S3 and compatibles; not a local disk).
     pub fn direct_uploads(&self) -> bool {
         self.presigns
     }
@@ -120,9 +193,9 @@ impl Objects {
     /// An object's bytes as a response body, and its length: only the range a `Range` header's
     /// value asks for when it asks one the object holds ([`byte_range`]), and that range.
     pub async fn stream(&self, key: &str, range: Option<&str>) -> Result<(u64, Option<Range<u64>>, Body)> {
-        let size = self.op.stat(key).await.map_err(storage_err)?.content_length();
+        let (op, size) = self.find(key).await.map_err(storage_err)?;
         let part = byte_range(range, size);
-        let reader = self.op.reader(key).await.map_err(storage_err)?;
+        let reader = op.reader(key).await.map_err(storage_err)?;
         let stream = match part.clone() {
             Some(r) => reader.into_bytes_stream(r).await,
             None => reader.into_bytes_stream(..).await,
@@ -133,32 +206,62 @@ impl Objects {
 
     /// The bytes of `range` of an object, read as that range only (a connection's upload in chunks).
     pub async fn range(&self, key: &str, range: Range<u64>) -> Result<Vec<u8>> {
-        let read = self.op.read_with(key).range(range).await.map_err(|e| match e.kind() {
-            opendal::ErrorKind::NotFound => Error::NotFound(format!("stored object {key}")),
-            _ => storage_err(e),
-        })?;
-        Ok(read.to_vec())
+        let gone = |e: opendal::Error| if not_found(&e) { Error::NotFound(format!("stored object {key}")) } else { storage_err(e) };
+        let (op, _) = self.find(key).await.map_err(gone)?;
+        Ok(op.read_with(key).range(range).await.map_err(gone)?.to_vec())
+    }
+
+    /// A link that reads `key` from the store for `ttl`, answered with `content_type` and `disposition`
+    /// (`files_direct_links`).
+    pub async fn presign_download(&self, key: &str, ttl: Duration, content_type: &str, disposition: &str) -> Result<String> {
+        let signed =
+            self.op.presign_read_with(key, ttl).override_content_type(content_type).override_content_disposition(disposition).await.map_err(storage_err)?;
+        Ok(signed.uri().to_string())
+    }
+
+    /// An object's length and SHA-256, from wherever [`Objects::find`] finds it; `None` when it is nowhere.
+    pub(crate) async fn digest_found(&self, key: &str) -> std::result::Result<Option<(u64, String)>, opendal::Error> {
+        match self.find(key).await {
+            Ok((op, _)) => crate::store::digest_of(op, key).await,
+            Err(e) if not_found(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// A whole object, from wherever [`Objects::find`] finds it.
+    pub(crate) async fn read(&self, key: &str) -> std::result::Result<bytes::Bytes, opendal::Error> {
+        let (op, _) = self.find(key).await?;
+        Ok(op.read(key).await?.to_bytes())
+    }
+
+    /// Writes an object to the store. A key that is written again after it was deleted (an interface's or an app's files,
+    /// named by their content's digest) is first taken off the deletions that wait.
+    pub(crate) async fn write(&self, key: &str, bytes: bytes::Bytes) -> Result<()> {
+        self.releases.take_back(key).await?;
+        self.op.write(key, bytes).await.map_err(storage_err)?;
+        Ok(())
+    }
+
+    /// Deletes an object, or records its deletion to happen once `files_delete_after_days` have passed. While files
+    /// move, from the directory first, then from the store: a copy `files_move` makes meanwhile goes too.
+    pub(crate) async fn remove(&self, key: &str) -> Result<()> {
+        if self.releases.defer(key).await? {
+            return Ok(());
+        }
+        self.remove_now(key).await
+    }
+
+    /// Deletes an object now, from the directory first while files move, then from the store.
+    pub(crate) async fn remove_now(&self, key: &str) -> Result<()> {
+        if let Some(dir) = &self.directory {
+            dir.delete(key).await.map_err(storage_err)?;
+        }
+        self.op.delete(key).await.map_err(storage_err)
     }
 
     /// Size and SHA-256 of an object, read once as a stream; `None` when nothing is stored there.
     async fn digest(&self, key: &str) -> Result<Option<(u64, String)>> {
-        let reader = match self.op.reader(key).await {
-            Ok(r) => r,
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(storage_err(e)),
-        };
-        let mut stream = match reader.into_bytes_stream(..).await {
-            Ok(s) => s,
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(storage_err(e)),
-        };
-        let (mut hash, mut size) = (Sha256::new(), 0u64);
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(storage_err)?;
-            size += chunk.len() as u64;
-            hash.update(&chunk);
-        }
-        Ok(Some((size, hex::encode(hash.finalize()))))
+        crate::store::digest_of(&self.op, key).await.map_err(storage_err)
     }
 
     /// Writes, reads and deletes a probe object: whether this store works, and not merely answers.
@@ -170,24 +273,23 @@ impl Objects {
         if back.to_bytes().as_ref() == b"ok" { Ok(()) } else { Err(Error::Unavailable("storage: a probe came back different".into())) }
     }
 
+    /// Whether an object is there: in the store, or (while files move) in the directory. One whose deletion waits and
+    /// that may be written again is not, so that whoever asks writes it again ([`Objects::write`]).
     pub(crate) async fn exists(&self, key: &str) -> Result<bool> {
-        match self.op.stat(key).await {
-            Ok(_) => Ok(true),
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(storage_err(e)),
-        }
+        Ok(self.size(key).await?.is_some() && !self.releases.pending(key).await?)
     }
 
     pub(crate) async fn size(&self, key: &str) -> Result<Option<u64>> {
-        match self.op.stat(key).await {
-            Ok(m) => Ok(Some(m.content_length())),
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(None),
+        match self.find(key).await {
+            Ok((_, size)) => Ok(Some(size)),
+            Err(e) if not_found(&e) => Ok(None),
             Err(e) => Err(storage_err(e)),
         }
     }
 
+    /// Deletes what an upload left (nothing a record names), now.
     async fn delete(&self, key: &str) {
-        if let Err(e) = self.op.delete(key).await {
+        if let Err(e) = self.remove_now(key).await {
             tracing::warn!(%key, "could not delete an upload's object: {e}");
         }
     }
@@ -195,9 +297,58 @@ impl Objects {
     /// Deletes the parts of an upload sent in parts, once it is recorded or forgotten.
     async fn drop_parts(&self, tenant: Uuid, id: Uuid) {
         let dir = format!("{}/", parts_dir(tenant, id));
-        if let Err(e) = self.op.delete_with(&dir).recursive(true).await {
-            tracing::warn!(%dir, "could not delete an upload's parts: {e}");
+        for op in self.directory.iter().chain(std::iter::once(&self.op)) {
+            if let Err(e) = op.delete_with(&dir).recursive(true).await {
+                tracing::warn!(%dir, "could not delete an upload's parts: {e}");
+            }
         }
+    }
+}
+
+/// Loco's storage over [`Objects`] (crate::app::build_storage): what handlers, the shell, the App Manager and the kernel's
+/// file store keep goes through the same reads, writes and deletions as streams and uploads do.
+pub struct Files(pub Arc<Objects>);
+
+fn loco_err(e: Error) -> loco_rs::storage::StorageError {
+    loco_rs::storage::StorageError::Any(e.to_string().into())
+}
+
+fn key(path: &std::path::Path) -> String {
+    path.display().to_string()
+}
+
+#[async_trait::async_trait]
+impl loco_rs::storage::drivers::StoreDriver for Files {
+    async fn upload(&self, path: &std::path::Path, content: &bytes::Bytes) -> loco_rs::storage::StorageResult<loco_rs::storage::drivers::UploadResponse> {
+        self.0.write(&key(path), content.clone()).await.map_err(loco_err)?;
+        Ok(loco_rs::storage::drivers::UploadResponse::new(None, None))
+    }
+    async fn get(&self, path: &std::path::Path) -> loco_rs::storage::StorageResult<loco_rs::storage::drivers::GetResponse> {
+        Ok(loco_rs::storage::drivers::GetResponse::from_bytes(self.0.read(&key(path)).await?))
+    }
+    async fn delete(&self, path: &std::path::Path) -> loco_rs::storage::StorageResult<()> {
+        self.0.remove(&key(path)).await.map_err(loco_err)
+    }
+    async fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> loco_rs::storage::StorageResult<()> {
+        Ok(self.0.op.rename(&key(from), &key(to)).await?)
+    }
+    async fn copy(&self, from: &std::path::Path, to: &std::path::Path) -> loco_rs::storage::StorageResult<()> {
+        self.0.op.copy(&key(from), &key(to)).await?;
+        Ok(())
+    }
+    async fn exists(&self, path: &std::path::Path) -> loco_rs::storage::StorageResult<bool> {
+        self.0.exists(&key(path)).await.map_err(loco_err)
+    }
+    async fn list(&self, path: &std::path::Path, recursive: bool) -> loco_rs::storage::StorageResult<Vec<loco_rs::storage::drivers::ListEntry>> {
+        let entries = self.0.op.list_with(&key(path)).recursive(recursive).await?;
+        Ok(entries
+            .into_iter()
+            .map(|e| loco_rs::storage::drivers::ListEntry::new(e.path().to_string(), e.metadata().is_dir(), Some(e.metadata().content_length()), None, None))
+            .collect())
+    }
+    async fn stat(&self, path: &std::path::Path) -> loco_rs::storage::StorageResult<loco_rs::storage::drivers::ListEntry> {
+        let (_, size) = self.0.find(&key(path)).await?;
+        Ok(loco_rs::storage::drivers::ListEntry::new(key(path), false, Some(size), None, None))
     }
 }
 
@@ -368,7 +519,8 @@ async fn join_parts(objects: &Objects, tenant: Uuid, id: Uuid, size: u64, key: &
 async fn write_parts(objects: &Objects, w: &mut Writer, tenant: Uuid, id: Uuid, size: u64) -> Result<()> {
     let mut offset = 0u64;
     while offset < size {
-        let part = objects.op.read(&part_key(tenant, id, offset)).await.map_err(storage_err)?;
+        // From the directory too, for an upload begun before files moved to the store.
+        let part = objects.read(&part_key(tenant, id, offset)).await.map_err(storage_err)?;
         if part.is_empty() {
             return Err(Error::Unavailable(format!("storage: the part of this upload at byte {offset} is empty")));
         }

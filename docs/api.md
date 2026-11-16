@@ -2177,7 +2177,7 @@ the app is gone or the person may no longer use it.
 
 ## Files
 
-`POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download, streamed; one `Range: bytes=…` answered with 206). Every download carries its type (a file kept without one as `application/octet-stream`), `X-Content-Type-Options: nosniff` and `Content-Disposition: attachment` with its name; a type a browser would run (HTML, SVG, XML, script) also a sandboxing CSP, also on the public route, where other types are inline. A generated document keeps the type it was made as ([BD-37](builder/decisions.md#bd-37-generated-documents-keep-their-type)).
+`POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download, streamed; one `Range: bytes=…` answered with 206; with `files_direct_links` on, `307` to a link signed for the object store instead, working for `files_direct_link_seconds`, never for an entity whose reads are recorded, an outside person or a type a browser would run: docs/operations.md, "Object storage"). Every download carries its type (a file kept without one as `application/octet-stream`), `X-Content-Type-Options: nosniff` and `Content-Disposition: attachment` with its name; a type a browser would run (HTML, SVG, XML, script) also a sandboxing CSP, also on the public route, where other types are inline. A generated document keeps the type it was made as ([BD-37](builder/decisions.md#bd-37-generated-documents-keep-their-type)).
 
 Who may attach and download (the uploads below alike):
 

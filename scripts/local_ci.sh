@@ -31,6 +31,10 @@
 #   window  not in the workflow, and only when named: scripts/window_rehearsal.sh, an older build of main (WINDOW_OLD,
 #           default 8a34644e, the first with floors) and this one on one database. The older build is made once and kept
 #           in WINDOW_WORK (about 3 GB while it builds; refused under 8 GB free).
+#   objects not in the workflow, and only when named: scripts/object_store_rehearsal.sh, the server without apps on real
+#           S3 servers (SeaweedFS from Homebrew, run by deploy/store/start.sh, and moto 5.0.28 in OBJECT_PYTHON): a new
+#           installation refused on a directory, files moved with files_move killed partway, two replicas, the doctor's
+#           bucket lines, the restore drill, direct links and a machine's identity in place of keys.
 #   editors not run here: it needs Docker and Playwright's browsers. The image job and the cluster workflow need
 #           Docker too: docs/operations.md, "Running the image and cluster checks on your own machine".
 #
@@ -284,6 +288,11 @@ job_window() {
   run "window rehearsal" scripts/window_rehearsal.sh "${WINDOW_OLD:-8a34644e}" "ferrum_windowrehearsal$SFX"
 }
 
+job_objects() {
+  run "objects build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
+  run "objects rehearsal" scripts/object_store_rehearsal.sh "ferrum_objrehearsal$SFX"
+}
+
 job_editors() { echo "SKIP editors: needs Docker (its nginx image) and Playwright's browsers; docs/operations.md says how to run it"; }
 
 jobs=("$@")
@@ -291,8 +300,8 @@ jobs=("$@")
 for j in "${jobs[@]}"; do
   case "$j" in
     # Each job in a shell of its own, so what one sets (saml's xmlsec1 and OpenSSL) never reaches the next.
-    rust | saml | audit | move | editors | replica | window | managed) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
-    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, managed)"; exit 2 ;;
+    rust | saml | audit | move | editors | replica | window | managed | objects) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
+    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, managed, objects)"; exit 2 ;;
   esac
 done
 echo "== $([ $failed = 0 ] && echo PASS || echo FAIL): ${jobs[*]}"

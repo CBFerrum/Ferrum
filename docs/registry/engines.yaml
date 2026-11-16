@@ -111,3 +111,9 @@ engines:
     read: getmoto/moto LICENSE
     terms: "Test clusters only (deploy/kind): it stands in for object storage and is never part of a production plan"
     decided_in: docs/capabilities.md (FERRUM-OPS-006)
+  - image: chrislusf/seaweedfs
+    name: SeaweedFS (the object store Compose bundles)
+    license: Apache-2.0
+    read: seaweedfs/seaweedfs LICENSE (Apache License 2.0, as shipped with release 4.53); docs/references/object-stores.md
+    terms: None beyond the licence; its filer and volume server answer without keys, so only its S3 port may listen beyond the container (deploy/store/start.sh)
+    decided_in: docs/references/object-stores.md (the trial against Garage); docs/plan/stateless.md (D6)
