@@ -260,7 +260,7 @@ async fn changes(a: &AppState, b: &AppState) {
     let said = |r: ferrum_kernel::Result<Vec<ferrum_server::settings::Done>>| r.err().map(|e| e.to_string()).unwrap_or_default();
     assert!(said(change(a, &one("session_days", Some("soon")), "task").await).contains("whole number"));
     assert!(said(change(a, &one("FERRUM_METRICS_TOKEN", Some("x")), "task").await).contains("is a secret"));
-    assert!(said(change(a, &one("office_url", Some("http://o")), "task").await).contains("by Drive"));
+    assert!(said(change(a, &one("drive.office_url", Some("http://o")), "task").await).contains("by Drive"));
     assert!(matches!(change(a, &one("nonsense", Some("1")), "task").await, Err(ferrum_kernel::Error::NotFound(_))));
     assert!(said(change(a, &one("db_max_connections", Some("8")), "task").await).contains("each pool's own"));
     let zone = said(change(a, &one("zone_default", Some("nowhere")), "task").await);

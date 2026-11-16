@@ -75,7 +75,11 @@ after the commit, or remove it when the work fails. A `reveal`, `sign` or `carry
 served fails. A verb does not see what the caller's open transaction wrote and has not committed. Under load a verb waits
 for a side connection, never for the caller's own, so it cannot hold up the caller's transaction by itself; do not call one
 while holding a lock on what that verb takes (the secret's own lock). The one verb in the caller's transaction is
-`field`, which reads the app's secret field with the record it belongs to.
+`field`, which reads the app's secret field with the record it belongs to; with the vault closed it reads the old store
+with the old key, as the kernel's own readers do. A workspace's key and an owner's key are never made inside a caller's
+transaction: a secret field written there first has them made on the vault's own connection, committed, so a vault call
+on another connection before the caller commits never waits on it (an app's `ready()` that made its keys first on a
+connection of its own is not needed).
 
 **What it made with the old key (R1 only).** An app that sealed or keyed things of its own with the old key
 (`settings.secret_key`, deprecated) keeps them working through its handle until they lapse, with no key in its hands and
