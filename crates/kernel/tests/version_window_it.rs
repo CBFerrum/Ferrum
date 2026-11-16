@@ -269,6 +269,10 @@ async fn keeps_out(db: &Db, floor: &window::Floor) {
     assert!(matches!(after, window::Standing::Guest(_)) || since == window::build_date(), "{}: a build from it on is refused: {after:?}", floor.feature);
 }
 
+/// A temporary floor as work under way would hold one (none of this build's is temporary): the way down leaves it unless
+/// forced, and it goes with its last holder.
+const HELD: window::Floor = window::Floor { feature: "work_under_way", since: "2026-11-14T04:00:04Z", what: "work under way holds it", temporary: true };
+
 async fn audited(db: &Db, action: &str) -> i64 {
     let mut tx = db.system_tx().await.unwrap();
     let n = sqlx::query_scalar("select count(*) from audit_event where action = $1").bind(action).fetch_one(&mut *tx).await.unwrap();
@@ -313,18 +317,17 @@ async fn floors() {
     assert_eq!(state(&db, "schema_compatible_from_own").await.as_deref(), Some(window::COMPATIBLE_FROM));
 
     // The way down: says what older builds will not enforce, is audited, and leaves the build's own value.
-    let tenant = k
-        .create_tenant(NewTenant {
-            slug: "acme".into(),
-            name: "Acme".into(),
-            admin_email: "admin@acme.test".into(),
-            admin_password: "Correct-Horse-9".into(),
-            admin_name: None,
-            packages: vec![],
-            settings: None,
-        })
-        .await
-        .unwrap();
+    k.create_tenant(NewTenant {
+        slug: "acme".into(),
+        name: "Acme".into(),
+        admin_email: "admin@acme.test".into(),
+        admin_password: "Correct-Horse-9".into(),
+        admin_name: None,
+        packages: vec![],
+        settings: None,
+    })
+    .await
+    .unwrap();
     assert!(k.allow_older_builds(" ", None, false).await.is_err(), "it takes a reason");
     assert!(k.allow_older_builds("rollback", Some("sandbox"), false).await.is_err(), "no such floor in effect");
     let one = k.allow_older_builds("rolling back the CRM pilot", Some("zones_limited"), false).await.unwrap();
@@ -337,39 +340,8 @@ async fn floors() {
     assert!(in_effect(&db).await.is_empty());
     assert_eq!(audited(&db, "platform.allow_older_builds").await, 2);
 
-    // Each workspace setting on save, and a pinned key, each on its own.
-    let session = k.login("acme", "admin@acme.test", "Correct-Horse-9").await.expect("login");
-    let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.unwrap();
-    let saves: [(serde_json::Value, &window::Floor); 3] = [
-        (json!({"staff_networks": {"networks": ["10.0.0.0/8"], "mode": "report"}}), &ferrum_kernel::gate::STAFF_NETWORKS_FLOOR),
-        (json!({"idle_minutes": 30}), &ferrum_kernel::gate::IDLE_FLOOR),
-        (json!({"break_glass": [session.user]}), &ferrum_kernel::gate::BREAK_GLASS_FLOOR),
-    ];
-    for (patch, floor) in saves {
-        k.update_tenant_settings(&admin, patch.as_object().unwrap()).await.unwrap();
-        assert_eq!(in_effect(&db).await, vec![(floor.feature.to_string(), "".into())], "{patch}");
-        keeps_out(&db, floor).await;
-        k.allow_older_builds("test", None, false).await.unwrap();
-    }
-    // Saved off, nothing is required; turning one off leaves its floor.
-    k.update_tenant_settings(&admin, json!({"idle_minutes": 0, "staff_networks": null, "break_glass": null}).as_object().unwrap()).await.unwrap();
-    assert!(in_effect(&db).await.is_empty());
-    k.update_tenant_settings(&admin, json!({"idle_minutes": 30}).as_object().unwrap()).await.unwrap();
-    k.update_tenant_settings(&admin, json!({"idle_minutes": 0}).as_object().unwrap()).await.unwrap();
-    assert_eq!(in_effect(&db).await, vec![("idle_timeout".into(), "".into())], "turned off, the floor stays");
-    k.allow_older_builds("test", None, false).await.unwrap();
-    k.create_api_key(&admin, session.user, "anywhere", None, None).await.unwrap();
-    assert!(in_effect(&db).await.is_empty(), "a key without networks");
-    let (key, _) = k.create_api_key_on(&admin, session.user, "office", None, None, &["10.0.0.0/8".into()]).await.unwrap();
-    assert_eq!(in_effect(&db).await, vec![("key_networks".into(), "".into())]);
-    keeps_out(&db, &ferrum_kernel::gate::KEY_NETWORKS_FLOOR).await;
-    k.allow_older_builds("test", None, false).await.unwrap();
-    k.set_api_key_networks(&admin, key, &["192.168.0.0/16".into()]).await.unwrap();
-    assert_eq!(in_effect(&db).await, vec![("key_networks".into(), "".into())], "networks given later");
-    k.allow_older_builds("test", None, false).await.unwrap();
-
-    // A temporary floor counts its holders: two moves at once keep it until both end.
-    let freeze = &ferrum_kernel::workspace_move::FLOOR;
+    // A temporary floor counts its holders: two pieces of work at once keep it until both end.
+    let freeze = &HELD;
     k.require_floor(freeze, "one").await.unwrap();
     k.require_floor(freeze, "two").await.unwrap();
     k.require_floor(freeze, "two").await.unwrap();
@@ -377,23 +349,15 @@ async fn floors() {
     k.release_floor(freeze, "one").await.unwrap();
     keeps_out(&db, freeze).await;
     // The way down refuses while a holder is under way, unless forced.
-    let said = k.allow_older_builds("rollback", None, false).await.expect_err("a move under way").to_string();
+    let said = k.allow_older_builds("rollback", None, false).await.expect_err("work under way").to_string();
     assert!(said.contains("under way") && said.contains("force:yes") && said.contains("held by two"), "{said}");
-    k.allow_older_builds("rollback", Some("workspace_freeze"), true).await.unwrap();
+    k.allow_older_builds("rollback", Some("work_under_way"), true).await.unwrap();
     assert!(in_effect(&db).await.is_empty());
     k.require_floor(freeze, "two").await.unwrap();
     k.release_floor(freeze, "two").await.unwrap();
     k.release_floor(freeze, "two").await.unwrap();
     assert!(in_effect(&db).await.is_empty());
     assert_eq!(settled(&db).await, window::compatible_from());
-
-    // Sandboxes: the floor stays until the last one is deleted.
-    k.require_floor(&ferrum_kernel::sandbox::FLOOR, "sandbox-a").await.unwrap();
-    k.require_floor(&ferrum_kernel::sandbox::FLOOR, "sandbox-b").await.unwrap();
-    k.release_floor(&ferrum_kernel::sandbox::FLOOR, "sandbox-a").await.unwrap();
-    keeps_out(&db, &ferrum_kernel::sandbox::FLOOR).await;
-    k.release_floor(&ferrum_kernel::sandbox::FLOOR, "sandbox-b").await.unwrap();
-    assert!(in_effect(&db).await.is_empty());
 
     // Concurrency: holders raised and released at once, over and over, leave exactly what is held and the right value.
     for round in 0..10 {
@@ -414,70 +378,14 @@ async fn floors() {
         k.allow_older_builds("round", None, false).await.unwrap();
     }
 
-    // What builds from before floors switched on is found at the next level start, and found again after the way down.
-    sqlx::raw_sql(
-        "begin; select set_config('ferrum.system', 'on', true); \
-         update tenant set settings = settings || jsonb_build_object('staff_networks', jsonb_build_object('networks', jsonb_build_array('10.0.0.0/8')), \
-           'idle_minutes', 15, 'break_glass', jsonb_build_array(gen_random_uuid())) where slug = 'acme'; \
-         insert into tenant select * from jsonb_populate_record(null::tenant, (select to_jsonb(t) || jsonb_build_object('id', gen_random_uuid(), \
-           'slug', 'acme-sandbox', 'sandbox_of', t.id, 'sandbox_from', 'acme', 'sandbox_until', current_date + 1) from tenant t where slug = 'acme')); \
-         insert into platform_move (id, valid_until, system_identifier, timeline, database_oid, reason) \
-           select gen_random_uuid(), now() + interval '1 day', 0, 1, 0, 'from before floors'; \
-         insert into workspace_move (workspace, move_id, side, state, peer, shared_files) \
-           select id, gen_random_uuid(), 'source', 'leaving', 'elsewhere', true from tenant where slug = 'acme'; commit;",
-    )
-    .execute(&db.pool)
-    .await
-    .unwrap();
-    let mut tx = db.system_tx().await.unwrap();
-    let sandbox: String = sqlx::query_scalar("select id::text from tenant where slug = 'acme-sandbox'").fetch_one(&mut *tx).await.unwrap();
-    let mark: String = sqlx::query_scalar("select id::text from platform_move").fetch_one(&mut *tx).await.unwrap();
-    tx.commit().await.unwrap();
-    let in_use = vec![
-        ("break_glass".to_string(), "".to_string()),
-        ("idle_timeout".into(), "".into()),
-        ("key_networks".into(), "".into()),
-        ("move_fence".into(), mark),
-        ("sandbox".into(), sandbox),
-        ("staff_networks".into(), "".into()),
-        ("workspace_freeze".into(), tenant.to_string()),
-    ];
-    assert!(in_effect(&db).await.is_empty());
-    for _ in 0..2 {
-        let starts = futures::future::join_all((0..3).map(|_| k.hold_start())).await;
-        for h in starts {
-            h.unwrap().expect("level").release().await;
-        }
-        assert_eq!(in_effect(&db).await, in_use);
-        settled(&db).await;
-        k.allow_older_builds("rolling back", None, true).await.unwrap();
-        assert!(in_effect(&db).await.is_empty());
-    }
-    sqlx::raw_sql(
-        "begin; select set_config('ferrum.system', 'on', true); delete from workspace_move; delete from platform_move; delete from tenant where slug = 'acme-sandbox'; \
-         update tenant set settings = settings - 'staff_networks' - 'idle_minutes' - 'break_glass' where slug = 'acme'; \
-         update api_key set networks = null; commit;",
-    )
-    .execute(&db.pool)
-    .await
-    .unwrap();
-    k.hold_start().await.unwrap().expect("level").release().await;
-    assert!(in_effect(&db).await.is_empty(), "nothing in use, nothing raised");
-
     // A guest of a newer build raises floors of what it knows, but releases none, lowers nothing and leaves the recorded
-    // build alone; it does no start-up check of what is in use.
+    // build alone.
     k.require_zone_floors(&level1).await.unwrap();
     set_state(&db, "schema_build_date", &day(1)).await;
     let before = settled(&db).await;
     k.require_floor(freeze, "guest").await.unwrap();
     k.require_zone_floors(&level2).await.unwrap();
-    k.update_tenant_settings(&admin, json!({"idle_minutes": 30}).as_object().unwrap()).await.unwrap();
-    let raised = vec![
-        ("idle_timeout".to_string(), "".to_string()),
-        ("workspace_freeze".into(), "guest".into()),
-        ("zones".into(), "".into()),
-        ("zones_limited".into(), "".into()),
-    ];
+    let raised = vec![("work_under_way".to_string(), "guest".to_string()), ("zones".into(), "".into()), ("zones_limited".into(), "".into())];
     assert_eq!(in_effect(&db).await, raised, "a guest raises");
     assert!(settled(&db).await >= before, "and only raises");
     k.release_floor(freeze, "guest").await.unwrap();
@@ -513,17 +421,11 @@ async fn floors() {
         assert!(said.contains("newer_thing (a newer protection holds)") && !said.contains("zones (") && said.contains("allow_older_builds"), "{said}");
     }
 
-    // A planned move raises its floor and cancelling it releases it.
+    // Back as this build left it: the floors gone, its own value recorded.
     sqlx::query("delete from window_floor where feature = 'newer_thing'").execute(&db.pool).await.unwrap();
     set_state(&db, "schema_build_date", &shown(window::build_date())).await;
     set_state(&db, "schema_compatible_from_own", window::COMPATIBLE_FROM).await;
-    k.allow_older_builds("before the move", None, false).await.unwrap();
-    let mark = k.plan_move("to Kubernetes", std::time::Duration::from_secs(24 * 3600), std::time::Duration::ZERO).await.unwrap();
-    assert_eq!(in_effect(&db).await, vec![("move_fence".into(), mark.id.to_string())]);
-    keeps_out(&db, &ferrum_kernel::moves::FLOOR).await;
-    let said = k.allow_older_builds("rollback", None, false).await.expect_err("a fenced database").to_string();
-    assert!(said.contains("move_fence"), "{said}");
-    k.cancel_move("rehearsed").await.unwrap();
+    k.allow_older_builds("the end", None, false).await.unwrap();
     assert!(in_effect(&db).await.is_empty());
     assert_eq!(settled(&db).await, window::compatible_from());
 }

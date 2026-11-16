@@ -24,7 +24,7 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `GET /sso?tenant=` | → `{providers: [{id, label}]}`: the workspace's single sign-on buttons (none for an unknown workspace) |
 | `POST /sso/start` | `{tenant, provider, redirect_uri, binding}` → `{url}` to send the browser to. `redirect_uri` is the sign-in page (registered with the provider, which sends the browser nowhere else); `binding` is a random secret (16–200 characters) the browser keeps to finish |
 | `POST /sso/finish` | `{state, code, binding}` (what the provider sent the browser back with) → `{token, …}`. Each sign-in works once, within ten minutes, in the browser that started it. The provider's own two-factor rules apply instead of Ferrum's |
-| `GET /saml/{workspace id}` | The workspace's SAML 2.0 metadata (`application/samlmetadata+xml`), for identity providers to load: its entity ID (this address), its assertion consumer service, its logout service (`…/slo`, both bindings), the key its requests and logout messages are signed with, and the keys assertions may be encrypted to (`use="encryption"`, two while one is being replaced, the new one first). Asked on the accounts host, the addresses there; on any other host, `PUBLIC_URL`'s. While a provider saved before encryption and logout were published (not saved since) has its addresses under `PUBLIC_URL`, the metadata there says only what it said then. 404 for a workspace that is not active |
+| `GET /saml/{workspace id}` | The workspace's SAML 2.0 metadata (`application/samlmetadata+xml`), for identity providers to load: its entity ID (this address), its assertion consumer service, its logout service (`…/slo`, both bindings), the key its requests and logout messages are signed with, and the keys assertions may be encrypted to (`use="encryption"`, two while one is being replaced, the new one first). Asked on the accounts host, the addresses there; on any other host, `PUBLIC_URL`'s. 404 for a workspace that is not active |
 | `POST /saml/{workspace id}/acs` | Where a SAML provider posts its answer (`SAMLResponse`, `RelayState`; HTTP-POST binding). A good answer → `303` to the `redirect_uri` the sign-in started with, plus `state` and `code`, which finish it with `/sso/finish` as above; anything else → a page that says why. For SAML providers `redirect_uri` must be an address of this server's own (`PUBLIC_URL`, a host of the workspace, the accounts host). The assertion may be encrypted to the workspace's key (AES-GCM, or AES-CBC when the whole response is signed; the key by RSA-OAEP) |
 | `GET /saml/{workspace id}/logout?ticket=` | The address `POST /logout` gives a SAML sign-in's session (once, for ten minutes): `303` to the provider with a signed logout request (HTTP-Redirect), or a page that posts it (HTTP-POST), or straight back when the provider offers no single logout; anything else → a page saying the sign-out did not go through the provider. Not served (`404`) where the zone admits no staff |
 | `GET`, `POST /saml/{workspace id}/slo` | The workspace's SAML logout service, for the provider, by the browser (no Ferrum cookie needed): its signed logout requests (`SAMLRequest`, HTTP-Redirect or HTTP-POST) end the sessions they name and are answered, signed, by the provider's binding; its signed answers to ours (`SAMLResponse`) send the browser back to where the person signed out from. Anything unsigned, signed by another key, for another address, older than ten minutes, already seen or from a provider the workspace does not have → a page saying it was refused, the same for each, and nothing ended. Not served (`404`) where the zone admits no staff |
@@ -850,7 +850,7 @@ document fetched to check it; or `{label, protocol: "saml", saml_metadata, domai
 single_logout_in?, …}` with the provider's metadata as XML or the https address it is published at, checked now
 and read again at each sign-in, `domains` required; `single_logout_out` (signing out here signs out there) and
 `single_logout_in` (the provider may end sessions here) are on unless `false`, and work when the provider's
-metadata offers single logout; a provider saved before they existed has both off until saved again),
+metadata offers single logout),
 `/api/admin/sso/{id}` (PUT the same — `client_secret` left out keeps the stored one, `""` clears it;
 a provider keeps its protocol; DELETE unlinks the people linked through it).
 
@@ -1207,8 +1207,7 @@ Customizations and upgrades: `GET /api/customize/conflicts` → `{conflicts: [{i
 now, gone, suspended}]}`; `POST /api/customize/{id}/keep` keeps one over what its package says now.
 A customization keeps what it replaced (`was`) when it is made or kept: a field's or the entity's
 property, a whole workflow (`set_workflow`) or print template (`set_print_template`), `null` where
-the packages had none. One made before it kept that is compared from what its packages say when this
-version first starts. An app's plan says the same before anyone agrees to it (below).
+the packages had none. An app's plan says the same before anyone agrees to it (below).
 
 ## SCIM 2.0 — `/api/scim/v2` ([identity lifecycle](identity-lifecycle.md))
 

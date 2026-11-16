@@ -167,23 +167,8 @@ async fn scenario() {
     }))
     .unwrap();
     let tickets = k.add_customization(&admin, "Ticket", OverlayOp::SetWorkflow { workflow: ours }, None).await.unwrap();
-    // One made before customizations kept what they replaced: it is compared from what its package
-    // says when this version first starts.
-    let legacy = Uuid::now_v7();
-    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
-    sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note) values ($1, $2, 'Case', $3, 'made long ago')")
-        .bind(tenant)
-        .bind(legacy)
-        .bind(serde_json::to_value(set("channel", "label", json!("Way in"))).unwrap())
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query("update tenant set meta_version = meta_version + 1 where id = $1").bind(tenant).execute(&mut *tx).await.unwrap();
-    tx.commit().await.unwrap();
-    k.registry.invalidate(tenant);
+    let way_in = k.add_customization(&admin, "Case", set("channel", "label", json!("Way in")), None).await.unwrap();
     assert!(k.customization_conflicts(&admin).await.unwrap().is_empty(), "nothing has moved yet");
-    assert_eq!(k.adopt_customization_baselines().await.unwrap(), 1, "the one that had not said what it replaced");
-    assert_eq!(k.adopt_customization_baselines().await.unwrap(), 0, "once");
     assert!(k.insert(&admin, "Case", doc(json!({"title": "before"}))).await.is_ok());
 
     // Claims waiting where the upgrade changes things, and one where it does not.
@@ -207,7 +192,7 @@ async fn scenario() {
     assert!(matches!(k.upgrade_impact(&clerk_ctx, &v2, &[]).await, Err(Error::Forbidden(_))), "administrators only");
     let impact = k.upgrade_impact(&admin, &v2, &[]).await.unwrap();
     let predicted: BTreeSet<Uuid> = impact.customizations.iter().map(|c| c.id).collect();
-    assert_eq!(predicted, BTreeSet::from([optional, renamed, hidden, tickets, legacy]), "{:?}", impact.customizations);
+    assert_eq!(predicted, BTreeSet::from([optional, renamed, hidden, tickets, way_in]), "{:?}", impact.customizations);
     assert!(impact.customizations.iter().find(|c| c.id == optional).unwrap().suspended, "and that this one will be suspended");
     let mut work: Vec<(&str, &str, i64, bool)> = impact.open_work.iter().map(|w| (w.entity.as_str(), w.state.as_str(), w.records, w.removed)).collect();
     work.sort();
@@ -236,7 +221,7 @@ async fn scenario() {
     assert_eq!((&of(renamed).was, &of(renamed).now), (&json!("Reference"), &json!("Your reference")));
     assert!(!of(renamed).suspended, "a label harms nobody: yours stands");
     assert!(of(hidden).gone);
-    assert_eq!((&of(legacy).was, &of(legacy).now), (&json!("Channel"), &json!("Source")), "compared from when it was adopted");
+    assert_eq!((&of(way_in).was, &of(way_in).now), (&json!("Channel"), &json!("Source")), "compared from when it was made");
     assert_eq!(
         (of(tickets).was["states"].as_array().unwrap().len(), of(tickets).now["states"].as_array().unwrap().len()),
         (2, 3),
@@ -265,7 +250,7 @@ async fn scenario() {
     for kept in [optional, renamed, tickets] {
         k.keep_customization(&admin, kept).await.expect("kept");
     }
-    k.set_customization_active(&admin, legacy, false).await.unwrap();
+    k.set_customization_active(&admin, way_in, false).await.unwrap();
     let admin = k.load_ctx(tenant, admin.user, None, "it".into()).await.unwrap();
     assert!(!admin.schema.entity("Case").unwrap().field("summary").unwrap().required, "their decision");
     assert_eq!(admin.schema.entity("Case").unwrap().field("channel").unwrap().label.as_deref(), Some("Source"), "the package's, switched off");

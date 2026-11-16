@@ -208,7 +208,8 @@ impl Ddl<'_> {
     }
 
     /// A unique index over documents that are not cancelled: a cancelled document is void, so its
-    /// values must not block new or amended ones. Replaces the plain one earlier versions created.
+    /// values must not block new or amended ones. Replaces the plain one made while the entity was not
+    /// submittable (a package release or a workspace's own definition can make it so).
     async fn unique_live(&mut self, table: &str, cols: &[&str], partial: Option<&str>) -> Result<()> {
         self.exec(format!("drop index if exists {}", q(&obj_name("uq", table, cols)))).await?;
         let cond = partial.map_or("docstatus <> 2".to_string(), |p| format!("{p} and docstatus <> 2"));

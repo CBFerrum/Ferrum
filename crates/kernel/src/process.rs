@@ -9,8 +9,7 @@
 //!
 //! * **Starts**: an event an active release's process listens for is accepted once per business key, on the
 //!   release active as it is accepted, with the generation of that activation, and its start is queued with it
-//!   (FLC-PROC-001, FLC-MIG-003). Once a solution imported from an automation runs, each of the automation's
-//!   events is claimed once, by the solution or by the automation's runner, never run by both.
+//!   (FLC-PROC-001, FLC-MIG-003).
 //! * **Effects**: each invocation goes through the capability gate under the effect key `{run}/{activation}`,
 //!   with the requester's rights as they are when it runs (FLC-PROC-006); an effect that relies on an approval
 //!   is refused if what was approved has changed since (FLC-HUMAN-002).
@@ -203,32 +202,6 @@ async fn signal_lock(tx: &mut Tx, tenant: Uuid, event: &str, correlation: &str) 
         .execute(&mut **tx)
         .await?;
     Ok(())
-}
-
-/// Whether an event of `automation`'s is for the solution imported from it to run, claiming it if so. Once the
-/// solution's release is active the automation is off (turned off in the same step), and each of its events is
-/// claimed once in the automation's own record of runs, under its lock: by the solution's subscriber or by the
-/// automation's runner, whichever comes to it first. An event the automation ran before then stays its own.
-/// An automation deleted since leaves the solution as the only writer (FLC-MIG-003).
-pub(crate) async fn claim_handover(tx: &mut Tx, tenant: Uuid, automation: Uuid, event: i64) -> Result<bool> {
-    let active: Option<bool> = sqlx::query_scalar("select is_active from automation where tenant_id = $1 and id = $2 for share")
-        .bind(tenant)
-        .bind(automation)
-        .fetch_optional(&mut **tx)
-        .await?;
-    Ok(match active {
-        None => true,
-        Some(true) => false,
-        Some(false) => sqlx::query_scalar::<_, i32>(
-            "insert into automation_run (tenant_id, automation_id, outbox_id, status) values ($1, $2, $3, 'handed_over') on conflict do nothing returning 1",
-        )
-        .bind(tenant)
-        .bind(automation)
-        .bind(event)
-        .fetch_optional(&mut **tx)
-        .await?
-        .is_some(),
-    })
 }
 
 /// The catalog's id of an outbox event (`procurement.material_request.submitted` for `MaterialRequest.submitted`),
@@ -436,7 +409,7 @@ impl Kernel {
             return Ok(());
         }
         let mut tx = self.db.tenant_tx(tenant).await?;
-        // An event delivered again (the outbox delivers at least once) starts and hands over nothing more.
+        // An event delivered again (the outbox delivers at least once) starts nothing more.
         if !outbox::first_time(&mut tx, tenant, "ferrum.logic", ev.id).await? {
             tx.commit().await?;
             return Ok(());
@@ -448,11 +421,6 @@ impl Kernel {
         }
         for s in l.triggers.get(&event).into_iter().flatten() {
             let generation = l.generations.get(&s.solution).map(|g| g.1).unwrap_or_default();
-            if let Some(automation) = crate::authoring::automation_of(&s.solution)
-                && !claim_handover(&mut tx, tenant, automation, ev.id).await?
-            {
-                continue;
-            }
             start_run(&mut tx, tenant, s, generation, ev, &event, &payload).await?;
         }
         if l.waits.contains(&event) && !subject.is_empty() {
@@ -514,30 +482,6 @@ impl Kernel {
         }
         tx.commit().await?;
         Ok(())
-    }
-
-    /// An event of an automation that is off. When the solution imported from it runs in its place and nobody
-    /// has claimed the event yet, it is claimed and the solution's run started here, in the automation runner's
-    /// transaction, so an event the solution's own subscriber passed before the cutover is not lost
-    /// (FLC-MIG-003). `false` when the automation was only turned off, or the event was claimed already.
-    pub(crate) async fn hand_over_automation_event(&self, tx: &mut Tx, ev: &OutboxEvent, automation: Uuid) -> Result<bool> {
-        let tenant = ev.tenant_id;
-        let solution = crate::authoring::solution_of(automation);
-        let now = generations(tx, tenant).await?;
-        let Some(&(_, generation)) = now.get(&solution) else { return Ok(false) };
-        if !claim_handover(tx, tenant, automation, ev.id).await? {
-            return Ok(false);
-        }
-        let mut l = listening(self, tenant).await?;
-        if l.generations != now {
-            l = Arc::new(build_listening(tx, tenant).await?);
-        }
-        let schema = self.registry.schema(tenant).await?;
-        let (event, _, payload) = identify(&schema, ev);
-        for s in l.triggers.get(&event).into_iter().flatten().filter(|s| s.solution == solution) {
-            start_run(tx, tenant, s, generation, ev, &event, &payload).await?;
-        }
-        Ok(true)
     }
 
     /// Asks every open run, in every workspace, to say where it stands (a recheck its runtime answers with a

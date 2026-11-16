@@ -68,9 +68,6 @@ pub struct UpgradeImpact {
     pub open_work: Vec<OpenWork>,
 }
 
-/// The ops that replace something a package says, and so can part ways with it.
-const REPLACING: &str = "('set_property', 'set_entity_property', 'set_workflow', 'set_print_template')";
-
 /// A state as `w` defines it, with its ways out in a stable order.
 fn state_of(w: &WorkflowDef, state: &str) -> Option<Value> {
     let def = w.states.iter().find(|s| s.name == state)?;
@@ -410,40 +407,6 @@ impl Kernel {
         }
         tx.commit().await?;
         Ok(UpgradeImpact { customizations, open_work })
-    }
-
-    /// Customizations made before they kept what they replaced, and the workflows and print templates
-    /// they replaced, which were not kept at all: compared from the packages as they are now, since
-    /// what they replaced when they were made is not known. Once; returns how many.
-    pub async fn adopt_customization_baselines(&self) -> Result<usize> {
-        let pick = format!("base is null and is_active and op->>'op' in {REPLACING}");
-        let mut tx = self.db.system_tx().await?;
-        let tenants: Vec<Uuid> =
-            sqlx::query_scalar(AssertSqlSafe(format!("select distinct tenant_id from meta_overlay where {pick}"))).fetch_all(&mut *tx).await?;
-        tx.commit().await?;
-        let mut adopted = 0;
-        for tenant in tenants {
-            let packaged = self.packaged(&Ctx::system(tenant, self.registry.schema(tenant).await?))?;
-            let mut tx = self.db.system_tenant_tx(tenant).await?;
-            let rows: Vec<(Uuid, String, Value)> =
-                sqlx::query_as(AssertSqlSafe(format!("select id, entity, op from meta_overlay where tenant_id = $1 and {pick}")))
-                    .bind(tenant)
-                    .fetch_all(&mut *tx)
-                    .await?;
-            for (id, entity, op) in rows {
-                let Ok(op) = serde_json::from_value::<OverlayOp>(op) else { continue };
-                let Some(base) = packaged.entity(&entity).and_then(|e| effective::replaced_value(e, &op)) else { continue };
-                sqlx::query("update meta_overlay set base = $3 where tenant_id = $1 and id = $2 and base is null")
-                    .bind(tenant)
-                    .bind(id)
-                    .bind(base)
-                    .execute(&mut *tx)
-                    .await?;
-                adopted += 1;
-            }
-            tx.commit().await?;
-        }
-        Ok(adopted)
     }
 
     /// An administrator looked at a conflict and the customization stands: it now replaces what the

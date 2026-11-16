@@ -1513,7 +1513,7 @@ impl Kernel {
     async fn fetch_links(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mut Doc, old: Option<&Doc>) -> Result<()> {
         crate::merge::resolve_links(ctx, tx, ent, doc).await?;
         let empty = Map::new();
-        fetch_for(self, ctx, tx, ent, doc, old.unwrap_or(&empty), old.is_none()).await?;
+        fetch_for(ctx, tx, ent, doc, old.unwrap_or(&empty), old.is_none()).await?;
         // Rows as stored, by id, at either level (ids are unique across them).
         let mut old_rows: HashMap<String, Map<String, Value>> = HashMap::new();
         if let Some(o) = old {
@@ -1548,7 +1548,7 @@ impl Kernel {
                         Some(o) => (o.clone(), false),
                         None => (Map::new(), true),
                     };
-                    fetch_for(self, ctx, tx, &cent, m, &base, is_new).await?;
+                    fetch_for(ctx, tx, &cent, m, &base, is_new).await?;
                 }
                 if !cent.children.is_empty() {
                     Box::pin(self.fetch_rows(ctx, tx, &cent, m, old_rows)).await?;
@@ -2076,7 +2076,7 @@ fn check_required(
     }
 }
 
-async fn fetch_for(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mut Map<String, Value>, old: &Map<String, Value>, is_new: bool) -> Result<()> {
+async fn fetch_for(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mut Map<String, Value>, old: &Map<String, Value>, is_new: bool) -> Result<()> {
     let fields: Vec<&FieldDef> = ent.value_fields().filter(|f| f.fetch_from.is_some()).collect();
     if fields.is_empty() {
         return Ok(());
@@ -2106,7 +2106,6 @@ async fn fetch_for(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mu
         let value = normalize(f, &value).unwrap_or(Value::Null);
         doc.insert(f.name.clone(), value);
     }
-    let _ = k;
     Ok(())
 }
 

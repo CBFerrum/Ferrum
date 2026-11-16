@@ -206,10 +206,6 @@ async fn scenario() {
     exec(&k, tenant, "update role_permission set hide = '{team}' where tenant_id = $1 and role = 'Work Client'").await;
     k.install_packages(tenant, &["work".into()]).await.unwrap();
     assert_eq!(hide_of(&k, tenant, "Work Client").await, vec!["notes".to_string()]);
-    // Written before this release (whose it is unknown): only an empty `hide` follows the package.
-    exec(&k, tenant, "update role_permission set hide = '{}', packaged = null where tenant_id = $1 and role = 'Work Client'").await;
-    k.install_packages(tenant, &["work".into()]).await.unwrap();
-    assert_eq!(hide_of(&k, tenant, "Work Client").await, vec!["notes".to_string()]);
     // An administrator's edit is theirs.
     k.set_role_permission(&admin, "Work Client", &rule(json!({"entity": "Project", "read": true, "via": "customer_email", "hide": ["team"]}))).await.unwrap();
     k.install_packages(tenant, &["work".into()]).await.unwrap();

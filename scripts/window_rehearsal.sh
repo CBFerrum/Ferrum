@@ -19,10 +19,7 @@
 #    leave this build's waiting work alone (this build then takes it);
 # 3. with SeaweedFS on the PATH (deploy/store/start.sh, as Compose runs it): this build moves the files to object
 #    storage (`files_move`) and the directory goes; the older build starts on that database and reads and writes files
-#    there, and this build reads what it wrote. Every start after this one is given the store's settings;
-# 4. this build switches on staff networks, which the older build enforces (it still starts), then recorded reads, which
-#    it does not: it refuses to start, naming them; `ferrum task allow_older_builds` lets it start; the next start of
-#    this build puts the floor back, and it is refused again.
+#    there, and this build reads what it wrote. Every start after this one is given the store's settings.
 #
 # The database is created and dropped here, so its name must start with ferrum_windowrehearsal_. Settings: FERRUM_BIN
 # (this build; default target/debug/ferrum, built with `cargo build -p ferrum-server --no-default-features --bin ferrum`),
@@ -328,42 +325,4 @@ if [ -n "$COMPANION_BIN" ] && [ -x "$COMPANION_BIN" ]; then
 else
   echo "    skipped a program beside the workspace: no stand-in for the Cloud app at ${WINDOW_COMPANION_BIN:-target/debug/examples/oidc_rehearsal}"
 fi
-T=$(token)
-settings() { curl -sS -o "$work/settings.json" -w '%{http_code}' -X PUT "$URL/api/admin/settings" -H "authorization: Bearer $T" -H 'content-type: application/json' -d "$1"; }
-# A build that knows floors (pull request 235 and later) names the protections it is too old for; one from before them
-# says only which build to start, and does not enforce staff networks either when it is older than their floor.
-FLOORS=$(ls "$OLD_DIR"/src/crates/kernel/migrations/*_window_floor.sql >/dev/null 2>&1 && echo yes || echo no)
-if [ "$FLOORS" = yes ]; then
-  step "a protection the older build enforces (staff networks): it still starts"
-  [ "$(settings '{"staff_networks": {"networks": ["127.0.0.0/8"], "mode": "report"}}')" = 200 ] || fail "staff networks: $(cat "$work/settings.json")"
-  stop
-  start old old-networks || fail "the older build was refused for a protection it enforces"
-  stop
-  start new new-reads || fail "this build did not start"
-  T=$(token)
-fi
-
-step "a protection the older build does not enforce (recorded reads): it is refused, saying what it needs"
-[ "$(settings '{"record_reads": {"Contact": "open"}}')" = 200 ] || fail "recorded reads: $(cat "$work/settings.json")"
-stop
-refused() {
-  if start old "$1"; then fail "the older build started though recorded reads are on"; fi
-  if [ "$FLOORS" = yes ]; then
-    grep -q "record_reads" "$work/$1.log" && grep -q "allow_older_builds" "$work/$1.log" || fail "the refusal does not name what needs a newer build"
-    grep -o 'record_reads ([^;]*' "$work/$1.log" | head -1 | sed 's/^/    refused: /'
-  else
-    grep -q "Start a build from .* or newer" "$work/$1.log" || fail "the refusal does not say which build to start"
-    grep -o 'Start a build from [^ ]* or newer' "$work/$1.log" | head -1 | sed 's/^/    refused: /'
-  fi
-}
-refused old-refused
-
-step "allow_older_builds with this build: the older build starts again, until this build's next start"
-(cd "$ROOT/server" && exec env DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" ${STORE_ENV[@]+"${STORE_ENV[@]}"} "$BIN" task allow_older_builds \
-  reason:"window rehearsal") | tail -3
-start old old-allowed || fail "the older build was refused after allow_older_builds"
-stop
-start new new-floor || fail "this build did not start"
-stop
-refused old-refused-again
 echo "the window rehearsal passed"

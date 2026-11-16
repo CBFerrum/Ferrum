@@ -509,16 +509,16 @@ impl HookRegistry {
         out
     }
 
-    /// Every hook for `entity`, followed by hooks registered for every entity (`"*"`, e.g.
-    /// plugins), so those see the values the entity's own hooks derived.
-    pub fn for_entity(&self, entity: &str) -> Vec<Arc<dyn DocHook>> {
-        self.matching(entity, |_| true)
-    }
-
-    /// [`HookRegistry::for_entity`] for a tenant with the `installed` packages: hooks scoped to
-    /// packages it lacks are left out.
+    /// The hooks for `entity` in a tenant with the `installed` packages (those scoped to packages it lacks are left
+    /// out), followed by hooks registered for every entity (`"*"`, e.g. plugins), so those see the values the entity's
+    /// own hooks derived.
     pub fn for_tenant(&self, entity: &str, installed: &[String]) -> Vec<Arc<dyn DocHook>> {
-        self.matching(entity, |h| h.packages.as_ref().is_none_or(|ps| ps.iter().any(|p| installed.contains(p))))
+        let own = self.by_entity.get(entity).into_iter().flatten();
+        let all = if entity != "*" { self.by_entity.get("*") } else { None };
+        own.chain(all.into_iter().flatten())
+            .filter(|h| h.packages.as_ref().is_none_or(|ps| ps.iter().any(|p| installed.contains(p))))
+            .map(|h| h.hook.clone())
+            .collect()
     }
 
     /// Puts each entity's hooks in the order they declare (otherwise, registration order), or says
@@ -557,12 +557,6 @@ impl HookRegistry {
         }
         out.sort();
         out
-    }
-
-    fn matching(&self, entity: &str, keep: impl Fn(&ScopedHook) -> bool) -> Vec<Arc<dyn DocHook>> {
-        let own = self.by_entity.get(entity).into_iter().flatten();
-        let all = if entity != "*" { self.by_entity.get("*") } else { None };
-        own.chain(all.into_iter().flatten()).filter(|h| keep(h)).map(|h| h.hook.clone()).collect()
     }
 
     pub fn add_event_sink(&mut self, sink: Arc<dyn EventSink>) -> &mut Self {
@@ -729,7 +723,7 @@ mod tests {
     }
 
     fn names(r: &HookRegistry) -> Vec<&'static str> {
-        r.for_entity("Invoice").iter().map(|h| h.name()).collect()
+        r.for_tenant("Invoice", &[]).iter().map(|h| h.name()).collect()
     }
 
     #[test]
@@ -921,7 +915,6 @@ mod tests {
         let id = |h: &Arc<dyn DocHook>| Arc::as_ptr(h) as *const () as usize;
         assert_eq!(ids(r.for_tenant("Item", &["core".into()])), [id(&platform), id(&everywhere)]);
         assert_eq!(ids(r.for_tenant("Item", &["core".into(), "procurement".into()])), [id(&platform), id(&app), id(&everywhere)]);
-        assert_eq!(ids(r.for_entity("Item")).len(), 3, "for_entity still lists every hook");
         r.register("Item", platform.clone());
         assert_eq!(ids(r.for_tenant("Item", &[])).len(), 3, "the scope ends with the closure");
     }

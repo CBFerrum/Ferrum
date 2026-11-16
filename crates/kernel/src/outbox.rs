@@ -346,7 +346,7 @@ impl Kernel {
              update outbox set available_at = now() + make_interval(secs => $1) where id in ( \
                select claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) order by random()) w \
                cross join lateral (select o.id from outbox o where o.tenant_id = w.tenant_id and o.processed_at is null and not o.dead \
-                 and o.available_at <= now() and (o.build_date is null or o.build_date <= $4) \
+                 and o.available_at <= now() and o.build_date <= $4 \
                  order by o.priority, o.id limit $2 for update skip locked) claimed \
                limit $3) \
              returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, depth, available_at as lease, zone",

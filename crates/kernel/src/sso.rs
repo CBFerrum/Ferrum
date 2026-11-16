@@ -268,7 +268,7 @@ pub(crate) struct Provider {
     domains: Vec<String>,
     auto_create: bool,
     default_roles: Vec<String>,
-    /// SAML: the origin its addresses are under, when kept (see the migration 20261118002401).
+    /// SAML: the origin its addresses are under, kept from when it was added (none for OpenID Connect).
     pub(crate) saml_sp_base: Option<String>,
     /// SAML: whether the provider may end sessions here (logout requests it sends).
     pub(crate) slo_in: Option<bool>,
@@ -400,7 +400,8 @@ impl Kernel {
         ferrum_saml::Idp::read(&xml).map_err(Error::invalid)
     }
 
-    /// PUBLIC_URL, under which SAML providers saved before their addresses were kept have them.
+    /// PUBLIC_URL: where a provider added on a server without an accounts host has its addresses, and the metadata
+    /// served on any host but the accounts host.
     fn saml_public_base(&self) -> Result<String> {
         self.settings
             .public_url
@@ -420,9 +421,10 @@ impl Kernel {
         })
     }
 
-    /// A provider's addresses here: those it was saved with, or PUBLIC_URL's.
+    /// A provider's addresses here: those it was added with.
     pub(crate) fn saml_names(&self, tenant: Uuid, p: &Provider) -> Result<SpNames> {
-        Ok(SpNames::under(&p.saml_sp_base.clone().map_or_else(|| self.saml_public_base(), Ok)?, tenant))
+        let base = p.saml_sp_base.as_deref().ok_or_else(|| Error::internal(format!("the SAML provider {} has no addresses of its own", p.id)))?;
+        Ok(SpNames::under(base, tenant))
     }
 
     /// The workspace's keys assertions may be encrypted to, the current one first, made the first time
@@ -582,19 +584,11 @@ impl Kernel {
     }
 
     /// [`Kernel::saml_metadata`] as served on `host`: on the accounts host, the addresses there; on
-    /// any other, PUBLIC_URL's. While a provider saved before keys and logout were published still
-    /// uses PUBLIC_URL's (not saved since), those say only what they said then: a provider that reads
-    /// the metadata again (AD FS, Shibboleth) would otherwise start encrypting or sending logout
-    /// messages unasked.
+    /// any other, PUBLIC_URL's.
     pub async fn saml_metadata_at(&self, tenant: Uuid, host: Option<&str>) -> Result<String> {
         let mut tx = self.db.system_tx().await?;
-        let (active, earlier): (bool, bool) = sqlx::query_as(
-            "select exists (select 1 from tenant where id = $1 and status = 'active'), \
-             exists (select 1 from sso_provider where tenant_id = $1 and protocol = 'saml' and saml_sp_base is null)",
-        )
-        .bind(tenant)
-        .fetch_one(&mut *tx)
-        .await?;
+        let active: bool =
+            sqlx::query_scalar("select exists (select 1 from tenant where id = $1 and status = 'active')").bind(tenant).fetch_one(&mut *tx).await?;
         tx.commit().await?;
         if !active {
             return Err(Error::NotFound("workspace".into()));
@@ -604,16 +598,9 @@ impl Kernel {
         let base = if on_accounts { self.saml_new_base()? } else { self.saml_public_base()? };
         let n = SpNames::under(&base, tenant);
         let key = self.saml_key(tenant).await?;
-        let as_then = earlier && !on_accounts;
         let can = saml_encryption().is_some_and(|c| c.is_ok());
-        let decrypt = if as_then || !can { Vec::new() } else { self.saml_enc_keys(tenant).await? };
-        let sp = ferrum_saml::Sp {
-            entity_id: &n.entity_id,
-            acs_url: &n.acs_url,
-            key: Some(&key),
-            decrypt: &decrypt,
-            slo_url: (!as_then).then_some(n.slo_url.as_str()),
-        };
+        let decrypt = if can { self.saml_enc_keys(tenant).await? } else { Vec::new() };
+        let sp = ferrum_saml::Sp { entity_id: &n.entity_id, acs_url: &n.acs_url, key: Some(&key), decrypt: &decrypt, slo_url: Some(n.slo_url.as_str()) };
         ferrum_saml::sp_metadata(&sp).map_err(Error::Unavailable)
     }
 
@@ -668,9 +655,8 @@ impl Kernel {
         Ok(rows
             .into_iter()
             .map(|mut r| {
-                let base = r["saml_sp_base"].as_str().map(str::to_string).map_or_else(|| self.saml_public_base(), Ok);
-                if let (Some("saml"), Ok(base)) = (r["protocol"].as_str(), base) {
-                    let n = SpNames::under(&base, ctx.tenant);
+                if let (Some("saml"), Some(base)) = (r["protocol"].as_str(), r["saml_sp_base"].as_str()) {
+                    let n = SpNames::under(base, ctx.tenant);
                     r["service_provider"] = json!({"entity_id": n.entity_id, "acs_url": n.acs_url, "slo_url": n.slo_url, "metadata_url": n.entity_id});
                 }
                 if let Some(o) = r.as_object_mut() {
@@ -784,14 +770,9 @@ impl Kernel {
         if !input.enabled {
             self.keep_one_for_required(&mut tx, ctx.tenant, id).await?;
         }
-        // SAML: a new provider's addresses are where new ones go; one saved before keeps PUBLIC_URL's,
-        // as then, from now on whatever PUBLIC_URL becomes. Never changed once kept.
+        // SAML: a new provider's addresses are where new ones go, and stay its own whatever the server's addresses become.
         let (sp_base, slo_out, slo_in) = match input.protocol {
-            Protocol::Saml => (
-                Some(if new { self.saml_new_base()? } else { self.saml_public_base()? }),
-                Some(input.single_logout_out.unwrap_or(true)),
-                Some(input.single_logout_in.unwrap_or(true)),
-            ),
+            Protocol::Saml => (Some(self.saml_new_base()?), Some(input.single_logout_out.unwrap_or(true)), Some(input.single_logout_in.unwrap_or(true))),
             Protocol::Oidc => (None, None, None),
         };
         sqlx::query(
@@ -801,8 +782,7 @@ impl Kernel {
              on conflict (tenant_id, id) do update set label = excluded.label, issuer = excluded.issuer, client_id = excluded.client_id, \
                client_secret = case when $11 then excluded.client_secret else sso_provider.client_secret end, \
                domains = excluded.domains, auto_create = excluded.auto_create, default_roles = excluded.default_roles, enabled = excluded.enabled, \
-               saml_metadata = excluded.saml_metadata, saml_sp_base = coalesce(sso_provider.saml_sp_base, excluded.saml_sp_base), \
-               slo_out = excluded.slo_out, slo_in = excluded.slo_in, updated_at = now()",
+               saml_metadata = excluded.saml_metadata, slo_out = excluded.slo_out, slo_in = excluded.slo_in, updated_at = now()",
         )
         .bind(ctx.tenant)
         .bind(id)
