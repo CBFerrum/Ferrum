@@ -417,7 +417,8 @@ mod tests {
         refused::<()>(Err(Error::Validation(vec![ferrum_kernel::error::FieldError::new("total", "must be positive")])), "invalid", "total: must be positive");
         refused::<()>(Err(Error::NotFound("the invoice".into())), "not found", "invoice");
         assert!(std::panic::catch_unwind(|| refused::<()>(Ok(()), "forbidden", "")).is_err(), "done is not refused");
-        assert_eq!(database("FERRUM_KIT_SELF_TEST_DATABASE_URL"), "postgres://ferrum:ferrum@localhost:5432/ferrum_kit_self_test");
+        // A name no suite reads and the local CI gives no database, so this is the default whatever the environment sets.
+        assert_eq!(database("FERRUM_KIT_NAMED_DATABASE_URL"), "postgres://ferrum:ferrum@localhost:5432/ferrum_kit_named");
         // Scenarios side by side share one kit, kept in a static.
         fn shared<T: Send + Sync>() {}
         shared::<Kit>();
