@@ -47,7 +47,7 @@ impl Companion for ObjectStore {
         let mut credentials = Vec::new();
         // The pairs by age: the current with the current, the one before with the one before.
         for (id, key) in ids.iter().zip(&keys) {
-            credentials.push(Credential { access_key: Zeroizing::new(text(&id.value)?), secret_key: Zeroizing::new(text(&key.value)?) });
+            credentials.push(Credential { access_key: Zeroizing::new(text(&id.value)?), secret: Zeroizing::new(text(&key.value)?) });
         }
         // As deploy/store/start.sh writes it for SeaweedFS's S3 gateway (`-s3.config`).
         let config = S3Config { identities: [Identity { name: "ferrum", credentials, actions: ["Admin", "Read", "Write", "List", "Tagging"] }] };
@@ -76,7 +76,7 @@ struct Credential {
     #[serde(rename = "accessKey", serialize_with = "plain")]
     access_key: Zeroizing<String>,
     #[serde(rename = "secretKey", serialize_with = "plain")]
-    secret_key: Zeroizing<String>,
+    secret: Zeroizing<String>,
 }
 
 fn plain<S: serde::Serializer>(v: &Zeroizing<String>, s: S) -> Result<S::Ok, S::Error> {
