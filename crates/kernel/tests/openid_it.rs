@@ -91,8 +91,8 @@ async fn replica(file: &Path) -> (Arc<Kernel>, Vault, Vault) {
     let (mut forge, mut other) = (None, None);
     hooks.app("forgeapp", &[], |h| {
         forge = Some(h.vault());
-        h.companion("forge", Arc::new(Forge));
-        h.companion("greedy", Arc::new(Greedy));
+        h.openid_companion("forge", Arc::new(Forge));
+        h.openid_companion("greedy", Arc::new(Greedy));
     });
     hooks.app("other", &[], |h| other = Some(h.vault()));
     let k = Kernel::boot(db, core(), hooks, KernelSettings::default(), None).await.expect("boot");
@@ -228,7 +228,7 @@ async fn installation(url: &str, key: &ferrum_kernel::secret::SecretKey, files: 
     let mut forge = None;
     hooks.app("forgeapp", &[], |h| {
         forge = Some(h.vault());
-        h.companion("forge", Arc::new(Forge));
+        h.openid_companion("forge", Arc::new(Forge));
     });
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     let k = Kernel::boot(db, catalog, hooks, KernelSettings { secret_key: Some(key.clone()), ..Default::default() }, None).await.expect("boot");

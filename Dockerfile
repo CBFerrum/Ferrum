@@ -48,7 +48,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tini libxml2 libxmlsec1 libxmlsec1-openssl libssl3 \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin ferrum \
- && mkdir -p /var/lib/ferrum/files && chown -R 10001 /var/lib/ferrum
+ && mkdir -p /var/lib/ferrum/files /var/lib/ferrum/companion && chown -R 10001 /var/lib/ferrum
 WORKDIR /app
 COPY --from=build /usr/local/bin/ferrum /usr/local/bin/ferrum
 COPY --from=build /src/server/config ./config

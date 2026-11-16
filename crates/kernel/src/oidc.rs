@@ -64,7 +64,7 @@ pub const CLIENT_PREFIX: &str = "fo_";
 /// How often a replica that runs background work looks for sign-ins whose session ended.
 const SWEEP_EVERY: Duration = Duration::from_secs(15);
 
-/// What an app gives, as it registers, for a program it runs beside Ferrum ([`crate::HookRegistry::companion`]).
+/// What an app gives, as it registers, for a program it runs beside Ferrum ([`crate::HookRegistry::openid_companion`]).
 #[async_trait]
 pub trait Companion: Send + Sync {
     /// The right that lets a person in: an entity of the app's and what they may do with it (some records are enough).
@@ -114,7 +114,7 @@ impl Vault {
     /// Declares, or brings up to date, this app's client for its companion `name` in workspace `tenant`: the addresses
     /// it returns people to (each matched exactly), and its secret, which the vault makes once as this app's own
     /// (`oidc-client.<name>`, revealed to this app's code to hand to the companion; a sandbox has none). Refused for a
-    /// companion this app did not register ([`crate::HookRegistry::companion`]). Doing it again changes nothing that
+    /// companion this app did not register ([`crate::HookRegistry::openid_companion`]). Doing it again changes nothing that
     /// is the same, whichever replica does it.
     pub async fn companion(&self, k: &Kernel, tenant: Uuid, name: &str, redirect_uris: &[String]) -> Result<Client> {
         let scope = Scope::Workspace(tenant);
@@ -122,8 +122,8 @@ impl Vault {
         // Its first use of the handle: refused unless this kernel's registry gave it out.
         let made = self.describe(k, scope, &secret).await?;
         let app = self.owner().to_string();
-        if !name_ok(name) || k.hooks.companion_of(&app, name).is_none() {
-            return Err(Error::invalid(format!("app {app} registered no companion named {name:?} (HookRegistry::companion, as it registers)")));
+        if !name_ok(name) || k.hooks.openid_companion_of(&app, name).is_none() {
+            return Err(Error::invalid(format!("app {app} registered no companion named {name:?} (HookRegistry::openid_companion, as it registers)")));
         }
         if redirect_uris.is_empty() || redirect_uris.len() > 10 {
             return Err(Error::field("redirect_uris", "between 1 and 10"));
@@ -510,7 +510,7 @@ impl Kernel {
     /// its app names. `Err`: why not, for the client.
     fn let_in(&self, ctx: &Ctx, client: &Client) -> std::result::Result<(), Refusal> {
         let denied = || refusal("access_denied", "you may not sign in to this program");
-        let companion = self.hooks.companion_of(&client.app, &client.name).ok_or_else(denied)?;
+        let companion = self.hooks.openid_companion_of(&client.app, &client.name).ok_or_else(denied)?;
         let (entity, action) = companion.right();
         if ctx.outside || ctx.perms.access(entity, action) == Access::None {
             return Err(denied());
@@ -802,7 +802,8 @@ impl Kernel {
                 claims.insert("email_verified".into(), json!(verified));
             }
         }
-        let companion = self.hooks.companion_of(&client.app, &client.name).ok_or_else(|| Error::Forbidden("this program is no longer offered here".into()))?;
+        let companion =
+            self.hooks.openid_companion_of(&client.app, &client.name).ok_or_else(|| Error::Forbidden("this program is no longer offered here".into()))?;
         for (key, value) in companion.claims(self, tenant, user).await? {
             if PLATFORM_CLAIMS.contains(&key.as_str()) {
                 return Err(Error::Internal(format!("app {} gave its companion the claim {key}, which only the platform sets", client.app)));

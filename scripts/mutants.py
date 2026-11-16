@@ -97,6 +97,8 @@ SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 EXPORT_UNIT = ("-p", "ferrum-server", "--lib", "controllers::docs::tests")
 EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
 VAULT = ("-p", "ferrum-kernel", "--test", "vault_it")
+COMPANIONS = ("-p", "ferrum-kernel", "--test", "companions_it")
+COMPANION_UNIT = ("-p", "ferrum-kernel", "--lib", "companion::tests")
 VAULT_FOLLOWS = ("-p", "ferrum-kernel", "--test", "vault_follows_it")
 VAULT_STORES = ("-p", "ferrum-kernel", "--test", "vault_stores_it")
 OLD_KEY = ("-p", "ferrum-kernel", "--test", "old_key_it")
@@ -987,6 +989,17 @@ MUTANTS = [
     # The vault: a value only where its rule lets it out, a handle only from the server that gave it out, a value bound
     # to its place, a wrong key told from a damaged row, a key version kept while what it sealed is kept outside.
     ("vault-reveal-ignores-rule", "crates/kernel/src/vault/secrets.rs", "            if !row.rule.reveal {\n", "            if false {\n", VAULT),
+    # Files for the programs beside the server (crates/kernel/src/companion.rs).
+    ("companion-render-ignores-rule", "crates/kernel/src/vault/secrets.rs", "                if !row.rule.reveal {\n", "                if false {\n", COMPANIONS),
+    ("companion-made-every-render", "crates/kernel/src/vault/secrets.rs", "&who, Some(made)).await.map(|(_, _, wrote)| wrote)", "&who, None).await.map(|(_, _, wrote)| wrote)", COMPANIONS),
+    ("companion-takes-a-persons-secret", "crates/kernel/src/vault/secrets.rs", "            if only.managed && !is_managed(&mut tx, scope, owner, name).await? {\n", "            if false {\n", COMPANIONS),
+    ("companion-renders-with-the-vault-closed", "crates/kernel/src/companion.rs", "        self.db.vault.installation()?;\n        Ok(Rendering {", "        Ok(Rendering {", COMPANIONS),
+    ("companion-renders-where-it-is-refused", "crates/kernel/src/companion.rs", "            Some(why) => Err(Error::Conflict(", "            Some(_) => Ok(()),\n            Some(why) => Err(Error::Conflict(", COMPANIONS),
+    ("companion-keeps-twice", "crates/kernel/src/vault/secrets.rs", "                > 0;\n            if marked {", "                >= 0;\n            if marked {", COMPANIONS),
+    ("object-store-renders-any-store", "server/src/companions.rs", "    if bundled {\n        return None;", "    if true {\n        return None;", ("-p", "ferrum-server", "--lib", "companions::tests")),
+    ("companion-writes-among-others-files", "crates/kernel/src/companion.rs", "        if !listed.contains(&name) {\n", "        if false {\n", COMPANION_UNIT),
+    ("companion-renders-at-once-into-one-directory", "crates/kernel/src/companion.rs", "    handle.lock().map_err(", "    handle.lock_shared().map_err(", COMPANION_UNIT),
+    ("companion-secret-in-a-plain-file", "crates/kernel/src/companion.rs", "    for f in files.iter().filter(|f| !f.secret) {\n", "    for f in files.iter().filter(|_| false) {\n", COMPANION_UNIT),
     ("vault-any-handle-will-do", "crates/kernel/src/vault/mod.rs", "Owner::App(id) => self.mint != 0 && k.hooks.vault_mint(id) == Some(self.mint),", "Owner::App(_) => true,", VAULT),
     ("vault-value-not-bound-to-its-name", "crates/kernel/src/vault/seal.rs", 'format!("ferrum-vault/secret/{scope}/{owner}/{name}/{version}/{key_version}")', 'format!("ferrum-vault/secret/{scope}/{owner}/{version}/{key_version}")', VAULT),
     ("vault-wrong-key-looks-damaged", "crates/kernel/src/vault/root.rs", "    if !kek.checks(&check_place(slot.kind.as_str()), &slot.check) {\n", "    if false {\n", VAULT),
@@ -1012,7 +1025,7 @@ MUTANTS = [
     # labels for it.
     ("keyed-opt-out-unchecked", "crates/kernel/src/messages.rs", '.any(|(_, k)| subtle_eq(k.fingerprint("message opt-out", &said).as_bytes(), sig.as_bytes()))', ".any(|_| true)", OLD_KEY),
     ("keyed-old-key-after-retirement", "crates/kernel/src/vault/keyed.rs", "self.env_key().filter(|_| !self.keyed.retired.load(Ordering::Relaxed))", "self.env_key()", OLD_KEY),
-    ("keyed-adopted-twice", "crates/kernel/src/vault/secrets.rs", "write_made(db, scope, owner, name, make(value)?, Some(rule), &who, true).await.map(|(_, _, wrote)| wrote)", "write_made(db, scope, owner, name, make(value)?, Some(rule), &who, false).await.map(|(_, _, wrote)| wrote)", OLD_KEY),
+    ("keyed-adopted-twice", "crates/kernel/src/vault/secrets.rs", "write_made(db, scope, owner, name, make(value)?, Some(rule), &who, ADOPT).await.map(|(_, _, wrote)| wrote)", "write_made(db, scope, owner, name, make(value)?, Some(rule), &who, None).await.map(|(_, _, wrote)| wrote)", OLD_KEY),
     ("keyed-app-names-kernel-labels", "crates/kernel/src/vault/keyed.rs", "        && !KERNEL_WORDS.contains(&id)\n", "\n", KEYED_UNIT),
     ("session-unsigned-verifies", "server/src/sessions.rs", "    ring::hmac::verify(&ring::hmac::Key::new(ring::hmac::HMAC_SHA512, key), signed.as_bytes(), &signature).ok()?;\n", "", SESSIONS_UNIT),
     ("session-key-past-its-end", "server/src/sessions.rs", "self.0.get(&n).filter(|h| h.until.is_none_or(|t| t > Utc::now()))", "self.0.get(&n)", SESSIONS_UNIT),

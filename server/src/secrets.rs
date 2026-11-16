@@ -182,7 +182,7 @@ pub async fn adopt_handoff(st: &AppState) -> Vec<String> {
     for (key, text) in handoff.keys {
         let Some(def) = find(key) else { continue };
         let (value, rule) = kept(def, text.trim(), snapshot);
-        match st.vault.adopt(&st.kernel, Scope::Installation, key, value, rule, "object store").await {
+        match st.vault.adopt(&st.kernel, Scope::Installation, key, value, rule, crate::companions::HANDED_OVER_BY).await {
             Ok(true) => stored.push(key.to_string()),
             Ok(false) => {}
             Err(e) => {

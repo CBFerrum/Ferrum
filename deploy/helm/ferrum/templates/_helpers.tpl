@@ -134,11 +134,14 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{- end }}
 {{- if .Values.metricsEngine.enabled }}
 - {name: FERRUM_METRICS_ENGINE_URL, value: "http://{{ include "ferrum.fullname" . }}-metrics-engine:5180"}
+{{- /* Rendered: Metrics reads the token from its own vault, which the engine's render gets it from. */}}
+{{- if ne (include "ferrum.renders" (list . "metrics-engine" .Values.metricsEngine.files)) "true" }}
 - name: FERRUM_METRICS_ENGINE_TOKEN
   valueFrom:
     secretKeyRef:
       name: {{ .Values.metricsEngine.tokenSecret.name }}
       key: {{ .Values.metricsEngine.tokenSecret.key }}
+{{- end }}
 {{- end }}
 {{- if and .Values.database.enabled .Values.database.readReplicas.enabled (not .direct) }}
 {{- if lt (int .Values.database.instances) 2 }}
@@ -159,6 +162,82 @@ generates is letters and digits only, so it needs no escaping in the address. */
 {{- with .Values.extraEnv }}
 {{ toYaml . }}
 {{- end }}
+{{- end -}}
+
+{{/* The services the server's image declares (`ferrum task services`) among the companions this chart bundles: with
+`environment: minimal`, these companions take their secrets and settings from files rendered as they start, unless their
+`files` value says otherwise. A companion is added here in the change that makes its owner declare its service: until
+then its owner reads its secret from the environment, and a render would find no such service. */}}
+{{- define "ferrum.declaredServices" -}}
+{{- toJson (list) -}}
+{{- end -}}
+
+{{/* "true" when the companion's files are rendered as it starts: its `files` value is `rendered`, or empty with
+`environment: minimal` and its service declared (ferrum.declaredServices). Call with (list . "<service>" files). */}}
+{{- define "ferrum.renders" -}}
+{{- $root := index . 0 -}}{{- $files := index . 2 | default "" -}}
+{{- if not (has $files (list "" "secret" "rendered")) -}}
+{{- fail (printf "%s's files are secret or rendered, not %q" (index . 1) $files) -}}
+{{- end -}}
+{{- $minimal := and (eq $root.Values.environment "minimal") (has (index . 1) (include "ferrum.declaredServices" $root | fromJsonArray)) -}}
+{{- if or (eq $files "rendered") (and (eq $files "") $minimal) }}true{{ end -}}
+{{- end -}}
+
+{{/* The init container that renders a companion's files as its pod starts (docs/operations.md, "Files for the programs
+beside the server"): the server's image running `ferrum task render`, with the database's address as its one input
+(straight to PostgreSQL, as the Jobs) and /run/ferrum for the vault's key file, writing into the memory-backed volume
+`companion`, which the companion mounts read-only at /run/companion. Its pod gets `ferrum.renderVolumes`, and its network
+policy `ferrum.databaseEgress` and DNS. Call with (list . "<service>"). */}}
+{{- define "ferrum.renderInit" -}}
+{{- $root := index . 0 -}}
+- name: render
+  image: {{ include "ferrum.image" (list "image" $root.Values.image) }}
+  args: ["task", "render", "service:{{ index . 1 }}", "to:/run/companion"]
+  env:
+    {{- range (include "ferrum.env" (dict "Values" $root.Values "Release" $root.Release "Chart" $root.Chart "direct" true) | fromYamlArray) }}
+    {{- if has .name (list "DATABASE_URL" "FERRUM_DATABASE_DIRECT_HOST") }}
+    - {{ toJson . }}
+    {{- end }}
+    {{- end }}
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: {drop: ["ALL"]}
+  volumeMounts:
+    - {name: render-tmp, mountPath: /tmp}
+    {{- include "ferrum.runMount" $root | nindent 4 }}
+    - {name: companion, mountPath: /run/companion}
+{{- end -}}
+
+{{- define "ferrum.renderVolumes" -}}
+# What the render writes, in memory: the companion's secrets are never on a disk.
+- name: companion
+  emptyDir: {medium: Memory, sizeLimit: 1Mi}
+- name: render-tmp
+  emptyDir: {sizeLimit: 64Mi}
+{{ include "ferrum.runVolume" . }}
+{{- end -}}
+
+{{/* The way out to the database: the chart's own cluster, or an outside database's networks (database.external.egress);
+nothing when neither is there. */}}
+{{- define "ferrum.databaseEgress" -}}
+{{- if .Values.database.enabled -}}
+- to:
+    - podSelector:
+        matchLabels: {cnpg.io/cluster: {{ include "ferrum.fullname" . }}-db}
+  ports:
+    - {port: 5432}
+{{- else if .Values.database.external.egress.cidrs -}}
+# The outside database and its pooler (database.external.egress).
+- to:
+    {{- range .Values.database.external.egress.cidrs }}
+    - ipBlock: {cidr: {{ . }}}
+    {{- end }}
+  ports:
+    {{- range .Values.database.external.egress.ports }}
+    - {port: {{ . }}}
+    {{- end }}
+{{- end -}}
 {{- end -}}
 
 {{/* The Secret holding an outside database's address (database.external.urlSecret, or the older database.urlSecret),

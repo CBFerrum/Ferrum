@@ -54,7 +54,7 @@ impl Companion for Forge {
 fn stand_in(h: &mut HookRegistry) {
     h.app("forgeapp", &[], |h| {
         let _ = FORGE.set(h.vault());
-        h.companion("forge", Arc::new(Forge));
+        h.openid_companion("forge", Arc::new(Forge));
     });
 }
 

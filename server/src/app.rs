@@ -267,6 +267,8 @@ impl Hooks for App {
             )));
         }
         ferrum_domain::register(&mut hooks);
+        // The platform's own services: the programs beside the server whose files it renders (`ferrum task render`).
+        crate::companions::register(&mut hooks);
         crate::packages::register(&mut hooks).map_err(|e| Error::Message(format!("apps: {e}")))?;
         if let Some(extra) = EXTRA_APPS.get() {
             extra(&mut hooks);
@@ -861,6 +863,8 @@ impl Hooks for App {
         tasks.register(crate::tasks::SecretRemove);
         tasks.register(crate::tasks::VaultTransfer);
         tasks.register(crate::tasks::Openid);
+        tasks.register(crate::tasks::ListServices);
+        tasks.register(crate::tasks::Render);
         for app in crate::extensions::all() {
             (app.tasks)(tasks);
         }

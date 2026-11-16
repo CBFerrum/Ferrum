@@ -2204,7 +2204,7 @@ authorization and token endpoints answer a companion as a client they do not kno
 | `GET`/`POST /oauth/userinfo` | `Authorization: Bearer <access token>` → the claims below, while the browser session the sign-in came from is live; else `401`, `WWW-Authenticate: Bearer error="invalid_token"` |
 
 **Who gets a code.** A member (never someone from outside) signed in to the workspace at that address, with the right
-the companion's app names (`Companion::right`, an entity of the app's and what one may do with it: some records are
+the companion's app names (`oidc::Companion::right`, an entity of the app's and what one may do with it: some records are
 enough); anyone else is told `access_denied` at the client's address. Someone not signed in signs in first and comes back
 (`prompt=none`: `login_required`). A code lives a minute, is good once, and only for its client, its return address, its
 PKCE verifier and its issuer; an access token lives five minutes, is opaque, and reaches the user-info and nothing else
@@ -2225,7 +2225,7 @@ steps of their sign-in (`password` or `code`, then `authenticator` or `recovery_
 build opened. `sub` is the person's in that
 workspace: random, kept, the same at every address of the workspace, and it says nothing else about them. Scope
 `profile` adds `name`, `email` adds `email` and `email_verified`. Then what the companion's app gives
-(`Companion::claims`; for the forge, `preferred_username`, the account's name there, and `email`, an address only that
+(`oidc::Companion::claims`; for the forge, `preferred_username`, the account's name there, and `email`, an address only that
 account has), which never names one of the platform's claims. The user-info answers `sub` and the same claims.
 
 **Refusals.** Until the return address is known to be the client's own (an unknown client, another workspace's client

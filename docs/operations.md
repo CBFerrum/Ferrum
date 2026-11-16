@@ -1045,6 +1045,17 @@ keys with its vault; a database made anew beside a store that already has keys f
 read them from the store (`docker compose exec store cat /data/ferrum/s3.json`) and give them once with `ferrum task
 secret_set`. To use a store of your own instead, set its address and keys and `STORE_REPLICAS=0`.
 
+Once it has handed its keys over, the store can take them back from the vault at each start, and the vault rotates
+them from then on (`-f deploy/store-files.yml`; *Files for the programs beside the server*): a one-shot service renders
+the keys the server keeps into a file before each start of the store (`STORE_S3_CONFIG` for `deploy/store/start.sh`).
+The first render keeps the handed-over keys for the service, as they are: the store keeps its data, its keys and its
+encryption key. A new installation starts once without that file, so that the handoff happens. The render, and a
+rotation through it, are refused, writing and making nothing, on an installation whose store is not the bundled one:
+where the vault holds no keys the bundled store handed over (the server signs with the machine's identity, or a store
+of the installation's own has keys given elsewhere), or where the keys there now were set by an operator (`secret_set`,
+the environment). `ferrum task services` says so. Without the refusal, keys made by a render would be what the server
+signs with at its next start, and its real store would never have heard of them.
+
 An installation from before this release keeps its `files` volume: with the new Compose file it starts with the store
 set and files moving, reads both, and moves its files with `docker compose exec ferrum ferrum task files_move`. With
 its old Compose file it keeps the directory, warned, as above. Back the store up beside the database with the commands
@@ -1507,6 +1518,9 @@ deletes, under the same cap on uses (a hundred an hour for each secret and verb,
     something it keeps outside the vault.
   * `level:secret workspace:… owner:<id> name:<name>`: a new value of a key code uses and nobody types (a random
     value, an Ed25519 pair), never shown. The version before still verifies for the secret's overlap.
+  * `level:service service:<name>`: new values of the secrets the vault made for a service (*Files for the programs
+    beside the server*), its app's to manage; the version before is still given to the service's renders for the
+    overlap.
 * `secret_set name:<key> [file:<path>] [overlap:<secs>]`, `secret_remove name:<key>`: the platform's own secrets
   (*The platform's secrets*).
 * `vault_transfer workspace:<slug>`: at the source of a move, the workspace's vault made ready to move, its key printed
@@ -1688,6 +1702,103 @@ source of a move) removes them in the same transaction as its rows, and says so 
 (`workspace_vault_removed`, with why, and how many keys and secrets). A sandbox has each secret as the secret's rule
 says (*A sandbox of a workspace*), with keys of its own. A move carries them (*Moving one workspace*).
 
+## Files for the programs beside the server
+
+Some programs run beside the server and share a secret or a setting with it: the object store Compose bundles, the
+meeting server, the mail server, an app's engine. Each can take what it needs from files written as it starts, from the
+database and the vault alone, instead of a Secret or a `deploy/.env` value typed once for it and once for the server. A
+secret the two share is then made once, by the vault, and typed by nobody.
+
+Each such program is a *service*, declared by its owner: an app for its own programs (docs/app-contract.md, *Declaring a
+service*), the platform for its own. A service names its files and the secrets the vault makes for it. One name with two
+owners stops the server, naming both.
+
+| Task | What it does |
+|---|---|
+| `ferrum task services [format:json]` | the services this build declares: each one's owner, its files and the secrets the vault keeps for it, and why one cannot be rendered here; never a value |
+| `ferrum task render service:<name> to:<dir>` | writes the service's files into `<dir>`, from the database and the vault; prints the files' names |
+| `ferrum task vault_rotate level:service service:<name>` | new values of the secrets the vault made for the service, never shown; the ones before stay for their overlap |
+
+**A render** opens the vault as a server does, reads the settings as a server does (the environment's value through this
+release, else the database's), asks the service for its files, then writes them. Run it with the servers'
+`DATABASE_URL` and nothing else: that is its one input. With the vault closed, a setting the service needs and nobody
+set, or a secret it may not have, it refuses, says why, and writes nothing.
+
+- **Only where it belongs.** A service may refuse an installation it does not belong to, and then a render and a
+  rotation through it are refused, writing and making nothing: the bundled store's (below) is refused on any
+  installation whose store is another one.
+- **The first render makes the shared secrets.** A secret the service declares that the vault does not hold yet is made
+  then: 32 random bytes, as 43 characters of base64url, in the installation's scope, owned by the service's owner. Renders
+  and replicas at once make one (the secret's lock). It is marked as its owner's to manage: the Secrets screen and the
+  operator's routes for an app's secrets leave it alone, and `vault_rotate level:service` rotates it. (The platform's
+  own are still set or removed with `secret_set` and `secret_remove`; the next render gives the program what they
+  leave.) A secret of that name that a person set is refused: the vault makes it only where there is none.
+- **Only what its rule lets out.** A secret reaches a file only through its owner's own handle, and only when its rule
+  lets its owner read it (`reveal`). A secret that is only used (to sign, to check) never goes into a file. A file that
+  says it holds no secret and holds a value the render was given is refused.
+- **On the record.** Each secret given to a render is in the vault's record as `render`, with the owner, the secret, its
+  version and the service, never the value (`ferrum task vault_events`), under the cap on uses: a hundred an hour for
+  each secret, then one summary. A secret the vault makes is recorded as `make`, a rotation as `rotate` by `operator`,
+  each naming the service.
+- **The directory** is made when missing, for its owner alone (or its group too, where the service says so), and is
+  never a link. It must be empty, or hold only what an earlier render of the same service wrote (`.ferrum-render` says
+  which service and which files): anything else there is refused, and left as it was. Each file is written under a
+  temporary name and then renamed to its own, readable by its owner alone (0600; 0640 where the service says a group
+  reads it). Nothing is written through a link, nor outside the directory. What the earlier render wrote and this one
+  does not is removed. Renders into one directory take turns.
+- **Stopped half way.** A render stopped between its renames can leave some files of each render. The program is not
+  started on them (the render failed), and the next render replaces them all.
+
+**Rotating.** A rotated secret reaches the program at its next start: `vault_rotate level:service`, then restart the
+program, whose render then gives it the new value. Where the program can hold two values at once, its render gives it
+the version before too while the secret's overlap lasts, so that the server and the program never refuse each other in
+between. Rotate when the program can be restarted within the overlap.
+
+**How a program gets its files.** In Kubernetes, an init container renders them as the program's pod starts: the
+server's image, with the database's address as its one input (straight to PostgreSQL, as the migrate Job) and
+`/run/ferrum` for the vault's key file. It writes into a memory-backed volume the program mounts read-only at
+`/run/companion`, and the program's network policy lets the pod reach the database, and DNS, for the render. It opens
+the vault with the key file or the database password, never with the pod's service account. In Compose, a one-shot
+service renders them before the program starts, into a volume the two share (on the host's disk, as the store's own
+keys always were: a volume in memory would be gone before the program starts). Through this release each program keeps
+its old way by default, and a value switches it:
+
+| Program | Its service (owner) | Switched by | What it is given |
+|---|---|---|---|
+| The store Compose bundles | `object-store` (the platform) | `-f deploy/store-files.yml`, once it has handed its keys over | `s3.json`: the access keys it handed over, both pairs while an overlap of a day lasts |
+| Metrics' engine | `metrics-engine` (Metrics, once its release declares it) | the chart's `metricsEngine.files: rendered`, implied by `environment: minimal` once the image declares the service; `deploy/k8s`: the component `metrics-engine-files` after `metrics-engine` | `token`: one token a line, the current first |
+
+The meeting server and the mail server switch when Comms declares their services (docs/plan/stateless.md says what it
+declares). The online editor and the browser editors take no secret of ours, only settings the chart's values give
+them; a render would put the database's address into pods that hold no secret today (and, for the editor, into a
+namespace of a lower security level), so they keep their values. None of this was run on a cluster or in Compose: the
+chart and `deploy/k8s` were rendered and compared (`deploy/helm/test.sh`), Compose with `docker compose config`; the
+store's switch was rehearsed with its own binary (`scripts/companions_rehearsal.sh`).
+
+**Rotating, program by program.**
+
+- *The store Compose bundles* (`object-store`): both keys rotate together. Restart the store first: it then lets in
+  both pairs. Then restart the servers: each starts with the new pair, and one not yet restarted keeps the pair before,
+  which the store still lets in. A day later the overlap is over: restart the store once more, and it lets in the new
+  pair alone.
+  ```bash
+  C="docker compose -f deploy/docker-compose.yml -f deploy/store-files.yml --env-file deploy/.env"
+  $C exec ferrum ferrum task vault_rotate level:service service:object-store
+  $C up -d --force-recreate store-files store      # both pairs rendered; the store started on them
+  $C up -d --force-recreate ferrum
+  $C up -d --force-recreate store-files store      # a day later: the new pair alone
+  ```
+- *Metrics' engine* (`metrics-engine`, with a Metrics release that declares it): rotate, then restart the engine's pods
+  within the overlap (a day): each is given both tokens, and Metrics sends the one before until the overlap is over, so
+  no pod refuses it meanwhile.
+  ```bash
+  kubectl -n ferrum exec deploy/ferrum -- ferrum task vault_rotate level:service service:metrics-engine
+  kubectl -n ferrum rollout restart deployment/ferrum-metrics-engine
+  ```
+- *The meeting server* holds many keys, one for each version, and is restarted within the overlap; *the mail server*
+  holds one administrator's secret, so it is restarted at once after the rotation. Both as Comms says, once it declares
+  them.
+
 ## Durable processes
 
 Customers' solutions may hold processes that wait for people, events and deadlines (the Full Process
@@ -1831,6 +1942,10 @@ docker compose -f deploy/docker-compose.yml -f deploy/metrics-engine.yml --env-f
   carries the source under `stale`, and Intelligence says so in its answers.
 - **Datasets** are files. Refresh them in place, by writing a new file and renaming it over the old one; the
   newest file's time is the dataset's age. They are not backed up with the stack: they are the lake's.
+- **Its token from the vault**, typed by nobody (*Files for the programs beside the server*): with a Metrics release
+  that declares the service `metrics-engine`, the chart's `metricsEngine.files: rendered` (or the `deploy/k8s`
+  component `metrics-engine-files`) renders the token into each engine pod as it starts, and neither side reads the
+  Secret `ferrum-metrics-engine` any more. Until then keep `secret`, the default.
 
 ## Background jobs
 
@@ -4606,7 +4721,9 @@ is set up by hand: the app declares the program's client for each workspace from
 its secret and the workspace's signing key. Each address of a workspace that serves its shell is an issuer of its own
 (`https://{address}/.well-known/openid-configuration`); without a base domain, the installation's one workspace
 (`FERRUM_DEFAULT_WORKSPACE`) on its own host, or a domain of a workspace's own. A host several workspaces share, a
-forwarding address, the accounts and hooks hosts and sandboxes answer nothing.
+forwarding address, the accounts and hooks hosts and sandboxes answer nothing. (These are the programs people sign in
+to; a program whose files the server renders is a service, in "Files for the programs beside the server", and one
+program can be both.)
 
 What an operator sees:
 

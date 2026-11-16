@@ -1,0 +1,79 @@
+# Metrics' engine with its token rendered from the vault as each of its pods starts (docs/operations.md, "Files for the
+# programs beside the server"), in place of the Secret ferrum-metrics-engine typed for both sides: list it under
+# `components:` after metrics-engine. Only with a Metrics release that declares its service `metrics-engine` (the server
+# reads the token from Metrics' own vault then) and an engine that reads FERRUM_METRICS_ENGINE_TOKEN_FILE. An init
+# container of the server's image, with the database's address as its one input, writes the token into memory the engine
+# reads; it opens the vault with the key file (ferrum-vault-key) or the database's password.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ferrum-metrics-engine
+      spec:
+        template:
+          spec:
+            initContainers:
+              - name: render
+                image: ferrum
+                args: ["task", "render", "service:metrics-engine", "to:/run/companion"]
+                env:
+                  - name: DATABASE_URL
+                    valueFrom: {secretKeyRef: {name: ferrum-db-app, key: uri}}
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities: {drop: ["ALL"]}
+                volumeMounts:
+                  - {name: render-tmp, mountPath: /tmp}
+                  - {name: run, mountPath: /run/ferrum, readOnly: true}
+                  - {name: companion, mountPath: /run/companion}
+            containers:
+              - name: engine
+                env:
+                  - name: FERRUM_METRICS_ENGINE_TOKEN
+                    $patch: delete
+                  # The vault's token, one line each: the current, and the one before while a rotation's overlap lasts.
+                  - {name: FERRUM_METRICS_ENGINE_TOKEN_FILE, value: /run/companion/token}
+                volumeMounts:
+                  - {name: companion, mountPath: /run/companion, readOnly: true}
+            volumes:
+              # What the render writes, in memory: the engine's token is never on a disk.
+              - name: companion
+                emptyDir: {medium: Memory, sizeLimit: 1Mi}
+              - name: render-tmp
+                emptyDir: {sizeLimit: 64Mi}
+              - name: run
+                projected:
+                  sources:
+                    - secret: {name: ferrum-vault-key, items: [{key: root.key, path: root.key}], optional: true}
+  # The server reads the token from Metrics' vault.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ferrum
+      spec:
+        template:
+          spec:
+            containers:
+              - name: ferrum
+                env:
+                  - name: FERRUM_METRICS_ENGINE_TOKEN
+                    $patch: delete
+  # The render as the pod starts: the database, and the names that lead to it.
+  - target: {kind: NetworkPolicy, name: ferrum-metrics-engine}
+    patch: |-
+      - op: replace
+        path: /spec/egress
+        value:
+          - to:
+              - podSelector:
+                  matchLabels: {cnpg.io/cluster: ferrum-db}
+            ports:
+              - {port: 5432}
+          - ports:
+              - {port: 53, protocol: UDP}
+              - {port: 53, protocol: TCP}

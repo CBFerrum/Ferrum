@@ -439,7 +439,9 @@ tokens, sign-in to the forge through Ferrum and CI runners; Cloud keeps running 
 ### D8: signing in to the forge through Ferrum (built)
 
 Ferrum is an OpenID Connect provider for the programs installed apps run beside it (crates/kernel/src/oidc.rs; docs/api.md,
-*Signing in to programs beside Ferrum*). What was decided, and why:
+*Signing in to programs beside Ferrum*). A companion here is a program people sign in to (`oidc::Companion`,
+`HookRegistry::openid_companion`), not the service of *Files for the programs beside the server* below
+(`companion::Companion`, `HookRegistry::add_companion`); one program can be both. What was decided, and why:
 
 - **The issuer is the workspace's address the request came to** (every address that serves one workspace's shell is
   one, each with the same subjects, and a code is good only where it was asked). Without a base domain: the
@@ -527,6 +529,115 @@ the database's address (server/src/settings.yaml, docs/operations.md "What a rep
   run fails on any name found set but `DATABASE_URL`, or read and declared neither by the registry (read through R1) nor
   by the baseline of what stays (docs/registry/environment-only.md, written by scripts/settings.py, which only
   shrinks).
+
+## Files for the programs beside the server (built)
+
+A companion's configuration comes from the database and the vault at its start, and a secret it shares with the server is
+made once, by the vault (crates/kernel/src/companion.rs; docs/operations.md, "Files for the programs beside the server";
+docs/app-contract.md, "Declaring a service").
+
+- **A service is declared by its owner**: `HookRegistry::add_companion(name, Arc<dyn Companion>)`, an app's inside its
+  registration, the platform's outside any. It names its files and the secrets the vault makes for it (`files()`,
+  `made()`, both static, so that `ferrum task services` lists them without touching a secret); a name declared twice,
+  or a declaration that cannot work, stops the start through `settle`, naming both owners. Its function is given a
+  `Rendering`: its owner's handle (made by the kernel, as people's routes make one), the settings (the server passes the
+  registry's alone, so a service never reads past it into the environment), and the render's own verbs.
+- **The listing is `ferrum task services`**, not `render services`: Loco 1.2 takes only `key:value` arguments.
+- **A render refuses before it writes.** The vault closed (whatever the service needs), a setting it needs and nobody
+  set, a secret its rule keeps from its owner (rule 3: `reveal`), a file it did not declare, or a value it was given
+  inside a file that says it holds no secret (values of 16 bytes or more are looked for). Everything is in the
+  installation's scope: companions are the installation's programs.
+- **On the record** in `vault.event` with `service` beside owner, name and version: `render` (under the cap on uses),
+  `make`, and `rotate` by `operator`. Nothing beside the rule says which service may have a secret: the services are
+  their owner's code, which its handle already lets read what the rule lets out, so such a mark would keep an owner from
+  itself; the previous build's strict reading of the rule is untouched.
+- **Made, not typed**: `Rendering::made` makes a secret the service declares where there is none, 32 random bytes as
+  base64url text, marked in `vault.managed` in the same transaction under the secret's lock, so renders and replicas at
+  once make one; a current version without the mark (a person's) is refused. The mark refuses people's and the
+  operator's generic routes, so the operator rotates through the service: `vault_rotate level:service` (same kind, rule
+  kept, the version before given to renders for the overlap). `Vault::carry_at` presents a kept version, as `sign_at`
+  signs with one: a client keeps presenting the version before while the overlap lasts, so a program not restarted yet
+  still takes it. No migration: the tables were all there.
+- **The writer** (`companion::write`): a directory made when missing, never a link; only an earlier render of the same
+  service there (`.ferrum-render`), else refused with nothing written; each file under a temporary name with `O_EXCL`,
+  its mode set exactly (0600, or 0640 where the service says a group reads), then renamed; the record last; what the
+  earlier render wrote and this one does not removed; renders into one directory take turns (`flock` on it).
+  Ceiling: a crash between the renames leaves some of each render's files, which no program is started on (the render
+  failed) and the next render replaces; atomic as a whole would take a link swapped in their place.
+- **The platform's service** is the store Compose bundles (`object-store`, server/src/companions.rs): SeaweedFS's
+  `s3.json` with the platform's `aws_access_key_id` and `aws_secret_access_key`, which the server signs with; both pairs
+  while an overlap of a day lasts. It renders only the keys that store handed over, and never makes any: a service may
+  refuse an installation (`Companion::refusal`, asked before a render and a rotation, said by `ferrum task services`).
+  What tells the bundled store's keys is the vault's record of how their current versions were written (`Vault::origin`):
+  `adopt` by `object store` (the handoff, written by nothing else) or a rotation for the service since. No keys (the
+  machine's identity, or a store whose keys come from elsewhere), or keys an operator set (`secret_set`, the
+  environment): refused, nothing written, nothing made. The first render keeps the handed-over keys for the service as
+  they are (`Rendering::keep`: marked once under the secret's lock, given the service's rule), so the store keeps its
+  keys. `deploy/store-files.yml` and `STORE_S3_CONFIG` switch the store to it once the handoff has happened; the handoff
+  stays the default, and a new installation starts once without the file.
+- **Deploy.** Chart and `deploy/k8s`: Metrics' engine, the one bundled program in the release's namespace that takes a
+  secret of ours (`metricsEngine.files`, the component `metrics-engine-files`); `environment: minimal` implies it only
+  for the services listed in `ferrum.declaredServices`, empty today. Literally, minimal would have stopped every minimal
+  install with the engine on: the pinned Metrics declares no service, so the init container would fail. The online
+  editor is left as it is: its pod runs in a namespace of its own at the `baseline` level, which must not hold the
+  database's address, and its proof key is its own. The browser editors and the PDF renderer take no secret of ours.
+- **The proof.** `crates/kernel/tests/companions_it.rs`: a service of settings, a meeting server declared in the test as
+  Comms is to declare it, two replicas rendering at once (one `make`), the refusals, the cap, a rotation, a closed vault,
+  a clash, and a handed-over key (refused where nobody or a person gave it, kept once by two replicas, rotated);
+  LiveKit 1.13.11 started on the written file and called with tokens the vault signs, both versions let in during the
+  overlap and the one before refused after it. `scripts/companions_rehearsal.sh` (`scripts/local_ci.sh companions`):
+  the real binary with `DATABASE_URL` alone refuses `object-store` where the vault holds no store keys and where an
+  operator set them (nothing written, nothing made, the keys as they were); after the bundled store's handoff it renders
+  them twice at once (kept once, the keys the store made), SeaweedFS starts on the file through `deploy/store/start.sh`,
+  servers keep and read files through it, a rotation's overlap lets the server from before and one started after in,
+  its end leaves the first out, and a vault that does not open writes nothing; no key in any output or log.
+- **Not run here**: the chart, `deploy/k8s` and Compose (rendered and compared only); the engine's init container; the
+  Dockerfile's new directory, which the one-shot's volume takes its owner from.
+
+### For the apps slice: what each app declares
+
+Each inside its own registration, its secrets in its own vault; settings in `operator_settings`. The format is the one
+each program reads as it starts.
+
+- **Comms, `meet` (LiveKit).** `files: ["livekit.yaml"]`, `made: ["meet.secret"]` with `Rule { reveal: true,
+  overlap_secs: 86_400 }`. Settings: `comms.meet_node_ip` (`FERRUM_MEET_NODE_IP`, text) and `comms.meet_external_ip`
+  (`FERRUM_MEET_EXTERNAL_IP`, bool, default `true`), beside those it has. The file (`secret: true`), as LiveKit reads
+  `--config`:
+  ```yaml
+  port: 7880
+  rtc:
+    tcp_port: 7881
+    udp_port: 7882
+    use_external_ip: true          # comms.meet_external_ip
+    node_ip: ""                     # comms.meet_node_ip
+  keys:
+    "ferrum.<current version>": "<meet.secret, current>"
+    "ferrum.<version before>": "<meet.secret, the one before>"   # while the overlap lasts
+  ```
+  Its code signs LiveKit's tokens with `Vault::sign_at` (HS256 is HMAC-SHA256 over `header.payload`), naming the API
+  key `ferrum.<version>` in `iss`: the version before while `previous_until` is to come, else the current one; it reads
+  `FERRUM_MEET_KEY` and `FERRUM_MEET_SECRET` no more (the platform then drops their entries from server/src/settings.yaml). `deploy/meet.yml`:
+  a one-shot `meet-files` (`ferrum task render service:meet to:/var/lib/ferrum/companion`) and a volume shared with
+  LiveKit, `command: ["--config", "/run/meet-files/livekit.yaml"]` without `LIVEKIT_KEYS` and `LIVEKIT_CONFIG`, and no
+  `:?` guard on the two variables. Proven against LiveKit 1.13.11 in companions_it.
+- **Comms, `mail` (Stalwart).** `files: ["admin-secret"]` (`secret: true`: the secret alone, no newline), `made:
+  ["mail.admin_secret"]` with `Rule { reveal: true, hosts: [<the host of comms.mail_url>], overlap_secs: 0 }`.
+  Settings: `comms.mail_url` (it has it) and `comms.mail_admin` (`FERRUM_MAIL_ADMIN`, text, default `admin`). Stalwart
+  takes it as its fallback administrator, in its `config.toml`: `authentication.fallback-admin.user = "admin"` and
+  `authentication.fallback-admin.secret = "%{file:/run/mail-files/admin-secret}%"` (Stalwart's file macro, from its
+  documentation as remembered: Stalwart is not on this machine, nothing of it was run). Its code sends it with
+  `carry(…, "mail.admin_secret", &url, &Carry::Basic(admin))`. One value only: rotated, the mail server is restarted at
+  once. `deploy/mail.yml`: a one-shot `mail-files` and a volume shared with Stalwart, read-only at `/run/mail-files`.
+- **Metrics, `metrics-engine`.** `files: ["token"]` (`secret: true`: each kept version on a line of its own, the
+  current first), `made: ["engine.token"]` with `Rule { reveal: true, hosts: [<the host of metrics.engine_url>],
+  overlap_secs: 86_400 }`. Settings: `metrics.engine_url` (`FERRUM_METRICS_ENGINE_URL`). The engine (`engine/src/main.rs`)
+  reads `FERRUM_METRICS_ENGINE_TOKEN_FILE` where set, taking any of its lines (compared in constant time), and
+  `FERRUM_METRICS_ENGINE_TOKEN` otherwise. Its code sends the token with `carry_at(…, "engine.token", &url,
+  &Carry::Bearer, v)`, `v` the version before while the overlap lasts. In the same change, the chart's
+  `ferrum.declaredServices` lists `metrics-engine`; `deploy/metrics-engine.yml` gets a one-shot and a shared volume, and
+  drops its `:?` guard.
+- **Drive** declares nothing: the online editor's settings are not secrets and its proof key is its own; the browser
+  editors hold no secret.
 
 ## Not doing
 
