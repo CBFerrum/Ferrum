@@ -188,7 +188,8 @@ networkPolicy:
   egressAnyHost: true
   egressCIDRs: []
 
-# Needs the Prometheus operator. Also scrapes the database's exporter when database.enabled.
+# Needs the Prometheus operator. Also scrapes the database's exporter when database.enabled. It sends FERRUM_METRICS_TOKEN
+# from the Secret above, which it needs: in production /metrics answers nobody while no token is set.
 serviceMonitor:
   enabled: true
   interval: 30s

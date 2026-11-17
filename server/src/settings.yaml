@@ -222,7 +222,8 @@
   secret: true
   vault: compared
   doc: >-
-    `/metrics` then requires `Authorization: Bearer <token>`. Recommended.
+    `/metrics` answers only `Authorization: Bearer <token>`. Required in production: while none is set, `/metrics`
+    answers nobody (`401`); in development and tests it is open without one.
 
 # The database.
 - key: migrate_at_start

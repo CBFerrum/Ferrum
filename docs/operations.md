@@ -61,7 +61,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `kms_ca_file` | `FERRUM_KMS_CA_FILE` | text |  | the environment (the key-management client (through R1; the file is /run/ferrum/kms-ca.pem from now on)) | A certificate authority (PEM) Transit's certificate is checked against, beside the usual ones. Mount it at `/run/ferrum/kms-ca.pem` instead. |
 | `kms_namespace` | `FERRUM_KMS_NAMESPACE` | text |  | installation, next start | The Vault namespace of `kms_transit`. |
 | `bootstrap_token` | `FERRUM_BOOTSTRAP_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it. |
-| `metrics_token` | `FERRUM_METRICS_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | `/metrics` then requires `Authorization: Bearer <token>`. Recommended. |
+| `metrics_token` | `FERRUM_METRICS_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | `/metrics` answers only `Authorization: Bearer <token>`. Required in production: while none is set, `/metrics` answers nobody (`401`); in development and tests it is open without one. |
 | `migrate_at_start` | `FERRUM_MIGRATE_AT_START` | bool | `true` | installation, next start | Default `true`: the server migrates the database, syncs the schema and runs the upgrade steps as it starts. `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe. Either way, on a database a newer build migrated, the server starts as a guest that changes nothing, or refuses (*Rolling back and the two-version window*). |
 | `db_max_connections` | `FERRUM_DB_MAX_CONNECTIONS` | int | `30` | each pool, next start | Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so. |
 | `database_direct_url` | `FERRUM_DATABASE_DIRECT_URL` | text |  | secret: the environment | With a pooler: PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler*. A secret while the address holds the password. |
@@ -1921,6 +1921,10 @@ on ([Monitoring](#monitoring), "The busiest workspaces"). Each finding's level i
 step. The report holds no secret or connection string, so it can be pasted into a ticket.
 
 ## Monitoring
+
+`/metrics` answers a scraper that sends the metrics token (`Authorization: Bearer <token>`; `ferrum task secret_set
+name:metrics_token` makes one and shows it once, or `FERRUM_METRICS_TOKEN`). In production it is required: while
+none is set, `/metrics` answers nobody (`401`). In development and tests it is open without one.
 
 `/metrics` (Prometheus text) exposes `ferrum_up`, uptime, database pool size and idle
 connections, the outbox backlog (pending, dead, age of the oldest pending event), webhook

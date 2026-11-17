@@ -2262,7 +2262,7 @@ Public files (`public=true`; images and PDFs only — logos, product photos, bro
 
 ## System
 
-`GET /_zone` on any host, no session, limited per address like other public endpoints: `{"zone": "public" | null, "staff": "all" | "none" | ["crm", …], "admin": bool, "address": "203.0.113.7"}`, the zone this request is in, its rule (the list of apps where it limits staff to some), and the caller's address as the server sees it ([Zones](operations.md#zones)). `GET /api/ready` (DB reachable), `GET /api/version`, `GET /metrics` (Prometheus), `POST /api/tenants` (requires `X-Ferrum-Bootstrap-Token`; a slug any workspace ever used is taken for good), `GET /_ping`, `GET /_health`.
+`GET /_zone` on any host, no session, limited per address like other public endpoints: `{"zone": "public" | null, "staff": "all" | "none" | ["crm", …], "admin": bool, "address": "203.0.113.7"}`, the zone this request is in, its rule (the list of apps where it limits staff to some), and the caller's address as the server sees it ([Zones](operations.md#zones)). `GET /api/ready` (DB reachable), `GET /api/version`, `GET /metrics` (Prometheus; the metrics token as `Authorization: Bearer`, which production requires: while none is set, `401` for everyone, [Monitoring](operations.md#monitoring)), `POST /api/tenants` (requires `X-Ferrum-Bootstrap-Token`; a slug any workspace ever used is taken for good), `GET /_ping`, `GET /_health`.
 
 ## Settings — `/api/operator/settings` (the installation's operator)
 

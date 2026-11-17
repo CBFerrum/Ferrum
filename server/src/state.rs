@@ -134,7 +134,8 @@ pub struct Settings {
     /// The scanner's `StreamMaxLength` in MiB (`FERRUM_CLAMAV_MAX_MB`): files past it stay unscanned.
     #[serde(default = "default_clamav_max_mb")]
     pub clamav_max_mb: u64,
-    /// When set, `/metrics` requires `Authorization: Bearer <token>`.
+    /// When set (or the vault holds one), `/metrics` requires `Authorization: Bearer <token>`; in production, while none
+    /// is set, `/metrics` answers nobody.
     #[serde(default)]
     pub metrics_token: String,
     /// `FERRUM_OPERATOR_TOKEN`: the operator's routes (`/api/operator/…`, in a zone with `operator: true`) require it
