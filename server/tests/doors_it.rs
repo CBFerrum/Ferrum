@@ -29,6 +29,8 @@ const ACME: &str = "erp.acme.test";
 const OTHER: &str = "erp.other.test";
 /// A host no workspace registered: with neither a base domain nor a default workspace, every workspace's (shape A′).
 const SHARED: &str = "erp.shared.test";
+/// The server's public address (`PUBLIC_URL`), where callbacks come with no hooks host set: one of acme's hosts too.
+const PUBLIC: &str = "erp.public.test";
 const PAGE: &str = "<!doctype html><title>Hello</title><script>fetch('/api/auth/token', {method: 'POST'})</script>";
 const OWN_POLICY: &str = "default-src 'none'; script-src 'nonce-abc'; style-src 'unsafe-inline'";
 
@@ -137,6 +139,7 @@ async fn scenario() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut config = Environment::Test.load_from_folder(&dir.join("config")).expect("config/test.yaml");
     config.database.uri = url;
+    config.server.host = format!("http://{PUBLIC}");
     if let Some(s) = config.settings.as_mut() {
         s["packages_dir"] = json!(dir.join("../packages").to_string_lossy());
     }
@@ -162,6 +165,9 @@ async fn scenario() {
         .await
         .unwrap();
         k.add_operator_host(slug, host, "shell", None).await.unwrap();
+        if slug == "acme" {
+            k.add_operator_host(slug, PUBLIC, "shell", None).await.unwrap();
+        }
         let s = k.login(slug, &format!("admin@{slug}.test"), PASSWORD).await.unwrap();
         let (tenant, _) = k.tenant_by_slug(slug).await.unwrap();
         let admin = k.load_ctx(tenant, s.user, None, "it".into()).await.unwrap();
@@ -209,4 +215,9 @@ async fn scenario() {
     assert_eq!(answer(get(&r, OTHER, "/api/site/acme/doors/page", None).await), nobody, "another workspace's host");
     assert_eq!(get(&r, OTHER, "/api/site/other/doors/page", None).await.0, StatusCode::OK, "its own");
     assert_eq!(get(&r, SHARED, "/api/site/acme/doors/page", None).await.0, StatusCode::OK, "a shared host");
+    // The address the platform gives outside callers (callback_base: here PUBLIC_URL's host, which is acme's too) answers
+    // for every workspace, sandboxed as anywhere; another workspace's own host still does not.
+    let (status, h, _) = get(&r, PUBLIC, "/api/site/other/doors/page", None).await;
+    assert!(status == StatusCode::OK && sandboxed(&h), "another workspace's route where callbacks come: {status} {h:?}");
+    assert_eq!(answer(get(&r, ACME, "/api/site/other/doors/page", None).await), nobody, "acme's own other host");
 }

@@ -399,8 +399,8 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   goes out under the sandbox policy stored files get, so it runs no script with the session of whoever opens it; only a
   native app's page may declare a policy of its own, and a plugin's own policy, framing and cookies are dropped
   (`contain` in server/src/controllers/system.rs). The public ones that name a workspace answer on that workspace's
-  hosts and hosts of no workspace, never on another workspace's host or the accounts host
-  (`Shell::answers_for`). Served over HTTPS (`PUBLIC_URL`
+  hosts, hosts of no workspace and the address callbacks are given (`FERRUM_HOOKS_HOST`, else `PUBLIC_URL`'s host),
+  never on another workspace's own host or the accounts host (`Shell::answers_for`). Served over HTTPS (`PUBLIC_URL`
   https), every answer, whichever part of the server made it, carries `Strict-Transport-Security: max-age=31536000;
   includeSubDomains`; over plain http none does. A browser's session
   travels in the `__Host-ferrum` cookie (`ferrum_session` on a plain-http development server): `HttpOnly`,

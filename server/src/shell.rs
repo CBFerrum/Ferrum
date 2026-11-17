@@ -690,10 +690,16 @@ impl Shell {
     }
 
     /// Whether a route that names its workspace in its path (`/api/public/{workspace}/{plugin}/…`,
-    /// `/api/site/{workspace}/{package}/…`) answers on this host: that workspace's own hosts, still its own once moved, and
+    /// `/api/site/{workspace}/{package}/…`) answers on this host: that workspace's own hosts, still its own once moved,
     /// hosts of no workspace (the hooks host, a shared host that serves every workspace in turn, a host the cluster does
-    /// not know). Never another workspace's host or the accounts host, where other people's sessions are.
+    /// not know), and the host the platform gives outside callers for every workspace (`callback_base`: the hooks host
+    /// when set, else `PUBLIC_URL`'s), whichever workspace it otherwise is. Never another workspace's own host or the
+    /// accounts host, where other people's sessions are.
     pub async fn answers_for(&self, headers: &HeaderMap, tenant: Uuid) -> Result<bool> {
+        let callbacks = self.kernel.settings.callback_base().as_deref().and_then(public_host);
+        if callbacks.is_some() && request_host(headers).and_then(ferrum_kernel::shell::normalize_host) == callbacks {
+            return Ok(true);
+        }
         Ok(match self.place(headers).await? {
             Place::Workspace(t) | Place::Portal(t) | Place::Site(t, _) => t == tenant,
             Place::Moved(_) => matches!(
