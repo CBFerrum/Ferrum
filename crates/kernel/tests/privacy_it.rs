@@ -3,6 +3,7 @@
 //! why; what is not searched is named; a legal hold stops erasure and deletion; and a database
 //! restored from before an erasure can be erased again from the journal.
 
+use ferrum_kernel::capability::Invocation;
 use ferrum_kernel::files::FileStore;
 use ferrum_kernel::privacy::{JOURNAL_PREFIX, Person, PersonalHeld};
 use ferrum_kernel::tenant::NewTenant;
@@ -619,4 +620,42 @@ async fn scenario() {
     assert_eq!(restored["companions"].as_array().unwrap().len(), 1, "her row went again: {restored:?}");
     let kept = k.get(&admin, "Visitor", namesake["id"].as_str().unwrap().parse().unwrap(), false).await.unwrap();
     assert_eq!(kept["email"], json!("p.lee@else.test"), "the namesake is untouched");
+
+    // ───────────── what the gate keeps of an operation (I6) ─────────────
+    // A record made through the gate leaves a receipt of what was done; the erasure takes the person out of it, and the
+    // same key asked again still answers which record it made.
+    let signup = || {
+        Invocation::new("people.visitor.create", json!({"values": {"full_name": "Quinn Gate", "email": "quinn@gate.test", "notes": "Prefers mornings"}}))
+            .key("signup-quinn")
+    };
+    let made = k.invoke(&admin, signup()).await.unwrap();
+    assert_eq!(made.result["email"], json!("quinn@gate.test"), "a first call answers the record as made");
+    let quinn = made.result["id"].clone();
+    k.erase_personal_data(&admin, "quinn@gate.test", "Request 6").await.unwrap();
+    let receipt = async || -> Option<Value> {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let kept = sqlx::query_scalar("select result from logic_effect where tenant_id = $1 and effect_key = 'signup-quinn'")
+            .bind(tenant)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        kept
+    };
+    let kept = receipt().await.expect("the receipt").to_string();
+    for theirs in ["Quinn", "quinn@gate.test", "mornings"] {
+        assert!(!kept.contains(theirs), "the receipt of an erased record still holds {theirs}: {kept}");
+    }
+    let again = k.invoke(&admin, signup()).await.unwrap();
+    assert!(again.repeated && again.result["id"] == quinn, "a repeat of the key answers the record it made: {again:?}");
+    // A receipt past its capability's retention (400 days for a create) goes with the hourly maintenance.
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update logic_effect set created_at = now() - interval '401 days' where tenant_id = $1 and effect_key = 'signup-quinn'")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    k.maintenance().await.expect("maintenance");
+    assert_eq!(receipt().await, None, "a receipt past its retention is gone after maintenance");
 }

@@ -654,8 +654,8 @@ impl Kernel {
             _ => cap.input_digest(&inv.input)?,
         };
         let claimed = sqlx::query(
-            "insert into logic_effect (tenant_id, environment, capability, effect_key, input_digest, version, capability_digest, actor, caller) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict do nothing",
+            "insert into logic_effect (tenant_id, environment, capability, effect_key, input_digest, version, capability_digest, actor, caller, retention_days) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict do nothing",
         )
         .bind(ctx.tenant)
         .bind(&inv.environment)
@@ -666,6 +666,8 @@ impl Kernel {
         .bind(&cap.digest)
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
         .bind(caller)
+        // ponytail: a declared retention past a hundred years is kept a hundred years (the date must stay in range).
+        .bind(cap.retention_days.min(36_500) as i32)
         .execute(&mut **tx)
         .await?
         .rows_affected()
@@ -689,6 +691,11 @@ impl Kernel {
         .execute(&mut **tx)
         .await?;
         Ok(Receipt { capability: cap.id, version: cap.version, effect_key: Some(key.to_string()), repeated: false, result, answered_once: None })
+    }
+
+    /// Receipts past the retention their capability declares (`retention_days`): hourly, from [`Kernel::maintenance`].
+    pub(crate) async fn purge_receipts(&self) -> Result<u64> {
+        self.db.purge(&[("logic_effect", "kept_until < now() at time zone 'UTC' and not ferrum_workspace_held(tenant_id)".into())]).await
     }
 
     /// The key was used before: the same input gets what was done, with the caller's own view of it;

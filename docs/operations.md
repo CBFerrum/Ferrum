@@ -3353,7 +3353,8 @@ account is not erased until it is no longer one. What durable processes keep of 
 event that started a run, the run's own record, the material shown) loses those fields too, and keeps them out
 when the run is reported again. The events of the records erased lose the record they carried (`doc` and `was`), in
 the outbox and in every webhook delivery of them, handled, waiting or dead; each says `erased` instead, and an
-administrator's replay of a dead one is refused (409), since it would go out without the record. The same is available as `GET
+administrator's replay of a dead one is refused (409), since it would go out without the record. The receipts the gate
+keeps of operations on them (a process's, an app's call, an agent's) keep only the record's id and version. The same is available as `GET
 /api/admin/personal-data` and `POST /api/admin/personal-data/erase`; packages and apps declare their
 entities with `personal_data` in their manifests. What an app keeps of people in tables of its own,
 outside its entities (a meeting's transcript, say), it reports and erases itself
