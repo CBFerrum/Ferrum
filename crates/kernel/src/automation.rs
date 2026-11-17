@@ -825,6 +825,43 @@ pub(crate) fn check_invoke(k: &Kernel, ctx: &Ctx, id: &str, input: &BTreeMap<Str
     Ok(())
 }
 
+/// Why an automation on `entity` cannot run once `packages` are removed, `gone` being their entities (each with its
+/// package): it is on one of them, or an action creates, finds, loops over or writes through a link to one, or invokes
+/// one of their capabilities. None when it names none of them.
+pub(crate) fn names_removed(
+    schema: &ferrum_meta::Schema,
+    entity: &str,
+    actions: &Value,
+    gone: &BTreeMap<String, String>,
+    packages: &[String],
+) -> Option<String> {
+    let of = |e: &str| gone.get(e).map(|p| format!("it names {e}, an entity of {p}, which was removed"));
+    if let Some(why) = of(entity) {
+        return Some(why);
+    }
+    let ent = schema.entity(entity);
+    let linked = |link: &str| ent.and_then(|e| linked_entity(e, link));
+    for a in every(&validate_actions(actions).ok()?) {
+        let named = match a {
+            AutomationAction::CreateDocument { entity, .. } | AutomationAction::Find { entity, .. } => Some(entity.as_str()),
+            AutomationAction::ForEach { entity: Some(entity), .. } => Some(entity.as_str()),
+            AutomationAction::ForEach { links: Some(path), .. } => linked(path.split('.').next().unwrap_or_default()),
+            AutomationAction::UpdateLinked { link, .. } | AutomationAction::CopyLines { link: Some(link), .. } => linked(link),
+            AutomationAction::Invoke { capability, .. } => {
+                if let Some(p) = packages.iter().find(|p| capability.starts_with(&format!("{p}."))) {
+                    return Some(format!("it invokes {capability}, a capability of {p}, which was removed"));
+                }
+                None
+            }
+            _ => None,
+        };
+        if let Some(why) = named.and_then(of) {
+            return Some(why);
+        }
+    }
+    None
+}
+
 /// The entity a link field of `ent` points at.
 fn linked_entity<'a>(ent: &'a ferrum_meta::EffEntity, link: &str) -> Option<&'a str> {
     ent.field(link).filter(|f| f.ftype == ferrum_meta::FieldType::Link).and_then(|f| f.to.as_deref())

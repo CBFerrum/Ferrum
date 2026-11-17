@@ -12,7 +12,7 @@
 # it, the one before still taken for a day. If the engine's address moves, store the new one and rotate.
 services:
   metrics-engine-files:
-    image: ${FERRUM_IMAGE:-ghcr.io/cbferrum/ferrum:latest}
+    image: ${FERRUM_IMAGE:?set FERRUM_IMAGE to a commit tag, docs/operations.md "Images"}
     restart: "no"
     depends_on:
       db:

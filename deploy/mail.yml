@@ -12,7 +12,7 @@
 # mail server's address moves, store the new one and rotate: the new secret goes to the new address only.
 services:
   mail-files:
-    image: ${FERRUM_IMAGE:-ghcr.io/cbferrum/ferrum:latest}
+    image: ${FERRUM_IMAGE:?set FERRUM_IMAGE to a commit tag, docs/operations.md "Images"}
     restart: "no"
     depends_on:
       db:

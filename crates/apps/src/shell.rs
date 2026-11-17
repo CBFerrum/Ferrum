@@ -7,7 +7,6 @@
 use crate::AppError;
 use crate::bundle::{check_path, is_image_path};
 use crate::manifest::AppManifest;
-use semver::VersionReq;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -83,9 +82,6 @@ fn is_env_name(s: &str) -> bool {
 pub struct UiSection {
     /// The built files: a directory in the bundle with an `index.html` (usually `ui/dist`).
     pub dist: String,
-    /// The shell API versions it works with.
-    #[serde(default = "any_shell")]
-    pub shell: VersionReq,
     /// Origins its pages need beyond the workspace's host, by kind ([`CSP_KINDS`]): `https://…`
     /// or `wss://…` origins, `setting:{key}` for an origin an operator sets in one of the app's
     /// settings, or (apps compiled into the server) `env:FERRUM_…` for one the operator sets on
@@ -96,10 +92,6 @@ pub struct UiSection {
     /// own share its navigation and its group in the launcher (docs/plan/apps-ui.md §11.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
-}
-
-fn any_shell() -> VersionReq {
-    VersionReq::parse(">=1.0").expect("valid")
 }
 
 /// `[a-z][a-z0-9-]{1,30}`: the first path segment an app's interface owns.
@@ -499,7 +491,6 @@ mod tests {
         ))
         .expect("valid");
         assert_eq!(m.routes(), vec![("mail".to_string(), vec!["inbox".to_string()]), ("chat".to_string(), vec![])]);
-        assert_eq!(m.ui.as_ref().unwrap().shell, VersionReq::parse(">=1.0").unwrap());
         // csp from a setting, and origins.
         parse(
             "ui:\n  dist: ui/dist\n  csp: {connect: [\"setting:meet_url\", \"wss://*.livekit.cloud\"], img: [\"https://maps.example.com:8443\"]}\n\

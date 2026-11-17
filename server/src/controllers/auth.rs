@@ -510,7 +510,6 @@ async fn sso_backchannel_logout(
 
 async fn me(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    let shell_v2 = st.shell.workspace(ctx.tenant).await?.shell_v2;
     // Shapes B and C: a joined account's password, two-step sign-in and passkeys are its Ferrum
     // account's, kept at the accounts host.
     let accounts = match accounts_for(&st, &headers).await? {
@@ -528,7 +527,6 @@ async fn me(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>
         "today": ctx.today(),
         "packages": ctx.schema.packages,
         "two_factor_setup": setup_only.is_some(),
-        "shell_v2": shell_v2,
         "accounts": accounts,
     }))
     .into_response())

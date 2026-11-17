@@ -1,6 +1,6 @@
 [package]
 name = "ferrum-server"
-description = "Ferrum HTTP API (Loco on Axum): REST, OpenAPI, ERPNext compatibility, background workers"
+description = "Ferrum HTTP API (Loco on Axum): REST, OpenAPI, background workers"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

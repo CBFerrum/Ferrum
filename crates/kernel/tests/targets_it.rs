@@ -502,17 +502,9 @@ async fn submitted(k: &Arc<Kernel>) {
     k.pin_clock(None);
 }
 
-/// Targets travel as customizations: an export imported elsewhere, and a pack carrying its calendar.
+/// Targets travel as customizations: a pack carries them with their calendar.
 async fn travel(k: &Arc<Kernel>) {
     let w = set_up(k, "from").await;
-    let set = k.export_customizations(&w.admin().await).await.unwrap();
-    let to = workspace(k, "to").await;
-    let r = k.import_customizations(&to.admin().await, &set).await;
-    assert!(matches!(&r, Err(e) if e.to_string().contains("no business calendar office")), "{r:?}");
-    k.put_logic_calendar(&to.admin().await, "office", &office()).await.unwrap();
-    k.import_customizations(&to.admin().await, &set).await.unwrap();
-    assert_eq!(to.admin().await.schema.entity("Ticket").unwrap().def.targets.len(), 2);
-
     let opts = ferrum_kernel::pack::ExportOptions { name: "desk".into(), label: "Desk".into(), version: 1, records: vec![] };
     let pack = k.export_pack(&w.admin().await, &opts).await.unwrap();
     assert_eq!(pack["calendars"][0]["name"], json!("office"));
@@ -524,6 +516,8 @@ async fn travel(k: &Arc<Kernel>) {
     assert_eq!(done["summary"]["calendars"]["created"], json!(["office"]));
     assert_eq!(fresh.admin().await.schema.entity("Ticket").unwrap().def.targets.len(), 2);
     // Where the calendar is there already it is left alone; a pack whose targets name one it lacks says so.
+    let to = workspace(k, "to").await;
+    k.put_logic_calendar(&to.admin().await, "office", &office()).await.unwrap();
     let plan = k.plan_pack(&to.admin().await, &pack).await.unwrap();
     assert_eq!(plan["sections"]["calendars"]["unchanged"], json!(["office"]));
     let mut bare = pack.clone();

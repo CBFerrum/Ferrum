@@ -208,8 +208,6 @@ def lrp01(p, away):
     said = "A request's total must be above zero"
     s, d = create(p["requester"], "Request", {"reference": f"ZERO-{RUN}-1", "total": "0"})
     check("LRP-01 refused through the records API, with the rule's message", s in (400, 409, 422) and said in json.dumps(d), (s, d))
-    s, d = p["requester"]("POST", "/api/resource/Request", {"reference": f"ZERO-{RUN}-2", "total": "0"})
-    check("LRP-01 refused through the older resource API alike", s in (400, 409, 422) and said in json.dumps(d), (s, d))
     s, d = p["requester"]("POST", "/api/v1/Request/_import", [{"reference": f"ZERO-{RUN}-3", "total": "0"}])
     check("LRP-01 a requester may not import at all", s == 403, (s, d))
     s, d = p["admin"]("POST", "/api/v1/Request/_import", [{"reference": f"ZERO-{RUN}-3", "total": "0"}])

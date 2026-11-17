@@ -132,7 +132,7 @@ impl Kernel {
         .fetch_one(&mut *tx)
         .await?;
         out.push(match (owner, in_database && in_public) {
-            (true, _) => Finding::ok("database.role", "an ordinary role (no superuser, no BYPASSRLS) that owns its database"),
+            (true, _) => Finding::ok("database.role", "a role that owns its database (the start refuses a superuser or a BYPASSRLS role)"),
             (false, true) => Finding::ok("database.role", "an ordinary role that does not own the database, and may create in it and in its public schema"),
             (false, false) => Finding::blocker(
                 "database.role",

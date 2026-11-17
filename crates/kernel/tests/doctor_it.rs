@@ -225,7 +225,7 @@ async fn scenario() {
     assert!(pool.detail.contains(&format!("can hold {own} at once")) && own as usize >= share + 4, "{pool:?}");
 
     // A release older than its database does not start on it: a migration it does not know was applied by a
-    // newer one, and going back that way is refused (FEO-080); the way back is a restore or upgrade_back.
+    // newer one, and going back that way is refused (FEO-080); the way back is a restore.
     sqlx::query("insert into _sqlx_migrations (version, description, success, checksum, execution_time) values (29991231000000, 'from a newer release', true, '\\x00', 0)")
         .execute(&k.db.pool)
         .await

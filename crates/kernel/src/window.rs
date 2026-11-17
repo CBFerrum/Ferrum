@@ -10,8 +10,7 @@
 //! * migrate: sqlx refuses applied migrations it does not know (`VersionMissing`), and the guest has none to add;
 //! * sync the schema: it would record its own, older catalog fingerprint, after which a newer server started with
 //!   `FERRUM_MIGRATE_AT_START=false` refuses to start ("synced for other packages"); `ddl::sync` refuses it;
-//! * the server's start-up writes: the upgrade steps' marker (`upgrades_done` names this build's steps, and the newer
-//!   build's check then fails), compiled apps recorded at this build's versions (`ensure_native`), interfaces
+//! * the server's start-up writes: compiled apps recorded at this build's versions (`ensure_native`), interfaces
 //!   registered for its versions (a fixed version such as the shell's `1.0.0` would then serve the older files to
 //!   every server). They run under [`Kernel::hold_start`];
 //! * take work a newer build wrote: events and jobs carry the date of the build that wrote them (`build_date`), and
@@ -494,8 +493,8 @@ impl Kernel {
         Ok(Lowered { removed, compatible_from })
     }
 
-    /// Before the start-up writes that would put older things back if an older build did them (upgrade steps, compiled
-    /// apps and their interfaces): `Some` while this build is not older than the database, held so that no newer build
+    /// Before the start-up writes that would put older things back if an older build did them (compiled apps and their
+    /// interfaces): `Some` while this build is not older than the database, held so that no newer build
     /// migrates in between; `None` for a guest, which skips them. Refused when a newer build that does not let this
     /// one in has migrated the database since this one started.
     pub async fn hold_start(&self) -> Result<Option<StartHold>> {

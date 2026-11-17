@@ -428,10 +428,6 @@ async fn toggle_custom(Auth(ctx): Auth, State(app): State<AppContext>, Path(id):
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-async fn export_custom(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
-    Ok(Json(app_state(&app)?.kernel.export_customizations(&ctx).await?).into_response())
-}
-
 /// `GET /api/customize/definition/{Entity}`: a custom entity's definition as it is now, for a designer to start from.
 /// A package's entity, which has no definition to replace, answers the approval policies its packages declare
 /// (`{entity, package, approvals: [{on, policy, source: "package", package}]}`); a custom entity's answer carries them as
@@ -446,11 +442,6 @@ pub fn definition_of(k: &Kernel, ctx: &Ctx, entity: &str) -> ApiResult<Value> {
         Some(e) if !e.custom && ctx.is_admin => Ok(k.package_approvals_of(ctx, entity)?),
         _ => Ok(k.custom_definition(ctx, entity)?),
     }
-}
-
-async fn import_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(bundle): Json<Value>) -> ApiResult<Response> {
-    let n = app_state(&app)?.kernel.import_customizations(&ctx, &bundle).await?;
-    Ok(Json(json!({"imported": n})).into_response())
 }
 
 // ── packs ──
@@ -1038,10 +1029,8 @@ pub fn routes() -> Routes {
         .add("/admin/plugins/{id}/enabled", put(toggle_plugin))
         .add("/admin/plugins/{id}/config", put(configure_plugin).patch(configure_plugin))
         .add("/customize", get(list_custom).post(add_custom))
-        .add("/customize/export", get(export_custom))
         .add("/customize/batch", post(batch_custom))
         .add("/customize/definition/{entity}", get(custom_definition))
-        .add("/customize/import", post(import_custom))
         .add("/admin/pack", get(get_pack))
         // A pack is at most 5 MiB; a larger body still reaches the pack's own refusal, which says why.
         .add("/admin/pack/plan", post(post_pack_plan).layer(DefaultBodyLimit::max(2 * ferrum_kernel::pack::MAX_PACK)))

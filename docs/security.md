@@ -12,7 +12,10 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   single sign-on in flight) runs in an explicit system context.
 * **Who acts**: people (a password with optional two-factor sign-in, or single sign-on), API keys,
   OAuth clients (MCP assistants), and plugins, each through its own service user whose role is
-  exactly its declared permissions. Every change lands in the audit trail with who made it.
+  exactly its declared permissions. Every change to a record lands in the audit trail with who made it,
+  as do administrators' changes to people's roles (added, removed, until when), kind, keys, two-factor
+  sign-in and leaving; switching a person off or on (journalled outside the database instead), the record
+  scopes they are held to and what a role grants are not audit events.
 * **What they may do**: roles grant read, write, create, delete, submit, cancel, export and import
   per entity, narrowed to the user's own records, to record scopes (companies) or to records whose
   fields hold given values, and per field group. The kernel enforces them on every path: the
@@ -325,8 +328,10 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   declare (`Vault::field`).
 * The audit trail is hash-chained (per record, with a daily anchor per workspace), and database
   triggers refuse any change to it but the redaction personal-data erasure makes, which keeps each
-  event's place and hash. The role Ferrum connects as owns those tables; a copy out of its reach is
-  what the operator's sink gives.
+  event's place and hash. That holds against the application's other code paths, not against the
+  role Ferrum connects as: it owns those tables and their triggers, so whoever holds it can rewrite
+  rows, hashes and anchors alike. Tamper evidence against that role is the operator's audit sink, a
+  copy out of its reach.
 * API responses carry `Cache-Control: no-store`, so browsers keep neither stale nor private copies.
 * Request logs record the path without the query string: queries carry WOPI tokens, OAuth and
   sign-on codes and signed grants.

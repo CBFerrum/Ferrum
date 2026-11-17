@@ -1,56 +1,23 @@
-//! Today's web app's addresses (`/app/…`), now that the shell and apps' own interfaces answer
-//! every page (docs/plan/apps-ui.md §14): each goes to its new home with its query, so bookmarks,
-//! links in mail and the single sign-on return address providers have registered (`/app/login`)
-//! keep working. Its offline worker is replaced by one that removes itself.
+//! The two `/app/…` addresses still given out: `/app/login`, the single sign-on return address providers have
+//! registered (auth.rs builds it), and `/app/e/{entity}[/{id}]`, which the interface's administration pages and
+//! Studio's dashboard links use. Everything else under `/app` goes to `/`.
 
 use axum::extract::Request;
-use axum::http::{HeaderValue, Uri, header};
+use axum::http::Uri;
 use axum::response::{IntoResponse, Redirect, Response};
 use loco_rs::controller::Routes;
 
-/// Where an address of today's web app (its path after `/app`, as sent) lives now. Segments
-/// keep their percent-encoding; every result is a path on this host.
+/// Where an address under `/app` (its path after `/app`, as sent) leads. Segments keep their percent-encoding;
+/// every result is a path on this host.
 pub fn new_home(path: &str) -> String {
     let seg: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let rest = |from: usize| seg.get(from..).unwrap_or_default().join("/");
     match seg.as_slice() {
-        [] => "/".into(),
         ["login"] => "/login".into(),
-        ["oauth", "authorize"] => "/oauth/authorize".into(),
         ["e", entity] => format!("/open/{entity}"),
         ["e", entity, id] => format!("/open/{entity}/{id}"),
-        ["apps"] => "/store/".into(),
-        ["apps", app, "settings"] => format!("/store/apps/{app}/settings"),
-        ["admin", ..] => format!("/admin/{}", rest(1)),
-        ["settings", ..] => "/account/".into(),
-        ["customize", ..] => format!("/data/{}", rest(0)),
-        // Studio's and the Point of Sale's own interfaces; ERP's has the rest.
-        ["studio", ..] => format!("/studio/{}", rest(1)),
-        ["dashboards" | "spaces", ..] => format!("/studio/{}", rest(0)),
-        ["pos", ..] => "/pos/".into(),
-        ["r", _] | ["x", ..] => format!("/erp/{}", rest(0)),
-        // Comms', Drive's and Docs' pages, and the pages people outside the workspace open by link.
-        ["mail" | "chat" | "meet" | "drive", ..] => format!("/{}/{}", seg[0], rest(1)),
-        ["calendar", ..] => "/calendar/".into(),
-        ["edit", ..] => format!("/drive/edit/{}", rest(1)),
-        ["doc", file] => format!("/docs/d/{file}"),
-        ["doc" | "docs", ..] => "/docs/".into(),
-        ["s", ..] => format!("/drive/s/{}", rest(1)),
         _ => "/".into(),
     }
 }
-
-/// Replaces today's web app's worker: clears its cache, removes itself and reloads its pages,
-/// which come here and go on to their new addresses.
-const WORKER: &str = r#"self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (event) => {
-  event.waitUntil((async () => {
-    await caches.delete("ferrum-shell");
-    await self.registration.unregister();
-    for (const client of await self.clients.matchAll({ type: "window" })) client.navigate(client.url);
-  })());
-});
-"#;
 
 async fn moved(req: Request) -> Response {
     answer(req.uri())
@@ -60,14 +27,6 @@ async fn moved(req: Request) -> Response {
 /// takes the slash off this module's routes).
 pub fn answer(uri: &Uri) -> Response {
     let path = uri.path().strip_prefix("/app").unwrap_or_default();
-    if path == "/sw.js" {
-        let mut res = WORKER.into_response();
-        let h = res.headers_mut();
-        h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/javascript; charset=utf-8"));
-        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-        h.insert("service-worker-allowed", HeaderValue::from_static("/app/"));
-        return res;
-    }
     // A provider's answer to signing in again (a step-up) comes to the return address registered with it, as a
     // sign-in's does: its state says which it is.
     if path == "/login"
@@ -79,7 +38,7 @@ pub fn answer(uri: &Uri) -> Response {
     Redirect::to(&format!("{}{q}", new_home(path))).into_response()
 }
 
-/// What load balancers and monitors asked the web app's image (`/healthz`).
+/// What load balancers and monitors ask (`/healthz`, deploy/smoke.sh).
 async fn healthz() -> &'static str {
     "ok\n"
 }
@@ -94,35 +53,15 @@ mod tests {
     use super::new_home;
 
     #[test]
-    fn old_addresses_go_to_their_new_homes() {
+    fn the_addresses_still_given_out_lead_to_their_pages() {
         for (old, new) in [
             ("", "/"),
             ("/", "/"),
             ("/login", "/login"),
-            ("/oauth/authorize", "/oauth/authorize"),
             ("/e/SalesInvoice", "/open/SalesInvoice"),
             ("/e/Sales%20Invoice/01a1", "/open/Sales%20Invoice/01a1"),
             ("/e/SalesInvoice/01a1/extra", "/"),
-            ("/r/sales_register", "/erp/r/sales_register"),
-            ("/apps", "/store/"),
-            ("/apps/crm/settings", "/store/apps/crm/settings"),
-            ("/admin", "/admin/"),
-            ("/admin/users", "/admin/users"),
-            ("/settings", "/account/"),
-            ("/customize/Customer/form", "/data/customize/Customer/form"),
-            ("/studio/reports/42", "/studio/reports/42"),
-            ("/studio", "/studio/"),
-            ("/dashboards/d1", "/studio/dashboards/d1"),
-            ("/x/board/main", "/erp/x/board/main"),
-            ("/pos", "/pos/"),
-            ("/mail/inbox/7", "/mail/inbox/7"),
-            ("/meet/guest/acme/k1", "/meet/guest/acme/k1"),
-            ("/calendar/2026-10", "/calendar/"),
-            ("/drive", "/drive/"),
-            ("/edit/f1/sheets", "/drive/edit/f1/sheets"),
-            ("/doc/f2", "/docs/d/f2"),
-            ("/docs", "/docs/"),
-            ("/s/acme/tok", "/drive/s/acme/tok"),
+            ("/admin/users", "/"),
             ("//evil.example/x", "/"),
             ("/nothing", "/"),
         ] {
@@ -136,7 +75,7 @@ mod tests {
         let to = |uri: &str| super::answer(&uri.parse().unwrap()).headers().get("location").unwrap().to_str().unwrap().to_string();
         assert_eq!(to("/app/login?code=c1&state=su.AbC-_9"), "/api/auth/step-up/provider/back?code=c1&state=su.AbC-_9");
         assert_eq!(to("/app/login?code=c1&state=AbC-_9"), "/login?code=c1&state=AbC-_9", "a sign-in's");
-        assert_eq!(to("/app/settings?state=su.x"), "/account/?state=su.x", "only the return address");
+        assert_eq!(to("/app/settings?state=su.x"), "/?state=su.x", "only the return address");
         assert_eq!(
             step_up_return(Some("state=su%2Ex&code=c")).as_deref(),
             Some("/api/auth/step-up/provider/back?state=su%2Ex&code=c"),

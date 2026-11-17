@@ -67,7 +67,8 @@ its own gates.
 
 A workspace administrator sees everything here and does what a Device Administrator does without
 these roles, but issues, stops, approves, refuses and reconciles only with the role itself, which an
-administrator can give themselves.
+administrator can give themselves: the change of roles is an audit event (`User`, `roles`) naming who made
+it, whose roles changed, which were added and removed, and until when.
 
 Agents hold none of these. They read, and they propose; a proposal runs only when a person approves
 it (`crates/ops/src/mcp.rs`).

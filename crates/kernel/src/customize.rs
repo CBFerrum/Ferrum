@@ -1,6 +1,6 @@
 //! Zero-code customization: tenant overlays are validated against the effective schema *before*
-//! they are stored, can be disabled (rollback) at any time, and can be exported/imported as a
-//! change-set to promote sandbox work into production.
+//! they are stored, can be disabled (rollback) at any time, and travel to another workspace in a
+//! pack (pack.rs).
 //!
 //! A customization remembers what it replaced. When a package's upgrade changes that same thing the
 //! two have parted ways, and [`Kernel::customization_conflicts`] says so: an upgrade neither undoes a
@@ -134,11 +134,9 @@ pub fn parse_batch(body: &[u8]) -> std::result::Result<(Vec<NewCustomization>, b
 enum Duplicates {
     /// Saved again (one customization at a time).
     Save,
-    /// Left out (a change set's import).
-    Skip,
     /// Refused (a batch: a screen's "nothing changed" is not hidden).
     Refuse,
-    /// Left out, as an import does, and a custom entity the workspace already defines otherwise is
+    /// Left out, and a custom entity the workspace already defines otherwise is
     /// redefined, under the same guards (a pack's install, pack.rs).
     Merge,
 }
@@ -518,7 +516,7 @@ impl Kernel {
         Ok(ids)
     }
 
-    /// A pack's customizations, saved in its install's transaction as an import saves a change set (pack.rs):
+    /// A pack's customizations, saved in its install's transaction (pack.rs):
     /// what each did, and the schema they leave, for the rest of the install to work against. The version
     /// is bumped when anything was saved; the caller drops the caches once it commits.
     pub(crate) async fn merge_customizations(&self, ctx: &Ctx, tx: &mut crate::db::Tx, items: Vec<NewCustomization>) -> Result<(Vec<Saved>, Schema)> {
@@ -528,7 +526,7 @@ impl Kernel {
         }
         Registry::bump_version(tx, ctx.tenant).await?;
         let mut schema = self.build(ctx, &overlays)?;
-        (schema.version, schema.fy_start_month, schema.shell_v2) = (ctx.schema.version, ctx.schema.fy_start_month, ctx.schema.shell_v2);
+        (schema.version, schema.fy_start_month) = (ctx.schema.version, ctx.schema.fy_start_month);
         schema.timezone.clone_from(&ctx.schema.timezone);
         Ok((saved, schema))
     }
@@ -582,7 +580,7 @@ impl Kernel {
                 }
             }
             if duplicates != Duplicates::Save && active.iter().any(|(e, o)| *e == target && *o == raw) {
-                if matches!(duplicates, Duplicates::Skip | Duplicates::Merge) {
+                if duplicates == Duplicates::Merge {
                     saved.push((label_of(&target, &raw), "unchanged"));
                     continue;
                 }
@@ -767,28 +765,5 @@ impl Kernel {
             a["workspace"] = now;
         }
         Ok(json!({"entity": entity, "package": ent.package, "approvals": approvals}))
-    }
-
-    /// Change-set export: every active customization in order.
-    pub async fn export_customizations(&self, ctx: &Ctx) -> Result<Value> {
-        let rows = self.list_customizations(ctx).await?;
-        let ops: Vec<Value> = rows.into_iter().filter(|r| r.is_active).map(|r| json!({"entity": r.entity, "op": r.op, "note": r.note})).collect();
-        Ok(json!({"format": "ferrum.changeset/1", "packages": ctx.schema.packages, "customizations": ops}))
-    }
-
-    /// Change-set import: validated as a whole, applied atomically, skipping exact duplicates.
-    pub async fn import_customizations(&self, ctx: &Ctx, bundle: &Value) -> Result<usize> {
-        require_admin(ctx)?;
-        if bundle.get("format").and_then(Value::as_str) != Some("ferrum.changeset/1") {
-            return Err(Error::invalid("not a ferrum.changeset/1 bundle"));
-        }
-        let items = bundle.get("customizations").and_then(Value::as_array).ok_or_else(|| Error::invalid("customizations missing"))?;
-        let mut new = Vec::new();
-        for it in items {
-            let entity = it.get("entity").and_then(Value::as_str).ok_or_else(|| Error::invalid("entity missing"))?.to_string();
-            let op = serde_json::from_value(it.get("op").cloned().ok_or_else(|| Error::invalid("op missing"))?).map_err(|e| Error::invalid(e.to_string()))?;
-            new.push(NewCustomization { entity, op, note: it.get("note").and_then(Value::as_str).map(str::to_string) });
-        }
-        Ok(self.save_customizations(ctx, new, Duplicates::Skip, false, false).await.map_err(|(_, e)| e)?.len())
     }
 }

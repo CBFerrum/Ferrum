@@ -42,7 +42,7 @@ command -v docker > /dev/null 2>&1 && ok "docker is installed" || blocker "docke
 docker compose version > /dev/null 2>&1 && ok "docker compose is available" || blocker "docker compose is not available" "Install the Compose plugin."
 
 if [ ! -f .env ]; then
-  blocker "deploy/.env does not exist" "Run deploy/preflight.sh --generate, then set PUBLIC_URL and MAILER_* in it."
+  blocker "deploy/.env does not exist" "Run deploy/preflight.sh --generate, then set FERRUM_IMAGE, PUBLIC_URL and MAILER_* in it."
 else
   case "$(ls -l .env | cut -c5-10)" in
     ------) ok "deploy/.env is readable only by its owner" ;;
@@ -55,6 +55,10 @@ else
       ok "$name is set"
     fi
   done
+  case "$(value FERRUM_IMAGE)" in
+    "" | *"<commit>"* | *:latest) blocker "FERRUM_IMAGE is not pinned" "Set it to a commit's tag, ghcr.io/cbferrum/ferrum:<full SHA> (docs/operations.md, Images): Compose refuses to start without it." ;;
+    *) ok "FERRUM_IMAGE is pinned" ;;
+  esac
   url=$(value PUBLIC_URL)
   case "$url" in
     https://*)

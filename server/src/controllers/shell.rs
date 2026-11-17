@@ -491,7 +491,7 @@ async fn page(
             let origin = shell::request_host(&headers).map(|h| format!("{}://{h}", if st.shell.secure { "https" } else { "http" }));
             return Ok(super::lists::page(&st.kernel, &st.public_limiter, &headers, rest.unwrap_or_default(), bound, &q, origin.as_deref()).await);
         }
-        // Today's web app's addresses (controllers/legacy.rs); `/app/` comes here, slash and all.
+        // The `/app/…` addresses still given out (controllers/legacy.rs); `/app/` comes here, slash and all.
         "app" => return Ok(super::legacy::answer(&uri)),
         // The assistant's page (controllers/assistant.rs), the side panel's and a phone's.
         "assistant" if rest.is_none_or(str::is_empty) => return super::assistant::page(&st, &headers, &uri).await,

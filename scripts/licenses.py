@@ -74,7 +74,10 @@ def accepted(expression: str) -> bool:
 
 
 def image_of(value: str) -> str:
-    """The repository an `image:` names, its `${VAR:-default}` resolved to the default, without tag or digest."""
+    """The repository an `image:` names, its `${VAR:-default}` resolved to the default, without tag or digest; none
+    for `${VAR:?…}`, an image the operator must name."""
+    if re.match(r"\$\{[A-Z0-9_]+:\?", value.strip().strip("'\"")):
+        return ""
     value = re.sub(r"\$\{[A-Z0-9_]+:-([^}]*)\}", r"\1", value.strip().strip("'\""))
     value = value.split("@", 1)[0]
     last = value.rsplit("/", 1)
@@ -105,7 +108,7 @@ def refused_images(files: dict, engines: list) -> list:
         operand = r"\s*imageName:\s*(\S+)"
         for line in text.splitlines():
             m = re.match(pattern, line) or re.match(operand, line)
-            if m and image_of(m.group(1)) not in approved:
+            if m and image_of(m.group(1)) and image_of(m.group(1)) not in approved:
                 bad.append(f"{path}: {image_of(m.group(1))} is not an engine approved in docs/registry/engines.yaml")
     return bad
 
@@ -116,6 +119,7 @@ def deployment_files() -> dict:
 
 def self_test() -> None:
     assert image_of("${FERRUM_IMAGE:-ghcr.io/cbferrum/ferrum:latest}") == "ghcr.io/cbferrum/ferrum"
+    assert image_of("${FERRUM_IMAGE:?set") == "", "an image the operator must name"
     assert image_of("postgres:17") == "postgres"
     assert image_of("localhost:5000/x/y:1@sha256:00") == "localhost:5000/x/y"
     engine = {"image": "postgres", "name": "PostgreSQL", "license": "PostgreSQL", "read": "COPYRIGHT", "terms": "none", "decided_in": "x"}

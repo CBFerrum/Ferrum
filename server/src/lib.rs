@@ -32,7 +32,6 @@ pub mod state;
 pub mod store;
 pub mod tasks;
 pub mod telemetry;
-pub mod upgrade;
 pub mod zone;
 
 /// Document postings run deep chains of async hooks; generous stacks keep unoptimized builds

@@ -247,27 +247,15 @@ checks (`type`, `description`, `properties`, `required`, `additionalProperties: 
 `maxLength`, `maxItems`; any other keyword is refused). At most 20.
 
 **`contributes`**: point → items, each with an `id` (lower-case letters, digits, `_`) unique within the point, 1 to
-50 items a point, contributions to at most 20 points. A point is one of: a screen slot (`ui.page`, `ui.widget`,
-`ui.panel`, `ui.settings`), a shell point (below), one of the app's own points, or a point of an app in `requires`.
-Anything else: `contributes: 'crm.quote_source' is not a screen slot (…), a shell point (…), an extension point of
-this app, or one of an app in requires`.
-
-**Screen slots** are for `wasm` and `meta` apps (`contributes.ui.page: native apps put their screens in the web
-app`): a page under `ui/` in the bundle.
-
-| Slot | Item |
-|---|---|
-| `ui.page` | `{id, title, entry: ui/….html, icon?}` |
-| `ui.widget` | `{id, title, entry, size?: [width, height]}`, each 1 to 12 grid cells |
-| `ui.panel` | `{id, title, entity, entry}` |
-| `ui.settings` | `{id, entry}`, one only |
+50 items a point, contributions to at most 20 points. A point is one of: a shell point (below), one of the app's own points, or a point of an app in `requires`.
+Anything else: `contributes: 'crm.quote_source' is not a shell point (…), an extension point of this app, or one of
+an app in requires`.
 
 ### The `ui` section and the shell's points
 
 ```yaml
 ui:
   dist: ui/dist          # a directory of built files with an index.html; not under packages/ or assets/
-  shell: ">=1.0"         # the shell API it needs (default >=1.0)
   family: Sales          # optional: the family it heads; an add-on names none
   csp:                   # origins beyond the workspace's host, by kind, at most 10 a kind
     connect: ["setting:meet_url", "wss://media.example.com"]
@@ -341,7 +329,6 @@ site can open is the site runtime's to say; this checks names only. See
 | A field the server does not know | `unknown field …: this app needs a newer Ferrum` | parser |
 | `parent` not in `requires` | `parent 'x' must also be listed in requires` | `validate_extensions` |
 | `route` without `ui` | `a route needs the app's own interface (a ui section)` | `shell::check` |
-| A screen slot in a native app | `native apps put their screens in the web app` | `validate_extensions` |
 | `operator_settings` on a wasm app | `operator_settings: only an app compiled into the server reads them` | parser and `check_apps.py` |
 | `operator_settings` with `platform: ">=0.3, <0.4"` | `operator_settings need the platform that reads them` | `check_apps.py` |
 | A declared variable read with `std::env::var` | `… reads FERRUM_X with std::env::var …` | `check_apps.py` |

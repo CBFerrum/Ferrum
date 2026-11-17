@@ -4,7 +4,7 @@
 //! finds what only the database can find and keeps nothing. A custom entity with records is
 //! redefined: fields, lines, a unique key and a total come; a field goes and comes back with its
 //! values; what would damage records is refused; switching a redefinition off is its undo; and a
-//! change set holding redefinitions gives another workspace the same schema.
+//! pack holding redefinitions gives another workspace the same schema.
 
 use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::tenant::NewTenant;
@@ -66,6 +66,16 @@ impl W {
     async fn customizations(&self) -> usize {
         self.k.list_customizations(&self.admin().await).await.unwrap().len()
     }
+}
+
+/// The workspace's pack, installed in `to`.
+async fn carry(k: &Arc<Kernel>, from: &Ctx, to: &W) -> Value {
+    let opts = ferrum_kernel::pack::ExportOptions { name: "work".into(), label: "Work".into(), version: 1, records: vec![] };
+    let pack = k.export_pack(from, &opts).await.expect("export");
+    let to = to.admin().await;
+    let plan = k.plan_pack(&to, &pack).await.expect("plan");
+    k.install_pack(&to, &pack, plan["digest"].as_str().unwrap()).await.expect("install");
+    pack
 }
 
 async fn workspace(k: &Arc<Kernel>, slug: &str) -> W {
@@ -163,10 +173,9 @@ async fn scenario() {
     let menus: Vec<_> = rows.iter().filter(|r| r.op["op"] == "define_module").collect();
     assert_eq!((menus[0].entity.as_str(), menus[0].superseded_by), ("x_work", Some(menus[1].id)), "the row is the menu's, marked replaced");
     assert_eq!(menus[1].superseded_by, None);
-    // Exported and imported elsewhere with the entities it names; removed.
-    let set = k.export_customizations(&admin).await.unwrap();
+    // Carried elsewhere by a pack with the entities it names; removed.
     let delta = workspace(&k, "delta").await;
-    assert!(k.import_customizations(&delta.admin().await, &set).await.unwrap() > 0);
+    carry(&k, &admin, &delta).await;
     let there = delta.admin().await;
     let menu_there = there.schema.modules.iter().find(|m| m.name == "x_work").expect("the menu came");
     assert_eq!((menu_there.label.as_str(), menu_there.create.clone()), ("Our work", vec!["XTask".to_string()]));
@@ -263,9 +272,9 @@ async fn scenario() {
     assert_eq!(w.count("select count(*) from custom_key where tenant_id = $1 and entity = 'XOrder'").await, 2, "with its key");
     assert!(k.insert(&admin, "XOrder", obj(json!({"code": "B", "region": "south"}))).await.is_err());
 
-    // ───────────── a change set with redefinitions gives another workspace the same schema ─────────────
-    // A child entity switched off and defined again sorts after the parent that uses it: the export's
-    // order does not pass operation by operation, yet the workspace's own export imports.
+    // ───────────── a pack with redefinitions gives another workspace the same schema ─────────────
+    // A child entity switched off and defined again sorts after the parent that uses it: the pack's
+    // order does not pass operation by operation, yet the workspace's own pack installs.
     let part = entity("XPart", "child", json!([{"name": "sku", "type": "data"}]));
     let kit = entity("XKit", "master", json!([{"name": "parts", "type": "table", "of": "XPart"}]));
     w.batch(vec![op("define_entity", part.clone()), op("define_entity", kit.clone())], false).await.unwrap();
@@ -275,20 +284,20 @@ async fn scenario() {
     w.batch(vec![op("define_entity", part.clone())], false).await.expect("defined again, after XKit");
     let admin = w.admin().await;
     assert!(admin.schema.entity("XKit").is_some_and(|e| e.children.contains_key("parts")));
-    let set = k.export_customizations(&admin).await.unwrap();
+    let beta = workspace(&k, "beta").await;
+    let opts = ferrum_kernel::pack::ExportOptions { name: "work".into(), label: "Work".into(), version: 1, records: vec![] };
+    let set = k.export_pack(&admin, &opts).await.unwrap();
     let order: Vec<&str> =
         set["customizations"].as_array().unwrap().iter().map(|c| c["entity"].as_str().unwrap()).filter(|e| ["XKit", "XPart"].contains(e)).collect();
-    assert_eq!(order, ["XKit", "XPart"], "the export lists the parent first");
-    let beta = workspace(&k, "beta").await;
+    assert_eq!(order, ["XKit", "XPart"], "the pack lists the parent first");
     let ops: Vec<NewCustomization> = serde_json::from_value(set["customizations"].clone()).unwrap();
     let stepwise = beta.batch(ops, true).await;
     assert!(matches!(&stepwise, Err((Some(_), e)) if e.to_string().contains("XPart")), "one at a time, this order is refused: {stepwise:?}");
-    assert!(k.import_customizations(&beta.admin().await, &set).await.unwrap() > 0);
+    carry(&k, &admin, &beta).await;
     let custom = |c: &Ctx| -> Value {
         c.schema.canonical()["entities"].as_object().unwrap().iter().filter(|(n, _)| n.starts_with('X')).map(|(n, v)| (n.clone(), v.clone())).collect()
     };
     assert_eq!(custom(&beta.admin().await), custom(&w.admin().await));
-    assert_eq!(k.import_customizations(&beta.admin().await, &set).await.unwrap(), 0, "an import skips what is already active");
 }
 
 /// The definition a designer starts from is the effective one: sent back unchanged as a redefinition, after

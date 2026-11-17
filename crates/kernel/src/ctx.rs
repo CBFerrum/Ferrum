@@ -411,7 +411,7 @@ impl PermSet {
         }
     }
 
-    /// What an app's screen may do for this user (docs/plugins.md, "Screens"): the user's access
+    /// What an app's screen may do for this user (docs/plugins.md, "Pages an app brings"): the user's access
     /// narrowed to what the app declared (entity or `*` → actions as its consent lists them:
     /// `read`, `write (own records)`, `read field group <g>`...) and to every action on `own`, the
     /// app's own entities. Field groups only as declared; never administrator power.

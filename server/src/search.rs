@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// How long one entity may take; slower ones are left out of this answer (`partial`).
+/// How long one entity may take, its statement's timeout too; slower ones are left out of this answer (`partial`).
 const PER_ENTITY: Duration = Duration::from_millis(300);
 /// How long the whole search may take: what has not finished by then is left out (`partial`), and stopped.
 const DEADLINE: Duration = Duration::from_millis(800);
@@ -113,7 +113,9 @@ pub async fn search(k: &Arc<Kernel>, ctx: &Ctx, q: &str, limit: usize) -> Result
             // A record headed by a link (an appointment by its patient) is shown by what it links to.
             let linked = ent.headed_by_link();
             let query = ListQuery { search: Some(q.clone()), fields: Some(fields), sort: Some("updated_at desc".into()), limit: Some(PER_ENTITY_ROWS), with_titles: linked, ..Default::default() };
-            let page = match tokio::time::timeout(PER_ENTITY, k.list(&ctx, &name, &query)).await {
+            // Its statement ends at its own budget too: what the search no longer waits for (left out, past the deadline, or
+            // the request dropped) is stopped by PostgreSQL, not left running and holding its connection.
+            let page = match tokio::time::timeout(PER_ENTITY, k.list_with_timeout(&ctx, &name, &query, PER_ENTITY.as_millis() as u64)).await {
                 Ok(Ok(page)) => page,
                 // Refused or failed (a field the person may not read, a broken custom entity): left out.
                 Ok(Err(_)) => return Some((name, None)),

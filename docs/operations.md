@@ -62,7 +62,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `kms_namespace` | `FERRUM_KMS_NAMESPACE` | text |  | installation, next start | The Vault namespace of `kms_transit`. |
 | `bootstrap_token` | `FERRUM_BOOTSTRAP_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it. |
 | `metrics_token` | `FERRUM_METRICS_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | `/metrics` answers only `Authorization: Bearer <token>`. Required in production: while none is set, `/metrics` answers nobody (`401`); in development and tests it is open without one. |
-| `migrate_at_start` | `FERRUM_MIGRATE_AT_START` | bool | `true` | installation, next start | Default `true`: the server migrates the database, syncs the schema and runs the upgrade steps as it starts. `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe. Either way, on a database a newer build migrated, the server starts as a guest that changes nothing, or refuses (*Rolling back and the two-version window*). |
+| `migrate_at_start` | `FERRUM_MIGRATE_AT_START` | bool | `true` | installation, next start | Default `true`: the server migrates the database and syncs the schema as it starts. `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe. Either way, on a database a newer build migrated, the server starts as a guest that changes nothing, or refuses (*Rolling back and the two-version window*). |
 | `db_max_connections` | `FERRUM_DB_MAX_CONNECTIONS` | int | `30` | each pool, next start | Pool size per replica (default 30). The replica's own job workers and event loops hold at most a quarter of it and 8 more at once (15 of 30): the event dispatcher and the webhook sender take a quarter together, however much is queued. Below 11 they can hold it all and requests wait behind them; the server warns as it starts, and `ferrum task doctor` says so. |
 | `database_direct_url` | `FERRUM_DATABASE_DIRECT_URL` | text |  | secret: the environment | With a pooler: PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler*. A secret while the address holds the password. |
 | `database_read_url` | `FERRUM_DATABASE_READ_URL` | text |  | secret: the environment | A replica that reports and the reading of exports may use, while it is within the lag limit and has replayed what the primary had committed when the read began; otherwise they read from the primary. Empty (the default): none. See "Deployment shapes", *Read address*. A secret while the address holds the password. |
@@ -383,7 +383,7 @@ What one replica holds, with the defaults (counted from the code on 14 November 
 | The settings' first read | `DATABASE_URL` | 2 | At start, before the server's own pools open: reads the `setting` table (*Settings in the database*), then closes. Safe through a pooler |
 | Listeners: metadata, users, plugin sockets, live updates, co-editing | the direct address | 5 | One each, for as long as the replica runs |
 | Session locks: apps' upkeep, app stores' revocations | the direct address | 3 | One per app whose upkeep runs (`FERRUM_UPKEEP_CONCURRENCY`, 2), one for revocations, while each runs |
-| At start: the two-version window's lock, then the migrations', the schema sync's and the upgrade steps' locks | the direct address | 2 | Before the replica serves or works: the window's lock is a connection outside every pool, the others one at a time |
+| At start: the two-version window's lock, then the migrations' and the schema sync's locks | the direct address | 2 | Before the replica serves or works: the window's lock is a connection outside every pool, the others one at a time |
 | The Temporal worker (`TEMPORAL_ADDRESS`) | none: it talks to Temporal | 0 | |
 | The region witness (`FERRUM_AUTHORITY_WITNESS_URL`) | another database | 2 there | When set |
 
@@ -455,7 +455,8 @@ Past the limit a request waits for its pool and answers 503; nothing queues with
    with `india`, GST templates are set up automatically) and a fiscal year.
 
 Single host: `cp deploy/.env.example deploy/.env`, set the database's two passwords (`POSTGRES_PASSWORD`,
-`FERRUM_DB_PASSWORD`; nothing else is required), then
+`FERRUM_DB_PASSWORD`) and the image, `FERRUM_IMAGE`, to a commit's tag (*Images*; Compose refuses to start
+without it); nothing else is required. Then
 `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
 
 **Installing with the Helm chart.** `deploy/helm/ferrum` renders what `deploy/k8s` renders, so one command
@@ -530,7 +531,8 @@ them with `gh attestation verify oci://<image>@<digest> --repo CBFerrum/Ferrum`.
 release only after it also passes the Kubernetes qualification. The server's image answers every page: it carries the shell's and Studio's interfaces,
 built from Ferrum-Frontend at the commit its Dockerfile pins (`FRONTEND_REV`), and apps' interfaces
 come compiled into their crates; Ferrum-Frontend publishes no image of its own. On a single host,
-pin them with `FERRUM_IMAGE` and `FERRUM_EDITORS_IMAGE`. Deploy a commit's tag and change it to upgrade: `latest`
+pin them with `FERRUM_IMAGE` and `FERRUM_EDITORS_IMAGE`: the Compose files have no default for either and
+refuse to start without them (`scripts/local_ci.sh audit` fails a Compose file that gives one). Deploy a commit's tag and change it to upgrade: `latest`
 moves, so pods started later (a rescheduled replica, a new node) would run another release. If
 pulling needs signing in (private packages, or your own mirror), use a token that may read
 packages: `docker login ghcr.io` on a single host; on Kubernetes,
@@ -729,54 +731,6 @@ the operators' install from one has not run on a cluster without internet.
   `maxUnavailable: 0` keeps capacity during the rollout.
 * Rolling back the image is safe within the two-version window (*Rolling back and the two-version window*, below). If a release notes a data migration, take an
   on-demand backup first (below).
-* Some releases move existing workspaces onto a new package layout with a one-time step at start-up
-  (one replica runs it; it is recorded per workspace). The first, `core-split`
-  ([plan](plan/apps-ui.md) §13), comes with the release that split `core` into `core`, `parties`
-  (customers, suppliers) and `products` (items, price lists), and gave ERP's packages the accounting,
-  stock and buying records and fields `core` had:
-  * a workspace with any of ERP's packages gets all five (accounting, inventory, buying, selling,
-    manufacturing), so it keeps every record and field it had;
-  * one without them gets `parties` and `products` only if it has customers, suppliers, items or
-    item prices of its own;
-  * tables and columns stay where they were.
-
-  `crm-erp` comes with CRM 0.2.0, which works without ERP: a workspace with CRM and ERP's selling
-  gets the connector package `crm_erp` (quotations' taxes, sales orders made from quotations, the
-  orders' link to them), and contacts and addresses are the platform's `contacts`. `helpdesk-erp`
-  comes with Helpdesk 0.2.0: a workspace with Helpdesk and selling gets `helpdesk_erp` (a ticket's
-  sales invoice, a maintenance contract's sales order). `hr-erp` comes with HR 0.2.0: a workspace
-  with HR and accounting gets `hr_erp` (expense claims and advances) and `payroll_erp` (payroll's
-  accounts and postings). `projects-erp` comes with Projects 0.2.0: a workspace with Projects and
-  selling gets `projects_erp` (invoicing time and milestones).
-
-  `project-records` comes with the release that moved Project out of `core` into the shared
-  `project_records` package (ERP's accounting depends on it): a workspace with projects but
-  without ERP gets it.
-
-  `attach-files` comes with the release in which a file tied to no record is served only to its
-  uploader and administrators, and saving a record ties the files its `attach` fields name to it
-  ([api](api.md#files)). Before that release a file uploaded for a record not yet saved stayed tied to
-  no record. The step ties each such file to the record whose `attach` field names it (a line's to
-  the record owning the line; custom entities' too), in batches of 1000, so that record's readers keep
-  it. A file several records name goes to the first made: the others' readers no longer download it,
-  and the log counts such files per workspace. A file no record names stays its uploader's. It runs
-  before the new release serves, in each way of running it:
-  * one server migrating as it starts (`FERRUM_MIGRATE_AT_START=true`, the default): migrations, the
-    schema sync, then the steps, before it takes requests. A step that fails is logged and the server
-    serves anyway (the next start tries again): check the log for `attach-files` after upgrading;
-  * `ferrum task migrate`, then a rolling restart: the task runs the step; the new servers refuse to
-    start until it has;
-  * the Helm chart with `migrate.enabled`: the pre-upgrade Job runs `ferrum task migrate` before the
-    Deployment changes; the new pods only check.
-
-  In the last two, and with several replicas in the first, servers of the release before keep taking
-  requests until they are replaced, and a record they save meanwhile leaves its new file tied to no
-  record. To tie those too, once the rollout is over run `ferrum task upgrade_back step:attach-files`
-  and then `ferrum task migrate` (the step is safe to run again and alongside servers taking requests).
-
-  To go back to a release before such a step, run `ferrum task upgrade_back step:<name>`
-  (`core-split`) with every replica of the newer release stopped, then start the older image. The
-  task takes out the packages the step installed and keeps the data.
 * Data a release moves after its schema has grown is a package's backfill (`backfills` in its
   manifest: a table or an entity, which rows still `need` it, what it `set`s, how many a batch).
   The hourly upkeep starts each one in every workspace that has the package, as a job of its own:
@@ -805,12 +759,11 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   each end right: deciding, migrating and syncing hold one advisory lock, and the start-up writes hold it shared.
   Session advisory locks need a direct database connection, not one through a transaction-pooling proxy such as
   PgBouncer, and take theirs from `FERRUM_DATABASE_DIRECT_URL` (`Db::direct`): this window lock
-  (`crates/kernel/src/window.rs`), the migrations' (sqlx's own), the schema sync's (`crates/kernel/src/ddl.rs`), the
-  upgrade steps' (`server/src/upgrade.rs`), apps' upkeep (`server/src/packages.rs`) and app revocations
+  (`crates/kernel/src/window.rs`), the migrations' (sqlx's own), the schema sync's (`crates/kernel/src/ddl.rs`), apps' upkeep (`server/src/packages.rs`) and app revocations
   (`server/src/appmgr.rs`). Leases on events and jobs are rows, not locks.
 * **What a guest does not do.** It does not migrate, does not sync the schema (nor make an app with packages
-  available), and skips the start-up writes that would put its older things back: the one-time upgrade steps and
-  their record, apps recorded at its versions, interfaces registered for them. It serves
+  available), and skips the start-up writes that would put its older things back: apps recorded at its versions,
+  interfaces registered for them. It serves
   requests on everything it knows, and runs the background work, but takes no event or job a newer build wrote (each
   says which build wrote it): those wait for a newer replica, never failed or dropped. A scheduled automation or a
   service target it cannot read is left as it is. After a full rollback only the newer build's own events and jobs
@@ -830,8 +783,7 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   `-- window: safe, <why>` comment. The schema sync itself only adds: it never drops, retypes or renames a column, and
   a column it adds is optional (a check box gets `default false`).
 * **Rolling back.** Set the previous image (`kubectl -n ferrum rollout undo deploy/ferrum`, `helm rollback`, or the
-  previous tag in Compose). The database stays as the newer build left it; roll forward again the same way. A one-time
-  upgrade step the newer build ran stays done: to go back to before one, use `ferrum task upgrade_back` (above).
+  previous tag in Compose). The database stays as the newer build left it; roll forward again the same way.
 * **Images.** The image build takes the commit's date as a build argument, `BUILD_DATE` (`git log -1 --format=%ct`;
   CI passes it), and labels the image `io.ferrum.build-date`. A build without git or `BUILD_DATE` takes a fixed date
   that is never later than its own, and is never a guest: on a database a dated build synced it refuses, saying to
@@ -1922,7 +1874,7 @@ stay `unscanned`, and signatures added later do not reach files already stored.
 ## Checking a deployment
 
 **Before the first start**, `deploy/preflight.sh` looks at the host and `deploy/.env`: Docker, secrets
-left as placeholders, TLS, DNS, memory, disk and ports. `--generate` fills in missing secrets, makes the online
+left as placeholders, an image not pinned to a commit, TLS, DNS, memory, disk and ports. `--generate` fills in missing secrets, makes the online
 editor's WOPI proof key (`deploy/office-proof-key`) when there is none, and changes nothing else. Blockers exit non-zero; warnings do not.
 
 **Once it runs**, `ferrum task doctor` reports on the deployment itself, blockers apart from warnings,
@@ -2119,7 +2071,7 @@ startup settings are refused. So, when `FERRUM_DATABASE_DIRECT_URL` names anothe
 | Through the pooler (`DATABASE_URL`) | Direct (`FERRUM_DATABASE_DIRECT_URL`) |
 |---|---|
 | Every transaction: requests, background work, reports. Each sets its own workspace, statement timeout, `lock_timeout` (10 s) and `idle_in_transaction_session_timeout` (60 s) in its first statement, and none counts on the server connection of the one before | The 5 listeners (metadata, users, plugin sockets, live updates, co-editing) |
-| The side pool and Loco's own pool (neither keeps a session) | Session advisory locks: the two-version window's, the migrations', the schema sync's (whose `create index concurrently` runs outside a transaction), the upgrade steps', apps' upkeep, app revocations |
+| The side pool and Loco's own pool (neither keeps a session) | Session advisory locks: the two-version window's, the migrations', the schema sync's (whose `create index concurrently` runs outside a transaction), apps' upkeep, app revocations |
 | Statements outside a transaction (`pg_notify`, rate-limit counters): they get the database's own `lock_timeout`, not 10 s | |
 
 The server sends no startup `options` and no `extra_float_digits` through the pooler (PgBouncer refuses
@@ -3361,7 +3313,9 @@ sessions*).
 **Audit integrity.** Every record's history is hash-chained and anchored daily.
 `GET /api/v1/{Entity}/{id}/audit` returns the trail with `chain_valid` / `broken_at`; a broken chain
 means rows were changed outside the application — restore from backup and investigate database
-access.
+access. A valid chain proves nothing against whoever holds the server's database role, which owns
+the audit tables and can rewrite rows and hashes alike: against that role, compare with the
+operator's audit sink (*Sending the audit log elsewhere*).
 
 ## Personal-data requests
 
@@ -4868,7 +4822,6 @@ ferrum task create_tenant slug:... name:... email:... password:... [packages:...
 ferrum task set_plan slug:... plan:...   # put a workspace on one of FERRUM_PLANS (its quotas)
 ferrum task extract_tenant from:<url> tenant:<slug> note:"..." [apply:yes]   # take one workspace back to what a restored copy holds
 ferrum task deps_report [schema:<file>]   # what ties packages together; schema: writes the canonical schema to compare across a package move
-ferrum task upgrade_back step:<name>      # before going back to the release before a one-time upgrade step
 ferrum task seed_demo tenant:<slug>  # demo data (never in production tenants)
 ferrum task import_erpnext src:<erpnext app dir> out:packages/erpnext-import
 ferrum task app_make_available file:<app.fapp> [allow_unsigned:true]   # make a bundle available to every workspace (verified against FERRUM_APP_TRUSTED_KEYS)

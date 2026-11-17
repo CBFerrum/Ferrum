@@ -169,7 +169,7 @@ contributes:
   `additionalProperties: false`, `items`, `enum`, `maxLength`, `maxItems`. Other keywords are
   refused rather than ignored. A contribution that breaks the schema fails the installation plan,
   which names the field.
-* Contributions go to the screen slots below, to the shell's points (*Interfaces of their own*), to the
+* Contributions go to the shell's points (*Interfaces of their own*), to the
   app's own points, or to points of apps in its `requires`. Ids are unique within a point; an app
   declares and contributes to at most 20 points, with at most 50 items to each.
 * The owner reads them with `GET /api/meta/contributions/{point}`. Only enabled apps count, and each
@@ -209,49 +209,23 @@ ones (a customer's receivable account, an item's stock settings). Depend on the 
   entity's form may list it, and leaves it out where the package is not installed; one the form
   does not list goes into the section of the field it follows.
 
-## Screens
+## Pages an app brings
 
-Wasm and meta apps can bring screens: HTML pages under `ui/` in the bundle, with their scripts,
-styles, WebAssembly, fonts and images. They plug into four slots:
-
-| Slot | Shows | Item |
-|---|---|---|
-| `ui.page` | a page with a sidebar entry, `/app/x/<app>/<id>` | `title`, `entry`, `icon` |
-| `ui.widget` | a card on Home | `title`, `entry`, `size: [w, h]` (12-column grid, 80 px rows) |
-| `ui.panel` | a tab on the forms of `entity` | `title`, `entry`, `entity` |
-| `ui.settings` | the app's settings screen, for administrators, from the Apps page | `entry` |
-
-A screen runs in a sandboxed frame with an opaque origin, so it cannot read the web app's page,
-storage or session.
-* Its Content Security Policy lets it load only its own files: no other network and no form posts.
-* A page opened outside a frame is refused.
-* It talks to Ferrum through `ferrum.js` (ferrum-sdk `examples/board/ui/ferrum.js`). The host hands
-  it a `MessagePort` and answers `context`, `api`, `navigate`, `openRecord`, `toast`, `confirm`
-  and `resize`; it sends `theme` and `record` events.
-
-`api` reaches `/api/v1/…`, `/api/meta/…` and the app's own `/api/ext/<app>/…`, and nothing else.
-* The host marks these calls with `X-Ferrum-App`.
-* The server runs them with the user's rights narrowed to what the app declared: its plugin's
-  permissions and its own entities. They never run with administrator power. A screen can do
-  neither more than its app was approved for nor more than its user can.
-* A panel receives only its record's entity and id and reads the record through `api`, so it sees
-  only the fields its app may read.
-
-`examples/board` in ferrum-sdk is a complete example: a page, a widget, a panel, a settings screen
-and an extension point.
+An app brings pages as an interface of its own (below); there are no slots for pages, cards or panels
+inside another interface, and a contribution to `ui.page`, `ui.widget`, `ui.panel` or `ui.settings` is
+refused. Calls an app's pages make carry `X-Ferrum-App` and run with the user's rights narrowed to what
+the app declared (its plugin's permissions and its own entities), never with administrator power.
 
 ## Interfaces of their own
 
 An app may own a whole interface at addresses of its own, as `/deals/…`: a web app of any kind
-(React, Vue, plain HTML) that the platform serves and wraps in the shell. Screens (above) stay the
-way to add a page, card or panel to someone else's interface. The plan is
+(React, Vue, plain HTML) that the platform serves and wraps in the shell. The plan is
 [docs/plan/apps-ui.md](plan/apps-ui.md); ferrum-sdk's `examples/customer-cards` is a small working one.
 
 ```yaml
 platform: ">=0.3.9, <0.4"
 ui:
   dist: ui/dist                   # the built files, with an index.html
-  shell: ">=1.0"                  # the shell API it needs
   family: Sales                   # optional: the family it heads (its add-ons with interfaces join it)
   csp:                            # origins beyond the workspace's host, reviewed by the store
     connect: ["setting:meet_url", "wss://media.example.com"]

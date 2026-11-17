@@ -1173,6 +1173,10 @@ impl Kernel {
                 .await
                 .map_err(|e| refused_role(e, r))?;
         }
+        if !roles.is_empty() {
+            let diff = serde_json::json!({"added": roles, "removed": [], "until": {}});
+            crate::audit::record_admin(&mut tx, ctx, "User", id, "roles", None, diff).await?;
+        }
         tx.commit().await?;
         Ok(id)
     }
@@ -1211,7 +1215,16 @@ impl Kernel {
             }
             _ => {}
         }
-        sqlx::query("delete from user_role where tenant_id = $1 and user_id = $2").bind(ctx.tenant).bind(user).execute(&mut *tx).await?;
+        let held: Vec<String> = sqlx::query_scalar("delete from user_role where tenant_id = $1 and user_id = $2 returning role")
+            .bind(ctx.tenant)
+            .bind(user)
+            .fetch_all(&mut *tx)
+            .await?;
+        // Who changed whose roles, which, and until when: in the audit trail, as other changes of access are.
+        let added: Vec<&String> = roles.iter().filter(|r| !held.contains(r)).collect();
+        let removed: Vec<&String> = held.iter().filter(|r| !roles.contains(r)).collect();
+        let diff = serde_json::json!({"added": added, "removed": removed, "until": until});
+        crate::audit::record_admin(&mut tx, ctx, "User", user, "roles", None, diff).await?;
         for r in roles {
             sqlx::query("insert into user_role (tenant_id, user_id, role, expires_at) values ($1, $2, $3, $4)")
                 .bind(ctx.tenant)

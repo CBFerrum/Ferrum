@@ -23,7 +23,7 @@ both for 12 months after a line is cut. A long-term line, if there is one, is na
 |---|---|
 | To the next release | Tested on every merge: the smoke test upgrades the last published image in place, with data. |
 | Skipping releases | Migrations run in order, so this works, and is not tested for every pair. |
-| Rolling, with replicas | Each migration must work with the release before it (expand, then contract later). `ferrum task upgrade_back` undoes a one-time upgrade step before going back to the release before it. |
+| Rolling, with replicas | Each migration must work with the release before it (expand, then contract later). |
 | Downgrading | Not supported. Restore from a backup. |
 
 Back up first. [docs/operations.md](operations.md#upgrades) has the steps.

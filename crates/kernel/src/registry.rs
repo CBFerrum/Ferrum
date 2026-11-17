@@ -187,8 +187,6 @@ impl Registry {
                 .push(SchemaWarning { entity: "tenant".into(), message: format!("{wrong}; every entity is treated as marked until it is saved again") });
         }
         schema.fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
-        // Every workspace uses the shell: today's web app has left /app/ (docs/plan/apps-ui.md U4b).
-        schema.shell_v2 = true;
         schema.timezone = match settings.get("timezone").and_then(|v| v.as_str()) {
             Some(tz) if tz.parse::<chrono_tz::Tz>().is_ok() => tz.to_string(),
             Some(tz) => {

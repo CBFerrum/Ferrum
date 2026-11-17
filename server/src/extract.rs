@@ -374,7 +374,7 @@ impl FromRequestParts<AppContext> for Auth {
     }
 }
 
-/// A call made from an app's screen (docs/plugins.md, "Screens"): only to records, metadata
+/// A call made from an app's screen (docs/plugins.md, "Pages an app brings"): only to records, metadata
 /// and the app's own endpoints; with the user's rights narrowed to what the app declared; never
 /// as an administrator.
 async fn screen_ctx(st: &crate::state::AppState, mut ctx: Ctx, app: &HeaderValue, path: &str) -> Result<Ctx, ApiError> {
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn screens_call_records_metadata_and_their_own_endpoints() {
-        for path in ["/api/v1/Customer", "/api/meta/Customer", "/api/meta/contributions/ui.page", "/api/ext/board/cards"] {
+        for path in ["/api/v1/Customer", "/api/meta/Customer", "/api/meta/contributions/board.card", "/api/ext/board/cards"] {
             assert!(screen_may_call("board", path), "{path}");
         }
         for path in ["/api/admin/users", "/api/auth/me", "/api/apps", "/api/ext/other/x", "/api/ext/boardx/x", "/api/ext/board", "/api/v1"] {

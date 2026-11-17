@@ -1,7 +1,8 @@
 //! The bar's search against a real PostgreSQL (`FERRUM_SEARCH_TEST_DATABASE_URL`, default
 //! `postgres://ferrum:ferrum@localhost:5432/ferrum_search_test`; the database is reset). Its queries are the
 //! request's: one the client gave up on (the bar drops it at the next keystroke) starts no further query, and
-//! a slow one answers by its deadline with what finished, marked partial. Every searched entity here is a
+//! a slow one answers by its deadline with what finished, marked partial; either way, what it had started is
+//! stopped by PostgreSQL at the search's own budget. Every searched entity here is a
 //! custom one, kept in `custom_record`, so that holding that table makes each of their queries wait where the
 //! test can count them (`pg_locks`).
 
@@ -88,6 +89,7 @@ async fn scenario() {
     tokio::time::sleep(Duration::from_secs(1)).await;
     let since = waiting().await;
     assert!(since <= when_dropped, "no query starts once the request is gone: {when_dropped} were waiting when it was dropped, {since} a second later");
+    assert_eq!(since, 0, "what it had started is stopped by PostgreSQL within its own budget, not left holding its connection");
     held.commit().await.unwrap();
     // What it had started ends with its statement, and leaves no transaction open.
     let started = Instant::now();
@@ -109,7 +111,10 @@ async fn scenario() {
     let started = Instant::now();
     let found = ferrum_server::search::search(&k, &ctx, "zz", 10).await.unwrap();
     let took = started.elapsed();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let left = waiting().await;
     held.commit().await.unwrap();
     assert_eq!(found["partial"], json!(true), "{found}");
+    assert_eq!(left, 0, "a second after a partial answer, none of its queries still waits");
     assert!(took < Duration::from_millis(1300), "a search with every table held answers by its deadline, not after {took:?}");
 }

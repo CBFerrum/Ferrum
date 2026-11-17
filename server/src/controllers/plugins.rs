@@ -1,7 +1,7 @@
 //! Plugin endpoints: HTTP routes (`/api/ext/{plugin}/…` for signed-in callers,
 //! `/api/public/{tenant}/{plugin}/…` for public ones such as third-party webhooks) and the
 //! WebSocket gateway (`/ws/ext/{tenant}/{plugin}/…`) for device protocols like OCPP; and the
-//! files of apps' screens (`/api/ext-ui/{tenant}/{app}/{version}/…`, docs/plugins.md "Screens").
+//! files of apps' screens (`/api/ext-ui/{tenant}/{app}/{version}/…`, docs/plugins.md "Pages an app brings").
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Auth, bearer, ctx_from_token, request_id};
@@ -43,7 +43,9 @@ fn plugin_headers(headers: &HeaderMap) -> Map<String, Value> {
 fn to_response(r: HttpReply) -> Response {
     let mut resp = (StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK), r.body).into_response();
     for (k, v) in r.headers {
-        // Plugins may not set cookies, the message's framing, or a page's policy and framing on Ferrum's origin.
+        // Plugins may not set cookies, the message's framing (length, transfer encoding, connection), or a page's
+        // policy and framing (CSP, X-Frame-Options) on Ferrum's origin; `contain` then adds nosniff, and the sandbox
+        // policy to whatever is not JSON or an attachment.
         if matches!(
             k.as_str(),
             "set-cookie"

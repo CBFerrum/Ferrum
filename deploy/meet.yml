@@ -12,7 +12,7 @@
 # network without internet access).
 services:
   meet-files:
-    image: ${FERRUM_IMAGE:-ghcr.io/cbferrum/ferrum:latest}
+    image: ${FERRUM_IMAGE:?set FERRUM_IMAGE to a commit tag, docs/operations.md "Images"}
     restart: "no"
     depends_on:
       db:

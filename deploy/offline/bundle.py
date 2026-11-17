@@ -112,14 +112,14 @@ def images_in(text: str) -> set[str]:
 
 
 def compose_images(files: list[Path], env: dict[str, str]) -> set[str]:
-    """The images Compose files name, `${VAR:-default}` read as Compose would with `env`."""
+    """The images Compose files name, `${VAR:-default}` and `${VAR:?message}` read as Compose would with `env`."""
 
     def expand(value: str) -> str:
         def one(m: re.Match) -> str:
-            var, default = m.group(1), m.group(3) or ""
+            var, default = m.group(1), m.group(2) or ""
             return env.get(var) or default
 
-        return re.sub(r"\$\{(\w+)(:?-([^}]*))?\}", one, value)
+        return re.sub(r"\$\{(\w+)(?::?-([^}]*)|:?\?[^}]*)?\}", one, value)
 
     found = set()
     for f in files:

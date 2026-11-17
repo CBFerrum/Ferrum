@@ -263,7 +263,7 @@ MUTANTS = [
     ("evidence-for-anyone", "crates/kernel/src/process.rs", "let t = self.logic_task(ctx, task).await?;", "let t = self.logic_task(&Ctx::system(ctx.tenant, ctx.schema.clone()), task).await?;", PROCESS_RECORDS),
     ("support-report-shows-payloads", "crates/kernel/src/support.rs", "'status', status, 'since', updated_at)", "'status', status, 'since', updated_at, 'trigger', trigger)", PROCESS_RECORDS),
     ("dependents-overlooked", "crates/kernel/src/logic.rs", '.filter(|l| packages.iter().any(|p| l.id.starts_with(&format!("{p}."))))', '.filter(|l| packages.iter().any(|p| l.id.starts_with(&format!("{p}.x"))))', PROCESS_RECORDS),
-    ("removal-forgets-what-waits", "crates/kernel/src/apps.rs", 'json!({"packages": names, "waiting": waiting})', 'json!({"packages": names, "waiting": waiting.iter().take(0).collect::<Vec<_>>()})', PROCESS_RECORDS),
+    ("removal-forgets-what-waits", "crates/kernel/src/apps.rs", 'json!({"packages": names, "waiting": waiting, ', 'json!({"packages": names, "waiting": waiting.iter().take(0).collect::<Vec<_>>(), ', PROCESS_RECORDS),
     ("references-of-any-kind", "crates/logic/src/expr.rs", "(Ty::Ref(_), Ty::Text) | (Ty::Text, Ty::Ref(_)) => true,", "(Ty::Ref(_), _) | (_, Ty::Ref(_)) => true,", PROCESS_RECORDS),
     # Company-owned runs act as their solution's own account, with the reviewed closure only (FLC-CAP-005).
     ("company-run-acts-as-its-activator", "crates/kernel/src/process.rs", '"select id, is_active from app_user where tenant_id = $1 and email = $2"', """"select a.activated_by, true from logic_activation a where a.tenant_id = $1 and $2 like 'solution.' || a.solution || '@%'\"""", PROCESS_RECORDS),
@@ -672,9 +672,6 @@ MUTANTS = [
     # A file tied to no record is its uploader's until a record they save names it.
     ("loose-file-served-to-anyone", "crates/kernel/src/files.rs", "            _ if owns_loose(ctx, by) => Ok(()),", "            _ if true => Ok(()),", PORTAL),
     ("save-ties-no-file", "crates/kernel/src/files.rs", "update file_object set entity = $3, record_id = $4 where tenant_id = $1 and id = $2\"", "update file_object set entity = $3, record_id = $4 where tenant_id = $1 and id = $2 and false\"", PORTAL),
-    ("upgrade-ties-no-file", "crates/kernel/src/files.rs", "where o.tenant_id = $1 and o.id = pick.file and o.record_id is null returning o.id", "where o.tenant_id = $1 and o.id = pick.file and false returning o.id", PORTAL),
-    ("upgrade-skips-lines", "crates/kernel/src/files.rs", "                for f in c.value_fields().filter(|f| f.ftype == FieldType::Attach) {", "                for f in c.value_fields().filter(|f| f.ftype == FieldType::Attach && false) {", PORTAL),
-    ("upgrade-ties-to-the-last-made", "crates/kernel/src/files.rs", "order by file, at, record)", "order by file, at desc, record)", PORTAL),
     ("save-names-anyones-file", "crates/kernel/src/files.rs", "                _ => return Err(refused()),", "                _ => {}", PORTAL),
     ("outsiders-upload-without-limit", "crates/kernel/src/files.rs", "        if !ctx.outside {\n            return Ok(());", "        if !ctx.outside || true {\n            return Ok(());", STREAMED),
     # A workspace's menu marked for the portal lists only what the person's portal roles reach (docs/builder/portal.md).
