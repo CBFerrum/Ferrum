@@ -6,7 +6,8 @@
 //! site's (`/api/site/{workspace}/{package}/…`, `/api/app/{package}/…`), runs nothing on the application's origin unless
 //! a native app declares a policy of its own; and a route that names its workspace answers on that workspace's hosts,
 //! not on another's. An AI client at `/mcp` reads under the workspace's policy for the assistant. A body past its
-//! route's limit is refused as too large (413) wherever the server refuses one.
+//! route's limit is refused as too large (413) wherever the server refuses one. Administration's list of packages is
+//! the administrators'.
 
 mod common;
 
@@ -291,4 +292,14 @@ async fn scenario() {
     let (status, headers) = (res.status(), res.headers().clone());
     let body = String::from_utf8_lossy(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).into_owned();
     assert_eq!(too_large((status, headers, body)), refused, "a file past upload_max_bytes");
+
+    // ── Administration's list of packages ──
+    // Only the Administration page reads it, which administrators alone open: a member is refused, as on every other
+    // administration route.
+    let member = k.create_user(&admin, "member@acme.test", "Member", Some(PASSWORD), &[], false).await.unwrap();
+    let member_key = k.create_api_key(&admin, member, "it", None, None).await.unwrap().1;
+    let (status, _, body) = get(&r, ACME, "/api/admin/packages", Some(&member_key)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a member: {body}");
+    let (status, _, body) = get(&r, ACME, "/api/admin/packages", Some(&key)).await;
+    assert!(status == StatusCode::OK && body.contains("\"doors\""), "an administrator: {status}");
 }
