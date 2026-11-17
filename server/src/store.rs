@@ -773,8 +773,9 @@ pub async fn place_findings(db: &Db, settings: &Settings, production: bool, obje
 }
 
 /// Days a deletion waits against how far back the database's backups reach (`files_delete_after_days`,
-/// `backup_reach_days`): a database restored to a moment the files no longer reach names files that are gone.
-pub fn lag_finding(lag_days: u64, reach_days: u64) -> Finding {
+/// `backup_reach_days`): a database restored to a moment the files no longer reach names files that are gone, which in
+/// production blocks.
+pub fn lag_finding(lag_days: u64, reach_days: u64, production: bool) -> Finding {
     match (lag_days, reach_days) {
         (0, 0) => Finding::warning(
             "storage.deletions",
@@ -789,13 +790,13 @@ pub fn lag_finding(lag_days: u64, reach_days: u64) -> Finding {
         (lag, reach) if lag >= reach => {
             Finding::ok("storage.deletions", format!("deleted files are kept {lag} days, as far as the database's backups reach ({reach} days)"))
         }
-        (lag, reach) => Finding::warning(
-            "storage.deletions",
-            format!(
+        (lag, reach) => {
+            let detail = format!(
                 "deleted files are kept {lag} days and the database's backups reach {reach} days: a database restored to more than {lag} days back names files that are gone"
-            ),
-            "Set files_delete_after_days to at least backup_reach_days (ferrum task settings set).",
-        ),
+            );
+            let fix = "Set files_delete_after_days to at least backup_reach_days (ferrum task settings set).";
+            if production { Finding::blocker("storage.deletions", detail, fix) } else { Finding::warning("storage.deletions", detail, fix) }
+        }
     }
 }
 
@@ -1200,11 +1201,19 @@ mod tests {
     #[test]
     fn the_lag_against_the_backups_reach() {
         use ferrum_kernel::doctor::Level;
-        assert_eq!(lag_finding(0, 0).level, Level::Warning);
-        assert_eq!(lag_finding(30, 0).level, Level::Ok);
-        assert_eq!(lag_finding(30, 30).level, Level::Ok);
-        assert_eq!(lag_finding(7, 30).level, Level::Warning);
-        assert!(lag_finding(7, 30).detail.contains("more than 7 days back"));
+        for production in [true, false] {
+            assert_eq!(lag_finding(0, 0, production).level, Level::Warning, "an explicit opt-out with no reach said");
+            assert_eq!(lag_finding(30, 0, production).level, Level::Ok);
+            assert_eq!(lag_finding(30, 30, production).level, Level::Ok);
+            assert!(lag_finding(7, 30, production).detail.contains("more than 7 days back"));
+        }
+        // Deleted files kept for less than the backups reach: a blocker in production, a warning elsewhere (D3).
+        assert_eq!(lag_finding(7, 30, true).level, Level::Blocker);
+        assert_eq!(lag_finding(0, 30, true).level, Level::Blocker, "gone at once, with backups that reach a month");
+        assert_eq!(lag_finding(7, 30, false).level, Level::Warning);
+        // The defaults keep a deleted file as long as the backups reach.
+        let defaults: Settings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(lag_finding(defaults.files_delete_after_days, defaults.backup_reach_days, true).level, Level::Ok, "{defaults:?}");
     }
 
     #[test]

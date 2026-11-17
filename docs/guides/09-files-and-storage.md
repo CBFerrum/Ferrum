@@ -104,8 +104,9 @@ counted.
 | `Kernel::remove_file(ctx, id)` | A person deletes a file they may delete (its uploader, or someone who can change its record). The row goes; the object is deleted through the store |
 | `outbox::release_objects(tx, tenant, &keys)` | The app deletes `file_object` rows in its own transaction: the objects are deleted once that transaction commits, never if it rolls back, retried while the store fails. Only keys under `tenants/{tenant}/`; anything else is refused |
 
-Either way the store keeps the object for `files_delete_after_days` first (0 by default; an operator sets it at least
-`backup_reach_days`), so a database restored to any moment its backups reach finds every file it names
+Either way the store keeps the object for `files_delete_after_days` first (30 by default, at least `backup_reach_days`,
+which the Helm chart sets from its backups' retention), so a database restored to any moment its backups reach finds
+every file it names
 (`Objects::remove` in `server/src/objects.rs`). A name is never used again for other bytes. Never delete an object
 another way: you would break the restore.
 

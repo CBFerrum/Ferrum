@@ -89,8 +89,8 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `aws_secret_access_key` | `AWS_SECRET_ACCESS_KEY` | text |  | secret: the environment, else the vault (library) | The object store's secret key. |
 | `aws_session_token` | `AWS_SESSION_TOKEN` | text |  | secret: the environment, else the vault (library) | A session token with the object store's keys, when they are temporary. |
 | `s3_set_up_bucket` | `FERRUM_S3_SET_UP_BUCKET` | bool | `false` | installation, next start | `true`: at start, make the bucket when it is missing, and turn on what the doctor looks for when the bucket has none of it: versioning, lifecycle rules (old versions end after `backup_reach_days`, 30 when not set; unfinished uploads after a day) and default encryption. Never replaces a bucket's own rules. The store Compose bundles asks for this itself at its first start; a bucket of your own is changed only when this is set, with keys allowed to change its configuration. A replica is not ready until the set-up has worked (tried again every five seconds). |
-| `files_delete_after_days` | `FERRUM_FILES_DELETE_AFTER_DAYS` | int | `0` | installation, at once | Days a deleted file stays in object storage before it goes (0, the default: at once). At least `backup_reach_days`, so that a database restored to any moment its backups reach finds every file it names (see *Backups of files*). |
-| `backup_reach_days` | `FERRUM_BACKUP_REACH_DAYS` | int | `0` | installation, at once | How many days back the database's backups reach (the chart's `database.backup.retention`; 0: not said). The doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule. |
+| `files_delete_after_days` | `FERRUM_FILES_DELETE_AFTER_DAYS` | int | `30` | installation, at once | Days a deleted file stays in object storage before it goes. At least `backup_reach_days`, so that a database restored to any moment its backups reach finds every file it names (see *Backups of files*); in production the doctor blocks while it is less. 0: at once, for an installation without backups to restore. |
+| `backup_reach_days` | `FERRUM_BACKUP_REACH_DAYS` | int | `30` | installation, at once | How many days back the database's backups reach (the chart sets it from its `database.backup.retention`; 0: not said). The doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule. |
 | `files_direct_links` | `FERRUM_FILES_DIRECT_LINKS` | bool | `false` | installation, at once | `true`: a download (`/files/{id}`) answers with a short-lived link signed for the object store, which the browser follows, instead of passing the bytes through the server. Never for files of entities whose reads are recorded, for outside people, for types a browser would run, or while files move. Off by default. |
 | `files_direct_link_seconds` | `FERRUM_FILES_DIRECT_LINK_SECONDS` | int | `60` | installation, at once | How long a direct link works, in seconds (default 60; at most 300). |
 | `direct_upload_max_bytes` | `FERRUM_DIRECT_UPLOAD_MAX_BYTES` | int | `2147483648` | installation, at once | Largest file browsers upload straight to the bucket, or in parts through the server (default 2 GiB). Straight to the bucket needs the bucket CORS rule below. |
@@ -983,10 +983,13 @@ SVG, XML, scripts: they would run on the store's address), or while files move.
 
 Files are named once and never named again for other bytes (a workspace's file by a new id, an interface's or an app's
 by its content's digest), and only ever deleted. So a database restored to a moment T needs only that the objects it
-names at T still exist. Deletions therefore wait: `files_delete_after_days` (0 by default: at once) keeps
-a deleted file that many days before it goes, recorded in `object_release` and swept every ten minutes by the replicas
-that run background work. Set it to at least how far back the database's backups reach (`backup_reach_days`; 30 with
-the chart's `database.backup.retention`), and every moment the backups reach finds its files. A key written again
+names at T still exist. Deletions therefore wait: `files_delete_after_days` (30 by default) keeps a deleted file that
+many days before it goes, recorded in `object_release` and swept every ten minutes by the replicas that run background
+work. It is at least how far back the database's backups reach (`backup_reach_days`, 30 by default), so every moment
+the backups reach finds its files: the Helm chart sets both from its `database.backup.retention`, deploy/k8s to its
+cluster's 30 days, and Compose leaves them at 30 for the dumps you keep. Backups that reach further need both raised; 0 for
+`files_delete_after_days` deletes at once, for an installation without backups to restore. In production the doctor
+blocks while deleted files go sooner than the backups reach. A key written again
 while its deletion waits (an interface published again) calls the deletion off. Nothing is swept while a restore is
 held (*After restoring a backup*), so a restored copy started beside the live installation deletes nothing of a store
 they share. An erased person's files stay as long, as their rows stay in the database's backups; `reapply_erasures`

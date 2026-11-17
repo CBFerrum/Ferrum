@@ -81,6 +81,9 @@ spec:
             # Attachments must be shared by all replicas: use object storage.
             - {name: FERRUM_S3_BUCKET, value: "CHANGE-ME-files-bucket"}
             - {name: FERRUM_S3_REGION, value: "ap-south-1"}
+            # A deleted file stays as long as the database's backups reach: database.yaml's retentionPolicy, 30d.
+            - {name: FERRUM_BACKUP_REACH_DAYS, value: "30"}
+            - {name: FERRUM_FILES_DELETE_AFTER_DAYS, value: "30"}
             # For MinIO, Cloudflare R2 and other S3-compatible stores:
             # - {name: FERRUM_S3_ENDPOINT, value: "https://<account>.r2.cloudflarestorage.com"}
             - {name: PUBLIC_URL, value: "https://erp.example.com"}

@@ -31,6 +31,17 @@ app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
 {{- end }}
 {{- end -}}
 
+{{/* How far back the database's backups reach, in days: database.backup.retention, CloudNativePG's (30d, 4w, 3m; a month
+counted as 31 days, so that deleted files are kept at least as long). */}}
+{{- define "ferrum.backupDays" -}}
+{{- $r := toString .Values.database.backup.retention -}}
+{{- if not (regexMatch "^[1-9][0-9]*[dwm]$" $r) -}}
+{{- fail (printf "database.backup.retention: %q is not days, weeks or months (30d, 4w, 3m)" $r) -}}
+{{- end -}}
+{{- $n := atoi (trimSuffix "d" (trimSuffix "w" (trimSuffix "m" $r))) -}}
+{{- if hasSuffix "w" $r }}{{ mul $n 7 }}{{ else if hasSuffix "m" $r }}{{ mul $n 31 }}{{ else }}{{ $n }}{{ end -}}
+{{- end -}}
+
 {{/* The server's environment, shared by the Deployment and the migration Job. */}}
 {{- define "ferrum.env" -}}
 {{- if and .Values.database.enabled .Values.database.pooler.enabled .Values.database.pooler.used (not .direct) }}
@@ -85,6 +96,12 @@ generates is letters and digits only, so it needs no escaping in the address. */
 - {name: FERRUM_S3_REGION, value: {{ .Values.storage.region | quote }}}
 {{- with .Values.storage.endpoint }}
 - {name: FERRUM_S3_ENDPOINT, value: {{ . | quote }}}
+{{- end }}
+{{- if .Values.database.enabled }}
+{{- /* A deleted file stays as long as the database's backups reach (docs/operations.md, Backups of files). */}}
+{{- $days := include "ferrum.backupDays" . }}
+- {name: FERRUM_BACKUP_REACH_DAYS, value: {{ $days | quote }}}
+- {name: FERRUM_FILES_DELETE_AFTER_DAYS, value: {{ $days | quote }}}
 {{- end }}
 - {name: PUBLIC_URL, value: {{ .Values.publicUrl | quote }}}
 {{- with .Values.names.accountsHost }}
