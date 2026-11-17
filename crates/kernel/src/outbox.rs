@@ -1,6 +1,8 @@
 //! Transactional outbox: events are written in the same transaction as the change that caused
-//! them, then dispatched at-least-once by any replica (`FOR UPDATE SKIP LOCKED`). Consumers are
-//! idempotent (unique delivery/run keys), so a crash between "handled" and "marked" is harmless.
+//! them, then dispatched at-least-once by any replica (`FOR UPDATE SKIP LOCKED`). Each consumer
+//! stands alone: one that fails makes the event retry for itself, and those that handled it are
+//! not called again (unique delivery and run keys, `event_receipt` for sinks). A crash between
+//! "handled" and "marked" can repeat a sink, which deduplicates what must happen once.
 //! Dispatchers poll (no NOTIFY from writers: it would serialize their commits).
 //!
 //! Each batch takes a few events from every workspace that has work, most urgent first, and handles
@@ -303,8 +305,11 @@ pub async fn first_time(tx: &mut Tx, tenant: Uuid, consumer: &str, event: i64) -
     .await?)
 }
 
-/// How long a claimed batch is reserved for the worker handling it.
-const LEASE_SECS: f64 = 600.0;
+/// How long a claimed batch is reserved for the worker that claimed it: what it has not begun by then may pass to
+/// another replica, so a replica that dies holding a batch delays it this long at most.
+const CLAIM_SECS: f64 = 30.0;
+/// How long an event is its worker's once begun: what its handlers may take, and the claim's time again to say how it went.
+const EVENT_LEASE_SECS: f64 = EVENT_TIMEOUT.as_secs() as f64 + CLAIM_SECS;
 /// The same for webhooks: requests run side by side and time out after 10 seconds.
 const WEBHOOK_LEASE_SECS: f64 = 60.0;
 
@@ -322,17 +327,31 @@ fn backoff(attempts: i32) -> f64 {
 }
 
 impl Kernel {
+    /// A turn at the pool for the dispatcher or the webhook sender ([`Kernel::background`]), held while one claim, event
+    /// or webhook's secret holds a connection: together they never hold more than their share.
+    async fn turn(&self) -> Result<tokio::sync::SemaphorePermit<'_>> {
+        self.background.acquire().await.map_err(Error::internal)
+    }
+
     /// Claims and handles one batch. Returns how many events were processed.
     ///
-    /// The claim is a lease: a short transaction moves the batch's `available_at` into the
-    /// future, then each event is handled outside any long transaction (handlers call webhooks,
-    /// SMTP servers, plugins) and its outcome is recorded on its own. A worker that dies mid-batch
-    /// leaves leases that simply expire, and another replica picks the events up — delivery stays
-    /// at least once, never stuck behind a lock.
+    /// The claim is a lease: a short transaction moves the batch's `available_at` half a minute
+    /// into the future, then each event is taken for its handlers' time as it begins, handled
+    /// outside any long transaction (handlers call webhooks, SMTP servers, plugins), and its outcome
+    /// recorded on its own. A worker that dies mid-batch leaves leases that simply expire, and
+    /// another replica picks the events up — delivery stays at least once, never stuck behind a lock.
     pub async fn dispatch_outbox_once(&self) -> Result<usize> {
+        let (_running, stopping) = watch::channel(false);
+        self.dispatch_outbox(&stopping).await
+    }
+
+    /// [`Kernel::dispatch_outbox_once`] for a dispatcher that may be told to stop: from then on it
+    /// begins nothing, and hands back at once what it had claimed and not begun.
+    async fn dispatch_outbox(&self, stopping: &watch::Receiver<bool>) -> Result<usize> {
         if self.db.fenced() || self.holding().await? {
             return Ok(0);
         }
+        let turn = self.turn().await?;
         let mut tx = self.db.system_tx().await?;
         // A loose index scan finds the workspaces with work, however long their backlogs. They come
         // in random order, so that more workspaces than a batch holds all get their turn.
@@ -354,28 +373,43 @@ impl Kernel {
                limit $3) \
              returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, depth, available_at as lease, zone",
         )
-        .bind(LEASE_SECS)
+        .bind(CLAIM_SECS)
         .bind(TENANT_SHARE)
         .bind(BATCH)
         .bind(crate::window::build_date())
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
+        drop(turn);
         let claimed = events.len();
         let mut by_tenant: BTreeMap<Uuid, Vec<Event>> = BTreeMap::new();
         for ev in events {
             by_tenant.entry(ev.tenant_id).or_default().push(ev);
         }
-        for outcome in futures::future::join_all(by_tenant.into_values().map(|events| self.handle_events(events))).await {
+        for outcome in futures::future::join_all(by_tenant.into_values().map(|events| self.handle_events(events, stopping))).await {
             outcome?;
         }
         Ok(claimed)
     }
 
     /// One workspace's share of a batch, in order: priority, then age.
-    async fn handle_events(&self, mut events: Vec<Event>) -> Result<()> {
+    async fn handle_events(&self, mut events: Vec<Event>, stopping: &watch::Receiver<bool>) -> Result<()> {
         events.sort_by_key(|e| e.id);
-        for ev in &events {
+        for (begun, ev) in events.iter().enumerate() {
+            // Workspaces are handled side by side, as many at once as there are turns.
+            let _turn = self.turn().await?;
+            // The replica is stopping: what it has not begun goes back now, not when the claim runs out.
+            if *stopping.borrow() {
+                let rest: Vec<i64> = events[begun..].iter().map(|e| e.id).collect();
+                let mut tx = self.db.system_tx().await?;
+                sqlx::query("update outbox set available_at = now() where id = any($1) and available_at = $2")
+                    .bind(&rest)
+                    .bind(ev.lease)
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                return Ok(());
+            }
             // The claim covered the batch, and earlier events may have used it up: take this one
             // afresh. If it has passed to another worker meanwhile, it is theirs, and running it
             // here too would do the work twice. Once a move is planned, the rest of the batch waits for its copy.
@@ -387,7 +421,7 @@ impl Kernel {
             )
             .bind(ev.id)
             .bind(ev.lease)
-            .bind(LEASE_SECS)
+            .bind(EVENT_LEASE_SECS)
             .fetch_optional(&mut *tx)
             .await?;
             tx.commit().await?;
@@ -419,7 +453,9 @@ impl Kernel {
                 zone: Trace::in_zone(ev.zone.clone()),
                 ..Default::default()
             };
-            let outcome = trace.scope(tokio::time::timeout(EVENT_TIMEOUT, crate::sandbox::in_hand(ev.tenant_id, self.handle_event(ev)))).await;
+            // The sinks that handle it, kept here so that they are known however the attempt ends.
+            let handled = std::sync::Mutex::new(Vec::new());
+            let outcome = trace.scope(tokio::time::timeout(EVENT_TIMEOUT, crate::sandbox::in_hand(ev.tenant_id, self.handle_event(ev, &handled)))).await;
             let outcome = outcome.unwrap_or_else(|_| Err(Error::Unavailable(format!("handlers took longer than {} s", EVENT_TIMEOUT.as_secs()))));
             let mut tx = self.db.system_tx().await?;
             match outcome {
@@ -445,6 +481,14 @@ impl Kernel {
                     .bind(lease)
                     .execute(&mut *tx)
                     .await?;
+                    // Those that handled it are not called again when it is tried again or replayed (handle_event).
+                    let handled = handled.into_inner().unwrap_or_else(|e| e.into_inner());
+                    sqlx::query("insert into event_receipt (tenant_id, consumer, event_id) select $1, unnest($2::text[]), $3 on conflict do nothing")
+                        .bind(ev.tenant_id)
+                        .bind(handled)
+                        .bind(ev.id)
+                        .execute(&mut *tx)
+                        .await?;
                 }
             }
             tx.commit().await?;
@@ -524,8 +568,8 @@ impl Kernel {
         Ok(rows)
     }
 
-    /// Queues a dead event again, from the first attempt. Consumers are idempotent, so those that
-    /// handled it before it failed are not repeated. One whose record has been erased since is not:
+    /// Queues a dead event again, from the first attempt. The automations and sinks that handled it
+    /// before it failed are not repeated (`automation_run`, `event_receipt`). One whose record has been erased since is not:
     /// it would go out without the record (crate::privacy). Audited (administrators only).
     pub async fn replay_event(&self, ctx: &Ctx, id: i64) -> Result<()> {
         require_admin(ctx)?;
@@ -641,7 +685,10 @@ impl Kernel {
         Ok(())
     }
 
-    async fn handle_event(&self, ev: &Event) -> Result<()> {
+    /// Hands an event to everything that consumes it: webhooks, followers, automations and the event sinks. Each
+    /// automation and each sink stands alone: one that fails makes the event fail for itself, the rest still run. The
+    /// names of the sinks that handled it go into `handled`, which the caller records if the event is to be tried again.
+    async fn handle_event(&self, ev: &Event, handled: &std::sync::Mutex<Vec<String>>) -> Result<()> {
         if ev.topic == RELEASE_TOPIC {
             let store = self.files.get().ok_or_else(|| Error::Unavailable("no file storage is configured".into()))?;
             let own = format!("tenants/{}/", ev.tenant_id);
@@ -692,6 +739,11 @@ impl Kernel {
             tx.commit().await?;
             return self.mail_settled(ev.tenant_id, send, "sent", None).await;
         }
+        // Its record was erased after the change and before this (crate::privacy): the event no longer carries it, and no
+        // webhook, follower, automation or sink is handed a change to a record it cannot show. It is handled, as nothing.
+        if ev.payload.get("erased") == Some(&Value::Bool(true)) {
+            return Ok(());
+        }
         self.queue_deliveries(ev).await?;
         if ev.topic == crate::lifecycle::DEPROVISIONED_TOPIC {
             self.hand_over(ev).await?;
@@ -708,6 +760,9 @@ impl Kernel {
                 tracing::warn!(topic = %ev.topic, "follower notifications failed: {e}");
             }
         }
+        // The workspace's sinks: an app's only where one of its packages is installed.
+        let schema = self.registry.schema(ev.tenant_id).await?;
+        let sinks: Vec<_> = self.hooks.event_sinks(&schema.packages).collect();
         let mut tx = self.db.tenant_tx(ev.tenant_id).await?;
         // An audit event (crate::audit) goes only to webhooks that name its topic or `audit.*`, never to `*` or an app's:
         // it holds people's data.
@@ -728,32 +783,49 @@ impl Kernel {
         .bind(entity_wildcard)
         .execute(&mut *tx)
         .await?;
+        // Those that handled it on an attempt that failed, or before it was dead and replayed.
+        let names: Vec<&str> = sinks.iter().map(|(name, _)| *name).collect();
+        let before: Vec<String> = sqlx::query_scalar("select consumer from event_receipt where tenant_id = $1 and consumer = any($2) and event_id = $3")
+            .bind(ev.tenant_id)
+            .bind(&names)
+            .bind(ev.id)
+            .fetch_all(&mut *tx)
+            .await?;
         tx.commit().await?;
         self.set_deliveries_aside(ev).await?;
-        crate::automation::run_for_event(self, ev).await?;
-        for sink in self.hooks.event_sinks() {
-            sink.on_event(self, ev).await?;
+        // Automations keep their own record of each run (`automation_run`): one that ran is not run again.
+        let mut failed = Vec::new();
+        if let Err(e) = crate::automation::run_for_event(self, ev).await {
+            failed.push(format!("automations: {e}"));
         }
-        Ok(())
+        for (name, sink) in sinks.into_iter().filter(|(name, _)| !before.iter().any(|b| b == name)) {
+            match sink.on_event(self, ev).await {
+                Ok(()) => handled.lock().unwrap_or_else(|e| e.into_inner()).push(name.to_string()),
+                Err(e) => failed.push(format!("{name}: {e}")),
+            }
+        }
+        if failed.is_empty() { Ok(()) } else { Err(Error::Unavailable(failed.join("; "))) }
     }
 
-    /// Drains the outbox until shutdown, looking again every 250 ms when it is empty.
+    /// Drains the outbox until shutdown, looking again every 250 ms when it is empty. Told to stop, it
+    /// finishes the events it has begun and hands back the rest of its batch.
     pub fn spawn_outbox_dispatcher(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         let k = self.clone();
         tokio::spawn(async move {
             loop {
-                if *shutdown.borrow() {
-                    return;
-                }
-                loop {
-                    match k.dispatch_outbox_once().await {
+                // Batch after batch while there is work, and none once the replica is stopping.
+                while !*shutdown.borrow() {
+                    match k.dispatch_outbox(&shutdown).await {
                         Ok(0) => break,
-                        Ok(_) => continue,
+                        Ok(_) => {}
                         Err(e) => {
                             tracing::warn!("outbox dispatch error: {e}");
                             break;
                         }
                     }
+                }
+                if *shutdown.borrow() {
+                    return;
                 }
                 tokio::select! {
                     _ = shutdown.changed() => return,
@@ -764,8 +836,8 @@ impl Kernel {
     }
 
     /// Sends one batch of webhooks. Like the outbox, the claim is a lease and no transaction stays
-    /// open across a request: a slow endpoint holds no row and no connection, and the batch's
-    /// requests run side by side, so it delays no other endpoint either.
+    /// open across a request: a slow endpoint holds no row, no connection and no turn at the pool,
+    /// and the batch's requests run side by side, so it delays no other endpoint either.
     pub async fn deliver_webhooks_once(&self) -> Result<usize> {
         if self.db.fenced() || self.holding().await? {
             return Ok(0);
@@ -780,6 +852,7 @@ impl Kernel {
             attempts: i32,
             url: String,
         }
+        let turn = self.turn().await?;
         let mut tx = self.db.system_tx().await?;
         let due: Vec<Due> = sqlx::query_as(
             "with claimed as (select tenant_id, id from webhook_delivery where status = 'pending' and next_attempt_at <= now() \
@@ -793,14 +866,20 @@ impl Kernel {
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
+        drop(turn);
         let outcomes = futures::future::join_all(due.iter().map(|d| async move {
-            // Nothing goes out for a sandbox (sandbox.rs).
-            self.outward(d.tenant_id).await.map_err(|e| (None, e.to_string()))?;
-            // One whose secret cannot be opened is not sent unsigned: it fails, and says why.
-            let secret = self.webhook_secret(d.tenant_id, d.webhook_id).await.map_err(|e| (None, e.to_string()))?;
+            // A turn at the pool while it reads what it needs, never while it waits for the endpoint.
+            let secret = {
+                let _turn = self.turn().await.map_err(|e| (None, e.to_string()))?;
+                // Nothing goes out for a sandbox (sandbox.rs).
+                self.outward(d.tenant_id).await.map_err(|e| (None, e.to_string()))?;
+                // One whose secret cannot be opened is not sent unsigned: it fails, and says why.
+                self.webhook_secret(d.tenant_id, d.webhook_id).await.map_err(|e| (None, e.to_string()))?
+            };
             self.post_webhook(&d.url, &secret, &d.topic, d.id, &d.payload).await
         }))
         .await;
+        let _turn = self.turn().await?;
         let mut tx = self.db.system_tx().await?;
         for (d, outcome) in due.iter().zip(outcomes) {
             let attempts = d.attempts + 1;
@@ -898,14 +977,23 @@ impl Kernel {
         })
     }
 
-    /// Deletes processed outbox rows, delivered webhooks and expired idempotency keys.
+    /// Deletes processed outbox rows, delivered webhooks, the receipts of events that will not be handled again, and expired
+    /// idempotency keys.
     pub async fn purge_old_events(&self, keep_days: i32) -> Result<u64> {
         let past = |column: &str, days: i32| format!("{column} < now() - make_interval(days => {days}) and not ferrum_workspace_held(tenant_id)");
         self.db
             .purge(&[
                 ("outbox", past("processed_at", keep_days)),
                 ("webhook_delivery", format!("status = 'delivered' and {}", past("updated_at", keep_days))),
-                ("event_receipt", past("received_at", keep_days)),
+                // A receipt stays while its event may still be handled (waiting, or dead and replayable): it is what
+                // keeps a consumer that handled it from being called again.
+                (
+                    "event_receipt",
+                    format!(
+                        "{} and not exists (select 1 from outbox o where o.id = event_receipt.event_id and o.processed_at is null)",
+                        past("received_at", keep_days)
+                    ),
+                ),
                 // A receipt answers a request sent again for as long as a device's work may wait offline.
                 ("idempotency_key", past("created_at", crate::receipt::RECEIPT_DAYS)),
                 ("event_chain", past("first_at", keep_days)),

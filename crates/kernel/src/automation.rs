@@ -1049,56 +1049,84 @@ async fn run_one(
         }
     };
     ctx.depth = depth + 1;
-    // The linked records and settings its condition and actions read, once for the run (BD-14, BD-17).
-    let condition = a.condition.as_deref().filter(|c| !c.trim().is_empty());
-    let cond = condition.map(compiled).transpose()?;
-    let mut names = crate::links::used(cond.iter());
-    let mut settings = crate::settings::used(cond.iter());
-    for action in validate_actions(&a.actions).into_iter().flatten() {
-        names.extend(links_used(&action)?);
-        settings.extend(settings_used(&action)?);
-    }
-    let ctx = crate::settings::with(k, &ctx, &mut tx, settings).await?.into_owned();
-    let user = ctx.user_value();
-    let links = match ctx.schema.entity(entity).cloned() {
-        Some(ent) => crate::links::load(k, &ctx, &mut tx, &ent, cel_doc, &names).await?,
-        None => Value::Object(Map::new()),
-    };
-    // A transition's event says which, from and to, and by whom (BD-19); null for any other.
-    let transition = ev.payload.get("transition").cloned().unwrap_or(Value::Null);
-    // Where the change came from (`outside`: a record a connection fetched, BD-50); empty for any other.
-    let came_from = ev.payload.get("origin").cloned().unwrap_or_else(|| Value::String(String::new()));
-    let pass = match condition {
-        Some(c) => matches!(eval(c, cel_doc, cel_old, &user, &[("links", &links), ("transition", &transition), ("origin", &came_from)])?, Value::Bool(true)),
-        _ => true,
-    };
-    let status = if pass {
-        // An `invoke` without a key of its own does its step once per automation, record version and place.
-        let origin = format!("automation:{}:{}:v{}:", a.id, record.map(|r| r.to_string()).unwrap_or_default(), cel_doc.get("version").unwrap_or(&Value::Null));
-        let mut results = Vec::new();
-        for (i, action) in validate_actions(&a.actions)?.into_iter().enumerate() {
-            let done = Value::Array(results.clone());
-            let what = action.action.clone();
-            results.push(
-                run_step(
-                    k,
-                    &ctx,
-                    &mut tx,
-                    entity,
-                    record,
-                    (raw, cel_doc),
-                    &user,
-                    &[("results", &done), ("links", &links), ("transition", &transition), ("origin", &came_from)],
-                    &format!("{origin}{i}"),
-                    action,
-                )
-                .await
-                .map_err(|e| at_effect(i, &what, e))?,
-            );
+    let ran = async {
+        // The linked records and settings its condition and actions read, once for the run (BD-14, BD-17).
+        let condition = a.condition.as_deref().filter(|c| !c.trim().is_empty());
+        let cond = condition.map(compiled).transpose()?;
+        let mut names = crate::links::used(cond.iter());
+        let mut settings = crate::settings::used(cond.iter());
+        for action in validate_actions(&a.actions).into_iter().flatten() {
+            names.extend(links_used(&action)?);
+            settings.extend(settings_used(&action)?);
         }
-        "done"
-    } else {
-        "skipped"
+        let ctx = crate::settings::with(k, &ctx, &mut tx, settings).await?.into_owned();
+        let user = ctx.user_value();
+        let links = match ctx.schema.entity(entity).cloned() {
+            Some(ent) => crate::links::load(k, &ctx, &mut tx, &ent, cel_doc, &names).await?,
+            None => Value::Object(Map::new()),
+        };
+        // A transition's event says which, from and to, and by whom (BD-19); null for any other.
+        let transition = ev.payload.get("transition").cloned().unwrap_or(Value::Null);
+        // Where the change came from (`outside`: a record a connection fetched, BD-50); empty for any other.
+        let came_from = ev.payload.get("origin").cloned().unwrap_or_else(|| Value::String(String::new()));
+        let pass = match condition {
+            Some(c) => {
+                matches!(eval(c, cel_doc, cel_old, &user, &[("links", &links), ("transition", &transition), ("origin", &came_from)])?, Value::Bool(true))
+            }
+            _ => true,
+        };
+        Ok(if pass {
+            // An `invoke` without a key of its own does its step once per automation, record version and place.
+            let origin =
+                format!("automation:{}:{}:v{}:", a.id, record.map(|r| r.to_string()).unwrap_or_default(), cel_doc.get("version").unwrap_or(&Value::Null));
+            let mut results = Vec::new();
+            for (i, action) in validate_actions(&a.actions)?.into_iter().enumerate() {
+                let done = Value::Array(results.clone());
+                let what = action.action.clone();
+                results.push(
+                    run_step(
+                        k,
+                        &ctx,
+                        &mut tx,
+                        entity,
+                        record,
+                        (raw, cel_doc),
+                        &user,
+                        &[("results", &done), ("links", &links), ("transition", &transition), ("origin", &came_from)],
+                        &format!("{origin}{i}"),
+                        action,
+                    )
+                    .await
+                    .map_err(|e| at_effect(i, &what, e))?,
+                );
+            }
+            "done"
+        } else {
+            "skipped"
+        })
+    }
+    .await;
+    let status = match ran {
+        Ok(status) => status,
+        // What it asks cannot be done, whatever the attempt (an entity no longer installed, a field the record lacks):
+        // recorded as failed, saying why, and the event goes on to its other consumers. Anything else is tried again.
+        Err(e) if crate::jobs::gives_up(&e) => {
+            tx.rollback().await?;
+            let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
+            sqlx::query(
+                "insert into automation_run (tenant_id, automation_id, outbox_id, status, error) values ($1, $2, $3, 'failed', $4) on conflict do nothing",
+            )
+            .bind(ev.tenant_id)
+            .bind(a.id)
+            .bind(ev.id)
+            .bind(e.to_string())
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            tracing::warn!(automation = %a.id, event = ev.id, "automation failed: {e}");
+            return Ok("failed");
+        }
+        Err(e) => return Err(e),
     };
     sqlx::query("insert into automation_run (tenant_id, automation_id, outbox_id, status) values ($1, $2, $3, $4)")
         .bind(ev.tenant_id)

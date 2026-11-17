@@ -35,7 +35,7 @@ const RENEW: Duration = Duration::from_secs(5);
 /// How often an idle replica looks for work.
 const POLL: Duration = Duration::from_secs(1);
 /// Jobs one replica runs at once ...
-const WORKERS: usize = 4;
+pub(crate) const WORKERS: usize = 4;
 /// ... and one workspace across all of them (replicas claiming at the same moment can pass this by
 /// one each: it shares capacity, it guards nothing).
 const TENANT_RUNNING: i64 = 3;
@@ -195,7 +195,9 @@ pub enum Ended {
     Released,
 }
 
-fn gives_up(e: &Error) -> bool {
+/// Whether an error says the work cannot succeed however often it is tried: a job fails at once, an automation's run
+/// is recorded as failed (crate::automation).
+pub(crate) fn gives_up(e: &Error) -> bool {
     matches!(e, Error::Invalid(_) | Error::Validation(_) | Error::Forbidden(_) | Error::NotFound(_) | Error::Unauthorized(_) | Error::Refused { .. })
 }
 

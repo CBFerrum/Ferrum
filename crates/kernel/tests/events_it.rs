@@ -50,14 +50,42 @@ impl EventSink for Sink {
     }
 }
 
+/// Hears every event, and says how often it heard each.
+#[derive(Default)]
+struct Tally(std::sync::Mutex<Vec<i64>>);
+
+#[async_trait]
+impl EventSink for Tally {
+    async fn on_event(&self, _: &Kernel, ev: &Event) -> Result<()> {
+        self.0.lock().unwrap().push(ev.id);
+        Ok(())
+    }
+}
+
+impl Tally {
+    fn times(&self, event: i64) -> usize {
+        self.0.lock().unwrap().iter().filter(|e| **e == event).count()
+    }
+}
+
+/// The newest event of a topic.
+async fn last(k: &Kernel, topic: &str) -> i64 {
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query_scalar("select max(id) from outbox where topic = $1").bind(topic).fetch_one(&mut *tx).await.unwrap()
+}
+
 async fn workspace(k: &Kernel, slug: &str) -> Uuid {
+    workspace_with(k, slug, &[]).await
+}
+
+async fn workspace_with(k: &Kernel, slug: &str, packages: &[&str]) -> Uuid {
     k.create_tenant(NewTenant {
         slug: slug.into(),
         name: slug.into(),
         admin_email: format!("admin@{slug}.test"),
         admin_password: "Correct-Horse-9".into(),
         admin_name: None,
-        packages: vec![],
+        packages: packages.iter().map(|p| p.to_string()).collect(),
         settings: None,
     })
     .await
@@ -106,8 +134,15 @@ async fn scenario() {
     ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     let sink = Arc::new(Sink { fail: AtomicBool::new(false), second: AtomicUsize::new(0) });
+    let tally = Arc::new(Tally::default());
     let mut hooks = HookRegistry::default();
+    hooks.add_event_sink(tally.clone());
     hooks.add_event_sink(sink.clone());
+    // An app's sink, registered as the server registers an app: for the workspaces that have one of its packages.
+    let journeys = Arc::new(Tally::default());
+    hooks.app("journeys", &["contacts".to_string()], |h| {
+        h.add_event_sink(journeys.clone());
+    });
     let settings = KernelSettings { webhooks_allow_private: true, ..Default::default() };
     let k = Kernel::boot(db, catalog, hooks, settings, None).await.expect("boot");
     let (loud, quiet) = (workspace(&k, "loud").await, workspace(&k, "quiet").await);
@@ -295,4 +330,129 @@ async fn scenario() {
     assert!(k.operation(&other, op).await.unwrap()["events"].as_array().unwrap().is_empty(), "another workspace finds none of it");
     assert!(matches!(k.operation(&clerk, op).await, Err(Error::Forbidden(_))), "administrators only");
     assert!(matches!(k.operation(&admin, "drop table; --").await, Err(Error::Validation(_))), "an id, not anything");
+
+    // ───────────── each consumer on its own (Annex A, issue 4) ─────────────
+    // An automation saved before its app was uninstalled: what it creates is not there, the same on every attempt.
+    let mut tx = k.db.tenant_tx(quiet).await.unwrap();
+    let ticket = Uuid::now_v7();
+    sqlx::query("insert into automation (tenant_id, id, name, entity, event, actions) values ($1, $2, 'open a ticket', 'Company', 'created', $3)")
+        .bind(quiet)
+        .bind(ticket)
+        .bind(json!([{"type": "create_document", "entity": "Ticket", "values": {}}]))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    outbox::enqueue(&mut tx, quiet, "Company.created", Some("Company"), Some(Uuid::now_v7()), json!({"doc": {"company_name": "Initech"}})).await.unwrap();
+    tx.commit().await.unwrap();
+    let created = last(&k, "Company.created").await;
+    k.dispatch_outbox_once().await.unwrap();
+    assert_eq!(tally.times(created), 1, "the sinks hear of it, whatever an automation did");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let run: (String, Option<String>) = sqlx::query_as("select status, error from automation_run where automation_id = $1")
+        .bind(ticket)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("the run is recorded");
+    let (processed, attempts): (bool, i32) =
+        sqlx::query_as("select processed_at is not null, attempts from outbox where id = $1").bind(created).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(run.0, "failed", "{run:?}");
+    assert!(run.1.as_deref().is_some_and(|e| e.contains("Ticket")), "saying why: {run:?}");
+    assert!(processed && attempts == 0, "the event is handled, not tried again: processed {processed}, attempts {attempts}");
+
+    // An automation that fails for now (a code another currency has: a conflict is tried again) fails the event for itself
+    // alone: the sinks hear of it on the first attempt, and are not called again when it is tried again for the automation.
+    let mut tx = k.db.tenant_tx(quiet).await.unwrap();
+    sqlx::query("insert into automation (tenant_id, id, name, entity, event, actions) values ($1, $2, 'one more rupee', 'Uom', 'created', $3)")
+        .bind(quiet)
+        .bind(Uuid::now_v7())
+        .bind(json!([{"type": "create_document", "entity": "Currency", "values": {"code": "'INR'", "currency_name": "'Rupee again'"}}]))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    outbox::enqueue(&mut tx, quiet, "Uom.created", Some("Uom"), Some(Uuid::now_v7()), json!({"doc": {"uom_name": "Crate"}})).await.unwrap();
+    tx.commit().await.unwrap();
+    let uom = last(&k, "Uom.created").await;
+    for _ in 0..2 {
+        k.dispatch_outbox_once().await.unwrap();
+        assert_eq!(tally.times(uom), 1, "the sinks hear of it while an automation fails, once");
+        let mut tx = k.db.system_tx().await.unwrap();
+        sqlx::query("update outbox set available_at = now() where id = $1").bind(uom).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert_eq!(pending(&k, quiet, "Uom.created").await, 1, "tried again for the automation");
+    let mut tx = k.db.tenant_tx(quiet).await.unwrap();
+    sqlx::query("update automation set is_active = false where name = 'one more rupee'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    drain(&k).await;
+    assert_eq!(pending(&k, quiet, "Uom.created").await, 0, "and handled once it is turned off");
+    assert_eq!(tally.times(uom), 1);
+
+    // A sink that fails once: a sink that handled the event is not called again when it is tried again.
+    sink.fail.store(true, Ordering::SeqCst);
+    emit(&k, quiet, "flaky", 1).await;
+    let flaky = last(&k, "flaky").await;
+    k.dispatch_outbox_once().await.unwrap();
+    assert_eq!(pending(&k, quiet, "flaky").await, 1, "it failed");
+    sink.fail.store(false, Ordering::SeqCst);
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update outbox set available_at = now() where id = $1").bind(flaky).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    drain(&k).await;
+    assert_eq!(pending(&k, quiet, "flaky").await, 0, "and was handled the second time");
+    assert_eq!(tally.times(flaky), 1, "the other sink ran once across both attempts");
+
+    // ───────────── a record erased while its event waited ─────────────
+    // Erasure took the record out of the event (crate::privacy): no consumer is handed a change to a record it lacks.
+    let mut tx = k.db.tenant_tx(quiet).await.unwrap();
+    sqlx::query("insert into automation (tenant_id, id, name, entity, event, actions) values ($1, $2, 'on update', 'Company', 'updated', $3)")
+        .bind(quiet)
+        .bind(Uuid::now_v7())
+        .bind(json!([{"type": "create_document", "entity": "Ticket", "values": {}}]))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let record = Uuid::now_v7();
+    outbox::enqueue(&mut tx, quiet, "Company.updated", Some("Company"), Some(record), json!({"id": record, "event": "updated", "erased": true})).await.unwrap();
+    tx.commit().await.unwrap();
+    let erased = last(&k, "Company.updated").await;
+    drain(&k).await;
+    assert_eq!(tally.times(erased), 0, "no sink hears of it");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let ran: i64 = sqlx::query_scalar("select count(*) from automation_run where outbox_id = $1").bind(erased).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(ran, 0, "no automation runs on it");
+    assert_eq!(pending(&k, quiet, "Company.updated").await, 0, "and it is handled, not dead");
+
+    // ───────────── an app's sink hears the workspaces that have the app, and no other ─────────────
+    let with = workspace_with(&k, "with-contacts", &["contacts"]).await;
+    emit(&k, quiet, "scoped", 1).await;
+    let elsewhere = last(&k, "scoped").await;
+    emit(&k, with, "scoped", 1).await;
+    let there = last(&k, "scoped").await;
+    drain(&k).await;
+    assert_eq!(journeys.times(elsewhere), 0, "a workspace without the app's packages does not call its sink");
+    assert_eq!(journeys.times(there), 1, "one with them does");
+    assert_eq!((tally.times(elsewhere), tally.times(there)), (1, 1), "the platform's own sinks hear every workspace");
+
+    // ───────────── a dead event keeps its receipts as long as it can be replayed ─────────────
+    sink.fail.store(true, Ordering::SeqCst);
+    emit(&k, quiet, "flaky", 1).await;
+    let dead = last(&k, "flaky").await;
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update outbox set attempts = 14 where id = $1").bind(dead).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    k.dispatch_outbox_once().await.unwrap();
+    assert_eq!(k.dead_events(&admin, 10).await.unwrap()[0]["id"], json!(dead), "dead");
+    assert_eq!(tally.times(dead), 1);
+    // Replayed a year on, long past the days handled events and their receipts are kept.
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update event_receipt set received_at = now() - interval '1 year' where event_id = $1").bind(dead).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    k.purge_old_events(30).await.unwrap();
+    sink.fail.store(false, Ordering::SeqCst);
+    k.replay_event(&admin, dead).await.unwrap();
+    drain(&k).await;
+    assert_eq!(pending(&k, quiet, "flaky").await, 0, "handled once replayed");
+    assert_eq!(tally.times(dead), 1, "a sink that handled it before it died is not called again");
 }

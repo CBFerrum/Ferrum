@@ -1,17 +1,18 @@
 //! AT-MSG-001, 002 and 005 as written, against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`; the
 //! database is reset first): crashes around the commit and around publication, the same event delivered
-//! at the same moment and after a restart, and nothing but what is committed to go on.
+//! at the same moment and after a restart, and nothing but what is committed to go on. Then scenario F8:
+//! a replica killed holding a batch, and one that stops, leave nothing waiting long.
 
 use async_trait::async_trait;
 use ferrum_kernel::outbox::{self, Event};
 use ferrum_kernel::tenant::NewTenant;
-use ferrum_kernel::{Db, DbConfig, EventSink, HookRegistry, Kernel, KernelSettings, Result};
+use ferrum_kernel::{Db, DbConfig, EventSink, HookRegistry, Kernel, KernelSettings, Result, Trace};
 use ferrum_meta::Catalog;
 use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -29,6 +30,46 @@ impl EventSink for Consumer {
         }
         self.delivered.fetch_add(1, Ordering::SeqCst);
         effect(k, ev.tenant_id, ev.id).await
+    }
+}
+
+/// Holds `held.{n}` until `open` reaches n, and notes what it began and what it finished (its topics).
+#[derive(Default)]
+struct Held {
+    open: AtomicUsize,
+    began: std::sync::Mutex<Vec<String>>,
+    done: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl EventSink for Held {
+    async fn on_event(&self, _: &Kernel, ev: &Event) -> Result<()> {
+        self.began.lock().unwrap().push(ev.topic.clone());
+        if let Some(n) = ev.topic.strip_prefix("held.").and_then(|n| n.parse::<usize>().ok()) {
+            while self.open.load(Ordering::SeqCst) < n {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        self.done.lock().unwrap().push(ev.topic.clone());
+        Ok(())
+    }
+}
+
+impl Held {
+    fn began(&self, topic: &str) -> bool {
+        self.began.lock().unwrap().iter().any(|t| t == topic)
+    }
+    fn done(&self, topic: &str) -> bool {
+        self.done.lock().unwrap().iter().any(|t| t == topic)
+    }
+    async fn begins(&self, topic: &str) {
+        for _ in 0..400 {
+            if self.began(topic) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("{topic} was never begun");
     }
 }
 
@@ -67,13 +108,13 @@ fn every_committed_event_arrives_and_counts_once() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 12, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 12, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
-    let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
+    let catalog = || Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     let consumer = Arc::new(Consumer::default());
     let mut hooks = HookRegistry::default();
     hooks.add_event_sink(consumer.clone());
-    let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
+    let k = Kernel::boot(db, catalog(), hooks, KernelSettings::default(), None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {
             slug: "acme".into(),
@@ -161,4 +202,63 @@ async fn scenario() {
     dispatcher.await.unwrap();
     assert_eq!(consumer.delivered.load(Ordering::SeqCst), before + 5);
     assert_eq!(count(&k, "select count(*) from effect").await, 7);
+
+    // ───────────── scenario F8: a replica killed holding a batch ─────────────
+    // Two more replicas of the server, whose sink holds `held.*` events as long as it is told.
+    let held = Arc::new(Held::default());
+    let replica = || async {
+        let db = Db::connect(DbConfig { url: url.clone(), max_connections: 8, ..Default::default() }).await.expect("connect");
+        let mut hooks = HookRegistry::default();
+        hooks.add_event_sink(held.clone());
+        Kernel::boot(db, catalog(), hooks, KernelSettings::default(), None).await.expect("boot")
+    };
+    let (a, b) = (replica().await, replica().await);
+    let queue = |topic: &'static str, priority: i16| {
+        let a = a.clone();
+        Trace { priority: Some(priority), ..Default::default() }.scope(async move {
+            let mut tx = a.db.tenant_tx(tenant).await.unwrap();
+            outbox::enqueue(&mut tx, tenant, topic, None, None, json!({})).await.unwrap();
+            tx.commit().await.unwrap();
+        })
+    };
+    // A sign-in code waits in the same batch behind an event whose handler is at work when its replica is killed.
+    queue("held.1", 1).await;
+    queue("code", outbox::PRIORITY_URGENT).await;
+    let (_alive, running) = watch::channel(false);
+    let killed = a.spawn_outbox_dispatcher(running);
+    held.begins("held.1").await;
+    killed.abort();
+    let _ = killed.await;
+    // Another replica takes the code once the claim on what the dead one had not begun runs out.
+    let since = Instant::now();
+    while !held.done("code") && since.elapsed() < Duration::from_secs(60) {
+        b.dispatch_outbox_once().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(held.done("code"), "the code was sent within a minute of its replica dying, not after the batch's ten-minute lease");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let left: f64 =
+        sqlx::query_scalar("select extract(epoch from available_at - now())::float8 from outbox where topic = 'held.1'").fetch_one(&mut *tx).await.unwrap();
+    sqlx::query("update outbox set processed_at = now() where topic = 'held.1'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(left < 150.0, "the event it was at holds no more than its handlers' time: {left} s left");
+
+    // ───────────── a replica that stops hands back what it has not begun ─────────────
+    queue("held.2", 1).await;
+    queue("held.3", 1).await;
+    let (stop, stopping) = watch::channel(false);
+    let dispatcher = a.spawn_outbox_dispatcher(stopping);
+    held.begins("held.2").await;
+    stop.send(true).unwrap();
+    held.open.store(2, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(20), dispatcher).await.expect("it stops once what it had begun is done").unwrap();
+    assert!(held.done("held.2") && !held.began("held.3"), "it finished what it had begun, and began nothing more");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let back: bool =
+        sqlx::query_scalar("select processed_at is null and available_at <= now() from outbox where topic = 'held.3'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(back, "what it had not begun is free for another replica at once");
+    held.open.store(3, Ordering::SeqCst);
+    assert_eq!(b.dispatch_outbox_once().await.unwrap(), 1, "and another takes it");
+    assert!(held.done("held.3"));
 }

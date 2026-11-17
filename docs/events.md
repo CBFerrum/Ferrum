@@ -28,21 +28,30 @@ Tasks a handler spawns start without a trace; run them under one if their events
 
 ## Delivery
 
-**At least once.** A worker takes a lease on a batch (ten minutes) and handles it outside any long
-transaction. If it dies the lease expires and another replica takes the events. Consumers must be
-idempotent, and the platform's are: webhook deliveries are unique per webhook and event, plugin runs per
-plugin and event, automation runs per automation and event (a scheduled automation's moments per
-automation, record and moment). There is no exactly-once, and nothing should assume it.
+**At least once.** A worker takes a lease on a batch (30 seconds), takes each event again as it begins
+it (for its handlers' 120 seconds and 30 more), and handles it outside any long transaction. If the worker
+dies, what it had not begun passes to another replica within 30 seconds, and the event it was at when its
+own lease ends; a replica that is stopping finishes what it has begun and hands back the rest of its batch at
+once. Webhook deliveries are
+unique per webhook and event, plugin runs per plugin and event, automation runs per automation and event (a
+scheduled automation's moments per automation, record and moment), and what an event sink handled is
+recorded (below). There is no exactly-once, and nothing should assume it.
 
 **What one event goes through, in order:** webhook deliveries are queued for the subscribed webhooks
 (an audit event only for those that name its topic, never for `*`; an app's webhook gets which record,
 never `doc` or `was`), followers are told (first attempt only), automations run, then each registered
-event sink is called, in registration order (plugin subscriptions are one). The event is done only when
-all of that returned. An error from any step, a sink's included, fails the event as a whole: it is tried
-again from the start, so automations and sinks that ran before the failing one run again for the same
-event, and the sinks after it have not run yet. A consumer outside the platform's own deduplicates on `id`
-(`EventSink::on_event` gets the event and nothing remembers what it did), and does its own work in a
-transaction it can repeat.
+event sink is called, in registration order (plugin subscriptions are one): an app's sinks only in the
+workspaces that installed one of its packages, as its document hooks run. Each automation and each sink
+has its own outcome: one that fails does not stop the others, and the event is tried again for what failed
+alone. An automation run that can never succeed (it creates an entity no longer installed, the record lacks a
+field it needs: an error that says invalid, not found or forbidden) is recorded as failed, saying why, and
+does not fail the event; an automation that ran is not run again for the event. A sink that handled the event
+is not called for it again when the event is retried or replayed: when an attempt fails or runs out of time,
+the sinks that handled it are recorded in `event_receipt` under their names (`{app}.{what}`, from
+`EventSink::name`). Only a replica that dies while handling an event can call again a sink that had finished,
+so a sink whose work must happen once asks `outbox::first_time` in the transaction that does it. An event
+whose record was erased while it waited carries nothing of the record any more (it says `erased`): it reaches
+no webhook, follower, automation or sink, and counts as handled.
 
 **Order** holds within a workspace and a priority, until something fails: a retry goes behind later
 events. During an upgrade or after a rollback, an event written by a newer build can be delivered after later events of
@@ -50,7 +59,10 @@ the same workspace (an older server leaves it for a newer one, docs/operations.m
 Anything that depends on order compares `source_version`.
 
 **Fairness.** A batch gives each workspace with work at most 10 events, of 50, and handles workspaces
-side by side. So one workspace's backlog, or its slow provider, does not delay another's events.
+side by side. So one workspace's backlog, or its slow provider, does not delay another's events. Side by
+side means as many events at once as a quarter of the replica's database pool (7 of the default 30), shared
+with the webhook sender's reads, so that a backlog never takes the connections requests need; slow providers
+holding all of those at once delay the rest by up to their handlers' 120 seconds.
 Within a workspace, mail and push go first and bulk work last: bulk operations, imports, jobs at
 bulk priority and sends to a whole list. A mail sent under bulk priority stays there, so 50,000
 campaign messages do not stand in front of someone's password reset. Run anything of the kind under
@@ -77,7 +89,8 @@ attempts. A sandbox sends nothing: its deliveries are dead at once, saying why.
 
 **Dead events** stay in the table for a person to look at; the `ferrum_outbox_dead` and
 `ferrum_webhook_dead` metrics count them. Handled events and delivered webhooks are deleted after 30
-days.
+days, and with them the receipts of what consumers handled; a waiting or dead event keeps its receipts however
+old they are, so a replay never repeats what was done.
 
 | Request | Does |
 |---|---|

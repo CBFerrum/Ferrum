@@ -108,10 +108,19 @@ pub struct ApprovalDecided<'a> {
     pub comment: Option<&'a str>,
 }
 
-/// Consumes outbox events after webhooks and automations (e.g. plugin subscriptions). Delivery is
-/// at least once: an error makes the event retry, so implementations must deduplicate.
+/// Consumes outbox events after webhooks and automations (e.g. plugin subscriptions), each sink on its own: an error
+/// makes the event retry for this sink alone, and a sink that handled an event is not called for it again when it is
+/// retried or replayed (crate::outbox). A replica that dies while handling an event can still call a sink again for
+/// it, so what must happen once is asked of [`crate::outbox::first_time`] in the transaction that does it.
 #[async_trait]
 pub trait EventSink: Send + Sync {
+    /// Its name within its app (`what` of `{app}.{what}`: the registry adds the app), under which what it handled is
+    /// recorded. Its type's name unless it says otherwise; two sinks of one app may not share one.
+    fn name(&self) -> &'static str {
+        let path = std::any::type_name::<Self>();
+        let path = path.split('<').next().unwrap_or(path);
+        path.rsplit("::").next().unwrap_or(path)
+    }
     async fn on_event(&self, kernel: &Kernel, event: &crate::outbox::Event) -> Result<()>;
 }
 
@@ -224,7 +233,9 @@ pub trait DocHost: Send + Sync {
 #[derive(Default, Clone)]
 pub struct HookRegistry {
     by_entity: HashMap<String, Vec<ScopedHook>>,
-    sinks: Vec<Arc<dyn EventSink>>,
+    /// Event sinks by name (`{app}.{what}`; `platform.{what}` outside any app's registration), each with the packages it
+    /// is called for (as [`ScopedHook::packages`]), in registration order.
+    sinks: Vec<(String, Option<Arc<[String]>>, Arc<dyn EventSink>)>,
     sites: HashMap<String, Arc<dyn Site>>,
     doc_hosts: HashMap<String, Arc<dyn DocHost>>,
     job_handlers: HashMap<&'static str, Arc<dyn crate::jobs::JobHandler>>,
@@ -585,13 +596,26 @@ impl HookRegistry {
         out
     }
 
+    /// Adds an event sink, named `{app}.{name}` after the app whose registration is running ([`EventSink::name`]), and
+    /// called only for the workspaces that installed one of that app's packages, as its document hooks are
+    /// ([`HookRegistry::scoped`]). A name two sinks share stops the server ([`HookRegistry::settle`]): what one handled
+    /// would pass for the other's.
     pub fn add_event_sink(&mut self, sink: Arc<dyn EventSink>) -> &mut Self {
-        self.sinks.push(sink);
+        let name = format!("{}.{}", self.app.as_deref().unwrap_or("platform"), sink.name());
+        if self.sinks.iter().any(|(n, _, _)| *n == name) {
+            self.problems.push(format!("two event sinks are named {name}: give one another name (EventSink::name)"));
+        }
+        self.sinks.push((name, self.scope.clone(), sink));
         self
     }
 
-    pub fn event_sinks(&self) -> &[Arc<dyn EventSink>] {
-        &self.sinks
+    /// The event sinks of a workspace with the `installed` packages, by name, in registration order: an app's only where
+    /// one of its packages is (as [`HookRegistry::for_tenant`] gives document hooks).
+    pub fn event_sinks(&self, installed: &[String]) -> impl Iterator<Item = (&str, &Arc<dyn EventSink>)> {
+        self.sinks
+            .iter()
+            .filter(move |(_, packages, _)| packages.as_ref().is_none_or(|ps| ps.iter().any(|p| installed.contains(p))))
+            .map(|(name, _, sink)| (name.as_str(), sink))
     }
 
     /// Adds a kind of background work (crate::jobs). Kinds are `{app}.{what}`.
@@ -956,6 +980,32 @@ mod tests {
             assert!(problems.contains(said), "{said}: {problems}");
         }
         assert!(bad.companions().next().is_none(), "none of them is declared");
+    }
+
+    struct Quiet;
+
+    #[async_trait]
+    impl EventSink for Quiet {
+        async fn on_event(&self, _: &Kernel, _: &crate::outbox::Event) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_event_sink_is_named_after_its_app_and_type_and_one_name_is_one_sinks() {
+        let mut r = HookRegistry::default();
+        r.add_event_sink(Arc::new(Quiet));
+        r.app("crm", &[], |h| {
+            h.add_event_sink(Arc::new(Quiet));
+        });
+        assert_eq!(r.event_sinks(&[]).map(|(name, _)| name).collect::<Vec<_>>(), ["platform.Quiet", "crm.Quiet"]);
+        assert!(r.settle().is_ok());
+        r.app("hr", &[], |h| {
+            h.add_event_sink(Arc::new(Quiet));
+            h.add_event_sink(Arc::new(Quiet));
+        });
+        let problems = r.settle().unwrap_err().join("; ");
+        assert!(problems.contains("two event sinks are named hr.Quiet"), "what one handled would pass for the other's: {problems}");
     }
 
     #[test]
