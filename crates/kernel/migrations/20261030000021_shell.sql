@@ -31,22 +31,25 @@ create policy tenant_isolation on user_session
 -- Host names that lead to a workspace: its subdomain of the cluster's base domain, or a custom
 -- domain the workspace proved it owns (a TXT record carrying `verify_token`). `target` is what
 -- the host serves: `shell` (the shell and every app), `portal` (portal pages only) or
--- `site:{app}` (an app's public site at the root). One primary host per workspace and target
--- carries links and redirects. A released host (renamed or deleted workspace) redirects for 90
--- days, then nobody may claim it for a year. Read before any session exists, so it is a cluster
--- table without row-level security.
+-- `site:{app}` (an app's public site at the root); or `mail`: a domain of the workspace's own
+-- claimed for mail, proven by its DNS record alone, which serves nothing and is never a main host.
+-- The host is the key, so a domain is one workspace's, whatever it is used for. One primary host
+-- per workspace and target carries links and redirects. A released host (renamed or deleted
+-- workspace) redirects for 90 days, then nobody may claim it for a year. Read before any session
+-- exists, so it is a cluster table without row-level security.
 create table tenant_host (
   host text primary key check (host ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$' and length(host) <= 253),
   tenant_id uuid not null references tenant(id) on delete cascade,
   kind text not null check (kind in ('subdomain', 'custom')),
-  target text not null default 'shell' check (target in ('shell', 'portal') or target ~ '^site:[a-z][a-z0-9-]{1,39}$'),
+  target text not null default 'shell' check (target in ('shell', 'portal', 'mail') or target ~ '^site:[a-z][a-z0-9-]{1,39}$'),
   is_primary boolean not null default false,
   verify_token text not null,
   verified_at timestamptz,
   checked_at timestamptz,
   failures int not null default 0,
   released_at timestamptz,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  check (target <> 'mail' or (kind = 'custom' and not is_primary))
 );
 create index tenant_host_tenant on tenant_host (tenant_id);
 create unique index tenant_host_primary on tenant_host (tenant_id, target) where is_primary and released_at is null;

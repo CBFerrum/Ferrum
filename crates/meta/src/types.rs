@@ -713,6 +713,17 @@ pub enum EntityKind {
     Ledger,
 }
 
+/// Which reads of an entity's records an entity declares recorded (`record_reads`), in the words of a workspace's own
+/// `record_reads` setting, which wins wherever it names the entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordReads {
+    /// Each single record opened.
+    Open,
+    /// That, and lists, searches, reports and exports.
+    All,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EntityDef {
@@ -739,6 +750,11 @@ pub struct EntityDef {
     /// says otherwise (pay, health, personnel files).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub internal: bool,
+    /// Who reads its records is recorded on the audit trail (a patient's chart, a personnel file) unless the workspace's
+    /// own `record_reads` names it, `off` included (crates/kernel/src/controls.rs). Read from the definition: nothing is
+    /// written into a workspace's settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_reads: Option<RecordReads>,
     /// Duplicates can be merged into one record (crates/kernel/src/merge.rs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mergeable: bool,

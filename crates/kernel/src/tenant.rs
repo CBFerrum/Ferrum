@@ -390,6 +390,11 @@ impl Kernel {
             // Entities whose work needs a recent step-up, and whose reads are recorded (crate::controls); null: off.
             "step_up": settings.get("step_up").cloned().unwrap_or(Value::Null),
             "record_reads": settings.get("record_reads").cloned().unwrap_or(Value::Null),
+            // What the workspace's entities declare (their definitions' `record_reads`), in force for each one
+            // `record_reads` does not name.
+            "record_reads_declared": ctx.schema.entities.values()
+                .filter_map(|e| e.def.record_reads.map(|r| (e.def.name.clone(), serde_json::json!(r))))
+                .collect::<serde_json::Map<String, Value>>(),
         }))
     }
 

@@ -3,7 +3,8 @@
 //! portal or an app's public site; choose what each `shell` address shows (where `/` lands, which apps the bar lists, its
 //! name in the bar); and keep short paths. The server verifies a domain of its own by fetching
 //! `/.well-known/ferrum-domain` from it and, with `FERRUM_DOMAIN_PROOF=record`, by its owner's DNS record `_ferrum.{host}`
-//! (the kernel's `check_hosts`, every minute); a name under the base is live at once.
+//! (the kernel's `check_hosts`, every minute); a name under the base is live at once. A domain claimed for mail (target
+//! `mail`) is proven by its record alone and serves nothing.
 //! The edge asks `/_tls/ask?domain=` before getting a certificate for a host on demand. What an address shows is never a
 //! wall: every app opens on every `shell` address, and only the operator puts an address in a zone.
 
@@ -79,31 +80,30 @@ fn status(h: &TenantHost) -> &'static str {
 /// An address as the list shows it to `apps`' viewer (what their zone shows): its row, with `primary`, `status` and what
 /// they may do with it (`can`); `home` and `apps` name only apps they see. A domain of its own that does not work yet says
 /// what it waits for (`waiting`: `domain` until a check finds it pointing here, then `record` where proof by record is
-/// asked), and, never proven where that is asked, the record that proves it (`record`).
+/// asked), and, never proven where that is asked, the record that proves it (`record`). A domain claimed for mail (target
+/// `mail`) waits only for its record, whatever the cluster asks of addresses, is never the main one and never redirects.
 fn listed(h: &TenantHost, apps: &[ShellApp], proof: DomainProof) -> Value {
     let mut v = serde_json::to_value(h).unwrap_or_default();
     let seen = |id: &String| apps.iter().any(|a| &a.id == id);
     let live = h.released_at.is_none();
-    let by_record = proof == DomainProof::Record && live && h.kind == "custom";
+    let mail = h.target == "mail";
+    let by_record = (proof == DomainProof::Record || mail) && live && h.kind == "custom";
     v["primary"] = json!(h.is_primary);
     v["status"] = json!(status(h));
-    v["waiting"] = json!((live && h.kind == "custom" && h.verified_at.is_none()).then(|| if by_record && h.checked_at.is_some() && h.failures == 0 {
-        "record"
-    } else {
-        "domain"
-    }));
+    let waiting = if mail || (by_record && h.checked_at.is_some() && h.failures == 0) { "record" } else { "domain" };
+    v["waiting"] = json!((live && h.kind == "custom" && h.verified_at.is_none()).then_some(waiting));
     v["record"] = json!(
         (by_record && h.proved_at.is_none())
             .then(|| json!({"name": format!("_ferrum.{}", h.host), "type": "TXT", "value": format!("ferrum-domain={}", h.verify_token)}))
     );
     // A released address still sends visitors on (its leaving period, then the redirect's days), or no longer answers.
-    v["redirecting"] = json!(h.released_at.map(|r| chrono::Utc::now() - h.leaving_until.unwrap_or(r) < chrono::Duration::days(HOST_REDIRECT_DAYS)));
+    v["redirecting"] = json!(h.released_at.map(|r| !mail && chrono::Utc::now() - h.leaving_until.unwrap_or(r) < chrono::Duration::days(HOST_REDIRECT_DAYS)));
     v["home"] = json!(h.home.as_ref().filter(|id| seen(id)));
     v["apps"] = json!(h.apps.as_ref().map(|l| l.iter().filter(|id| seen(id)).collect::<Vec<_>>()));
     v["can"] = json!({
         "edit": live && h.kind != "operator" && h.target == "shell",
         "remove": live && (h.kind == "custom" || h.base_name.is_some()),
-        "make_primary": live && !h.is_primary && !h.forward && (h.kind != "custom" || h.verified_at.is_some()),
+        "make_primary": live && !mail && !h.is_primary && !h.forward && (h.kind != "custom" || h.verified_at.is_some()),
     });
     v
 }

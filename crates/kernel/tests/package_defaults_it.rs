@@ -1,16 +1,18 @@
 //! What a package ships that a workspace used to set up by hand: approval policies on submitting its documents and on
-//! its workflow's transitions, and automations (one on a schedule), against a real PostgreSQL
-//! (`FERRUM_TEST_DATABASE_URL`; the database is reset first). Each is a default the workspace switches off, replaces or
-//! edits; a release changes what the workspace left alone and flags what it edited; a policy or automation naming what
-//! the package neither ships nor requires is refused when the package is loaded.
+//! its workflow's transitions, automations (one on a schedule), and an entity's reads recorded, against a real
+//! PostgreSQL (`FERRUM_TEST_DATABASE_URL`; the database is reset first). Each is a default the workspace switches off,
+//! replaces or edits; a release changes what the workspace left alone and flags what it edited; a policy or automation
+//! naming what the package neither ships nor requires is refused when the package is loaded.
 
 use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::tenant::NewTenant;
+use ferrum_kernel::zones::{Credential, Entry, Placed, Zones};
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, HookRegistry, Kernel, KernelSettings, automation};
 use ferrum_meta::{Catalog, Package};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 use uuid::Uuid;
 
 const MANIFEST: &str = r#"package: work
@@ -48,6 +50,7 @@ const ENTITIES: &str = r#"
   label: Timesheet
   kind: document
   submittable: true
+  record_reads: open
   fields:
     - {name: hours, type: int}
     - {name: note, type: data}
@@ -81,6 +84,28 @@ fn op(entity: &str, op: Value) -> NewCustomization {
     serde_json::from_value(json!({"entity": entity, "op": op})).unwrap()
 }
 
+/// What one request of `user`'s, reading a record of `entity` and its list, wrote to the audit trail (category `access`):
+/// `(entity, action)`.
+async fn reads_recorded(k: &Kernel, tenant: Uuid, user: Uuid, entity: &str, id: Uuid) -> Vec<(String, String)> {
+    let events = async || {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("select diff->>'entity', action from audit_event where tenant_id = $1 and category = 'access' order by id")
+                .bind(tenant)
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        rows
+    };
+    let before = events().await.len();
+    let entry = Arc::new(Entry { zones: Arc::new(Zones::default()), placed: Placed::Nowhere, address: "10.1.2.3".into(), credential: Credential::Cookie });
+    let ctx = k.request_ctx(tenant, user, None, "it".into(), &entry).await.unwrap();
+    k.get(&ctx, entity, id, false).await.unwrap();
+    k.list(&ctx, entity, &Default::default()).await.unwrap();
+    events().await.split_off(before)
+}
+
 async fn rows(k: &Kernel, tenant: Uuid) -> Vec<Value> {
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let mut out: Vec<Value> = sqlx::query_scalar("select to_jsonb(a) from automation a where tenant_id = $1 and package = 'work' order by package_key")
@@ -101,6 +126,8 @@ fn packages_ship_approvals_and_automations() {
 
 async fn scenario() {
     let v1 = || work("0.1.0", "The boss", "'stamped'", "", ("", ""));
+    // Timesheet declares that its reads are recorded (`record_reads: open`).
+    assert!(v1().is_ok(), "an entity may declare that its reads are recorded: {}", v1().err().unwrap_or_default());
     // ───────────── refused when loaded, naming the package and the entity ─────────────
     for (swap, says) in [
         (("approvers: {role: Boss}}]}}\nautomations", "approvers: {role: Ghost}}]}}\nautomations"), "work: Timesheet: approval on submit names role Ghost"),
@@ -208,4 +235,41 @@ async fn scenario() {
     let t3 = k2.insert(&clerk2, "Timesheet", obj(json!({"hours": 2}))).await.unwrap();
     let t3: Uuid = t3["id"].as_str().unwrap().parse().unwrap();
     assert_eq!(k2.submit(&clerk2, "Timesheet", t3, None).await.unwrap()["docstatus"], json!(1), "still switched off after the release");
+
+    // ───────────── Timesheet declares its reads recorded (`record_reads: open`): in force where the workspace's own
+    // setting does not name it, which wins where it does, `off` included; nothing is written into the workspace ─────────────
+    let shown = k2.tenant_settings(&a2).await.unwrap();
+    assert_eq!((shown["record_reads"].clone(), shown["record_reads_declared"].clone()), (Value::Null, json!({"Timesheet": "open"})), "{shown}");
+    let open = |entity: &str| vec![(entity.to_string(), "open".to_string())];
+    assert_eq!(reads_recorded(&k2, tenant, clerk.user, "Timesheet", t3).await, open("Timesheet"), "each record opened, on a workspace that set nothing");
+    assert!(reads_recorded(&k2, tenant, clerk.user, "Change", c2).await.is_empty(), "an entity that declares nothing, as before");
+    let settings = async |v: Value| k2.update_tenant_settings(&a2, &obj(json!({"record_reads": v}))).await.unwrap();
+    settings(json!({"Timesheet": "off"})).await;
+    assert!(reads_recorded(&k2, tenant, clerk.user, "Timesheet", t3).await.is_empty(), "the workspace switched it off");
+    settings(json!({"Timesheet": "all", "Change": "open"})).await;
+    let all = reads_recorded(&k2, tenant, clerk.user, "Timesheet", t3).await;
+    assert_eq!(all.iter().map(|(_, action)| action.as_str()).collect::<Vec<_>>(), ["open", "list"], "the workspace's level: its lists too");
+    assert_eq!(reads_recorded(&k2, tenant, clerk.user, "Change", c2).await, open("Change"));
+    let shown = settings(Value::Null).await;
+    assert_eq!((shown["record_reads"].clone(), shown["record_reads_declared"].clone()), (Value::Null, json!({"Timesheet": "open"})), "{shown}");
+    assert_eq!(reads_recorded(&k2, tenant, clerk.user, "Timesheet", t3).await, open("Timesheet"), "its declaration again");
+    // A declaration takes the values the setting takes for recording, and no other.
+    for bad in ["sometimes", "off"] {
+        let files: BTreeMap<String, String> = [
+            ("package.yaml", "package: odd\nversion: 0.1.0\ndepends: [core]\n".to_string()),
+            ("entities/odd.yaml", format!("name: Odd\nlabel: Odd\nkind: master\nrecord_reads: {bad}\nfields:\n  - {{name: title, type: data}}\n")),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let refused = ferrum_meta::catalog::load_package_files(&files).map(|_| ()).unwrap_err().to_string();
+        assert!(refused.contains(bad), "{refused}");
+    }
+    // A workspace's own entity (as a customization or a pack defines it) has the same definition, and declares it alike.
+    let chart = json!({"name": "XChart", "label": "Chart", "kind": "master", "record_reads": "open", "fields": [{"name": "title", "type": "data"}]});
+    k2.batch_customizations(&a2, vec![op("XChart", json!({"op": "define_entity", "entity": chart}))], false).await.map_err(|e| e.1).expect("defined");
+    let a3 = k2.load_ctx(tenant, session.user, None, "it".into()).await.unwrap();
+    let chart = k2.insert(&a3, "XChart", obj(json!({"title": "Ward 4"}))).await.unwrap();
+    let chart: Uuid = chart["id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(reads_recorded(&k2, tenant, session.user, "XChart", chart).await, open("XChart"));
 }

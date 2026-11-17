@@ -870,11 +870,13 @@ impl Kernel {
             is_primary: bool,
             forward: bool,
         }
-        // A workspace that moved to another installation (workspace_move.rs) answers as moved on every host it had here.
+        // A workspace that moved to another installation (workspace_move.rs) answers as moved on every host it had here. A
+        // domain claimed for mail leads nowhere, claimed or released: it is no address.
         let row: Option<Row> = sqlx::query_as(
             "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at, h.zone, m.workspace is not null as moved, m.moved_to, h.leaving_until, \
              h.home, h.apps, h.label, h.is_primary, h.forward from tenant_host h \
-             join tenant t on t.id = h.tenant_id left join workspace_move m on m.workspace = h.tenant_id and m.state = 'moved' where h.host = $1",
+             join tenant t on t.id = h.tenant_id left join workspace_move m on m.workspace = h.tenant_id and m.state = 'moved' \
+             where h.host = $1 and h.target <> 'mail'",
         )
         .bind(&host)
         .fetch_optional(&mut *tx)
@@ -1067,12 +1069,13 @@ impl Kernel {
     pub async fn set_primary_host(&self, host: &str) -> Result<()> {
         let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a host name"))?;
         let mut tx = self.db.system_tx().await?;
-        let tenant: Uuid =
-            sqlx::query_scalar("select tenant_id from tenant_host where host = $1 and released_at is null and (kind = 'subdomain' or verified_at is not null)")
-                .bind(&host)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or_else(|| Error::NotFound(format!("host {host} (live and verified)")))?;
+        let tenant: Uuid = sqlx::query_scalar(
+            "select tenant_id from tenant_host where host = $1 and released_at is null and (kind = 'subdomain' or verified_at is not null) and target <> 'mail'",
+        )
+        .bind(&host)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("host {host} (live and verified)")))?;
         not_forwarding(&mut tx, &host).await?;
         primary_in(&mut tx, tenant, &host).await?;
         let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
@@ -1091,7 +1094,8 @@ impl Kernel {
         let q = format!(
             "update tenant_host set is_primary = true where host in ( \
                select distinct on (c.tenant_id, c.target) c.host from tenant_host c \
-               where c.released_at is null and (c.kind = 'subdomain' or c.verified_at is not null) and not c.forward and ($1::uuid is null or c.tenant_id = $1) \
+               where c.released_at is null and (c.kind = 'subdomain' or c.verified_at is not null) and not c.forward and c.target <> 'mail' \
+                 and ($1::uuid is null or c.tenant_id = $1) \
                  and not exists (select 1 from tenant_host p where p.tenant_id = c.tenant_id and p.target = c.target and p.is_primary and p.released_at is null) \
                order by c.tenant_id, c.target, {SUCCESSION})"
         );
@@ -1119,7 +1123,7 @@ impl Kernel {
         let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a host name"))?;
         let mut tx = self.db.system_tx().await?;
         let q = format!(
-            "select (select c.host from tenant_host c where c.tenant_id = h.tenant_id and c.target = h.target and c.host <> h.host \
+            "select (select c.host from tenant_host c where c.tenant_id = h.tenant_id and c.target = h.target and c.host <> h.host and c.target <> 'mail' \
                and c.released_at is null and (c.kind = 'subdomain' or c.verified_at is not null) and not c.forward order by c.is_primary desc, {SUCCESSION} limit 1) \
              from tenant_host h where h.host = $1 and h.released_at is null"
         );
@@ -1148,7 +1152,8 @@ impl Kernel {
     }
 
     /// Adds a custom domain to the caller's workspace, unverified until [`Kernel::host_checked`]
-    /// finds it pointing here. `target`: `shell`, `portal` or `site:{app}`.
+    /// finds it pointing here. `target`: `shell`, `portal` or `site:{app}`; or `mail`, a domain claimed for mail, which
+    /// serves nothing and is proven by its DNS record alone ([`Kernel::domain_proven`]).
     pub async fn add_host(&self, ctx: &Ctx, host: &str, target: &str) -> Result<TenantHost> {
         self.add_host_shaped(ctx, host, target, &HostShape::default()).await
     }
@@ -1157,7 +1162,9 @@ impl Kernel {
     pub async fn add_host_shaped(&self, ctx: &Ctx, host: &str, target: &str, shape: &HostShape) -> Result<TenantHost> {
         may_change_addresses(ctx)?;
         let host = normalize_host(host).ok_or_else(|| Error::field("host", "is not a valid domain name"))?;
-        check_target(target)?;
+        if target != "mail" {
+            check_target(target)?;
+        }
         let shape = check_shape(target, shape)?;
         let mut tx = self.db.system_tx().await?;
         room_for_address(&mut tx, ctx.tenant).await?;
@@ -1359,7 +1366,8 @@ impl Kernel {
         let host = normalize_host(host).ok_or_else(|| Error::NotFound("no such domain".into()))?;
         let mut tx = self.db.system_tx().await?;
         let target: Option<String> = sqlx::query_scalar(
-            "select target from tenant_host where host = $1 and tenant_id = $2 and released_at is null and (kind = 'subdomain' or verified_at is not null)",
+            "select target from tenant_host where host = $1 and tenant_id = $2 and released_at is null and (kind = 'subdomain' or verified_at is not null) \
+             and target <> 'mail'",
         )
         .bind(&host)
         .bind(ctx.tenant)
@@ -1441,18 +1449,22 @@ impl Kernel {
     /// Records a check of a domain of a workspace's own, once whether it points here is known (`points`). Where proof by
     /// record is asked ([`DomainProof::Record`]), a domain never proven opens nothing until its record is there as well
     /// ([`domain_record`], asked only when it points here); one proven once, or verified before, goes on by pointing here
-    /// alone: it never left its workspace, so nobody can have taken it. `None`: no such live domain.
+    /// alone: it never left its workspace, so nobody can have taken it. A domain claimed for mail is proven by its record
+    /// alone, whatever the cluster asks of addresses: nothing of it is served, so it has nowhere to point. `None`: no such
+    /// live domain.
     pub async fn host_reached(&self, host: &str, points: bool) -> Result<Option<HostCheck>> {
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(String, bool, bool)> = sqlx::query_as(
-            "select verify_token, verified_at is not null, proved_at is not null from tenant_host where host = $1 and kind = 'custom' and released_at is null",
+        let row: Option<(String, bool, bool, bool)> = sqlx::query_as(
+            "select verify_token, verified_at is not null, proved_at is not null, target = 'mail' from tenant_host \
+             where host = $1 and kind = 'custom' and released_at is null",
         )
         .bind(host)
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
-        let Some((token, verified, proved)) = row else { return Ok(None) };
-        let record = if points && !proved && self.settings.domain_proof == DomainProof::Record {
+        let Some((token, verified, proved, mail)) = row else { return Ok(None) };
+        let points = points || mail;
+        let record = if points && !proved && (mail || self.settings.domain_proof == DomainProof::Record) {
             Some(domain_record(&self.live().dns_resolvers, host, &token).await)
         } else {
             None
@@ -1489,16 +1501,35 @@ impl Kernel {
         Ok(())
     }
 
-    /// The token a pending custom domain must answer with, by host (checked before any session).
+    /// The token a pending custom domain must answer with, by host (checked before any session). None for a domain
+    /// claimed for mail: nothing answers for it, so it gets no certificate either ([`Kernel::host_may_have_certificate`]).
     pub async fn host_token(&self, host: &str) -> Result<Option<String>> {
         let Some(host) = normalize_host(host) else { return Ok(None) };
         let mut tx = self.db.system_tx().await?;
-        let t = sqlx::query_scalar("select verify_token from tenant_host where host = $1 and kind = 'custom' and released_at is null")
+        let t = sqlx::query_scalar("select verify_token from tenant_host where host = $1 and kind = 'custom' and target <> 'mail' and released_at is null")
             .bind(host)
             .fetch_optional(&mut *tx)
             .await?;
         tx.commit().await?;
         Ok(t)
+    }
+
+    /// Whether `domain` is proven to be `tenant`'s for mail (docs/operations.md, "Domains for mail"): the workspace holds
+    /// it, claimed for mail or as an address of its own, and its owner's DNS record proved it ([`domain_record`]). A
+    /// domain is one workspace's whatever it is used for, so this is never true for two. One lookup by the domain: cheap
+    /// enough for an app's settings hook and upkeep.
+    pub async fn domain_proven(&self, tenant: Uuid, domain: &str) -> Result<bool> {
+        let Some(host) = normalize_host(domain) else { return Ok(false) };
+        let mut tx = self.db.system_tx().await?;
+        let proven = sqlx::query_scalar(
+            "select exists (select 1 from tenant_host where host = $1 and tenant_id = $2 and released_at is null and proved_at is not null)",
+        )
+        .bind(host)
+        .bind(tenant)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(proven)
     }
 
     /// Custom domains to check again (pending ones and verified ones not checked for a day).
@@ -1626,9 +1657,11 @@ impl Kernel {
             return Ok(None);
         }
         // The main place goes on by SUCCESSION (operator hosts included, a forwarding address never); also when the target
-        // had no main host at all (an installation from before every target got one).
+        // had no main host at all (an installation from before every target got one). A domain for mail has no main place
+        // to hand on, and no leaving period: nobody is served there.
+        let mail = target == "mail";
         let others: Vec<_> = live.iter().filter(|h| h.0 != host && h.2 == *target).collect();
-        if *primary || !others.iter().any(|h| h.3) {
+        if !mail && (*primary || !others.iter().any(|h| h.3)) {
             let next = others
                 .iter()
                 .filter(|h| (h.1 == "subdomain" || h.4) && !h.7)
@@ -1643,7 +1676,7 @@ impl Kernel {
              leaving_until = case when $2 > 0 then now() + make_interval(days => $2::int) end where host = $1 returning leaving_until",
         )
         .bind(host)
-        .bind(days)
+        .bind(if mail { 0 } else { days })
         .fetch_one(&mut **tx)
         .await?;
         Ok(until)

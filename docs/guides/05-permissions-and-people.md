@@ -212,7 +212,7 @@ Beside roles, a workspace sets controls an app's code must not get around (each 
 
 | Control | What the app owes |
 |---|---|
-| `record_reads`: reads of named entities recorded on the audit trail | read those entities through the kernel (`get`, `list`, reports, exports), or call `ferrum_kernel::controls::record_read(tx, ctx, entity, Read::One(id))` in the same transaction for a read of its own; a read the kernel does not see is not recorded |
+| `record_reads`: reads of named entities recorded on the audit trail | read those entities through the kernel (`get`, `list`, reports, exports), or call `ferrum_kernel::controls::record_read(tx, ctx, entity, Read::One(id))` in the same transaction for a read of its own; a read the kernel does not see is not recorded. An entity holding sensitive records declares `record_reads: open` (or `all`) in its definition, so they are recorded where the workspace set nothing |
 | Staff networks, zones, idle sessions | nothing beyond going through the kernel: they are decided where the request's context is built |
 | `internal` entities and field groups toward AI providers (`Egress`) | mark pay, health and personnel entities `internal`; put sensitive fields in groups |
 | An account restricted or closed (`ctx.read_only`) | nothing changes; reading and exporting still work. `Ctx::require` refuses changes; an app's own writes check `ctx.read_only` |

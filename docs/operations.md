@@ -2635,11 +2635,20 @@ administration event on the audit trail. Switching it on keeps builds that would
 
 ## Recording who read what
 
-A workspace's administrators can name entities whose reads are recorded on the audit trail. Off unless set.
+A workspace's administrators can name entities whose reads are recorded on the audit trail. Off unless set, or
+declared by the entity's app (below).
 
 | Workspace setting (`GET`/`PUT /api/admin/settings`) | Meaning | Default |
 |---|---|---|
-| `record_reads` | `{"Employee": "open", "Payslip": "all"}`, at most 200 entities | `null`: off |
+| `record_reads` | `{"Employee": "open", "Payslip": "all", "Patient": "off"}`, at most 200 entities | `null`: what the entities declare, else off |
+
+**Declared by an app.** An entity holding sensitive records (a patient's chart, a personnel file) may declare in its
+definition that its reads are recorded, `record_reads: open` or `all` ([guide](guides/04-data-and-records.md)). It is
+recorded so on every workspace whose own `record_reads` does not name it; where that names it, the workspace's value
+wins, `off` included, which stops it. Nothing is written into the workspace's settings: the default is read from the
+definition, so an upgrade that changes it applies at once and an uninstall leaves nothing behind. `GET
+/api/admin/settings` shows the declared defaults as `record_reads_declared` (`{"Patient": "open"}`), beside the
+workspace's own `record_reads`.
 
 **What is recorded.** `open`: each single record a request returns the fields of: the records API, a card, a print or a
 document made from it, an MCP `get_record`, an approver's view. `all`: those, and lists, searches (the search bar and
@@ -4098,7 +4107,8 @@ it) and signed with the server's VAPID key.
 Administrators give a workspace its own addresses under Administration → Addresses
 ([plan](plan/apps-ui.md) §7): for the workspace (`shell`), its portal (`portal`) or an app's public
 site (`site:{app}`), within its limit of addresses (Addresses of a workspace, which also says what each
-`shell` address shows and how names under the base domain work).
+`shell` address shows and how names under the base domain work). There too they claim a domain for mail (`mail`,
+*Domains for mail* below), which is no address.
 
 * **Pointing a domain**: a CNAME record to the cluster's address (the host of `PUBLIC_URL`, shown on
   the page), or A/AAAA records to the same addresses for an apex domain.
@@ -4126,6 +4136,18 @@ site (`site:{app}`), within its limit of addresses (Addresses of a workspace, wh
   only where every workspace is one company's. Set in so many words (`FERRUM_DOMAIN_PROOF=record`), it puts a floor in
   place (*Protections an older build would not enforce*), since a build from before it would verify by pointing alone.
   Taken by default, it puts none: set it explicitly on a cluster of several companies.
+* **Domains for mail** (target `mail`). An app that runs mail for a workspace (Comms' hosted mail) creates mailboxes in
+  the domain the workspace names, and a mail domain's website is usually elsewhere, so it can never point here. An
+  administrator claims it where addresses are added (`POST /api/admin/domains {host, target: "mail"}`), and it is
+  proven by its record alone, `_ferrum.{domain}` TXT `ferrum-domain={token}`, whatever `FERRUM_DOMAIN_PROOF` says of
+  addresses: checked as they are, and once proven never asked again (the record may then go). It serves nothing: no
+  page, proof, certificate or redirect answers for it, and it is never a main address. It is a claim like any other:
+  it counts toward the workspace's addresses, one domain is one workspace's whatever it is used for (another workspace
+  adding it, for mail or as an address, is refused), and removing it releases it at once, with no leaving period, into
+  the year's quarantine (one never proven is simply dropped). There is one claim per domain: an address of the
+  workspace's own counts for mail as well once its record proved it (with `record`), so a domain that is to be both is
+  added as an address. Apps ask `Kernel::domain_proven(workspace, domain)` ([app-contract.md](app-contract.md), *A
+  domain the workspace owns*).
 * **Certificates**: the edge in front of Ferrum gets one per domain. With Caddy's on-demand TLS:
 
   ```caddyfile
@@ -4143,8 +4165,8 @@ site (`site:{app}`), within its limit of addresses (Addresses of a workspace, wh
   ```
 
   `/_tls/ask?domain=` answers 200 only for a workspace's subdomain or name under the base domain, a working
-  custom domain, one being verified, or a removed one still redirecting, so nobody can make the edge request certificates for
-  other names. On Kubernetes, put Caddy (or another edge with on-demand TLS) in front of the
+  custom domain, one being verified, or a removed one still redirecting (never a domain for mail), so nobody can make
+  the edge request certificates for other names. On Kubernetes, put Caddy (or another edge with on-demand TLS) in front of the
   `ferrum` service; with cert-manager instead, each custom domain needs its own Ingress and
   Certificate, which an operator adds when the domain is verified.
 * **Removing** a working domain releases it, after a leaving period (below). A domain that never worked
@@ -4216,6 +4238,7 @@ work on whichever address a person is on. An address only chooses where a person
 | `operator` | a name only a private network resolves | the operator (`ferrum task add_host`, see Zones) | at once, never checked |
 
 Each address has a target: `shell` (the workspace), `portal` (portal pages only) or `site:{app}` (an app's public site).
+A domain claimed for mail has the target `mail` and is no address (Custom domains, *Domains for mail*).
 
 **What a `shell` address shows.** Three settings, each optional:
 

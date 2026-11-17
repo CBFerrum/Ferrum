@@ -415,6 +415,116 @@ async fn scenario() {
     assert!(k.create_tenant(tenant("umbrella")).await.is_ok());
 
     Box::pin(names_and_what_addresses_show(&k)).await;
+    Box::pin(mail_domains(&k)).await;
+}
+
+/// A domain claimed for mail (docs/operations.md, "Custom domains", Domains for mail), on a cluster that proves addresses
+/// by their pointing here alone: proven by its DNS record alone (asked of a DNS server this test runs), never an address,
+/// one workspace's, and released by the rules every domain of a workspace's own follows.
+async fn mail_domains(k: &Kernel) {
+    use ferrum_kernel::shell::{DomainProof, HostCheck};
+    let zone: Zone = Arc::default();
+    k.set_live(KernelSettings { dns_resolvers: vec![dns(zone.clone()).await], ..k.settings.clone() });
+    assert_eq!(k.settings.domain_proof, DomainProof::Points, "addresses are proven by pointing here");
+    let record = |host: &str, token: &str| {
+        zone.lock().unwrap().insert(format!("_ferrum.{host}."), format!("ferrum-domain={token}"));
+    };
+    let ctx = |slug: &'static str| async move {
+        let t = Box::pin(k.create_tenant(tenant(slug))).await.expect("tenant");
+        let s = k.login(slug, &format!("admin@{slug}.test"), "Correct-Horse-9").await.unwrap();
+        (t, k.load_ctx(t, s.user, Some(s.token_version), "it".into()).await.unwrap())
+    };
+    let ((post, admin), (rival, rival_admin)) = (ctx("post").await, ctx("rival").await);
+
+    // Claimed for mail, it waits for its record alone: nothing of it can point here.
+    let claim = k.add_host(&admin, "Post.example", "mail").await.expect("a workspace claims a domain for mail");
+    assert_eq!((claim.host.as_str(), claim.kind.as_str(), claim.target.as_str()), ("post.example", "custom", "mail"));
+    assert!(!k.domain_proven(post, "post.example").await.unwrap(), "not before its record");
+    assert_eq!(k.check_host("post.example").await.unwrap(), Some(HostCheck { works: false, points: true, record: Some(false) }), "its record asked");
+    record("post.example", "fedcba9876543210fedcba9876543210");
+    assert_eq!(k.check_host("post.example").await.unwrap().map(|c| c.works), Some(false), "another token");
+    assert!(!k.domain_proven(post, "post.example").await.unwrap());
+    record("post.example", &claim.verify_token);
+    assert_eq!(k.check_host("post.example").await.unwrap(), Some(HostCheck { works: true, points: true, record: Some(true) }));
+    assert!(k.domain_proven(post, "POST.example.").await.unwrap(), "its record proved it");
+    assert!(!k.domain_proven(rival, "post.example").await.unwrap(), "for its workspace only");
+    zone.lock().unwrap().clear();
+    assert_eq!(k.check_host("post.example").await.unwrap(), Some(HostCheck { works: true, points: true, record: None }), "proven once, not asked again");
+
+    // Never an address: no route, no proof answered, no certificate, never a main host (the database refuses it one).
+    assert_eq!(k.route_host("post.example").await.unwrap(), HostRoute::Unknown);
+    assert_eq!(k.host_token("post.example").await.unwrap(), None);
+    assert!(!k.host_may_have_certificate("post.example").await.unwrap());
+    let row = k.list_hosts(&admin).await.unwrap().into_iter().find(|h| h.host == "post.example").unwrap();
+    assert!(row.verified_at.is_some() && row.proved_at.is_some() && !row.is_primary, "{row:?}");
+    assert!(k.make_primary_host(&admin, "post.example").await.is_err() && k.set_primary_host("post.example").await.is_err());
+    let mut tx = k.db.system_tx().await.unwrap();
+    assert!(sqlx::query("update tenant_host set is_primary = true where host = 'post.example'").execute(&mut *tx).await.is_err());
+    tx.rollback().await.unwrap();
+    assert!(k.add_name(&admin, "names.test", "post", "mail", &Default::default()).await.is_err(), "a name under the base is the cluster's");
+    assert!(k.add_operator_host("post", "mail.post.internal", "mail", None).await.is_err(), "only its record proves one");
+
+    // One workspace's, whatever it is used for; one claim per domain. An address proven by pointing alone proves nothing
+    // about mail.
+    for target in ["mail", "shell"] {
+        assert!(matches!(k.add_host(&rival_admin, "post.example", target).await, Err(Error::Conflict(_))), "{target}");
+    }
+    assert!(matches!(k.add_host(&admin, "post.example", "shell").await, Err(Error::Conflict(_))), "claimed once");
+    k.add_host(&admin, "www.post.example", "shell").await.unwrap();
+    k.host_checked("www.post.example", true).await.unwrap();
+    assert!(!k.domain_proven(post, "www.post.example").await.unwrap(), "pointing here proves nothing about mail");
+
+    // Removed: no longer proven, with no leaving period nor redirect, and kept from every other workspace for the
+    // quarantine; a year on, another may claim it, and the old record proves nothing for it.
+    assert_eq!(k.remove_host(&admin, "post.example").await.unwrap(), None);
+    assert!(!k.domain_proven(post, "post.example").await.unwrap());
+    assert_eq!(k.route_host("post.example").await.unwrap(), HostRoute::Unknown, "it never redirects");
+    assert!(!k.host_may_have_certificate("post.example").await.unwrap());
+    assert!(matches!(k.add_host(&rival_admin, "post.example", "mail").await, Err(Error::Conflict(m)) if m.contains("recently")));
+    sql(k, "update tenant_host set released_at = now() - interval '366 days' where host = 'post.example'").await;
+    let theirs = k.add_host(&rival_admin, "post.example", "mail").await.expect("free a year on");
+    record("post.example", &claim.verify_token);
+    assert_eq!(k.check_host("post.example").await.unwrap().map(|c| c.works), Some(false), "the old owner's record");
+    record("post.example", &theirs.verify_token);
+    assert!(k.check_host("post.example").await.unwrap().is_some_and(|c| c.works) && k.domain_proven(rival, "post.example").await.unwrap());
+    // One never proven is simply dropped: free at once.
+    k.add_host(&admin, "late.example", "mail").await.unwrap();
+    assert_eq!(k.remove_host(&admin, "late.example").await.unwrap(), None);
+    k.add_host(&rival_admin, "late.example", "mail").await.expect("free at once");
+}
+
+/// What the test's DNS holds: a name (lower case, with its final dot) and its TXT record.
+type Zone = Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>;
+
+/// A DNS server for one test, as the kernel's own tests run one (crates/kernel/src/shell.rs): a question for a name `zone`
+/// holds is answered with its TXT record; any other name does not exist.
+async fn dns(zone: Zone) -> std::net::SocketAddr {
+    use hickory_resolver::proto::op::{Message, OpCode, ResponseCode};
+    use hickory_resolver::proto::rr::rdata::TXT;
+    use hickory_resolver::proto::rr::{Name, RData, Record};
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 1500];
+        while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+            let Ok(asked) = Message::from_vec(&buf[..n]) else { continue };
+            let Some(q) = asked.queries.first().cloned() else { continue };
+            let name = q.name().to_ascii().to_ascii_lowercase();
+            let mut answer = Message::response(asked.metadata.id, OpCode::Query);
+            answer.metadata.recursion_desired = true;
+            answer.metadata.recursion_available = true;
+            answer.add_query(q);
+            let found = zone.lock().unwrap().get(&name).cloned();
+            match found {
+                Some(value) => {
+                    answer.add_answers(vec![Record::from_rdata(Name::from_ascii(&name).unwrap(), 60, RData::TXT(TXT::new(vec![value])))]);
+                }
+                None => answer.metadata.response_code = ResponseCode::NXDomain,
+            }
+            let _ = socket.send_to(&answer.to_vec().unwrap(), from).await;
+        }
+    });
+    addr
 }
 
 /// The addresses a workspace gives itself (docs/operations.md, "Addresses of a workspace"): names under the base domain,

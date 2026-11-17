@@ -176,8 +176,10 @@ impl Registry {
             schema.warnings.push(SchemaWarning { entity: m.clone(), message: format!("package {m} is installed but no longer available on this cluster") });
         }
         schema.audit_topics = audit_topics;
-        // Step-up rules and recorded reads (crate::controls), from the settings read above: no statement of their own.
-        let (controls, wrong) = crate::controls::load(&settings);
+        // Step-up rules and recorded reads (crate::controls), from the settings read above (no statement of their own), over
+        // the reads its entities declare recorded.
+        let declared = schema.entities.values().filter_map(|e| e.def.record_reads.map(|r| (e.def.name.clone(), r == ferrum_meta::RecordReads::All)));
+        let (controls, wrong) = crate::controls::load(&settings, declared);
         schema.controls = controls;
         if let Some(wrong) = wrong {
             schema
