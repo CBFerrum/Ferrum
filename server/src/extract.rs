@@ -285,8 +285,18 @@ impl FromRequestParts<AppContext> for BrowserSession {
     async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
         let st = app_state(state)?;
         let (ctx, sid) = caller(&st, parts).await?;
+        not_outside_administration(parts.uri.path(), &ctx)?;
         Ok(BrowserSession(ctx, sid))
     }
+}
+
+/// Administration (`/api/admin/…`) is staff's, each route's own check deciding which of them: portal people and guests
+/// are refused there by the credential that brings them ([`Auth`], [`BrowserSession`]), before the route reads anything.
+fn not_outside_administration(path: &str, ctx: &Ctx) -> Result<(), ApiError> {
+    if ctx.outside && path.starts_with("/api/admin/") {
+        return Err(ApiError(Error::Forbidden("administration is not open to portal people and guests".into())));
+    }
+    Ok(())
 }
 
 /// A socket's credential at the upgrade: a bearer token, or the session cookie when the page
@@ -326,6 +336,7 @@ impl FromRequestParts<AppContext> for Auth {
         let st = app_state(state)?;
         let place = parts.extensions.get::<crate::state::Place>().cloned();
         let (mut ctx, _, token_app, records) = caller_with_app(&st, &parts.method, &parts.headers, place.as_ref()).await?;
+        not_outside_administration(parts.uri.path(), &ctx)?;
         // Administration where the zone keeps administrators out (crate::zones, level 2): refused as level 1 refuses,
         // naming where the whole workspace opens. Nobody is an administrator there, so nothing else is lost.
         if parts.uri.path().starts_with("/api/admin/") && !ctx.is_admin && ctx.zone.as_ref().is_some_and(|e| e.keeps_admins_out()) {

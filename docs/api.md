@@ -740,6 +740,9 @@ has when it runs, not when they asked. A bulk job's `result` is `{total, succeed
 
 ## Administration (administrators only)
 
+Every route under `/api/admin/` answers portal people and guests `403` before it reads anything of the request; for
+staff, each route's own check decides (most are an administrator's alone, reading the settings among them).
+
 Workspace settings: `GET /api/admin/settings` → `{timezone, language, fiscal_year_start_month, require_two_factor,
 require_sso, assistant, assistant_model, assistant_monthly_tokens, assistant_egress, offline, messages,
 new_device_notice, break_glass, idle_minutes, staff_networks, step_up, record_reads}`;

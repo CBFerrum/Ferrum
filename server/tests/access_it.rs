@@ -224,6 +224,49 @@ async fn scenario() {
     let (_, body, _) = sign_in(&r, INSIDE, "admin@acme.test", PASSWORD, false).await;
     let admin_token = body["token"].as_str().unwrap().to_string();
 
+    // ── Administration is not for outside people ──
+    // Every route under /api/admin/, each of its methods, as a portal person and as a guest: refused before the route
+    // reads anything, whatever it is. And the workspace's settings, its security among them, are no member's either.
+    let guest = k.create_user(&admin, "guest@acme.test", "Guest", Some(PASSWORD), &[], false).await.unwrap();
+    k.set_user_kind(&admin, guest, "guest").await.unwrap();
+    let (status, body, _) = sign_in(&r, INSIDE, "guest@acme.test", PASSWORD, false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let guest_token = body["token"].as_str().unwrap().to_string();
+    let administration: Vec<(Method, String)> = App::routes(&ctx)
+        .collect()
+        .iter()
+        .filter(|route| route.uri.starts_with("/api/admin/"))
+        .flat_map(|route| route.actions.iter().map(|m| (m.clone(), route.uri.clone())))
+        .collect();
+    assert!(administration.len() > 100, "{} routes", administration.len());
+    let id = Uuid::now_v7().to_string();
+    let mut admitted = vec![];
+    for (who, token) in [("a portal person", &holds[1].token), ("a guest", &guest_token)] {
+        for (method, route) in &administration {
+            let path: Vec<&str> = route
+                .split('/')
+                .map(|s| {
+                    if s == "{n}" {
+                        "1"
+                    } else if s.starts_with('{') {
+                        id.as_str()
+                    } else {
+                        s
+                    }
+                })
+                .collect();
+            let (status, answer) = call(&r, method.clone(), &path.join("/"), INSIDE, Cred::Bearer(token), Some(json!({}))).await;
+            if status != StatusCode::FORBIDDEN {
+                admitted.push(format!("{who}: {method} {route}: {status} {answer}"));
+            }
+        }
+    }
+    assert!(admitted.is_empty(), "{} of {} answered other than 403: {admitted:#?}", admitted.len(), 2 * administration.len());
+    let (status, answer) = call(&r, Method::GET, "/api/admin/settings", INSIDE, Cred::Bearer(&holds[0].token), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a member: {answer}");
+    let (status, answer) = call(&r, Method::GET, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), None).await;
+    assert_eq!(status, StatusCode::OK, "an administrator: {answer}");
+
     // ── 0. Code the operator does not take ──
     // A plugin module on its own is signed by no key: where the server takes no upload a trusted key did not sign (the
     // test configuration's `apps`, as production's), an administrator's module is refused as an unsigned bundle is, and
