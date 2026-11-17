@@ -413,16 +413,13 @@ impl Bundle {
             }
         }
         // A native app's own interface (`ui.dist`, built) may ride in its bundle for the store to
-        // review; its server embeds its own copy. Nothing else of ui/: screens are wasm and meta
-        // apps', and an interface's sources stay out.
+        // review; its server embeds its own copy. Nothing else of ui/: an interface's sources stay
+        // out.
         if m.runtime == Runtime::Native {
             let dist = m.ui.as_ref().map(|u| format!("{}/", u.dist.trim_end_matches('/')));
             if let Some(p) = self.files.keys().find(|p| p.starts_with("ui/") && !dist.as_deref().is_some_and(|d| p.starts_with(d))) {
-                return bad(format!("{p}: native apps carry only their built interface under ui/ (ui.dist), not screens or sources"));
+                return bad(format!("{p}: native apps carry only their built interface under ui/ (ui.dist), not its sources"));
             }
-        }
-        if let Some(e) = m.screen_entries().into_iter().find(|e| !has(e)) {
-            return bad(format!("app.yaml opens {e}, which is not in the bundle"));
         }
         let dirs: BTreeSet<&str> = self.files.keys().filter_map(|p| Some(p.strip_prefix("packages/")?.split_once('/')?.0)).collect();
         if let Some(dir) = dirs.iter().find(|d| !m.packages.iter().any(|p| p == *d)) {
@@ -585,9 +582,6 @@ mod tests {
     #[test]
     fn screens_under_ui() {
         let mut files = meta_app();
-        let yaml = String::from_utf8(files["app.yaml"].clone()).unwrap() + "contributes:\n  ui.page:\n    - {id: board, title: Board, entry: ui/board.html}\n";
-        files.insert("app.yaml".into(), yaml.into_bytes());
-        refused(files.clone(), "app.yaml opens ui/board.html, which is not in the bundle");
         files.insert("ui/board.html".into(), b"<!doctype html><script src=app.js></script>".to_vec());
         files.insert("ui/app.js".into(), b"console.log(1)".to_vec());
         files.insert("ui/editor.wasm".into(), WASM_MAGIC.to_vec());
@@ -609,10 +603,7 @@ mod tests {
             refused(f, needle);
         }
         let mut native = files.clone();
-        let yaml = String::from_utf8(native["app.yaml"].clone())
-            .unwrap()
-            .replace("runtime: meta", "runtime: native")
-            .replace("contributes:\n  ui.page:\n    - {id: board, title: Board, entry: ui/board.html}\n", "");
+        let yaml = String::from_utf8(native["app.yaml"].clone()).unwrap().replace("runtime: meta", "runtime: native");
         native.insert("app.yaml".into(), yaml.clone().into_bytes());
         refused(native.clone(), "native apps carry only their built interface under ui/");
         // With an interface of its own, its built files come along, and nothing else of ui/.

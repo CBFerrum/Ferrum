@@ -5,13 +5,10 @@ use crate::bundle::{PLUGIN_JSON, check_path, is_image_path};
 use crate::contract;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-/// The platform's extension points for screens (docs/plugins.md, "Screens"): a page with a
-/// sidebar entry, a dashboard widget, a panel on the forms of an entity, the app's settings page.
-pub const UI_POINTS: &[&str] = &["ui.page", "ui.widget", "ui.panel", "ui.settings"];
 /// Most extension points an app declares, and most it contributes to.
 const MAX_POINTS: usize = 20;
 /// Most items an app contributes to one point.
@@ -26,31 +23,6 @@ pub struct ExtensionPoint {
     /// (the contribution's `id` is not part of it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<Value>,
-}
-
-/// What a screen slot's items hold besides `id`.
-fn screen_contract(point: &str) -> Value {
-    let text = |max: u64| json!({"type": "string", "maxLength": max});
-    let mut props = serde_json::Map::new();
-    props.insert("entry".into(), text(200));
-    props.insert("title".into(), text(60));
-    let mut required = vec!["entry"];
-    match point {
-        "ui.page" => {
-            props.insert("icon".into(), text(40));
-            required.push("title");
-        }
-        "ui.widget" => {
-            props.insert("size".into(), json!({"type": "array", "items": {"type": "integer"}, "maxItems": 2}));
-            required.push("title");
-        }
-        "ui.panel" => {
-            props.insert("entity".into(), text(80));
-            required.extend(["title", "entity"]);
-        }
-        _ => {}
-    }
-    json!({"type": "object", "additionalProperties": false, "required": required, "properties": props})
 }
 
 /// A contribution without its `id`, as contracts describe it.
@@ -363,8 +335,7 @@ pub struct AppManifest {
     /// Points other apps may contribute to, named `<this app's id>.<name>`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extension_points: BTreeMap<String, ExtensionPoint>,
-    /// What it adds to extension points: the screen slots ([`UI_POINTS`]), its own points or
-    /// those of apps it requires. Point → items, each with an `id` unique within the point.
+    /// What it adds to extension points: the shell's, its own or those of apps it requires. Point → items, each with an `id` unique within the point.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub contributes: BTreeMap<String, Vec<Value>>,
     /// The app's own interface (docs/plan/apps-ui.md §10.1).
@@ -442,40 +413,6 @@ impl AccessDef {
 
 fn bad<T>(msg: impl Into<String>) -> Result<T, AppError> {
     Err(AppError::Manifest(msg.into()))
-}
-
-/// What the contract of a screen slot cannot say: the entry is an HTML page under `ui/`, titles
-/// are single lines, icons are icon names, widget sizes fit the 12-column grid.
-fn check_screen(point: &str, id: &str, item: &Value) -> Result<(), AppError> {
-    let field = |k: &str| item.get(k).and_then(Value::as_str);
-    let at = format!("contributes.{point}.{id}");
-    let entry = field("entry").unwrap_or_default();
-    if let Err(e) = check_path(entry) {
-        return bad(format!("{at}.entry: {e}"));
-    }
-    if !entry.starts_with("ui/") || !entry.ends_with(".html") {
-        return bad(format!("{at}.entry must be an HTML page under ui/, not {entry}"));
-    }
-    if let Some(title) = field("title") {
-        line(&format!("{at}.title"), title, 60)?;
-    }
-    if let Some(icon) = field("icon")
-        && (icon.is_empty() || !icon.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
-    {
-        return bad(format!("{at}.icon must be an icon name such as truck or file-text"));
-    }
-    if let Some(entity) = field("entity")
-        && !ferrum_meta::is_entity_name(entity)
-    {
-        return bad(format!("{at}.entity '{entity}' is not an entity name"));
-    }
-    if let Some(size) = item.get("size").and_then(Value::as_array) {
-        let ok = size.len() == 2 && size.iter().all(|n| n.as_u64().is_some_and(|n| (1..=12).contains(&n)));
-        if !ok {
-            return bad(format!("{at}.size must be [width, height], each 1 to 12 grid cells"));
-        }
-    }
-    Ok(())
 }
 
 /// `[a-z][a-z0-9-]{1,39}`: app ids, publisher ids and plugin names.
@@ -864,32 +801,18 @@ impl AppManifest {
             }
         }
         for (point, items) in &self.contributes {
-            let screen = UI_POINTS.contains(&point.as_str());
             let shell = crate::shell::SHELL_POINTS.contains(&point.as_str());
             let foreign = point.split_once('.').is_some_and(|(owner, rest)| self.requires.contains_key(owner) && ferrum_meta::is_ident(rest));
-            if !screen && !shell && !foreign && !self.extension_points.contains_key(point) {
+            if !shell && !foreign && !self.extension_points.contains_key(point) {
                 return bad(format!(
-                    "contributes: '{point}' is not a screen slot ({}), a shell point ({}), an extension point of this app, or one of an app in requires",
-                    UI_POINTS.join(", "),
+                    "contributes: '{point}' is not a shell point ({}), an extension point of this app, or one of an app in requires",
                     crate::shell::SHELL_POINTS.join(", ")
                 ));
-            }
-            if screen && self.runtime == Runtime::Native {
-                return bad(format!("contributes.{point}: native apps put their screens in the web app"));
             }
             if items.is_empty() || items.len() > MAX_ITEMS {
                 return bad(format!("contributes.{point}: list 1 to {MAX_ITEMS} items"));
             }
-            if point == "ui.settings" && items.len() > 1 {
-                return bad("contributes.ui.settings: an app has one settings page");
-            }
-            let schema = if screen {
-                Some(screen_contract(point))
-            } else if shell {
-                Some(crate::shell::contract(point))
-            } else {
-                self.extension_points.get(point).and_then(|p| p.schema.clone())
-            };
+            let schema = if shell { Some(crate::shell::contract(point)) } else { self.extension_points.get(point).and_then(|p| p.schema.clone()) };
             let mut ids = BTreeSet::new();
             for item in items {
                 let Some(id) = item.get("id").and_then(Value::as_str).filter(|i| ferrum_meta::is_ident(i)) else {
@@ -901,17 +824,9 @@ impl AppManifest {
                 if let Some(s) = &schema {
                     contract::conforms(&contribution_body(item), s).map_err(|e| AppError::Manifest(format!("contributes.{point}.{id}: {e}")))?;
                 }
-                if screen {
-                    check_screen(point, id, item)?;
-                }
             }
         }
         crate::shell::check(self)
-    }
-
-    /// The pages (`ui/….html`) its screen contributions open.
-    pub fn screen_entries(&self) -> Vec<&str> {
-        UI_POINTS.iter().filter_map(|p| self.contributes.get(*p)).flatten().filter_map(|item| item.get("entry").and_then(Value::as_str)).collect()
     }
 
     /// Whether this app works with platform (app API) version `platform`.
@@ -1089,21 +1004,12 @@ contributes:
   ev-charging.tariff:
     - {id: flat, unit: kwh}
   selling.quote_source:
-    - {id: sessions, anything: goes}
-  ui.page:
-    - {id: board, title: Charge points, entry: ui/board.html, icon: zap}
-  ui.widget:
-    - {id: load, title: Live load, entry: ui/load.html, size: [4, 3]}
-  ui.panel:
-    - {id: sessions, title: Sessions, entity: Customer, entry: ui/sessions.html}
-  ui.settings:
-    - {id: settings, entry: ui/settings.html}"#;
+    - {id: sessions, anything: goes}"#;
 
     #[test]
     fn parent_extension_points_and_contributions() {
         let m = with("uninstall: keep", EXTENDS).unwrap();
         assert_eq!(m.parent.as_deref(), Some("selling"));
-        assert_eq!(m.screen_entries(), ["ui/board.html", "ui/load.html", "ui/sessions.html", "ui/settings.html"]);
         let json = serde_json::to_value(&m).unwrap();
         assert_eq!(serde_json::from_value::<AppManifest>(json).unwrap(), m);
 
@@ -1115,27 +1021,13 @@ contributes:
         swap("  ev-charging.tariff:\n    description", "  tariff:\n    description", "must be named ev-charging.<name>");
         swap("maxLength: 40", "pattern: x", "label: 'pattern' is not supported");
         swap("    - {id: flat, unit: kwh}", "    - {id: flat, unit: day}", "contributes.ev-charging.tariff.flat: unit must be one of");
-        swap("  selling.quote_source:", "  crm.quote_source:", "'crm.quote_source' is not a screen slot");
-        swap("{id: board, title", "{title", "contributes.ui.page: every item needs an id");
+        swap("  selling.quote_source:", "  crm.quote_source:", "'crm.quote_source' is not a shell point");
+        swap("{id: flat, unit", "{unit", "contributes.ev-charging.tariff: every item needs an id");
         swap(
-            "    - {id: board, title: Charge points, entry: ui/board.html, icon: zap}",
-            "    - {id: board, title: Charge points, entry: ui/board.html, icon: zap}\n    - {id: board, title: Again, entry: ui/again.html}",
-            "contributes.ui.page: id 'board' is used twice",
+            "    - {id: flat, unit: kwh}",
+            "    - {id: flat, unit: kwh}\n    - {id: flat, unit: minute}",
+            "contributes.ev-charging.tariff: id 'flat' is used twice",
         );
-        swap("{id: sessions, title", "{id: sessions, colour: red, title", "unknown field colour");
-        swap("title: Charge points, ", "", "contributes.ui.page.board: (top) needs title");
-        swap("entry: ui/board.html", "entry: board.html", "must be an HTML page under ui/");
-        swap("entry: ui/board.html", "entry: ui/../board.html", "'..' is not allowed");
-        swap("entry: ui/board.html", "entry: ui/board.js", "must be an HTML page under ui/");
-        swap("size: [4, 3]", "size: [13, 3]", "each 1 to 12 grid cells");
-        swap("icon: zap", "icon: Zap!", "must be an icon name");
-        swap("entity: Customer", "entity: customer", "'customer' is not an entity name");
-        swap("    - {id: settings, entry: ui/settings.html}", "    - {id: a, entry: ui/a.html}\n    - {id: b, entry: ui/b.html}", "one settings page");
-
-        let native = "id: kit\nname: Kit\nversion: 0.1.0\npublisher: acme\nsummary: A kit\ncategories: [industry]\nruntime: native\nplatform: '^0.3'\n\
-                      contributes:\n  ui.page:\n    - {id: home, title: Kit, entry: ui/home.html}\n";
-        let err = AppManifest::parse(native).unwrap_err().to_string();
-        assert!(err.contains("native apps put their screens in the web app"), "{err}");
     }
 
     #[test]

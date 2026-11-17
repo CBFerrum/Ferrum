@@ -1,7 +1,7 @@
 //! Plugin endpoints: HTTP routes (`/api/ext/{plugin}/…` for signed-in callers,
 //! `/api/public/{tenant}/{plugin}/…` for public ones such as third-party webhooks) and the
 //! WebSocket gateway (`/ws/ext/{tenant}/{plugin}/…`) for device protocols like OCPP; and the
-//! files of apps' screens (`/api/ext-ui/{tenant}/{app}/{version}/…`, docs/plugins.md "Screens").
+//! files of apps' screens (`/api/ext-ui/{tenant}/{app}/{version}/…`, docs/plugins.md "Pages an app brings").
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Auth, bearer, ctx_from_token, request_id};

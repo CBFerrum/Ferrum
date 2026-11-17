@@ -590,8 +590,8 @@ mod tests {
         let natives: Vec<_> =
             super::native_manifests().into_iter().map(|m| ferrum_apps::AppManifest::parse(m).unwrap_or_else(|e| panic!("{e}\n{m}"))).collect();
         // What a compiled app contributes to another's extension point meets that point's schema
-        // (the platform's own points, screens and the shell's, are checked by the manifest).
-        let platform = |p: &str| ferrum_apps::UI_POINTS.contains(&p) || ferrum_apps::shell::SHELL_POINTS.contains(&p);
+        // (the shell's own points are checked by the manifest).
+        let platform = |p: &str| ferrum_apps::shell::SHELL_POINTS.contains(&p);
         for m in &natives {
             for (point, items) in m.contributes.iter().filter(|(p, _)| !platform(p)) {
                 let owner =

@@ -15,7 +15,7 @@ use dashmap::DashMap;
 use ferrum_apps::{AppError, AppManifest, Bundle, PLATFORM_VERSION, Permissions, Role, Runtime, TrustedKey, Uninstall};
 use ferrum_kernel::apps::{NewRelease, Release};
 use ferrum_kernel::customize::{Conflict, OpenWork, UpgradeImpact};
-use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, Result, Tx};
+use ferrum_kernel::{Ctx, Error, Kernel, Result, Tx};
 use ferrum_plugins::{NewPlugin, PluginHost};
 use futures_util::future::join_all;
 use loco_rs::storage::Storage;
@@ -425,9 +425,6 @@ impl AppManager {
         Ok(out)
     }
 
-    /// `GET /api/meta/contributions/{point}`: what the enabled apps contribute to a screen slot
-    /// or to an enabled app's extension point, each item with its `app` and `version`. Panels
-    /// only on entities the caller may read; the settings page only for administrators.
     /// What the enabled app at `route` tells the assistant about working in its pages
     /// (`shell.assistant`): each item's title, instructions and suggested questions.
     pub async fn assistant_domain(&self, tenant: Uuid, route: &str) -> Result<Vec<Value>> {
@@ -439,26 +436,17 @@ impl AppManager {
             .collect())
     }
 
+    /// `GET /api/meta/contributions/{point}`: what the enabled apps contribute to an enabled app's
+    /// extension point, each item with its `app` and `version`.
     pub async fn contributions(&self, ctx: &Ctx, point: &str) -> Result<Vec<Value>> {
         let apps = self.enabled_apps(ctx.tenant).await?;
-        if !ferrum_apps::UI_POINTS.contains(&point) {
-            let owner = point.split_once('.').map_or("", |(o, _)| o);
-            if !apps.iter().any(|a| a.id == owner && a.manifest.extension_points.contains_key(point)) {
-                return Err(Error::NotFound(format!("extension point {point}")));
-            }
-        }
-        if point == "ui.settings" && !ctx.is_admin {
-            return Ok(Vec::new());
+        let owner = point.split_once('.').map_or("", |(o, _)| o);
+        if !apps.iter().any(|a| a.id == owner && a.manifest.extension_points.contains_key(point)) {
+            return Err(Error::NotFound(format!("extension point {point}")));
         }
         let mut out = Vec::new();
         for a in apps.iter() {
             for item in a.manifest.contributes.get(point).into_iter().flatten() {
-                if let Some(entity) = item.get("entity").and_then(Value::as_str)
-                    && point == "ui.panel"
-                    && ctx.perms.access(entity, Action::Read) == Access::None
-                {
-                    continue;
-                }
                 let mut v = item.clone();
                 if let Some(o) = v.as_object_mut() {
                     o.insert("app".into(), json!(a.id));
@@ -477,8 +465,8 @@ impl AppManager {
         let apps = self.enabled_apps(tenant).await?;
         Ok(apps
             .iter()
-            // Screens, or an interface of its own (isolated ones call through the same narrowing).
-            .find(|a| a.id == app && (a.manifest.contributes.keys().any(|p| p.starts_with("ui.")) || a.manifest.ui.is_some()))
+            // An interface of its own (isolated ones call through the same narrowing).
+            .find(|a| a.id == app && a.manifest.ui.is_some())
             .and_then(|a| a.bundled.as_ref())
             .map(|(p, _)| (p.entities.clone(), p.new_entities.clone())))
     }
@@ -1499,7 +1487,7 @@ impl AppManager {
         // version this plan brings, or the one installed.
         for s in steps.iter().filter(|s| s.action != StepAction::Already) {
             for (point, items) in &s.manifest.contributes {
-                let Some((owner, _)) = point.split_once('.').filter(|(o, _)| *o != s.id && !ferrum_apps::UI_POINTS.contains(&point.as_str())) else { continue };
+                let Some((owner, _)) = point.split_once('.').filter(|(o, _)| *o != s.id) else { continue };
                 let manifest = match (steps.iter().find(|o| o.id == owner), ws.apps.get(owner)) {
                     (Some(o), _) => Some(o.manifest.clone()),
                     (None, Some(inst)) => self.manifest_of(ctx.tenant, owner, &inst.version).await?,

@@ -143,7 +143,7 @@ fn interface_app(id: &str, route: &str) -> BTreeMap<String, Vec<u8>> {
     ])
 }
 
-/// An app with screens and an extension point (docs/plugins.md).
+/// An app with an interface of its own and an extension point (docs/plugins.md).
 const BOARD_YAML: &str = r#"id: board
 name: Board
 version: 1.0.0
@@ -158,15 +158,8 @@ extension_points:
   board.card:
     description: A card on the board
     schema: {type: object, required: [label], additionalProperties: false, properties: {label: {type: string, maxLength: 20}}}
-contributes:
-  ui.page:
-    - {id: board, title: Board, entry: ui/board.html, icon: layout-grid}
-  ui.widget:
-    - {id: count, title: Cards, entry: ui/count.html, size: [3, 2]}
-  ui.panel:
-    - {id: cards, title: Cards, entity: BdCard, entry: ui/panel.html}
-  ui.settings:
-    - {id: settings, entry: ui/settings.html}
+ui:
+  dist: ui/dist
 "#;
 
 fn board() -> BTreeMap<String, Vec<u8>> {
@@ -177,9 +170,8 @@ fn board() -> BTreeMap<String, Vec<u8>> {
         ("packages/board/entities/card.yaml", "name: BdCard\nlabel: Card\nkind: master\nfields:\n  - {name: title, type: data, required: true}\n"),
         ("ui/board.html", page),
         ("ui/board.js", "parent.postMessage('ready', '*')"),
-        ("ui/count.html", page),
-        ("ui/panel.html", page),
-        ("ui/settings.html", page),
+        ("ui/dist/index.html", "<!doctype html><html><head><script type=\"module\" src=\"./app.js\"></script></head><body></body></html>"),
+        ("ui/dist/app.js", "ferrum.shell.ready();"),
     ])
 }
 
@@ -889,16 +881,9 @@ async fn scenario() {
     assert_eq!(dev.sync_revocations().await.unwrap(), 1, "a newer one applies");
     assert_eq!(first().await, "revoked");
 
-    // ── screens, extension points and add-ons (docs/plugins.md) ──
+    // ── an interface's files, extension points and add-ons (docs/plugins.md) ──
     let (_, up) = dev.upload(&admin, bundle(board(), &[]).write().unwrap().into()).await.unwrap();
     dev.install(&admin, "board", None, &up.digest, false).await.unwrap();
-    let pages = dev.contributions(&admin, "ui.page").await.unwrap();
-    assert_eq!(pages, [json!({"id": "board", "title": "Board", "entry": "ui/board.html", "icon": "layout-grid", "app": "board", "version": "1.0.0"})]);
-    assert_eq!(dev.contributions(&admin, "ui.widget").await.unwrap()[0]["size"], json!([3, 2]));
-    assert_eq!(dev.contributions(&admin, "ui.settings").await.unwrap().len(), 1);
-    assert!(dev.contributions(&clerk, "ui.settings").await.unwrap().is_empty(), "settings pages are for administrators");
-    assert_eq!(dev.contributions(&admin, "ui.panel").await.unwrap().len(), 1);
-    assert!(dev.contributions(&clerk, "ui.panel").await.unwrap().is_empty(), "the clerk cannot read cards");
     assert!(dev.contributions(&admin, "board.card").await.unwrap().is_empty());
     assert!(matches!(dev.contributions(&admin, "kit.card").await, Err(Error::NotFound(_))), "no such point");
 
@@ -914,21 +899,21 @@ async fn scenario() {
     let err = dev.uninstall(&admin, "board", false).await.unwrap_err();
     assert!(err.to_string().contains("board-late need board"), "an add-on keeps its parent: {err}");
 
-    // The files of screens, and what a screen may reach for its user.
+    // The files of its interface, and what its pages may reach for their user.
     let (page, digest) = dev.screen_file(tenant, "board", "1.0.0", "board.html").await.unwrap().expect("the page");
     assert!(std::str::from_utf8(&page).unwrap().contains("<title>Board</title>") && !digest.is_empty());
     assert!(dev.screen_file(tenant, "board", "1.0.0", "missing.html").await.unwrap().is_none());
     assert!(dev.screen_file(tenant, "board", "0.1.0", "board.html").await.unwrap().is_none(), "only the installed version");
     assert!(dev.screen_file(other, "board", "1.0.0", "board.html").await.unwrap().is_none(), "only where it is installed");
-    assert!(dev.screen_scope(tenant, "board-late").await.unwrap().is_none(), "an app without screens has no bridge");
-    let (entities, own) = dev.screen_scope(tenant, "board").await.unwrap().expect("board has screens");
+    assert!(dev.screen_scope(tenant, "board-late").await.unwrap().is_none(), "an app without an interface has no bridge");
+    let (entities, own) = dev.screen_scope(tenant, "board").await.unwrap().expect("board has an interface");
     assert!(entities.is_empty() && own.contains("BdCard"), "{entities:?} {own:?}");
     let screen = admin.perms.limited_to(&entities, &own);
     assert_eq!(screen.access("BdCard", Action::Read), Access::All);
-    assert_eq!(screen.access("Customer", Action::Read), Access::None, "an administrator's screen reaches only what the app declared");
+    assert_eq!(screen.access("Customer", Action::Read), Access::None, "an administrator's page reaches only what the app declared");
     dev.set_enabled(&admin, "board-late", false).await.unwrap();
     dev.set_enabled(&admin, "board", false).await.unwrap();
-    assert!(dev.contributions(&admin, "ui.page").await.unwrap().is_empty(), "disabled apps contribute nothing");
+    assert!(matches!(dev.contributions(&admin, "board.card").await, Err(Error::NotFound(_))), "disabled apps offer and contribute nothing");
     assert!(dev.screen_scope(tenant, "board").await.unwrap().is_none());
 
     // ── an app the store sells installs only with a live licence for this workspace ──

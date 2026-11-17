@@ -194,10 +194,7 @@ as on any host.
   **Linked records** (docs/builder/decisions.md BD-14): `links.<field>` is the record a link field of the record names, as an expression sees a record (its fields, and its lines in their order, so `links.type.documents.all(d, doc.documents.exists(r, r.document == d.document && r.file != ''))`), or null when the field is empty or the record is gone. It is read as the workspace, whoever saves or presses, so a check does not pass or fail by who runs it; its secret fields are left out; it is read without a lock in the save's transaction, so a rule sees the linked record as it is when the save runs, a change earlier in the same transaction included. One level: a link of the linked record is an id. `links` works in entity rules (not a line's rules), an action's `condition` and `refuse_if`, workflow guards, automation conditions and action values, and service targets' expressions; in `default_expr`, `computed`, `visible_if`, `required_if`, `read_only_if` and a section's `visible_if` it is refused when saved (they are worked out without a transaction, and in the browser). Checked when saved: each `links.<name>` is a link field of the entity, at most 5 different ones in one expression, and `links` is read only as `links.<name>` (`links['type']` is refused). Each place loads the names its expressions use once (a save with three rules over `links.type` reads the type once). The approvals inbox takes a guard that reads `links` to hold; taking the step decides. A form cannot judge such a condition, so it leaves the button to the server.
 * `GET /api/meta/contributions/{point}` → `{point, items}`: what enabled apps contribute
   ([plugins](plugins.md#extension-points-and-add-ons)). Each item is the contribution plus its
-  `app` and `version`. A point is either:
-  * a screen slot: `ui.page`; `ui.widget`; `ui.panel`, listing only panels on entities the caller
-    can read; `ui.settings`, for administrators only;
-  * an enabled app's extension point; 404 when no enabled app offers it.
+  `app` and `version`. A point is an enabled app's extension point; 404 when no enabled app offers it.
 * Form sections: sections sharing a `tab` label show under that tab (untabbed sections form the first
   tab); a section's `visible_if` (CEL over `doc`) hides it while false.
 * `secret` fields are write-only: records carry `true` when a value is set (never the value). Send
@@ -562,7 +559,7 @@ updated_at}]}`.
 ## Screens of apps
 
 * `GET /api/ext-ui/{tenant}/{app}/{version}/{path}` → a file under the `ui/` of an enabled app, at
-  its installed version ([plugins](plugins.md#screens)).
+  its installed version ([plugins](plugins.md#pages-an-app-brings)).
   * No sign-in is needed: sandboxed frames send none.
   * Headers: `Content-Security-Policy: sandbox allow-scripts allow-downloads; default-src 'none';
     … frame-ancestors 'self'`, `ETag` (the bundle digest) and `Cache-Control: no-cache`.
