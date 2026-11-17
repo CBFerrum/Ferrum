@@ -90,15 +90,15 @@ pub(crate) async fn erase_held(
     let mut sign_ins = Vec::new();
     if let Some(person) = account {
         sqlx::query("delete from conn_signin where tenant_id = $1 and user_id = $2").bind(tenant).bind(person).execute(&mut **tx).await?;
-        let taken: Vec<(Uuid, String)> = sqlx::query_as("delete from conn_token where tenant_id = $1 and user_id = $2 returning conn_id, sealed")
+        let taken: Vec<Uuid> = sqlx::query_scalar("delete from conn_token where tenant_id = $1 and user_id = $2 returning conn_id")
             .bind(tenant)
             .bind(person)
             .fetch_all(&mut **tx)
             .await?;
-        for (conn, sealed) in taken {
+        for conn in taken {
             // Opened for the revocation that follows, and gone from the vault with the row.
             let place = super::oauth::token_place(tenant, conn, person);
-            let tokens = k.kept(tx, &place, &sealed).await.ok();
+            let tokens = k.kept(tx, &place).await.ok();
             crate::vault::kept::forget(tx, &place).await?;
             sign_ins.push((conn, tokens));
         }

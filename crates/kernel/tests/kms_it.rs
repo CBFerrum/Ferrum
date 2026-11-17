@@ -1,4 +1,4 @@
-//! The secret key through a key-management service: OpenBao's Transit engine at
+//! A key through a key-management service: OpenBao's Transit engine at
 //! `FERRUM_KMS_TEST_TRANSIT` (its address; `FERRUM_KMS_TEST_TOKEN` signs in; CI starts a development
 //! server and requires this test). A key goes in as ciphertext and comes back out the same; a key the
 //! service rotated still opens what it wrapped before; and the ways it can fail say so.

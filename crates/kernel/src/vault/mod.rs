@@ -49,7 +49,7 @@
 //! // ... nor is a store's place in the vault made, or read, outside the kernel.
 //! async fn read(k: &ferrum_kernel::Kernel, tx: &mut ferrum_kernel::Tx) {
 //!     let place = ferrum_kernel::vault::kept::Place::webhook(uuid::Uuid::nil(), uuid::Uuid::nil());
-//!     let _ = k.kept(tx, &place, "sealed:vault").await;
+//!     let _ = k.kept(tx, &place).await;
 //! }
 //! ```
 
@@ -61,10 +61,7 @@ mod scope;
 mod seal;
 mod secrets;
 
-pub use kept::{LegacyKey, Moved};
-pub(crate) use keyed::take_old_key_inputs;
-pub(crate) use keyed::{Keyed, PLUGIN_VAULT, Ring, adopted_ids, at_boot, older_builds_refused, sealed_by_vault};
-pub use keyed::{OLD_KEY_FLOOR, OldKey};
+pub(crate) use keyed::{Keyed, PLUGIN_VAULT, Ring};
 pub(crate) use root::{CHANNEL, Root, finish};
 pub use root::{
     Opened, Opener, Printed, ROOT_FILE, RecoveryKey, Resealing, Rewrap, SlotKind, SlotStatus, Status, open, put_slot, remove_slot, rewrap,

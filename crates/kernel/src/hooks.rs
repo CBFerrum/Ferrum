@@ -465,11 +465,6 @@ impl HookRegistry {
         self.file_kinds.get(kind).map(String::as_str)
     }
 
-    /// The apps this registry gave vault handles to.
-    pub(crate) fn vault_app_ids(&self) -> impl Iterator<Item = &str> {
-        self.vault_apps.keys().map(String::as_str)
-    }
-
     /// What app `id`'s vault handles carry, when this registry registered it (the platform's, once the server took it).
     pub(crate) fn vault_mint(&self, id: &str) -> Option<u128> {
         if id == "platform" { self.platform_mint } else { self.vault_apps.get(id).copied() }

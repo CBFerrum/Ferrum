@@ -14,10 +14,9 @@ alter table sso_flow
 
 -- Each workspace's own SAML key: it signs the workspace's requests and opens assertions encrypted to
 -- it; its certificate is in the workspace's metadata. Made the first time it is wanted, the private
--- half sealed by the server key.
+-- half kept in the vault.
 create table saml_sp_key (
   tenant_id uuid primary key references tenant (id) on delete cascade,
-  private_key text not null,
   certificate text not null,
   created_at timestamptz not null default now()
 );

@@ -120,16 +120,12 @@ pub struct Settings {
     /// How long such a link works, in seconds (at most 300).
     #[serde(default = "default_direct_link_seconds")]
     pub files_direct_link_seconds: u64,
-    /// Base64 of 32 random bytes sealing secret fields, or Transit ciphertext of them
-    /// (`vault:v1:…`, unwrapped through `kms_transit`); required in production.
-    #[serde(default)]
-    pub secret_key: String,
-    /// A command printing the secret key, in place of `secret_key`: a KMS's own tool
-    /// (`FERRUM_SECRET_KEY_COMMAND`; crates/kernel/src/kms.rs).
+    /// A command printing the key of the vault's `kms` slot: a KMS's own tool (`FERRUM_SECRET_KEY_COMMAND`;
+    /// crates/kernel/src/kms.rs).
     #[serde(default)]
     pub secret_key_command: String,
-    /// The OpenBao or Vault Transit key unwrapping `secret_key` and retired keys given as
-    /// ciphertext, `https://host:8200/<mount>/<key>` (`FERRUM_KMS_TRANSIT`).
+    /// The OpenBao or Vault Transit key of the vault's `kms` slot, `https://host:8200/<mount>/<key>`
+    /// (`FERRUM_KMS_TRANSIT`).
     #[serde(default)]
     pub kms_transit: String,
     /// The ClamAV daemon uploads pass through, `host:port` (`FERRUM_CLAMAV_ADDR`); empty: none.
@@ -138,9 +134,6 @@ pub struct Settings {
     /// The scanner's `StreamMaxLength` in MiB (`FERRUM_CLAMAV_MAX_MB`): files past it stay unscanned.
     #[serde(default = "default_clamav_max_mb")]
     pub clamav_max_mb: u64,
-    /// Keys being rotated out, comma-separated base64 (`FERRUM_RETIRED_SECRET_KEYS`).
-    #[serde(default)]
-    pub retired_secret_keys: String,
     /// When set, `/metrics` requires `Authorization: Bearer <token>`.
     #[serde(default)]
     pub metrics_token: String,

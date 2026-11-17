@@ -171,8 +171,8 @@ A sandbox is a copy of a live workspace under a new id, for trying an upgrade or
 - **What the app sealed** with `Vault::seal` for the live workspace does not open in the sandbox (another scope, other
   keys): `open` answers `Invalid`. Treat it as absent; Comms honours no room's old guest link in a sandbox
   (`src/keys.rs`, `guest_key`).
-- A value with the form of a value the old key sealed, in any column the platform does not know, is blanked (the command
-  lists the columns; `not_sealed:` keeps one that holds no sealed value).
+- A value with the form of one sealed outside the vault, in any column, is blanked (the command lists the columns;
+  `not_sealed:` keeps one that holds no sealed value).
 - The app's secret fields are not copied; its kinds of file are.
 
 ## A workspace is deleted

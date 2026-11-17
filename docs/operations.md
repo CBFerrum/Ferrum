@@ -50,10 +50,8 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `mailer_password` | `MAILER_PASSWORD` | text |  | secret: the environment, else the vault (library) | The SMTP password. |
 | `jwt_secret` | `JWT_SECRET` | text |  | secret: the environment, else the vault (session) | Base64, at least 32 random bytes: `openssl rand -base64 48`. Changing it signs everyone out. Without it the vault's keys sign sessions, each named by the tokens it signs and replaced without signing anyone out (*The key that signs sessions*); then it is required only while the vault is closed. |
 | `jwt_expiration_seconds` | `JWT_EXPIRATION_SECONDS` | int | `28800` | installation, at once | How long a bearer token from signing in lasts, in seconds (default 8 hours). |
-| `secret_key` | `FERRUM_SECRET_KEY` | text |  | secret: the environment | The old master key. A new installation leaves it out: where the vault opens, the vault keeps and keys everything. One that has it keeps it until `ferrum task legacy_key` says it may go ([Retiring the old key](#retiring-the-old-key)); where the vault cannot open, production requires it. Base64 of exactly 32 random bytes (`openssl rand -base64 32`), or that key as a key-management service's ciphertext (`vault:v1:…`, [below](#the-secret-key-from-a-key-management-service)); every replica needs the same key. Back it up while you keep backups taken with it: values sealed with a lost key must be entered again. |
-| `secret_key_command` | `FERRUM_SECRET_KEY_COMMAND` | text |  | secret: the environment | In place of `FERRUM_SECRET_KEY`, and as the vault's `kms` slot: a command (run with `sh -c`, 30 seconds at most) that prints the key, such as a KMS's own CLI. Only ever from the environment, and outside the boot contract: a command line is never read from the database, where whoever writes a row would run a program. Prefer the key file (`/run/ferrum/root.key`) or the key-management service (`kms_transit`). |
-| `retired_secret_keys` | `FERRUM_RETIRED_SECRET_KEYS` | text |  | secret: the environment | Keys being rotated out, comma-separated: see *Rotating the secret key*. |
-| `kms_transit` | `FERRUM_KMS_TRANSIT` | text |  | installation, next start | The OpenBao or Vault Transit key of the vault's `kms` slot: `https://host:8200/<mount>/<key>`. It signs in with the token mounted at `/run/ferrum/kms.token`, or as the pod's service account (`kms_kubernetes_role`); its certificate is checked against `/run/ferrum/kms-ca.pem` too when that is there. The slot keeps the address it was made with, and the token goes nowhere else: changed here, the slot is not asked until it is made again (`ferrum task vault_add_slot kind:kms`). Keys from the environment given as its ciphertext (`FERRUM_SECRET_KEY`, retired keys) are unwrapped only at an address the environment gives. |
+| `secret_key_command` | `FERRUM_SECRET_KEY_COMMAND` | text |  | secret: the environment | The vault's `kms` slot through a command (run with `sh -c`, 30 seconds at most) that prints its key, such as a KMS's own CLI. Only ever from the environment, and outside the boot contract: a command line is never read from the database, where whoever writes a row would run a program. Prefer the key file (`/run/ferrum/root.key`) or the key-management service (`kms_transit`). |
+| `kms_transit` | `FERRUM_KMS_TRANSIT` | text |  | installation, next start | The OpenBao or Vault Transit key of the vault's `kms` slot: `https://host:8200/<mount>/<key>`. It signs in with the token mounted at `/run/ferrum/kms.token`, or as the pod's service account (`kms_kubernetes_role`); its certificate is checked against `/run/ferrum/kms-ca.pem` too when that is there. The slot keeps the address it was made with, and the token goes nowhere else: changed here, the slot is not asked until it is made again (`ferrum task vault_add_slot kind:kms`). A move's source keys given as its ciphertext are unwrapped only at an address the environment gives. |
 | `kms_token_file` | `FERRUM_KMS_TOKEN_FILE` | text |  | the environment (the key-management client (through R1; the token's file is /run/ferrum/kms.token from now on)) | A file a Vault Agent keeps the Transit token in, read at each use. Mount it at `/run/ferrum/kms.token` instead. |
 | `bao_token` | `BAO_TOKEN` | text |  | secret: the environment | The OpenBao token for `kms_transit`, through R1: give it as the file `/run/ferrum/kms.token` instead. |
 | `vault_token` | `VAULT_TOKEN` | text |  | secret: the environment | The Vault token for `kms_transit`, when `BAO_TOKEN` is not set, through R1: give it as the file `/run/ferrum/kms.token` instead. |
@@ -159,7 +157,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `otel_sdk_disabled` | `OTEL_SDK_DISABLED` | bool | `false` | installation, next start | `true` turns traces off. |
 | `otel_service_name` | `OTEL_SERVICE_NAME` | text | `ferrum` | installation, next start | The name traces carry. |
 | `move_source_database_url` | `FERRUM_MOVE_SOURCE_DATABASE_URL` | text |  | secret: the environment | The source installation's database. |
-| `move_source_secret_keys` | `FERRUM_MOVE_SOURCE_SECRET_KEYS` | text |  | secret: the environment | The source's `FERRUM_SECRET_KEY`, then its retired keys, comma-separated. |
+| `move_source_secret_keys` | `FERRUM_MOVE_SOURCE_SECRET_KEYS` | text |  | secret: the environment | The key `ferrum task vault_transfer` printed at the source for the workspace's vault (comma-separated with any others); itself, or as the key-management service's ciphertext. |
 | `move_source_files` | `FERRUM_MOVE_SOURCE_FILES` | text |  | an input of `ferrum task move_workspace`, from its environment as it runs | `same` when both installations use one storage. |
 | `move_source_files_dir` | `FERRUM_MOVE_SOURCE_FILES_DIR` | text |  | an input of `ferrum task move_workspace`, from its environment as it runs | The source's file directory. |
 | `move_source_s3_bucket` | `FERRUM_MOVE_SOURCE_S3_BUCKET` | text |  | an input of `ferrum task move_workspace`, from its environment as it runs | The source's bucket. |
@@ -174,13 +172,13 @@ The app `comms`'s settings:
 | `comms.meet_key` | `FERRUM_MEET_KEY` | text |  | secret: `comms`'s own vault; the environment's, while set, wins and is adopted there once | LiveKit's API key (a name); Comms keeps it in its vault as `meet.key`. |
 | `comms.meet_secret` | `FERRUM_MEET_SECRET` | text |  | secret: `comms`'s own vault; the environment's, while set, wins and is adopted there once | LiveKit's API secret; Comms keeps it in its vault as `meet.secret`. |
 | `comms.mail_admin_secret` | `FERRUM_MAIL_ADMIN_SECRET` | text |  | secret: `comms`'s own vault; the environment's, while set, wins and is adopted there once | The password of Stalwart's administrator (`comms.mail_admin`); Comms keeps it in its vault as `mail.admin_secret`. |
-| `comms.meet_url` | `FERRUM_MEET_URL` | text |  | installation, at once; not from the table while `FERRUM_MEET_SECRET` is in the environment; moving it takes that secret again or clears it | LiveKit as browsers reach it, wss://meet.example.com. Its key and secret are Comms' secrets meet.key and meet.secret. |
-| `comms.meet_api_url` | `FERRUM_MEET_API_URL` | text |  | installation, at once; not from the table while `FERRUM_MEET_SECRET` is in the environment; moving it takes that secret again or clears it | LiveKit's server API as Ferrum reaches it, when that is not the address above over http(s). |
+| `comms.meet_url` | `FERRUM_MEET_URL` | text |  | installation, at once | LiveKit as browsers reach it, wss://meet.example.com. Its key and secret are Comms' secrets meet.key and meet.secret. |
+| `comms.meet_api_url` | `FERRUM_MEET_API_URL` | text |  | installation, at once | LiveKit's server API as Ferrum reaches it, when that is not the address above over http(s). |
 | `comms.meet_recordings` | `FERRUM_MEET_RECORDINGS` | bool | `false` | installation, at once | true once LiveKit Egress runs beside LiveKit with its storage, so people can record meetings. |
 | `comms.meet_node_ip` | `FERRUM_MEET_NODE_IP` | text |  | installation, at once | Optional. The IP address LiveKit gives browsers, written into its file by the service meet; unset, LiveKit finds it. |
 | `comms.meet_external_ip` | `FERRUM_MEET_EXTERNAL_IP` | bool | `true` | installation, at once | Whether LiveKit finds its public address by STUN, written into its file by the service meet; false on a network without internet access. |
-| `comms.mail_url` | `FERRUM_MAIL_URL` | text |  | installation, at once; not from the table while `FERRUM_MAIL_ADMIN_SECRET` is in the environment; moving it takes that secret again or clears it | Stalwart's HTTP address as the server reaches it, for hosted mailboxes. |
-| `comms.mail_admin` | `FERRUM_MAIL_ADMIN` | text |  | installation, at once; not from the table while `FERRUM_MAIL_ADMIN_SECRET` is in the environment; moving it takes that secret again or clears it | A Stalwart administrator (admin, the fallback administrator, where the service mail renders its password). Its password is Comms' secret mail.admin_secret. |
+| `comms.mail_url` | `FERRUM_MAIL_URL` | text |  | installation, at once | Stalwart's HTTP address as the server reaches it, for hosted mailboxes. |
+| `comms.mail_admin` | `FERRUM_MAIL_ADMIN` | text |  | installation, at once | A Stalwart administrator (admin, the fallback administrator, where the service mail renders its password). Its password is Comms' secret mail.admin_secret. |
 | `comms.mail_host` | `FERRUM_MAIL_HOST` | text |  | installation, at once | Optional. The mail server's public host name, shown to people setting up mail programs. |
 
 The app `drive`'s settings:
@@ -213,7 +211,7 @@ The app `metrics`'s settings:
 | Setting | Variable | Type | Default | Where it lives | Meaning |
 |---|---|---|---|---|---|
 | `metrics.engine_token` | `FERRUM_METRICS_ENGINE_TOKEN` | text |  | secret: `metrics`'s own vault; the environment's, while set, wins and is adopted there once | The token of Metrics' engine, at least 32 characters; Metrics keeps it in its vault as `engine.token`. |
-| `metrics.engine_url` | `FERRUM_METRICS_ENGINE_URL` | text |  | installation, at once; not from the table while `FERRUM_METRICS_ENGINE_TOKEN` is in the environment; moving it takes that secret again or clears it | Metrics' engine for external sources, as the server reaches it (a private address; plain http allowed). Its token is Metrics' secret engine.token, sent only to the host it was given for. |
+| `metrics.engine_url` | `FERRUM_METRICS_ENGINE_URL` | text |  | installation, at once | Metrics' engine for external sources, as the server reaches it (a private address; plain http allowed). Its token is Metrics' secret engine.token, sent only to the host it was given for. |
 
 The app `my`'s settings:
 
@@ -350,9 +348,9 @@ behaves; the release after stops. What stays in the environment after that, each
 - `LOCO_ENV` (the image sets it): which configuration file the program reads, not a value an operator chooses.
 - `FERRUM_SECRET_KEY_COMMAND`: a command line is never read from the database, where whoever writes a row would run a
   program. Prefer the key file or the key-management service.
-- The old keys (`FERRUM_SECRET_KEY`, `FERRUM_RETIRED_SECRET_KEYS`), until the old key retires; and the apps' own
-  secrets (`FERRUM_MEET_SECRET`, …), which each app keeps in its own vault and adopts from the environment while one is
-  set, until its release stops reading them. The apps' settings are the database's, as the platform's are.
+- The apps' own secrets (`FERRUM_MEET_SECRET`, …), which each app keeps in its own vault and adopts from the
+  environment while one is set, until its release stops reading them. The apps' settings are the database's, as the
+  platform's are.
 - What the libraries read themselves: PostgreSQL's driver its `PG*` variables (the parts `DATABASE_URL` leaves out),
   the HTTP client the system's proxy (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`: set, every outbound request
   goes through it), the log's filter `RUST_LOG`, the OpenTelemetry SDK its other `OTEL_*` variables, the object store's
@@ -1320,64 +1318,32 @@ remembered on 15 November 2026, every line marked *(from memory)*. Check it agai
 | Neon | The project's role owns its database and is no superuser; whether a role made in Neon's console has `BYPASSRLS` is unchecked: make it with SQL (`CREATE ROLE ... NOBYPASSRLS`) if the server refuses it *(from memory)* | The `-pooler` host (PgBouncer, transaction mode) *(from memory)* | The same host without `-pooler` *(from memory)* | A branch or a restore to a point in time keeps the identity: noticed by the marker; a branch's roles keep their passwords *(from memory)* | Compute is stateless over replicated storage: `false` *(from memory)* |
 | Your own, or CloudNativePG (the chart's) | `deploy/postgres-init` (Compose) or the chart do it | PgBouncer (`database.pooler`) | `-rw` (the chart sets it) | `pg_basebackup`, Barman, CloudNativePG's recovery (*Backups and restore*); a new cluster's role has a password of its own, so `vault_rewrap` (*The vault*) | Synchronous replication: `false`; otherwise `true` |
 
-## Rotating the secret key
+## The vault's key from a key-management service
 
-An installation that has `FERRUM_SECRET_KEY` (the old master key: a new one has none, *Retiring the old key*)
-seals with it, beside the vault, what a build before the vault reads: secret fields, authenticator secrets,
-single sign-on client secrets, webhook signing secrets, plugins' settings and the Web Push key. Better than
-rotating it is retiring it. To replace it, on a schedule or because the old key may have been seen:
-
-1. Generate a new key: `openssl rand -base64 32`.
-2. Give **every** replica both: add the new key to `FERRUM_RETIRED_SECRET_KEYS` and restart them all.
-   Nothing changes yet, but each replica can now open what the new key will seal, so a rolling
-   restart in the next step cannot leave one that cannot read a value.
-3. Set `FERRUM_SECRET_KEY` to the new key and `FERRUM_RETIRED_SECRET_KEYS` to the old one, and restart.
-   Each replica moves stored values to the new key as it starts. It is safe side by side with
-   traffic and with other replicas: a value changed meanwhile is left for the next start.
-4. Check the log. `secrets remain that no configured key opens` means some values were sealed with
-   a key you have not configured: keep the retired keys until you know why.
-5. Remove the old key from `FERRUM_RETIRED_SECRET_KEYS` and restart. Back up the new key.
-
-A backup taken before the rotation still needs the old key, so keep it as long as those backups.
-
-## The secret key from a key-management service
-
-The key need not sit in the configuration in the clear. Two ways, both read once at start-up, the
-key then living only in the server's memory:
+The vault's `kms` slot (*The vault*, below) opens with a key that a key-management service gives, asked once at
+start-up, the key then living only in the server's memory. Two ways:
 
 * **OpenBao or Vault Transit.** Make a Transit key (`bao secrets enable transit`,
   `bao write -f transit/keys/ferrum`), give Ferrum a policy allowing `update` on
   `transit/encrypt/ferrum` and `transit/decrypt/ferrum`, and set `FERRUM_KMS_TRANSIT` to
-  `https://bao.internal:8200/transit/ferrum`. With the key still configured in the clear,
-  `ferrum task kms_wrap` prints `FERRUM_SECRET_KEY=vault:v1:…` (and `FERRUM_RETIRED_SECRET_KEYS`, if
-  any): configure those in its place and restart. It never prints a key. When the service rotates its
-  Transit key, what it wrapped before still opens; run `kms_wrap` again to move to the newest version.
-  Keys from the environment given as ciphertext are unwrapped, and `kms_wrap` wraps, only at an address the
-  environment gives beside them (`FERRUM_KMS_TRANSIT`), never at one a row of the database chose.
+  `https://bao.internal:8200/transit/ferrum`. The slot keeps its key wrapped by the service, and the service's address
+  it was made with: its token goes nowhere else, and a changed address is not asked until the slot is made again
+  (`ferrum task vault_add_slot kind:kms`). When the service rotates its Transit key, what it wrapped before still opens.
   The token is never a setting: mount it at `/run/ferrum/kms.token` (a Secret, or a Vault Agent's file; the chart's
   `vault.kms.tokenSecret`), or sign in as the pod (the setting `kms_kubernetes_role`, the Kubernetes auth method; the
   chart's `vault.kms.serviceAccount`). `BAO_TOKEN`, `VAULT_TOKEN` and `FERRUM_KMS_TOKEN_FILE` still work through this
   release, and win.
-* **A command.** `FERRUM_SECRET_KEY_COMMAND` runs once at start and must print the key, as
-  PostgreSQL's `ssl_passphrase_command` does. It stays in the environment, outside the boot contract: a command line
-  is never read from the database, where whoever writes a row would run a program. Prefer the key file
-  (`/run/ferrum/root.key`, *The vault*) or the service above. Any KMS's own tool works, for example
+* **A command.** `FERRUM_SECRET_KEY_COMMAND` runs once at start and must print the slot's key (base64 of 32 bytes), as
+  PostgreSQL's `ssl_passphrase_command` does. It is tried before the service. It stays in the environment, outside the
+  boot contract: a command line is never read from the database, where whoever writes a row would run a program.
+  Prefer the key file (`/run/ferrum/root.key`, *The vault*) or the service above. Any KMS's own tool works, for example
   `aws kms decrypt --ciphertext-blob fileb:///etc/ferrum/key.enc --query Plaintext --output text`
   (the file holding `aws kms encrypt`'s output for the key's 32 bytes). What it prints on stderr is
   not logged.
 
-A server that cannot get its key does not start, and says why (`ferrum task doctor` says where the
-key comes from). The vault's `kms` slot is reached the same way (The vault, below). The service is
-then part of starting: run it, and back it up, accordingly. Keep a copy of the key itself where your
-recovery plan says: without the service and without that copy, what the key sealed is lost.
-
-**If a key is lost**, what it sealed cannot be recovered: nothing else holds those values. Secret
-fields answer that they were sealed with another key. People with an authenticator app cannot use
-it, and an administrator resets their two-factor sign-in. Single sign-on fails until the client
-secret is entered again. Plugins start with those settings missing, so re-enter them. Webhooks fail
-rather than go out unsigned, so make new ones. The Web Push key is replaced, and devices subscribe
-again. Passwords, sessions and business data are not affected. Restoring a backup without its key
-leaves the same state.
+Where the `kms` slot is the only one that opens the vault, a server that cannot reach the service does not start, and
+says why (`ferrum task doctor` says which slot opens the vault here). The service is then part of starting: run it, and
+back it up, accordingly, and keep another way in (the key file, the recovery key) where your recovery plan says.
 
 ## The vault
 
@@ -1386,8 +1352,8 @@ schema `vault`. Its rows open only with the *installation key*, and that key is 
 the vault's *slots*: a dump of the database opens nothing without a slot's key. Below the installation key, each
 workspace has a key of its own (and the installation one more, for what belongs to no workspace), and each owner in it
 (the platform, each app, each plugin) a key of its own; each is random, versioned and stored wrapped by the one above.
-The platform's own secrets are in it (*The platform's secrets*, below), and so is what `FERRUM_SECRET_KEY` sealed in
-stores of its own (*The old key's stores in the vault*, below).
+The platform's own secrets are in it (*The platform's secrets*, below), and so are the values of the kernel's own
+stores (*The kernel's stores in the vault*, below).
 
 **Slots.** Any one of them opens the installation key.
 
@@ -1414,10 +1380,11 @@ is another than the one mounted (the doctor says so). The Helm chart mounts a ke
 makes once and keeps, or the Secret `vault.keySecret` names.
 
 When none of the three is there (`DATABASE_URL` has no password, there is no key file, no key-management service is
-set), the vault has no slot to be made with: the server starts with it closed, one warning in the log says so and
-names the three ways to give it a root, the doctor says so too, and everything that asks the vault is refused with
-*the vault is closed*. The platform's secrets then come from the environment alone, exactly as before (`JWT_SECRET`
-is required then). The first start that has one of them makes it.
+set), the vault has no slot to be made with. In production the server does not start, and says so: production keeps
+every secret in the vault (`doctor`, `vault_status`, `vault_rewrap` and `vault_add_slot` still run). Elsewhere it
+starts with the vault closed: one warning in the log says so and names the three ways to give it a root, the doctor says so too, and
+everything that asks the vault is refused with *the vault is closed*. The platform's secrets then come from the
+environment alone (`JWT_SECRET` is required then). The first start that has one of them makes it.
 
 Every other failure stops the start, and says why for each slot:
 
@@ -1614,78 +1581,36 @@ new `JWT_SECRET` (the older build cannot read what the vault's keys signed, so p
 you still have it, keeps the sessions it signed); the tokens your callers hold. The older build ignores the vault, and
 this build, started again later, takes the environment's values while they are set.
 
-### The old key's stores in the vault
+### The kernel's stores in the vault
 
-What `FERRUM_SECRET_KEY` sealed in stores of its own is in the vault from this release, each value a secret of its
-owner: secret fields (the app whose package declares the field; a field one app adds to another's entity is the
-adder's), connections' secrets and sign-in tokens, connectors' credentials, message channels' secrets, single sign-on
-client secrets, SAML keys, second factors, webhook signing secrets, approvals' secret parameters (the platform's), and the
-push key (the installation's). An app reads only its own secret fields, through its own vault handle; the platform
-uses the rest to sign, to check, or to put on a request, and shows none of them. Plugins' settings are sealed under each
-plugin's own key in the workspace's vault (`{"$vault": …}` in the plugin's configuration), and never stored plain: with
-neither the vault open nor the old key, saving one is refused.
+What the platform keeps for its own work is in the vault, each value a secret of its owner: secret fields (the app whose
+package declares the field; a field one app adds to another's entity is the adder's), connections' secrets and sign-in
+tokens, connectors' credentials, message channels' secrets, single sign-on client secrets, SAML keys, second factors,
+webhook signing secrets, approvals' secret parameters (the platform's), and the push key (the installation's). Their
+tables keep only that a value is set (a row, or a flag such as `connection.has_credentials`), never the value. An app
+reads only its own secret fields, through its own vault handle; the platform uses the rest to sign, to check, or to put
+on a request, and shows none of them. Plugins' settings are sealed under each plugin's own key in the workspace's vault
+(`{"$vault": …}` in the plugin's configuration), and never stored plain. With the vault closed none of them is kept or
+read: saving one is refused, saying why.
 
-- **What exists moves by itself.** The hourly upkeep moves every value the vault does not hold yet, on any number of
-  replicas at once: each value in a transaction of its own, checked in the vault before it commits, and one that a
-  person or another replica holds at that moment is left for the next round. `ferrum task vault_move` does it now and
-  says how many moved and how many were left. Until a value has moved it is read where it was.
-- **The previous build keeps working.** While `FERRUM_SECRET_KEY` is set, every value is still sealed with it beside the
-  vault, where a build before this one reads it, so a rollback reads every value as it is now. A value the older build
-  changes is read from where it changed it, and the next move takes it again. Nothing is deleted from the old stores in
-  this release. Keep `FERRUM_SECRET_KEY` (and `FERRUM_RETIRED_SECRET_KEYS`) as they are while you might roll back.
-- **Without the key** (a new installation, or one that retired it): the old stores hold only the vault's mark `vault`,
-  which opens nothing, and a webhook's secret is never kept plain again. A build before this one refuses each of those
-  values, and in production does not start without the key.
+- **What a store no longer holds goes from the vault**: in the transaction that removes it (a secret field cleared or
+  its record deleted, a connection or channel deleted, a sign-in disconnected), and otherwise in the hourly upkeep (a
+  decided approval's parameters, a disconnected connector's credentials, rows the database removed with others).
 - **Changing a connection's hosts asks for its secrets again**: they were given for the hosts its description reached
   then, and are not sent anywhere else.
 
-### Retiring the old key
+### What the platform keys and seals
 
-A new installation needs no `FERRUM_SECRET_KEY`: where the vault opens, production starts without it, and the platform
-keys and seals what it gives out with keys of its own from the vault, each derived for one use: opt-out links in
-promotional messages, erased people's opt-outs, sign-ins to accounts (their `state` and the verifier while they wait),
-public addresses of files, connectors' account fingerprints, receipts' digests of secret parameters, messages waiting
-with secret values (a workspace's each), and processes' payloads (the installation's). Development, with the vault open,
-no longer derives a key from `JWT_SECRET`: that key opens only what it sealed before. With the vault closed, each of these
-is refused, saying why; nothing falls back to anything else.
+The platform keys and seals what it gives out with keys of its own, each derived for one use from the platform's key in
+the vault: a workspace's for opt-out links in promotional messages, erased people's opt-outs, sign-ins to accounts
+(their `state` and the verifier while they wait), public addresses of files, connectors' account fingerprints,
+receipts' digests of secret parameters and messages waiting with secret values; the installation's for processes'
+payloads. With the vault closed, each of these is refused, saying why; nothing falls back to anything else.
 
-An installation that has the key takes it out in three steps, without stopping:
-
-1. **Upgrade.** Start this release with the key set, as before. Every replica that starts with the vault open adopts
-   `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS` into the vault once (each a secret of the platform's, used and
-   never shown; replicas starting together adopt it once). From then on what the key made is checked and opened with
-   the vault's copy as well. While older builds may still run, what the platform makes it still makes with the key, so
-   that a rollback finds every link, sign-in and receipt it gave out still good; the hourly upkeep moves what the old
-   stores and plugins' settings hold into the vault (`ferrum task vault_move` does it now).
-2. **Refuse older builds.** When `ferrum task legacy_key` says every key is in the vault and nothing waits to move, and
-   you will not roll back to a build before this one, run `ferrum task legacy_key retire:yes`. Builds before this one
-   (which need the key) no longer start (`ferrum task allow_older_builds reason:<why> feature:old-key-retired` lets them in again), and
-   each replica, once started again, makes what it gives out with the vault's keys.
-3. **Remove the variable.** `ferrum task legacy_key` then says `retirable: true`: remove `FERRUM_SECRET_KEY` and
-   `FERRUM_RETIRED_SECRET_KEYS` from every replica's environment and start them again. A replica that starts without the
-   key refuses older builds by itself as soon as it makes anything with the vault's keys.
-
-What `ferrum task legacy_key` (and the doctor's `legacy_key` finding) says at each stage:
-
-| Stage | `legacy_key` | The doctor |
-| --- | --- | --- |
-| Before the upgrade's first start with the vault open | the key's id under `not_adopted`; `retirable: false` | warning: the key is not yet in the vault |
-| Upgraded, values still moving | `adopted`; what waits, by store; `retirable: false` | the key is in the vault, the move is not done |
-| Everything moved, older builds still allowed | `moved_since`; `older_builds_refused: false`; `retirable: false` | run `legacy_key retire:yes` once no older build will run |
-| After `retire:yes` | `older_builds_refused: true`; `retirable: true` | the key may go |
-| The variable removed | `configured: false`; the ids still `adopted` | the key is gone; what it made is checked with the vault's copy |
-| A new installation | `configured: false`, nothing adopted | the key is not set, and never was |
-
-No app reads the old key itself: it is the kernel's alone. What an app sealed or keyed with it before (Cloud's, Helpdesk's
-mail tokens) the app opens and checks through its own vault handle, with the vault's copies once the key is gone from the
-environment (docs/app-contract.md, *The vault*). The previous build's apps that still read it are given the key noted as
-the environment's last, from the vault's copy, so a rollback changes nothing they sealed.
-
-When the vault's keys make what a key made before: links and addresses made before a rotation of the platform's key
-still check (every version that made one is kept); a receipt's digest and a connector's fingerprint are made with the
-current version only, so a request repeated across a rotation (or across `retire:yes`) is answered as a new one, and
-connections saved before it are told apart from those saved after until they are saved again. Keep the key itself,
-offline, as long as you keep backups taken before it went: they need it.
+When the platform's key rotates, links and addresses made before still check (every version that made one is kept); a
+receipt's digest and a connector's fingerprint are made with the current version only, so a request repeated across a
+rotation is answered as a new one, and connections saved before it are told apart from those saved after until they
+are saved again. A workspace's keys go with it when it moves (*Moving one workspace*), so what they made holds there.
 
 ### A workspace's vault
 
@@ -1818,8 +1743,7 @@ profile). They run on a [Temporal](https://temporal.io) server (MIT) beside Ferr
 (and `TEMPORAL_NAMESPACE`, created beforehand) on the replicas that run background work. Without it, a
 solution with a process is refused and everything else runs as before. What Temporal stores is sealed with
 the platform's key for processes in the vault, each payload naming the version that sealed it, so runs read
-their own history after the key rotates; on an installation that still has `FERRUM_SECRET_KEY`, with that key
-until it is retired (*Retiring the old key*), and what it sealed opens with the vault's copy once it is gone.
+their own history after the key rotates.
 Settings and behaviour: [logic/processes.md](logic/processes.md).
 
 **Accounts solutions act as.** A run no person's act started acts as its solution's own service account,
@@ -1877,7 +1801,7 @@ that format).
 
 A history that does not replay means the new build would decide those runs differently: keep the old build
 running them, and say so in the release notes. Replay opens the payloads as the runtime does: with the vault
-open, and the old key (or the vault's copy of it) for what it sealed.
+open.
 
 **Comparing before it runs.** On a release's page in Studio (or `POST /api/app/studio/solutions/shadow`),
 recent work is replayed against the release and against what runs now: the last runs of its solution, with
@@ -2856,9 +2780,8 @@ pool's pods being ready, the public host answers 503; the two steps avoid it. Go
 slightly different moments.
 
 **How the database starts.** `database.bootstrap.mode` is read once, when CloudNativePG creates the cluster;
-keep it in your values afterwards. Every mode but `empty` needs the server's settings (`FERRUM_SECRET_KEY`
-above all: sealed values open only with the key that sealed them), the files (object storage) of the
-installation it comes from, and a way into its vault: the new cluster's role has a password of its own, which the
+keep it in your values afterwards. Every mode but `empty` needs the server's settings, the files (object storage) of
+the installation it comes from, and a way into its vault: the new cluster's role has a password of its own, which the
 vault's credential slot was not made with (*The vault*, After a restore, a copy or a move).
 
 | Mode | What it does | Use it when you come from | Needs | After it |
@@ -2949,20 +2872,15 @@ restoring a backup"). People's changes made at the source after the copy was tak
 credential slot only where the role kept its password, so after the chart's `import` see *The vault*, After a restore,
 a copy or a move); the files, byte for byte under the same keys (`tenants/`, `uploads/`,
 `ui/`, `apps/`, `privacy-journal/`, `access-journal/`, the same in a directory and in a bucket, so a plain
-copy of the whole tree or bucket does it); and the keys: `JWT_SECRET` (sessions), `FERRUM_SECRET_KEY` and
-every key in `FERRUM_RETIRED_SECRET_KEYS` (sealed values open only with the key that sealed them), with
-`FERRUM_KMS_TRANSIT` and its sign-in when the keys are wrapped. On the copy, `ferrum task doctor` reports
-sealed values no key opens (`secrets.unopened`, by where they are kept and a few record ids, never a value;
-secret fields are counted whole by the key that sealed them, other sealed values up to 20,000 a run) and the
-newest 200 files and every app bundle the database names that storage lacks (`files.missing`).
+copy of the whole tree or bucket does it); and `JWT_SECRET` (sessions). On the copy, `ferrum task doctor` reports
+the newest 200 files and every app bundle the database names that storage lacks (`files.missing`).
 `ferrum task check_files [tenant:<slug>]` looks for every file, 500 at a time, and lists those missing.
 
 ### Compose to Kubernetes
 
-1. Prepare the cluster: the bucket, and the Secret with the Compose installation's `JWT_SECRET`,
-   `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS`. Set `database.bootstrap.mode: import` with the
-   Compose database as the source ("Moving from one shape to another"). Do not install yet: `import` dumps the
-   source when the cluster is created.
+1. Prepare the cluster: the bucket, and the Secret with the Compose installation's `JWT_SECRET`. Set
+   `database.bootstrap.mode: import` with the Compose database as the source ("Moving from one shape to another").
+   Do not install yet: `import` dumps the source when the cluster is created.
 2. On the Compose host (commands run in `deploy/`):
    `docker compose exec ferrum ferrum task plan_move reason:"to Kubernetes"`, and wait for it to finish.
 3. Copy the files into the bucket, the directory's root to the bucket's root, for example
@@ -2973,8 +2891,8 @@ newest 200 files and every app bundle the database names that storage lacks (`fi
    password: the migrate Job stops on the vault's credential slot until `ferrum task vault_rewrap` has run once with
    the cluster's `DATABASE_URL` and the Compose database's password (*The vault*, After a restore, a copy or a move).
    Then the server starts, adopts the move and logs `THIS INSTALLATION MOVED HERE`.
-5. `kubectl -n ferrum exec deploy/ferrum -- ferrum task doctor`: no `move`, `secrets.unopened` and
-   `files.missing` fine; then `ferrum task check_files`.
+5. `kubectl -n ferrum exec deploy/ferrum -- ferrum task doctor`: no `move` and `files.missing` fine; then
+   `ferrum task check_files`.
 6. Point the names at the cluster (the accounts, callbacks and link hosts first: "Names that should never
    change"). Stop the Compose stack; it stays fenced if it is started again.
 
@@ -2990,7 +2908,7 @@ mark's time runs out would still carry on as moved, and send what the source the
    gives the address), and restore it into the Compose database as in "Backups and restore" (an empty database,
    then `deploy/dump.sh restore` or `pg_restore`).
 3. Copy the bucket into the files volume (`aws s3 sync s3://<bucket>/ files/`, then `tar` into the volume).
-4. Start Compose with the cluster's `JWT_SECRET`, `FERRUM_SECRET_KEY` and `FERRUM_RETIRED_SECRET_KEYS`; run
+4. Start Compose with the cluster's `JWT_SECRET`; run
    the doctor and `check_files`; point the names; scale the cluster's Deployments to 0.
 
 ### Cluster to cluster
@@ -3020,9 +2938,7 @@ installation. Both installations keep running. Use "Moving an installation" for 
 **What it takes.** Both installations run one build (the same image), with the same apps available; the
 workspace's apps at their versions are available at the target. No grant: the copy runs as the server's own role,
 as every copy of a workspace does (*Taking one workspace back*). The workspace has no
-process run open (they live in the source's workflow service). A workspace whose erased people's opt-outs are
-kept (as digests under the source's key) needs that key in the target's `FERRUM_RETIRED_SECRET_KEYS` first,
-or the move refuses: without it those people could be sent marketing again. Waiting work asked for in a zone
+process run open (they live in the source's workflow service). Waiting work asked for in a zone
 that limits staff (jobs, events, approvals) is done in that zone by name: the move refuses while the target's
 `FERRUM_ZONES` does not define each such zone, until you define it there or let that work finish first.
 
@@ -3032,7 +2948,7 @@ command line; none of it is printed):
 | Variable | What it is |
 |---|---|
 | `FERRUM_MOVE_SOURCE_DATABASE_URL` | The source's database, as its `DATABASE_URL` (the role it gives must be able to read every row) |
-| `FERRUM_MOVE_SOURCE_SECRET_KEYS` | The source's `FERRUM_SECRET_KEY`, then each of its `FERRUM_RETIRED_SECRET_KEYS`, comma-separated (plain, or wrapped by this installation's `FERRUM_KMS_TRANSIT`); and the workspace's transfer key, when it has anything in the vault (below) |
+| `FERRUM_MOVE_SOURCE_SECRET_KEYS` | The workspace's transfer key, when it has anything in the vault (below): plain, or wrapped by this installation's `FERRUM_KMS_TRANSIT`; several, comma-separated, are each tried |
 | `FERRUM_MOVE_SOURCE_FILES` | `same` when both installations use one bucket or directory; otherwise one of the two below |
 | `FERRUM_MOVE_SOURCE_FILES_DIR` | The source's files directory, mounted here |
 | `FERRUM_MOVE_SOURCE_S3_BUCKET`, `_S3_REGION`, `_S3_ENDPOINT` | The source's bucket, read with this installation's `AWS_*` credentials |
@@ -3066,7 +2982,8 @@ Moving it back takes a transfer made where it is then.
 
 1. **Checks**, changing nothing: one build on both sides (the build that last brought each database up to date,
    and no work waiting for a newer one), the same tables, no restore hold or planned move on either side, the
-   name and id free here, and every value the workspace sealed opened with the keys given.
+   name and id free here, its vault's transfer opened with the keys given, and nothing sealed outside its vault
+   that a move cannot carry (below).
 2. **Held** at the source: no new background work starts for it (events, webhooks, jobs, schedules, service
    targets, pulls, approvals' reminders, plugin schedules, co-editing saves, expired uploads, the audit
    anchor). People go on working. It waits `wait` seconds, so that what was in hand finishes.
@@ -3149,26 +3066,19 @@ one does not know the freeze and would write to a frozen workspace. The move ref
 last brought up to date by different builds, or work waits for a newer one; it cannot see an older replica that
 is merely running, so check that every pod on both sides runs one image first.
 
-**Sealed values it does not know.** Before copying anything, every text and JSON value of every row of the
-workspace is looked at, one pass per table, for the form a sealed value has (padded base64 of 40 characters or
-more, not plain hex). Those in the places the kernel seals in, it seals again under this installation's key;
-any other column holding one refuses the move, naming the table and column, since it would arrive sealed with a
-key this installation does not hold. A column that holds text of that form which is not sealed is let through
-with `not_sealed:table.column,...`.
+**Values sealed outside the vault.** What the vault keeps travels with its transfer. Before copying anything, every
+text and JSON value of every row of the workspace is looked at, one pass per table, for the form a value sealed
+outside the vault has (padded base64 of 40 characters or more, not plain hex): any column holding one refuses the
+move, naming the table and column, since it would arrive sealed with a key that may not travel with it. A column that
+holds text of that form which is not sealed is let through with `not_sealed:table.column,...`.
 
-**Refused rather than guessed.** A different build on either side; another app or version; a value no key opens;
-a sealed value where the kernel does not know how it was sealed; erased opt-outs without the source's key here;
-a workspace named outside its own tables (a private app's release); a counter of the whole database other than
-events', or an event's number kept where this does not know of it; an open process run; a name, address or API
-key prefix this installation has already.
+**Refused rather than guessed.** A different build on either side; another app or version; a vault whose transfer
+does not open with the keys given; a value sealed outside the vault; a workspace named outside its own tables (a
+private app's release); a counter of the whole database other than events', or an event's number kept where this does
+not know of it; an open process run; a name, address or API key prefix this installation has already.
 
 **What a move cannot carry or guarantee.**
 
-* Links already mailed to unsubscribe are signed with the source's key, and receipts keep fingerprints of secret
-  parameters made with it. Put the source's `FERRUM_SECRET_KEY` in this installation's `FERRUM_RETIRED_SECRET_KEYS`
-  and erased people's opt-outs keep holding (the move refuses without it when there are any); fingerprints still
-  tell equal values apart only within the history from before the move, and mailed opt-out links still do not
-  work here, since they are checked against the current key alone.
 * Journals partitioned by date (the books) go into the partitions the target has: a year it has not made
   refuses the copy, and nothing changes.
 * An open process run lives in the source's workflow service: the move refuses until it ends or is cancelled.
@@ -3177,7 +3087,7 @@ key prefix this installation has already.
 * The privacy and access journals stay in the source's storage; they serve a restore of the source.
 
 **Rehearsed.** The second part of `scripts/move_rehearsal.sh --grant` moves a workspace between two running servers of
-the real binary and back, each on its own database, files directory and secret key, started as regions `a` and `b` that
+the real binary and back, each on its own database, files directory and session key, started as regions `a` and `b` that
 trust each other, each with a base domain of its own (`a.localhost`, `b.localhost`): `move_workspace` on `b` with the
 `FERRUM_MOVE_SOURCE_*` settings of `a`, then `finish_move` on `a` and the move back. Everything is checked from outside,
 over HTTP, both ways. While the run is held still after it froze the workspace, the source answers a change with 503,
@@ -3211,8 +3121,8 @@ ferrum task delete_sandbox tenant:acme-try
 
 Run it on the installation that is to hold the sandbox. With `from:here` the source is one of this installation's
 workspaces. Without it, the source is another installation, given in the environment exactly as for
-`move_workspace` ("Moving one workspace": `FERRUM_MOVE_SOURCE_DATABASE_URL`, `FERRUM_MOVE_SOURCE_SECRET_KEYS`, and
-`FERRUM_MOVE_SOURCE_FILES` or `_FILES_DIR` or `_S3_BUCKET`); both run one build, with the source's apps at their
+`move_workspace` ("Moving one workspace": `FERRUM_MOVE_SOURCE_DATABASE_URL`, and `FERRUM_MOVE_SOURCE_FILES` or
+`_FILES_DIR` or `_S3_BUCKET`); both run one build, with the source's apps at their
 versions here. Either way it needs no grant, as for a move. `not_sealed:<table.column,...>` keeps text that looks
 like a sealed value (below).
 
@@ -3239,21 +3149,21 @@ names; API keys, sessions, passkeys, OAuth and MCP sign-ins, device subscription
 action links already sent; support access; and the privacy journal (a sandbox made after an erasure holds no erased
 data, and its own erasures are in its own records). Members' links to their Ferrum accounts stay behind.
 
-**Secrets.** Only what a person needs to sign in travels: second factors, opened with the source's keys and sealed
-again under the new id. Everything else sealed is blanked, so the sandbox cannot act as the live workspace anywhere:
+**Secrets.** Only what a person needs to sign in travels: second factors, which the sandbox's vault keeps by their
+rule (*Its vault*, below). Every other secret stays behind, so the sandbox cannot act as the live workspace anywhere:
 
-| Sealed value | In the sandbox |
+| Secret | In the sandbox |
 |---|---|
-| A person's second factor (`app_user.totp_secret`) | carried, sealed again under the new id |
-| Password hashes, recovery codes (not sealed) | carried |
-| Connections' credentials and their account (`connection.sealed`, `account_key`) | blank |
-| Connections' credentials and OAuth tokens (`conn.sealed`, `conn_token`) | blank; tokens not copied |
-| Message channels' credentials: mail, text and chat providers (`message_channel.sealed`) | blank |
-| Single sign-on client secrets (`sso_provider.client_secret`), the SAML key (`saml_sp_key`) | blank; the key is made anew |
+| A person's second factor (`app_user.totp_set`) | carried, kept in the sandbox's vault |
+| Password hashes, recovery codes (hashes, not secrets of the vault) | carried |
+| Connectors' credentials and their account (`connection.has_credentials`, `account_key`) | blank |
+| Connections' credentials and OAuth tokens (`conn.has_secrets`, `conn_token`) | blank; tokens not copied |
+| Message channels' credentials: mail, text and chat providers (`message_channel.has_secrets`) | blank |
+| Single sign-on client secrets (`sso_provider.has_client_secret`), the SAML key (`saml_sp_key`) | blank; the key is made anew |
 | Plugins' sealed settings: payment and gateway keys (`plugin.config`) | blank |
 | Webhooks' signing secrets | a new random secret nobody has seen |
 | An app's secret fields (`record_secret`) | not copied |
-| Parameters held for an approval, messages waiting (`approval_request.sealed`, `message_send.pending`) | blank |
+| Parameters held for an approval, messages waiting (`approval_request.secret_params`, `message_send.pending`) | blank |
 | Anything else with the form of a sealed value, in any column or JSON | blank (the command lists the columns; `not_sealed:` keeps a column that holds no sealed value) |
 
 A connection, channel or provider stays in the list, blank: entering credentials there makes it work inside the
@@ -3263,7 +3173,8 @@ sandbox, and still nothing goes out.
 the secret's rule says: `blank` (the default) leaves it out, `regenerate` makes a value of its own of the same kind
 (a random value, or an Ed25519 pair) that nobody is shown, and `keep` copies the value, sealed with the sandbox's keys.
 `resume:yes` makes only what is not there yet. A sandbox of a workspace of another installation starts with an empty
-vault: the source's secrets open only with the source's keys.
+vault: the source's secrets open only with the source's keys, so its second factors are not there either, and someone
+who has one cannot sign in there.
 
 **Why nothing can leave.** The mark (`sandbox_of`, `sandbox_from`, `sandbox_until` on the workspace) is written with
 the sandbox's own row, in the transaction that copies every other row: there is never a copy without it. No setting
@@ -4189,17 +4100,17 @@ devices" then pop up there, even with no Ferrum page open (docs/plan/apps-ui.md 
 sends each one to the browser's push service, encrypted for that device (the service cannot read
 it) and signed with the server's VAPID key.
 
-* **Nothing to configure** beyond `FERRUM_SECRET_KEY`. The VAPID key is made by the first replica
-  that needs it, sealed with the secret key in the database (`server_key`), and shared by every
-  replica. Without a secret key there is no Web Push; the bell does not offer it.
+* **Nothing to configure.** The VAPID key is made by the first replica that needs it, kept in the
+  vault (the installation's; `server_key` holds its public half), and shared by every replica. With
+  the vault closed there is no Web Push; the bell does not offer it.
 * **Outbound access.** Replicas reach the push services over https: `fcm.googleapis.com`,
   `updates.push.services.mozilla.com`, `web.push.apple.com` and `*.notify.windows.com`. Where egress
   is filtered, allow those; a push service that cannot be reached is tried again with the outbox's
   backoff (up to 15 times over about 6 hours), and the bar has the notification meanwhile.
 * **Only push services.** The server sends to no address but those (`FERRUM_PUSH_SERVICES`), each
   checked again when sending (no private addresses), so a subscription cannot point it elsewhere.
-* **A new secret key** cannot open the stored VAPID key: the server logs an error, makes a new one,
-  and forgets subscriptions made with the old one as they come up. People's browsers subscribe
+* **A push key the vault no longer has** (its rows lost) is made anew: the server logs an error, makes
+  a new one, and forgets subscriptions made with the old one as they come up. People's browsers subscribe
   again on their next visit without asking (the permission stays).
 * **Sign-out ends it.** A device's subscription belongs to its browser session: signing that device
   out, signing out everywhere, deactivating the person or the session expiring stops its pushes.
@@ -4598,7 +4509,7 @@ authenticator app, and keeps the ten recovery codes it shows once. Administratio
 Two-factor sign-in requires it of everyone: people without it set it up at their next sign-in.
 Administration → Users → Reset 2FA is for a lost phone: it turns it off, lifts a lockout and ends
 the person's sessions. Wrong codes count toward the same lockout as wrong passwords (5 in a row,
-15 minutes). The secrets are sealed with `FERRUM_SECRET_KEY`.
+15 minutes). The authenticator secrets are kept in the vault.
 
 **Single sign-on (OpenID Connect).** Register Ferrum with the identity provider as a web
 application: redirect URI `https://<your host>/app/login` (Administration → Single sign-on shows
@@ -4650,7 +4561,7 @@ NameID. A persistent NameID links the person to their identity there; a transien
 address stand in for it. Then add the provider with its metadata, pasted or its https address
 (read again at each sign-in, so a new signing certificate is picked up), and the email domains it
 vouches for, which SAML needs listed. Requests are signed with the workspace's own key (made when
-first wanted, sealed by `FERRUM_SECRET_KEY`, its certificate in the metadata; providers that
+first wanted, its private half kept in the vault, its certificate in the metadata; providers that
 import the metadata, Keycloak among them, then check every request). It needs `PUBLIC_URL`.
 
 *Addresses.* Each provider keeps the addresses it was saved with. On a server with an accounts host

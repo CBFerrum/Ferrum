@@ -88,9 +88,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 
-export JWT_SECRET FERRUM_SECRET_KEY
+export JWT_SECRET
 JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-FERRUM_SECRET_KEY=$(openssl rand -base64 32 | tr -d '\n')
 # Production settings, the only ones that read FERRUM_MIGRATE_AT_START; a files directory in place of a bucket.
 export LOCO_ENV=production LOG_LEVEL=warn FERRUM_BOOTSTRAP_TOKEN=rehearsal-token FERRUM_REQUIRE_OBJECT_STORAGE=false
 PASSWORD='Rehearsal-Passw0rd'

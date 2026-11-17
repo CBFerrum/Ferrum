@@ -289,23 +289,11 @@ impl SpNames {
     }
 }
 
-pub(crate) fn saml_enc_label(tenant: Uuid, id: Uuid) -> String {
-    format!("saml-enc|{tenant}|{id}")
-}
-
 /// How long a replaced encryption key is still published and accepted.
 const ENC_KEY_OVERLAP_DAYS: i32 = 30;
 
 fn admin_only(ctx: &Ctx) -> Result<()> {
     if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("single sign-on is set up by administrators".into())) }
-}
-
-pub(crate) fn sealed_label(tenant: Uuid, id: Uuid) -> String {
-    format!("sso|{tenant}|{id}")
-}
-
-pub(crate) fn saml_key_label(tenant: Uuid) -> String {
-    format!("saml-sp|{tenant}")
 }
 
 /// An email domain as listed: lower case, no `@`.
@@ -428,13 +416,13 @@ impl Kernel {
     }
 
     /// The workspace's keys assertions may be encrypted to, the current one first, made the first time
-    /// wanted (one current key at most, whichever replica makes it), each sealed by the server key.
+    /// wanted (one current key at most, whichever replica makes it), each kept in the vault.
     pub(crate) async fn saml_enc_keys(&self, tenant: Uuid) -> Result<Vec<ferrum_saml::SpKey>> {
-        type Row = (Uuid, String, String, bool);
+        type Row = (Uuid, String, bool);
         let read = || async {
             let mut tx = self.db.system_tx().await?;
             let rows: Vec<Row> = sqlx::query_as(
-                "select id, private_key, certificate, retires_at is null from saml_enc_key where tenant_id = $1 and (retires_at is null or retires_at > now()) \
+                "select id, certificate, retires_at is null from saml_enc_key where tenant_id = $1 and (retires_at is null or retires_at > now()) \
                  order by retires_at is null desc, created_at desc",
             )
             .bind(tenant)
@@ -444,14 +432,14 @@ impl Kernel {
             Ok::<_, Error>(rows)
         };
         let mut rows = read().await?;
-        if !rows.iter().any(|r| r.3) {
+        if !rows.iter().any(|r| r.2) {
             self.add_saml_enc_key(tenant, false).await?;
             rows = read().await?;
         }
         let unreadable = |_| Error::Internal("the workspace's SAML encryption key is not base64".into());
         let mut keys = Vec::with_capacity(rows.len());
-        for (id, private, cert, _) in rows {
-            let private_der = STANDARD.decode(self.kept_alone(&Place::saml_enc(tenant, id), &private).await?.as_bytes()).map_err(unreadable)?;
+        for (id, cert, _) in rows {
+            let private_der = STANDARD.decode(self.kept_alone(&Place::saml_enc(tenant, id)).await?.as_bytes()).map_err(unreadable)?;
             keys.push(ferrum_saml::SpKey { private_der, certificate_der: STANDARD.decode(cert).map_err(unreadable)? });
         }
         Ok(keys)
@@ -461,9 +449,7 @@ impl Kernel {
     /// accepted for 30 days more, else none is replaced (and a key made at the same time elsewhere
     /// wins). Two replacements at once: one fails, on the one current key the database allows.
     async fn add_saml_enc_key(&self, tenant: Uuid, replace: bool) -> Result<Uuid> {
-        if !self.kept_here() {
-            return Err(Error::Unavailable("SAML needs the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
-        }
+        self.vault_open("SAML")?;
         let made = tokio::task::spawn_blocking(move || ferrum_saml::new_sp_key(&format!("Ferrum {tenant} encryption")))
             .await
             .map_err(|e| Error::Unavailable(format!("making the workspace's SAML key stopped: {e}")))?
@@ -486,25 +472,17 @@ impl Kernel {
         }
         // The row first: a key made at the same time elsewhere wins, and only the one made here is kept.
         let made_here = sqlx::query(
-            "insert into saml_enc_key (tenant_id, id, private_key, certificate) values ($1, $2, $3, $4) \
-             on conflict (tenant_id) where retires_at is null do nothing",
+            "insert into saml_enc_key (tenant_id, id, certificate) values ($1, $2, $3) on conflict (tenant_id) where retires_at is null do nothing",
         )
         .bind(tenant)
         .bind(id)
-        .bind(crate::vault::kept::MARKER)
         .bind(STANDARD.encode(&made.certificate_der))
         .execute(&mut *tx)
         .await?
         .rows_affected()
             == 1;
         if made_here {
-            let stored = self.keep(&mut tx, &Place::saml_enc(tenant, id), &STANDARD.encode(&made.private_der)).await?;
-            sqlx::query("update saml_enc_key set private_key = $3 where tenant_id = $1 and id = $2")
-                .bind(tenant)
-                .bind(id)
-                .bind(stored)
-                .execute(&mut *tx)
-                .await?;
+            self.keep(&mut tx, &Place::saml_enc(tenant, id), &STANDARD.encode(&made.private_der)).await?;
         }
         tx.commit().await?;
         Ok(id)
@@ -526,48 +504,43 @@ impl Kernel {
     }
 
     /// The workspace's own SAML key, made the first time it is wanted (by whichever replica gets
-    /// there first), its private half sealed by the server key.
+    /// there first), its private half kept in the vault.
     pub(crate) async fn saml_key(&self, tenant: Uuid) -> Result<ferrum_saml::SpKey> {
         let place = Place::saml_sp(tenant);
         let read = || async {
             let mut tx = self.db.system_tx().await?;
-            let row: Option<(String, String)> =
-                sqlx::query_as("select private_key, certificate from saml_sp_key where tenant_id = $1").bind(tenant).fetch_optional(&mut *tx).await?;
+            let row: Option<String> =
+                sqlx::query_scalar("select certificate from saml_sp_key where tenant_id = $1").bind(tenant).fetch_optional(&mut *tx).await?;
             tx.commit().await?;
             Ok::<_, Error>(row)
         };
-        let row = match read().await? {
-            Some(row) => row,
+        let cert = match read().await? {
+            Some(cert) => cert,
             None => {
-                if !self.kept_here() {
-                    return Err(Error::Unavailable("SAML needs the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
-                }
+                self.vault_open("SAML")?;
                 let made = tokio::task::spawn_blocking(move || ferrum_saml::new_sp_key(&format!("Ferrum {tenant}")))
                     .await
                     .map_err(|e| Error::Unavailable(format!("making the workspace's SAML key stopped: {e}")))?
                     .map_err(Error::Unavailable)?;
                 let mut tx = self.db.system_tx().await?;
                 // The row first: the replica whose row it is keeps its key; any other's is dropped.
-                let made_here =
-                    sqlx::query("insert into saml_sp_key (tenant_id, private_key, certificate) values ($1, $2, $3) on conflict (tenant_id) do nothing")
-                        .bind(tenant)
-                        .bind(crate::vault::kept::MARKER)
-                        .bind(STANDARD.encode(&made.certificate_der))
-                        .execute(&mut *tx)
-                        .await?
-                        .rows_affected()
-                        == 1;
+                let made_here = sqlx::query("insert into saml_sp_key (tenant_id, certificate) values ($1, $2) on conflict (tenant_id) do nothing")
+                    .bind(tenant)
+                    .bind(STANDARD.encode(&made.certificate_der))
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected()
+                    == 1;
                 if made_here {
-                    let stored = self.keep(&mut tx, &place, &STANDARD.encode(&made.private_der)).await?;
-                    sqlx::query("update saml_sp_key set private_key = $2 where tenant_id = $1").bind(tenant).bind(stored).execute(&mut *tx).await?;
+                    self.keep(&mut tx, &place, &STANDARD.encode(&made.private_der)).await?;
                 }
                 tx.commit().await?;
                 read().await?.ok_or_else(|| Error::Retryable("the workspace's SAML key is being made".into()))?
             }
         };
         let unreadable = |_| Error::Internal("the workspace's SAML key is not base64".into());
-        let private_der = STANDARD.decode(self.kept_alone(&place, &row.0).await?.as_bytes()).map_err(unreadable)?;
-        Ok(ferrum_saml::SpKey { private_der, certificate_der: STANDARD.decode(&row.1).map_err(unreadable)? })
+        let private_der = STANDARD.decode(self.kept_alone(&place).await?.as_bytes()).map_err(unreadable)?;
+        Ok(ferrum_saml::SpKey { private_der, certificate_der: STANDARD.decode(&cert).map_err(unreadable)? })
     }
 
     /// What a SAML identity provider's administrator needs about this workspace for a provider added
@@ -640,7 +613,7 @@ impl Kernel {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<Value> = sqlx::query_scalar(
-            "select jsonb_build_object('id', id, 'label', label, 'protocol', protocol, 'issuer', issuer, 'client_id', client_id, 'has_secret', client_secret is not null, \
+            "select jsonb_build_object('id', id, 'label', label, 'protocol', protocol, 'issuer', issuer, 'client_id', client_id, 'has_secret', has_client_secret, \
                'saml_metadata', saml_metadata, 'domains', domains, 'auto_create', auto_create, 'default_roles', default_roles, 'enabled', enabled, \
                'single_logout_out', coalesce(slo_out, false), 'single_logout_in', coalesce(slo_in, false), 'saml_sp_base', saml_sp_base, \
                'linked_users', (select count(*) from app_user u where u.tenant_id = p.tenant_id and u.sso_subject like p.id::text || '|%'), \
@@ -731,9 +704,7 @@ impl Kernel {
                 (idp.entity_id, String::new(), Some(source.to_string()))
             }
         };
-        if !self.kept_here() {
-            return Err(Error::Unavailable("single sign-on needs the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
-        }
+        self.vault_open("single sign-on")?;
         let given: Option<Option<&str>> = match input.client_secret.as_deref().map(str::trim) {
             _ if input.protocol == Protocol::Saml => Some(None),
             Some("") => Some(None),
@@ -743,11 +714,14 @@ impl Kernel {
         };
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         // Kept in the transaction that saves the provider: neither goes without the other.
-        let secret: Option<Option<String>> = match given {
-            Some(Some(s)) => Some(Some(self.keep(&mut tx, &Place::sso(ctx.tenant, id), s).await?)),
+        let secret: Option<bool> = match given {
+            Some(Some(s)) => {
+                self.keep(&mut tx, &Place::sso(ctx.tenant, id), s).await?;
+                Some(true)
+            }
             Some(None) => {
                 crate::vault::kept::forget(&mut tx, &Place::sso(ctx.tenant, id)).await?;
-                Some(None)
+                Some(false)
             }
             None => None,
         };
@@ -776,11 +750,11 @@ impl Kernel {
             Protocol::Oidc => (None, None, None),
         };
         sqlx::query(
-            "insert into sso_provider (tenant_id, id, label, issuer, client_id, client_secret, domains, auto_create, default_roles, enabled, protocol, saml_metadata, \
+            "insert into sso_provider (tenant_id, id, label, issuer, client_id, has_client_secret, domains, auto_create, default_roles, enabled, protocol, saml_metadata, \
                saml_sp_base, slo_out, slo_in) \
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $13, $14, $15, $16) \
              on conflict (tenant_id, id) do update set label = excluded.label, issuer = excluded.issuer, client_id = excluded.client_id, \
-               client_secret = case when $11 then excluded.client_secret else sso_provider.client_secret end, \
+               has_client_secret = case when $11 then excluded.has_client_secret else sso_provider.has_client_secret end, \
                domains = excluded.domains, auto_create = excluded.auto_create, default_roles = excluded.default_roles, enabled = excluded.enabled, \
                saml_metadata = excluded.saml_metadata, slo_out = excluded.slo_out, slo_in = excluded.slo_in, updated_at = now()",
         )
@@ -789,7 +763,7 @@ impl Kernel {
         .bind(label)
         .bind(&issuer)
         .bind(&client_id)
-        .bind(secret.clone().flatten())
+        .bind(secret == Some(true))
         .bind(&domains)
         .bind(input.auto_create)
         .bind(&roles)
@@ -883,7 +857,7 @@ impl Kernel {
             protocol: String,
             issuer: String,
             client_id: String,
-            client_secret: Option<String>,
+            has_client_secret: bool,
             saml_metadata: Option<String>,
             domains: Vec<String>,
             auto_create: bool,
@@ -892,7 +866,7 @@ impl Kernel {
             slo_in: Option<bool>,
         }
         let p: P = sqlx::query_as(
-            "select p.tenant_id, p.label, p.protocol, p.issuer, p.client_id, p.client_secret, p.saml_metadata, p.domains, p.auto_create, p.default_roles, \
+            "select p.tenant_id, p.label, p.protocol, p.issuer, p.client_id, p.has_client_secret, p.saml_metadata, p.domains, p.auto_create, p.default_roles, \
                p.saml_sp_base, p.slo_in \
              from sso_provider p join tenant t on t.id = p.tenant_id \
              where p.id = $1 and p.enabled and t.status = 'active' and (t.id = $2 or t.slug = $3)",
@@ -905,9 +879,9 @@ impl Kernel {
         .ok_or_else(|| Error::NotFound("single sign-on provider".into()))?;
         // Every sign-in through a provider reaches it: never from a sandbox (sandbox.rs).
         self.outward(p.tenant_id).await?;
-        let client_secret = match p.client_secret {
-            Some(stored) => Some(self.kept(tx, &Place::sso(p.tenant_id, id), &stored).await?.to_string()),
-            None => None,
+        let client_secret = match p.has_client_secret {
+            true => Some(self.kept(tx, &Place::sso(p.tenant_id, id)).await?.to_string()),
+            false => None,
         };
         let provider = Provider {
             id,

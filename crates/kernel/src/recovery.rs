@@ -551,7 +551,7 @@ impl Kernel {
         sqlx::query("set local statement_timeout = 0").execute(&mut *from).await?;
         copying(&mut tx, true).await?;
         let people: Value = sqlx::query_scalar(
-            "select coalesce(jsonb_agg(jsonb_build_object('id', id, 'password_hash', password_hash, 'totp_secret', totp_secret, \
+            "select coalesce(jsonb_agg(jsonb_build_object('id', id, 'password_hash', password_hash, 'totp_set', totp_set, \
              'totp_enabled_at', totp_enabled_at, 'is_active', is_active)), '[]') from app_user where tenant_id = $1",
         )
         .bind(tenant)
@@ -594,8 +594,8 @@ impl Kernel {
         }
 
         sqlx::query(
-            "update app_user u set password_hash = p.password_hash, totp_secret = p.totp_secret, totp_enabled_at = p.totp_enabled_at, is_active = p.is_active \
-             from jsonb_to_recordset($2) as p(id uuid, password_hash text, totp_secret text, totp_enabled_at timestamptz, is_active boolean) \
+            "update app_user u set password_hash = p.password_hash, totp_set = p.totp_set, totp_enabled_at = p.totp_enabled_at, is_active = p.is_active \
+             from jsonb_to_recordset($2) as p(id uuid, password_hash text, totp_set boolean, totp_enabled_at timestamptz, is_active boolean) \
              where u.tenant_id = $1 and u.id = p.id",
         )
         .bind(tenant)

@@ -103,12 +103,12 @@ impl Kernel {
             return Ok(false);
         }
         let (hook, secret) = (Uuid::now_v7(), crate::oauth::random_secret("whsec_"));
-        sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics, app, created_by) values ($1, $2, $3, $4, $5, $6, $7, $8)")
+        self.keep_webhook_secret(&mut tx, ctx.tenant, hook, &secret).await?;
+        sqlx::query("insert into webhook (tenant_id, id, name, url, topics, app, created_by) values ($1, $2, $3, $4, $5, $6, $7)")
             .bind(ctx.tenant)
             .bind(hook)
             .bind(format!("App: {}", s.app))
             .bind(&events_url)
-            .bind(self.keep_webhook_secret(&mut tx, ctx.tenant, hook, &secret).await?)
             .bind(s.events)
             .bind(s.app)
             .bind((!ctx.user.is_nil()).then_some(ctx.user))
@@ -160,13 +160,13 @@ impl Kernel {
             .bind(email_of(app))
             .fetch_optional(&mut *tx)
             .await?;
-        let hook: Option<(Uuid, String)> =
-            sqlx::query_as("select id, secret from webhook where tenant_id = $1 and app = $2").bind(ctx.tenant).bind(app).fetch_optional(&mut *tx).await?;
+        let hook: Option<Uuid> =
+            sqlx::query_scalar("select id from webhook where tenant_id = $1 and app = $2").bind(ctx.tenant).bind(app).fetch_optional(&mut *tx).await?;
         // Its signing secret, opened for the last call below: it goes from the vault with the webhook.
-        let secret = match &hook {
-            Some((id, stored)) => {
-                let place = crate::vault::kept::Place::webhook(ctx.tenant, *id);
-                let opened = self.kept(&mut tx, &place, stored).await;
+        let secret = match hook {
+            Some(id) => {
+                let place = crate::vault::kept::Place::webhook(ctx.tenant, id);
+                let opened = self.kept(&mut tx, &place).await;
                 crate::vault::kept::forget(&mut tx, &place).await?;
                 Some(opened)
             }
@@ -181,8 +181,8 @@ impl Kernel {
                 .execute(&mut *tx)
                 .await?;
         }
-        if let Some((id, _)) = &hook {
-            audit::record_admin(&mut tx, ctx, "ServiceApp", *id, "uninstall", None, json!({"app": app})).await?;
+        if let Some(id) = hook {
+            audit::record_admin(&mut tx, ctx, "ServiceApp", id, "uninstall", None, json!({"app": app})).await?;
         }
         tx.commit().await?;
         if let Some(user) = user {

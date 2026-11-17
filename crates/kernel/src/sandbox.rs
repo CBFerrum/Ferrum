@@ -12,11 +12,10 @@
 //! What would let it act as the live workspace anywhere is not copied, or copied blank: integration secrets, API keys,
 //! sessions, grants, the live workspace's addresses, and the ids by which the outside world calls the live workspace's
 //! connections, channels and sign-in providers (new ids here). What people need to sign in travels: passwords, second
-//! factors (sealed again under the new id) and recovery codes.
+//! factors (the sandbox's vault keeps each, by its rule) and recovery codes.
 
 use crate::recovery::{copying, delete_rows, may_copy, same_database, shape, workspace_columns};
-use crate::secret::SecretKey;
-use crate::workspace_move::{EachRow, KNOWN_SEALED, LEFT_BEHIND, MoveSource, SEALED_FORM, Shape, copy_rows, named, renumber_events, system};
+use crate::workspace_move::{EachRow, LEFT_BEHIND, MoveSource, SEALED_FORM, Shape, copy_rows, named, renumber_events, system};
 use crate::{Ctx, Db, DbConfig, Error, Kernel, Result, audit};
 use chrono::NaiveDate;
 use serde_json::{Map, Value, json};
@@ -409,11 +408,6 @@ impl Kernel {
         may_copy(&self.db).await?;
         self.named_outside(source, tenant, slug, &tables).await?;
 
-        let keys: Vec<SecretKey> = match &c.from {
-            Some(f) => f.keys.clone(),
-            None => self.secret_keys().cloned().collect(),
-        };
-        let to = self.env_key().cloned();
         let new = Uuid::now_v7();
         let mut src = source.pool.begin().await?;
         sqlx::query("set transaction isolation level repeatable read, read only").execute(&mut *src).await?;
@@ -461,11 +455,10 @@ impl Kernel {
         let (mut carried, mut emptied) = (0u64, 0u64);
         let events = HashMap::new();
         let mut each = |t: &str, row: &mut Map<String, Value>| -> Result<()> {
-            // A sealed value where the kernel does not seal is blanked, never carried.
+            // A value sealed outside the vault (by code the platform does not know) is blanked, never carried.
             for (column, v) in row.iter_mut() {
-                let known = KNOWN_SEALED.contains(&(t, column.as_str()));
                 let kept = c.not_sealed.iter().any(|n| n.split_once('.') == Some((t, column.as_str())));
-                if !known && !kept && blank_sealed(v) > 0 {
+                if !kept && blank_sealed(v) > 0 {
                     blanked.insert(format!("{t}.{column}"));
                 }
             }
@@ -474,57 +467,38 @@ impl Kernel {
             let Value::Object(r) = whole else { unreachable!("an object stays one") };
             *row = r;
             renumber_events(t, row, &events);
-            let mut null = |column: &str| {
-                if row.get(column).is_some_and(|v| !v.is_null()) {
-                    row.insert(column.into(), Value::Null);
+            // A column set to `to`, counted where it held something: a secret's flag set off, its value being one the
+            // sandbox's vault does not have (by its rule).
+            let mut blank = |column: &str, to: Value| {
+                if row.get(column).is_some_and(|v| !v.is_null() && *v != to) {
+                    row.insert(column.into(), to);
                     emptied += 1;
                 }
             };
             match t {
-                // What signing in needs: the second factor, sealed again under the new id. Ferrum accounts stay behind.
+                // What signing in needs: the second factor, which the sandbox's vault keeps by its rule (crate::vault::kept).
+                // Ferrum accounts stay behind. (A webhook's secret is made anew there, by its rule: nobody has seen it.)
                 "app_user" => {
-                    null("identity_id");
-                    // One only the vault keeps stays its mark: the sandbox's vault has it by its rule (crate::vault::kept).
-                    if let Some(sealed) = text_opt(row, "totp_secret").filter(|s| *s != crate::vault::kept::MARKER) {
-                        let user = row
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .and_then(|s| s.parse::<Uuid>().ok())
-                            .ok_or_else(|| Error::Internal("a person without an id".into()))?;
-                        let plain = keys
-                            .iter()
-                            .find_map(|k| k.open(&crate::twofactor::sealed_label(tenant, user), &sealed).ok())
-                            .ok_or_else(|| Error::Conflict(format!("the second factor of person {user}: no key given opens it, so nothing was copied")))?;
-                        let to = to.as_ref().ok_or_else(|| Error::Conflict("this installation has no FERRUM_SECRET_KEY to seal second factors with".into()))?;
-                        row.insert("totp_secret".into(), json!(to.seal(&crate::twofactor::sealed_label(new, user), &plain)?));
+                    blank("identity_id", Value::Null);
+                    if row.get("totp_set") == Some(&Value::Bool(true)) {
                         carried += 1;
                     }
                 }
-                // A new secret nobody has seen: the live one is not here, and nothing is sent with it anyway.
-                "webhook" => {
-                    let id = row
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .and_then(|s| s.parse::<Uuid>().ok())
-                        .ok_or_else(|| Error::Internal("a webhook without an id".into()))?;
-                    row.insert("secret".into(), json!(self.seal_webhook_secret(new, id, &hex::encode(rand::random::<[u8; 32]>()))?));
-                    emptied += 1;
-                }
                 "connection" => {
-                    null("sealed");
-                    null("account_key");
+                    blank("has_credentials", json!(false));
+                    blank("account_key", Value::Null);
                 }
-                "conn" | "message_channel" => null("sealed"),
-                "sso_provider" => null("client_secret"),
+                "conn" | "message_channel" => blank("has_secrets", json!(false)),
+                "sso_provider" => blank("has_client_secret", json!(false)),
                 // A sandbox's work is judged by the zone its own requests arrive in, not the one the live workspace's did.
                 "approval_request" => {
-                    null("sealed");
-                    null("zone");
+                    blank("secret_params", json!([]));
+                    blank("zone", Value::Null);
                 }
-                "message_send" => null("pending"),
+                "message_send" => blank("pending", Value::Null),
                 "plugin" => {
                     if let Some(Value::Object(config)) = row.get_mut("config") {
-                        for v in config.values_mut().filter(|v| v.get("$sealed").is_some() || v.get(crate::vault::PLUGIN_VAULT).is_some()) {
+                        for v in config.values_mut().filter(|v| v.get(crate::vault::PLUGIN_VAULT).is_some()) {
                             *v = Value::Null;
                             emptied += 1;
                         }

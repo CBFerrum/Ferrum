@@ -41,8 +41,7 @@ storage:
 # the platform's secrets (docs/operations.md, "The platform's secrets"; `ferrum task secret_set`). Its keys, each
 # optional: JWT_SECRET, FERRUM_BOOTSTRAP_TOKEN, FERRUM_METRICS_TOKEN, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (or the
 #   pod's own identity), FERRUM_CLAMAV_ADDR, FERRUM_CLAMAV_MAX_MB, FERRUM_CONNECTION_UPLOAD_MB, FERRUM_OPS_TELEMETRY_DAYS,
-#   FERRUM_SECRET_KEY and FERRUM_RETIRED_SECRET_KEYS (the old master key, where an installation still has it:
-#   docs/operations.md, "Retiring the old key"), FERRUM_OPERATOR_TOKEN (the settings routes for the Operations screen).
+#   FERRUM_OPERATOR_TOKEN (the settings routes for the Operations screen).
 # The environment, where it sets one, still wins over the vault in this release.
 secrets:
   existingSecret: ferrum-secrets

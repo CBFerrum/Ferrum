@@ -12,7 +12,7 @@ anyone, and what it must write down for the people who run it. The operator's ow
 | `ferrum task services` | Each service the app declares: files, made secrets, why it cannot be rendered here | `HookRegistry::add_companion` ([10](10-companions-and-sign-in.md)) |
 | `GET /api/operator/secrets`, `ferrum task vault_events` | The app's installation secrets, described (never a value), and every use and change | The app's vault handle ([08](08-secrets-and-the-vault.md)) |
 | A workspace's Administration, *Secrets* | The app's secrets in that workspace; `managed_by` where the app manages one | The handle; `Vault::manage` |
-| `ferrum task doctor` | Nothing app-specific, except what still depends on the old key: `ferrum task legacy_key` and the doctor name the apps whose code read past the vault (`Kernel::legacy_key_findings`) | Nothing: an app adds no doctor line |
+| `ferrum task doctor` | Nothing app-specific | Nothing: an app adds no doctor line |
 | The support report | Per workspace that installed the package: the app's counts and problems in words | `HookRegistry::add_health(package, Arc<dyn support::Health>)` |
 | The log | The app's `tracing` lines, its upkeep failures and panics with its name, upkeep that took longer than its round | `tracing::warn!`, `error!`; the upkeep runner adds the app's name |
 | `ferrum task deps_report` | Every entity a package names that another defines, and hooks that run on another package's records or in every workspace | The registrations themselves |

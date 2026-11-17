@@ -94,8 +94,16 @@ fn events_travel_fairly_and_can_be_followed() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    // The vault opened as a server opens it: a webhook's signing secret is kept there.
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url,
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     let sink = Arc::new(Sink { fail: AtomicBool::new(false), second: AtomicUsize::new(0) });
     let mut hooks = HookRegistry::default();
@@ -218,9 +226,11 @@ async fn scenario() {
         }
     });
     let mut tx = k.db.tenant_tx(quiet).await.unwrap();
-    sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, $2, 'slow', $3, 's3cret', '{hooked}')")
+    let hook = Uuid::now_v7();
+    k.keep_webhook_secret(&mut tx, quiet, hook, "s3cret").await.unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, topics) values ($1, $2, 'slow', $3, '{hooked}')")
         .bind(quiet)
-        .bind(Uuid::now_v7())
+        .bind(hook)
         .bind(&endpoint)
         .execute(&mut *tx)
         .await

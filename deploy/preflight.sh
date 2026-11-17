@@ -55,11 +55,6 @@ else
       ok "$name is set"
     fi
   done
-  # The old master key, where an installation still has one (docs/operations.md, "Retiring the old key").
-  secret=$(value FERRUM_SECRET_KEY)
-  if [ -n "$secret" ] && [ "$(printf %s "$secret" | openssl base64 -d -A 2>/dev/null | wc -c | tr -d ' ')" != 32 ]; then
-    blocker "FERRUM_SECRET_KEY is not 32 bytes of base64" "openssl rand -base64 32"
-  fi
   url=$(value PUBLIC_URL)
   case "$url" in
     https://*)

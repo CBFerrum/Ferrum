@@ -448,7 +448,7 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
     let tenant = ctx.tenant;
     sqlx::query(
         "update app_user set email = $3, full_name = $4, password_hash = null, is_active = false, settings = '{}', token_version = token_version + 1, \
-         totp_secret = null, totp_enabled_at = null, totp_last_step = null, sso_subject = null, scim_external_id = null, identity_id = null, updated_at = now() \
+         totp_set = false, totp_enabled_at = null, totp_last_step = null, sso_subject = null, scim_external_id = null, identity_id = null, updated_at = now() \
          where tenant_id = $1 and id = $2",
     )
     .bind(tenant)

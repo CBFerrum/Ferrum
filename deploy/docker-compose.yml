@@ -50,10 +50,6 @@ services:
       # Not needed: the vault (in the database, its credential slot opened by FERRUM_DB_PASSWORD) signs sessions and keeps
       # the platform's secrets (docs/operations.md, "The vault"). An installation that has one keeps it while it may roll back.
       JWT_SECRET: ${JWT_SECRET:-}
-      # The old master key: a new installation leaves it out (the vault keeps and keys everything); one that has it keeps
-      # it until `ferrum task legacy_key` says it may go (docs/operations.md, "Retiring the old key").
-      FERRUM_SECRET_KEY: ${FERRUM_SECRET_KEY:-}
-      FERRUM_RETIRED_SECRET_KEYS: ${FERRUM_RETIRED_SECRET_KEYS:-}
       FERRUM_CLAMAV_ADDR: ${FERRUM_CLAMAV_ADDR:-}
       FERRUM_CLAMAV_MAX_MB: ${FERRUM_CLAMAV_MAX_MB:-25}
       # Sending the audit log elsewhere (docs/operations.md): empty sends nothing, as before.

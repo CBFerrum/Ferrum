@@ -640,7 +640,7 @@ impl Kernel {
         let Some(key) = inv.effect_key.as_deref().filter(|k| !k.trim().is_empty()) else {
             return Err(refused(Code::SchemaInvalid, format!("{} changes something, so it needs a logical effect key", cap.id)));
         };
-        // An action's secret parameters are digested only keyed with the server's secret key.
+        // An action's secret parameters are digested only keyed with the workspace's key for receipts, from the vault.
         let action = match &cap.operation {
             Operation::Action(name) => crate::receipt::action_def(ctx, cap.entity.as_deref().unwrap_or_default(), name),
             _ => None,

@@ -6,14 +6,14 @@
 //! the kernel; the platform's packages and hooks (`ferrum_domain`); each app registered as itself
 //! ([`HookRegistry::app`]): ERP first and for every workspace, every other app for the workspaces that installed one of
 //! its packages, each owning its packages; their reports set at once with who gives each; a package needing one the
-//! build lacks left out. Mail and files are kept in memory, and each app's upkeep runs once. Refused: an old master key
-//! in the settings, and a vault that does not open.
+//! build lacks left out. Mail and files are kept in memory, and each app's upkeep runs once. Refused: a vault that does
+//! not open.
 
 use ferrum_domain::reports::ReportSource;
 use ferrum_kernel::files::FileStore;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::vault::{self, Kdf, Opener, Vault};
-use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, MailAttachment, Mailer, OldKey, Result};
+use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, MailAttachment, Mailer, Result};
 use ferrum_meta::{Catalog, MetaError, Package};
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -107,13 +107,8 @@ impl Kit {
     }
 
     /// [`Kit::boot`], with `packages` that no app brings (a stand-in for another app's, a package as it was) and the
-    /// kernel's `settings` (an address people reach, private addresses allowed). An old master key is refused.
+    /// kernel's `settings` (an address people reach, private addresses allowed).
     pub async fn boot_with(url: &str, apps: &[App], packages: Vec<Package>, settings: KernelSettings) -> Kit {
-        // OldKey keeps its keys to itself: its Debug says whether it holds one.
-        let old = settings.secret_key.is_some()
-            || !settings.retired_secret_keys.is_empty()
-            || format!("{:?}", settings.old_key) != format!("{:?}", OldKey::default());
-        assert!(!old, "the kit boots as the server does, with the vault: give it no old master key");
         let db = connect(url).await;
         reset(&db.pool).await;
         let (files, mail) = (Arc::new(MemFiles::default()), Arc::new(Mailbox::default()));
@@ -422,7 +417,8 @@ mod tests {
         refused::<()>(Err(Error::Validation(vec![ferrum_kernel::error::FieldError::new("total", "must be positive")])), "invalid", "total: must be positive");
         refused::<()>(Err(Error::NotFound("the invoice".into())), "not found", "invoice");
         assert!(std::panic::catch_unwind(|| refused::<()>(Ok(()), "forbidden", "")).is_err(), "done is not refused");
-        assert_eq!(database("FERRUM_KIT_SELF_TEST_DATABASE_URL"), "postgres://ferrum:ferrum@localhost:5432/ferrum_kit_self_test");
+        // A name no suite reads and the local CI gives no database, so this is the default whatever the environment sets.
+        assert_eq!(database("FERRUM_KIT_NAMED_DATABASE_URL"), "postgres://ferrum:ferrum@localhost:5432/ferrum_kit_named");
         // Scenarios side by side share one kit, kept in a static.
         fn shared<T: Send + Sync>() {}
         shared::<Kit>();

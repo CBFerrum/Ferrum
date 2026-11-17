@@ -3,12 +3,11 @@
 #
 # 1. A whole installation (docs/operations.md, Moving an installation): a server on one database with a files directory;
 #    a workspace, a record, a file and a webhook whose delivery is still waiting; `ferrum task plan_move`; pg_dump,
-#    pg_restore into a second database, the files copied; a server on the copy with the same keys. It checks: no restore
-#    hold on the copy, the fence lifted there and still on the source, the waiting delivery made once, sealed values open,
-#    the vault (made by the source's first start) open on the copy with the role's password, the doctor's move checks
-#    fine. Then the same without plan_move, which must end in the hold.
+#    pg_restore into a second database, the files copied; a server on the copy with the same session key. It checks: no
+#    restore hold on the copy, the fence lifted there and still on the source, the waiting delivery made once, the vault
+#    (made by the source's first start) open on the copy with the role's password, the doctor's move checks fine. Then the same without plan_move, which must end in the hold.
 # 2. One workspace between two running servers, and back (docs/operations.md, Moving one workspace), then a sandbox of it
-#    (A sandbox of a workspace): two servers, each on its own database, files directory and secret key, as two regions
+#    (A sandbox of a workspace): two servers, each on its own database, files directory and session key, as two regions
 #    that trust each other. `move_workspace` on the second against the first, then `finish_move` on the first and the
 #    move back; each is checked from outside, over HTTP: while the run is held still (SIGSTOP) once it has frozen the
 #    workspace, the source refuses changes with the moving answer and still reads; afterwards the target serves the
@@ -83,10 +82,9 @@ else
   echo "The workspace's move and copy run as $ROLE with no grant (D7): this script never gives one."
 fi
 
-# The same keys on both sides, as a move carries them.
-export JWT_SECRET FERRUM_SECRET_KEY
+# The session key the commands below share (each side's server is given its own).
+export JWT_SECRET
 JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-FERRUM_SECRET_KEY=$(openssl rand -base64 32 | tr -d '\n')
 export LOCO_ENV=development LOG_LEVEL=warn FERRUM_BOOTSTRAP_TOKEN=rehearsal-token
 PASSWORD='Rehearsal-Passw0rd'
 
@@ -191,7 +189,7 @@ python3 - "$work/doctor.json" <<'PY'
 import json, sys
 text = open(sys.argv[1]).read()
 found = {f["check"]: f["level"] for f in json.loads(text[text.index("\n[") + 1 if not text.startswith("[") else 0:])}
-for check in ["secrets.unopened", "files.missing", "restore", "vault", "vault.slot.credential"]:
+for check in ["files.missing", "restore", "vault", "vault.slot.credential"]:
     assert found.get(check) == "ok", (check, found.get(check))
 assert "move" not in found, found["move"]
 PY
@@ -233,9 +231,9 @@ open(sys.argv[2], "w").write(re.sub(r"^mailer:\n(?:[ \t]+.*\n|\n)*", "", text, f
 PY
 grep -q '^mailer:' "$work/config/development.yaml" && fail "the settings without a mailer still have one"
 key() { openssl rand -base64 "$1" | tr -d '\n'; }
-A_ENV=(LOCO_CONFIG_FOLDER="$work/config" DATABASE_URL="$APP/$SOURCE" FERRUM_FILES_DIR="$work/wfiles-a" JWT_SECRET="$(key 48)" FERRUM_SECRET_KEY="$(key 32)" FERRUM_REGION=a
+A_ENV=(LOCO_CONFIG_FOLDER="$work/config" DATABASE_URL="$APP/$SOURCE" FERRUM_FILES_DIR="$work/wfiles-a" JWT_SECRET="$(key 48)" FERRUM_REGION=a
   FERRUM_REGIONS="b=http://accounts.b.localhost:$B_PORT" FERRUM_BASE_DOMAIN=a.localhost PORT=$A_PORT BINDING=127.0.0.1 PUBLIC_URL="http://a.localhost:$A_PORT")
-B_ENV=(LOCO_CONFIG_FOLDER="$work/config" DATABASE_URL="$APP/$COPY" FERRUM_FILES_DIR="$work/wfiles-b" JWT_SECRET="$(key 48)" FERRUM_SECRET_KEY="$(key 32)" FERRUM_REGION=b
+B_ENV=(LOCO_CONFIG_FOLDER="$work/config" DATABASE_URL="$APP/$COPY" FERRUM_FILES_DIR="$work/wfiles-b" JWT_SECRET="$(key 48)" FERRUM_REGION=b
   FERRUM_REGIONS="a=http://accounts.a.localhost:$A_PORT" FERRUM_BASE_DOMAIN=b.localhost PORT=$B_PORT BINDING=127.0.0.1 PUBLIC_URL="http://b.localhost:$B_PORT")
 side_env() { if [ "$1" = a ]; then printf '%s\n' "${A_ENV[@]}"; else printf '%s\n' "${B_ENV[@]}"; fi; }
 side_get() { side_env "$1" | sed -n "s/^$2=//p"; }
@@ -333,12 +331,12 @@ move() {
   local envs=()
   while IFS= read -r line; do envs+=("$line"); done < <(side_env "$to")
   # The workspace's keys and secrets in the source's vault travel with a transfer made there (docs/operations.md,
-  # "Moving one workspace"): its key is shown once, given after the source's own keys, and never printed here.
+  # "Moving one workspace"): its key is shown once, given as the source's keys, and never printed here.
   local from_envs=() transfer
   while IFS= read -r line; do from_envs+=("$line"); done < <(side_env "$from")
   transfer=$( (cd "$ROOT/server" && exec env "${from_envs[@]}" "$BIN" task vault_transfer workspace:moving) 2>"$work/transfer-$from-$to.err" | sed -n 's/^    \([^ ][^ ]*\)$/\1/p' | head -1) || true
   [ -n "$transfer" ] || fail "no transfer of the workspace's vault was made at $from: $(tail -3 "$work/transfer-$from-$to.err")"
-  envs+=(FERRUM_MOVE_SOURCE_DATABASE_URL="$(side_get "$from" DATABASE_URL)" FERRUM_MOVE_SOURCE_SECRET_KEYS="$(side_get "$from" FERRUM_SECRET_KEY),$transfer"
+  envs+=(FERRUM_MOVE_SOURCE_DATABASE_URL="$(side_get "$from" DATABASE_URL)" FERRUM_MOVE_SOURCE_SECRET_KEYS="$transfer"
     FERRUM_MOVE_SOURCE_FILES_DIR="$(side_get "$from" FERRUM_FILES_DIR)" FERRUM_MOVE_SOURCE_REGION="$from")
   grant
   (cd "$ROOT/server" && exec env "${envs[@]}" "$BIN" task move_workspace tenant:moving wait:1) >"$work/move-$from-$to.out" 2>&1 &

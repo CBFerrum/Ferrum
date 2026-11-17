@@ -32,7 +32,8 @@ use uuid::Uuid;
 pub struct MoveSource {
     /// Its database (`FERRUM_MOVE_SOURCE_DATABASE_URL`).
     pub url: String,
-    /// Its `FERRUM_SECRET_KEY`, then its retired keys: what sealed the workspace's values there.
+    /// The key of the workspace's transfer at the source (`ferrum task vault_transfer`), among others: what opens its keys
+    /// in the source's vault (crate::vault, `carry_in`).
     pub keys: Vec<SecretKey>,
     /// Its file storage; `None`: the same storage as this installation's, so nothing is copied.
     pub files: Option<Arc<dyn FileStore>>,
@@ -148,153 +149,9 @@ fn text<'a>(row: &'a Map<String, Value>, k: &str) -> Option<&'a str> {
     row.get(k).and_then(Value::as_str)
 }
 
-fn uuid(row: &Map<String, Value>, k: &str) -> Result<Uuid> {
-    text(row, k).and_then(|s| s.parse().ok()).ok_or_else(|| Error::Internal(format!("a row without {k}")))
-}
-
-/// Opens `sealed` with the source's keys and seals it again with this installation's. The vault's mark (a value only the
-/// vault keeps, which travels with the workspace's vault rows) passes as it is.
-fn reseal(from: &[SecretKey], to: Option<&SecretKey>, label: &str, sealed: &str, at: &str) -> Result<String> {
-    if sealed == crate::vault::kept::MARKER {
-        return Ok(sealed.to_string());
-    }
-    let plain = from
-        .iter()
-        .find_map(|k| k.open(label, sealed).ok())
-        .ok_or_else(|| Error::Conflict(format!("{at}: a sealed value no key in FERRUM_MOVE_SOURCE_SECRET_KEYS opens, so nothing was moved")))?;
-    let to = to.ok_or_else(|| Error::Conflict("this installation has no FERRUM_SECRET_KEY to seal the workspace's values with".into()))?;
-    to.seal(label, &plain)
-}
-
-/// One row's sealed values, opened with the source's keys and sealed with this installation's (each bound to the same
-/// workspace, record and field as before: the workspace keeps its id). Where values are sealed is listed in secret.rs
-/// (`STORES`) and its callers; a plugin's settings follow plugins/src/lib.rs (`config_aad`).
-fn reseal_row(table: &str, tenant: Uuid, row: &mut Map<String, Value>, from: &[SecretKey], to: Option<&SecretKey>) -> Result<u64> {
-    // One column's value, if it holds one.
-    let again = |row: &mut Map<String, Value>, column: &str, label: String| -> Result<u64> {
-        let Some(sealed) = text(row, column) else { return Ok(0) };
-        let new = reseal(from, to, &label, sealed, &format!("{table}.{column} of {}", text(row, "id").unwrap_or("the workspace")))?;
-        row.insert(column.into(), Value::String(new));
-        Ok(1)
-    };
-    Ok(match table {
-        "record_secret" => {
-            let label = crate::secret::aad(tenant, text(row, "entity").unwrap_or_default(), uuid(row, "record_id")?, text(row, "field").unwrap_or_default());
-            let n = again(row, "sealed", label)?;
-            if let Some(k) = to {
-                row.insert("key_id".into(), json!(k.id));
-            }
-            n
-        }
-        "webhook" => match text(row, "secret").and_then(|s| s.strip_prefix(crate::secret::SEALED_WEBHOOK)) {
-            Some(sealed) => {
-                let at = format!("webhook.secret of {}", text(row, "id").unwrap_or_default());
-                let new = reseal(from, to, &crate::secret::webhook_label(tenant, uuid(row, "id")?), sealed, &at)?;
-                row.insert("secret".into(), Value::String(format!("{}{new}", crate::secret::SEALED_WEBHOOK)));
-                1
-            }
-            None => 0,
-        },
-        "app_user" => again(row, "totp_secret", crate::twofactor::sealed_label(tenant, uuid(row, "id")?))?,
-        "connection" => {
-            let label = crate::connect::sealed_label(tenant, uuid(row, "id")?);
-            let n = again(row, "sealed", label.clone())?;
-            // The account a connection opens is known by a fingerprint under the key: made again with this one's.
-            if let (Some(_), Some(sealed), Some(key)) = (text(row, "account_key"), text(row, "sealed").filter(|s| *s != crate::vault::kept::MARKER), to) {
-                let credentials: Value = serde_json::from_str(&key.open(&label, sealed)?).map_err(Error::internal)?;
-                let provider = text(row, "provider").unwrap_or_default();
-                let print =
-                    key.fingerprint("connection account", &format!("{provider}:{}", String::from_utf8_lossy(&crate::value::canonical_json(&credentials))));
-                row.insert("account_key".into(), Value::String(print));
-            }
-            n
-        }
-        "message_channel" => again(row, "sealed", crate::messages::sealed_label(tenant, uuid(row, "id")?))?,
-        "conn" => again(row, "sealed", crate::connections::sealed_label(tenant, uuid(row, "id")?))?,
-        "conn_token" => again(row, "sealed", crate::connections::oauth::token_label(tenant, uuid(row, "conn_id")?, uuid(row, "user_id")?))?,
-        "sso_provider" => again(row, "client_secret", crate::sso::sealed_label(tenant, uuid(row, "id")?))?,
-        "saml_sp_key" => again(row, "private_key", crate::sso::saml_key_label(tenant))?,
-        "saml_enc_key" => again(row, "private_key", crate::sso::saml_enc_label(tenant, uuid(row, "id")?))?,
-        "approval_request" => {
-            let id = uuid(row, "id")?;
-            let mut n = 0;
-            if let Some(Value::Object(params)) = row.get_mut("sealed") {
-                for (name, v) in params.iter_mut() {
-                    if let Some(sealed) = v.as_str() {
-                        let at = format!("approval_request.sealed of {id}");
-                        *v = Value::String(reseal(from, to, &crate::approvals::sealed_label(tenant, id, name), sealed, &at)?);
-                        n += 1;
-                    }
-                }
-            }
-            n
-        }
-        "plugin" => {
-            let name = text(row, "name").unwrap_or_default().to_string();
-            let mut n = 0;
-            if let Some(Value::Object(config)) = row.get_mut("config") {
-                for (k, v) in config.iter_mut() {
-                    let Some(sealed) = v.get("$sealed").and_then(Value::as_str) else { continue };
-                    // Kept in the vault too, under the plugin's key in the workspace's vault, which travels with it: the
-                    // old key's copy beside is for the previous build, sealed again where this installation has one.
-                    let vault = v.get(crate::vault::PLUGIN_VAULT).cloned();
-                    *v = match (vault, to) {
-                        (Some(vault), None) => json!({ crate::vault::PLUGIN_VAULT: vault }),
-                        (vault, _) => {
-                            let new = reseal(from, to, &format!("{tenant}/plugin/{name}/{k}"), sealed, &format!("plugin {name}'s setting {k}"))?;
-                            let mut kept = json!({"$sealed": new, "$key": to.map(|k| k.id.clone())});
-                            if let Some(vault) = vault {
-                                kept[crate::vault::PLUGIN_VAULT] = vault;
-                            }
-                            kept
-                        }
-                    };
-                    n += 1;
-                }
-            }
-            n
-        }
-        "message_send" | "outbox" => {
-            let column = if table == "outbox" { "payload" } else { "pending" };
-            let at = format!("{table}.{column} of {}", row.get("id").unwrap_or(&Value::Null));
-            match row.get_mut(column).and_then(Value::as_object_mut) {
-                Some(held) => match held.get("sealed").and_then(Value::as_str) {
-                    // Sealed under the platform's key in the workspace's vault, which travels with it.
-                    Some(sealed) if crate::vault::sealed_by_vault(sealed) => 0,
-                    Some(sealed) => {
-                        let new = reseal(from, to, &crate::messages::sealed_message(tenant), sealed, &at)?;
-                        held.insert("sealed".into(), Value::String(new));
-                        1
-                    }
-                    None => 0,
-                },
-                None => 0,
-            }
-        }
-        _ => 0,
-    })
-}
-
-/// Where values are sealed in a form this module seals again ([`reseal_row`]), or text of the same form that is not
-/// sealed: the scan for sealed values leaves these alone.
-pub(crate) const KNOWN_SEALED: &[(&str, &str)] = &[
-    ("record_secret", "sealed"),
-    ("app_user", "totp_secret"),
-    ("connection", "sealed"),
-    ("message_channel", "sealed"),
-    ("conn", "sealed"),
-    ("conn_token", "sealed"),
-    ("sso_provider", "client_secret"),
-    ("saml_sp_key", "private_key"),
-    ("approval_request", "sealed"),
-    ("plugin", "config"),
-    ("message_send", "pending"),
-    ("outbox", "payload"),
-    ("saml_enc_key", "private_key"),
-];
-
-/// What a sealed value looks like (secret.rs, `SecretKey::seal`): standard base64, padded, of a nonce, the text and a
-/// tag, so 40 characters at least; not only lower-case hex, which digests are.
+/// What a value sealed outside the vault looks like (`SecretKey::seal`'s): standard base64, padded, of a nonce, the text
+/// and a tag, so 40 characters at least; not only lower-case hex, which digests are. What the platform seals into a
+/// workspace's rows it seals in the workspace's vault (`fv1.`…), which travels with it.
 pub(crate) const SEALED_FORM: &str = "^([A-Za-z0-9+/]{4}){9,}([A-Za-z0-9+/]{4}|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)$";
 
 /// What one table holds of a workspace: its rows and a digest of them, read so that two reads of the same rows agree
@@ -634,8 +491,8 @@ impl Kernel {
         self.arrive(tenant, move_id, slug, peer, from.base_domain.as_deref(), say).await
     }
 
-    /// What has to hold before anything is copied: one build on both sides, the same tables, nothing held, every value
-    /// the workspace sealed opened with the keys given, nothing it has that does not travel yet.
+    /// What has to hold before anything is copied: one build on both sides, the same tables, nothing held, its vault's
+    /// transfer opened with the keys given, nothing it has that does not travel yet.
     async fn may_move(&self, source: &Db, tenant: Uuid, slug: &str, from: &MoveSource, say: &(dyn Fn(&str) + Send + Sync)) -> Result<()> {
         let here = self.one_build(source).await?;
         self.counters_carried(&here).await?;
@@ -686,18 +543,17 @@ impl Kernel {
         if retired {
             return Err(Error::Conflict(format!("the name {slug} belonged to another workspace here, and is never used again here")));
         }
-        let opened = self.prove_keys(source, tenant, from, &here).await?;
         crate::vault::may_carry(source, tenant, &from.keys).await?;
         let unknown: Vec<String> = self.unknown_sealed(source, tenant, &here).await?.into_iter().filter(|c| !from.not_sealed.contains(c)).collect();
         if !unknown.is_empty() {
             return Err(Error::Conflict(format!(
-                "{slug} holds what looks like sealed values where a move does not know how they were sealed, so it could not seal them again here: {}. \
+                "{slug} holds what looks like values sealed outside its vault, with a key that may not travel with it: {}. \
                  If a column holds no sealed value (some other text of the same form), say so with not_sealed:{}",
                 unknown.join(", "),
                 unknown.join(",")
             )));
         }
-        say(&format!("checked: one build on both sides, the same tables, and {opened} sealed values open with the keys given"));
+        say("checked: one build on both sides, the same tables, and the vault's transfer opens with the keys given");
         Ok(())
     }
 
@@ -829,59 +685,8 @@ impl Kernel {
         Ok(())
     }
 
-    /// Opens every value the workspace sealed at the source with the keys given, changing nothing; how many. Refuses
-    /// what no key opens, and erased opt-outs kept as digests made with a key this installation does not hold.
-    async fn prove_keys(&self, source: &Db, tenant: Uuid, from: &MoveSource, tables: &Shape) -> Result<u64> {
-        let to = self.env_key();
-        let mut tx = system(source).await?;
-        let mut opened = 0;
-        for t in [
-            "record_secret",
-            "webhook",
-            "app_user",
-            "connection",
-            "message_channel",
-            "conn",
-            "conn_token",
-            "sso_provider",
-            "saml_sp_key",
-            "approval_request",
-            "plugin",
-            "message_send",
-            "outbox",
-            "saml_enc_key",
-        ] {
-            if !tables.contains_key(t) {
-                continue;
-            }
-            let rows: Vec<Value> =
-                sqlx::query_scalar(AssertSqlSafe(format!("select to_jsonb(x) from \"{t}\" x where tenant_id = $1"))).bind(tenant).fetch_all(&mut *tx).await?;
-            for row in rows {
-                let Value::Object(mut row) = row else { continue };
-                opened += reseal_row(t, tenant, &mut row, &from.keys, to)?;
-            }
-        }
-        // An erased person's opt-out is kept as a digest under the key: only a key this installation holds still matches
-        // it (messages.rs, `erased_marks`), so without one the person could be sent to again. One made with the vault's
-        // keys (`erased:v…`) is the workspace's vault's, which travels with it.
-        let erased: i64 = sqlx::query_scalar(
-            "select count(*) from contact_consent where tenant_id = $1 and email::text like 'erased:%' and email::text not like 'erased:v%'",
-        )
-        .bind(tenant)
-        .fetch_one(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        if erased > 0 && !from.keys.iter().any(|k| self.secret_keys().any(|h| h.id == k.id)) {
-            return Err(Error::Conflict(format!(
-                "{erased} opt-outs of erased people are kept as digests made with the source's key: add that key to FERRUM_RETIRED_SECRET_KEYS here first, so they still hold"
-            )));
-        }
-        Ok(opened)
-    }
-
-    /// Columns of the workspace's tables, outside [`KNOWN_SEALED`], where some value has the form of a sealed one: a
-    /// value sealed by code this module does not know (an app's own table) would arrive here sealed with a key this
-    /// installation does not hold. Every text and JSON column (every string inside JSON) of every row the workspace has,
+    /// Columns of the workspace's tables where some value has the form of one sealed outside the vault ([`SEALED_FORM`]):
+    /// sealed by code the platform does not know (an app's own table), with a key that may not travel with it. Every text and JSON column (every string inside JSON) of every row the workspace has,
     /// one pass per table, which says only whether each column holds one.
     async fn unknown_sealed(&self, source: &Db, tenant: Uuid, tables: &Shape) -> Result<Vec<String>> {
         // The same, for every string inside a JSON value (a jsonpath pattern is written in it, not passed).
@@ -891,7 +696,6 @@ impl Kernel {
         for (t, columns) in travelling(tables) {
             let looked: Vec<(&str, String)> = columns
                 .iter()
-                .filter(|(c, _, _)| !KNOWN_SEALED.contains(&(t.as_str(), c.as_str())))
                 .filter_map(|(c, kind, _)| match kind.as_str() {
                     "text" | "varchar" | "citext" => Some((c.as_str(), format!("bool_or(\"{c}\"::text ~ $2 and \"{c}\"::text !~ '^[0-9a-f]+$')"))),
                     "jsonb" | "json" => Some((c.as_str(), format!("bool_or(jsonb_path_exists(\"{c}\"::jsonb, $3::jsonpath))"))),
@@ -1016,7 +820,6 @@ impl Kernel {
     async fn copy_arriving(&self, source: &Db, tenant: Uuid, move_id: Uuid, peer: &str, from: &MoveSource, say: &(dyn Fn(&str) + Send + Sync)) -> Result<()> {
         let tables = shape(&self.db).await?;
         let people = self.identities(source, tenant, from, say).await?;
-        let to = self.env_key();
         let mut src = source.pool.begin().await?;
         sqlx::query("set transaction isolation level repeatable read, read only").execute(&mut *src).await?;
         sqlx::query("select set_config('ferrum.system', 'on', true), set_config('statement_timeout', '0', true)").execute(&mut *src).await?;
@@ -1047,7 +850,6 @@ impl Kernel {
             .await?;
         new.sort_unstable();
         let events: HashMap<i64, i64> = old.iter().copied().zip(new).collect();
-        let mut sealed = 0;
         let mut each = |t: &str, row: &mut Map<String, Value>| -> Result<()> {
             if t == "outbox" {
                 let id = row.get("id").and_then(Value::as_i64).and_then(|id| events.get(&id).copied());
@@ -1064,7 +866,6 @@ impl Kernel {
             {
                 row.insert("identity_id".into(), json!(people.get(&identity).copied().flatten()));
             }
-            sealed += reseal_row(t, tenant, row, &from.keys, to)?;
             Ok(())
         };
         let mut copied = Box::pin(copy_rows(&mut src, &mut tx, (tenant, tenant), &tables, LEFT_BEHIND, true, &mut each)).await?;
@@ -1089,7 +890,7 @@ impl Kernel {
         sqlx::query("update workspace_move set copied = $2 where workspace = $1").bind(tenant).bind(Value::Object(copied)).execute(&mut *tx).await?;
         tx.commit().await?;
         src.rollback().await?;
-        say(&format!("copied {rows} rows, {} events renumbered, {sealed} sealed values sealed again with this installation's key", old.len()));
+        say(&format!("copied {rows} rows, {} events renumbered", old.len()));
         Ok(())
     }
 
@@ -1434,37 +1235,5 @@ impl Kernel {
         self.hosts.clear();
         tracing::warn!(%tenant, slug, "what a workspace that moved away left here was deleted");
         Ok(json!({"workspace": slug, "rows": rows, "files": if shared { 0 } else { keys.len() }, "moved_to": moved_to}))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sealed_values_are_sealed_again_under_the_same_label() {
-        let (a, b, t, r) = (SecretKey::new([1; 32]), SecretKey::new([2; 32]), Uuid::now_v7(), Uuid::now_v7());
-        let label = crate::secret::aad(t, "Contact", r, "token");
-        let mut row = json!({"entity": "Contact", "record_id": r, "field": "token", "sealed": a.seal(&label, "s3cret").unwrap(), "key_id": a.id})
-            .as_object()
-            .cloned()
-            .unwrap();
-        assert_eq!(reseal_row("record_secret", t, &mut row, std::slice::from_ref(&a), Some(&b)).unwrap(), 1);
-        assert_eq!(b.open(&label, text(&row, "sealed").unwrap()).unwrap(), "s3cret");
-        assert_eq!(row["key_id"], json!(b.id));
-        // A plugin's setting: sealed again, and says by which key.
-        let mut plugin = json!({"name": "books", "config": {"token": {"$sealed": a.seal(&format!("{t}/plugin/books/token"), "\"x\"").unwrap(), "$key": a.id}, "plain": null}})
-            .as_object()
-            .cloned()
-            .unwrap();
-        assert_eq!(reseal_row("plugin", t, &mut plugin, std::slice::from_ref(&a), Some(&b)).unwrap(), 1);
-        assert_eq!(plugin["config"]["token"]["$key"], json!(b.id));
-        // Without the key that sealed it, nothing: never a value left as it was.
-        let mut again =
-            json!({"entity": "Contact", "record_id": r, "field": "token", "sealed": a.seal(&label, "s3cret").unwrap()}).as_object().cloned().unwrap();
-        assert!(matches!(reseal_row("record_secret", t, &mut again, std::slice::from_ref(&b), Some(&b)), Err(Error::Conflict(_))));
-        // A webhook's secret from before they were sealed stays as it is.
-        let mut hook = json!({"id": r, "secret": "plain"}).as_object().cloned().unwrap();
-        assert_eq!(reseal_row("webhook", t, &mut hook, std::slice::from_ref(&a), Some(&b)).unwrap(), 0);
     }
 }

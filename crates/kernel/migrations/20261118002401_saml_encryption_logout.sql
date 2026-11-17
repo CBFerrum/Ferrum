@@ -1,12 +1,11 @@
 -- SAML: encrypted assertions and single logout (crates/kernel/src/sso.rs and saml_logout.rs, crates/saml).
 
 -- The keys a workspace's SAML assertions may be encrypted to, apart from the key its requests are signed with. Made
--- the first time wanted (by whichever replica gets there first: one current key at most), the private half sealed by
--- the server key. A replaced key keeps being published and accepted until `retires_at`.
+-- the first time wanted (by whichever replica gets there first: one current key at most), the private half kept in the
+-- vault. A replaced key keeps being published and accepted until `retires_at`.
 create table saml_enc_key (
   tenant_id uuid not null references tenant (id) on delete cascade,
   id uuid not null,
-  private_key text not null,
   certificate text not null,
   created_at timestamptz not null default now(),
   retires_at timestamptz,

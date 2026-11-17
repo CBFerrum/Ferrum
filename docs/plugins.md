@@ -48,10 +48,10 @@ taken only where the server takes uploads that no trusted key signed (`apps.uplo
 `apps.allow_unsigned_uploads`, development's default); elsewhere it ships in an app bundle
 (`runtime: wasm`) signed by a key the server trusts. `PUT /api/admin/plugins/{id}/enabled`
 `{"enabled": false}` switches it off at once; `PUT /api/admin/plugins/{id}/config` `{"config": {...}}`
-replaces its settings and secrets (listings only show the keys; each value is sealed at rest with the
-server's `FERRUM_SECRET_KEY`, bound to its workspace, plugin and key, and settings stored before that
-are sealed when the server starts; the plugin reads them as given, and one that cannot be opened, such
-as after the key changed, is left out with a warning in the log until it is set again); `DELETE /api/admin/plugins/{id}`
+replaces its settings and secrets (listings only show the keys; each value is sealed at rest under the
+plugin's own key in the workspace's vault, bound to its workspace, plugin and key, and refused with the
+vault closed; the plugin reads them as given, and one that cannot be opened is left out with a warning in
+the log until it is set again); `DELETE /api/admin/plugins/{id}`
 removes it with its private data (records it created stay).
 
 ## Manifest

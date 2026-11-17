@@ -349,7 +349,7 @@ workspace or in a package's `approvals:` ([BD-34](builder/decisions.md#bd-34-app
 
 Refused for an action the entity lacks or a `read_only` one. `POST /api/v1/{E}/{id}/actions/{name}` by someone who may
 run it now answers `{"_approval": {…, "on_action": true, "action": "implement", "params": {…}}}` and runs nothing; a
-secret parameter shows as `[redacted]` there and in the history, its value sealed with the server's key (without one, an
+secret parameter shows as `[redacted]` there and in the history, its value kept in the vault (with the vault closed, an
 action given a secret is refused). When the last step approves, the action runs once **as its requester at that
 moment**, with exactly the parameters asked; refused then (their right gone, the record no longer meets the action's
 condition or a refusal), the request ends `failed` with `failure` in the action's words and the requester is told. A
@@ -1576,7 +1576,7 @@ templates read `public_files.<name>`, and a step's `inputs` too (pass it on to t
   "body": "{\"image_url\": {{ public_files.photo | json }}}", "result": {"id": "/id"}}
 ```
 
-Each is `{PUBLIC_URL}/files/pull/{id}?s=<HMAC of the id under the server's key>`: good for that one file only, for
+Each is `{PUBLIC_URL}/files/pull/{id}?s=<HMAC of the id under the workspace's key>`: good for that one file only, for
 `minutes` (60 unless said, at most 360), read without signing in with the file's type and length and byte ranges
 (`Range`, `206`), never cached; `end_with_call: true` ends it once the call has its answer (worked or refused; one that
 waits for the service keeps it). The caller must be able to read the file (as for a file part). A keyed call made again
@@ -1708,7 +1708,7 @@ chat-app messages.
 
 **Channel connections** (administrators): `GET|POST /api/admin/messages/channels`, `PUT|DELETE
 /api/admin/messages/channels/{id}` with `{kind: text | chat, name, description, secrets?, enabled?}`. One enabled for
-each kind; `secrets` (`{name: value}`) are sealed with the server's key and never read back (left out, they stay).
+each kind; `secrets` (`{name: value}`) are kept in the vault and never read back (left out, they stay).
 `description`: `url`, `method` (POST), `headers`, `body` (a JSON template) or `form` (fields), each a template over
 `to` (international form), `text`, `template_name`, `values`, `language`, `from` and `secret.<name>` (`| json` writes a
 value as JSON); `id_at` and `error_at` (JSON pointers into the answer); `temporary` (statuses meaning "later";
@@ -2037,8 +2037,8 @@ else on `PUBLIC_URL`.
 |---|---|
 | `GET /api/notifications?limit=` | `{notifications: [{id, user_id, title, body, entity, record_id, kind, delivery, read_at, emailed_at, created_at}], unread}`, newest first; `limit` up to 100 (the default), 0 for the count alone |
 | `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all` | marks one, or all, read (204) |
-| `GET /api/notifications/types` | `{types: [{kind, label, app, default, channel}], channels, email, push}`: the kinds the caller may choose for (apps' only for apps they may use), each with its default and their choice; `email` is false when the server sends no email, `push` when it pushes to no devices (no secret key) |
-| `PUT /api/notifications/preferences` `{kind, channel}` | how one kind reaches the caller; `channel: null` returns it to the default. `email` and `digest` need a mailer, `push` the secret key |
+| `GET /api/notifications/types` | `{types: [{kind, label, app, default, channel}], channels, email, push}`: the kinds the caller may choose for (apps' only for apps they may use), each with its default and their choice; `email` is false when the server sends no email, `push` when it pushes to no devices (the vault closed) |
+| `PUT /api/notifications/preferences` `{kind, channel}` | how one kind reaches the caller; `channel: null` returns it to the default. `email` and `digest` need a mailer, `push` the vault open |
 
 An app sends its kinds with `ferrum_kernel::notify::send_kind(tx, tenant, user, "{app}.{id}",
 default, title, body, entity, record)`, `default` being what its manifest declares

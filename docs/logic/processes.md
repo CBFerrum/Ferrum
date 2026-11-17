@@ -142,9 +142,10 @@ that overtakes another still counts; a delivery to a run that has ended is dropp
 an hour stalls a run but never ends it; an effect retried finds its receipt. A run continues as new after 500 events, or sooner when Temporal suggests it,
 carrying its state, deadlines and undelivered signals.
 
-Everything Temporal stores is sealed with `FERRUM_SECRET_KEY` before it leaves the server, and opened with
-it or a key in `FERRUM_RETIRED_SECRET_KEYS`. After rotating the key, keep the old one retired until every run
-that started before the rotation has finished and Temporal has removed its history.
+Everything Temporal stores is sealed before it leaves the server, with the platform's key for processes in the
+vault (the installation's), each payload naming the version that sealed it, so a run reads its own history after
+the key rotates. With the vault closed a payload is neither sealed nor opened, and the work that needs one is
+refused, saying why.
 
 ### Running the Full Process profile
 

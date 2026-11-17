@@ -1,7 +1,7 @@
 //! Web Push (docs/plan/apps-ui.md §12.5): notifications reach people's devices through their
 //! browsers' push services (RFC 8030), encrypted for each device (RFC 8291, `aes128gcm`) and
-//! signed with the server's VAPID key (RFC 8292). The key is made once, sealed with the server's
-//! secret key and shared by every replica. A device's subscription belongs to the browser session
+//! signed with the server's VAPID key (RFC 8292). The key is made once, kept in the vault (the
+//! installation's) and shared by every replica. A device's subscription belongs to the browser session
 //! it was made in: signing that device out, or out everywhere, stops its pushes. The core worker
 //! (`/sw.js`) shows them and opens what they are about.
 
@@ -33,8 +33,6 @@ const MAX_PLAINTEXT: usize = RECORD_SIZE as usize - 86 - 1 - 16;
 /// How long a push service keeps a message for a device that is offline (the bar has it anyway).
 const TTL_SECONDS: &str = "86400";
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
-/// The aad sealing the VAPID key.
-pub(crate) const VAPID_LABEL: &str = "server_key|vapid";
 
 fn internal(what: &str) -> Error {
     Error::Internal(format!("web push: {what}"))
@@ -165,10 +163,10 @@ pub struct PushStatus {
 }
 
 impl Kernel {
-    /// The server's VAPID key, made the first time a replica needs it; `None` with neither the vault nor the server's
-    /// secret key (nothing to keep it with): then there is no Web Push.
+    /// The server's VAPID key, made the first time a replica needs it; `None` with the vault closed (nothing to keep it
+    /// with): then there is no Web Push.
     pub async fn vapid(&self) -> Result<Option<Arc<Vapid>>> {
-        if !self.kept_here() {
+        if self.db.vault.installation().is_err() {
             return Ok(None);
         }
         let v = self.vapid.get_or_try_init(|| async { self.load_vapid().await.map(Arc::new) }).await?;
@@ -176,41 +174,34 @@ impl Kernel {
     }
 
     /// Reads the stored key (the platform's, in the vault, of the installation), storing a new one when there is none.
-    /// One that cannot be opened (the secret key was replaced, the vault lost it) is replaced too: devices subscribed
-    /// with it subscribe again on their next visit.
+    /// One that cannot be opened (the vault lost it) is replaced too: devices subscribed with it subscribe again on their
+    /// next visit.
     async fn load_vapid(&self) -> Result<Vapid> {
         let place = Place::push();
         let (der, fresh) = Vapid::generate()?;
         let mut tx = self.db.system_tx().await?;
         // The row first: the replica whose row it is keeps its key.
-        let made_here = sqlx::query("insert into server_key (name, public, sealed) values ('vapid', $1, $2) on conflict (name) do nothing")
+        let made_here = sqlx::query("insert into server_key (name, public) values ('vapid', $1) on conflict (name) do nothing")
             .bind(&fresh.public)
-            .bind(crate::vault::kept::MARKER)
             .execute(&mut *tx)
             .await?
             .rows_affected()
             == 1;
         if made_here {
-            let stored = self.keep(&mut tx, &place, &B64URL.encode(&der)).await?;
-            sqlx::query("update server_key set sealed = $1 where name = 'vapid'").bind(stored).execute(&mut *tx).await?;
+            self.keep(&mut tx, &place, &B64URL.encode(&der)).await?;
         }
-        let stored: String = sqlx::query_scalar("select sealed from server_key where name = 'vapid' for update").fetch_one(&mut *tx).await?;
-        let opened = match self.kept(&mut tx, &place, &stored).await {
+        // One replica at a time reads it, and replaces it if it must.
+        sqlx::query("select 1 from server_key where name = 'vapid' for update").execute(&mut *tx).await?;
+        let opened = match self.kept(&mut tx, &place).await {
             Ok(b) => B64URL.decode(b.as_bytes()).ok().and_then(|der| Vapid::from_pkcs8(&der).ok()),
             Err(_) => None,
         };
         let vapid = match opened {
             Some(v) => v,
             None => {
-                tracing::error!(
-                    "the stored VAPID key cannot be opened (was FERRUM_SECRET_KEY replaced, or the vault's rows lost?); made a new one, devices subscribe again"
-                );
-                let stored = self.keep(&mut tx, &place, &B64URL.encode(&der)).await?;
-                sqlx::query("update server_key set public = $1, sealed = $2, created_at = now() where name = 'vapid'")
-                    .bind(&fresh.public)
-                    .bind(stored)
-                    .execute(&mut *tx)
-                    .await?;
+                tracing::error!("the stored VAPID key cannot be opened (were the vault's rows lost?); made a new one, devices subscribe again");
+                self.keep(&mut tx, &place, &B64URL.encode(&der)).await?;
+                sqlx::query("update server_key set public = $1, created_at = now() where name = 'vapid'").bind(&fresh.public).execute(&mut *tx).await?;
                 fresh
             }
         };
@@ -224,7 +215,8 @@ impl Kernel {
     /// Someone acting as the person (support access) gets no pushes of theirs.
     pub async fn subscribe_push(&self, ctx: &Ctx, session: Uuid, endpoint: &str, p256dh: &str, auth: &str) -> Result<()> {
         let Some(vapid) = self.vapid().await? else {
-            return Err(Error::Unavailable("notifications on devices need the server's secret key (FERRUM_SECRET_KEY)".into()));
+            self.vault_open("notifications on devices")?;
+            return Err(Error::Unavailable("notifications on devices need the vault".into()));
         };
         if endpoint.len() > 2048 || !allowed_endpoint(endpoint, &self.live().push_services) {
             return Err(Error::field("endpoint", "is not a push service this server sends to"));

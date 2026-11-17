@@ -214,7 +214,7 @@ pub(crate) async fn page_bootstrap(
         boot["host"]["leaving"] = json!({"to": to, "until": until});
     }
     // Web Push (§12.5): the key a device subscribes with, and whether this one has. None for
-    // callers without a browser session, or a server without a secret key.
+    // callers without a browser session, or a server whose vault is closed.
     boot["offline"] = offline(st, ctx, &kind).await.map_err(err)?;
     boot["push"] = match (device, st.kernel.vapid().await.map_err(err)?) {
         (Some(d), Some(v)) => json!({"key": v.public, "on": st.kernel.push_status(ctx, Some(d)).await.map_err(err)?.here}),

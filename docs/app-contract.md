@@ -63,8 +63,6 @@ server does not start.
 | `carry` | a secret put on an outbound request, for the hosts its rule names |
 | `field` | the value of a secret field its own packages declare (a field one app adds to another's entity is the adder's), read in the caller's transaction and recorded; another app's is refused |
 
-`Kernel::secret` (any app's secret field) still works and is noted, and goes in the next release.
-
 **A secret it manages itself.** `manage(k, scope, name, true)` marks a secret of the app's own as the app's to manage
 (a published signing key, a token it rotates on its own schedule); `false` gives it back to people. While marked, the
 administrator's and operator's routes refuse to set, rotate, remove it or change its rule, and an operator's regenerate
@@ -83,36 +81,11 @@ after the commit, or remove it when the work fails. A `reveal`, `sign` or `carry
 served fails. A verb does not see what the caller's open transaction wrote and has not committed. Under load a verb waits
 for a side connection, never for the caller's own, so it cannot hold up the caller's transaction by itself; do not call one
 while holding a lock on what that verb takes (the secret's own lock). The one verb in the caller's transaction is
-`field`, which reads the app's secret field with the record it belongs to; with the vault closed it reads the old store
-with the old key, as the kernel's own readers do. A workspace's key and an owner's key are never made inside a caller's
+`field`, which reads the app's secret field with the record it belongs to; with the vault closed it is refused, as the
+kernel's own readers are. A workspace's key and an owner's key are never made inside a caller's
 transaction: a secret field written there first has them made on the vault's own connection, committed, so a vault call
 on another connection before the caller commits never waits on it (an app's `ready()` that made its keys first on a
 connection of its own is not needed).
-
-**What it made with the old key (R1 only).** The old key is the kernel's alone: `KernelSettings::old_key` holds it and
-gives nothing back (`secret_key` and `retired_secret_keys` are inputs only, emptied as a kernel takes them). An app that sealed or keyed things of its own with it (through `settings.secret_key`, public until
-platform 0.3.x) keeps them working through its handle until they lapse, with no key in its hands and nothing wider. Each names a context of the app's own: its id, then one of ` -.:/|`, then more (`cloud-dns-key`,
-`helpdesk mail token`, `pos snapshot`); not one that another app's longer id also begins (`cloud-ops-…` is `cloud-ops`'s,
-not `cloud`'s), not one that begins with a workspace's id, and never for an app whose id is a word the platform's own
-labels begin with (`message`, `connection`, `ferrum`, …). Anything else is refused. They work from the copies the vault
-adopted, so they keep working once the key is gone from the environment, each use is noted for `ferrum task
-legacy_key`, and they go in R2 with the key:
-
-| Call | What it does |
-| --- | --- |
-| `open_old(k, context, sealed)` | what the old key sealed for `context`, opened with every old key |
-| `seal_old(k, context, plain)` | `plain` sealed with the old key for the column the app's previous release reads, while the key is in the environment; `None` once it is gone |
-| `old_fingerprints(k, context, data)` | `data`'s fingerprint under each old key, as `SecretKey::fingerprint` made it: to check what the app issued, never to issue anything new |
-
-What the apps that read the key did in their repositories: Commerce asks `Kernel::seals_secret_values()` in place of
-whether the old key is set (a message's secret values are sealed with the vault now, 0.11.1); Helpdesk checks the mail
-tokens 0.11 issued with `old_fingerprints` (`helpdesk mail token`, `helpdesk mail token hash`, 0.12.1); POS signs its
-snapshots with a key it derives (`derive`, 0.7.5), the server never checks their old signatures, and a till comparing one
-sees it change once; Cloud opens and writes what it sealed with `open_old` and `seal_old` (its contexts begin `cloud-`).
-
-**A test with the old key.** An app's suite that gives a kernel the old key as before (`KernelSettings { secret_key: …,
-retired_secret_keys: … }`) keeps working unchanged: the kernel takes those fields in as it boots and empties them, so
-nothing reads the key back from its settings.
 
 ## Using another app's operations
 

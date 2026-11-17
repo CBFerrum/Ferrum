@@ -758,7 +758,6 @@ impl Kernel {
             payload: Value,
             attempts: i32,
             url: String,
-            secret: String,
         }
         let mut tx = self.db.system_tx().await?;
         let due: Vec<Due> = sqlx::query_as(
@@ -766,7 +765,7 @@ impl Kernel {
                and not ferrum_workspace_held(tenant_id) order by next_attempt_at limit 20 for update skip locked), \
              leased as (update webhook_delivery d set next_attempt_at = now() + make_interval(secs => $1) from claimed c \
                where d.tenant_id = c.tenant_id and d.id = c.id returning d.tenant_id, d.id, d.webhook_id, d.topic, d.payload, d.attempts) \
-             select l.tenant_id, l.id, l.webhook_id, l.topic, l.payload, l.attempts, w.url, w.secret from leased l \
+             select l.tenant_id, l.id, l.webhook_id, l.topic, l.payload, l.attempts, w.url from leased l \
              join webhook w on w.tenant_id = l.tenant_id and w.id = l.webhook_id",
         )
         .bind(WEBHOOK_LEASE_SECS)
@@ -777,7 +776,7 @@ impl Kernel {
             // Nothing goes out for a sandbox (sandbox.rs).
             self.outward(d.tenant_id).await.map_err(|e| (None, e.to_string()))?;
             // One whose secret cannot be opened is not sent unsigned: it fails, and says why.
-            let secret = self.webhook_secret(d.tenant_id, d.webhook_id, &d.secret).await.map_err(|e| (None, e.to_string()))?;
+            let secret = self.webhook_secret(d.tenant_id, d.webhook_id).await.map_err(|e| (None, e.to_string()))?;
             self.post_webhook(&d.url, &secret, &d.topic, d.id, &d.payload).await
         }))
         .await;

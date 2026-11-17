@@ -4,7 +4,7 @@
 //!
 //! * **A connection** is an address, a way to authenticate (none, a header holding a secret, basic, bearer, a request
 //!   signed with a stated scheme, or tokens a person's sign-in gave), default headers, the hosts it may reach, time and
-//!   size limits, and who may use it (roles, apps). Its secrets are sealed with the server's key and never read back.
+//!   size limits, and who may use it (roles, apps). Its secrets are kept in the vault and never read back.
 //! * **Operations** are named calls on it: method, path, query, headers, a body or form, each a template over
 //!   `inputs` and `secret`; where the results and the error are in the answer; which statuses mean "later"; the header
 //!   that carries an idempotency key.
@@ -1249,18 +1249,22 @@ pub(crate) fn digest(v: &Value) -> String {
 
 /// A connection's secrets, open, its row locked for the rest of `tx` (to change them).
 pub(crate) async fn lock_secrets(tx: &mut Tx, k: &Kernel, tenant: Uuid, id: Uuid) -> Result<BTreeMap<String, String>> {
-    let sealed: Option<Option<String>> =
+    let has_secrets: Option<bool> =
         // Not a key's lock: a call logged meanwhile (its row refers to this one) is not held up by it.
-        sqlx::query_scalar("select sealed from conn where tenant_id = $1 and id = $2 for no key update").bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
-    match sealed.ok_or_else(|| Error::NotFound("connection".into()))? {
-        Some(s) => serde_json::from_str(&k.kept(tx, &place(tenant, id), &s).await?).map_err(Error::internal),
-        None => Ok(BTreeMap::new()),
+        sqlx::query_scalar("select has_secrets from conn where tenant_id = $1 and id = $2 for no key update")
+            .bind(tenant)
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    match has_secrets.ok_or_else(|| Error::NotFound("connection".into()))? {
+        true => serde_json::from_str(&k.kept(tx, &place(tenant, id)).await?).map_err(Error::internal),
+        false => Ok(BTreeMap::new()),
     }
 }
 
 /// Where a connection's secrets are kept: the platform's, in the workspace, sent only to the hosts it reaches.
 pub(crate) fn place(tenant: Uuid, id: Uuid) -> Place {
-    Place::platform(Store::Conn, tenant, id, sealed_label(tenant, id))
+    Place::platform(Store::Conn, tenant, id)
 }
 
 /// The hosts a description reaches (its base's and those it adds): what its secrets may be sent to.
@@ -1273,22 +1277,20 @@ pub(crate) fn reach_hosts(desc: &Description) -> Vec<String> {
 }
 
 /// Whether secrets kept under `rule` may go where `desc` reaches: the hosts they were given for, exactly. Changing them
-/// asks for the secrets again. Those not in the vault yet (no rule) go where the description reaches, as before.
-pub(crate) fn given_for(rule: Option<&crate::vault::Rule>, desc: &Description) -> bool {
+/// asks for the secrets again.
+pub(crate) fn given_for(rule: &crate::vault::Rule, desc: &Description) -> bool {
     let set = |hosts: &[String]| hosts.iter().map(|h| h.to_ascii_lowercase()).collect::<std::collections::BTreeSet<_>>();
-    rule.is_none_or(|r| set(&r.hosts) == set(&reach_hosts(desc)))
+    set(&rule.hosts) == set(&reach_hosts(desc))
 }
 
-/// Keeps `secrets` as the connection's in `tx`, bound to the hosts its stored description reaches: what its row holds.
-async fn keep_secrets(tx: &mut Tx, k: &Kernel, tenant: Uuid, id: Uuid, desc: &Description, secrets: &BTreeMap<String, String>) -> Result<String> {
-    if !k.kept_here() {
-        return Err(Error::Unavailable("connection secrets need the vault or the server's secret key (FERRUM_SECRET_KEY)".into()));
-    }
+/// Keeps `secrets` as the connection's in `tx`, bound to the hosts its stored description reaches.
+async fn keep_secrets(tx: &mut Tx, k: &Kernel, tenant: Uuid, id: Uuid, desc: &Description, secrets: &BTreeMap<String, String>) -> Result<()> {
+    k.vault_open("a connection's secrets")?;
     let hosts = reach_hosts(desc).into_iter().map(|h| h.to_ascii_lowercase()).collect();
     k.keep(tx, &place(tenant, id).sent_to(hosts), &serde_json::to_string(secrets).map_err(Error::internal)?).await
 }
 
-/// Seals `held` with `set` set and `remove` removed as the connection's secrets, in `tx` (after [`lock_secrets`]).
+/// Keeps `held` with `set` set and `remove` removed as the connection's secrets, in `tx` (after [`lock_secrets`]).
 pub(crate) async fn store_secrets(
     tx: &mut Tx,
     k: &Kernel,
@@ -1302,13 +1304,8 @@ pub(crate) async fn store_secrets(
     held.retain(|n, _| !remove.contains(n));
     let desc: Value = sqlx::query_scalar("select description from conn where tenant_id = $1 and id = $2").bind(tenant).bind(id).fetch_one(&mut **tx).await?;
     let desc: Description = serde_json::from_value(desc).map_err(Error::internal)?;
-    let sealed = keep_secrets(tx, k, tenant, id, &desc, &held).await?;
-    sqlx::query("update conn set sealed = $3, updated_at = now() where tenant_id = $1 and id = $2")
-        .bind(tenant)
-        .bind(id)
-        .bind(sealed)
-        .execute(&mut **tx)
-        .await?;
+    keep_secrets(tx, k, tenant, id, &desc, &held).await?;
+    sqlx::query("update conn set has_secrets = true, updated_at = now() where tenant_id = $1 and id = $2").bind(tenant).bind(id).execute(&mut **tx).await?;
     Ok(held)
 }
 
@@ -1316,10 +1313,6 @@ pub(crate) async fn store_secrets(
 /// dropped by an administrator's save.
 fn kept_by_platform(name: &str) -> bool {
     name.starts_with('_')
-}
-
-pub(crate) fn sealed_label(tenant: Uuid, id: Uuid) -> String {
-    format!("conn:{tenant}:{id}")
 }
 
 /// A connection, loaded for the length of a call: its secrets open.
@@ -1364,22 +1357,22 @@ impl Loaded {
     }
 }
 
-const ROW: &str = "select id, name, description, sealed, enabled, coalesce(debug_until > now(), false) from conn where tenant_id = $1";
+const ROW: &str = "select id, name, description, has_secrets, enabled, coalesce(debug_until > now(), false) from conn where tenant_id = $1";
 
-type Row = (Uuid, String, Value, Option<String>, bool, bool);
+type Row = (Uuid, String, Value, bool, bool, bool);
 
 impl Kernel {
     /// A connection as loaded for a call: its secrets opened for the platform's use, never handed to its caller. Secrets
     /// the vault keeps for other hosts than the description reaches now are not had: a description sent elsewhere asks
     /// for its credentials again.
-    async fn open_row(&self, tx: &mut Tx, tenant: Uuid, (id, name, desc, sealed, enabled, debug): Row) -> Result<Loaded> {
+    async fn open_row(&self, tx: &mut Tx, tenant: Uuid, (id, name, desc, has_secrets, enabled, debug): Row) -> Result<Loaded> {
         let desc: Description = serde_json::from_value(desc).map_err(Error::internal)?;
-        let secrets = match sealed {
-            Some(s) => {
-                let (open, rule) = self.kept_with_rule(tx, &place(tenant, id), &s).await?;
-                if given_for(rule.as_ref(), &desc) { serde_json::from_str(&open).map_err(Error::internal)? } else { BTreeMap::new() }
+        let secrets = match has_secrets {
+            true => {
+                let (open, rule) = self.kept_with_rule(tx, &place(tenant, id)).await?;
+                if given_for(&rule, &desc) { serde_json::from_str(&open).map_err(Error::internal)? } else { BTreeMap::new() }
             }
-            None => BTreeMap::new(),
+            false => BTreeMap::new(),
         };
         Ok(Loaded { tenant, id, name, desc, secrets, enabled, debug })
     }
@@ -2241,8 +2234,8 @@ fn clipped(v: &Value) -> Value {
 
 // ── administration ──
 
-/// What `POST /api/admin/connections` takes. `secrets` are sealed and never read back; left out, the ones there are
-/// stay.
+/// What `POST /api/admin/connections` takes. `secrets` are kept in the vault and never read back; left out, the ones
+/// there are stay.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectionInput {
@@ -2256,7 +2249,7 @@ pub struct ConnectionInput {
 }
 
 impl Kernel {
-    /// Adds a connection, or changes one. Its secrets are sealed; a description that is wrong is refused.
+    /// Adds a connection, or changes one. Its secrets are kept in the vault; a description that is wrong is refused.
     pub async fn save_connection_def(&self, ctx: &Ctx, id: Option<Uuid>, input: &ConnectionInput) -> Result<Uuid> {
         admin_only(ctx)?;
         if !is_name(&input.name) {
@@ -2279,47 +2272,38 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         // Reading any host goes without secrets: none given, none kept from before (BD-65).
         if input.description.any_host {
-            let kept: Option<bool> = sqlx::query_scalar("select sealed is not null from conn where tenant_id = $1 and id = $2")
-                .bind(ctx.tenant)
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await?;
+            let kept: Option<bool> =
+                sqlx::query_scalar("select has_secrets from conn where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
             if input.secrets.as_ref().is_some_and(|s| !s.is_empty()) || (input.secrets.is_none() && kept == Some(true)) {
                 return Err(Error::field("description", "any_host: a description that reads any host has no secrets (remove them first)"));
             }
         }
-        let sealed = match &input.secrets {
-            Some(s) => {
-                // What the platform keeps among them (a registered client, a DPoP key) stays.
-                let held = match sqlx::query_scalar::<_, Option<String>>("select sealed from conn where tenant_id = $1 and id = $2 for update")
-                    .bind(ctx.tenant)
-                    .bind(id)
-                    .fetch_optional(&mut *tx)
-                    .await?
-                    .flatten()
-                {
-                    Some(old) => {
-                        serde_json::from_str::<BTreeMap<String, String>>(&self.kept(&mut tx, &place(ctx.tenant, id), &old).await?).map_err(Error::internal)?
-                    }
-                    None => BTreeMap::new(),
-                };
-                let mut all: BTreeMap<String, String> = held.into_iter().filter(|(n, _)| kept_by_platform(n)).collect();
-                all.extend(s.clone());
-                Some(keep_secrets(&mut tx, self, ctx.tenant, id, &input.description, &all).await?)
-            }
-            None => None,
-        };
+        if let Some(s) = &input.secrets {
+            // What the platform keeps among them (a registered client, a DPoP key) stays.
+            let held = match sqlx::query_scalar::<_, bool>("select has_secrets from conn where tenant_id = $1 and id = $2 for update")
+                .bind(ctx.tenant)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?
+            {
+                Some(true) => serde_json::from_str::<BTreeMap<String, String>>(&self.kept(&mut tx, &place(ctx.tenant, id)).await?).map_err(Error::internal)?,
+                _ => BTreeMap::new(),
+            };
+            let mut all: BTreeMap<String, String> = held.into_iter().filter(|(n, _)| kept_by_platform(n)).collect();
+            all.extend(s.clone());
+            keep_secrets(&mut tx, self, ctx.tenant, id, &input.description, &all).await?;
+        }
         let n = sqlx::query(
-            "insert into conn (tenant_id, id, name, label, description, sealed, enabled, source) values ($1, $2, $3, $4, $5, $6, $7, $8) \
+            "insert into conn (tenant_id, id, name, label, description, has_secrets, enabled, source) values ($1, $2, $3, $4, $5, $6, $7, $8) \
              on conflict (tenant_id, id) do update set name = excluded.name, label = excluded.label, description = excluded.description, \
-             sealed = coalesce(excluded.sealed, conn.sealed), enabled = excluded.enabled, updated_at = now()",
+             has_secrets = excluded.has_secrets or conn.has_secrets, enabled = excluded.enabled, updated_at = now()",
         )
         .bind(ctx.tenant)
         .bind(id)
         .bind(&input.name)
         .bind(label)
         .bind(serde_json::to_value(&input.description).map_err(Error::internal)?)
-        .bind(sealed)
+        .bind(input.secrets.is_some())
         .bind(input.enabled)
         .bind(source)
         .execute(&mut *tx)
@@ -2399,21 +2383,22 @@ impl Kernel {
     pub async fn connection_defs(&self, ctx: &Ctx) -> Result<Vec<Value>> {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let rows: Vec<(Uuid, String, String, Value, Option<String>, bool, Option<String>, i32, Option<DateTime<Utc>>)> =
-            sqlx::query_as("select id, name, label, description, sealed, enabled, source, refused, debug_until from conn where tenant_id = $1 order by name")
-                .bind(ctx.tenant)
-                .fetch_all(&mut *tx)
-                .await?;
+        let rows: Vec<(Uuid, String, String, Value, bool, bool, Option<String>, i32, Option<DateTime<Utc>>)> = sqlx::query_as(
+            "select id, name, label, description, has_secrets, enabled, source, refused, debug_until from conn where tenant_id = $1 order by name",
+        )
+        .bind(ctx.tenant)
+        .fetch_all(&mut *tx)
+        .await?;
         tx.commit().await?;
         let mut out = Vec::new();
-        for (id, name, label, description, sealed, enabled, source, refused, debug_until) in rows {
-            let names: Vec<String> = match sealed {
-                Some(s) => serde_json::from_str::<BTreeMap<String, String>>(&self.kept_alone(&place(ctx.tenant, id), &s).await?)
+        for (id, name, label, description, has_secrets, enabled, source, refused, debug_until) in rows {
+            let names: Vec<String> = match has_secrets {
+                true => serde_json::from_str::<BTreeMap<String, String>>(&self.kept_alone(&place(ctx.tenant, id)).await?)
                     .map_err(Error::internal)?
                     .into_keys()
                     .filter(|n| !kept_by_platform(n))
                     .collect(),
-                None => vec![],
+                false => vec![],
             };
             let account = self.workspace_account(ctx.tenant, id).await?;
             out.push(json!({"id": id, "name": name, "label": label, "description": description, "enabled": enabled, "secrets": names, "account": account,
@@ -2674,10 +2659,9 @@ mod tests {
         };
         let rule = |hosts: &[&str]| crate::vault::Rule { hosts: hosts.iter().map(|h| h.to_string()).collect(), ..Default::default() };
         let acme = desc("https://api.acme.test/v1", &["files.acme.test"]);
-        assert!(super::given_for(None, &acme), "not in the vault yet: as before");
-        assert!(super::given_for(Some(&rule(&["files.acme.test", "API.acme.test"])), &acme), "the same hosts, any order or case");
-        assert!(!super::given_for(Some(&rule(&["api.acme.test"])), &acme), "a host added: asked again");
-        assert!(!super::given_for(Some(&rule(&["api.acme.test", "files.acme.test"])), &desc("https://api.other.test", &["files.acme.test"])), "moved");
+        assert!(super::given_for(&rule(&["files.acme.test", "API.acme.test"]), &acme), "the same hosts, any order or case");
+        assert!(!super::given_for(&rule(&["api.acme.test"]), &acme), "a host added: asked again");
+        assert!(!super::given_for(&rule(&["api.acme.test", "files.acme.test"]), &desc("https://api.other.test", &["files.acme.test"])), "moved");
     }
 
     use super::*;

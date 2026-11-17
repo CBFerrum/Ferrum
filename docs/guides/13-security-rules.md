@@ -179,7 +179,7 @@ Each of these is read by a person before a pin, and some fail a check until it i
 |---|---|---|
 | A direct write to an `e_*` table outside the document pipeline | It skips hooks, validation, permissions and history | `scripts/mutation_paths.py` fails until a person gives it a kind in docs/registry/mutation-paths.md |
 | A new cryptography crate, or `unsafe` | Keys outside the vault; memory safety | `scripts/secret_paths.py` (baseline only shrinks) |
-| A secret read past the handle (`Kernel::secret`), the old key | Ownership of secrets | `scripts/secret_paths.py` |
+| A secret read past its owner's handle (the vault's tables, its ways in) | Ownership of secrets | `scripts/secret_paths.py` |
 | A new licence | Distribution | `scripts/licenses.py` |
 | A public route, a webhook, a new role or right, `allow_private: true`, `system_tx` in a request path, an HTTP client of the app's own, a statement in `AssertSqlSafe` | Each widens what an outsider or a person can reach | Reviewed, not checked |
 | A new operator setting, a new secret, a new service or companion | What the operator must run and rotate | `scripts/check_apps.py`, `scripts/settings.py`; the rest reviewed |
@@ -193,7 +193,7 @@ Privately to the maintainers, never in a public issue ([docs/security.md](../sec
 
 ## Checked by
 
-- `scripts/secret_paths.py` (cryptography crates, `unsafe`, the vault's tables, ways into the vault, the old key).
+- `scripts/secret_paths.py` (cryptography crates, `unsafe`, the vault's tables, ways into the vault).
 - `scripts/licenses.py check`, `cargo audit` and `scripts/registry.py check` (advisories), in `scripts/local_ci.sh audit`.
 - `scripts/mutation_paths.py` (direct writes).
 - Row-level security in the database; the platform's isolation and permission suites with their mutants

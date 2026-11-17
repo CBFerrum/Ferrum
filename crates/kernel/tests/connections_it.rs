@@ -977,11 +977,35 @@ async fn signing_in(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) -> Vec<Str
     PROVIDER.lock().unwrap().2 = "taken-back".into();
     connections::call(k, &pia, None, &me()).await.unwrap();
     assert_eq!(PROVIDER.lock().unwrap().1, 3);
+    // Two calls refused at once: refreshed once, and the other call takes what that gave (the provider takes only its
+    // newest token). Each waits for the token's row in turn, held here until both do.
+    PROVIDER.lock().unwrap().2 = "taken-back".into();
+    let mut held = k.db.system_tx().await.unwrap();
+    sqlx::query("select 1 from conn_token where tenant_id = $1 for update").bind(tenant).execute(&mut *held).await.unwrap();
+    let release = async {
+        for _ in 0..500 {
+            let waiting: i64 = sqlx::query_scalar(
+                "select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like '%conn_token%for update%'",
+            )
+            .fetch_one(&k.db.pool)
+            .await
+            .unwrap();
+            if waiting == 2 {
+                return held.rollback().await.unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("the two calls never both waited for the token's row");
+    };
+    let both = me();
+    let (first, second, ()) = tokio::join!(connections::call(k, &pia, None, &both), connections::call(k, &pia, None, &both), release);
+    assert_eq!((first.unwrap(), second.unwrap()), (json!({"email": "pia@mail.test"}), json!({"email": "pia@mail.test"})));
+    assert_eq!(PROVIDER.lock().unwrap().1, 4, "refreshed once");
     // Ahead of its expiry, by the job.
     expire("5 minutes").await;
     assert_eq!(k.sweep_tokens_at(chrono::Utc::now()).await.unwrap(), 1);
     drain(k).await;
-    assert_eq!(PROVIDER.lock().unwrap().1, 4);
+    assert_eq!(PROVIDER.lock().unwrap().1, 5);
 
     // Revoked at the provider: "needs reconnecting", its owner told once.
     PROVIDER.lock().unwrap().0 = true;
@@ -1089,7 +1113,7 @@ async fn erasing(k: &Kernel, admin: &Ctx, seen: &Seen, store: Arc<Memory>) {
     // A restore from before the erasure brings her rows back; the erasure's journal takes them again.
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     sqlx::query("update app_user set email = 'ivy@depot.test' where tenant_id = $1 and id = $2").bind(tenant).bind(ivy_id).execute(&mut *tx).await.unwrap();
-    sqlx::query("insert into conn_token (tenant_id, conn_id, user_id, sealed) values ($1, $2, $3, 'restored')")
+    sqlx::query("insert into conn_token (tenant_id, conn_id, user_id) values ($1, $2, $3)")
         .bind(tenant)
         .bind(mailbox)
         .bind(ivy_id)

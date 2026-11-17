@@ -427,9 +427,8 @@ impl PluginHost {
         let _ = self.vault.set(platform);
     }
 
-    /// `config` with each value kept as the host keeps settings (sealed under the plugin's own key in the vault, and with
-    /// the old key beside while it is configured: ferrum_kernel::vault). Refused where nothing here seals them: a
-    /// setting is never stored plain.
+    /// `config` with each value kept as the host keeps settings (sealed under the plugin's own key in the vault:
+    /// ferrum_kernel::vault). Refused with the vault closed: a setting is never stored plain.
     async fn keep_config(&self, k: &Kernel, tenant: Uuid, plugin: &str, config: Map<String, Value>) -> Result<Map<String, Value>> {
         let mut out = Map::new();
         for (key, v) in config {
@@ -444,17 +443,15 @@ impl PluginHost {
         Ok(out)
     }
 
-    /// `config` as the plugin reads it: each value opened. One that does not open here (moved to another setting, or
-    /// sealed with a key this server does not have) is left out and logged, so the plugin reports it as missing rather
-    /// than every plugin of the workspace failing to load.
+    /// `config` as the plugin reads it: each value opened. One that does not open here (moved to another setting, or not
+    /// kept as the host keeps settings) is left out and logged, so the plugin reports it as missing rather than every
+    /// plugin of the workspace failing to load.
     async fn open_config(&self, k: &Kernel, tenant: Uuid, plugin: &str, config: Value) -> Value {
         let Value::Object(map) = config else { return config };
         let mut out = Map::new();
         for (key, v) in map {
             let opened = match self.vault.get() {
                 Some(vault) => vault.plugin_setting(k, tenant, plugin, &key, &v).await,
-                // A host given no handle reads only what was never sealed.
-                None if v.get("$vault").is_none() && v.get("$sealed").is_none() => Ok(Some(v.clone())),
                 None => Err(Error::Unavailable("this server gives its plugins no vault".into())),
             };
             match opened {

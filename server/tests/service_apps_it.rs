@@ -60,8 +60,10 @@ fn an_app_runs_on_its_publishers_servers_as_an_account_of_its_own() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_APPS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_apps_api_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     common::reset(&db.pool).await;
+    // The vault opened as the server opens it: the service's webhook secret is kept there.
+    common::open_vault(&db, &url).await;
     let dir = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../packages");
     let packages = ["core", "contacts", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
     let settings = KernelSettings { webhooks_allow_private: true, public_url: Some("http://acme.example".into()), ..Default::default() };

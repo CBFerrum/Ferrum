@@ -3,7 +3,8 @@
 //! `apply` (a secret PIN among its parameters) whose policy the package ships, and a workspace's own button with
 //! effects: pressing either asks; the last approval runs it once, as whoever pressed it, with what they gave; a
 //! rejection or a recall runs nothing; a record that no longer meets the action's condition is refused then, in plain
-//! words; a secret is never readable from the request or the audit trail; approval lends no rights.
+//! words; a secret is never readable from the request or the audit trail, and is kept in the vault, where it outlives
+//! a rotation of the keys keeping it; approval lends no rights.
 
 use async_trait::async_trait;
 use ferrum_kernel::customize::NewCustomization;
@@ -96,10 +97,22 @@ fn approval_before_an_action() {
     rt.block_on(async { tokio::spawn(scenario()).await.unwrap() });
 }
 
+/// The vault of the database at `url`, opened as a server opens it.
+async fn open_vault(db: &Db, url: &str) {
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url.into(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(db, opener, false).await.expect("the vault");
+}
+
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    open_vault(&db, &url).await;
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/change.yaml", CHANGE)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
@@ -107,9 +120,7 @@ async fn scenario() {
     let board = Arc::new(Board::default());
     let mut hooks = HookRegistry::default();
     hooks.register("Change", board.clone());
-    let settings =
-        KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(ferrum_kernel::secret::SecretKey::new([5u8; 32])), vec![]), ..Default::default() };
-    let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, settings, None).await.expect("boot");
+    let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {
             slug: "acme".into(),
@@ -192,10 +203,7 @@ async fn scenario() {
     }
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let rows: Vec<String> =
-        sqlx::query_scalar("select t::text from audit_event t union all select r.params::text || coalesce(r.sealed::text, '') from approval_request r")
-            .fetch_all(&mut *tx)
-            .await
-            .unwrap();
+        sqlx::query_scalar("select t::text from audit_event t union all select r::text from approval_request r").fetch_all(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     assert!(rows.iter().any(|r| r.contains("[redacted]")) && rows.iter().all(|r| !r.contains(PIN)), "no table keeps the secret in the clear");
 
@@ -259,37 +267,25 @@ async fn scenario() {
     assert_eq!(s["status"], json!("failed"), "the requester lost the right: {s}");
     assert_eq!(bumps(c7).await, 0, "not run, by anyone");
 
-    // ───────────── the server's key rotated while a request waits: its sealed parameters move with the rest ─────────────
+    // ───────────── the keys keeping a waiting request's secret rotated: decided on another server, it runs with it ─────────────
     k.set_user_roles(&admin, changer, &["Changer".into()]).await.unwrap();
     let cc = as_(changer).await;
     let c8 = change("C8").await;
     k.run_action(&cc, "Change", c8, "apply", json!({"window": "Sun", "pin": PIN})).await.unwrap();
-    let boot = |current: [u8; 32], retired: Option<[u8; 32]>| {
-        let board = board.clone();
-        async move {
-            let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-            let db = Db::connect(DbConfig { url, max_connections: 4, ..Default::default() }).await.expect("connect");
-            let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
-            let files: BTreeMap<String, String> =
-                [("package.yaml", PACKAGE), ("entities/change.yaml", CHANGE)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-            let pkg = ferrum_meta::catalog::load_package_files(&files).expect("package");
-            let mut hooks = HookRegistry::default();
-            hooks.register("Change", board);
-            let settings = KernelSettings {
-                old_key: ferrum_kernel::OldKey::configured(
-                    Some(ferrum_kernel::secret::SecretKey::new(current)),
-                    retired.into_iter().map(ferrum_kernel::secret::SecretKey::new).collect(),
-                ),
-                ..Default::default()
-            };
-            Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, settings, None).await.expect("boot")
-        }
+    k.rotate_owner_key(ferrum_kernel::vault::Scope::Workspace(tenant), "platform").await.unwrap();
+    let other = {
+        let db = Db::connect(DbConfig { url: url.clone(), max_connections: 4, ..Default::default() }).await.expect("connect");
+        open_vault(&db, &url).await;
+        let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
+        let files: BTreeMap<String, String> =
+            [("package.yaml", PACKAGE), ("entities/change.yaml", CHANGE)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let pkg = ferrum_meta::catalog::load_package_files(&files).expect("package");
+        let mut hooks = HookRegistry::default();
+        hooks.register("Change", board.clone());
+        Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot")
     };
-    let rotating = boot([6u8; 32], Some([5u8; 32])).await;
-    assert!(rotating.reseal_secrets().await.unwrap().moved >= 1, "the waiting PIN moved to the new key");
-    let only_new = boot([6u8; 32], None).await;
-    let b1n = only_new.load_ctx(tenant, boss1, None, "it".into()).await.unwrap();
-    let s = only_new.decide_approval(&b1n, "Change", c8, true, Some("ok")).await.unwrap();
+    let b1n = other.load_ctx(tenant, boss1, None, "it".into()).await.unwrap();
+    let s = other.decide_approval(&b1n, "Change", c8, true, Some("ok")).await.unwrap();
     assert_eq!(s["status"], json!("approved"), "{s}");
-    assert_eq!(board.ran("C8"), [(changer, json!({"window": "Sun", "pin": PIN}))], "replayed under the new key alone");
+    assert_eq!(board.ran("C8"), [(changer, json!({"window": "Sun", "pin": PIN}))], "replayed with what was given, after the rotation");
 }

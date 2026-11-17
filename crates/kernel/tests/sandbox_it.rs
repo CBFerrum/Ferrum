@@ -7,7 +7,6 @@ use ferrum_kernel::auth::SignIn;
 use ferrum_kernel::jobs::{Job, JobHandler, NewJob};
 use ferrum_kernel::outbox::{self, Event};
 use ferrum_kernel::sandbox::{Copy, Halt, SANDBOX};
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::shell::HostRoute;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::twofactor::code;
@@ -124,13 +123,21 @@ fn catalog() -> Catalog {
     Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog")
 }
 
-async fn installation(url: &str, key: &SecretKey, seen: &Arc<Seen>, mails: &Arc<Mutex<Vec<String>>>, files: &Path, call: &str) -> Arc<Kernel> {
+/// An installation on `url`, emptied first, its vault opened as a server opens it.
+async fn installation(url: &str, seen: &Arc<Seen>, mails: &Arc<Mutex<Vec<String>>>, files: &Path, call: &str) -> Arc<Kernel> {
     let db = Db::connect(DbConfig { url: url.to_string(), max_connections: 8, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url.to_string(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let mut hooks = HookRegistry::default();
     hooks.add_event_sink(Arc::new(Sink(seen.clone())));
     hooks.add_job_handler(Arc::new(CallOut(call.to_string())));
-    let settings = KernelSettings { old_key: ferrum_kernel::OldKey::configured(Some(key.clone()), vec![]), webhooks_allow_private: true, ..Default::default() };
+    let settings = KernelSettings { webhooks_allow_private: true, ..Default::default() };
     let k = Kernel::boot(db, catalog(), hooks, settings, Some(Arc::new(Mails(mails.clone())))).await.expect("boot");
     k.set_file_store(Arc::new(DirFiles(files.to_path_buf())));
     k.ensure_directory().await.unwrap();
@@ -231,19 +238,18 @@ fn sandboxes() {
 
 async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     let (a_url, b_url) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
-    let (key_a, key_b) = (SecretKey::new([1; 32]), SecretKey::new([2; 32]));
     let dirs = std::env::temp_dir().join(format!("ferrum-sandbox-{}", Uuid::now_v7()));
     let (dir_a, dir_b) = (dirs.join("a"), dirs.join("b"));
     let (seen, mails) = (Arc::new(Seen::default()), Arc::new(Mutex::new(Vec::new())));
     let (hook_url, hits) = receiver().await;
-    let a = installation(&a_url, &key_a, &seen, &mails, &dir_a, &hook_url).await;
-    let b = installation(&b_url, &key_b, &seen, &mails, &dir_b, &hook_url).await;
+    let a = installation(&a_url, &seen, &mails, &dir_a, &hook_url).await;
+    let b = installation(&b_url, &seen, &mails, &dir_b, &hook_url).await;
     // Without the grant on session_replication_role (D7): moves and copies run as the server's own role.
     for u in [&a_url, &b_url] {
         as_superuser(u, "do $$ begin execute format('revoke set on parameter session_replication_role from %I', (select datdba::regrole::text from pg_database where datname = current_database())); end $$").await;
     }
 
-    // Acme, live at A: records with lines, a file, sealed values of both kinds, a connection with tokens, a webhook, an
+    // Acme, live at A: records with lines, a file, secrets of the kernel's stores, a connection with tokens, a webhook, an
     // API key, an enforced second factor and single sign-on, an opt-out, an erasure, a legal hold, waiting events and a
     // queued job.
     let tenant = a
@@ -284,14 +290,17 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     a.enable_two_factor(&pat_ctx, &code(&secret, now()).unwrap()).await.unwrap();
     let (hook, conn, old_conn, channel, provider) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     let mut tx = a.db.system_tx().await.unwrap();
+    // The webhook's signing secret kept in the vault, as the admin route keeps it; the other stores' rows as the kernel
+    // writes them, each saying its value is set (the vault keeps it).
+    a.keep_webhook_secret(&mut tx, t, hook, "whsec").await.unwrap();
     for q in [
-        format!("insert into record_secret (tenant_id, entity, record_id, field, sealed, key_id) values ($1, 'Contact', '{contact}', 'token', '{}', '{}')", key_a.seal(&format!("{t}/Contact/{contact}/token"), "app-secret").unwrap(), key_a.id),
-        format!("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, '{hook}', 'books', '{hook_url}', '{}', array['*'])", a.seal_webhook_secret(t, hook, "whsec").unwrap()),
-        format!("insert into connection (tenant_id, id, provider, name, sealed) values ($1, '{old_conn}', 'books', 'Books', '{}')", key_a.seal(&format!("connection:{t}:{old_conn}"), "{\"token\": \"live\"}").unwrap()),
-        format!("insert into conn (tenant_id, id, name, label, description, sealed) values ($1, '{conn}', 'pay', 'Payments', '{{}}', '{}')", key_a.seal(&format!("conn:{t}:{conn}"), "{\"key\": \"sk_live\"}").unwrap()),
-        format!("insert into conn_token (tenant_id, conn_id, user_id, sealed) values ($1, '{conn}', '{pat}', '{}')", key_a.seal("token", "refresh-me").unwrap()),
-        format!("insert into message_channel (tenant_id, id, kind, name, description, sealed) values ($1, '{channel}', 'text', 'Texts', '{{}}', '{}')", key_a.seal(&format!("message_channel:{t}:{channel}"), "{\"auth\": \"live\"}").unwrap()),
-        format!("insert into sso_provider (tenant_id, id, label, issuer, client_id, client_secret) values ($1, '{provider}', 'Company', 'https://idp.example', 'ferrum', '{}')", key_a.seal(&format!("sso|{t}|{provider}"), "client-secret").unwrap()),
+        format!("insert into record_secret (tenant_id, entity, record_id, field) values ($1, 'Contact', '{contact}', 'token')"),
+        format!("insert into webhook (tenant_id, id, name, url, topics) values ($1, '{hook}', 'books', '{hook_url}', array['*'])"),
+        format!("insert into connection (tenant_id, id, provider, name, has_credentials) values ($1, '{old_conn}', 'books', 'Books', true)"),
+        format!("insert into conn (tenant_id, id, name, label, description, has_secrets) values ($1, '{conn}', 'pay', 'Payments', '{{}}', true)"),
+        format!("insert into conn_token (tenant_id, conn_id, user_id) values ($1, '{conn}', '{pat}')"),
+        format!("insert into message_channel (tenant_id, id, kind, name, description, has_secrets) values ($1, '{channel}', 'text', 'Texts', '{{}}', true)"),
+        format!("insert into sso_provider (tenant_id, id, label, issuer, client_id, has_client_secret) values ($1, '{provider}', 'Company', 'https://idp.example', 'ferrum', true)"),
         "insert into contact_consent (tenant_id, email, purpose, granted, source) values ($1, 'no-mail@buyer.test', 'marketing', false, 'it')".to_string(),
         "insert into tenant_host (host, tenant_id, kind, target, is_primary, verify_token, verified_at) values ('erp.acme.example', $1, 'custom', 'shell', true, 'x', now())".to_string(),
         // A name under the base with what it shows, and short paths (docs/operations.md, "Addresses of a workspace").
@@ -329,7 +338,7 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     run(&a, "delete from workspace_move where workspace = $1", t).await;
     let same = MoveSource {
         url: direct(&a_url),
-        keys: vec![key_a.clone()],
+        keys: vec![],
         files: None,
         regions: None,
         base_domain: None,
@@ -369,7 +378,7 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     // And one at B, from A.
     let from_a = MoveSource {
         url: direct(&a_url),
-        keys: vec![key_a.clone()],
+        keys: vec![],
         files: Some(Arc::new(DirFiles(dir_a.clone()))),
         regions: None,
         base_domain: None,
@@ -414,8 +423,8 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
         assert_eq!(mark[0], (Some(t), "Acme (sandbox)".to_string()));
         let sealed: Vec<(i64, i64, i64, i64)> = sql(
             k,
-            "select (select count(*) from connection where tenant_id = $1 and sealed is not null), (select count(*) from conn where tenant_id = $1 and sealed is not null), \
-             (select count(*) from message_channel where tenant_id = $1 and sealed is not null), (select count(*) from sso_provider where tenant_id = $1 and client_secret is not null)",
+            "select (select count(*) from connection where tenant_id = $1 and has_credentials), (select count(*) from conn where tenant_id = $1 and has_secrets), \
+             (select count(*) from message_channel where tenant_id = $1 and has_secrets), (select count(*) from sso_provider where tenant_id = $1 and has_client_secret)",
             id,
         )
         .await;
@@ -431,7 +440,9 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
         )
         .await;
         assert_eq!((renewed[0].0, count(k, "connection", id).await), (0, 1), "the outside world's ids for the live workspace's are not the sandbox's");
-        // A person signs in with their password and their second factor; single sign-on is not required there.
+        // A person signs in with their password and their second factor; single sign-on is not required there. A sandbox
+        // of another installation's workspace starts with an empty vault (the source's secrets open only with the source's
+        // keys): its second factor is not there, and signing in stops at it.
         let SignIn::SecondFactor(ticket) = k
             .sign_in(
                 if id == at_b {
@@ -449,7 +460,12 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
         else {
             panic!("a second step")
         };
-        k.second_factor(id, pat, ticket.token_version, &code(&secret, now() + 30).unwrap()).await.expect("their second factor");
+        let factor = k.second_factor(id, pat, ticket.token_version, &code(&secret, now() + 30).unwrap()).await;
+        if id == at_b {
+            assert!(matches!(&factor, Err(Error::Unavailable(m)) if m.contains("has no value for it")), "{factor:?}");
+        } else {
+            factor.expect("their second factor");
+        }
     }
     assert!(
         matches!(a.sign_in("acme-try", "clerk@acme.test", PASSWORD).await, Ok(SignIn::SetupRequired(_))),

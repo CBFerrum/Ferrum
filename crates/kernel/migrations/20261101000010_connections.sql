@@ -1,5 +1,5 @@
--- Connections to outside systems (crates/kernel/src/connect.rs). `sealed` holds credentials, bound to
--- the connection by the seal; it is never read back through any API.
+-- Connections to outside systems (crates/kernel/src/connect.rs). `has_credentials`: credentials are kept in the vault,
+-- bound to the connection; they are never read back through any API.
 create table connection (
   tenant_id uuid not null references tenant (id) on delete cascade,
   id uuid not null,
@@ -7,7 +7,7 @@ create table connection (
   name text not null check (length(name) between 1 and 100),
   config jsonb not null default '{}',
   mapping jsonb not null default '{}',
-  sealed text,
+  has_credentials boolean not null default false,
   enabled boolean not null default false,
   cursors jsonb not null default '{}',
   last_success_at timestamptz,

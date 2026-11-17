@@ -163,7 +163,7 @@ EOF
     serve_port=${MANAGED_SERVE_PORT:-5397}
     export LOCO_ENV=development LOG_LEVEL=warn PORT=$serve_port BINDING=127.0.0.1 FERRUM_FILES_DIR=$dir/files \
       DATABASE_URL=${FERRUM_MANAGED_URL%/*}/ferrum_serve FERRUM_DATABASE_DIRECT_HOST=127.0.0.1:$port \
-      JWT_SECRET="$(openssl rand -base64 48 | tr -d '\n')" FERRUM_SECRET_KEY="$(openssl rand -base64 32 | tr -d '\n')"
+      JWT_SECRET="$(openssl rand -base64 48 | tr -d '\n')"
     "$bin" start >"$dir/serve.log" 2>&1 &
     pid=$!
     trap 'kill $pid 2>/dev/null; wait $pid 2>/dev/null' EXIT

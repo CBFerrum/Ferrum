@@ -557,8 +557,8 @@ message. Built once in the platform (`crates/kernel/src/messages.rs`; the API in
   and approval notices work unchanged, and may name a template instead.
 * **Text and chat-app messages go to a channel connection that is configuration.** No provider is named in the kernel:
   a connection describes the HTTP request (address, method, headers, a JSON body or a form, each a template), where the
-  provider's id and error are in its answer, and which statuses mean "later"; its secrets are sealed with the server's
-  key as connections' are. One job per send, retried while the provider says "later", failed at once when it says
+  provider's id and error are in its answer, and which statuses mean "later"; its secrets are kept in the vault as
+  connections' are. One job per send, retried while the provider says "later", failed at once when it says
   "no". A test channel delivers into the log only. Delivery reports and replies come back on an inbound route per
   connection, authenticated as its description says (an HMAC of the body, or a shared token), refused and counted
   otherwise.
@@ -573,7 +573,7 @@ message. Built once in the platform (`crates/kernel/src/messages.rs`; the API in
   minutes, five tries, five sends a recipient an hour. The test channel's log masks the code.
 * **Personal data**: a person's sends and codes are in their report and go with their erasure, by id in its journal
   so a restore erases them again. **An opt-out outlives its person's erasure, without its address**: the address
-  becomes an HMAC-SHA256 under the server's key (`FERRUM_SECRET_KEY`, and those being rotated out) of the workspace,
+  becomes an HMAC-SHA256, under the workspace's key for erased opt-outs from the vault (every version kept), of the workspace,
   channel and normalised address, which a promotional send to that address on that channel still matches, while no
   table, log, report or listing holds or finds the address (a consent given goes; staff remove an erased opt-out only
   by its row). A restored backup brings the clear rows back, as it does every erased datum, and the platform's answer
@@ -857,9 +857,8 @@ service apps need to call out and be called back. Built once (`crates/kernel/src
   secret, basic, bearer, a request signed with HMAC-SHA256 over `<timestamp>.<body>` or the body, or tokens a sign-in
   gave, BD-32), default headers, the hosts besides the base's it may reach, a time limit (15 s, at most 60 s) and an
   answer size limit (1 MB, at most 10 MB), and who may use it: administrators and configuration always, people holding
-  one of its `roles`, apps it lists in `apps`. Its secrets are sealed with the server's key, bound to the connection,
-  never read back (the listing gives their names), moved by `reseal_secrets` with the rest. No provider is named in the
-  kernel.
+  one of its `roles`, apps it lists in `apps`. Its secrets are kept in the vault, bound to the connection and the hosts
+  it reaches, never read back (the listing gives their names). No provider is named in the kernel.
 * **Operations are named calls**: method, a path (whose printed values are percent-encoded: an input cannot add a
   segment, a query or a host), query, headers, a JSON body template (`| json`) or a form, all templates over `inputs`,
   `secret` and `key`; `result` maps names to JSON pointers in the answer, `error_at` where the refusal is said,
@@ -1009,9 +1008,9 @@ approval before one ran; a change board waited on it. Extends BD-19.
   to). A workflow does not stop it: it is not a transition.
 * **Pressing it asks**: whoever presses must pass the action's own gates now (permission, roles, document status, its
   `when`, its refusals); the answer is `{_approval}` and nothing of the action runs. The request keeps the parameters
-  as given; a secret one is kept as `[redacted]` and its value sealed apart with the server's key, bound to the request
-  (`approval_request.sealed`), so neither the request's API nor the audit trail can read it, and `reseal_secrets` moves
-  it with the rest. Without the server's key an action given a secret is refused rather than asked.
+  as given; a secret one is kept as `[redacted]` and its value kept apart in the vault, bound to the request
+  (`approval_request.secret_params` names them), so neither the request's API nor the audit trail can read it. With the
+  vault closed an action given a secret is refused rather than asked.
 * **The last approval runs it once, as the requester at that moment** (BD-19's rule for submit): their context loaded,
   every gate checked again as theirs, the action given exactly what was asked (secrets unsealed), in the decision's
   transaction. Refused then (their right gone, the record no longer meeting the action's `when` or a refusal), nothing
@@ -1346,7 +1345,7 @@ registration.
 * **`auth: session`**: `{login, refresh?, token_at, refresh_at?, expires_at?, header?, prefix?}`. The `login`
   operation (templates over the connection's `secret`) gives a token at `token_at`; `refresh` (given
   `inputs.refresh_token`) renews it, else the login is made again. The expiry is seconds from now, a Unix time (past
-  10^9) or a moment. The workspace's account (`conn_token`, nil user), sealed, refreshed a minute ahead by a call and
+  10^9) or a moment. The workspace's account (`conn_token`, nil user), its tokens in the vault, refreshed a minute ahead by a call and
   ten minutes ahead by the job, once again after a 401, under a lock per connection so that two calls never both log
   in. A login or a refresh the service refuses marks it `needs_reconnecting` and tells the administrators once (who
   connected it, else every administrator): a wrong password is tried once, not on every call (an account lockout).
@@ -1354,7 +1353,7 @@ registration.
 * **The login and refresh are never operations**: an app, a person, an effect, the gate, a pull and "try this" are
   refused them (their answer is a token), they are made without credentials of their own and never captured.
 * **DPoP (RFC 9449)**: `provider.dpop: true` binds tokens to an ES256 key pair of the connection's own, made with
-  `ring` (already the workspace's) and sealed among its secrets (`_dpop_key`, so `reseal_secrets` moves it): a proof on
+  `ring` (already the workspace's) and kept among its secrets (`_dpop_key`): a proof on
   the token request and on every call (`Authorization: DPoP`, `ath` the token's digest), the nonce a server asks for
   (`use_dpop_nonce`, at the token address a 400, at a service a 401) kept per connection and server and the request
   made once more. Not done: `dpop_jkt` on the authorisation request, and pushed authorisation requests.
@@ -1736,7 +1735,7 @@ Decided 13 November 2026.
   Threads). The platform gave an app no address a service could reach.
 * **What was there**: `/files/public/{id}` serves files marked public for good, which is not this; S3 presigned URLs
   exist for uploads only, and a local store has none. Reused: the streamed download with ranges (`Objects::stream`,
-  `streamed_response`, `file_headers`), the server's key (`SecretKey::fingerprint`, HMAC-SHA256), `PUBLIC_URL` as the
+  `streamed_response`, `file_headers`), a key of the platform's (`SecretKey::fingerprint`, HMAC-SHA256), `PUBLIC_URL` as the
   connection callback uses it. One route serves every store the same way.
 * **The shape**: an operation's `public_files: {<name>: {file, minutes?, end_with_call?}}`; templates read
   `public_files.<name>`, a step's inputs too. A property of the operation, resolved before the request is built, rather
@@ -1751,7 +1750,7 @@ Decided 13 November 2026.
   minutes left, so the service is not given a second one. Rows go 90 days after they end.
 * **A secret**: the masking every capture, error and result goes through hides `s=<64 hex>` (and `s%3D…`) wherever it
   appears; a capture of the request never shows it.
-* **Without `PUBLIC_URL`** the call is refused: "a service cannot pull a file from localhost". Without the server's key
+* **Without `PUBLIC_URL`** the call is refused: "a service cannot pull a file from localhost". With the vault closed
   there is no signature, so it is refused too.
 * **The App API is 0.3.8** (BD-63). An app hands the file's id as an input and names the address in its description.
 

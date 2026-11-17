@@ -62,8 +62,7 @@ pub struct Floor {
 }
 
 /// Every floor this build knows.
-pub const FLOORS: &[&Floor] =
-    &[&crate::zones::FLOOR, &crate::zones::FLOOR_LIMITED, &crate::zones::FLOOR_STEP_UP, &crate::shell::PROOF_FLOOR, &crate::vault::OLD_KEY_FLOOR];
+pub const FLOORS: &[&Floor] = &[&crate::zones::FLOOR, &crate::zones::FLOOR_LIMITED, &crate::zones::FLOOR_STEP_UP, &crate::shell::PROOF_FLOOR];
 
 fn parse(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s).map(|d| d.with_timezone(&Utc)).unwrap_or(DateTime::<Utc>::MIN_UTC)

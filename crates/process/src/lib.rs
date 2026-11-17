@@ -7,7 +7,7 @@
 //!
 //! * an effect's activity id is its node's activation, so a changed interpreter is caught on replay;
 //! * one payload codec ([`converter`]) everywhere, the replayer's included: what Temporal stores is sealed with
-//!   the platform's key for processes, from the vault (or the old key, while it seals them);
+//!   the platform's key for processes, from the vault;
 //! * people's decisions and other deliveries reach a run by its workflow id, never a run-bound handle, so they
 //!   survive a continuation;
 //! * receipts are Ferrum's: an activity retried after a lost answer finds its effect's receipt;
@@ -54,7 +54,7 @@ use uuid::Uuid;
 pub const QUEUE: &str = "ferrum-processes";
 /// What the codec binds every sealed payload to.
 const AAD: &str = "ferrum.process.payload/1";
-/// The metadata that names the version of the platform's key a payload was sealed with (none: the old key).
+/// The metadata that names the version of the platform's key a payload was sealed with.
 const KEY_VERSION: &str = "ferrum-key";
 /// Events a run handles before it continues as new, unless the server suggests sooner (FLC-PROC-013).
 const CONTINUE_AFTER: u32 = 500;
@@ -70,7 +70,7 @@ pub struct Settings {
 
 /// What seals and opens payloads: the kernel, with the platform's vault handle, once it has started (`Vault::seal_process`):
 /// the platform's key of the installation for processes, every version kept, so a run that started before a rotation
-/// reads its own history after it; or the old key while it seals them, and for what it sealed before.
+/// reads its own history after it.
 #[derive(Default)]
 pub struct Keys(std::sync::OnceLock<(std::sync::Weak<Kernel>, Vault)>);
 
@@ -89,8 +89,8 @@ impl Keys {
 
 // ----- What Temporal stores is sealed before it leaves the process -----
 
-/// Seals each payload with the platform's key for processes (naming its version), or the old key while it seals them,
-/// and opens it with the key it names; one that is not sealed passes as it is (a history written before sealing).
+/// Seals each payload with the platform's key for processes (naming its version), and opens it with the key it names;
+/// one that is not sealed passes as it is (a history written before sealing).
 pub struct Sealed(pub Arc<Keys>);
 
 impl PayloadCodec for Sealed {
@@ -104,9 +104,7 @@ impl PayloadCodec for Sealed {
                 let (version, sealed) = vault.seal_process(&k, AAD, &inner).await.map_err(|e| PayloadConversionError::EncodingError(e.to_string().into()))?;
                 let mut q = Payload::default();
                 q.metadata.insert("encoding".into(), b"binary/ferrum-sealed".to_vec());
-                if let Some(v) = version {
-                    q.metadata.insert(KEY_VERSION.into(), v.to_string().into_bytes());
-                }
+                q.metadata.insert(KEY_VERSION.into(), version.to_string().into_bytes());
                 q.data = sealed.into_bytes();
                 out.push(q);
             }
@@ -125,7 +123,11 @@ impl PayloadCodec for Sealed {
                     continue;
                 }
                 let (k, vault) = keys.kernel()?;
-                let version = p.metadata.get(KEY_VERSION).and_then(|v| std::str::from_utf8(v).ok()?.parse::<i32>().ok());
+                let version = p
+                    .metadata
+                    .get(KEY_VERSION)
+                    .and_then(|v| std::str::from_utf8(v).ok()?.parse::<i32>().ok())
+                    .ok_or_else(|| PayloadConversionError::EncodingError("a sealed payload that names no version of the key that sealed it".into()))?;
                 let sealed = String::from_utf8(p.data).map_err(|e| PayloadConversionError::EncodingError(e.into()))?;
                 let inner = vault.open_process(&k, AAD, version, &sealed).await.map_err(|e| PayloadConversionError::EncodingError(e.to_string().into()))?;
                 let (metadata, data): (HashMap<String, Vec<u8>>, Vec<u8>) =

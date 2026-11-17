@@ -1,12 +1,12 @@
 //! Web Push against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`, default
 //! `postgres://ferrum:ferrum@localhost:5432/ferrum_test`) and a push service on this machine
-//! (docs/plan/apps-ui.md §12.5): devices subscribe in their browser sessions, notifications of a
-//! kind pushed go to each device encrypted for it and signed with the server's key, and signing
-//! out, a key that changed or a push service that forgot the device stop them.
+//! (docs/plan/apps-ui.md §12.5), the vault opened as a server opens it: devices subscribe in their
+//! browser sessions, notifications of a kind pushed go to each device encrypted for it and signed
+//! with the server's key (kept in the vault), and signing out, a key that changed or a push
+//! service that forgot the device stop them; with the vault closed there is no Web Push.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
-use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings, notify};
 use ferrum_meta::Catalog;
@@ -21,19 +21,25 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
-async fn kernel(port: u16, secret: [u8; 32], reset: bool) -> Arc<Kernel> {
+async fn kernel(port: u16, reset: bool) -> Arc<Kernel> {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     if reset {
         sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;")
             .execute(&db.pool)
             .await
             .expect("reset");
     }
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url,
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     // The push service is on this machine: its exact origin is listed, and private addresses allowed.
     let settings = KernelSettings {
-        old_key: ferrum_kernel::OldKey::configured(Some(SecretKey::new(secret)), vec![]),
         webhooks_allow_private: true,
         push_services: vec![format!("http://127.0.0.1:{port}")],
         push_contact: Some("mailto:ops@ferrum.test".into()),
@@ -186,6 +192,15 @@ async fn sql(k: &Kernel, q: &str) {
     sqlx::raw_sql(sqlx::AssertSqlSafe(q.clone())).execute(&k.db.pool).await.expect(&q);
 }
 
+/// The vault's copy of the push key gone, behind the kernel's back (its rows lost).
+async fn lose_push_key(k: &Kernel) {
+    let mut tx = k.db.pool.begin().await.unwrap();
+    sqlx::query("select set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
+    let gone = sqlx::query("delete from vault.secret where owner = 'platform' and name like 'push.%'").execute(&mut *tx).await.unwrap().rows_affected();
+    tx.commit().await.unwrap();
+    assert_eq!(gone, 1, "the push key is the installation's one secret of its kind");
+}
+
 async fn count(k: &Kernel, q: &str) -> i64 {
     let mut tx = k.db.system_tx().await.unwrap();
     let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(q.to_string())).fetch_one(&mut *tx).await.unwrap();
@@ -212,7 +227,7 @@ async fn drain(k: &Kernel) {
 #[tokio::test]
 async fn notifications_reach_subscribed_devices() {
     let (svc, port) = PushService::start().await;
-    let k = kernel(port, [7u8; 32], true).await;
+    let k = kernel(port, true).await;
     let acme = k.create_tenant(tenant("acme")).await.expect("tenant");
     let s = k.login("acme", "admin@acme.test", "Correct-Horse-9").await.unwrap();
     let admin = k.load_ctx(acme, s.user, Some(s.token_version), "it".into()).await.unwrap();
@@ -223,10 +238,10 @@ async fn notifications_reach_subscribed_devices() {
     let laptop = k.open_session(&a, day, "Firefox laptop", "203.0.113.7", None).await.unwrap();
     let phone = k.open_session(&a, day, "Safari phone", "203.0.113.8", None).await.unwrap();
 
-    // ── The server's key: made once, the same for every replica and every start. ──
-    let vapid = k.vapid().await.unwrap().expect("a secret key, so push");
+    // ── The server's key: made once, kept in the vault, the same for every replica and every start. ──
+    let vapid = k.vapid().await.unwrap().expect("the vault is open, so push");
     assert_eq!(B64URL.decode(&vapid.public).unwrap().len(), 65);
-    let again = kernel(port, [7u8; 32], false).await;
+    let again = kernel(port, false).await;
     assert_eq!(again.vapid().await.unwrap().unwrap().public, vapid.public);
     assert_eq!(count(&k, "select count(*) from server_key").await, 1);
 
@@ -271,6 +286,10 @@ async fn notifications_reach_subscribed_devices() {
         let auth = r.headers["authorization"].strip_prefix("vapid t=").unwrap();
         let (token, key) = auth.split_once(", k=").unwrap();
         assert_eq!(key, vapid.public);
+        let (signed, sig) = token.rsplit_once('.').unwrap();
+        ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, B64URL.decode(key).unwrap())
+            .verify(signed.as_bytes(), &B64URL.decode(sig).unwrap())
+            .expect("signed with the push key");
         let claims: Value = serde_json::from_slice(&B64URL.decode(token.split('.').nth(1).unwrap()).unwrap()).unwrap();
         assert_eq!(claims["aud"], format!("http://127.0.0.1:{port}"));
         assert_eq!(claims["sub"], "mailto:ops@ferrum.test");
@@ -344,19 +363,20 @@ async fn notifications_reach_subscribed_devices() {
     drain(&k).await;
     assert!(svc.take().is_empty(), "signed out everywhere: the old session's subscription is not used");
 
-    // ── A new server key (the secret key was replaced): subscriptions made with the old one go. ──
+    // ── A new server key (the vault lost the old one): subscriptions made with the old one go. ──
     let a3 = k.login("acme", "ana@acme.test", "Correct-Horse-9").await.unwrap();
     let ana3 = k.load_ctx(acme, ana_id, Some(a3.token_version), "it".into()).await.unwrap();
     let den = k.open_session(&a3, day, "Firefox den", "203.0.113.12", None).await.unwrap();
     let on_den = Device::new();
     k.subscribe_push(&ana3, den, &at("den"), &on_den.p256dh(), &on_den.auth()).await.unwrap();
-    let replaced = kernel(port, [8u8; 32], false).await;
+    lose_push_key(&k).await;
+    let replaced = kernel(port, false).await;
     let new_key = replaced.vapid().await.unwrap().unwrap();
     assert_ne!(new_key.public, vapid.public);
     mention(&replaced, acme, ana_id, "Hal mentioned you", record).await;
     drain(&replaced).await;
     assert!(svc.take().is_empty());
-    assert_eq!(replaced.push_status(&ana3, Some(den)).await.unwrap().devices, 0, "forgotten: made with the old key");
+    assert_eq!(replaced.push_status(&ana3, Some(den)).await.unwrap().devices, 0, "forgotten: made with the key the vault lost");
 
     // ── Turning it off on a device. ──
     let mut on_den = Device::new();
@@ -369,11 +389,11 @@ async fn notifications_reach_subscribed_devices() {
     replaced.unsubscribe_push(&ana3, den).await.unwrap();
     assert!(!replaced.push_status(&ana3, Some(den)).await.unwrap().here);
 
-    // ── Without a secret key there is no Web Push. ──
+    // ── With the vault closed there is no Web Push. ──
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 2, ..Default::default() }).await.unwrap();
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).unwrap();
-    let keyless = Kernel::boot(db, catalog, HookRegistry::default(), KernelSettings::default(), None).await.unwrap();
-    assert!(keyless.vapid().await.unwrap().is_none());
-    assert!(matches!(keyless.subscribe_push(&ana3, den, &at("den3"), &on_den.p256dh(), &on_den.auth()).await, Err(Error::Unavailable(_))));
+    let closed = Kernel::boot(db, catalog, HookRegistry::default(), KernelSettings::default(), None).await.unwrap();
+    assert!(closed.vapid().await.unwrap().is_none());
+    assert!(matches!(closed.subscribe_push(&ana3, den, &at("den3"), &on_den.p256dh(), &on_den.auth()).await, Err(Error::Unavailable(_))));
 }

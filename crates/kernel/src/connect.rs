@@ -6,8 +6,8 @@
 //! This is what every connector shares. A provider implements [`Connector`] and describes what its
 //! API really offers ([`ConnectorInfo`]), not a lowest common denominator; the rest is here:
 //!
-//! - **Connections**: one per workspace and account, with credentials sealed apart from the record
-//!   and never read back, and a test that proves them.
+//! - **Connections**: one per workspace and account, with credentials kept in the vault, apart from
+//!   the record, and never read back, and a test that proves them.
 //! - **Mapping**: which stream lands in which entity, under which field names and rules.
 //! - **Synchronization**: a job per run, resuming from its cursor, a page at a time. External ids are
 //!   kept in `connection_link`; each record is one transaction, so a failure loses nothing and
@@ -235,11 +235,7 @@ fn admin_only(ctx: &Ctx) -> Result<()> {
 
 /// Where a connector's credentials are kept: the platform's, in the workspace.
 pub(crate) fn connector_place(tenant: Uuid, id: Uuid) -> crate::vault::kept::Place {
-    crate::vault::kept::Place::platform(crate::vault::kept::Store::Connector, tenant, id, sealed_label(tenant, id))
-}
-
-pub(crate) fn sealed_label(tenant: Uuid, connection: Uuid) -> String {
-    format!("connection:{tenant}:{connection}")
+    crate::vault::kept::Place::platform(crate::vault::kept::Store::Connector, tenant, id)
 }
 
 /// What a record's mapped fields come to, to tell a real change from a repeat.
@@ -284,7 +280,7 @@ struct Row {
     provider: String,
     config: Value,
     mapping: Value,
-    sealed: Option<String>,
+    has_credentials: bool,
     enabled: bool,
 }
 
@@ -432,19 +428,20 @@ impl Kernel {
 
     async fn row(&self, tenant: Uuid, id: Uuid) -> Result<Row> {
         let mut tx = self.db.system_tenant_tx(tenant).await?;
-        let row: Option<Row> = sqlx::query_as("select id, provider, config, mapping, sealed, enabled from connection where tenant_id = $1 and id = $2")
-            .bind(tenant)
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let row: Option<Row> =
+            sqlx::query_as("select id, provider, config, mapping, has_credentials, enabled from connection where tenant_id = $1 and id = $2")
+                .bind(tenant)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
         tx.commit().await?;
         row.ok_or_else(|| Error::NotFound("connection".into()))
     }
 
     async fn opened(&self, tenant: Uuid, row: &Row) -> Result<Connection> {
-        let credentials = match &row.sealed {
-            Some(sealed) => serde_json::from_str(&self.kept_alone(&connector_place(tenant, row.id), sealed).await?).map_err(Error::internal)?,
-            None => Value::Null,
+        let credentials = match row.has_credentials {
+            true => serde_json::from_str(&self.kept_alone(&connector_place(tenant, row.id)).await?).map_err(Error::internal)?,
+            false => Value::Null,
         };
         Ok(Connection { id: row.id, tenant, provider: row.provider.clone(), config: row.config.clone(), credentials })
     }
@@ -473,8 +470,8 @@ impl Kernel {
             }
         }
         let connection = id.unwrap_or_else(Uuid::now_v7);
-        if input.credentials.is_some() && !self.kept_here() {
-            return Err(Error::Unavailable("connections need the vault or a configured secret key (FERRUM_SECRET_KEY)".into()));
+        if input.credentials.is_some() {
+            self.vault_open("a connection's credentials")?;
         }
         // The account they open, known by a fingerprint: connections on one account wait together (FEO-067). Without a
         // key to make it with (crate::vault::keyed), they wait apart, as before.
@@ -493,14 +490,13 @@ impl Kernel {
         let mapping = serde_json::to_value(&input.mapping).map_err(Error::internal)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         // Kept in the transaction that saves the connection.
-        let sealed = match &input.credentials {
-            Some(c) => Some(self.keep(&mut tx, &connector_place(ctx.tenant, connection), &c.to_string()).await?),
-            None => None,
-        };
+        if let Some(c) = &input.credentials {
+            self.keep(&mut tx, &connector_place(ctx.tenant, connection), &c.to_string()).await?;
+        }
         let n = sqlx::query(
-            "insert into connection (tenant_id, id, provider, name, config, mapping, sealed, created_by, account_key) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+            "insert into connection (tenant_id, id, provider, name, config, mapping, has_credentials, created_by, account_key) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              on conflict (tenant_id, id) do update set name = excluded.name, config = excluded.config, mapping = excluded.mapping, \
-             sealed = coalesce(excluded.sealed, connection.sealed), account_key = coalesce(excluded.account_key, connection.account_key), enabled = false \
+             has_credentials = excluded.has_credentials or connection.has_credentials, account_key = coalesce(excluded.account_key, connection.account_key), enabled = false \
              where connection.provider = excluded.provider",
         )
         .bind(ctx.tenant)
@@ -509,7 +505,7 @@ impl Kernel {
         .bind(name)
         .bind(if input.config.is_null() { json!({}) } else { input.config.clone() })
         .bind(mapping)
-        .bind(sealed)
+        .bind(input.credentials.is_some())
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
         .bind(&account_key)
         .execute(&mut *tx)
@@ -557,7 +553,7 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<Value> = sqlx::query_scalar(
             "select jsonb_build_object('id', c.id, 'provider', c.provider, 'name', c.name, 'enabled', c.enabled, 'config', c.config, 'mapping', c.mapping, \
-             'has_credentials', c.sealed is not null, 'failures', c.failures, 'waiting_until', c.waiting_until, 'waiting_reason', c.waiting_reason, \
+             'has_credentials', c.has_credentials, 'failures', c.failures, 'waiting_until', c.waiting_until, 'waiting_reason', c.waiting_reason, \
              'last_success_at', c.last_success_at, 'last_checked_at', c.last_checked_at, 'last_error', c.last_error, 'cursors', c.cursors, \
              'linked', (select count(*) from connection_link l where l.tenant_id = c.tenant_id and l.connection_id = c.id), \
              'drift', (select count(*) from connection_drift d where d.tenant_id = c.tenant_id and d.connection_id = c.id and d.resolved_at is null), \
@@ -592,7 +588,7 @@ impl Kernel {
     pub async fn disconnect(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let n = sqlx::query("update connection set enabled = false, sealed = null where tenant_id = $1 and id = $2")
+        let n = sqlx::query("update connection set enabled = false, has_credentials = false where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)
             .bind(id)
             .execute(&mut *tx)

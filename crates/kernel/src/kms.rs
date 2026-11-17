@@ -1,6 +1,6 @@
-//! Where the keys sealing secrets come from (`FERRUM_SECRET_KEY` and its retired ones, secret.rs):
-//! the configuration itself (base64 of 32 bytes), a key-management service that unwraps them at
-//! start-up, or a command the operator names. The unwrapped keys live only in the server's memory.
+//! The key-management service, for the vault's `kms` slot (crate::vault) and a move's transfer key given as its
+//! ciphertext: a key (base64 of 32 bytes) a service unwraps, or a command the operator names prints. What it gives
+//! lives only in the server's memory.
 //!
 //! * A value `vault:v…:…` is ciphertext of OpenBao's (or HashiCorp Vault's) Transit engine, unwrapped
 //!   by the Transit key the setting `kms_transit` names (`https://host:8200/transit/ferrum`: the mount,
@@ -11,9 +11,6 @@
 //! * `FERRUM_SECRET_KEY_COMMAND` runs a command whose output is the key: any KMS's own tool
 //!   (`aws kms decrypt …`, `gcloud kms decrypt …`, `az keyvault key decrypt …`), as PostgreSQL's
 //!   `ssl_passphrase_command` does.
-//!
-//! `ferrum task kms_wrap` turns a key into Transit ciphertext, so it never has to be configured in
-//! the clear.
 
 use crate::error::{Error, Result};
 use crate::secret::SecretKey;
@@ -157,11 +154,11 @@ impl Transit {
         let token = self.token(&client).await?;
         let v = self.call(&client, &format!("{}/decrypt/{}", self.mount, self.key), token.as_deref(), json!({"ciphertext": ciphertext.trim()})).await?;
         let plain = v["data"]["plaintext"].as_str().ok_or_else(|| Error::Unavailable("the key-management service gave no plaintext".into()))?;
-        // Transit's plaintext is base64 of the key's 32 bytes: the form the key is configured in.
+        // Transit's plaintext is base64 of the key's 32 bytes: the form the key is given in.
         SecretKey::from_base64(plain)
     }
 
-    /// Transit ciphertext for `key` (the base64 it is configured as).
+    /// Transit ciphertext for `key` (base64 of its 32 bytes).
     pub async fn wrap(&self, key: &str) -> Result<String> {
         SecretKey::from_base64(key)?;
         let client = self.client()?;
@@ -171,7 +168,7 @@ impl Transit {
     }
 }
 
-/// Whether a configured key is Transit ciphertext rather than the key itself.
+/// Whether a key given is Transit ciphertext rather than the key itself.
 pub fn is_wrapped(value: &str) -> bool {
     value
         .trim()
@@ -179,8 +176,8 @@ pub fn is_wrapped(value: &str) -> bool {
         .is_some_and(|rest| rest.split_once(':').is_some_and(|(v, c)| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && !c.is_empty()))
 }
 
-/// The key a configured value stands for: itself, or what Transit unwraps it to (tried a few times,
-/// for a service that is starting too).
+/// The key a value given stands for: itself, or what Transit unwraps it to (tried a few times, for a
+/// service that is starting too).
 pub async fn resolve(value: &str, transit: Option<&Transit>) -> Result<SecretKey> {
     if !is_wrapped(value) {
         return SecretKey::from_base64(value);
@@ -190,7 +187,7 @@ pub async fn resolve(value: &str, transit: Option<&Transit>) -> Result<SecretKey
     for attempt in 1..=TRIES {
         match transit.unwrap(value).await {
             Err(Error::Unavailable(why)) if attempt < TRIES => {
-                tracing::warn!(attempt, "unwrapping the secret key: {why}; trying again");
+                tracing::warn!(attempt, "unwrapping a key: {why}; trying again");
                 tokio::time::sleep(wait).await;
                 wait *= 2;
             }

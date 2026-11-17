@@ -79,7 +79,7 @@ pub struct Opener {
     pub file: PathBuf,
     /// The kms slot through Transit.
     pub transit: Option<kms::Transit>,
-    /// The kms slot through a command (asked first, as for the secret key).
+    /// The kms slot through a command (asked before Transit).
     pub command: Option<String>,
     /// Argon2id's costs for a credential slot made here (a slot keeps its own).
     pub kdf: Kdf,
@@ -106,8 +106,8 @@ pub enum Opened {
     Later,
     /// The vault has no slot yet, and nothing here can make its first one: no password in `DATABASE_URL`, no key
     /// file, no key-management service. It stays closed, saying so, and everything that asks it is refused; a later
-    /// start with one of them makes it. The server starts all the same, with what the environment gives in its place
-    /// (`JWT_SECRET`, and in production the old key), or refuses, saying which it lacks.
+    /// start with one of them makes it. Outside production the server starts all the same (sessions signed with
+    /// `JWT_SECRET`); in production it refuses, saying so.
     Closed,
 }
 

@@ -56,7 +56,7 @@ pub(crate) async fn drop_scope(tx: &mut Tx, tenant: Uuid, why: &str) -> Result<(
 
 /// `ferrum task vault_transfer workspace:<slug>`, at the source of a move: every version of the workspace's key, wrapped
 /// by a new transfer key and kept in `vault.transfer`, in place of a transfer made before. The key is returned to be
-/// shown once, as base64 of its 32 bytes (as `FERRUM_SECRET_KEY` is written): the move takes it among the source's keys.
+/// shown once, as base64 of its 32 bytes: the move takes it among the source's keys.
 /// A workspace with nothing in the vault needs none.
 pub async fn transfer_out(k: &Kernel, tenant: Uuid) -> Result<Zeroizing<String>> {
     let root = &k.db.vault;

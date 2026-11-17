@@ -6,7 +6,7 @@ through a handle only the app's registration is given. The contract is [docs/app
 [docs/operations.md](../operations.md), *The vault*; what it protects against, and what not, is
 [docs/security.md](../security.md), *The vault*. This guide is how an app uses it. The code is
 `crates/kernel/src/vault/` (`mod.rs` for the handle, `seal`, `open` and `derive`; `secrets.rs` for the secrets' verbs;
-`kept.rs` for secret fields; `keyed.rs` for the old key's calls).
+`kept.rs` for secret fields and the kernel's other stores; `keyed.rs` for the platform's own derived keys).
 
 ## What the vault is, in one paragraph
 
@@ -60,7 +60,7 @@ and are deleted with it. The installation's are the operator's to see.
 ## Secrets: names, rules, values
 
 **A name** is lowercase letters, digits and `_ . -`, 1 to 100, beginning with a letter or digit. Names the kernel's own
-stores keep, and `legacy.key.…` (the old keys it adopted), are refused (`check_name`, `secrets.rs:183`). Use a short
+stores keep are refused (`check_name`, `secrets.rs:183`). Use a short
 dotted name that says what it is for: `meet.secret`, `engine.token`, `forge.database_url`.
 
 **A rule** (`vault::Rule`) is kept with each version:
@@ -213,10 +213,8 @@ pub(crate) async fn field(k: &Kernel, tx: &mut Tx, tenant: Uuid, entity: &str, r
 ```
 
 Another app's field is refused, set or not: "E.f is not X's: an app reads only the secret fields its own packages
-declare" (`crates/kernel/src/vault/kept.rs:807`). Each read is recorded as a reveal. The server says which app owns which
-package (`HookRegistry::own`); register yours with it in tests too, or `field` refuses. `Kernel::secret` still reads any
-app's field and is deprecated: it goes in the next release, and `scripts/secret_paths.py` keeps the list of apps that call
-it, which is empty today (docs/registry/secret-paths.md).
+declare" (`Vault::field`, `crates/kernel/src/vault/kept.rs`). Each read is recorded as a reveal. The server says which app
+owns which package (`HookRegistry::own`); register yours with it in tests too, or `field` refuses.
 
 ## Keys for a purpose, and sealing
 
@@ -258,23 +256,6 @@ handle()?.adopt(k, Scope::Installation, TOKEN, New::Value(Zeroizing::new(token.a
 service's render making the secret at that moment, write it once. Comms does the same for LiveKit's key and secret and
 the mail administrator's password (`src/keys.rs`, `Operator`). In R2 the variables stop being read and the adoption
 code goes.
-
-## What the old key made (R1 only)
-
-`FERRUM_SECRET_KEY` is the kernel's alone; no app is given it (`KernelSettings::old_key` gives nothing back). What an app
-sealed or fingerprinted with it in an earlier release it reaches only through its handle, for contexts of its own, until
-R2 ([docs/app-contract.md](../app-contract.md), *What it made with the old key*):
-
-| Call | For |
-|---|---|
-| `open_old(k, context, sealed)` | What the old key sealed for `context`, opened with every old key, the adopted copies too |
-| `seal_old(k, context, plain)` | Sealing for the column the app's previous release reads, while the key is in the environment; `None` once it is gone |
-| `old_fingerprints(k, context, data)` | `data`'s fingerprint under each old key, to check what the app issued; never to issue anything new |
-
-A context is the app's id, then one of ` -.:/|`, then more (`cloud-dns-key`, `helpdesk mail token`); not one another app's
-longer id also begins, not one beginning with a workspace's id, and never for an app whose id is one of the kernel's
-words (`ferrum`, `message`, `connection`, `platform`, `plugin`, … in `KERNEL_WORDS`, `keyed.rs`). Each use is noted for
-`ferrum task legacy_key`. A new app never needs these.
 
 ## On the record
 
@@ -325,8 +306,6 @@ let k = Kernel::boot(db, catalog, hooks, settings, None).await?;
 - Drop the `vault` schema with `public` between runs: it is a schema of its own.
 - The database address must carry a password for the credential slot.
 - Register with `hooks.own(id, &packages)` too when the app reads secret fields (Campaigns' `tests/campaigns_it.rs`).
-- A suite that gives the kernel the old key (`KernelSettings { secret_key: Some(…), .. }`) keeps working: the kernel
-  takes it in and empties the field.
 - Test the refusals, not only the happy path: the value not revealed, the host refused, a closed vault's message.
 
 [15](15-testing-and-ci.md) covers suites in full.
