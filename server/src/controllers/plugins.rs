@@ -43,7 +43,9 @@ fn plugin_headers(headers: &HeaderMap) -> Map<String, Value> {
 fn to_response(r: HttpReply) -> Response {
     let mut resp = (StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK), r.body).into_response();
     for (k, v) in r.headers {
-        // Plugins may not set cookies, the message's framing, or a page's policy and framing on Ferrum's origin.
+        // Plugins may not set cookies, the message's framing (length, transfer encoding, connection), or a page's
+        // policy and framing (CSP, X-Frame-Options) on Ferrum's origin; `contain` then adds nosniff, and the sandbox
+        // policy to whatever is not JSON or an attachment.
         if matches!(
             k.as_str(),
             "set-cookie"

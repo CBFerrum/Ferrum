@@ -328,8 +328,10 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   declare (`Vault::field`).
 * The audit trail is hash-chained (per record, with a daily anchor per workspace), and database
   triggers refuse any change to it but the redaction personal-data erasure makes, which keeps each
-  event's place and hash. The role Ferrum connects as owns those tables; a copy out of its reach is
-  what the operator's sink gives.
+  event's place and hash. That holds against the application's other code paths, not against the
+  role Ferrum connects as: it owns those tables and their triggers, so whoever holds it can rewrite
+  rows, hashes and anchors alike. Tamper evidence against that role is the operator's audit sink, a
+  copy out of its reach.
 * API responses carry `Cache-Control: no-store`, so browsers keep neither stale nor private copies.
 * Request logs record the path without the query string: queries carry WOPI tokens, OAuth and
   sign-on codes and signed grants.

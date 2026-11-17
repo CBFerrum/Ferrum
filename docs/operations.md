@@ -3311,7 +3311,9 @@ sessions*).
 **Audit integrity.** Every record's history is hash-chained and anchored daily.
 `GET /api/v1/{Entity}/{id}/audit` returns the trail with `chain_valid` / `broken_at`; a broken chain
 means rows were changed outside the application — restore from backup and investigate database
-access.
+access. A valid chain proves nothing against whoever holds the server's database role, which owns
+the audit tables and can rewrite rows and hashes alike: against that role, compare with the
+operator's audit sink (*Sending the audit log elsewhere*).
 
 ## Personal-data requests
 
