@@ -195,7 +195,9 @@ pub enum Ended {
     Released,
 }
 
-fn gives_up(e: &Error) -> bool {
+/// Whether an error says the work cannot succeed however often it is tried: a job fails at once, an automation's run
+/// is recorded as failed (crate::automation).
+pub(crate) fn gives_up(e: &Error) -> bool {
     matches!(e, Error::Invalid(_) | Error::Validation(_) | Error::Forbidden(_) | Error::NotFound(_) | Error::Unauthorized(_) | Error::Refused { .. })
 }
 

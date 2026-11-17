@@ -127,9 +127,12 @@ consumer `<app>.<what>`.
 an upgrade an older replica leaves a newer build's event for a newer one. Anything that depends on order compares
 `source_version`, never arrival.
 
-**Failing.** An error makes the event retry: 10 s, 20 s, 40 s and so on up to an hour, dead after 15 attempts. One
-event's handlers get 120 seconds. Dead events stay for a person (`GET /api/admin/events/dead`, Administration's
-*Needs a person*) and can be replayed; consumers that already handled it are not repeated. Return an error only for
+**Failing.** An error makes the event retry for this sink alone: 10 s, 20 s, 40 s and so on up to an hour, dead after
+15 attempts; the other sinks and automations are not stopped by it, and those that handled the event are not called
+again. One event's handlers get 120 seconds. Dead events stay for a person (`GET /api/admin/events/dead`,
+Administration's *Needs a person*) and can be replayed; consumers that already handled it are not repeated. A sink is
+recorded under `{app}.{what}`, `what` being `EventSink::name` (its type's name unless it says otherwise; two sinks of
+one app need two names). Return an error only for
 what a retry can fix; an event that can never be handled is logged and returned `Ok`, or it blocks nothing but fills
 the dead list.
 

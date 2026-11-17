@@ -29,20 +29,23 @@ Tasks a handler spawns start without a trace; run them under one if their events
 ## Delivery
 
 **At least once.** A worker takes a lease on a batch (ten minutes) and handles it outside any long
-transaction. If it dies the lease expires and another replica takes the events. Consumers must be
-idempotent, and the platform's are: webhook deliveries are unique per webhook and event, plugin runs per
-plugin and event, automation runs per automation and event (a scheduled automation's moments per
-automation, record and moment). There is no exactly-once, and nothing should assume it.
+transaction. If it dies the lease expires and another replica takes the events. Webhook deliveries are
+unique per webhook and event, plugin runs per plugin and event, automation runs per automation and event (a
+scheduled automation's moments per automation, record and moment), and what an event sink handled is
+recorded (below). There is no exactly-once, and nothing should assume it.
 
 **What one event goes through, in order:** webhook deliveries are queued for the subscribed webhooks
 (an audit event only for those that name its topic, never for `*`; an app's webhook gets which record,
 never `doc` or `was`), followers are told (first attempt only), automations run, then each registered
-event sink is called, in registration order (plugin subscriptions are one). The event is done only when
-all of that returned. An error from any step, a sink's included, fails the event as a whole: it is tried
-again from the start, so automations and sinks that ran before the failing one run again for the same
-event, and the sinks after it have not run yet. A consumer outside the platform's own deduplicates on `id`
-(`EventSink::on_event` gets the event and nothing remembers what it did), and does its own work in a
-transaction it can repeat.
+event sink is called, in registration order (plugin subscriptions are one). Each automation and each sink
+has its own outcome: one that fails does not stop the others, and the event is tried again for what failed
+alone. An automation run that can never succeed (it creates an entity no longer installed, the record lacks a
+field it needs: an error that says invalid, not found or forbidden) is recorded as failed, saying why, and
+does not fail the event; an automation that ran is not run again for the event. A sink that handled the event
+is not called for it again when the event is retried or replayed: when an attempt fails or runs out of time,
+the sinks that handled it are recorded in `event_receipt` under their names (`{app}.{what}`, from
+`EventSink::name`). Only a replica that dies while handling an event can call again a sink that had finished,
+so a sink whose work must happen once asks `outbox::first_time` in the transaction that does it.
 
 **Order** holds within a workspace and a priority, until something fails: a retry goes behind later
 events. During an upgrade or after a rollback, an event written by a newer build can be delivered after later events of

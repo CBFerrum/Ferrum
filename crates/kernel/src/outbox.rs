@@ -1,6 +1,8 @@
 //! Transactional outbox: events are written in the same transaction as the change that caused
-//! them, then dispatched at-least-once by any replica (`FOR UPDATE SKIP LOCKED`). Consumers are
-//! idempotent (unique delivery/run keys), so a crash between "handled" and "marked" is harmless.
+//! them, then dispatched at-least-once by any replica (`FOR UPDATE SKIP LOCKED`). Each consumer
+//! stands alone: one that fails makes the event retry for itself, and those that handled it are
+//! not called again (unique delivery and run keys, `event_receipt` for sinks). A crash between
+//! "handled" and "marked" can repeat a sink, which deduplicates what must happen once.
 //! Dispatchers poll (no NOTIFY from writers: it would serialize their commits).
 //!
 //! Each batch takes a few events from every workspace that has work, most urgent first, and handles
@@ -419,7 +421,9 @@ impl Kernel {
                 zone: Trace::in_zone(ev.zone.clone()),
                 ..Default::default()
             };
-            let outcome = trace.scope(tokio::time::timeout(EVENT_TIMEOUT, crate::sandbox::in_hand(ev.tenant_id, self.handle_event(ev)))).await;
+            // The sinks that handle it, kept here so that they are known however the attempt ends.
+            let handled = std::sync::Mutex::new(Vec::new());
+            let outcome = trace.scope(tokio::time::timeout(EVENT_TIMEOUT, crate::sandbox::in_hand(ev.tenant_id, self.handle_event(ev, &handled)))).await;
             let outcome = outcome.unwrap_or_else(|_| Err(Error::Unavailable(format!("handlers took longer than {} s", EVENT_TIMEOUT.as_secs()))));
             let mut tx = self.db.system_tx().await?;
             match outcome {
@@ -445,6 +449,14 @@ impl Kernel {
                     .bind(lease)
                     .execute(&mut *tx)
                     .await?;
+                    // Those that handled it are not called again when it is tried again or replayed (handle_event).
+                    let handled = handled.into_inner().unwrap_or_else(|e| e.into_inner());
+                    sqlx::query("insert into event_receipt (tenant_id, consumer, event_id) select $1, unnest($2::text[]), $3 on conflict do nothing")
+                        .bind(ev.tenant_id)
+                        .bind(handled)
+                        .bind(ev.id)
+                        .execute(&mut *tx)
+                        .await?;
                 }
             }
             tx.commit().await?;
@@ -524,8 +536,8 @@ impl Kernel {
         Ok(rows)
     }
 
-    /// Queues a dead event again, from the first attempt. Consumers are idempotent, so those that
-    /// handled it before it failed are not repeated. One whose record has been erased since is not:
+    /// Queues a dead event again, from the first attempt. The automations and sinks that handled it
+    /// before it failed are not repeated (`automation_run`, `event_receipt`). One whose record has been erased since is not:
     /// it would go out without the record (crate::privacy). Audited (administrators only).
     pub async fn replay_event(&self, ctx: &Ctx, id: i64) -> Result<()> {
         require_admin(ctx)?;
@@ -641,7 +653,10 @@ impl Kernel {
         Ok(())
     }
 
-    async fn handle_event(&self, ev: &Event) -> Result<()> {
+    /// Hands an event to everything that consumes it: webhooks, followers, automations and the event sinks. Each
+    /// automation and each sink stands alone: one that fails makes the event fail for itself, the rest still run. The
+    /// names of the sinks that handled it go into `handled`, which the caller records if the event is to be tried again.
+    async fn handle_event(&self, ev: &Event, handled: &std::sync::Mutex<Vec<String>>) -> Result<()> {
         if ev.topic == RELEASE_TOPIC {
             let store = self.files.get().ok_or_else(|| Error::Unavailable("no file storage is configured".into()))?;
             let own = format!("tenants/{}/", ev.tenant_id);
@@ -728,13 +743,28 @@ impl Kernel {
         .bind(entity_wildcard)
         .execute(&mut *tx)
         .await?;
+        // The sinks that handled it on an attempt that failed, or before it was dead and replayed.
+        let names: Vec<&str> = self.hooks.event_sinks().map(|(name, _)| name).collect();
+        let before: Vec<String> = sqlx::query_scalar("select consumer from event_receipt where tenant_id = $1 and consumer = any($2) and event_id = $3")
+            .bind(ev.tenant_id)
+            .bind(&names)
+            .bind(ev.id)
+            .fetch_all(&mut *tx)
+            .await?;
         tx.commit().await?;
         self.set_deliveries_aside(ev).await?;
-        crate::automation::run_for_event(self, ev).await?;
-        for sink in self.hooks.event_sinks() {
-            sink.on_event(self, ev).await?;
+        // Automations keep their own record of each run (`automation_run`): one that ran is not run again.
+        let mut failed = Vec::new();
+        if let Err(e) = crate::automation::run_for_event(self, ev).await {
+            failed.push(format!("automations: {e}"));
         }
-        Ok(())
+        for (name, sink) in self.hooks.event_sinks().filter(|(name, _)| !before.iter().any(|b| b == name)) {
+            match sink.on_event(self, ev).await {
+                Ok(()) => handled.lock().unwrap_or_else(|e| e.into_inner()).push(name.to_string()),
+                Err(e) => failed.push(format!("{name}: {e}")),
+            }
+        }
+        if failed.is_empty() { Ok(()) } else { Err(Error::Unavailable(failed.join("; "))) }
     }
 
     /// Drains the outbox until shutdown, looking again every 250 ms when it is empty.
