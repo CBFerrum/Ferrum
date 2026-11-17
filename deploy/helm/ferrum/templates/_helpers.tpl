@@ -19,6 +19,21 @@ app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
 {{- end -}}
 {{- end -}}
 
+{{/* The values that ship as placeholders (a CHANGE-ME bucket, a host on example.com): rendering fails naming each one still
+set, so that nothing installs with them. */}}
+{{- define "ferrum.placeholders" -}}
+{{- $example := "(^|[/.])example[.]com([/:]|$)" -}}
+{{- $unset := list -}}
+{{- if regexMatch $example .Values.publicUrl }}{{ $unset = append $unset "publicUrl" }}{{ end -}}
+{{- if contains "CHANGE-ME" .Values.storage.bucket }}{{ $unset = append $unset "storage.bucket" }}{{ end -}}
+{{- if and .Values.database.enabled (contains "CHANGE-ME" .Values.database.backup.destinationPath) }}{{ $unset = append $unset "database.backup.destinationPath" }}{{ end -}}
+{{- if and .Values.gateway.enabled (regexMatch $example .Values.gateway.hostname) }}{{ $unset = append $unset "gateway.hostname" }}{{ end -}}
+{{- if and .Values.privateGateway.enabled (regexMatch $example (join " " .Values.privateGateway.hostnames)) }}{{ $unset = append $unset "privateGateway.hostnames" }}{{ end -}}
+{{- if and .Values.office.enabled (regexMatch $example .Values.office.host) }}{{ $unset = append $unset "office.host" }}{{ end -}}
+{{- if and .Values.editors.enabled (regexMatch $example .Values.editors.host) }}{{ $unset = append $unset "editors.host" }}{{ end -}}
+{{- with $unset }}{{ fail (printf "these ship as placeholders, set each to your own: %s" (join ", " .)) }}{{ end -}}
+{{- end -}}
+
 {{/* A key of the existing Secret. Call with (list . "KEY" optional). */}}
 {{- define "ferrum.secretEnv" -}}
 - name: {{ index . 1 }}

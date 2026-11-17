@@ -464,10 +464,13 @@ replaces step 5 (steps 1 to 3 and 6 to 8 are the same):
 ```bash
 helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
   --set image.digest=sha256:<digest> \
-  --set publicUrl=https://<host> --set gateway.hostname=<host> \
+  --set publicUrl=https://<host> --set gateway.hostname=<host> --set office.host=<editor's host> \
   --set storage.bucket=<files bucket> --set database.backup.destinationPath=s3://<backup bucket>/ferrum
 ```
 
+* *The placeholders.* `publicUrl`, `gateway.hostname`, `storage.bucket`, `database.backup.destinationPath` and
+  `office.host` (and `editors.host`, `privateGateway.hostnames` when those are on) ship as placeholders, a `CHANGE-ME`
+  bucket or a host on `example.com`: the chart refuses to render while any is still one, naming each.
 * *The secrets.* The chart makes one: the vault's key file, once, kept when the release is removed (`vault.keySecret`
   names one of your own instead; *The vault*). It reads the Secret `ferrum-secrets` (another name:
   `secrets.existingSecret`) where it is there, none of whose keys is required (`deploy/k8s/secret.example.yaml` lists
