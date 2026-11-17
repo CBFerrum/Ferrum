@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Ferrum's CI on this machine, as .github/workflows/ci.yml runs it on GitHub, job by job (scripts/app_ci.sh does the
-# same for an app's repository). One line per step, PASS or FAIL; exit 1 when any step failed.
+# same for an app's repository). One line per step, PASS or FAIL, or SKIP for a job whose software is not here; exit 1
+# when any step failed, and when a job named on the command line skipped.
 #
-#   scripts/local_ci.sh              every job below
-#   scripts/local_ci.sh rust audit   just those
+#   scripts/local_ci.sh              every job below; a job that skips does not fail it, and the run ends with one
+#                                    line, `skipped: <job>, <job>`, naming each (editors always, here)
+#   scripts/local_ci.sh rust audit   just those, and any of them that skips fails the run
 #
 # Jobs:
 #   rust    cargo fmt --check; clippy over the workspace with the job's feature; the tests: every crate's unit tests,
@@ -55,7 +57,7 @@
 # A job run only when named needs software of its own: PostgreSQL 17's programs (replica, managed; PG_BIN), PgBouncer
 # (managed; PGBOUNCER), SeaweedFS's `weed` (objects, oneinput, companions; window's object-storage step), moto 5.0.28
 # with boto3 in a virtualenv (objects; OBJECT_PYTHON), a C compiler (oneinput), Forgejo 17 and sqlite3 (oidc; FORGEJO).
-# Where it is not there, the job says so in one line, SKIP, and passes. LiveKit (`livekit-server`) is the rust job's:
+# Where it is not there, the job says so in one line, SKIP: a run that named it fails, the default run names it at the end. LiveKit (`livekit-server`) is the rust job's:
 # companions_it starts it where installed.
 #
 # Settings: PG (Postgres as the `ferrum` role; default postgres://ferrum:ferrum@localhost:5432), LOCALCI_SUFFIX (added to
@@ -109,8 +111,11 @@ room() {
   echo "FAIL disk: ${free} GB free under $TARGET, less than $MIN_GB; stopping"
   exit 1
 }
-# A job whose software is not there: one plain line, and no failure.
-skip() { echo "SKIP $1: needs $2"; }
+# A job whose software is not there: one plain line, and its name kept for the end of the run.
+skip() {
+  echo "SKIP $1: needs $2"
+  echo "$1" >>"$LOGS/skipped"
+}
 has() { command -v "$1" >/dev/null 2>&1; }
 # PostgreSQL 17's own programs, where the rehearsals look for them (their PG_BIN), and whether each is there.
 pg17() {
@@ -355,10 +360,11 @@ job_companions() {
   run "companions rehearsal" scripts/companions_rehearsal.sh "ferrum_companions$SFX"
 }
 
-job_editors() { echo "SKIP editors: needs Docker (its nginx image) and Playwright's browsers; docs/operations.md says how to run it"; }
+job_editors() { skip editors "Docker (its nginx image) and Playwright's browsers; docs/operations.md says how to run it"; }
 
 jobs=("$@")
 [ ${#jobs[@]} -gt 0 ] || jobs=(rust saml audit move editors)
+: >"$LOGS/skipped"
 for j in "${jobs[@]}"; do
   case "$j" in
     # Each job in a shell of its own, so what one sets (saml's xmlsec1 and OpenSSL) never reaches the next.
@@ -366,5 +372,9 @@ for j in "${jobs[@]}"; do
     *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, managed, objects, oneinput, oidc, companions)"; exit 2 ;;
   esac
 done
+skipped=$(sort -u "$LOGS/skipped" | paste -sd, - | sed 's/,/, /g')
+# A job named on the command line that did not run is not a pass.
+[ -n "$skipped" ] && [ $# -gt 0 ] && failed=1
 echo "== $([ $failed = 0 ] && echo PASS || echo FAIL): ${jobs[*]}"
+[ -z "$skipped" ] || echo "skipped: $skipped"
 exit $failed

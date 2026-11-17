@@ -154,7 +154,8 @@ What it does, as the app's `.github/workflows/ci.yml` would on GitHub:
 
 The platform's CI on this machine, job by job (`rust`, `saml`, `audit`, `move`; `replica`, `managed`, `window`,
 `objects`, `oneinput`, `oidc`, `companions` only when named; `editors` needs Docker and Playwright and is not run here). A job that needs software it cannot find says `SKIP` in
-one line and passes. An app developer runs `audit` after changing what the platform compiles in (a pin), and the
+one line: a run that named it fails (`scripts/local_ci.sh editors` exits 1 here), and the default run passes but
+ends with `skipped: <job>, <job>`, so a green run says what it did not run. An app developer runs `audit` after changing what the platform compiles in (a pin), and the
 rehearsal that matches what they changed.
 
 ## What each check script checks

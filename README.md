@@ -508,7 +508,8 @@ cd web && npm test
 > when `FERRUM_TEST_S3_ENDPOINT` points at an S3-compatible endpoint.
 
 **Before merging**, run `scripts/local_ci.sh` (or one job: `scripts/local_ci.sh rust`), which runs here what each job
-of `.github/workflows/ci.yml` runs and prints PASS or FAIL for each step; its `rust` job's clippy step,
+of `.github/workflows/ci.yml` runs and prints PASS or FAIL for each step (SKIP for a job whose software is not here: a job you named that skips fails the
+run, and the default run's last line names every job that skipped); its `rust` job's clippy step,
 `cargo clippy --workspace --all-targets --locked --features ferrum-server/control -- -D warnings`, is not replaced by
 `cargo clippy -p <crate>`: that compiles only the crates named, so a change that passes it can still break the tests
 of the crates that depend on it.
