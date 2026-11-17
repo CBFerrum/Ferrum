@@ -293,7 +293,7 @@ async fn scenario() {
     set("_ferrum.www.taker.test", std::slice::from_ref(&mine));
     assert_eq!(k.host_reached("www.taker.test", true).await.unwrap().map(|c| c.works), Some(true));
     assert_eq!(call(&router, Method::DELETE, at_taker, "/api/admin/domains/www.taker.test", Some(&taker_token), None).await.0, StatusCode::OK);
-    let (_, other_token) = workspace(&k, &router, "other").await;
+    let (other, other_token) = workspace(&k, &router, "other").await;
     let (status, body) = add(&other_token, "other.proof.test", "www.taker.test").await;
     assert!(status == StatusCode::CONFLICT && body.contains("recently"), "quarantined: {status} {body}");
     sql(&k, "update tenant_host set released_at = now() - interval '400 days', leaving_until = now() - interval '399 days' where host = 'www.taker.test'")
@@ -302,4 +302,46 @@ async fn scenario() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(k.host_reached("www.taker.test", true).await.unwrap().map(|c| c.works), Some(false), "the old owner's record proves nothing");
     assert_eq!(k.route_host("www.taker.test").await.unwrap(), HostRoute::Unknown);
+
+    // ── 4. A domain claimed for mail, whose website is elsewhere: proven by its record alone through the same routes and
+    // list, answering nothing on the web, and one workspace's. ──
+    let claim = async |token: &str, at: &str| {
+        call(&router, Method::POST, at, "/api/admin/domains", Some(token), Some(json!({"host": "taker.test", "target": "mail"}))).await
+    };
+    let check = async || {
+        let (status, body) = call(&router, Method::POST, at_taker, "/api/admin/domains/taker.test/check", Some(&taker_token), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        serde_json::from_str::<Value>(&body).unwrap()
+    };
+    let (status, body) = claim(&taker_token, at_taker).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let row: Value = serde_json::from_str(&body).unwrap();
+    let mail = format!("ferrum-domain={}", row["verify_token"].as_str().unwrap());
+    assert_eq!((row["target"].clone(), row["status"].clone(), row["waiting"].clone()), (json!("mail"), json!("pending"), json!("record")), "{row}");
+    assert_eq!(row["record"], json!({"name": "_ferrum.taker.test", "type": "TXT", "value": mail}), "what to add");
+    assert_eq!(row["can"], json!({"edit": false, "remove": true, "make_primary": false}));
+    assert_eq!(check().await, json!({"host": "taker.test", "answers": false, "points": true, "waiting": "record"}), "nothing to point");
+    set("_ferrum.taker.test", std::slice::from_ref(&mail));
+    assert_eq!(check().await, json!({"host": "taker.test", "answers": true, "points": true, "waiting": null}));
+    assert!(k.domain_proven(taker, "taker.test").await.unwrap() && !k.domain_proven(other, "taker.test").await.unwrap());
+    let row = listed(&router, at_taker, &taker_token, "taker.test").await;
+    assert_eq!((row["status"].clone(), row["primary"].clone(), row["record"].clone()), (json!("verified"), json!(false), json!(null)), "{row}");
+    let (status, body) = call(&router, Method::GET, "taker.test", "/", None, None).await;
+    assert!(status == StatusCode::NOT_FOUND && body.contains("No workspace here"), "no page: {status} {body}");
+    assert_eq!(call(&router, Method::GET, "taker.test", "/.well-known/ferrum-domain", None, None).await.0, StatusCode::NOT_FOUND, "no proof");
+    assert_eq!(call(&router, Method::GET, "localhost", "/_tls/ask?domain=taker.test", None, None).await.0, StatusCode::NOT_FOUND, "no certificate");
+    // An address of the workspace's own that its record proved counts for mail as well: the same owner. Another workspace
+    // gets the domain neither way.
+    assert!(k.domain_proven(taker, "shop.victim.test").await.unwrap(), "an address proven by its record");
+    for (status, body) in [claim(&other_token, "other.proof.test").await, add(&other_token, "other.proof.test", "taker.test").await] {
+        assert!(status == StatusCode::CONFLICT && body.contains("already in use"), "{status} {body}");
+    }
+    // Removed: it stops at once, never redirects, and is kept from the others as any domain of a workspace's own.
+    let (status, body) = call(&router, Method::DELETE, at_taker, "/api/admin/domains/taker.test", Some(&taker_token), None).await;
+    assert_eq!((status, serde_json::from_str::<Value>(&body).unwrap()["leaving_until"].clone()), (StatusCode::OK, Value::Null), "{body}");
+    let row = listed(&router, at_taker, &taker_token, "taker.test").await;
+    assert_eq!((row["status"].clone(), row["redirecting"].clone()), (json!("released"), json!(false)), "{row}");
+    assert!(!k.domain_proven(taker, "taker.test").await.unwrap());
+    let (status, body) = claim(&other_token, "other.proof.test").await;
+    assert!(status == StatusCode::CONFLICT && body.contains("recently"), "quarantined: {status} {body}");
 }

@@ -798,7 +798,9 @@ zone.
   read_only, leaving_days}`.
   * `kind`: `subdomain` (the workspace's `{slug}.{base}`, or a name it gave itself under the base, which has
     `base_name`), `custom` (a domain of its own) or `operator` (the operator's, `ferrum task add_host`). `target`:
-    `shell`, `portal` or `site:{app}`. `primary` (and `is_primary`, the same): the main address of its target.
+    `shell`, `portal` or `site:{app}`; or `mail`, a custom domain claimed for mail, which serves nothing and is never a
+    main address ([operations](operations.md#custom-domains), Domains for mail). `primary` (and `is_primary`, the
+    same): the main address of its target.
     `status`: `verified`, `pending`, `failing`, `leaving` or `released`. `zone`: the zone's name, or `null`; read only.
     `redirecting`, for a removed address: `true` while it still sends visitors on (its leaving period, then 90 days),
     `false` once it no longer answers; `null` for a live one.
@@ -810,12 +812,14 @@ zone.
     then `record` while its record is missing (its `status` then stays `pending`, not `failing`); else `null`. Where
     `proof` is `record`, one never proven by its record has `record: {name: "_ferrum.{host}", type: "TXT", value:
     "ferrum-domain={verify_token}"}`, the record its owner adds; else `null`. `proved_at`: when its record proved it.
+    A domain for mail is proven by its record alone, whatever `proof` says: until then `waiting` is `record` and
+    `record` is shown; removed, its `redirecting` is `false`.
   * `home`, `apps`, `label`: what a `shell` address shows (`null`: Home, every app, no name), naming only apps the
     caller's zone shows. `forward`: it serves nothing and sends each page on to the main address, `/` to `home` there
     ([operations](operations.md#addresses-of-a-workspace), Forwarding addresses); a live one with `leaving_until` still
     serves those signed in there until then.
   * `can`: `edit` (a live `shell` address that is not the operator's), `remove` (a live custom domain or name under
-    the base), `make_primary` (a live, working address that is not the main one nor forwarding).
+    the base), `make_primary` (a live, working address that is not the main one nor forwarding, never a domain for mail).
   * `base`: the base domain, or `null`; `name_form`: the form a new name takes there (`{name}--acme.ferrum.cloud`), or
     `null` without a base. `reserved_names`: names refused. `homes`: the apps that can be a `home` or be in `apps`,
     those with a launcher route that the caller's zone shows. `limits` and `used`: addresses (live, every kind; the
@@ -823,7 +827,8 @@ zone.
 * `POST /api/admin/domains` `{host, target?, home?, apps?, label?, forward?}` adds a domain of the workspace's own (verified
   before it works; one a deleted workspace had, or removed less than a year after its leaving period: `409`); `{name, target?, home?, apps?, label?}` a name under the base domain, `{name}--{slug}.{base}`, live
   at once (the name is 1 to 30 lowercase letters, digits and single hyphens; one that is an app's id is refused where
-  the apps base is the base domain). `target` is `shell` unless given, a `site:{app}` only for one of `sites`; `home`,
+  the apps base is the base domain). `target` is `shell` unless given, a `site:{app}` only for one of `sites`, `mail`
+  only with `host` (a domain claimed for mail, which another workspace can no longer add); `home`,
   `apps` and `label` only for `shell`, `home` and each of `apps` one of `homes`, at most 50 apps, `label` 1 to 40
   characters; `forward` (default `false`) only for `shell`, without `apps` or `label`, and only while the workspace has a
   main address. → `201` and the address as the list shows it. `zone` is refused (`422`): only the operator puts an
@@ -834,11 +839,12 @@ zone.
   `422`. An operator's address: `403`, "this address is the operator's: only the operator changes or removes it".
 * `DELETE /api/admin/domains/{host}` removes a custom domain or a name under the base → `{host, leaving_until}`: one in
   use keeps serving the people signed in there until `leaving_until`, then redirects (`null`: it stopped at once, being
-  never verified or with `FERRUM_HOST_LEAVING_DAYS=0`); the main address hands its place to another of the workspace's
+  never verified, a domain for mail or with `FERRUM_HOST_LEAVING_DAYS=0`); the main address hands its place to another of the workspace's
   first. An operator's address: `403`; the workspace's own subdomain: `404`.
 * `PUT …/{host}/primary` makes a working one the main address of its kind (a forwarding one: `422`); `POST …/{host}/check` checks a custom
   domain now, that it points here and, where `proof` is `record`, its record → `{host, answers, points, waiting}`:
-  `answers`, it works; `points`, it points here; `waiting` as in the list (`null` once it works).
+  `answers`, it works; `points`, it points here (always `true` for a domain for mail, which only its record proves);
+  `waiting` as in the list (`null` once it works).
 * `GET /api/admin/paths` → `{paths: [{alias, target, works, taken_by?}], limit: 50, taken}`: the workspace's short paths
   (`works`: false once an app has taken the segment, whose page then opens there; `taken_by` then names that app when
   it is compiled in or the caller's zone shows it, else `null`), and `taken`, the first segments the
@@ -853,7 +859,7 @@ zone.
 
 Public: `GET /.well-known/ferrum-domain` answers the token of the custom domain the request reached, and
 `GET /_tls/ask?domain=` answers 200 when the edge may get a certificate for that host (a subdomain or name under the
-base, a working or pending custom domain, one leaving or redirecting).
+base, a working or pending custom domain, one leaving or redirecting). Neither answers for a domain for mail.
 
 Single sign-on: `/api/admin/sso` (GET → `{providers: [{id, label, protocol, issuer, client_id, has_secret,
 saml_metadata, domains, auto_create, default_roles, enabled, single_logout_out, single_logout_in, linked_users,

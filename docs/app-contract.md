@@ -232,6 +232,14 @@ lets the same sessions back in. So lock it on every reason; for `access_ended` k
 in `claims`, which Ferrum calls only while issuing that person a token for a live session of theirs, before the forge
 signs them in.
 
+## A domain the workspace owns
+
+An app that acts on a domain a workspace names (mailboxes in its mail domain, mail sent as it) asks
+`Kernel::domain_proven(tenant, domain)` in its settings hook and again in its upkeep, and refuses or stops while it is
+false: it is true only while the workspace holds the domain and its owner's DNS record proved it, never for two
+workspaces. The refusal tells the administrator to claim the domain under Administration → Addresses with the target
+`mail` and add the DNS record shown there (docs/operations.md, *Custom domains*, Domains for mail).
+
 ## Operator settings
 
 What an operator chooses for the whole installation and an app's code in the server reads (an address of a service, a
