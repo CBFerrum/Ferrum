@@ -94,6 +94,27 @@ async fn scenario() {
     assert_eq!(k.verify_api_key(&key).await.unwrap().1.as_deref(), Some("scim"));
     assert!(k.scim_users(&plain, None, None, None).await.is_err(), "SCIM is for administrators");
 
+    // ───────────── a change of roles is in the audit trail: who changed whose, which, until when ─────────────
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("insert into role (tenant_id, name) values ($1, 'Dispatcher')").bind(tenant).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let until = chrono::Utc::now() + chrono::Duration::days(7);
+    k.set_user_roles_until(&admin, plain.user, &["Dispatcher".into()], &[("Dispatcher".to_string(), until)].into()).await.unwrap();
+    k.set_user_roles(&admin, plain.user, &[]).await.unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let entries: Vec<(Option<Uuid>, Value)> =
+        sqlx::query_as("select actor, diff from audit_event where entity = 'User' and record_id = $1 and action = 'roles' order by id")
+            .bind(plain.user)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(entries.len(), 2, "granting a role and taking it away each leave an entry: {entries:?}");
+    assert!(entries.iter().all(|(actor, _)| *actor == Some(admin.user)), "naming who changed them: {entries:?}");
+    assert_eq!((&entries[0].1["added"], &entries[0].1["removed"]), (&json!(["Dispatcher"]), &json!([])), "{entries:?}");
+    assert_eq!(entries[0].1["until"]["Dispatcher"], json!(until), "{entries:?}");
+    assert_eq!((&entries[1].1["added"], &entries[1].1["removed"]), (&json!([]), &json!(["Dispatcher"])), "{entries:?}");
+
     // ───────────── the provider creates a person ─────────────
     let pat = k
         .scim_create_user(

@@ -12,7 +12,10 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   single sign-on in flight) runs in an explicit system context.
 * **Who acts**: people (a password with optional two-factor sign-in, or single sign-on), API keys,
   OAuth clients (MCP assistants), and plugins, each through its own service user whose role is
-  exactly its declared permissions. Every change lands in the audit trail with who made it.
+  exactly its declared permissions. Every change to a record lands in the audit trail with who made it,
+  as do administrators' changes to people's roles (added, removed, until when), kind, keys, two-factor
+  sign-in and leaving; switching a person off or on (journalled outside the database instead), the record
+  scopes they are held to and what a role grants are not audit events.
 * **What they may do**: roles grant read, write, create, delete, submit, cancel, export and import
   per entity, narrowed to the user's own records, to record scopes (companies) or to records whose
   fields hold given values, and per field group. The kernel enforces them on every path: the
