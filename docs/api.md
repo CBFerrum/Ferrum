@@ -1305,7 +1305,7 @@ search. `pages` ("Go to") are the lists the caller may open whose name matches, 
 true when an entity took longer than its time budget (300 ms) or the whole search reached its deadline (800 ms),
 and what had not finished was left out. The entities are searched six at a time as the request's own work: once
 the deadline passes or the caller goes away (the bar drops a search at the next keystroke), no further query of it
-starts, and those already sent end with their statement. The bar's search asks this
+starts, and those already sent end with their statement, which PostgreSQL stops at the entity's budget (each list runs with a 300 ms statement timeout). The bar's search asks this
 and the apps' `shell.search` providers together; a provider answers `GET {endpoint}?q=&limit=` with
 `{results: [{title, subtitle?, url, icon?, updated_at?}]}`, each `url` a page of this site the caller
 may open.
