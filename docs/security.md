@@ -343,9 +343,11 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   else, for codes NIC issued, under NIC's published signing keys (shipped in
   India's add-on, `addons/india/src/nic_keys` in ferrum-app-erp, verified against NIC's own signed
   sample).
-* Outbound requests (webhooks, plugins, identity providers, the IRP, push services): https, hosts
-  resolved once and pinned, private and loopback addresses refused, no redirects, time and size
-  limits. Plugins reach only the hosts they declare; identity providers on a private network need
+* Outbound requests (webhooks, plugins, connections, identity providers, the IRP, push services): https, hosts
+  resolved once and pinned, no redirects, time and size limits, and every resolved address refused when it is
+  private, loopback, link-local (the cloud's metadata address), shared, multicast, reserved, benchmarking, or a v6
+  form carrying one (mapped, IPv4-compatible, NAT64 `64:ff9b::/96`): one check for every way out,
+  `ferrum_kernel::outbox::is_private`. Plugins reach only the hosts they declare; identity providers on a private network need
   `FERRUM_SSO_ALLOW_PRIVATE`; pushes go only to the browsers' push services
   (`FERRUM_PUSH_SERVICES`), whatever endpoint a subscription names.
 * Plugins run as WebAssembly without ambient access, with CPU fuel, a memory cap, a host-call
