@@ -879,35 +879,17 @@ impl Kernel {
 
     /// Deletes processed outbox rows, delivered webhooks and expired idempotency keys.
     pub async fn purge_old_events(&self, keep_days: i32) -> Result<u64> {
-        let mut tx = self.db.system_tx().await?;
-        let mut n = sqlx::query("delete from outbox where processed_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
-            .bind(keep_days)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        n += sqlx::query("delete from webhook_delivery where status = 'delivered' and updated_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
-            .bind(keep_days)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        n += sqlx::query("delete from event_receipt where received_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
-            .bind(keep_days)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        // A receipt answers a request sent again for as long as a device's work may wait offline.
-        n += sqlx::query("delete from idempotency_key where created_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
-            .bind(crate::receipt::RECEIPT_DAYS)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        n += sqlx::query("delete from event_chain where first_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
-            .bind(keep_days)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        tx.commit().await?;
-        Ok(n)
+        let past = |column: &str, days: i32| format!("{column} < now() - make_interval(days => {days}) and not ferrum_workspace_held(tenant_id)");
+        self.db
+            .purge(&[
+                ("outbox", past("processed_at", keep_days)),
+                ("webhook_delivery", format!("status = 'delivered' and {}", past("updated_at", keep_days))),
+                ("event_receipt", past("received_at", keep_days)),
+                // A receipt answers a request sent again for as long as a device's work may wait offline.
+                ("idempotency_key", past("created_at", crate::receipt::RECEIPT_DAYS)),
+                ("event_chain", past("first_at", keep_days)),
+            ])
+            .await
     }
 }
 

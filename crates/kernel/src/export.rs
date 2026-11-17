@@ -520,22 +520,33 @@ impl Kernel {
 
     /// Deletes exports past their time, and jobs long over.
     pub(crate) async fn purge_exports(&self) -> Result<u64> {
-        let mut tx = self.db.system_tx().await?;
-        let old: Vec<(Uuid, String)> =
-            sqlx::query_as("delete from file_object where entity = $1 and created_at < now() - make_interval(days => $2) and not ferrum_workspace_held(tenant_id) returning tenant_id, storage_key")
-                .bind(EXPORT_ENTITY)
-                .bind(EXPORT_DAYS)
-                .fetch_all(&mut *tx)
-                .await?;
-        let purged = old.len() as u64;
-        let mut by_tenant: BTreeMap<Uuid, Vec<String>> = BTreeMap::new();
-        for (tenant, key) in old {
-            by_tenant.entry(tenant).or_default().push(key);
-        }
-        for (tenant, keys) in by_tenant {
-            release_objects(&mut tx, tenant, &keys).await?;
-        }
-        tx.commit().await?;
-        Ok(purged + self.purge_jobs(30).await?)
+        let parts = self
+            .db
+            .in_batches(|tx| {
+                Box::pin(async move {
+                    let old: Vec<(Uuid, String)> = sqlx::query_as(
+                        "delete from file_object where ctid = any(array(select ctid from file_object where entity = $1 \
+                           and created_at < now() - make_interval(days => $2) and not ferrum_workspace_held(tenant_id) limit $3)) \
+                         returning tenant_id, storage_key",
+                    )
+                    .bind(EXPORT_ENTITY)
+                    .bind(EXPORT_DAYS)
+                    .bind(crate::db::PURGE_BATCH as i64)
+                    .fetch_all(&mut **tx)
+                    .await?;
+                    let purged = old.len() as u64;
+                    let mut by_tenant: BTreeMap<Uuid, Vec<String>> = BTreeMap::new();
+                    for (tenant, key) in old {
+                        by_tenant.entry(tenant).or_default().push(key);
+                    }
+                    for (tenant, keys) in by_tenant {
+                        release_objects(tx, tenant, &keys).await?;
+                    }
+                    Ok(purged)
+                })
+            })
+            .await;
+        let jobs = self.purge_jobs(30).await;
+        Ok(parts? + jobs?)
     }
 }

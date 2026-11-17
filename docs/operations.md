@@ -9,7 +9,7 @@ through PostgreSQL `NOTIFY`. Any replica can be killed or added at any time.
 
 | Component | Role | Failure behaviour |
 |---|---|---|
-| API replicas (`ferrum start`) | Stateless HTTP API; each also runs the outbox dispatcher, webhook sender, job runner, metadata listener and maintenance loops | Any replica may die at any time; work is claimed with `SKIP LOCKED` / advisory locks and retried by the others. Stopped (`SIGTERM`), a replica stops its background loops and live connections, answers the requests in flight (up to 20 s), then closes its database pools: within Kubernetes' 40 s grace period |
+| API replicas (`ferrum start`) | Stateless HTTP API; each also runs the outbox dispatcher, webhook sender, job runner, metadata listener and maintenance loops (the hourly maintenance on one replica at a time) | Any replica may die at any time; work is claimed with `SKIP LOCKED` / advisory locks and retried by the others. Stopped (`SIGTERM`), a replica stops its background loops and live connections, answers the requests in flight (up to 20 s), then closes its database pools: within Kubernetes' 40 s grace period |
 | PostgreSQL 17 (CloudNativePG) | All state: documents, ledgers, audit, outbox, plugins | Synchronous replica + automatic failover; WAL archiving for point-in-time recovery |
 | Object storage (S3 or compatible) | Attachments (`FERRUM_S3_BUCKET`, `FERRUM_S3_ENDPOINT`) | Required in production; a replica is not ready until a write-then-read probe has worked since it started, and a later failure is reported by the doctor and the metrics, not by taking it out of service |
 
@@ -4821,6 +4821,15 @@ offline until it is sent) follows one policy, set per workspace: [offline.md](of
 
 ```bash
 ferrum task run_maintenance          # anchor audit trails, purge expired events, ledger partitions, queue notification digests (also runs in-process, hourly)
+```
+
+The hourly maintenance runs on one replica at a time (an advisory lock; a replica that finds another running it leaves
+it, and `run_maintenance` then does nothing either). Each step stands on its own: one that fails is logged by its name
+and the next still runs, and the round ends saying which failed. Every purge deletes at most 5,000 rows a statement, in a
+transaction of its own, until none is left, so a backlog however large is caught up in pieces, each within the statement
+timeout.
+
+```bash
 ferrum task sync_schema              # force the metadata → DDL sync (normally automatic at boot)
 ferrum task create_tenant slug:... name:... email:... password:... [packages:...]   # core only without packages:
 ferrum task set_plan slug:... plan:...   # put a workspace on one of FERRUM_PLANS (its quotas)

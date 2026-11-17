@@ -32,6 +32,9 @@ pub const LISTENERS: u32 = 5;
 /// differs from the main one, opens at most `LISTENERS + DIRECT_LOCKS + upkeep at once` ([`DbConfig::direct_connections`]).
 pub const DIRECT_LOCKS: u32 = 1;
 
+/// The most rows one statement of a purge deletes ([`Db::in_batches`]).
+pub const PURGE_BATCH: u64 = 5000;
+
 /// Session settings every kernel transaction sets for itself (the `options` a direct connection also starts with): a
 /// connection pooler in transaction mode gives each transaction whichever server connection is free, so nothing set on
 /// one session reaches the next transaction.
@@ -574,6 +577,43 @@ impl Db {
             .await?;
         self.stay_fenced(&mut tx, row).await?;
         Ok(tx)
+    }
+
+    /// Runs `batch` in a system transaction of its own, again and again, until it deletes fewer than [`PURGE_BATCH`] rows:
+    /// however far behind a purge has fallen, no statement takes more than a batch, so none meets the statement timeout.
+    /// `batch` deletes at most [`PURGE_BATCH`] rows and says how many it did.
+    pub(crate) async fn in_batches(&self, mut batch: impl for<'a> FnMut(&'a mut Tx) -> futures::future::BoxFuture<'a, Result<u64>>) -> Result<u64> {
+        let mut done = 0;
+        loop {
+            let mut tx = self.system_tx().await?;
+            let n = batch(&mut tx).await?;
+            tx.commit().await?;
+            done += n;
+            if n < PURGE_BATCH {
+                return Ok(done);
+            }
+        }
+    }
+
+    /// Deletes from each table the rows its filter selects, in batches ([`Db::in_batches`]). A table that fails is passed
+    /// over and the next one is still purged; the error names each that failed. The filters are the platform's own SQL
+    /// (numbers written in, nothing anyone typed), and rows are taken by `ctid`, so no table here may be partitioned.
+    pub(crate) async fn purge(&self, purges: &[(&str, String)]) -> Result<u64> {
+        let (mut done, mut failed) = (0, Vec::new());
+        for (table, filter) in purges {
+            let sql = format!("delete from {table} where ctid = any(array(select ctid from {table} where {filter} limit {PURGE_BATCH}))");
+            let deleted = self
+                .in_batches(|tx| {
+                    let sql = sql.clone();
+                    Box::pin(async move { Ok(sqlx::query(AssertSqlSafe(sql)).execute(&mut **tx).await?.rows_affected()) })
+                })
+                .await;
+            match deleted {
+                Ok(n) => done += n,
+                Err(e) => failed.push(format!("{table}: {e}")),
+            }
+        }
+        if failed.is_empty() { Ok(done) } else { Err(Error::Internal(format!("purging {}", failed.join("; ")))) }
     }
 
     /// System transaction pinned to one tenant: RLS still allows everything, but code that relies on

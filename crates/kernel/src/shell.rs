@@ -801,18 +801,20 @@ impl Kernel {
 
     /// Deletes sessions that ended more than a week ago (maintenance).
     pub async fn purge_sessions(&self) -> Result<u64> {
-        let mut tx = self.db.system_tx().await?;
-        sqlx::query("delete from sso_logout_seen where seen_at < now() - interval '1 day' and not ferrum_workspace_held(tenant_id)").execute(&mut *tx).await?;
-        sqlx::query("delete from sso_sid where created_at < now() - interval '90 days'").execute(&mut *tx).await?;
-        let n = sqlx::query("delete from user_session where expires_at < now() - interval '7 days' or revoked_at < now() - interval '7 days'")
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let purged = self
+            .db
+            .purge(&[
+                ("sso_logout_seen", "seen_at < now() - interval '1 day' and not ferrum_workspace_held(tenant_id)".into()),
+                ("sso_sid", "created_at < now() - interval '90 days'".into()),
+                ("user_session", "expires_at < now() - interval '7 days' or revoked_at < now() - interval '7 days'".into()),
+            ])
+            .await;
         // Failed sign-ins of hours that are over: their summaries.
+        let mut tx = self.db.system_tx().await?;
         crate::gate::flush_failures(&mut tx, None).await?;
         tx.commit().await?;
         self.sessions.retain(|_, v| v.1.elapsed() < CACHE_TTL);
-        Ok(n)
+        purged
     }
 
     // ── hosts ──
