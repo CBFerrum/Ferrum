@@ -320,7 +320,8 @@ async fn procure_to_pay(k: &Arc<Kernel>) {
             obj(json!({"company": cid, "supplier": steel["id"], "bill_no": "STEEL/778", "items": [{"item": sheet["id"], "qty": "1", "rate": "1"}]})),
         )
         .await;
-    assert!(matches!(twice, Err(Error::Validation(ref e)) if e.iter().any(|f| f.field == "bill_no")), "{twice:?}");
+    // ERP's unique index on a supplier and its invoice number refuses it (ERP 0.32).
+    assert!(matches!(twice, Err(Error::Conflict(ref why)) if why.contains("Supplier Invoice No")), "{twice:?}");
 
     // ───────────── paid, and matched to the bank's statement ─────────────
     let payment = made(&admin.action("PurchaseInvoice", invoice, "make_payment", json!({})).await);

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The shell's points. Unlike the screen slots (`ui.*`), compiled-in apps contribute to them too.
+/// The shell's points. Apps of every runtime contribute to them, compiled-in ones too.
 pub const SHELL_POINTS: &[&str] = &[
     "shell.app",
     "shell.open",

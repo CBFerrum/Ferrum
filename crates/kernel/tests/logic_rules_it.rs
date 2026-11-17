@@ -287,9 +287,15 @@ async fn scenario() {
     drain(&k).await;
     let why: String = {
         let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
-        // A failed automation leaves its event to be tried again, saying why.
-        let why: String =
-            sqlx::query_scalar("select last_error from outbox where topic = 'Party.updated' and last_error is not null").fetch_one(&mut *tx).await.unwrap();
+        // A run the rules refuse cannot succeed however often it is tried: it is recorded as failed, saying why, and
+        // its event is handled, not tried again.
+        let why: String = sqlx::query_scalar(
+            "select r.error from automation_run r join outbox o on o.tenant_id = r.tenant_id and o.id = r.outbox_id \
+             where o.topic = 'Party.updated' and r.status = 'failed' and o.processed_at is not null and o.last_error is null",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         why
     };

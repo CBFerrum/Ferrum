@@ -484,9 +484,9 @@ becomes an EV charging, IoT, payment or telephony platform without changing its 
 
 Every row is subject to the permissions the administrator approved, a CPU budget (fuel) and a
 memory cap. See [docs/plugins.md](docs/plugins.md), the Rust SDK in [ferrum-sdk](https://github.com/CBFerrum/ferrum-sdk) and the complete
-`plugins/examples/device-gateway`. Apps can also bring their own screens (pages, Home widgets,
-panels on forms, settings) in sandboxed frames, and offer extension points for add-ons to fill;
-ferrum-sdk's `examples/board` shows both.
+`plugins/examples/device-gateway`. An app's pages are its own interface (`ui` and `shell.app` in its
+manifest; ferrum-sdk's `examples/customer-cards`), and an app can offer extension points for add-ons
+to fill (ferrum-sdk's `examples/board`).
 
 ## Testing
 
