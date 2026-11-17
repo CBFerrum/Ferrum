@@ -259,7 +259,7 @@ flowchart TB
 | [ferrum-app-edge](https://github.com/CBFerrum/ferrum-app-edge) | IoT Edge and `ferrum-site`, the gateway next to the equipment: definitions, flows, alarms, and what each gateway should be |
 | [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP: its manifest, interface, packages (`accounting`, `inventory`, `selling`, `buying`, `manufacturing`) and engine (ledger, open items, stock valuation, selling and buying, manufacturing and MRP, the books' reports), which other apps post through; its add-ons: 26 country add-ons on its localization seam (India, the European Union and eight of its members, the United Kingdom, the United States, Canada and thirteen more), Finance, Procurement, Stock Operations, Manufacturing Operations, Quality, Warehouse Management and Manufacturing Execution |
 | `packages/*` | The shared packages: `core`, `contacts`, `parties`, `products`, `project_records` |
-| `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, ERPNext-compatible `/api/resource` shim, CLI tasks |
+| `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, CLI tasks |
 | `plugins/examples` | Example plugins, on [`ferrum-plugin-sdk`](https://github.com/CBFerrum/ferrum-sdk) |
 | `deploy` | Docker Compose, Kubernetes manifests (`k8s`), a Helm chart (`helm`), a kind cluster for CI (`kind`) and the optional pieces beside the server |
 | `packs` | Reference packs: whole solutions built by configuration alone ([packs/README.md](packs/README.md)) |
@@ -630,7 +630,7 @@ flowchart LR
 
 | | Document | What it covers |
 |---|---|---|
-| 📘 | [API contract](docs/api.md) | Auth, metadata, documents, collaboration, live updates, the shell, reports, administration, apps, search, notifications, MCP, ERPNext compatibility |
+| 📘 | [API contract](docs/api.md) | Auth, metadata, documents, collaboration, live updates, the shell, reports, administration, apps, search, notifications, MCP |
 | 🧭 | [App developer's handbook](docs/guides/README.md) | How to build an app and the rules it keeps: a first app step by step, the manifest, data, permissions, stateless apps, the vault, files, companion programs, privacy, security, testing, releasing, the interface, accessibility, languages, dos and don'ts, a review checklist |
 | 🧩 | [Plugins](docs/plugins.md) | Writing one, manifests, host calls, extension points, screens, interfaces of their own, limits |
 | 📐 | [App contract](docs/app-contract.md), [test kit](docs/testkit.md) | What every app gives, the vault, using another app's operations, files, companions and operator settings; starting an app's integration suite |

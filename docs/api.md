@@ -609,9 +609,7 @@ Pages, for browsers, with the session cookie:
   of its entities; `/data/{menu}` redirects to `/data/{menu}/`.
 * `GET /app/…` → `303` to the page's address, with its query: `/app/e/{E}[/{id}]` → `/open/…`,
   `/app/login` → `/login` (the single sign-on return address providers register; a provider's answer to
-  a step-up goes on to `/api/auth/step-up/provider/back`), `/app/admin…` → `/admin/…`, `/app/apps` →
-  `/store/`, `/app/mail…` and the other apps' pages → their routes, anything else → `/`. `/app/sw.js` is a
-  worker that clears the `ferrum-shell` cache and removes itself.
+  a step-up goes on to `/api/auth/step-up/provider/back`), anything else → `/`.
 * `GET /healthz` → `ok` (for load balancers).
 * `GET /go/{workspace}/{s|p}/{path}?{query}` on the link host (`FERRUM_LINK_HOST`) only, whatever
   else that host is: no session; `302` to `https://{host}/{path}?{query}`, where `host` is the
@@ -2385,7 +2383,3 @@ one the vault makes is shown once, in the answer that made it. Never cached.
 * `DELETE /api/admin/secrets/{owner}/{name}` → `{"removed": true|false}`.
 
 Each change is on the workspace's audit trail (owner, name, verb, version; never a value); a rule's change as `rule`.
-
-## ERPNext compatibility
-
-`GET|POST /api/resource/{DocType}`, `GET|PUT|DELETE /api/resource/{DocType}/{name}` (`name` = document number or id; DocType names map by removing spaces), `GET /api/method/frappe.auth.get_logged_user`. Responses use `{"data": ...}`.

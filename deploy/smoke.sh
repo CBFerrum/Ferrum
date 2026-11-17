@@ -312,13 +312,12 @@ if [ -n "${SMOKE_MEET:-}" ]; then
   [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "authorization: Bearer $key" "$API/api/auth/me")" = 401 ] || fail "an app password works as an API key"
 fi
 
-step "today's web app's old addresses, and live updates"
-# /app/ is gone: its addresses lead to their new homes with their query (bookmarks, links in mail,
-# the single sign-on return address providers have registered), and its worker removes itself.
+step "the /app/ addresses still given out, and live updates"
+# The /app/ addresses still given out lead to their pages with their query: a record's, and the single
+# sign-on return address providers have registered; anything else to /.
 [[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/app/e/SalesInvoice/$before?tab=1")" =~ ^30[23]\ .*/open/SalesInvoice/$before\?tab=1$ ]] || fail "an old record address"
 [[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/app/login?code=c&state=s")" =~ ^30[23]\ .*/login\?code=c\&state=s$ ]] || fail "the single sign-on return address"
 [[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/app/")" =~ ^30[23]\ .*/$ ]] || fail "/app/"
-grep -q "unregister" <<<"$(curl -fsS "$API/app/sw.js")" || fail "today's web app's worker does not remove itself"
 [ "$(curl -fsS "$API/healthz")" = ok ] || fail "/healthz"
 # Signed out, Home is the sign-in page first.
 [[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/")" =~ ^30[23]\ .*/login ]] || fail "/ signed out"

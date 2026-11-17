@@ -741,7 +741,6 @@ impl Hooks for App {
             .add_route(controllers::connections::routes())
             .add_route(controllers::messages::routes())
             .add_route(controllers::apps::routes())
-            .add_route(controllers::compat::routes())
             .add_route(controllers::mcp::routes())
             .add_route(controllers::oauth::routes())
             .add_route(controllers::oidc::routes())

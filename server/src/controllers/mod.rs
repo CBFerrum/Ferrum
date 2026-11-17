@@ -5,7 +5,6 @@ pub mod assistant;
 pub mod auth;
 pub mod cards;
 pub mod collab;
-pub mod compat;
 pub mod connect;
 pub mod connections;
 pub mod dav;
