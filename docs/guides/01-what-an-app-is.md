@@ -196,8 +196,8 @@ ferrum-app-grc/
 
 What a bundle (`.fapp`) may hold is fixed and anything else is refused, not ignored (`crates/apps/src/lib.rs`,
 *Bundle format*; `kind()` in `crates/apps/src/bundle.rs`): `app.yaml`, `README.md`, `CHANGELOG.md`, `LICENSE`,
-`plugin.json`, `plugin.wasm`, `packages/<name>/` (`package.yaml`, `README.md`, `entities/*.yaml`, `sql/*.sql`,
-`print/*.html`, `print/*.layout.json`), images under `assets/`, screens under `ui/`, and an industrial solution's
+`plugin.json`, `plugin.wasm`, `packages/<name>/` (`package.yaml`, `README.md`, `entities/*.yaml`, `sql/*.sql` in
+native apps only, `print/*.html`, `print/*.layout.json`), images under `assets/`, screens under `ui/`, and an industrial solution's
 `industrial/profiles/*.yaml` and `industrial/acceptance/*.yaml`. A native app is not shipped as a bundle to the
 server (its code is compiled in), but the store takes its manifest and packages that way.
 

@@ -433,10 +433,12 @@ impl Bundle {
                 return Err(AppError::Package { package: p.clone(), message: format!("listed in app.yaml, but packages/{p}/package.yaml is missing") });
             }
         }
-        if matches!(m.runtime, Runtime::Meta | Runtime::Service)
+        // Package SQL runs raw, as the database's owner, for the whole installation: only reviewed
+        // code compiled into the server brings it. Other apps' tables come from their entities.
+        if m.runtime != Runtime::Native
             && let Some(sql) = self.files.keys().find(|p| p.starts_with("packages/") && p.contains("/sql/"))
         {
-            return bad(format!("{sql}: {} apps carry no code and no SQL", m.runtime));
+            return bad(format!("{sql}: {} apps carry no SQL; only native apps, compiled into the server, do", m.runtime));
         }
         match &m.industrial {
             Some(section) => {
@@ -879,7 +881,7 @@ mod tests {
     fn code_rules() {
         let mut files = meta_app();
         files.insert("packages/kit/sql/001_init.sql".into(), b"create table x ();".to_vec());
-        refused(files, "meta apps carry no code and no SQL");
+        refused(files, "meta apps carry no SQL");
         let mut files = meta_app();
         files.insert("plugin.wasm".into(), WASM_MAGIC.to_vec());
         refused(files, "meta apps carry no plugin code");
@@ -889,8 +891,16 @@ mod tests {
         let mut files = wasm_app();
         files.remove("plugin.json");
         refused(files, "plugin.json is missing");
-        // wasm and native apps may ship SQL (the store limits it to verified publishers).
-        assert!(Bundle::from_files(wasm_app()).unwrap().package_files()["gw"].contains_key("sql/001_init.sql"));
+        // The schema sync runs package SQL raw, as the database's owner, for the whole installation.
+        let mut files = wasm_app();
+        files.insert("packages/gw/sql/002_copy.sql".into(), b"alter table app_user no force row level security;".to_vec());
+        refused(files, "packages/gw/sql/002_copy.sql: wasm apps carry no SQL");
+        // A native app (reviewed, compiled in) may: the store reviews its packages as a bundle.
+        let mut files = meta_app();
+        let yaml = String::from_utf8(files["app.yaml"].clone()).unwrap().replace("runtime: meta", "runtime: native");
+        files.insert("app.yaml".into(), yaml.into_bytes());
+        files.insert("packages/kit/sql/001_init.sql".into(), b"create table x ();".to_vec());
+        assert!(Bundle::from_files(files).unwrap().package_files()["kit"].contains_key("sql/001_init.sql"));
         let (wasm, json) = Bundle::from_files(wasm_app()).unwrap().plugin().unwrap().unwrap();
         assert!(wasm.starts_with(WASM_MAGIC) && json["name"] == "gw");
         assert!(Bundle::from_files(meta_app()).unwrap().plugin().unwrap().is_none());

@@ -393,8 +393,10 @@ The rules:
   function that crosses workspaces.
 - **Never the vault's tables** (`vault.*`): `scripts/secret_paths.py` reads packages' SQL too and fails one that names
   them.
-- **A third party's `sql/` is for verified publishers only**, and private (unsigned) apps create no tables at all
-  ([docs/plan/apps.md](../plan/apps.md) §3, §5). A `meta` app carries no `sql/`.
+- **Only a native app carries `sql/`.** The schema sync runs it raw, as the database's owner, for the whole
+  installation, so a bundle of any other runtime (`wasm`, `meta`, `service`) that carries it is refused
+  (`check_contents` in `crates/apps/src/bundle.rs`); their tables come from their entities. Private (unsigned) apps
+  create no tables at all ([docs/plan/apps.md](../plan/apps.md) §5).
 
 `scripts/window.py` checks the two-version window for the platform's own migrations and packages; it does not read
 an app's repository, so an app's SQL is held to *only add* by review.
