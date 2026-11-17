@@ -161,7 +161,7 @@ impl Kernel {
                 cursor,
                 ..Default::default()
             };
-            let page = self.list(sys, &rule.entity, &q).await?;
+            let page = self.list_with_timeout(sys, &rule.entity, &q, self.db.config.report_timeout_ms).await?;
             ids.extend(page.rows.iter().filter_map(|r| r.get("id")?.as_str()?.parse::<Uuid>().ok()));
             cursor = page.next_cursor;
             if cursor.is_none() {

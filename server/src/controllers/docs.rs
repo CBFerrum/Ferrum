@@ -482,7 +482,7 @@ async fn export(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Pa
             let (k, ctx, entity, mut q) = (k.clone(), ctx.clone(), entity.clone(), q.clone());
             async move {
                 q.cursor = cursor;
-                let page = k.list(&ctx, &entity, &q).await?;
+                let page = k.list_with_timeout(&ctx, &entity, &q, k.db.config.report_timeout_ms).await?;
                 Ok((page.rows, page.next_cursor))
             }
         }

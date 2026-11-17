@@ -201,6 +201,10 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Malware scanning** looks at a file once, when it is uploaded: files stored earlier, or past the
   scanner's size limit, stay `unscanned`, and nothing rescans them when signatures change.
 - **Bulk jobs** reach at most 100,000 records, and list the first 1,000 failures.
+- **Lists** someone waits for (the list API, search, link pickers, `Kernel::list`) give up on a statement
+  past 15 s, and the request answers `503`, the query took too long. What reads page after page for a
+  download, a workspace's export, a bulk job's records or a retention rule waits 60 s a page
+  (`DbConfig::report_timeout_ms`, `Kernel::list_with_timeout`).
 
 ## Operations and the site runtime
 

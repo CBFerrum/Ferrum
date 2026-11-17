@@ -131,7 +131,7 @@ impl JobHandler for BulkJob {
                     cursor,
                     ..Default::default()
                 };
-                let page = k.list(&ctx, entity, &q).await?;
+                let page = k.list_with_timeout(&ctx, entity, &q, k.db.config.report_timeout_ms).await?;
                 ids.extend(page.rows.iter().filter_map(|r| r.get("id")?.as_str()?.parse::<Uuid>().ok()));
                 if ids.len() > MAX_JOB_RECORDS {
                     return Err(Error::invalid(format!("the filter matches more than {MAX_JOB_RECORDS} records")));
@@ -449,7 +449,8 @@ async fn make(k: &Kernel, job: &Job, ctx: &Ctx) -> Result<Value> {
 impl Kernel {
     /// A page of an entity's records with their child rows, and the cursor for the next.
     async fn whole_records(&self, all: &Ctx, entity: &str, with_rows: bool, cursor: Option<String>) -> Result<(Vec<Value>, Option<String>)> {
-        let page = self.list(all, entity, &ListQuery { sort: Some("created_at".into()), limit: Some(MAX_LIMIT), cursor, ..Default::default() }).await?;
+        let q = ListQuery { sort: Some("created_at".into()), limit: Some(MAX_LIMIT), cursor, ..Default::default() };
+        let page = self.list_with_timeout(all, entity, &q, self.db.config.report_timeout_ms).await?;
         let mut rows = Vec::with_capacity(page.rows.len());
         for row in page.rows {
             let id = row.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
