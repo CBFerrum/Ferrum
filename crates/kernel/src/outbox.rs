@@ -305,8 +305,11 @@ pub async fn first_time(tx: &mut Tx, tenant: Uuid, consumer: &str, event: i64) -
     .await?)
 }
 
-/// How long a claimed batch is reserved for the worker handling it.
-const LEASE_SECS: f64 = 600.0;
+/// How long a claimed batch is reserved for the worker that claimed it: what it has not begun by then may pass to
+/// another replica, so a replica that dies holding a batch delays it this long at most.
+const CLAIM_SECS: f64 = 30.0;
+/// How long an event is its worker's once begun: what its handlers may take, and the claim's time again to say how it went.
+const EVENT_LEASE_SECS: f64 = EVENT_TIMEOUT.as_secs() as f64 + CLAIM_SECS;
 /// The same for webhooks: requests run side by side and time out after 10 seconds.
 const WEBHOOK_LEASE_SECS: f64 = 60.0;
 
@@ -326,12 +329,19 @@ fn backoff(attempts: i32) -> f64 {
 impl Kernel {
     /// Claims and handles one batch. Returns how many events were processed.
     ///
-    /// The claim is a lease: a short transaction moves the batch's `available_at` into the
-    /// future, then each event is handled outside any long transaction (handlers call webhooks,
-    /// SMTP servers, plugins) and its outcome is recorded on its own. A worker that dies mid-batch
-    /// leaves leases that simply expire, and another replica picks the events up — delivery stays
-    /// at least once, never stuck behind a lock.
+    /// The claim is a lease: a short transaction moves the batch's `available_at` half a minute
+    /// into the future, then each event is taken for its handlers' time as it begins, handled
+    /// outside any long transaction (handlers call webhooks, SMTP servers, plugins), and its outcome
+    /// recorded on its own. A worker that dies mid-batch leaves leases that simply expire, and
+    /// another replica picks the events up — delivery stays at least once, never stuck behind a lock.
     pub async fn dispatch_outbox_once(&self) -> Result<usize> {
+        let (_running, stopping) = watch::channel(false);
+        self.dispatch_outbox(&stopping).await
+    }
+
+    /// [`Kernel::dispatch_outbox_once`] for a dispatcher that may be told to stop: from then on it
+    /// begins nothing, and hands back at once what it had claimed and not begun.
+    async fn dispatch_outbox(&self, stopping: &watch::Receiver<bool>) -> Result<usize> {
         if self.db.fenced() || self.holding().await? {
             return Ok(0);
         }
@@ -356,7 +366,7 @@ impl Kernel {
                limit $3) \
              returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, depth, available_at as lease, zone",
         )
-        .bind(LEASE_SECS)
+        .bind(CLAIM_SECS)
         .bind(TENANT_SHARE)
         .bind(BATCH)
         .bind(crate::window::build_date())
@@ -368,16 +378,28 @@ impl Kernel {
         for ev in events {
             by_tenant.entry(ev.tenant_id).or_default().push(ev);
         }
-        for outcome in futures::future::join_all(by_tenant.into_values().map(|events| self.handle_events(events))).await {
+        for outcome in futures::future::join_all(by_tenant.into_values().map(|events| self.handle_events(events, stopping))).await {
             outcome?;
         }
         Ok(claimed)
     }
 
     /// One workspace's share of a batch, in order: priority, then age.
-    async fn handle_events(&self, mut events: Vec<Event>) -> Result<()> {
+    async fn handle_events(&self, mut events: Vec<Event>, stopping: &watch::Receiver<bool>) -> Result<()> {
         events.sort_by_key(|e| e.id);
-        for ev in &events {
+        for (begun, ev) in events.iter().enumerate() {
+            // The replica is stopping: what it has not begun goes back now, not when the claim runs out.
+            if *stopping.borrow() {
+                let rest: Vec<i64> = events[begun..].iter().map(|e| e.id).collect();
+                let mut tx = self.db.system_tx().await?;
+                sqlx::query("update outbox set available_at = now() where id = any($1) and available_at = $2")
+                    .bind(&rest)
+                    .bind(ev.lease)
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                return Ok(());
+            }
             // The claim covered the batch, and earlier events may have used it up: take this one
             // afresh. If it has passed to another worker meanwhile, it is theirs, and running it
             // here too would do the work twice. Once a move is planned, the rest of the batch waits for its copy.
@@ -389,7 +411,7 @@ impl Kernel {
             )
             .bind(ev.id)
             .bind(ev.lease)
-            .bind(LEASE_SECS)
+            .bind(EVENT_LEASE_SECS)
             .fetch_optional(&mut *tx)
             .await?;
             tx.commit().await?;
@@ -775,23 +797,25 @@ impl Kernel {
         if failed.is_empty() { Ok(()) } else { Err(Error::Unavailable(failed.join("; "))) }
     }
 
-    /// Drains the outbox until shutdown, looking again every 250 ms when it is empty.
+    /// Drains the outbox until shutdown, looking again every 250 ms when it is empty. Told to stop, it
+    /// finishes the events it has begun and hands back the rest of its batch.
     pub fn spawn_outbox_dispatcher(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         let k = self.clone();
         tokio::spawn(async move {
             loop {
-                if *shutdown.borrow() {
-                    return;
-                }
-                loop {
-                    match k.dispatch_outbox_once().await {
+                // Batch after batch while there is work, and none once the replica is stopping.
+                while !*shutdown.borrow() {
+                    match k.dispatch_outbox(&shutdown).await {
                         Ok(0) => break,
-                        Ok(_) => continue,
+                        Ok(_) => {}
                         Err(e) => {
                             tracing::warn!("outbox dispatch error: {e}");
                             break;
                         }
                     }
+                }
+                if *shutdown.borrow() {
+                    return;
                 }
                 tokio::select! {
                     _ = shutdown.changed() => return,
@@ -936,14 +960,23 @@ impl Kernel {
         })
     }
 
-    /// Deletes processed outbox rows, delivered webhooks and expired idempotency keys.
+    /// Deletes processed outbox rows, delivered webhooks, the receipts of events that will not be handled again, and expired
+    /// idempotency keys.
     pub async fn purge_old_events(&self, keep_days: i32) -> Result<u64> {
         let past = |column: &str, days: i32| format!("{column} < now() - make_interval(days => {days}) and not ferrum_workspace_held(tenant_id)");
         self.db
             .purge(&[
                 ("outbox", past("processed_at", keep_days)),
                 ("webhook_delivery", format!("status = 'delivered' and {}", past("updated_at", keep_days))),
-                ("event_receipt", past("received_at", keep_days)),
+                // A receipt stays while its event may still be handled (waiting, or dead and replayable): it is what
+                // keeps a consumer that handled it from being called again.
+                (
+                    "event_receipt",
+                    format!(
+                        "{} and not exists (select 1 from outbox o where o.id = event_receipt.event_id and o.processed_at is null)",
+                        past("received_at", keep_days)
+                    ),
+                ),
                 // A receipt answers a request sent again for as long as a device's work may wait offline.
                 ("idempotency_key", past("created_at", crate::receipt::RECEIPT_DAYS)),
                 ("event_chain", past("first_at", keep_days)),

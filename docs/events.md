@@ -28,8 +28,11 @@ Tasks a handler spawns start without a trace; run them under one if their events
 
 ## Delivery
 
-**At least once.** A worker takes a lease on a batch (ten minutes) and handles it outside any long
-transaction. If it dies the lease expires and another replica takes the events. Webhook deliveries are
+**At least once.** A worker takes a lease on a batch (30 seconds), takes each event again as it begins
+it (for its handlers' 120 seconds and 30 more), and handles it outside any long transaction. If the worker
+dies, what it had not begun passes to another replica within 30 seconds, and the event it was at when its
+own lease ends; a replica that is stopping finishes what it has begun and hands back the rest of its batch at
+once. Webhook deliveries are
 unique per webhook and event, plugin runs per plugin and event, automation runs per automation and event (a
 scheduled automation's moments per automation, record and moment), and what an event sink handled is
 recorded (below). There is no exactly-once, and nothing should assume it.
@@ -83,7 +86,8 @@ attempts. A sandbox sends nothing: its deliveries are dead at once, saying why.
 
 **Dead events** stay in the table for a person to look at; the `ferrum_outbox_dead` and
 `ferrum_webhook_dead` metrics count them. Handled events and delivered webhooks are deleted after 30
-days.
+days, and with them the receipts of what consumers handled; a waiting or dead event keeps its receipts however
+old they are, so a replay never repeats what was done.
 
 | Request | Does |
 |---|---|

@@ -434,4 +434,25 @@ async fn scenario() {
     assert_eq!(journeys.times(elsewhere), 0, "a workspace without the app's packages does not call its sink");
     assert_eq!(journeys.times(there), 1, "one with them does");
     assert_eq!((tally.times(elsewhere), tally.times(there)), (1, 1), "the platform's own sinks hear every workspace");
+
+    // ───────────── a dead event keeps its receipts as long as it can be replayed ─────────────
+    sink.fail.store(true, Ordering::SeqCst);
+    emit(&k, quiet, "flaky", 1).await;
+    let dead = last(&k, "flaky").await;
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update outbox set attempts = 14 where id = $1").bind(dead).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    k.dispatch_outbox_once().await.unwrap();
+    assert_eq!(k.dead_events(&admin, 10).await.unwrap()[0]["id"], json!(dead), "dead");
+    assert_eq!(tally.times(dead), 1);
+    // Replayed a year on, long past the days handled events and their receipts are kept.
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update event_receipt set received_at = now() - interval '1 year' where event_id = $1").bind(dead).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    k.purge_old_events(30).await.unwrap();
+    sink.fail.store(false, Ordering::SeqCst);
+    k.replay_event(&admin, dead).await.unwrap();
+    drain(&k).await;
+    assert_eq!(pending(&k, quiet, "flaky").await, 0, "handled once replayed");
+    assert_eq!(tally.times(dead), 1, "a sink that handled it before it died is not called again");
 }

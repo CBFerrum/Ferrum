@@ -105,7 +105,7 @@ impl EventSink for Departures {
 the app's document hooks run (the platform's own sinks, and an app's registered without packages, hear every
 workspace), so its own check of the package is no longer needed; it filters by topic first.
 
-**At least once, so the first time is asked.** A worker leases a batch; if it dies, another replica takes the events
+**At least once, so the first time is asked.** A worker leases a batch for 30 seconds; if it dies, another replica takes the events
 again. There is no exactly-once ([docs/events.md](../events.md), *Delivery*). A handler is either naturally idempotent
 (Bookings' `update … set active = false … where … and active`), or asks, in the transaction that does the work,
 whether it is the first time:
