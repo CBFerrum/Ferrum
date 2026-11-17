@@ -141,6 +141,14 @@ fn person(ctx: &Ctx) -> Option<Uuid> {
     (!ctx.user.is_nil()).then_some(ctx.user)
 }
 
+/// Nobody approves what they asked for themselves: `asked_by` wrote it.
+fn someone_else(ctx: &Ctx, asked_by: Option<Uuid>) -> Result<()> {
+    if person(ctx).is_some() && asked_by == person(ctx) {
+        return Err(Error::Forbidden("someone else has to approve this".into()));
+    }
+    Ok(())
+}
+
 /// One limit an envelope sets on a payload.
 #[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct Limit {
@@ -256,7 +264,8 @@ async fn envelope(tx: &mut Tx, tenant: Uuid, target: &devices::Target, cmd: &New
     Ok(Ok(reference))
 }
 
-/// Whoever turns an envelope on approved it, and what it allowed at that moment stays on record.
+/// Whoever turns an envelope on, or changes it while it is on, approves it, and what it allowed at that
+/// moment stays on record. It has to limit something, and whoever wrote it cannot approve it.
 pub struct EnvelopeHook;
 
 #[async_trait::async_trait]
@@ -269,6 +278,10 @@ impl DocHook for EnvelopeHook {
         if doc.get("enabled").and_then(Value::as_bool) != Some(true) {
             return Ok(());
         }
+        if doc.get("limits").and_then(Value::as_array).is_none_or(Vec::is_empty) {
+            return Err(Error::field("limits", "an envelope that limits nothing approves every payload: give it a limit before it is on"));
+        }
+        someone_else(hc.ctx, doc.get("created_by").and_then(Value::as_str).and_then(|s| s.parse().ok()))?;
         let id = doc.get("id").and_then(Value::as_str).and_then(|s| s.parse().ok()).ok_or_else(|| Error::internal("an envelope without an id"))?;
         let mut values = Doc::new();
         values.insert("approved_by".into(), json!(hc.ctx.email));
@@ -559,9 +572,7 @@ pub async fn approve(tx: &mut Tx, ctx: &Ctx, id: Uuid) -> Result<State> {
     if row.state()? != State::Proposed {
         return Err(Error::invalid(format!("this command is {}", row.state)));
     }
-    if row.issued_by == person(ctx) && person(ctx).is_some() {
-        return Err(Error::Forbidden("someone else has to approve this".into()));
-    }
+    someone_else(ctx, row.issued_by)?;
     let reference = format!("user:{}", ctx.user);
     sqlx::query("update op_command set approval_ref = $3 where tenant_id = $1 and id = $2")
         .bind(ctx.tenant)

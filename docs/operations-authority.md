@@ -72,8 +72,10 @@ it (`crates/ops/src/mcp.rs`).
 
 Software asks through the ledger like anything else: a rule or schedule as `automation`, an agent as
 `ai`. What it asks for waits for a person unless an **Automation Envelope** covers it, and the
-command's history says which limit it fell outside of. An envelope is one person's decision made in
-advance, and it has to say what was decided:
+command's history says which limit it fell outside of. An envelope is a decision made in advance, by
+someone other than whoever wrote it, and it has to say what was decided. It is created switched off;
+it is switched on only with at least one parameter limit, and never by whoever created it. Whoever
+switches it on, or changes it while it is on, is recorded as approving it, with what it allowed then:
 
 | It says | With | Anything else |
 |---|---|---|

@@ -65,15 +65,15 @@
   kind: master
   module: ops
   title_field: envelope_name
-  description: What software may do on its own, approved by a person, with limits. Anything outside it goes to a person. Switching one off takes effect at once.
+  description: What software may do on its own, with limits, approved by a person other than whoever wrote it. Anything outside it goes to a person. Switching one off takes effect at once.
   fields:
     - {name: envelope_name, type: data, required: true, in_list: true}
     - {name: site, type: link, to: Site, required: true, in_list: true, in_filter: true}
     - {name: operation, type: data, required: true, in_list: true, max_length: 100}
-    - {name: enabled, type: check, default: true, in_list: true, in_filter: true}
+    - {name: enabled, type: check, in_list: true, in_filter: true, description: "Switched on, with at least one limit, by someone other than whoever created it, who approves it"}
     - {name: agents, type: check, label: AI Agents Too, in_filter: true, description: "Off, only rules and schedules run under this, and whatever an agent proposes goes to a person"}
     - {name: devices, type: table, of: EnvelopeDevice, description: "Only these. Empty means every device at the site that may do this"}
-    - {name: limits, type: table, of: EnvelopeLimit, label: Parameter Limits, description: "A payload outside any of these, or without one of them, goes to a person"}
+    - {name: limits, type: table, of: EnvelopeLimit, label: Parameter Limits, description: "At least one before it is on. A payload outside any of these, or without one of them, goes to a person"}
     - {name: equipment_state, type: select, options: [Running, Idle, Stopped], description: "The state the device must last have reported. Empty asks nothing of it"}
     - {name: evidence_metric, type: data, max_length: 120, description: "A reading that must be recent, or nobody knows how the device stands"}
     - {name: evidence_max_age_secs, type: int, min: 1, label: Evidence Age (Seconds), description: "How old that reading may be"}

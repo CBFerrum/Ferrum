@@ -433,9 +433,10 @@ async fn scenario() {
     let by_ai = issue(&t, &manager, NewCommand { issuer: Issuer::Ai, ..move_tote(bot) }).await.unwrap();
     assert_eq!(by_ai.state, State::Proposed, "an AI proposes, even for what a person could send at once");
     let envelope = k
-        .insert(&manager, "AutomationEnvelope", obj(json!({"envelope_name": "Moves", "site": site, "operation": "warehouse.move", "max_per_hour": 2, "valid_until": (Utc::now() + Duration::hours(1)).to_rfc3339()})))
+        .insert(&manager, "AutomationEnvelope", obj(json!({"envelope_name": "Moves", "site": site, "operation": "warehouse.move", "max_per_hour": 2, "limits": [{"parameter": "to"}], "valid_until": (Utc::now() + Duration::hours(1)).to_rfc3339()})))
         .await
         .expect("envelope");
+    k.update(&t.admin, "AutomationEnvelope", id_of(&envelope), obj(json!({"enabled": true})), None).await.expect("switched on by someone else");
     for _ in 0..2 {
         assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap().state, State::Queued, "inside its limits");
     }
@@ -934,6 +935,7 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
     activate(&t, gw_id).await;
     let bot = robot(&t, "BOT-1", site).await;
     let manager = person(&t, "mo@north.test", &["Ops Manager"]).await;
+    let second = person(&t, "ann@north.test", &["Ops Manager"]).await;
     let force = NewCommand { operation: "door.force".into(), payload: json!({"door": 3}), ..move_tote(bot) };
     let envelope = k
         .insert(&manager, "AutomationEnvelope", obj(json!({"envelope_name": "Moves", "site": site, "operation": "warehouse.move", "max_per_hour": 2, "valid_until": (Utc::now() + Duration::hours(1)).to_rfc3339()})))
@@ -944,11 +946,20 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
         let seen = json_of(api(&t, &t.admin, "GET", &format!("/commands/{id}"), Value::Null).await.unwrap());
         seen["history"].as_array().unwrap().iter().find_map(|e| e["detail"]["outside"].as_str()).unwrap_or_default().to_string()
     };
-    let envelope_set = async |v: Value| k.update(&manager, "AutomationEnvelope", id_of(&envelope), obj(v), None).await.expect("changed");
+    // Whoever turns it on, or changes it while it is on, approves it: here never the one who wrote it.
+    let envelope_set = async |v: Value| k.update(&second, "AutomationEnvelope", id_of(&envelope), obj(v), None).await.expect("changed");
+
+    // ───── A6: one person cannot make one, and nobody one that limits nothing ─────
+    let switch_on = async |by: &Ctx| k.update(by, "AutomationEnvelope", id_of(&envelope), obj(json!({"enabled": true})), None).await;
+    let limitless = switch_on(&second).await;
+    assert!(matches!(&limitless, Err(Error::Validation(v)) if v[0].field == "limits"), "an envelope with no limit approves every payload: {limitless:?}");
+    k.update(&manager, "AutomationEnvelope", id_of(&envelope), obj(json!({"limits": [{"parameter": "to"}]})), None).await.expect("a limit, while it is off");
+    let own = switch_on(&manager).await;
+    assert!(matches!(&own, Err(Error::Forbidden(_))), "nobody approves what they wrote: {own:?}");
 
     // ───── an envelope is more than a rate: where, what, when and how much ─────
     envelope_set(json!({"enabled": true, "max_per_hour": 1000})).await;
-    assert_eq!(k.get(&t.admin, "AutomationEnvelope", id_of(&envelope), false).await.unwrap()["approved_by"], json!("mo@north.test"), "whoever turned it on");
+    assert_eq!(k.get(&t.admin, "AutomationEnvelope", id_of(&envelope), false).await.unwrap()["approved_by"], json!("ann@north.test"), "whoever turned it on");
     let ai = issue(&t, &manager, NewCommand { issuer: Issuer::Ai, ..move_tote(bot) }).await.unwrap();
     assert_eq!(ai.state, State::Proposed, "an envelope for rules says nothing about agents");
     assert!(outside(ai.id).await.contains("does not cover agents"));
@@ -971,7 +982,7 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
     assert_eq!(too_many.state, State::Proposed, "a quantity past its limit");
     let unsaid = issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap();
     assert!(outside(unsaid.id).await.contains("does not say qty"), "what it does not say cannot be judged");
-    envelope_set(json!({"limits": []})).await;
+    envelope_set(json!({"limits": [{"parameter": "to"}]})).await;
 
     envelope_set(json!({"equipment_state": "Idle"})).await;
     let unheard = issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap();

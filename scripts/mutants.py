@@ -402,7 +402,7 @@ MUTANTS = [
     ("ops-replay-accepted", "crates/ops/src/identity.rs", "    if fresh.rows_affected() == 0 {", "    if false {", OPS),
     ("ops-signature-unchecked", "crates/ops/src/identity.rs", "    key.verify(&signed, &Signature::from_bytes(&signature)).map_err(|_| Refused::Key(\"the signature does not match\"))?;\n", "    let _ = (&key, &signed, &signature);\n", OPS),
     ("ops-ai-queues-directly", "crates/ops/src/commands.rs", "            Err(why) => (State::Proposed, None, Some(why)),", "            Err(why) => (State::Queued, None, Some(why)),", OPS),
-    ("ops-own-approval", "crates/ops/src/commands.rs", "    if row.issued_by == person(ctx) && person(ctx).is_some() {", "    if false {", OPS),
+    ("ops-own-approval", "crates/ops/src/commands.rs", "    if person(ctx).is_some() && asked_by == person(ctx) {", "    if false {", OPS),
     ("ops-other-site-measurements", "crates/ops/src/telemetry.rs", "if !ours.contains(&m.device_id) || m.check(now).is_err() {", "if m.check(now).is_err() {", OPS),
     # A connection is one gateway's at a time, by generation (FLC-EDGE-009): the old one closing ends
     # nothing of the new, and an open older than what is known does not take it back.
