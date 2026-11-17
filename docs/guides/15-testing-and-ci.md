@@ -16,7 +16,7 @@ may be its parent's). In practice each area of an app has one: Comms has `comms_
 - **The role.** The tests connect as an ordinary role, `ferrum`, that owns its test database and is no superuser:
   superusers bypass row-level security, so a suite run as one proves nothing about tenant isolation. The app's workflow
   makes it so (`create role ferrum login password 'ferrum'; create database ferrum_comms_test owner ferrum;`).
-- **The address.** Each suite reads its database from a variable of its own, through the test kit:
+- **The address.** Each suite reads its database from a variable of its own. With the test kit,
   `database("FERRUM_METRICS_TEST_DATABASE_URL")` is the variable's address, else `ferrum_metrics_test` on the local
   server. `scripts/app_ci.sh` finds these (in the workflow and in the suites) and gives each a database of its own.
   Reading a test variable with `std::env::var` in `tests/` is fine: the operator-settings check skips `tests/`.
@@ -27,7 +27,9 @@ may be its parent's). In practice each area of an app has one: Comms has `comms_
 ### Booted as the server boots it
 
 A suite boots from the test kit, `ferrum-testkit` under `[dev-dependencies]` ([docs/testkit.md](../testkit.md)), which
-boots the kernel as the server does and in no other way. From a suite that needs Comms, ERP and CRM beside Campaigns:
+boots the kernel as the server does and in no other way. The kit's own suites are in the platform's repository
+(`docs/testkit.md`); the suites of the app repositories boot the kernel themselves, as Comms' and Metrics' do. For a
+suite that needs Comms, ERP and CRM beside Campaigns, on the kit:
 
 ```rust
 use ferrum_testkit::{Kit, app, database, run};
@@ -52,8 +54,8 @@ async fn scenario() {
 - The vault is opened before the kernel with its credential slot, from the address's password (it must hold one), with
   a cheap `vault::Kdf` ([08](08-secrets-and-the-vault.md), *Tests*).
 - Several replicas: `kit.replica()` starts another server on the same database. Run the same work on both at once and
-  check it happened once. Metrics' `external_it` runs its upkeep four times at once, as replicas starting together
-  would, and checks the environment's token was kept in the vault once.
+  check it happened once. Metrics' `services_it` renders its service's files on two replicas at once and checks the
+  token was made once.
 - Events: `ws.drain()` delivers the workspace's events and fails, naming them, when they do not go.
 
 ### What a scenario test covers
@@ -104,7 +106,7 @@ not run:
 |---|---|
 | Comms | A real Stalwart mail server for hosted mail (`tests/stalwart.sh`, Docker), started in its workflow; without one the hosted-mail part prints "hosted mail skipped: no FERRUM_MAIL_URL (tests/stalwart.sh starts a mail server)" |
 | Metrics | Its real engine, served in the test process on a real port (`tests/external_it.rs`) |
-| The platform | LiveKit 1.13.11 started on a rendered file (`crates/kernel/tests/companions_it.rs`, where `livekit-server` is installed); a real Forgejo 17.0.1 (`scripts/oidc_rehearsal.sh`); real S3 servers (`scripts/object_store_rehearsal.sh`); PgBouncer in transaction mode (`scripts/managed_pg.sh`) |
+| The platform | LiveKit started on a rendered file (`crates/kernel/tests/companions_it.rs`, where `livekit-server` is installed); a real Forgejo (`scripts/oidc_rehearsal.sh`); real S3 servers (`scripts/object_store_rehearsal.sh`); PgBouncer in transaction mode (`scripts/managed_pg.sh`) |
 
 How to say what never ran:
 
@@ -151,7 +153,7 @@ What it does, as the app's `.github/workflows/ci.yml` would on GitHub:
 ### `scripts/local_ci.sh`
 
 The platform's CI on this machine, job by job (`rust`, `saml`, `audit`, `move`; `replica`, `managed`, `window`,
-`objects`, `oneinput`, `oidc`, `companions` only when named). A job that needs software it cannot find says `SKIP` in
+`objects`, `oneinput`, `oidc`, `companions` only when named; `editors` needs Docker and Playwright and is not run here). A job that needs software it cannot find says `SKIP` in
 one line and passes. An app developer runs `audit` after changing what the platform compiles in (a pin), and the
 rehearsal that matches what they changed.
 

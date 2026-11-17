@@ -18,6 +18,7 @@ sandbox's wall); the app's job is to use it rather than build its own. The refer
 | Send mail, a text, a chat message or an in-app notice | `messages::send` with a template in `package.yaml` | The workspace edits the words; opt-outs, quiet hours, restriction of processing, the record of each send |
 | Let a person write a mail in the Mail app from your page | The `compose` intent | No dependency on Comms |
 | Use another app's records | `requires` in `app.yaml` and the kernel's record calls | Its permissions, hooks and history apply |
+| Make another app do something (take a payment, place a hold) | `uses` in the package and `Kernel::call_tx` | One gate: its hooks, rules and audit run, once per key, undone as a whole if it fails |
 | Carry one country's or sector's rules | An **add-on** with data, on a general engine | Engines stay the same everywhere |
 
 ## Calling another system
@@ -25,11 +26,11 @@ sandbox's wall); the app's job is to use it rather than build its own. The refer
 ### A connection
 
 A connection is one described HTTP service: its base address, its authentication, its operations, their inputs and
-results, its secrets ([docs/api.md](../api.md), *Connections*; BD-29 to BD-33 in docs/builder/decisions.md). No
+results, its secrets ([docs/api.md](../api.md), *Connections*). No
 provider is named in the platform's code: a provider is a description. An app ships the descriptions it needs in its
 package (`connections:` in `package.yaml`), so that a workspace sees them offered and an administrator gives the secrets.
 
-Calling one from an app (`crates/kernel/src/connections/mod.rs:1456`):
+Calling one from an app (`connections::call`, `crates/kernel/src/connections/mod.rs`):
 
 ```rust
 use ferrum_kernel::connections::{self, Call};
@@ -54,10 +55,6 @@ let result = connections::call(k, ctx, Some("erp"), &Call {
   address unless the operator names the host in `FERRUM_CONNECTION_HOSTS`.
 - The credentials are the connection's secrets, carried by the platform (`vault::carried`), had only while the
   description still reaches the hosts they were given for. The app never sees them.
-
-[docs/api.md](../api.md), *Moving an app's own HTTP client onto a connection*, is the step-by-step for an app that built
-its own client: the description, moving the stored keys, replacing the client with `connections::call`, moving the
-webhook route, OAuth providers, deleting the app's own fixtures and address checks.
 
 ### The kernel's outbound client
 
@@ -120,7 +117,7 @@ The handler runs in the transaction that marks the call processed: what it chang
 that says the call cannot succeed marks it failed; any other is tried again. The caller is answered at once, whatever
 the reason for a refusal (`401 this call was not accepted`); bodies up to 256 KB by default, 1 MB at most.
 
-An app's own site (`/api/site/{tenant}/{package}/…`, `Site::handle`) can take a webhook too, and older apps do. Then the
+An app's own site (`/api/site/{tenant}/{package}/…`, `Site::handle`) can take a webhook too. Then the
 app does what the inbound address does for free: verify the signature in constant time, refuse replays, rate-limit with
 `Kernel::rate_limit`, keep the body small (`Site::max_body_for`), answer fast and do the work in a job. Prefer the
 connection.
@@ -129,7 +126,7 @@ connection.
 
 A connector translates one provider's model, credentials, events and limits into an app's records
 ([docs/connectors.md](../connectors.md)). Implement `connect::Connector` (`info`, `check`, `discover`, `pull`, `push`,
-webhook authentication; `crates/kernel/src/connect.rs:157`) and register it with `HookRegistry::add_connector`, or ship
+webhook authentication; `crates/kernel/src/connect.rs`) and register it with `HookRegistry::add_connector`, or ship
 it as a plugin. The platform does the rest: credentials sealed and never read back, mapping per stream, a job per run
 with a cursor, conflicts (`source`, `local`, `review`), tombstones, delivery with dead letters, webhooks authenticated and
 deduplicated, reconciliation that repairs nothing by guesswork, and waiting together per provider account when the
@@ -137,8 +134,7 @@ provider says slow down. Describe what the provider's API really offers, not a c
 
 ## Mail, texts and notices
 
-Every message an app sends to a person is a template the workspace can edit ([docs/api.md](../api.md), *Messages*;
-BD-20):
+Every message an app sends to a person is a template the workspace can edit ([docs/api.md](../api.md), *Messages*):
 
 ```yaml
 # package.yaml
@@ -170,8 +166,8 @@ ferrum_kernel::messages::send(k, tx, ctx, &Message {
   address they have had: the platform asks `Kernel::may_contact_for` at the moment a message goes out. An app that
   reaches people another way asks it too ([12](12-privacy-and-data-duties.md)).
 - A one-time code: `Kernel::send_code` and `Kernel::verify_code`, never a code table of your own.
-- `Kernel::queue_mail` (`crates/kernel/src/outbox.rs:75`) queues a plain e-mail through the server's mailer after the
-  commit. It is the older way, for wording no workspace edits; new messages are templates.
+- `Kernel::queue_mail` (`crates/kernel/src/outbox.rs`) queues a plain e-mail through the server's mailer after the
+  commit, for wording no workspace edits; a message a person reads is a template.
 
 Mail does not need the Mail app (Comms): the server's mailer sends it. When a person should write a mail themselves from
 your page, start the `compose` intent and let whichever app handles it open its composer ([docs/plan/apps-ui.md](../plan/apps-ui.md),
@@ -187,8 +183,24 @@ your page, start the `compose` intent and let whichever app handles it open its 
   app's permissions, field groups, hooks, validation, numbering and history apply ([04](04-data-and-records.md)).
 - **Never its tables.** An `update`, `insert into` or `delete from` of an `e_*` table outside the document pipeline is
   listed and given a kind by a person in docs/registry/mutation-paths.md; `scripts/mutation_paths.py` fails on one that
-  is not ([04](04-data-and-records.md), *The review of direct table writes*). Another app's engine tables (journals,
+  is not ([04](04-data-and-records.md), *Writes outside the pipeline, and their review*). Another app's engine tables (journals,
   stock moves) are its own: ask it through its functions.
+- **Its operations**, not only its records: an app offers one as an action with a contract, and the package that needs it
+  says so in `package.yaml`, within what it depends on (`uses: [{capability: commerce.sales_invoice.request_payment,
+  version: "^0.6"}]`: Bookings' `bookings_payments`). The app calls it in its own transaction with the vault handle its
+  registration took, under a key of its own:
+
+  ```rust
+  // ferrum-app-bookings/src/payments.rs
+  k.call_tx(&crate::keys::handle(k)?, ctx, tx, &Invocation::new(capability, input).key(key)).await?.result
+  ```
+
+  The call runs the owning app's operation as the system on the person's behalf, through the gate (its hooks, rules and
+  audit apply), once per key. It is refused where no installed package of the caller declares it (`forbidden`) or the
+  installed version is outside the range (`capability_unavailable`), is never left waiting for an approval, and when it
+  fails it leaves nothing of itself in the caller's transaction, so the caller may carry on. The install screen lists
+  the uses, and administrators see each app's calls (`GET /api/admin/apps/connections`). The full rules are
+  [docs/app-contract.md](../app-contract.md), *Using another app's operations*; keep the handle inside the app's crate.
 - **Hooks on its entities** register under `HookRegistry::scoped` (or inside your `app` registration) so they run only
   where your packages are installed.
 - **Something that needs both sides** is a connector app: CRM's `crm-erp` (`requires: {crm, erp}`) adds ERP's taxes to
@@ -201,7 +213,7 @@ your page, start the `compose` intent and let whichever app handles it open its 
 ## Country and sector rules: add-ons and data, never an engine's code
 
 Engines are general. A country's or a sector's rules are data a workspace can see and change, or an add-on app on the
-engine, never a branch on a country inside the engine (the owner's standing rule; [docs/plan/localization.md](../plan/localization.md)):
+engine, never a branch on a country inside the engine ([docs/plan/localization.md](../plan/localization.md)):
 
 - **An add-on** is its own app with `parent: <engine app>` and `requires: {<engine app>: …}`, in the engine app's
   repository under `addons/<code>` (ERP's: `ca`, `countries`, `de`, `eu`, `eu-members`, `gb`, `india`, `us` and more), its
@@ -230,6 +242,8 @@ manifest. For extending another app, see *Extension points* above.
 - The kernel's guard on every connection call and outbound client (`crates/kernel/src/outbound.rs`,
   `crates/kernel/src/connections/`), and the sandbox's wall (`Kernel::outward`).
 - `scripts/mutation_paths.py`: direct writes to `e_*` tables.
+- `crates/meta/src/catalog.rs` (a `uses` of a package it does not depend on, or a version that is no range) and
+  `crates/kernel/tests/app_uses_it.rs` (`Kernel::call_tx`: declared, in range, once per key, undone when refused).
 - The catalog (`crates/meta/src/catalog.rs`): a package reaching past its dependencies is refused.
 - `compiled_apps_fit_together` (`server/src/packages.rs`): what a compiled app requires of another, the release compiled
   with it meets; contributions meet their point's schema.

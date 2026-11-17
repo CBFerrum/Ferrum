@@ -1,6 +1,6 @@
 # What every app gives
 
-The completeness contract for an app of Ferrum's (specification §7.2, FERRUM-UX-004): what a
+The completeness contract for an app of Ferrum's: what a
 person, an administrator and the platform can count on from every app, whoever wrote it. The parts a
 program can see are checked on every pull request by `scripts/check_apps.py`, over the apps the lock
 compiles in; the rest is reviewed, and walked in a browser (docs/platform/evidence).
@@ -15,9 +15,10 @@ How to follow it, step by step and with examples, is in the app developer's hand
 | A manifest | `app.yaml` with its id, name, version, publisher, summary, categories, licence, homepage and where to ask for support |
 | A description | The manifest names its README, which the store and the install dialog show |
 | A history | `CHANGELOG.md` says what each version changed, the version in the manifest included, and the README points at it (or lists that version in a changelog table of its own) |
-| A scenario test | At least one test under `tests/` that runs the app's flows against a real PostgreSQL, booted from the test kit ([testkit.md](testkit.md)) |
+| A scenario test | At least one `tests/*_it.rs` that runs the app's flows against a real PostgreSQL; the test kit ([testkit.md](testkit.md)) is how a suite starts |
 | An interface, when it has one | `ui/dist` built, with `.source` saying which sources and which Ferrum-Frontend it was built from |
 | A launcher icon the shell draws | Every `shell.app` contribution names an icon `server/shell/runtime.js` knows |
+| Operator settings, when it declares any | Native apps only, each with a key, a variable, a known type and a doc; the app requires the platform that reads them; its code reads the variables with `ferrum_kernel::env::var` (*Operator settings*, below) |
 
 ## Reviewed
 
@@ -44,7 +45,7 @@ How to follow it, step by step and with examples, is in the app developer's hand
 ## The vault
 
 An app keeps its keys and secrets in the platform's vault, through a handle of its own, and never holds a key of the
-platform's (docs/security.md, *The vault*; docs/plan/stateless.md, D4).
+platform's (docs/security.md, *The vault*).
 
 **Its handle.** An app registers under its id (`HookRegistry::app(id, packages, |h| ...)`), and takes its handle inside
 that registration (`h.vault()`): a `Vault` that opens only what is this app's, and works with the kernel the registry
@@ -60,7 +61,9 @@ server does not start.
 | `sign`, `verify` | HMAC (a value) or Ed25519 (a key pair the vault made); `verify` takes the version before during its overlap |
 | `derive`, `derive_at` | a key for one purpose from the app's own key, and again at an older version for what was made with it |
 | `seal`, `open` | data sealed under the app's own key for a context, kept wherever the app keeps it; it names the version that sealed it, and opens after a rotation |
-| `carry` | a secret put on an outbound request, for the hosts its rule names |
+| `carry`, `carry_at` | a secret put on an outbound request, for the hosts its rule names; `carry_at` with a version the app names, and says which it carried |
+| `adopt` | sets a secret only where it has no current version: what a replica found in its environment, copied once however many copy it at once; recorded with who copied it |
+| `origin` | how the current version of one of the app's installation-scope secrets was written, as the installation's record says |
 | `field` | the value of a secret field its own packages declare (a field one app adds to another's entity is the adder's), read in the caller's transaction and recorded; another app's is refused |
 
 **A secret it manages itself.** `manage(k, scope, name, true)` marks a secret of the app's own as the app's to manage
@@ -241,7 +244,7 @@ each workspace's administrators fill.
 platform: ">=0.3.9, <0.4"        # the platform that reads operator settings
 operator_settings:
   - key: office_url              # kept as drive.office_url
-    env: FERRUM_OFFICE_URL       # the variable the app read until now: it still works, and wins, through R1
+    env: FERRUM_OFFICE_URL       # the variable that sets it: the environment's value wins over the table's
     type: text                   # text (the default), bool, int, json, or choice (with values)
     default: ""                  # as the variable would say it; "" for the app's own default
     applies: start               # start (the default), or live: every replica takes a change within seconds

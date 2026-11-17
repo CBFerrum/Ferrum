@@ -278,6 +278,10 @@ well ([docs/logic/capabilities.md](../logic/capabilities.md)).
 contract. The record operations' names (`create`, `read`, `list`, `update`, `delete`, `submit`, `cancel`, `amend`)
 cannot be action names.
 
+**An app uses another app's operation** through the same gate, in its own transaction: it declares the capability in
+its package's `uses`, and calls it with `Kernel::call_tx` and the vault handle its registration took, under an effect key
+of its own ([11-integrations.md](11-integrations.md), *Other apps' records*).
+
 **A contract** says what an action promises (`ActionContract` in `crates/meta/src/types.rs`); everything is derived
 when left out, and a contract that contradicts its action is refused when the package loads:
 

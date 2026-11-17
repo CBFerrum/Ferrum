@@ -87,7 +87,7 @@ Add-ons live in their parent's repository when they ship with it. ERP's are unde
 # ferrum-app-erp/addons/india/app.yaml (abridged)
 id: india
 name: India
-version: 0.7.1
+version: 0.7.3
 publisher: cbferrum
 summary: GST, e-invoices and e-way bills for ERP
 categories: [finance]
@@ -107,10 +107,10 @@ Two kinds of add-on have categories of their own (`CATEGORIES` in `crates/apps/s
 
 - **A connector** (`connector`) joins two apps that do not depend on each other: it requires both and ships with
   one. CRM's `crm-erp` (`requires: {crm, erp}`, package `crm_erp`) adds ERP's taxes to quotations; its hooks
-  register under `HookRegistry::scoped(&["crm_erp"], …)` so they run only where it is installed
+  register under `HookRegistry::scoped(&["crm_erp".to_string()], …)` so they run only where it is installed
   ([docs/plugins.md](../plugins.md), *Records other apps share*). The connector manifests that ship with their apps
-  are listed in `native_manifests()` in `server/src/packages.rs` (`CONNECTOR_MANIFEST` of CRM, Helpdesk, HR,
-  Projects, Assets).
+  are listed in `native_manifests()` in `server/src/packages.rs` (each app's `CONNECTOR_MANIFEST`: CRM, Helpdesk, HR,
+  Projects, Assets, Commerce, Bookings, LMS, ITSM, Control, Objectives).
 - **A suite** (`suite`) is a `meta` app with only the apps it requires: no packages, no interface, no
   contributions. Installing it installs them. The parser refuses a suite that is anything else, and an app in
   category `suite` that is not one (`a suite (category suite) is a meta app with only the apps it requires`). The
@@ -166,10 +166,10 @@ Every app lives in a repository of its own, `ferrum-app-<name>`, under a licence
 `git+https://github.com/CBFerrum/ferrum-app-…` and has an `app.yaml` beside its `Cargo.toml`. An app inside the
 platform's own workspace is not one of those, so the check never sees it.
 
-> **Two exceptions exist at this commit.** Operations (`crates/ops`, `id: ops`) and Studio (`crates/studio`,
+> **Two exceptions exist.** Operations (`crates/ops`, `id: ops`) and Studio (`crates/studio`,
 > `id: studio`) are apps with an `app.yaml` inside the platform's `crates/`. Neither has a `CHANGELOG.md`,
-> `LICENSE`, `homepage` or `support` of its own, and `scripts/check_apps.py` does not check them. They predate the
-> rule. A new app does not follow them.
+> `LICENSE`, `homepage` or `support` of its own, and `scripts/check_apps.py` does not check them. A new app does not
+> follow them.
 
 ### The layout
 
@@ -185,10 +185,11 @@ ferrum-app-grc/
   src/risks.rs …            the hooks, one module per area
   packages/grc/package.yaml the package: modules, roles, workflows, seeds, personal data
   packages/grc/entities/    the entities (04-data-and-records.md)
-  packages/grc/sql/         an app's own tables (GRC has none; Drive has seven files)
+  packages/grc/sql/         an app's own tables (GRC has none; Drive has one file)
   tests/grc_it.rs           the scenario test against a real PostgreSQL (15-testing-and-ci.md)
   ui/                       the interface's sources; ui/dist is built and committed (17-the-interface.md)
-  README.md CHANGELOG.md LICENSE SECURITY.md docs/   (22-readme-and-repository.md)
+  rustfmt.toml              max_width 160 (02-your-first-app.md)
+  README.md CHANGELOG.md LICENSE docs/   (22-readme-and-repository.md)
   .github/workflows/ci.yml  the workflow scripts/app_ci.sh replays on the developer's machine
   .gitignore                /target, .cargo/config.toml, Cargo.lock (a library crate), ui/node_modules
 ```

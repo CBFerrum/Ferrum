@@ -56,8 +56,8 @@ impl Site for DriveSite {
 - `SiteResponse::json(status, &value)`, `SiteResponse::text(status, content_type, body)`, and
   `SiteResponse::file(status, content_type, headers, file_id)` for a stored file the server streams (never load a
   large file into memory to answer with it).
-- Bodies: 1 MB unless the `Site` says more (`max_body`, `max_body_for` per route), at most 32 MB for an app's JSON
-  (`docs/api.md`, *App endpoints*) and 1 GiB for anything; the server reads no further.
+- Bodies: 1 MB unless the `Site` says more (`max_body`, `max_body_for` per route), at most 1 GiB
+  (`docs/api.md`, *App endpoints*); the server reads no further.
 - `x-ferrum-site-api` and `x-ferrum-site-origin` never reach an app from the caller.
 - `serves_pages()` is for an app that serves a public website at the root of a `site:{app}` host (Commerce's
   storefront).
@@ -105,7 +105,7 @@ Rules:
 - A code, once published, keeps its meaning. A new situation gets a new code.
 - Field errors name the field as the API names it, so a form can put the message at the field.
 - `Retry-After` is sent on 429 and 503; the platform's client honours it (up to 30 seconds) and retries reads and
-  writes that carry an idempotency key, up to four times, and waits through `503 app_upgrading` (Ferrum-Frontend
+  writes that carry an idempotency key on 429, 502, 503 and 504, up to four times (Ferrum-Frontend
   `packages/client/src/index.ts`, `send`).
 - Never put a secret, a query string, SQL or another workspace's data in a message
   ([20-writing-for-people.md](20-writing-for-people.md)).
@@ -132,8 +132,9 @@ GET /api/app/helpdesk/portal/tickets?cursor=…  ->  {"tickets": [...], "next_cu
 Anything that creates something or has an effect outside takes an `Idempotency-Key`, so a request whose answer was
 lost can be sent again and is done once.
 
-- The platform: `POST /api/v1/{entity}` accepts `Idempotency-Key` (8 to 200 characters); a replay returns the
-  original record with `200` and `Idempotent-Replayed: true` (`docs/api.md`, *Conventions*).
+- The platform: `POST /api/v1/{entity}`, `PATCH /api/v1/{entity}/{id}` and `POST /api/v1/{entity}/{id}/actions/{action}`
+  accept `Idempotency-Key` (8 to 200 characters); a replay returns the original answer with `200` and
+  `Idempotent-Replayed: true` (`docs/api.md`, *Conventions*).
 - Cloud requires one on every create and refuses without it: "this request needs an Idempotency-Key header, so that
   repeating it is safe"; a key used for a different request is a conflict (`src/site.rs`, `src/operations.rs`).
 - Store the key with a digest of the request in the same transaction as the effect; answer a repeat with the first
@@ -171,11 +172,11 @@ yet is an answer of its own (`outcome_unknown`, Cloud's `unresolved`), never ret
   means, never remove one in a minor release.
 - Readers ignore what they do not know; writers do not send what was not asked for. Cloud's events carry a `schema`
   that a new field does not change (`ferrum-app-cloud/docs/sdk.md`).
-- Every call from an interface carries `X-Ferrum-UI: {app}@{version}`; a call that cannot be served for an old
-  interface answers `409 ui_outdated`, and the kit offers to reload (`docs/plan/apps-ui.md` §12.12). The plan says an
-  app's endpoints accept the previous minor of its own interface, so a page open across an upgrade keeps working.
-  Nothing checks that; test it by hand when you change a route the interface calls.
-- While an upgrade migrates a workspace, the app's API answers `503 app_upgrading` with `Retry-After`.
+- Every call from an interface carries `X-Ferrum-UI: {app}@{version}` (`packages/client/src/index.ts`). The plan
+  (`docs/plan/apps-ui.md` §12.12) adds that a call that cannot be served for an old interface answers `409 ui_outdated`,
+  that an app's endpoints accept the previous minor of its own interface, and that an app's API answers
+  `503 app_upgrading` while an upgrade migrates a workspace. Neither answer is in the code today, and nothing checks
+  that a page open across an upgrade keeps working: test it by hand when you change a route the interface calls.
 - Deprecating: the plan's rule is two platform minors with warnings before a removal (`docs/plan/apps-ui.md` §4
   rule 4). For an app: say it in the CHANGELOG with the version that will remove it, keep it working until then, and
   remove it in a release whose version says so ([16-releasing.md](16-releasing.md)).

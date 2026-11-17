@@ -92,10 +92,10 @@ own `packages/` with `scripts/window.py`; an app's repository is not checked by 
 An app's own tables, functions and triggers are SQL files in `packages/<package>/sql/` (`crates/meta/src/catalog.rs`).
 The schema sync applies each file once per installation, in file-name order, after the entity tables exist, each in a
 transaction of its own on the direct connection, and records it with its SHA-256 in `cluster_package_sql`
-(`crates/kernel/src/ddl.rs:631-660`).
+(`crates/kernel/src/ddl.rs:633-660`).
 
 - **Number them** so that name order is the order you mean: `001_cloud.sql`, `002_resources.sql`, … (Cloud's, up to
-  `010_event_retention.sql`). Three digits leave room.
+  `025_forge_sign_in.sql`). Three digits leave room.
 - **Never edit a file once released.** A changed file stops the start: "package SQL <package>/<file> changed after it was
   applied; add a new file instead of editing it". Fix forward in a new file.
 - **One file is one transaction.** It applies whole or not at all; no `CONCURRENTLY` inside it.

@@ -7,7 +7,7 @@ test and record it.
 The target is WCAG 2.2 level AA for the shell and the kit (`docs/plan/apps-ui.md` §12.9), and the contract asks every
 app for the basics: labels that name their fields, pages that fit 375px, colours that hold in dark mode
 (`docs/app-contract.md`, *Reviewed*). The criteria below are written from WCAG 2.2 as published; each is mapped to the
-kit components that were read in Ferrum-Frontend `3bec041` (`src/ui/kit.tsx`, `src/ui/patterns.tsx`,
+kit components in Ferrum-Frontend (`src/ui/kit.tsx`, `src/ui/patterns.tsx`,
 `src/ui/toolbar.tsx`, `src/lib/focusReturn.ts`, `src/components/ui/*`) and to what an app still has to do.
 
 ## What has and has not been tested
@@ -26,9 +26,12 @@ Say this plainly wherever your app's accessibility comes up:
   asserts focus returns to the opener for the list's overflow menu, a menu item that opens a dialog and the
   Administration dialogs (`evidence/integration-after/tab-order.json`, on the machine that did the work, not in the
   repository); the bar's nine controls checked to have names.
-- No app's tests run axe today. The helper is in Ferrum-Frontend's own `src/test/axe.ts`, which an app cannot import
-  (the build refuses `@/…` imports), and `@ferrum/testing` does not export it. The plan's "automatic accessibility
-  pass" in `ferrum-app check` and in the store's review (`docs/plan/apps-ui.md` §10.6, §12.9) is not built.
+- One app's tests run axe: Control's `ui/src/status.test.tsx` imports the helper from Ferrum-Frontend's `src/test/axe.ts`
+  by a relative path (the build refuses `@/…` imports, not relative ones). No other app's tests do, and
+  `@ferrum/testing` does not export it. The server and the store look at the page of an uploaded bundle's interface
+  (`ferrum_apps::ui::review`: `<html lang>`, a `<title>`, a viewport, `alt` on images, size); that is not an
+  accessibility test of its screens, and the plan's "automatic accessibility pass" (`docs/plan/apps-ui.md` §10.6,
+  §12.9) is not built beyond it.
 
 So a claim that an app "meets WCAG 2.2 AA" cannot be made today. What an app can say is which of the checks below were
 done, by whom, on which build, and what they found.
@@ -152,8 +155,8 @@ with `aria-keyshortcuts` and in the tooltip (`ToolbarButton shortcut="Mod-b"`).
 The kit's durations are zero under reduced motion and a global rule in `src/styles.css` cuts animation and
 transition everywhere. Do not start motion that lasts more than five seconds without a pause (a carousel, a ticker), do
 not flash, and do not rely on an animation to tell something happened. Spinners stop under reduced motion
-(`motion-reduce:animate-none` in `SaveStatus`). Do not use a scroll-driven animation to show state: the edge cue was
-one until 12 Nov 2026 and screenshots and Firefox lost it (PATTERNS.md, *Scrolling rows*).
+(`motion-reduce:animate-none` in `SaveStatus`). Do not use a scroll-driven animation to show state: the
+edge cue of a scrolling row is set from the scroll position by `watchEdges()` (PATTERNS.md, *Scrolling rows*).
 
 ### Zoom, text size and reflow (1.4.4, 1.4.10, 1.4.12, 1.3.4)
 
@@ -214,8 +217,8 @@ one until 12 Nov 2026 and screenshots and Firefox lost it (PATTERNS.md, *Scrolli
 - Text shown as it is (a name, a code, a count built in code) in a right-to-left page goes through `isolate()`, so
   its punctuation and numbers keep their order; `t()` isolates English left untranslated in such a page
   ([19-languages-and-formats.md](19-languages-and-formats.md)).
-- Arrows that mean "along the line" are mirrored (`Icon` with `chevronRight` or `left` gets `icon-dir`; `arrowStep`
-  maps Left and Right for the page's direction).
+- Arrows that mean "along the line" are mirrored (`Icon` with `chevronRight` or `left` gets `icon-dir`; the kit's tabs
+  and toolbars swap Left and Right for the page's direction, and a key handler of your own must too).
 - A passage in another language than the page (a quoted mail) gets its own `lang` where you know it.
 
 ### Media (1.2.1 to 1.2.5)
@@ -235,7 +238,7 @@ place on every page.
 Do these on a running server with your app built (`02-your-first-app.md` says how to run one), and record what you
 did. Each takes minutes per screen.
 
-1. **Automated.** There is no axe step an app can run today (above). Until there is, run the axe browser extension
+1. **Automated.** There is no axe step in an app's `cli.mjs` commands (above). Until there is, run the axe browser extension
    or Lighthouse's accessibility audit in Chrome on each screen, in light and dark, and keep the report. It finds
    perhaps a third of real problems: missing names, bad ARIA, contrast of text it can see.
 2. **Keyboard only.** Unplug the mouse. From the bar, Tab into the page (use "Skip to content"), do the screen's main

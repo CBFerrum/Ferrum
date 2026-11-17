@@ -183,7 +183,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 * Passwords: Argon2id; at least 10 characters with three character classes; 5 failures lock the
   account for 15 minutes; sign-in attempts are rate limited per address and workspace across
   replicas; an unknown email costs the same time as a known one.
-* Sessions: signed tokens (8 hours by default) carrying a token version; changing the password,
+* Sessions: a browser's is a session kept on the server, named by a signed cookie, lasting
+  `session_days` (14 by default) and ended one by one; other clients get signed tokens (HMAC-SHA512,
+  `jwt_expiration_seconds`, 8 hours by default). Both carry a token version: changing the password,
   "sign out everywhere", an administrator's two-factor reset and deactivation end every session.
 * Passkeys (WebAuthn): the relying party is the host signed in on; registration needs a session that
   signed in or stepped up in the last ten minutes and asks for no attestation; every ceremony's
@@ -262,7 +264,7 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   (never PKCS#1 v1.5), cipher values inline only (nothing fetched), and the key named by us rather
   than by a certificate or reference the sender chose. Once a key is tried, every failure reads the
   same. Only what the linked xmlsec1 has is accepted, asked of it algorithm by algorithm; without
-  AES-GCM and RSA-OAEP, encryption stays off as before (no key published, encrypted assertions
+  AES-GCM and RSA-OAEP, encryption stays off (no key published, encrypted assertions
   refused). Run on xmlsec1 1.3.13; 1.2 (the release image's 1.2.37) checked by reading its source.
 * SAML single logout (crates/kernel/src/saml_logout.rs), by the browser, both ways. Signing out ends
   the session at once, whatever the provider does; the logout request to the provider is signed, and
@@ -274,8 +276,8 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   guessed or of another provider's ends nothing. No Ferrum cookie is involved, so it works in a frame
   or another tab and cannot be forged by a page. The NameID and session index are kept on the session
   row (personal data, going with it) and in a logout started here for ten minutes.
-* API keys: 256 random bits, stored as SHA-256; OAuth access tokens last an hour, refresh tokens
-  rotate.
+* API keys: a secret of 40 lowercase letters and digits (about 206 random bits), stored as SHA-256;
+  OAuth access tokens last an hour, refresh tokens rotate.
 
 **Programs beside Ferrum signing in through it** ([api](api.md#signing-in-to-programs-beside-ferrum-openid-connect))
 * A program an installed app runs (its companion: the forge first) is an OpenID Connect client its app declares in its
@@ -317,8 +319,10 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   secrets) are kept in the vault, each its owner's, bound to their record, and never appear in
   events, the audit log, exports or webhooks. An app reads only the secret fields its own packages
   declare (`Vault::field`).
-* The audit trail is a hash chain the database only appends to; personal-data erasure redacts
-  values in it while keeping each event's place and hash.
+* The audit trail is hash-chained (per record, with a daily anchor per workspace), and database
+  triggers refuse any change to it but the redaction personal-data erasure makes, which keeps each
+  event's place and hash. The role Ferrum connects as owns those tables; a copy out of its reach is
+  what the operator's sink gives.
 * API responses carry `Cache-Control: no-store`, so browsers keep neither stale nor private copies.
 * Request logs record the path without the query string: queries carry WOPI tokens, OAuth and
   sign-on codes and signed grants.
@@ -377,7 +381,8 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   fall back to the replica's own count if the database is briefly unreachable (server/src/state.rs); the limit an
   app asks for (`Kernel::rate_limit`) fails closed instead, refusing the request with the database's error. Every client address has a request budget too
   (6000 a minute in a pool of replicas by default, each replica allowing its share), taken from the entry `FERRUM_PROXY_HOPS` from the
-  right of `X-Forwarded-For`: what a client writes there itself is never counted as its address.
+  right of `X-Forwarded-For`: when that matches the proxies in front, what a client writes there itself is never
+  counted as its address.
 * Every user has a request budget (3000 a minute in a pool of replicas by default, across all their
   sessions and API keys): a runaway script with a valid token is slowed down to `429`s instead of
   slowing everyone down.
@@ -406,42 +411,14 @@ Scope: passwords, two-factor sign-in, single sign-on, API keys and OAuth; tenanc
 outbound requests; templates and prints; plugins and the Commerce payment gateways (signatures,
 replays, idempotency); uploads; dependency advisories (`cargo audit` in CI, `npm audit`: none).
 
-Found and fixed:
-* API responses had no `Cache-Control`. A browser reused its copy of a record after the engine
-  changed it without a new version (a recorded IRN, an e-way bill), so the screen showed stale
-  data, and per-user data could stay in a shared machine's cache. All `/api/` responses are now
-  `no-store` unless a handler says otherwise.
-* Two-factor sign-in was designed so that re-entering the password does not reset the count of
-  wrong codes; without that, codes could be guessed indefinitely.
-* Every writing transaction sent a NOTIFY (to wake the event dispatcher), and PostgreSQL
-  serializes the commits of notifying transactions: under load, writes slowed each other down
-  (an availability risk under bursts). Writers no longer notify; dispatchers poll. See the
-  runbook's Capacity section for the measurements.
-* The single sign-on start compared its return address with the request's host, which breaks
-  behind proxies that rewrite it; the return address is safe without it (the provider sends the
-  browser only to registered addresses, and only the browser holding the binding can finish).
-* The Kubernetes manifests relied on ingress-nginx, retired in March 2026 (no more security fixes),
-  for TLS, routing and the per-address request limit, and on CloudNativePG's built-in backups,
-  removed in 1.31. They now use Gateway API routes, a per-address budget in the server itself, and
-  the Barman Cloud plugin, and CI deploys them to a real cluster for every image.
-* Deploying the manifests to a real cluster showed two availability faults. Losing the database
-  primary held writes up for three minutes: CloudNativePG's smart shutdown waits for every client
-  to disconnect, and the API's pooled connections never do. The primary now ends sessions after
-  15 s and writes resume in about 25 s. And the API's spread across nodes counted a tainted node
-  (one pods may not run on) as a node without a replica, so a rolling update could never place
-  its first new pod; it now counts only usable nodes, per revision.
-* The client's address for sign-in limits was always the last `X-Forwarded-For` entry: behind a
-  CDN or an HTTP load balancer, every user shared the CDN's address and its sign-in budget.
-  `FERRUM_PROXY_HOPS` says how many proxies to trust.
-
 Known and accepted:
 * NIC rotates its QR signing keys (the shipped ones run to 1 May 2027). A code under a NIC key a
   release does not know is refused when entered by hand, until NIC's new key is added to
   `nic_keys` or entered as the company's IRP QR key. From the direct connection, where the code
   comes straight from the IRP, it is recorded and the gap logged so invoicing does not stop. A
   private IRP's codes are checked only when the company enters that IRP's key.
-* Session tokens are readable by script on the app's origin; the Content Security Policy is what
-  keeps foreign script out.
+* The bearer token a page is given beside its cookie (unless it asks for the cookie alone) is
+  readable by script on the app's origin; the Content Security Policy is what keeps foreign script out.
 * SAML: no artifact binding and no back-channel (SOAP) logout, so a provider that logs out only that
   way, or a person who closed the browser, leaves the other side's session to end by itself; logout
   requests with an encrypted NameID are refused; and a sign-in API client given a bearer token (not a

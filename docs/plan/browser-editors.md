@@ -329,7 +329,7 @@ and it would become ours to maintain.
 | 4 | Ferrum-Frontend | Open and Open with; the editor page (frame, port, dirty, lock refresh, save, conflicts, read-only, failures); the default editor per type in Drive's settings; `frame-src` | Playwright tests for every row of §5 the browser decides, in the three engines |
 | 5 | Ferrum `deploy/` and docs | `editors.yml`, the Kubernetes component, a "Browser editors" section in docs/operations.md | The Compose smoke test runs with the editor server; the kind test checks its headers |
 | 6 | A fidelity note in docs/plan | Ten real files per type (styles, charts, merged cells, pivots, comments, tracked changes, images), opened and saved unchanged in each editor, compared with the original and with Collabora's result | Done: [browser-editors-fidelity.md](browser-editors-fidelity.md). 24 of 25 public files keep everything counted. Collabora was not compared (none ran here). |
-| 7 | Upstream | The requests of §8 | Done. Matched to the issues already open upstream, and the three new ones posted: deckcraft#1563, wordcraft#4945, gridcraft#2942 ([upstream-requests.md](upstream-requests.md)) |
+| 7 | Upstream | The requests of §8 | Done. Matched to the issues already open upstream, and the three new ones posted: deckcraft#1563, wordcraft#4945, gridcraft#2942 |
 
 The phase is done when:
 * in a workspace with the add-on, a sheet, a document and a PDF open from Drive, are edited and saved

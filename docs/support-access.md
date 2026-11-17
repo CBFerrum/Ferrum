@@ -1,6 +1,6 @@
 # Support access
 
-A workspace's administrators give support access, in layers. Nobody at Ferrum or a partner holds a
+A workspace's administrators give support access, in layers. No maintainer, host or partner holds a
 standing way in through the product.
 
 | Level | Reaches | Longest |
@@ -40,8 +40,8 @@ This limits what the product gives support. It is not a claim that nobody else c
 Whoever runs the servers can reach what is on them. Someone with the database's credentials reads every
 workspace, because row-level security binds the application's role and not an administrator of the
 database. Someone with a key that opens the vault as well (its key file, the key-management service, the database
-password or the recovery key) opens sealed values. On Ferrum Cloud that is the
-operator, and on a partner's hosting, the partner. Backups hold the same data. A customer who needs
+password or the recovery key) opens sealed values. That is whoever runs the deployment: a hosting
+operator, a partner, or the customer. Backups hold the same data. A customer who needs
 stronger separation needs a dedicated deployment they control, with keys they hold.
 
 Partner staff get no access by being partners: only what a customer grants them here.
@@ -56,14 +56,17 @@ state:restricted note:"Invoice overdue"`.
 | `active` | Everything works. |
 | `grace` | Everything works, and `GET /api/admin/usage` says why it is in grace. |
 | `restricted` | Read-only for everyone. Reading, reporting and exporting the workspace still work. |
+| `closed` | Read-only as `restricted`, and kept until a date: `state:closed retain_until:YYYY-MM-DD note:"..."`. An administrator closing their own workspace keeps it 30 days. |
 
-A billing problem never touches data, and export is a right, not a feature. What happens after that (how
-long a restricted workspace is kept, and when it is deleted) is a commercial decision, and no code
-deletes a workspace for it.
+A billing problem never touches data, and export is a right, not a feature. How long a restricted
+workspace is kept is a commercial decision. A closed one may be deleted after its date
+(`ferrum task delete_tenant`); no code deletes a workspace by itself.
 
 `GET /api/admin/usage` shows storage, people, AI tokens and jobs now, and day by day: readings are kept in
-`usage_day`, so a bill can be explained later from the same numbers. Ferrum sets no prices. A storage
-quota is the operator's, in `tenant.quotas.storage_bytes`; reaching it refuses new files and nothing else.
-Operations adds two more: `measurements_per_day`, past which gateways hold their measurements until
-there is room, and `devices`, past which no new device can be added. Commands, leases and reports go on
-either way.
+`usage_day`, so a bill can be explained later from the same numbers. Ferrum sets no prices. Quotas are
+the operator's, in `tenant.quotas`, one by one or through a plan (`ferrum task set_plan`, plans in
+`FERRUM_PLANS`): `people` (active members), `storage_bytes` (reaching it refuses new files and nothing
+else), `ai_tokens_month` (the assistant), `addresses` (20 when unset), and for Operations
+`measurements_per_day`, past which gateways hold their measurements until there is room, and `devices`,
+past which no new device can be added. Commands, leases and reports go on either way. A quota left out
+has no limit.

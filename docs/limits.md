@@ -27,7 +27,7 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   document) sends one HTML message to one address through the server's SMTP settings: no cc,
   threading or bounce handling (the Mail app has those). Attachments need an SMTP server (not
   the development stub), up to 10 files and 20 MB per message.
-- **Large files**: files past the 25 MB request limit go up to 2 GiB in 8 MiB parts through the
+- **Large files**: files past the 25 MB request limit go up to 2 GiB (`direct_upload_max_bytes`) in 8 MiB parts through the
   server, on any store, and an upload goes on from what has arrived after a dropped connection,
   or when the same file is chosen again for the same record after the page went (the device keeps
   which upload it was, under the person's offline name; without a lease, only while the page
@@ -40,8 +40,6 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   memory, which is refused past 256 MB (the largest an app works on whole, Learn's SCORM packages).
   Completing an upload reads the object once to record its SHA-256. Portal people and guests upload at
   most 20 files tied to no record an hour (an `attach` field's file before its record is saved).
-  A file several records' `attach` fields named before that release is tied to the first made by the
-  upgrade step `attach-files` (docs/operations.md, Upgrades): the other records' readers lose it.
 - **Stock revaluation** is a stock reconciliation counting the same quantity at the new rate. Like
   every stock posting (and landed costs), it is valued when it is posted: a backdated document
   never re-values the ones after it (there is no reposting).
@@ -78,12 +76,14 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   changes do not (they reach live screens through the outbox, within about 250 ms).
 - **Sign-in**: people sign in with a password, a passkey (WebAuthn) or single sign-on. Two-factor
   sign-in uses authenticator apps (TOTP); there are no text-message codes. Single sign-on speaks
-  OpenID Connect, not SAML. An account is linked to one identity at a
+  OpenID Connect and SAML 2.0. An account is linked to one identity at a
   time: the one at the provider it last signed in through. People and groups can be provisioned by
-  SCIM ([identity-lifecycle.md](identity-lifecycle.md)); without it, someone removed at the provider
-  keeps the session they have until it expires unless deactivated here, because Ferrum does not
-  receive OpenID Connect's back-channel logout. Apps do not yet hand over what they keep when someone
-  leaves: Drive shares and helpdesk queues stay with them.
+  SCIM ([identity-lifecycle.md](identity-lifecycle.md)); a provider that sends OpenID Connect's
+  back-channel logout (`/api/auth/sso/{provider}/backchannel-logout`) or SAML's single logout ends
+  sessions here; without either, someone removed at the provider keeps the session they have until it
+  expires unless deactivated here. An app hands over what it keeps when someone leaves only for what its
+  `handover` declaration names (Drive's owned files and folders, helpdesk's open tickets); the rest is for
+  a handler of `ferrum.user.deprovisioned` ([events](events.md)).
 
 - **Custom entities** (`define_entity`) keep every record and every line in one table, `custom_record`,
   with their fields in JSON: no index is made on a custom field, so filtering a large custom entity by a
@@ -171,15 +171,15 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   the records frame at `/data/{menu}/`, never a screen of its own; it gives the bar no search provider
   and its tile no counts. Its tile goes to whoever reads one of its entities, not to chosen roles. An
   entity that goes leaves the menu with a schema warning.
-- **Merging duplicates** is for entities that opt in (customers and suppliers so far). It finds
+- **Merging duplicates** is for entities that opt in (customers, suppliers, contacts, and CRM's prospects and leads). It finds
   duplicates by equal fields, not by resemblance, and is not undone. Append-only history keeps the id
   it was posted under: a report on it must ask `ferrum_kernel::merge::merged_ids`.
 - **Field masks** show part of a value to someone outside its field group. A masked field cannot be
-  filtered or sorted on by them, and they cannot write it back. No shipped package declares one yet.
+  filtered or sorted on by them, and they cannot write it back. HR masks bank and tax identifiers; no
+  other shipped package declares one.
 - **Restricting processing** stops queued mail, and what asks `Kernel::may_contact`. It does not stop
   people reading or editing the records.
-- **Retention rules** are set per workspace and per entity; packages suggest none. Customizations made
-  before they remembered what they replaced are not compared with upgrades.
+- **Retention rules** are set per workspace and per entity; packages suggest none.
 - **Hook order** can be declared and is checked, but apps' hooks have not declared theirs yet: they run
   in registration order.
 - **The assistant** speaks one provider's protocol, or a proxy's that speaks it, and has no regional
@@ -261,15 +261,15 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   for an offline till, so two tills can sell the last item. No customer display, cash drawer or card
   terminal integration; receipts print through the browser. Closing a session uses the POS Closing
   Entry form.
-- **Chat and calendar** (the Mail app): the chat screen (`/app/chat`) covers channels, direct
+- **Chat and calendar** (the Mail, Chat and Calendar app): the chat screen (`/chat/`) covers channels, direct
   messages, threads, mentions, edits, search and files (up to 20 and 25 MB per message; images
   are previewed). The calendar screen
-  (`/app/calendar`) shows a month or a week of hours (an agenda on phones) with RSVPs; events
+  (`/calendar/`) shows a month or a week of hours (an agenda on phones) with RSVPs; events
   you organize move by dragging them with a mouse (a repeating event is changed in its form, for
   the whole series); free/busy lookups are API-only.
 - **Bookings**: one resource per booking; bookings repeat weekly, every 2 or 4 weeks or monthly at the
   staff member's local time, each an ordinary booking, and a guest gets a confirmation for each;
-  no deposits, and calendars go out as signed feeds with nothing read back; notices can be up to a
+  deposits come from the separate Booking Deposits package, and calendars go out as signed feeds with nothing read back; notices can be up to a
   minute late. Without the Mail app, guest emails carry an add-to-calendar link instead of an
   invitation.
 - **Field Service**: SLAs run in calendar hours; travel times are straight-line estimates.
@@ -277,7 +277,7 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   one-per-respondent slot; CSV export stops at 100,000 rows; up to 500 spam responses per form per
   day are kept for review.
 - **Learn**: learners see draft course titles and summaries (not content); instructors read all
-  learners unless their course is scoped; certificates are print templates; no paid courses or SCORM.
+  learners unless their course is scoped; certificates are print templates.
 - **Drive**: public links outlive their creator's access; one copy handles up to 1,000 items or 1 GB.
 - **Campaigns**: templated links are not tracked; imports are set-based (no per-contact audit or
   attribute-change journeys); anniversary journeys check the current day only; automatic clicks by

@@ -166,14 +166,14 @@ notifications on the device (Web Push) and an unread badge.
 ## Apps
 
 Larger business areas are native apps in their own repositories, installed per workspace from
-**Apps** (or the app store) like a WordPress plugin; the server image ships them as cargo features (every official app but Control, the fleet control plane of a hosting business: a hosting build adds it with `--features control`).
+**Apps** (or the app store) like a WordPress plugin; the server image ships the apps below as cargo features (Control, the fleet control plane of a hosting business, is not among them: a hosting build adds it with `--features control`).
 Third parties build wasm or metadata apps with the [SDK](https://github.com/CBFerrum/ferrum-sdk)
 (`ferrum-app new`, `pack`, `sign`, `publish`) — an EV-charging (OCPP) back end, a clinic, a school
 or any other vertical is a plugin, not a fork.
 
 | | App | What it brings |
 |---|---|---|
-| 🏢 | **[ERP](https://github.com/CBFerrum/ferrum-app-erp)**<br><sub>ferrum-app-erp</sub> | Accounting, selling, buying, inventory and manufacturing on one universal journal, the engine other apps post through; a country's taxes as an add-on (26 so far: India, the EU and eight of its members, the UK, the US, Canada and thirteen more); Finance, Procurement, Stock Operations and Manufacturing Operations |
+| 🏢 | **[ERP](https://github.com/CBFerrum/ferrum-app-erp)**<br><sub>ferrum-app-erp</sub> | Accounting, selling, buying, inventory and manufacturing on one universal journal, the engine other apps post through; a country's taxes as an add-on (26 so far: India, the EU and eight of its members, the UK, the US, Canada and thirteen more); Finance, Procurement, Stock Operations, Manufacturing Operations, Quality, Warehouse Management and Manufacturing Execution |
 | 🤝 | **[CRM](https://github.com/CBFerrum/ferrum-app-crm)**<br><sub>ferrum-app-crm</sub> | Leads, a pipeline you can drag, quotations and every touchpoint, beside the books |
 | 📋 | **[Projects and timesheets](https://github.com/CBFerrum/ferrum-app-projects)**<br><sub>ferrum-app-projects</sub> | Task trees with dependencies, timesheets, billing by time or milestone, profitability |
 | 🎧 | **[Helpdesk](https://github.com/CBFerrum/ferrum-app-helpdesk)**<br><sub>ferrum-app-helpdesk</sub> | Tickets with business-hours SLAs, fair assignment and a knowledge base |
@@ -192,6 +192,28 @@ or any other vertical is a plugin, not a fork.
 | 🏭 | **Operations**<br><sub>crates/ops</sub> | Durable commands to equipment, one authority per site, device identity and a [site runtime](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/gateway.md) that keeps working with the link down. It coordinates above controllers, fleet managers and safety systems, and never replaces them |
 | 📡 | **[IoT Edge](https://github.com/CBFerrum/ferrum-app-edge)**<br><sub>ferrum-app-edge</sub> | Devices described in a few lines instead of programmed, over TCP, serial, HTTP, MQTT, Modbus, OPC UA, Sparkplug and more, with templates for robots and fleets. [Flows](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/flows.md) drawn on a canvas, simulated, reviewed and run at the gateway. Alarms, robots on a map, and links between servers. Nothing has run on physical equipment yet: see [compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md) |
 | ✍️ | **[Sign](https://github.com/CBFerrum/ferrum-app-sign)**<br><sub>ferrum-app-sign</sub> | Electronic signatures in order, by secure link, with a sealed PDF and an audit trail |
+| 🏨 | **[Hospitality](https://github.com/CBFerrum/ferrum-app-hospitality)**<br><sub>ferrum-app-hospitality</sub> | A hotel's front office: rooms, rate plans, stays from reservation to check-out, folios, housekeeping and the night audit |
+| 🍽️ | **[Restaurant](https://github.com/CBFerrum/ferrum-app-restaurant)**<br><sub>ferrum-app-restaurant</sub> | Tables and menus, orders for dine-in, takeaway and delivery, kitchen tickets by station, stock by recipe and reservations |
+| 🏘️ | **[Property](https://github.com/CBFerrum/ferrum-app-property)**<br><sub>ferrum-app-property</sub> | Buildings and units, leases invoiced each period through ERP, rent reviews, repairs and inspections, portal pages for lessees and owners |
+| 👷 | **[Construction](https://github.com/CBFerrum/ferrum-app-construction)**<br><sub>ferrum-app-construction</sub> | Estimates, contracts with variations, progress claims with retention invoiced through ERP, and site diaries |
+| 🚛 | **[Logistics](https://github.com/CBFerrum/ferrum-app-logistics)**<br><sub>ferrum-app-logistics</sub> | Depots, vehicles and drivers, trips in their windows, proof of delivery that works offline, and the fleet's costs |
+| 🩺 | **[Healthcare](https://github.com/CBFerrum/ferrum-app-healthcare)**<br><sub>ferrum-app-healthcare</sub> | Patients, practitioners' hours, appointments, consent by form version, visits billed through ERP, and a patient portal |
+| 🏫 | **[Education](https://github.com/CBFerrum/ferrum-app-education)**<br><sub>ferrum-app-education</sub> | A school's office: admissions, students and guardians, fees through ERP, timetables, attendance, report cards and a family portal |
+| 🤲 | **[Nonprofit](https://github.com/CBFerrum/ferrum-app-nonprofit)**<br><sub>ferrum-app-nonprofit</sub> | Members and memberships, donors and donations posted to the books, funds, grants and volunteers |
+| 🏛️ | **[Government](https://github.com/CBFerrum/ferrum-app-government)**<br><sub>ferrum-app-government</sub> | Permits reviewed in stages and paid through ERP, a public register, cases with deadlines, and a citizens' portal |
+| 🏬 | **[Retail](https://github.com/CBFerrum/ferrum-app-retail)**<br><sub>ferrum-app-retail</sub> | Click and collect, ship from store, returns to any store, stock by store, and franchise royalties |
+| 🛠️ | **[IT Services](https://github.com/CBFerrum/ferrum-app-itsm)**<br><sub>ferrum-app-itsm</sub> | Configuration items, a service catalog with approvals, incidents, problems and changes |
+| ⚖️ | **[Governance and Risk](https://github.com/CBFerrum/ferrum-app-grc)**<br><sub>ferrum-app-grc</sub> | Risks scored on a matrix, controls tested with evidence, policies acknowledged by revision, and findings |
+| 📑 | **[Contracts](https://github.com/CBFerrum/ferrum-app-contracts)**<br><sub>ferrum-app-contracts</sub> | Contracts from approved clauses, kept by version, approved by policy, signed through Sign, with renewals and obligations |
+| 🎯 | **[Objectives](https://github.com/CBFerrum/ferrum-app-objectives)**<br><sub>ferrum-app-objectives</sub> | Objectives aligned to their parents, key results measured by check-ins or from the records, and the projects behind them |
+| 🖼️ | **[Digital Assets](https://github.com/CBFerrum/ferrum-app-dam)**<br><sub>ferrum-app-dam</sub> | Assets kept in Drive with their rights, renditions, approval by version and collections |
+| 📈 | **[Metrics](https://github.com/CBFerrum/ferrum-app-metrics)**<br><sub>ferrum-app-metrics</sub> | Metrics and datasets defined once on Studio, certified by a steward, with their lineage and a glossary |
+| 💡 | **[Intelligence](https://github.com/CBFerrum/ferrum-app-intelligence)**<br><sub>ferrum-app-intelligence</sub> | Questions about certified metrics in plain words, answered with your own rights and the evidence shown |
+| 📱 | **[Social](https://github.com/CBFerrum/ferrum-app-social)**<br><sub>ferrum-app-social</sub> | Brands' social accounts: posts approved by someone else and sent at their time, the inbox, and what each post did |
+| 🔑 | **[Developer Hub](https://github.com/CBFerrum/ferrum-app-developers)**<br><sub>ferrum-app-developers</sub> | The workspace's API reference, the events it gives, and your keys |
+| 📰 | **[Intranet](https://github.com/CBFerrum/ferrum-app-intranet)**<br><sub>ferrum-app-intranet</sub> | Spaces for teams with their pages, and announcements acknowledged where asked |
+| 🌐 | **[Website](https://github.com/CBFerrum/ferrum-app-website)**<br><sub>ferrum-app-website</sub> | The workspace's public website: pages and blog posts in Markdown, a menu, and the site on its own host |
+| 🎥 | **[Live](https://github.com/CBFerrum/ferrum-app-live)**<br><sub>ferrum-app-live</sub> | One-to-many live video through a Media over QUIC relay, attached to any record, with an embeddable player |
 
 ```mermaid
 flowchart TB
@@ -223,20 +245,26 @@ flowchart TB
 |---|---|
 | `crates/calc` | Pure tax/discount/rounding engine (also builds to WASM for the browser) |
 | `crates/meta` | Metadata model: packages, entities, overlays, CEL rules, effective schema per tenant |
-| `crates/kernel` | Document engine on PostgreSQL: CRUD, lifecycle, permissions, RLS, numbering, audit, outbox, webhooks, automations, print, customization |
+| `crates/kernel` | Document engine on PostgreSQL: CRUD, lifecycle, permissions, RLS, numbering, audit, outbox, webhooks, automations, print, customization, the vault |
 | `crates/domain` | The shared core every app builds on: helpers (fields, contexts, money and rounding, exchange rates), the report framework, document helpers, the shared packages' hooks |
 | `crates/plugins` | WebAssembly plugin host (wasmtime): hooks, routes, WebSockets, schedules, host calls, fuel and memory limits |
 | `crates/apps` | Signed `.fapp` app bundles, manifests, permissions and dependency resolution (shared by server, SDK and store) |
 | `crates/mcp` | MCP server: every entity, action and report available to AI agents |
+| `crates/logic` | Customer logic's contracts with no I/O: canonical digests, approvals, capability descriptors and refusals, shared with the Edge gateway |
+| `crates/process` | Durable processes on Temporal, built in with the `process` feature |
+| `crates/saml` | SAML 2.0 single sign-on, signatures checked by xmlsec1, built in with the `saml` feature |
+| `crates/testkit` | The test kit apps' integration suites start from ([docs/testkit.md](docs/testkit.md)) |
 | `crates/studio` | Analytics engine and the no-code report builder, charts, number cards, dashboards and Spaces |
 | `crates/ops`, `crates/ops-contract` | Operations: the command ledger, and what it and a site agree on |
 | [ferrum-app-edge](https://github.com/CBFerrum/ferrum-app-edge) | IoT Edge and `ferrum-site`, the gateway next to the equipment: definitions, flows, alarms, and what each gateway should be |
-| [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP: its manifest, interface, packages (`accounting`, `inventory`, `selling`, `buying`, `manufacturing`) and engine (ledger, open items, stock valuation, selling and buying, manufacturing and MRP, the books' reports), which other apps post through; its add-ons: 26 countries on its localization seam (India, the European Union and eight of its members, the United Kingdom, the United States, Canada and thirteen more), Finance, Procurement, Stock Operations and Manufacturing Operations |
+| [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP: its manifest, interface, packages (`accounting`, `inventory`, `selling`, `buying`, `manufacturing`) and engine (ledger, open items, stock valuation, selling and buying, manufacturing and MRP, the books' reports), which other apps post through; its add-ons: 26 country add-ons on its localization seam (India, the European Union and eight of its members, the United Kingdom, the United States, Canada and thirteen more), Finance, Procurement, Stock Operations, Manufacturing Operations, Quality, Warehouse Management and Manufacturing Execution |
 | `packages/*` | The shared packages: `core`, `contacts`, `parties`, `products`, `project_records` |
 | `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, ERPNext-compatible `/api/resource` shim, CLI tasks |
 | `plugins/examples` | Example plugins, on [`ferrum-plugin-sdk`](https://github.com/CBFerrum/ferrum-sdk) |
-| `deploy` | Docker Compose and Kubernetes manifests |
-| `docs` | [API contract](docs/api.md), [plugins](docs/plugins.md), [operations runbook](docs/operations.md), [security](docs/security.md), [known limits](docs/limits.md), [plan and analysis](docs/plan/PLAN.md) |
+| `deploy` | Docker Compose, Kubernetes manifests (`k8s`), a Helm chart (`helm`), a kind cluster for CI (`kind`) and the optional pieces beside the server |
+| `packs` | Reference packs: whole solutions built by configuration alone ([packs/README.md](packs/README.md)) |
+| `scripts` | The checks and rehearsals CI and releases run (`local_ci.sh`, `check_apps.py`, `smoke.py`, ...) |
+| `docs` | [API contract](docs/api.md), [plugins](docs/plugins.md), [app contract](docs/app-contract.md), [test kit](docs/testkit.md), [operations runbook](docs/operations.md), [security](docs/security.md), [known limits](docs/limits.md), [plan and analysis](docs/plan/PLAN.md) |
 | `tools` | `loadtest.py`: a load test of a running server (see the runbook's Capacity section) |
 
 The shell's and Studio's interfaces, and the packages apps build theirs with, live in
@@ -393,6 +421,8 @@ entity, action, workflow and report of every installed package, customizations i
 | 🔎 Read | `search_records`, `get_record`, `run_report`, `get_audit_trail` |
 | ✏️ Write | `preview_record`, `create_record` (idempotent), `update_record`, `delete_record` |
 | 🔁 Lifecycle | `submit_record`, `cancel_record`, `amend_record`, `run_action`, `workflow_transition` |
+| 💬 Collaborate | `get_collaboration`, `add_comment`, `assign_record`, `my_assignments`, `set_tags` |
+| 🧱 Capabilities | `list_capabilities`, `invoke_capability` |
 | 🛠️ Administer | `customize_entity` (administrators) |
 
 Each call runs as the signed-in user with that user's permissions and lands in the audit trail;
@@ -461,8 +491,10 @@ ferrum-sdk's `examples/board` shows both.
 ## Testing
 
 ```bash
-for db in ferrum_test ferrum_mcp_test ferrum_plugins_test ferrum_studio_test ferrum_apps_api_test \
-          ferrum_sso_test ferrum_coedit_test ferrum_assistant_test; do
+for db in ferrum_test ferrum_mcp_test ferrum_plugins_test ferrum_testkit_test ferrum_plugin_resources_test \
+          ferrum_restore_test ferrum_witness_test ferrum_app_resources_test ferrum_studio_test \
+          ferrum_apps_api_test ferrum_sso_test ferrum_coedit_test ferrum_assistant_test \
+          ferrum_journeys_test ferrum_ops_test ferrum_saga_test ferrum_companions_test; do
   createdb -O ferrum $db
 done
 cargo test --workspace                # unit + integration (resets the test databases)
@@ -477,10 +509,9 @@ cd web && npm test
 
 **Before merging**, run `scripts/local_ci.sh` (or one job: `scripts/local_ci.sh rust`), which runs here what each job
 of `.github/workflows/ci.yml` runs and prints PASS or FAIL for each step; its `rust` job's clippy step,
-`cargo clippy --workspace --all-targets --locked --features ferrum-server/control -- -D warnings`, takes three to five
-minutes here with a warm build directory. `cargo clippy -p <crate>` is not a substitute: it compiles only the crates named,
-and on 12 November 2026 a kernel change that passed it broke the tests of `ferrum-mcp` and `ferrum-studio`, which kept
-the `rust` job red for three days.
+`cargo clippy --workspace --all-targets --locked --features ferrum-server/control -- -D warnings`, is not replaced by
+`cargo clippy -p <crate>`: that compiles only the crates named, so a change that passes it can still break the tests
+of the crates that depend on it.
 
 **Through a connection pooler.** To run suites the way a server behind PgBouncer runs, start PgBouncer
 (1.21 or later) in transaction mode with `max_prepared_statements` above 0 in front of a test database, point
@@ -551,18 +582,23 @@ flowchart LR
 ```
 
 * Image: `ghcr.io/cbferrum/ferrum`, the server, which answers every page (the shell's and Studio's
-  interfaces built in from Ferrum-Frontend, apps' compiled into their crates) and the API on one
-  origin. It is stateless. The published images are linux/amd64; for ARM hosts (Graviton,
+  interfaces built in from Ferrum-Frontend at the revision the Dockerfile's `FRONTEND_REV` names, apps'
+  compiled into their crates) and the API on one origin. It is built with the default features and
+  `saml` and `process`. It is stateless. The published images are linux/amd64; for ARM hosts (Graviton,
   Ampere), `docker build .` on an arm64 machine produces a working image (checked on Apple
   Silicon: non-root, read-only root filesystem, no capabilities).
 * Optional: `ghcr.io/cbferrum/ferrum-editors`, the static server of Drive's browser editors
   (`deploy/editors`, on an origin of its own).
-* Optional: a LiveKit server for video meetings (`deploy/meet.yml`; docs/operations.md "Meetings").
+* Optional, beside the stack on a single host: a LiveKit server for video meetings (`deploy/meet.yml`;
+  docs/operations.md "Meetings"), a Stalwart mail server (`deploy/mail.yml`), a Media over QUIC relay for Live
+  (`deploy/live.yml`), a Temporal server for durable processes (`deploy/temporal.yml`) and Metrics' engine
+  (`deploy/metrics-engine.yml`).
 * Single host: `deploy/docker-compose.yml`.
 * Production: `deploy/k8s` (CloudNativePG with synchronous replica and PITR backups through the
   Barman Cloud plugin, 3+ API replicas, Gateway API routes with cert-manager TLS, PDB, HPA,
   NetworkPolicy, probes), deployed and exercised on a kind cluster in CI (`deploy/kind`) — see
   [docs/operations.md](docs/operations.md).
+* Helm: `deploy/helm/ferrum` renders what `deploy/k8s` renders.
 
 ## Scope and known limits
 
@@ -597,6 +633,7 @@ flowchart LR
 | 📘 | [API contract](docs/api.md) | Auth, metadata, documents, collaboration, live updates, the shell, reports, administration, apps, search, notifications, MCP, ERPNext compatibility |
 | 🧭 | [App developer's handbook](docs/guides/README.md) | How to build an app and the rules it keeps: a first app step by step, the manifest, data, permissions, stateless apps, the vault, files, companion programs, privacy, security, testing, releasing, the interface, accessibility, languages, dos and don'ts, a review checklist |
 | 🧩 | [Plugins](docs/plugins.md) | Writing one, manifests, host calls, extension points, screens, interfaces of their own, limits |
+| 📐 | [App contract](docs/app-contract.md), [test kit](docs/testkit.md) | What every app gives, the vault, using another app's operations, files, companions and operator settings; starting an app's integration suite |
 | 🛠️ | [Operations runbook](docs/operations.md) | Components, configuration, first deployment, upgrades, backups, monitoring, scaling, capacity, incident playbooks |
 | 🔐 | [Security](docs/security.md) | The model, the controls, and the latest review |
 | ⚖️ | [Known limits](docs/limits.md) | What is deliberately simpler than you might expect |

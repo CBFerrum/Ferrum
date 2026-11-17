@@ -18,7 +18,7 @@ Most of this guide is about native apps, which is what every app in CBFerrum's r
 ## Versions
 
 - **The app's version is `version` in `app.yaml`.** The crate's version in `Cargo.toml` is not the app's (Comms' crate
-  is `0.7.0`, the app `0.23.0`): readers, the store, the CHANGELOG and every check read the manifest's.
+  is `0.7.0`, the app `0.25.1`): readers, the store, the CHANGELOG and every check read the manifest's.
 - **Semantic versioning.** A new major version for an incompatible change to anything another app relies on: an
   extension point's schema, an entity or field others link to, an intent's payload ([docs/plugins.md](../plugins.md):
   "An incompatible change to a point is a new major version of its owner, so `requires` ranges keep owners and add-ons
@@ -28,16 +28,14 @@ Most of this guide is about native apps, which is what every app in CBFerrum's r
   starts below 0.3.9. An installation outside the range shows the app as blocked (`blocked: [{app: "platform", …}]`).
 - **`requires`** names each app the app needs, with a range. The platform's build test `compiled_apps_fit_together`
   (`server/src/packages.rs:589`) fails when a compiled app's range does not include the version compiled beside it:
-  "<app> requires <dep> <range>, compiled with <dep> <version>". Campaigns 0.5.3 asked for Comms below 0.22 while Comms
-  0.22.0 was being pinned; the pair was refused, and Campaigns 0.5.4 widened its range
-  ([docs/plan/stateless.md](../plan/stateless.md), *This week's app releases built in*). So when you release a sibling's
-  next minor, check every app whose range stops below it, and widen theirs in the same batch.
+  "<app> requires <dep> <range>, compiled with <dep> <version>". So when you release a sibling's next minor, check
+  every app whose range stops below it, and widen theirs in the same batch.
 
 ## The CHANGELOG
 
 `CHANGELOG.md` at the repository's root has a heading for every version, the manifest's included:
 `scripts/check_apps.py` looks for `^## .*\b<version>\b` and fails "CHANGELOG.md says nothing of <version>" otherwise;
-the README must point at `CHANGELOG.md` (or, the older form, list the version in a table). An add-on's history is its
+the README must point at `CHANGELOG.md` or list the version in a table. An add-on's history is its
 repository's.
 
 Each entry says, for its readers:
@@ -83,7 +81,7 @@ What a store and the install dialog show comes from the manifest and the reposit
 | Name, summary, categories, publisher, homepage, where to ask for support | `app.yaml` (all required by `scripts/check_apps.py`) |
 | The description | The README the manifest names (`description: README.md`): the install plan shows its opening prose as plain text, about 600 characters, without HTML, pictures, badges, headings, tables or code (`ferrum_apps::description::excerpt`). Put what the app is and does first ([22](22-readme-and-repository.md)) |
 | The launcher's icon | `shell.app` contributions' `icon`, one the shell draws (`scripts/check_apps.py`) |
-| What it asks for | The install plan's `permissions` and `increases`: records it reads and writes, hosts it calls, public endpoints, sockets, schedules. An upgrade that asks for more stops for a new consent |
+| What it asks for | The install plan's `permissions` and `increases`: records it reads and writes, hosts it calls, public endpoints, sockets, schedules, operations it uses from other apps. An upgrade that asks for more stops for a new consent |
 | Whether it may lose data on removal | `uninstall: ask` (data deleted only when the administrator asks) or `keep` |
 
 The store service's review, countersigning, storefront and revocation list are designed in
@@ -95,13 +93,12 @@ The store service's review, countersigning, storefront and revocation list are d
 1. The app's `main` has the release: the version in `app.yaml`, the CHANGELOG entry, the README, `ui/dist` built with
    `.source`, its checks passed on the developer's machine (`scripts/app_ci.sh`).
 2. In the platform's checkout: `cargo update -p ferrum-app-<name> --precise <commit>` for each app in the batch. Only the
-   apps' own crates move; check that nothing else in `Cargo.lock` did (loco-rs stayed 1.2.0 in the 16 November batch).
+   apps' own crates move; check that nothing else in `Cargo.lock` did.
 3. The platform's checks run on that build: `scripts/check_apps.py`, `scripts/secret_paths.py`, `scripts/settings.py`
    (and `--write` when an app's operator settings changed the operations guide's table), `scripts/licenses.py check`,
    `scripts/mutation_paths.py`, the `rust` job with `compiled_apps_fit_together`, and the rehearsals the change touches
    (`scripts/local_ci.sh oneinput` for settings and secrets, `companions` for services, `oidc` for sign-in).
 4. The pin lands in the platform with its notes: which apps at which versions, what the checks said, what was not run.
-   [docs/plan/stateless.md](../plan/stateless.md), *This week's app releases built in*, is an example.
 
 An app whose `main` moved by documentation alone (a README, screenshots) need not be pinned again.
 

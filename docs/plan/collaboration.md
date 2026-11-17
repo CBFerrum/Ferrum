@@ -325,6 +325,6 @@ on Android, Outlook through a CalDAV add-in.
 
 * An engine of our own for co-editing Office files: Collabora and ONLYOFFICE do it.
 * Co-editing in the browser editors: they are single-user apps, and a fork must drop their names.
-  Their capability port (upstream-requests.md) may change what is possible.
+  Their capability port, requested upstream, may change what is possible.
 * Offline editing.
 * A second notification system: the bell and mail are the platform's.

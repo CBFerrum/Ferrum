@@ -1,7 +1,7 @@
 # Working offline
 
 Some apps keep working without a connection: Point of Sale sells from its price book, Docs keeps
-what was typed. What a device keeps for that follows one policy, whatever the app.
+what was typed, Field Service keeps a technician's day and Logistics a driver's trips. What a device keeps for that follows one policy, whatever the app.
 
 ## What a device keeps
 
@@ -11,9 +11,11 @@ what was typed. What a device keeps for that follows one policy, whatever the ap
   turned off or their password changes.
 * **Work not sent yet**: a sale made offline, changes not yet stored. It is kept for its person until
   it is sent, whatever the lease says, since forgetting it would lose what they did; nobody else
-  signed in on the device is shown it or sends it.
+  signed in on the device is shown it or sends it. It goes with an `Idempotency-Key` (and an
+  `Idempotency-Digest` where the body is rebuilt on each try), so the server does it once however
+  often it arrives: the server keeps each key's answer for 30 days ([API](api.md#conventions)).
 
-Guests and portal people never keep anything. A page that cannot store anything (a private window,
+Only members keep anything: guests, portal people and service accounts never do. A page that cannot store anything (a private window,
 a full disk) works online only, and says so where it matters.
 
 ## The workspace's policy

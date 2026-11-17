@@ -131,13 +131,13 @@ add-ons in step ([docs/plugins.md](../plugins.md)). How versions, the CHANGELOG 
 [16-releasing.md](16-releasing.md).
 
 **`platform`** is a semver range of the *app API* the app works with, checked against `PLATFORM_VERSION` in
-`crates/apps/src/lib.rs` (0.3.9 at this commit). The app API's version moves when the platform adds something an app
+`crates/apps/src/lib.rs` (0.3.9). The app API's version moves when the platform adds something an app
 may depend on; the comments in the code and docs name what came when:
 
 | App API | What an app may use from it | Where it is said |
 |---|---|---|
 | 0.3.2 | an interface of its own (`ui`, the shell's points) | [docs/plugins.md](../plugins.md), *Interfaces of their own* |
-| 0.3.8 | `shell.menu`: a row of a module's left menu leading to the app's own page | [docs/plugins.md](../plugins.md); `docs/builder/decisions.md` BD-63 |
+| 0.3.8 | `shell.menu`: a row of a module's left menu leading to the app's own page | [docs/plugins.md](../plugins.md) |
 | 0.3.9 | its vault handle (`HookRegistry::vault`) and `operator_settings` | `PLATFORM_VERSION` in `crates/apps/src/lib.rs`; [docs/app-contract.md](../app-contract.md) |
 
 Write the range with an upper bound below the next minor: `">=0.3.9, <0.4"`. The lower bound is the oldest app API
@@ -156,7 +156,7 @@ or disabled first.
 
 | Mistake | What happens | What catches it |
 |---|---|---|
-| A range that stops below a sibling's new release (`comms: ">=0.7, <0.8"` while Comms moves to 0.10) | The app cannot be installed beside the release the platform compiles in: its requirement is never met. This happened (Campaigns asked for Comms 0.7 beside Comms 0.10) | `compiled_apps_fit_together` in `server/src/packages.rs` fails: `campaigns requires comms >=0.7, <0.8, compiled with comms 0.10.0` |
+| A range that stops below a sibling's new release (`comms: ">=0.7, <0.8"` while Comms moves to 0.10) | The app cannot be installed beside the release the platform compiles in: its requirement is never met | `compiled_apps_fit_together` in `server/src/packages.rs` fails: `campaigns requires comms >=0.7, <0.8, compiled with comms 0.10.0` |
 | No upper bound (`erp: ">=0.21"`) | A breaking release of the other app is accepted, and the app breaks at run time | reviewed, not checked |
 | A lower bound older than what the code uses | An older release of the other app is accepted, and a call or field the app needs is missing | reviewed, not checked; the scenario test runs against the version the platform pins, not the oldest in range |
 | `^0.3` read as "any 0.x" | For `0.x`, `^0.3` means `>=0.3.0, <0.4.0` (semver's caret on a zero major) | — |
@@ -225,7 +225,7 @@ Refusals: `settings: key 'OcpiToken' must be snake_case …`, `settings.ocpi_tok
 | Key | Rule |
 |---|---|
 | `key` | snake_case; `<app id>.<key>` at most 63 characters (it is the `setting` table's key) |
-| `env` | the variable the app read before: an upper-case letter, then upper-case letters, digits and `_`, 3 to 100 characters, never `DATABASE_URL`; each once |
+| `env` | the environment variable that gives the setting too, and wins over the database's value: an upper-case letter, then upper-case letters, digits and `_`, 3 to 100 characters, never `DATABASE_URL`; each once |
 | `type` | `text` (default), `bool`, `int`, `json`, `choice` |
 | `values` | a `choice`'s values, each once (`""` among them when it may be empty); only for `choice` |
 | `default` | as the variable would say it, and a value of the type; `""` for the app's own default |

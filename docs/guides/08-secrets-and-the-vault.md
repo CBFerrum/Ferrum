@@ -35,15 +35,15 @@ pub fn register(hooks: &mut HookRegistry) {
 ```
 
 - `HookRegistry::app(id, packages, f)`: `id` is lowercase letters, digits and dashes, 1 to 63 characters, beginning with a
-  letter or digit, and not `platform` (`app_id_ok`, `crates/kernel/src/vault/mod.rs:150`). Once per app, never inside
+  letter or digit, and not `platform` (`app_id_ok`, `crates/kernel/src/vault/mod.rs`). Once per app, never inside
   another app's registration.
 - `HookRegistry::vault()` inside `f` gives a `Vault` that opens only this app's own and works only with the kernel booted
   from that registry. Asked for outside an app's registration it returns a handle nothing accepts, and the server does
-  not start: "a vault handle was asked for outside an app's registration" (`crates/kernel/src/hooks.rs:363`).
+  not start: "a vault handle was asked for outside an app's registration" (`HookRegistry::vault` in `crates/kernel/src/hooks.rs`).
 - A handle used with another kernel is refused at its first use: "this vault handle was not given out by this server".
 - There is no other way to get one. No public function takes an owner and returns that owner's secrets; the module's
   doc tests prove that copying, asking the kernel or the registry for another app's, or turning a handle into another
-  owner's does not compile (`crates/kernel/src/vault/mod.rs:17-54`).
+  owner's does not compile (`crates/kernel/src/vault/mod.rs`).
 
 **Keeping it.** Keep the handle with what you register. One process may hold kernels of several registries (a test's
 replicas, the two set-ups of `ferrum start`), each accepting only its own registry's handle. Comms keeps each
@@ -60,7 +60,7 @@ and are deleted with it. The installation's are the operator's to see.
 ## Secrets: names, rules, values
 
 **A name** is lowercase letters, digits and `_ . -`, 1 to 100, beginning with a letter or digit. Names the kernel's own
-stores keep are refused (`check_name`, `secrets.rs:183`). Use a short
+stores keep are refused (`check_name` in `secrets.rs`). Use a short
 dotted name that says what it is for: `meet.secret`, `engine.token`, `forge.database_url`.
 
 **A rule** (`vault::Rule`) is kept with each version:
@@ -183,7 +183,7 @@ still takes it:
 ```rust
 // ferrum-app-metrics/src/keys.rs: the version to send.
 pub(crate) async fn sending(k: &Kernel) -> Result<Option<i32>> {
-    let d = handle()?.describe(k, Scope::Installation, TOKEN).await?;
+    let d = vault()?.describe(k, Scope::Installation, TOKEN).await?;
     Ok(d.filter(|d| d.managed_by.is_some() && d.previous_until.is_some_and(|t| t > chrono::Utc::now())).map(|d| d.version - 1))
 }
 ```
@@ -221,7 +221,7 @@ owns which package (`HookRegistry::own`); register yours with it in tests too, o
 **`derive(k, scope, purpose)`** gives a key for one purpose (lowercase letters, digits and `_ . : -`, up to 100) from the
 app's owner key: the same purpose gives the same key until the owner key rotates, and nothing is stored. Its
 `Derived::version()` says which owner key made it; `derive_at` makes it again from an older version while that version is
-kept. Use it for an HMAC over what the app issues (POS signs its snapshots with a derived key since 0.7.5). Name the
+kept. Use it for an HMAC over what the app issues (Drive and Commerce sign their links with keys derived for a purpose, `src/keys.rs`). Name the
 version beside what you made, so you can check it after a rotation.
 
 **`seal(k, scope, context, data)`** seals up to 1 MiB (`vault::MAX_SEALED`) under the app's owner key for a context (up
@@ -234,28 +234,27 @@ sealed for another place, or changed". Comms seals each room's guest key so (`sr
 **Seal again what an older version sealed.** An owner-key version that sealed or derived something kept outside the
 vault is kept when a newer one comes (it is marked `outside`), so that what it made still opens. To let it go, compare
 `Vault::sealed_version(&kept)` with `key_version(k, scope)` in upkeep and seal again, a batch to a transaction, taking
-rows with `for update skip locked` so that replicas share the work: Cloud's `reseal` in `src/keys.rs` is the pattern.
+rows with `for update skip locked` so that replicas share the work.
 
 **A sandbox and a move.** A sandbox is a new workspace with keys of its own: what the app sealed for the live workspace
 does not open there (the scope is part of what a value is bound to), so `open` answers `Invalid`. Treat that as "not
 here", never as an error that stops a page: Comms answers a guest link that does not open as no link. A move keeps the
 workspace's id and carries its vault with a transfer, so sealed values open at the target.
 
-## Adopting what the environment held (R1)
+## A secret the environment gives
 
-Through R1 a variable that set a secret still wins, so that a rollback behaves. An app that read a secret from the
-environment copies it into its vault once, bound to the hosts it serves now, and uses the environment's while it is set:
+A variable may still give an app a secret. The app copies it into its vault once, bound to the hosts it serves now,
+and uses the environment's while it is set:
 
 ```rust
-// ferrum-app-metrics/src/keys.rs
-let rule = Rule { hosts: vec![host], ..Default::default() };
-handle()?.adopt(k, Scope::Installation, TOKEN, New::Value(Zeroizing::new(token.as_bytes().to_vec())), rule, "environment").await?;
+// ferrum-app-cloud/src/operator.rs
+let rule = Rule { reveal: self.reveal, hosts: hosts.to_vec(), ..Default::default() };
+let value = New::Value(Zeroizing::new(value.as_bytes().to_vec()));
+let adopted = crate::keys::handle(k)?.adopt(k, Scope::Installation, self.name, value, rule, "environment").await.map_err(unavailable)?;
 ```
 
 `adopt` writes only where there is no current version, under the secret's lock, so replicas starting together, or a
-service's render making the secret at that moment, write it once. Comms does the same for LiveKit's key and secret and
-the mail administrator's password (`src/keys.rs`, `Operator`). In R2 the variables stop being read and the adoption
-code goes.
+service's render making the secret at that moment, write it once.
 
 ## On the record
 
@@ -273,39 +272,24 @@ owner, the name, the verb and the version, never a value: a workspace's on its o
 | Use a cryptography crate of its own (`hmac`, `ring`, `aes-gcm`, `ed25519-dalek`, `jsonwebtoken`, `rsa`, …) | Keys it makes are outside the vault | `scripts/secret_paths.py` (the `CRYPTO` list; hashes alone are allowed); existing uses are in a baseline that may only shrink, docs/registry/secret-paths.md |
 | Write `unsafe` | Inside one process the vault keeps owners apart by the shape of the code | `scripts/secret_paths.py` |
 | Log, format or return a value | A log is read by many; an error reaches a person | Reviewed, not checked. The vault's own types hide values from `Debug` (`New`, `Derived`, `Client`); keep values in `Zeroizing` and never `{:?}` a header |
-| Print a value in a test's output | CI logs are kept | Reviewed, not checked. Metrics' `external_it` checks that no table holds its token in plain text |
+| Print a value in a test's output | CI logs are kept | Reviewed, not checked |
 | Fall back to a weaker mode when the vault refuses | Fail closed | Reviewed, not checked |
 | Call the people's or operator's functions (`vault_set`, `operator_set`, …) or open the vault | They name an owner; only the platform's code may | `scripts/secret_paths.py` (`WAYS_IN`) |
 
 ## Tests
 
-An app's suite boots a kernel the way the server does: the vault open, the app registered by its id owning its
-packages. From Metrics' `tests/external_it.rs`:
+An app's suite boots through the test kit ([docs/testkit.md](../testkit.md)): the vault opened before the kernel with its
+credential slot (from the database address's password, a cheap Argon2id), each app registered by its id owning its
+packages, and the `vault` schema emptied with `public`. `kit.vault("id")` gives the test a handle of the app's own, to
+look at what the app keeps.
 
 ```rust
-let db = Db::connect(DbConfig { url: url.clone(), max_connections: 16, ..Default::default() }).await?;
-sqlx::raw_sql("drop schema if exists vault cascade; drop schema if exists public cascade; create schema public;").execute(&db.pool).await?;
-// The vault open, as on a server whose database address has a password (the credential slot).
-let opener = ferrum_kernel::vault::Opener {
-    database_url: url.clone(),
-    file: "/nonexistent/root.key".into(),
-    kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },   // cheap Argon2id for tests
-    ..Default::default()
-};
-ferrum_kernel::vault::open(&db, opener, false).await?;
-let mut hooks = HookRegistry::default();
-ferrum_domain::register(&mut hooks);
-let mut vault = None;
-hooks.app("metrics", &[], |h| {
-    ferrum_app_metrics::register(h);
-    vault = Some(h.vault());          // the test keeps a handle too, to look at what the app keeps
-});
-let k = Kernel::boot(db, catalog, hooks, settings, None).await?;
+let kit = Kit::boot(&database("FERRUM_METRICS_TEST_DATABASE_URL"), &[app!("metrics", ferrum_app_metrics)]).await;
+let vault = kit.vault("metrics");
 ```
 
-- Drop the `vault` schema with `public` between runs: it is a schema of its own.
-- The database address must carry a password for the credential slot.
-- Register with `hooks.own(id, &packages)` too when the app reads secret fields (Campaigns' `tests/campaigns_it.rs`).
+- The kit fails when the vault does not open; the database address must carry a password for the credential slot (the
+  kit's default does).
 - Test the refusals, not only the happy path: the value not revealed, the host refused, a closed vault's message.
 
 [15](15-testing-and-ci.md) covers suites in full.
@@ -315,8 +299,8 @@ let k = Kernel::boot(db, catalog, hooks, settings, None).await?;
 - `scripts/secret_paths.py` (CI, and `scripts/local_ci.sh audit`), with its tests `scripts/test_secret_paths.py`; its
   baseline docs/registry/secret-paths.md.
 - `scripts/check_apps.py`: no secret among operator settings.
-- The vault's suites in the platform: `crates/kernel/tests/secret_it.rs` and its mutants in `scripts/mutants.py`; the
-  compile-fail doc tests in `crates/kernel/src/vault/mod.rs`.
+- The vault's suites in the platform: `crates/kernel/tests/vault_it.rs`, `vault_follows_it.rs`, `vault_stores_it.rs` and
+  their mutants in `scripts/mutants.py`; the compile-fail doc tests in `crates/kernel/src/vault/mod.rs`.
 - Logging, error text and test output holding no value: reviewed, not checked.
 
 ## See also
