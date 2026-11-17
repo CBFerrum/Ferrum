@@ -1,6 +1,7 @@
 //! `/mcp`: the Model Context Protocol over stateless Streamable HTTP. Each POST carries one
 //! JSON-RPC message (or a batch) and gets a JSON reply, so any replica can serve any call. Clients
-//! authenticate exactly like the REST API: `Authorization: Bearer <session token or API key>`.
+//! authenticate exactly like the REST API: `Authorization: Bearer <session token or API key>`, and read
+//! under the workspace's policy for the assistant (`Assistant::ai_policy`).
 
 use crate::error::ApiError;
 use crate::extract::Auth;
@@ -34,6 +35,12 @@ async fn post(State(app): State<AppContext>, headers: HeaderMap, auth: Result<Au
         Ok(Auth(ctx)) => ctx,
         Err(ApiError(e)) if e.status() == 401 => return unauthorized(&st, &headers, e.to_string()),
         Err(e) => return e.into_response(),
+    };
+    // An MCP client is an AI agent: what it reads goes on to its provider. The workspace's policy for the assistant is
+    // its too: shut where the assistant is turned off, and what may not go to a provider is not read.
+    let ctx = match st.assistant.ai_policy(&st.kernel, ctx.tenant).await {
+        Ok(policy) => ctx.for_provider(policy.egress),
+        Err(e) => return ApiError(e).into_response(),
     };
     let msg: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,

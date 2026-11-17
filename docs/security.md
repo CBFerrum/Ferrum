@@ -178,6 +178,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   schema before anything runs; a reply that was cut off or declined runs none of its calls.
 * What goes to the model's API is limited to what the person could read; the key stays on the
   server; workspaces can turn the assistant off.
+* An AI client at `/mcp` is held to the same policy, read the same way (`Assistant::ai_policy`): where the
+  workspace turned the assistant off, `/mcp` answers `403`; what `assistant_egress` does not let go to an AI
+  provider (internal entities, fields in a permission group, secrets) it does not read.
 
 **Signing in**
 * Passwords: Argon2id; at least 10 characters with three character classes; 5 failures lock the

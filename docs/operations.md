@@ -3829,7 +3829,9 @@ It is off unless you set a key:
 everything the assistant reads is narrowed, whoever is asking, an administrator included: entities
 marked `internal` are refused, and fields in a permission group or holding a secret are left out, in
 records, lists, filters, sorting, reports and audit trails. A workspace widens this deliberately with
-the `assistant_egress` setting, `{groups: [...], entities: [...]}`. Secrets never go.
+the `assistant_egress` setting, `{groups: [...], entities: [...]}`. Secrets never go. An AI client at `/mcp` is
+an assistant too, whose provider gets what it reads: it reads under the same policy, and where the workspace
+turned the assistant off (`assistant: false`), `/mcp` answers `403`.
 
 **What it may do.** A change waits for the person. What they allow is the call as it was shown, on the
 record as it stood: if the record changed meanwhile, or 30 minutes passed, nothing happens and the

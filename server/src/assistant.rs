@@ -103,11 +103,12 @@ const APPROVAL_SECS: i64 = 30 * 60;
 
 /// A workspace's settings for the assistant: what it may be sent, on which model, how much of it.
 #[derive(Clone, Debug, Default)]
-struct Policy {
+pub(crate) struct Policy {
     off: bool,
     model: Option<String>,
     monthly_tokens: Option<i64>,
-    egress: Egress,
+    /// What may go on to an AI provider ([`Ctx::for_provider`]).
+    pub(crate) egress: Egress,
 }
 
 /// How long a workspace's policy, once read, is used without reading it again.
@@ -315,6 +316,16 @@ impl Assistant {
     /// Off by the workspace's setting, or off because its setting cannot be read now.
     async fn turned_off(&self, k: &Kernel, tenant: Uuid) -> bool {
         self.policy(k, tenant).await.map(|p| p.off).unwrap_or(true)
+    }
+
+    /// The workspace's policy for whatever AI reads its records, through every door one comes by (the assistant, an MCP
+    /// client): refused where the workspace turned the assistant off, or while its settings cannot be read.
+    pub(crate) async fn ai_policy(&self, k: &Kernel, tenant: Uuid) -> Result<Policy> {
+        let policy = self.policy(k, tenant).await?;
+        if policy.off {
+            return Err(Error::Forbidden("the assistant was turned off for this workspace".into()));
+        }
+        Ok(policy)
     }
 
     /// One short call with the operator's settings and no tools (`ferrum task assistant_check`):
@@ -1132,10 +1143,7 @@ impl Assistant {
 /// changed under it stops, since what it read before is in the context it would send on.
 async fn standing(env: &Env, first: &Ctx, signed_in: i32, begun: Option<&Ctx>) -> Result<(Ctx, Policy)> {
     let k = &env.kernel;
-    let policy = env.assistant.policy(k, first.tenant).await?;
-    if policy.off {
-        return Err(Error::Forbidden("the assistant was turned off for this workspace".into()));
-    }
+    let policy = env.assistant.ai_policy(k, first.tenant).await?;
     // What it would send goes to the model's provider, outside: never from a sandbox.
     k.outward(first.tenant).await?;
     let now = k.reload(first, Some(signed_in)).await.map_err(|e| match e {

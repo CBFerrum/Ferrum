@@ -5,7 +5,7 @@
 //! A reply the server did not write, a plugin's (`/api/public/{workspace}/{plugin}/…`, `/api/ext/{plugin}/…`) or an app
 //! site's (`/api/site/{workspace}/{package}/…`, `/api/app/{package}/…`), runs nothing on the application's origin unless
 //! a native app declares a policy of its own; and a route that names its workspace answers on that workspace's hosts,
-//! not on another's.
+//! not on another's. An AI client at `/mcp` reads under the workspace's policy for the assistant.
 
 mod common;
 
@@ -46,9 +46,18 @@ platform: \">=0.3, <0.4\"
 packages: [doors]
 ";
 
+/// Its package: a person's record whose pay is in the `payroll` field group.
 fn packages() -> Result<Vec<ferrum_meta::Package>, ferrum_meta::MetaError> {
-    let files: BTreeMap<String, String> =
-        [("package.yaml", "package: doors\nversion: 0.1.0\ndepends: [core]\n")].into_iter().map(|(p, d)| (p.to_string(), d.to_string())).collect();
+    let files: BTreeMap<String, String> = [
+        ("package.yaml", "package: doors\nversion: 0.1.0\ndepends: [core]\n"),
+        (
+            "entities/employee.yaml",
+            "name: DoorsEmployee\nlabel: Employee\nkind: master\ntitle_field: full_name\nfields:\n  - {name: full_name, type: data}\n  - {name: salary, type: data, perm_group: payroll}\n",
+        ),
+    ]
+    .into_iter()
+    .map(|(p, d)| (p.to_string(), d.to_string()))
+    .collect();
     Ok(vec![ferrum_meta::catalog::load_package_files(&files)?])
 }
 
@@ -220,4 +229,26 @@ async fn scenario() {
     let (status, h, _) = get(&r, PUBLIC, "/api/site/other/doors/page", None).await;
     assert!(status == StatusCode::OK && sandboxed(&h), "another workspace's route where callbacks come: {status} {h:?}");
     assert_eq!(answer(get(&r, ACME, "/api/site/other/doors/page", None).await), nobody, "acme's own other host");
+
+    // ── An AI client at /mcp ──
+    // Its provider gets what it reads, so the workspace's policy for the assistant is its: what may not go to a
+    // provider (the payroll field group, here) is not read, and where the assistant is off the door is shut.
+    let pat = k.insert(&admin, "DoorsEmployee", json!({"full_name": "Pat Doe", "salary": "SALARY-123456"}).as_object().cloned().unwrap()).await.unwrap();
+    let get_record =
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_record", "arguments": {"entity": "DoorsEmployee", "id": pat["id"]}}});
+    let mcp = |policy: Value| {
+        let (k, r, admin, key, get_record) = (k.clone(), r.clone(), admin.clone(), key.clone(), get_record.clone());
+        async move {
+            k.update_tenant_settings(&admin, policy.as_object().unwrap()).await.unwrap();
+            let (status, _, body) = call(&r, Method::POST, ACME, "/mcp", Some(&key), Body::from(get_record.to_string())).await;
+            (status, body)
+        }
+    };
+    let (status, body) = mcp(json!({"assistant_egress": {"groups": [], "entities": []}})).await;
+    assert!(status == StatusCode::OK && body.contains("Pat Doe"), "{status} {body}");
+    assert!(!body.contains("SALARY-123456"), "payroll is withheld from AI providers: {body}");
+    let (status, body) = mcp(json!({"assistant_egress": {"groups": ["payroll"], "entities": []}})).await;
+    assert!(status == StatusCode::OK && body.contains("SALARY-123456"), "and goes where the workspace lets it: {status} {body}");
+    let (status, body) = mcp(json!({"assistant": false})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "the assistant turned off: {body}");
 }

@@ -2137,7 +2137,12 @@ these). Off unless the server has `FERRUM_ASSISTANT_API_KEY`.
 
 `POST /mcp` — Model Context Protocol, Streamable HTTP, stateless (JSON responses, no session id;
 `GET`/`DELETE` → 405). Auth as above (`Bearer` session token or API key); 401 carries
-`WWW-Authenticate`. Methods: `initialize` (versions 2025-06-18, 2025-03-26, 2024-11-05), `ping`,
+`WWW-Authenticate`. A client reads under the workspace's policy for the assistant ([operations](operations.md#the-assistant)):
+`403` where the workspace turned the assistant off (`assistant: false`), and what `assistant_egress` does not let go to
+an AI provider (internal entities, fields in a permission group, secrets) is left out of every tool's answer. For an MCP
+client to receive a field group, or an internal entity, an administrator lists it there:
+`PUT /api/admin/settings {"assistant_egress": {"groups": ["payroll"], "entities": ["Payslip"]}}` (the assistant's
+provider receives it too). Secrets never go. Methods: `initialize` (versions 2025-06-18, 2025-03-26, 2024-11-05), `ping`,
 `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `resources/read`
 (`ferrum://overview`, `ferrum://entity/{name}`, `ferrum://record/{entity}/{id}`), `prompts/list`,
 `prompts/get`. Tool failures come back as results with `isError: true` and the same error JSON as
