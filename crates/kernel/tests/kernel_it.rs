@@ -225,4 +225,27 @@ async fn kernel_end_to_end() {
     // Print renders.
     let html = k.render_print(&ctx, "Customer", cid).await.unwrap();
     assert!(html.contains("Globex"));
+
+    // A list someone waits for gives up at the ordinary statement timeout, not the reports' (K18). Both are made
+    // short here, on a second server of the same database, and a lock held elsewhere is what makes the list slow.
+    let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+    let db =
+        Db::connect(DbConfig { url, max_connections: 4, statement_timeout_ms: 2_000, report_timeout_ms: 9_000, ..Default::default() }).await.expect("connect");
+    let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
+    let short = Kernel::boot(db, catalog, HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
+    let mut held = k.db.pool.begin().await.unwrap();
+    sqlx::query("lock table e_customer in access exclusive mode").execute(&mut *held).await.unwrap();
+    let started = std::time::Instant::now();
+    let waited = short.list(&ctx, "Customer", &ListQuery::default()).await;
+    let took = started.elapsed();
+    assert!(matches!(&waited, Err(Error::Unavailable(m)) if m.contains("took too long")), "{waited:?}");
+    assert!(took < std::time::Duration::from_secs(5), "a list stops at the statement timeout (2 s here), not the report timeout (9 s): {took:?}");
+    // What an export reads, page after page (`/_export`, a workspace's export), waits for the report timeout.
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        held.commit().await.unwrap();
+    });
+    let exported = short.list_with_timeout(&ctx, "Customer", &ListQuery::default(), short.db.config.report_timeout_ms).await;
+    assert!(exported.is_ok_and(|page| !page.rows.is_empty()), "an export's page outlasts the statement timeout");
+    release.await.unwrap();
 }

@@ -73,6 +73,9 @@ async fn workspace(k: &Arc<Kernel>, slug: &str) -> T {
         .expect("tenant");
     let session = k.login(slug, &email, "Correct-Horse-9").await.unwrap();
     let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.unwrap();
+    // The scenarios' administrator dispatches, approves and settles too, which takes the role (A18).
+    k.set_user_roles(&admin, session.user, &["Ops Manager".into()]).await.unwrap();
+    let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.unwrap();
     T { k: k.clone(), tenant, admin }
 }
 
@@ -242,6 +245,7 @@ async fn scenario() {
     let k = boot().await;
     a_charger_is_where_its_connection_is(&k).await;
     envelopes_and_exclusive_work(&k).await;
+    the_ledger_asks_who_is_asking(&k).await;
     let t = workspace(&k, "north").await;
     let site = id_of(&k.insert(&t.admin, "Site", obj(json!({"site_name": "North DC", "site_code": "north"}))).await.expect("site"));
     let (gw_id, gw) = gateway(&t, "GW-1", site, 7).await;
@@ -432,9 +436,10 @@ async fn scenario() {
     let by_ai = issue(&t, &manager, NewCommand { issuer: Issuer::Ai, ..move_tote(bot) }).await.unwrap();
     assert_eq!(by_ai.state, State::Proposed, "an AI proposes, even for what a person could send at once");
     let envelope = k
-        .insert(&manager, "AutomationEnvelope", obj(json!({"envelope_name": "Moves", "site": site, "operation": "warehouse.move", "max_per_hour": 2, "valid_until": (Utc::now() + Duration::hours(1)).to_rfc3339()})))
+        .insert(&manager, "AutomationEnvelope", obj(json!({"envelope_name": "Moves", "site": site, "operation": "warehouse.move", "max_per_hour": 2, "limits": [{"parameter": "to"}], "valid_until": (Utc::now() + Duration::hours(1)).to_rfc3339()})))
         .await
         .expect("envelope");
+    k.update(&t.admin, "AutomationEnvelope", id_of(&envelope), obj(json!({"enabled": true})), None).await.expect("switched on by someone else");
     for _ in 0..2 {
         assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap().state, State::Queued, "inside its limits");
     }
@@ -933,6 +938,7 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
     activate(&t, gw_id).await;
     let bot = robot(&t, "BOT-1", site).await;
     let manager = person(&t, "mo@north.test", &["Ops Manager"]).await;
+    let second = person(&t, "ann@north.test", &["Ops Manager"]).await;
     let force = NewCommand { operation: "door.force".into(), payload: json!({"door": 3}), ..move_tote(bot) };
     let envelope = k
         .insert(&manager, "AutomationEnvelope", obj(json!({"envelope_name": "Moves", "site": site, "operation": "warehouse.move", "max_per_hour": 2, "valid_until": (Utc::now() + Duration::hours(1)).to_rfc3339()})))
@@ -943,11 +949,20 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
         let seen = json_of(api(&t, &t.admin, "GET", &format!("/commands/{id}"), Value::Null).await.unwrap());
         seen["history"].as_array().unwrap().iter().find_map(|e| e["detail"]["outside"].as_str()).unwrap_or_default().to_string()
     };
-    let envelope_set = async |v: Value| k.update(&manager, "AutomationEnvelope", id_of(&envelope), obj(v), None).await.expect("changed");
+    // Whoever turns it on, or changes it while it is on, approves it: here never the one who wrote it.
+    let envelope_set = async |v: Value| k.update(&second, "AutomationEnvelope", id_of(&envelope), obj(v), None).await.expect("changed");
+
+    // ───── A6: one person cannot make one, and nobody one that limits nothing ─────
+    let switch_on = async |by: &Ctx| k.update(by, "AutomationEnvelope", id_of(&envelope), obj(json!({"enabled": true})), None).await;
+    let limitless = switch_on(&second).await;
+    assert!(matches!(&limitless, Err(Error::Validation(v)) if v[0].field == "limits"), "an envelope with no limit approves every payload: {limitless:?}");
+    k.update(&manager, "AutomationEnvelope", id_of(&envelope), obj(json!({"limits": [{"parameter": "to"}]})), None).await.expect("a limit, while it is off");
+    let own = switch_on(&manager).await;
+    assert!(matches!(&own, Err(Error::Forbidden(_))), "nobody approves what they wrote: {own:?}");
 
     // ───── an envelope is more than a rate: where, what, when and how much ─────
     envelope_set(json!({"enabled": true, "max_per_hour": 1000})).await;
-    assert_eq!(k.get(&t.admin, "AutomationEnvelope", id_of(&envelope), false).await.unwrap()["approved_by"], json!("mo@north.test"), "whoever turned it on");
+    assert_eq!(k.get(&t.admin, "AutomationEnvelope", id_of(&envelope), false).await.unwrap()["approved_by"], json!("ann@north.test"), "whoever turned it on");
     let ai = issue(&t, &manager, NewCommand { issuer: Issuer::Ai, ..move_tote(bot) }).await.unwrap();
     assert_eq!(ai.state, State::Proposed, "an envelope for rules says nothing about agents");
     assert!(outside(ai.id).await.contains("does not cover agents"));
@@ -970,7 +985,7 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
     assert_eq!(too_many.state, State::Proposed, "a quantity past its limit");
     let unsaid = issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap();
     assert!(outside(unsaid.id).await.contains("does not say qty"), "what it does not say cannot be judged");
-    envelope_set(json!({"limits": []})).await;
+    envelope_set(json!({"limits": [{"parameter": "to"}]})).await;
 
     envelope_set(json!({"equipment_state": "Idle"})).await;
     let unheard = issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap();
@@ -1085,6 +1100,59 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
     cancelled.expect("stopped before it left");
     let again = exclusive(held("1"), "wms-task:1").await;
     assert!(!again.repeated && again.id != first.id, "once it has ended, the next attempt is its own");
+}
+
+/// A1: whoever asks in person, or an agent in their name, needs the dispatch role and a site that admits
+/// them, in the ledger itself: another app writing commands (Edge's bulk command does, for up to 500
+/// devices) cannot skip either. An app's engine answers for its own gates.
+async fn the_ledger_asks_who_is_asking(k: &Arc<Kernel>) {
+    let t = workspace(k, "guarded").await;
+    let site = id_of(&k.insert(&t.admin, "Site", obj(json!({"site_name": "Cleanroom", "site_code": "clean"}))).await.unwrap());
+    let (gw_id, _gw) = gateway(&t, "GW-C", site, 21).await;
+    activate(&t, gw_id).await;
+    let fan = robot(&t, "FAN-1", site).await;
+    let members = json!([{"user_email": "member@guarded.test"}, {"user_email": "setup@guarded.test"}]);
+    k.update(&t.admin, "Site", site, obj(json!({"restricted": true, "members": members})), None).await.expect("members only");
+    let outsider = person(&t, "contractor@guarded.test", &["Ops Dispatcher"]).await;
+    let setup = person(&t, "setup@guarded.test", &["Device Administrator", "Ops Viewer"]).await;
+    let member = person(&t, "member@guarded.test", &["Ops Dispatcher"]).await;
+    let written = async || -> i64 {
+        let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+        let n = sqlx::query_scalar("select count(*) from op_command where target_id = $1").bind(fan).fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        n
+    };
+    // As another app calls it: straight to the write function, with the caller's own context.
+    for issuer in [Issuer::Person, Issuer::Ai] {
+        let asked = issue(&t, &outsider, NewCommand { issuer, ..move_tote(fan) }).await;
+        assert!(matches!(asked, Err(Error::NotFound(_))), "a members-only site is closed to whoever it does not list, as {issuer:?}: {asked:?}");
+        let asked = issue(&t, &setup, NewCommand { issuer, ..move_tote(fan) }).await;
+        assert!(matches!(asked, Err(Error::Forbidden(_))), "configuring a device is not dispatching to it, as {issuer:?}: {asked:?}");
+    }
+    assert_eq!(written().await, 0, "and nothing was written");
+    assert_eq!(issue(&t, &member, move_tote(fan)).await.unwrap().state, State::Queued, "a dispatcher the site lists");
+    // An engine releasing its own work (a warehouse task a person released there) is not asked again.
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+    let engine = commands::issue_exclusive(&mut tx, &outsider, NewCommand { issuer: Issuer::Engine, ..move_tote(fan) }, "wms-task:7").await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(engine.state, State::Queued);
+    assert_eq!(written().await, 2);
+
+    // A18: an administrator reads and configures here without a role, and dispatches, approves and settles
+    // only with one, which they can give themselves.
+    let it = k.create_user(&t.admin, "it@guarded.test", "IT", Some("Correct-Horse-9"), &[], true).await.unwrap();
+    let it_admin = k.load_ctx(t.tenant, it, None, "it".into()).await.unwrap();
+    let asked = issue(&t, &it_admin, move_tote(fan)).await;
+    assert!(matches!(asked, Err(Error::Forbidden(_))), "an administrator without the role does not dispatch: {asked:?}");
+    let door = issue(&t, &member, NewCommand { operation: "door.force".into(), payload: json!({"door": 1}), ..move_tote(fan) }).await.unwrap();
+    assert_eq!(door.state, State::Proposed);
+    assert!(matches!(api(&t, &it_admin, "POST", &format!("/commands/{}/approve", door.id), Value::Null).await, Err(Error::Forbidden(_))), "nor approves");
+    assert!(api(&t, &it_admin, "GET", "/overview", Value::Null).await.is_ok(), "reading is theirs");
+    let pin = api(&t, &it_admin, "POST", "/operators/pin", json!({"site": site, "email": "member@guarded.test", "pin": "204060"})).await;
+    assert!(pin.is_ok_and(|r| r.status == 204), "and configuring");
+    k.set_user_roles(&t.admin, it, &["Ops Dispatcher".into()]).await.unwrap();
+    let it_admin = k.load_ctx(t.tenant, it, None, "it".into()).await.unwrap();
+    assert_eq!(issue(&t, &it_admin, move_tote(fan)).await.unwrap().state, State::Queued, "given the role, they dispatch");
 }
 
 /// A device that exists and is not active.

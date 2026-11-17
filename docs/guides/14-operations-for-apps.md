@@ -47,7 +47,7 @@ The platform's limits are the app's ([docs/limits.md](../limits.md), [docs/opera
 
 | Limit | Value | What it means for an app |
 |---|---|---|
-| Statement timeout | 15 s by default (`DbConfig::statement_timeout_ms`), set in every transaction the kernel opens | One statement over it is cancelled. Do long work in batches |
+| Statement timeout | 15 s by default (`DbConfig::statement_timeout_ms`), set in every transaction the kernel opens, `Kernel::list` included; a report or an export reading page after page passes 60 s (`report_timeout_ms`) to `Kernel::list_with_timeout` | One statement over it is cancelled, and a request answers `503` (`unavailable`, "query took too long"). Do long work in batches |
 | `lock_timeout` | 10 s | Waiting on a lock longer fails: keep transactions short, and lock rows in the same order everywhere |
 | Idle in a transaction | 60 s | A transaction held open while waiting on the network is cut. Never call out inside one |
 | Request time | `request_timeout_ms`, 2 minutes by default | A request is not a job: queue what takes longer ([06](06-events-jobs-and-logic.md)) |

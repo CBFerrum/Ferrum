@@ -32,7 +32,7 @@ use crate::identity::{self, Refused};
 use crate::{acceptance, authority, connections, devices, sync, telemetry};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use ferrum_kernel::{Ctx, Error, Kernel, Result, Site, SiteRequest, SiteResponse};
+use ferrum_kernel::{Ctx, Error, Kernel, Result, Site, SiteRequest, SiteResponse, Tx};
 use ferrum_ops_contract::sign::Enroll;
 use ferrum_ops_contract::{Lifecycle, MAX_SYNC_BYTES, State, SyncRequest};
 use serde::Deserialize;
@@ -63,9 +63,12 @@ fn time(req: &SiteRequest, k: &str) -> Result<Option<DateTime<Utc>>> {
 }
 
 /// Roles that each kind of act needs. Read, dispatch, configuration and recovery are separate
-/// privileges: who may move a robot need not be who may change what it is allowed to do.
+/// privileges: who may move a robot need not be who may change what it is allowed to do. An
+/// administrator reads and configures without them, and dispatches, approves and settles only with
+/// the role, which they can give themselves (`has_role` holds every role for an administrator).
 pub(crate) fn may(ctx: &Ctx, roles: &[&str]) -> Result<()> {
-    if ctx.is_admin || roles.iter().any(|r| ctx.has_role(r)) {
+    let admin = ctx.is_admin && [READ, CONFIGURE].contains(&roles);
+    if admin || roles.iter().any(|r| ctx.roles.iter().any(|held| held == r)) {
         return Ok(());
     }
     Err(Error::Forbidden(format!("this takes one of: {}", roles.join(", "))))
@@ -77,21 +80,30 @@ const RECOVER: &[&str] = &["Ops Recovery", "Ops Manager"];
 const CONFIGURE: &[&str] = &["Device Administrator", "Ops Manager"];
 const APPROVE: &[&str] = &["Ops Manager"];
 
-/// A site marked members-only is closed to everyone not listed, whatever their roles.
-async fn open_sites(k: &Kernel, ctx: &Ctx) -> Result<Option<Vec<Uuid>>> {
+/// The sites open to `ctx`, `None` for every one: a site marked members-only is closed to everyone not
+/// listed, whatever their roles. An app listing Operations' devices filters them by it.
+pub async fn open_sites(k: &Kernel, ctx: &Ctx) -> Result<Option<Vec<Uuid>>> {
     if ctx.is_admin {
         return Ok(None);
     }
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let ids = open_sites_tx(&mut tx, ctx).await?;
+    tx.commit().await?;
+    Ok(ids)
+}
+
+async fn open_sites_tx(tx: &mut Tx, ctx: &Ctx) -> Result<Option<Vec<Uuid>>> {
+    if ctx.is_admin {
+        return Ok(None);
+    }
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "select s.id from e_site s where s.tenant_id = $1 and (not coalesce(s.restricted, false) or exists ( \
            select 1 from e_site__members m where m.tenant_id = s.tenant_id and m.parent_id = s.id and lower(m.user_email) = lower($2)))",
     )
     .bind(ctx.tenant)
     .bind(&ctx.email)
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await?;
-    tx.commit().await?;
     Ok(Some(ids))
 }
 
@@ -112,12 +124,19 @@ pub(crate) async fn command_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> 
 
 pub async fn device_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let site: Option<Option<Uuid>> =
-        sqlx::query_scalar("select site from e_device where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
+    device_site_tx(&mut tx, ctx, id).await?;
     tx.commit().await?;
-    match site.ok_or_else(|| Error::NotFound("device".into()))? {
-        Some(site) => site_open(k, ctx, site).await,
-        None => Ok(()),
+    Ok(())
+}
+
+/// [`device_site`] in the caller's transaction: the ledger asks it of whoever writes a command in person.
+pub(crate) async fn device_site_tx(tx: &mut Tx, ctx: &Ctx, id: Uuid) -> Result<()> {
+    let site: Option<Option<Uuid>> =
+        sqlx::query_scalar("select site from e_device where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_optional(&mut **tx).await?;
+    let Some(site) = site.ok_or_else(|| Error::NotFound("device".into()))? else { return Ok(()) };
+    match open_sites_tx(tx, ctx).await? {
+        Some(open) if !open.contains(&site) => Err(Error::NotFound("site".into())),
+        _ => Ok(()),
     }
 }
 
@@ -210,10 +229,9 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
             Ok(ok(json!({"commands": commands::list(k, ctx, sites.as_deref(), param(req, "state"), param(req, "needs_person").is_some(), limit).await?})))
         }
         ("POST", ["commands"]) => {
-            may(ctx, DISPATCH)?;
             let cmd: NewCommand = body(req)?;
-            device_site(k, ctx, cmd.target).await?;
-            // Never the caller's to say. An assistant's context is marked, and it only proposes.
+            // Never the caller's to say. An assistant's context is marked, and it only proposes. The ledger
+            // asks either for the dispatch role and a site that admits them.
             let cmd = NewCommand { issuer: if ctx.egress.is_some() { commands::Issuer::Ai } else { commands::Issuer::Person }, ..cmd };
             let mut tx = k.db.tenant_tx(ctx.tenant).await?;
             let issued = commands::issue(&mut tx, ctx, cmd).await?;

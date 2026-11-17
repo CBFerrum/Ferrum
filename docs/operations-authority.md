@@ -58,6 +58,17 @@ authorization.
 | Reconcile | Ops Recovery | Needs what was found, in words |
 | Enroll, change lifecycle, move authority, set PINs | Device Administrator | |
 
+The ledger asks it of whoever writes a command, whichever app writes it (`commands::issue`): a command
+issued as a person's, or an agent's in a person's name, needs Ops Dispatcher or Ops Manager, and a site
+that admits them. A site marked members-only admits only the people it lists, whatever their roles.
+Operations' endpoints, Edge's bulk command and any other app are refused alike, and nothing is written.
+An app's engine issuing work a person released there (a warehouse task, a production run) answers for
+its own gates.
+
+A workspace administrator sees everything here and does what a Device Administrator does without
+these roles, but issues, stops, approves, refuses and reconciles only with the role itself, which an
+administrator can give themselves.
+
 Agents hold none of these. They read, and they propose; a proposal runs only when a person approves
 it (`crates/ops/src/mcp.rs`).
 
@@ -65,8 +76,10 @@ it (`crates/ops/src/mcp.rs`).
 
 Software asks through the ledger like anything else: a rule or schedule as `automation`, an agent as
 `ai`. What it asks for waits for a person unless an **Automation Envelope** covers it, and the
-command's history says which limit it fell outside of. An envelope is one person's decision made in
-advance, and it has to say what was decided:
+command's history says which limit it fell outside of. An envelope is a decision made in advance, by
+someone other than whoever wrote it, and it has to say what was decided. It is created switched off;
+it is switched on only with at least one parameter limit, and never by whoever created it. Whoever
+switches it on, or changes it while it is on, is recorded as approving it, with what it allowed then:
 
 | It says | With | Anything else |
 |---|---|---|

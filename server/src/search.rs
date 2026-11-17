@@ -1,8 +1,9 @@
 //! Search across the workspace (docs/plan/apps-ui.md §12.8): the records of every entity the person
 //! may read, found by their title and search fields with the kernel's list search (filtered by
 //! the person's permissions as lists are, on trigram indexes), entities in parallel within a time
-//! budget, ranked by how well the title matches and how recently the record changed. What is not
-//! an entity (mail, chat) comes from the apps' `shell.search` providers, which the bar asks itself.
+//! budget and one deadline, as the request's own work, ranked by how well the title matches and how
+//! recently the record changed. What is not an entity (mail, chat) comes from the apps' `shell.search`
+//! providers, which the bar asks itself.
 //! The lists the person may open are matched by name too (`pages`: the bar's "Go to").
 
 use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, ListQuery, Result};
@@ -13,6 +14,8 @@ use std::time::{Duration, Instant};
 
 /// How long one entity may take; slower ones are left out of this answer (`partial`).
 const PER_ENTITY: Duration = Duration::from_millis(300);
+/// How long the whole search may take: what has not finished by then is left out (`partial`), and stopped.
+const DEADLINE: Duration = Duration::from_millis(800);
 /// Entities searched at once: a search must not take the whole connection pool.
 const AT_ONCE: usize = 6;
 /// Records asked of each entity.
@@ -97,10 +100,12 @@ pub async fn search(k: &Arc<Kernel>, ctx: &Ctx, q: &str, limit: usize) -> Result
     let pages = pages(ctx, q);
     let entities = searchable(ctx);
     let gate = Arc::new(tokio::sync::Semaphore::new(AT_ONCE));
-    let mut tasks = Vec::new();
+    // The request's own: dropped with it (the bar drops a search at the next keystroke) or at the deadline,
+    // which stops whatever has not finished, so that no query of it starts after.
+    let mut tasks = tokio::task::JoinSet::new();
     for name in entities {
         let (k, ctx, gate, q) = (k.clone(), ctx.clone(), gate.clone(), q.to_string());
-        tasks.push(tokio::spawn(async move {
+        tasks.spawn(async move {
             let _slot = gate.acquire_owned().await.ok()?;
             let ent = ctx.schema.entity(&name)?.clone();
             let mut fields = vec!["id".to_string(), "number".into(), "updated_at".into()];
@@ -144,16 +149,18 @@ pub async fn search(k: &Arc<Kernel>, ctx: &Ctx, q: &str, limit: usize) -> Result
                 })
                 .collect();
             Some((name, Some(hits)))
-        }));
+        });
     }
     let mut hits = Vec::new();
     let mut partial = false;
-    for t in tasks {
-        match t.await {
+    let deadline = tokio::time::Instant::now() + DEADLINE;
+    while let Ok(Some(done)) = tokio::time::timeout_at(deadline, tasks.join_next()).await {
+        match done {
             Ok(Some((_, Some(h)))) => hits.extend(h),
-            Ok(Some((_, None))) | Ok(None) | Err(_) => partial = true,
+            _ => partial = true,
         }
     }
+    partial |= !tasks.is_empty();
     hits.sort_by(|a, b| b.rank.cmp(&a.rank).then_with(|| b.updated.cmp(&a.updated)));
     hits.truncate(limit.clamp(1, 50));
     Ok(json!({

@@ -182,7 +182,14 @@ impl Kernel {
         doc
     }
 
+    /// A page of an entity's records for someone waiting for it: under the ordinary statement timeout.
     pub async fn list(&self, ctx: &Ctx, entity: &str, q: &ListQuery) -> Result<Page> {
+        self.list_with_timeout(ctx, entity, q, self.db.config.statement_timeout_ms).await
+    }
+
+    /// [`Kernel::list`] with the caller's statement timeout: what reports and exports read, page after page,
+    /// passes `DbConfig::report_timeout_ms`.
+    pub async fn list_with_timeout(&self, ctx: &Ctx, entity: &str, q: &ListQuery, timeout_ms: u64) -> Result<Page> {
         let ent = self.entity(ctx, entity)?;
         guard_kind(&ent)?;
         let scope = row_scope(ctx, &ent, Action::Read)?;
@@ -207,7 +214,7 @@ impl Kernel {
                 }
             }
         }
-        let mut tx = self.db.tenant_tx_with_timeout(ctx.tenant, self.db.config.report_timeout_ms).await?;
+        let mut tx = self.db.tenant_tx_with_timeout(ctx.tenant, timeout_ms).await?;
         let mut qb = QueryBuilder::new(format!("select to_jsonb(x) from (select {}", store::select_list(&ent, "a")));
         query::push_from_where_for(&mut qb, ctx, &ent, &scope, &q.filters, q.search.as_deref())?;
         let dir = if desc { "desc" } else { "asc" };
