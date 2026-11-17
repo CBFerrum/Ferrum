@@ -392,7 +392,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 
 **Browser**
 * The web app's Content Security Policy allows scripts only from its own bundle; responses carry
-  `X-Content-Type-Options: nosniff`, a referrer policy and same-origin framing. A browser's session
+  `X-Content-Type-Options: nosniff`, a referrer policy and same-origin framing. Served over HTTPS (`PUBLIC_URL`
+  https), every answer, whichever part of the server made it, carries `Strict-Transport-Security: max-age=31536000;
+  includeSubDomains`; over plain http none does. A browser's session
   travels in the `__Host-ferrum` cookie (`ferrum_session` on a plain-http development server): `HttpOnly`,
   `SameSite=Lax`, `Secure`, `Path=/` (server/src/shell.rs); other clients send a token in the
   `Authorization` header. Against cross-site request forgery, a request the cookie authenticates may

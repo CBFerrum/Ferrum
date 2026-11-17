@@ -267,6 +267,34 @@ async fn scenario() {
     let (status, answer) = call(&r, Method::GET, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), None).await;
     assert_eq!(status, StatusCode::OK, "an administrator: {answer}");
 
+    // ── Served over HTTPS, every answer keeps browsers on it, those of the layers outside the routes too ──
+    let https = {
+        let storage = std::sync::Arc::new(loco_rs::storage::Storage::single(loco_rs::storage::drivers::mem::new()));
+        let shell = ferrum_server::shell::Shell::new(k.clone(), storage, &st.settings, "https://erp.acme.test");
+        let st = AppState { shell: std::sync::Arc::new(shell), ..st.clone() };
+        let ctx = AppContext::builder(Environment::Test, Default::default(), base.config.clone()).build();
+        ctx.shared_store.insert(st);
+        let router = App::routes(&ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
+        App::after_routes(router, &ctx).await.expect("layers")
+    };
+    let hsts = |router: &axum::Router, req: Request<Body>| {
+        let router = router.clone();
+        async move {
+            let res = router.oneshot(req).await.unwrap();
+            let said: Vec<String> = res.headers().get_all(header::STRICT_TRANSPORT_SECURITY).iter().map(|v| v.to_str().unwrap().to_string()).collect();
+            (res.status(), said)
+        }
+    };
+    let ping = || Request::get("/_ping").header(header::HOST, HOST).body(Body::empty()).unwrap();
+    // A screen's call off the paths screens may call, refused by a layer before any route.
+    let off_paths = || Request::get("/api/admin/users").header(header::HOST, HOST).header("x-ferrum-app", "board").body(Body::empty()).unwrap();
+    let a_year = vec!["max-age=31536000; includeSubDomains".to_string()];
+    assert_eq!(hsts(&https, ping()).await, (StatusCode::OK, a_year.clone()), "a route's answer");
+    assert_eq!(hsts(&https, off_paths()).await, (StatusCode::FORBIDDEN, a_year), "a layer's answer");
+    for req in [ping(), off_paths()] {
+        assert_eq!(hsts(&r, req).await.1, Vec::<String>::new(), "over plain http (PUBLIC_URL http://)");
+    }
+
     // ── 0. Code the operator does not take ──
     // A plugin module on its own is signed by no key: where the server takes no upload a trusted key did not sign (the
     // test configuration's `apps`, as production's), an administrator's module is refused as an unsigned bundle is, and

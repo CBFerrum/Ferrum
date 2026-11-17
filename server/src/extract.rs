@@ -451,7 +451,7 @@ pub fn client_ip(headers: &HeaderMap) -> String {
 
 /// With no proxy in front (`proxy_hops` 0), an `X-Forwarded-For` is whatever the client wrote: the connection's own
 /// address takes its place, so that [`client_ip`], and every limit, zone and network that goes by it, has the peer.
-/// Outside every other layer (app.rs), before anything reads the address.
+/// Outside every layer that reads the address (app.rs).
 pub async fn peer_address(mut req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     if PROXY_HOPS.load(std::sync::atomic::Ordering::Relaxed) == 0 {
         let peer = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip().to_canonical());

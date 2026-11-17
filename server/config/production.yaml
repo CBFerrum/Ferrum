@@ -16,12 +16,13 @@ server:
     fallback:
       enable: false
     # CSP allows only same-origin scripts (the built web app); print templates may use inline styles.
+    # Strict-Transport-Security is not set here: the server's outermost layer decides it for every answer, those its
+    # other layers make included, from PUBLIC_URL (server/src/app.rs, strict_transport), over what the preset says.
     secure_headers:
       enable: true
       preset: github
       overrides:
         Content-Security-Policy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
-        Strict-Transport-Security: "max-age=31536000; includeSubDomains"
         Referrer-Policy: "strict-origin-when-cross-origin"
     limit_payload:
       enable: true

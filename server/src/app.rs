@@ -705,6 +705,7 @@ impl Hooks for App {
 
     async fn after_routes(router: axum::Router, ctx: &AppContext) -> Result<axum::Router> {
         let state = crate::state::app_state(ctx).map_err(|e| Error::Message(e.0.to_string()))?;
+        let secure = state.shell.secure;
         let limiter = state.address_limiter.clone();
         let st = Arc::new(state.clone());
         let origins = st.clone();
@@ -726,8 +727,10 @@ impl Hooks for App {
             .layer(axum::middleware::from_fn(move |req, next| app_origins(origins.clone(), req, next)))
             // A request's whole time, by app and kind (/metrics).
             .layer(axum::middleware::from_fn(crate::request_metrics::count))
-            // Outermost: the client's address, before anything reads it.
-            .layer(axum::middleware::from_fn(crate::extract::peer_address)))
+            // The client's address, before anything reads it.
+            .layer(axum::middleware::from_fn(crate::extract::peer_address))
+            // Outermost: HSTS on every answer, whichever layer made it.
+            .layer(axum::middleware::from_fn(move |req, next| strict_transport(secure, req, next))))
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
@@ -1032,6 +1035,20 @@ async fn step_up_ways(st: Arc<AppState>, req: axum::extract::Request, next: axum
         return res;
     }
     crate::controllers::auth::with_ways(&st, &headers, res).await
+}
+
+/// HSTS: served over HTTPS (`PUBLIC_URL`), every answer tells browsers to come back over HTTPS only, for a year, to this
+/// host and those under it; over plain http none says it (a browser would not take it there). Set here, outside every
+/// other layer, so that the answers those make carry it too, and nowhere else.
+async fn strict_transport(secure: bool, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::http::{HeaderValue, header::STRICT_TRANSPORT_SECURITY};
+    let mut res = next.run(req).await;
+    if secure {
+        res.headers_mut().insert(STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=31536000; includeSubDomains"));
+    } else {
+        res.headers_mut().remove(STRICT_TRANSPORT_SECURITY);
+    }
+    res
 }
 
 /// API answers belong to one user and can change without a new version (an engine-set status, a
