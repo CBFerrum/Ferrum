@@ -408,27 +408,16 @@ impl Hooks for App {
             .map_err(Error::Message)?;
         let shell = Arc::new(crate::shell::Shell::new(kernel.clone(), storage.clone(), &settings, &ctx.config.server.host));
         // What would put this build's older things back on a newer build's database (crates/kernel/src/window.rs): held
-        // so that no newer build migrates meanwhile, and left out by a guest (the upgrade steps and their marker, apps
-        // recorded at this build's versions, interfaces registered for them).
+        // so that no newer build migrates meanwhile, and left out by a guest (apps recorded at this build's versions,
+        // interfaces registered for them).
         match kernel.hold_start().await.map_err(|e| Error::Message(format!("kernel boot: {e}")))? {
             Some(hold) => {
-                // Workspaces from before this release's package layout move onto it (logged, not fatal:
-                // the next start tries again).
-                if migrating {
-                    // The task runs the steps itself, to print them and to fail when one fails.
-                } else if migrate_now {
-                    if let Err(e) = crate::upgrade::run(&kernel).await {
-                        tracing::error!("moving workspaces onto this release's packages failed: {e}");
-                    }
-                } else {
-                    crate::upgrade::verify(&kernel).await.map_err(|e| Error::Message(e.to_string()))?;
-                }
                 apps.ensure_native("erp", "accounting").await;
                 apps.ensure_native("studio", "studio").await;
                 crate::shell::register_compiled(&kernel, &storage, &settings, &apps).await;
                 hold.release().await;
             }
-            None => tracing::warn!("a newer build has this database: its upgrade steps, apps and interfaces are left as that build made them"),
+            None => tracing::warn!("a newer build has this database: its apps and interfaces are left as that build made them"),
         }
         if settings.dev_ui {
             tracing::warn!("FERRUM_DEV_UI is on: administrators may serve apps' pages from development servers on this machine; never on a server people use");
@@ -783,7 +772,6 @@ impl Hooks for App {
         tasks.register(crate::tasks::RunMaintenance);
         tasks.register(crate::tasks::SeedDemo);
         tasks.register(crate::tasks::DepsReport);
-        tasks.register(crate::tasks::UpgradeBack);
         tasks.register(crate::tasks::AppMakeAvailable);
         tasks.register(crate::tasks::AppUpgrade);
         tasks.register(crate::tasks::AppRevoke);

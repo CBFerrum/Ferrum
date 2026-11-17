@@ -425,8 +425,8 @@ metricsEngine:
     limits: {memory: 3Gi}
 
 # A Job that migrates the database before an install or upgrade (Helm hook): it runs the server
-# image with `args`, `task migrate`, which applies the kernel's SQL migrations, syncs the schema and
-# runs the one-time upgrade steps, and fails the release when one fails. While it is enabled the
+# image with `args`, `task migrate`, which applies the kernel's SQL migrations and syncs the schema, and
+# fails the release when one fails. While it is enabled the
 # server's pods also get `serverEnv`, FERRUM_MIGRATE_AT_START=false: they no longer migrate as they
 # start, only check that the Job did, and refuse to start (naming the command) when it has not.
 # Pods of the release before keep starting once the Job has run: on a database a newer build migrated,

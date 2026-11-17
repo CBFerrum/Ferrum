@@ -526,7 +526,7 @@ impl Kernel {
         }
         Registry::bump_version(tx, ctx.tenant).await?;
         let mut schema = self.build(ctx, &overlays)?;
-        (schema.version, schema.fy_start_month, schema.shell_v2) = (ctx.schema.version, ctx.schema.fy_start_month, ctx.schema.shell_v2);
+        (schema.version, schema.fy_start_month) = (ctx.schema.version, ctx.schema.fy_start_month);
         schema.timezone.clone_from(&ctx.schema.timezone);
         Ok((saved, schema))
     }

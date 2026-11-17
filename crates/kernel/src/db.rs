@@ -34,7 +34,7 @@ pub fn background_connections(main: u32) -> u32 {
 pub const LISTENERS: u32 = 5;
 
 /// What [`Db::direct`] holds besides the listeners and apps' upkeep: one session lock at a time (app revocations; at
-/// start the migrations, the schema sync and the upgrade steps, one after another). Its own pool, when the direct address
+/// start the migrations and the schema sync, one after the other). Its own pool, when the direct address
 /// differs from the main one, opens at most `LISTENERS + DIRECT_LOCKS + upkeep at once` ([`DbConfig::direct_connections`]).
 pub const DIRECT_LOCKS: u32 = 1;
 

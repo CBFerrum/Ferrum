@@ -232,7 +232,7 @@
   default: "true"
   path: settings.migrate_at_start
   doc: >-
-    Default `true`: the server migrates the database, syncs the schema and runs the upgrade steps as it starts.
+    Default `true`: the server migrates the database and syncs the schema as it starts.
     `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and
     refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe.
     Either way, on a database a newer build migrated, the server starts as a guest that changes nothing, or refuses

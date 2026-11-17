@@ -273,9 +273,6 @@ pub struct Schema {
     pub fy_start_month: u32,
     /// The tenant's IANA time zone (`Asia/Kolkata`); "today" and "now" are local to it.
     pub timezone: String,
-    /// The tenant's people use the shell and apps with interfaces of their own (docs/plan/apps-ui.md):
-    /// every workspace since U4b. The server still says so (`/me`, server/src/shell.rs).
-    pub shell_v2: bool,
     /// The workspace's published lists (`publish_list`, BD-15), each checked against its entity.
     pub published_lists: Vec<PublishedList>,
     /// The installed packages' message templates, as they ship them (BD-20).
@@ -374,7 +371,6 @@ impl Default for Schema {
             warnings: vec![],
             fy_start_month: 1,
             timezone: "UTC".into(),
-            shell_v2: false,
             published_lists: vec![],
             messages: vec![],
             documents: vec![],
@@ -1281,7 +1277,6 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         warnings,
         fy_start_month: 1,
         timezone: "UTC".into(),
-        shell_v2: false,
         published_lists,
         messages,
         documents,

@@ -215,9 +215,6 @@ pub struct WorkspaceInfo {
     pub slug: String,
     pub name: String,
     pub status: String,
-    /// The workspace uses the shell and apps with interfaces of their own: every workspace since
-    /// U4b (the `shell_v2` setting is for the release before).
-    pub shell_v2: bool,
     /// A sandbox's `{of, until}` (ferrum_kernel::sandbox), for the interface to say so; `None` for a live workspace.
     pub sandbox: Option<Value>,
 }
@@ -721,15 +718,13 @@ impl Shell {
     }
 
     pub async fn workspace(&self, id: Uuid) -> Result<Arc<WorkspaceInfo>> {
-        // The switch comes with the workspace's schema, which every replica reloads at once when
-        // settings change; the rest (names) may be a few seconds old.
-        let shell_v2 = self.kernel.registry.schema(id).await?.shell_v2;
-        if let Some(e) = self.workspaces.get(&id).filter(|e| e.0.elapsed() < TTL && e.1.shell_v2 == shell_v2) {
+        // Names may be a few seconds old.
+        if let Some(e) = self.workspaces.get(&id).filter(|e| e.0.elapsed() < TTL) {
             return Ok(e.1.clone());
         }
-        let (slug, name, status, _) = self.kernel.workspace_brief(id).await?;
+        let (slug, name, status) = self.kernel.workspace_brief(id).await?;
         let sandbox = self.kernel.sandbox_mark(id).await?;
-        let w = Arc::new(WorkspaceInfo { id, slug, name, status, shell_v2, sandbox });
+        let w = Arc::new(WorkspaceInfo { id, slug, name, status, sandbox });
         self.workspaces.insert(id, (Instant::now(), w.clone()));
         Ok(w)
     }
@@ -2828,14 +2823,7 @@ mod tests {
     #[tokio::test]
     async fn a_sandbox_says_so_on_its_pages() {
         let mark = json!({"of": "acme", "until": "2026-12-01"});
-        let ws = WorkspaceInfo {
-            id: Uuid::nil(),
-            slug: "acme-try".into(),
-            name: "Acme".into(),
-            status: "active".into(),
-            shell_v2: false,
-            sandbox: Some(mark.clone()),
-        };
+        let ws = WorkspaceInfo { id: Uuid::nil(), slug: "acme-try".into(), name: "Acme".into(), status: "active".into(), sandbox: Some(mark.clone()) };
         assert_eq!(public_bootstrap(&ws, "acme-try.example.com", "UTC", json!({}), "p")["sandbox"], mark);
         async fn page(ws: &WorkspaceInfo) -> String {
             let res = login_page(Some(ws), "/", false);
@@ -2848,7 +2836,7 @@ mod tests {
 
     #[test]
     fn public_pages_know_no_person() {
-        let ws = WorkspaceInfo { id: Uuid::nil(), slug: "acme".into(), name: "Acme".into(), status: "active".into(), shell_v2: false, sandbox: None };
+        let ws = WorkspaceInfo { id: Uuid::nil(), slug: "acme".into(), name: "Acme".into(), status: "active".into(), sandbox: None };
         let b = public_bootstrap(&ws, "erp.acme.com", "Asia/Kolkata", json!({"id": "drive"}), "drive/s");
         assert!(b["person"].is_null() && b["workspace"]["id"].is_null() && b["api"]["live"].is_null());
         assert_eq!((b["host"]["kind"].as_str(), b["public"].as_str(), b["workspace"]["slug"].as_str()), (Some("public"), Some("drive/s"), Some("acme")));

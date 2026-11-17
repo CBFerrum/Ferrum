@@ -442,8 +442,8 @@ impl Task for ImportErpnext {
 }
 
 /// `migrate` — everything a server start does to the database, whatever `FERRUM_MIGRATE_AT_START` says: the kernel's
-/// SQL migrations, Loco's, the schema sync for the packages of this build, and the one-time upgrade steps. It prints what
-/// it did and fails when any step fails. Several at once are safe: each step holds its advisory lock.
+/// SQL migrations, Loco's and the schema sync for the packages of this build. It prints what it did and fails when any
+/// step fails. Several at once are safe: each step holds its advisory lock.
 pub struct Migrate;
 
 #[async_trait]
@@ -451,7 +451,7 @@ impl Task for Migrate {
     fn task(&self) -> TaskInfo {
         TaskInfo {
             name: "migrate".into(),
-            detail: "Migrate the database, sync the schema and run the upgrade steps; for a server that starts with FERRUM_MIGRATE_AT_START=false".into(),
+            detail: "Migrate the database and sync the schema; for a server that starts with FERRUM_MIGRATE_AT_START=false".into(),
         }
     }
     async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
@@ -475,18 +475,6 @@ impl Task for Migrate {
         } else {
             println!("schema: synced ({} statements, {} warnings)", schema.statements, schema.warnings.len());
         }
-        // Held as a server's start holds it; None when a newer build has migrated since this task started.
-        let Some(hold) = k.hold_start().await.map_err(refused)? else {
-            println!("upgrade steps: left to the newer build that has migrated this database meanwhile");
-            return Ok(());
-        };
-        let steps = crate::upgrade::run(&k).await.map_err(|e| Error::Message(format!("upgrade steps: {e}")));
-        hold.release().await;
-        let steps = steps?;
-        for (step, n) in steps.iter().filter(|(_, n)| *n > 0) {
-            println!("upgrade {step}: {n} workspaces");
-        }
-        println!("upgrades: {} steps checked, all done", steps.len());
         Ok(())
     }
 }
@@ -550,24 +538,6 @@ impl Task for DepsReport {
             std::fs::write(path, text).map_err(|e| Error::Message(format!("{path}: {e}")))?;
             println!("\nThe canonical schema is in {path}");
         }
-        Ok(())
-    }
-}
-
-/// `upgrade_back step:core-split` — before going back to the release before a one-time upgrade
-/// step: takes out the packages it installed in every workspace (the data stays).
-pub struct UpgradeBack;
-
-#[async_trait]
-impl Task for UpgradeBack {
-    fn task(&self) -> TaskInfo {
-        TaskInfo { name: "upgrade_back".into(), detail: "Undo a one-time upgrade step before going back to the release before it".into() }
-    }
-    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
-        let k = kernel(ctx)?;
-        let step = vars.cli_arg("step")?;
-        let n = crate::upgrade::back(&k, step).await.map_err(refused)?;
-        println!("{step}: undone in {n} workspaces; stop every replica of this release before it starts again, or it runs the step again");
         Ok(())
     }
 }
