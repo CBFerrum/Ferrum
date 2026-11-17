@@ -1018,7 +1018,7 @@ MUTANTS = [
     ("keyed-opt-out-unchecked", "crates/kernel/src/messages.rs", '.any(|(_, k)| subtle_eq(k.fingerprint("message opt-out", &said).as_bytes(), sig.as_bytes()))', ".any(|_| true)", MESSAGES),
     ("session-unsigned-verifies", "server/src/sessions.rs", "    ring::hmac::verify(&ring::hmac::Key::new(ring::hmac::HMAC_SHA512, key), signed.as_bytes(), &signature).ok()?;\n", "", SESSIONS_UNIT),
     ("session-key-past-its-end", "server/src/sessions.rs", "self.0.get(&n).filter(|h| h.until.is_none_or(|t| t > Utc::now()))", "self.0.get(&n)", SESSIONS_UNIT),
-    ("compared-token-any", "server/src/secrets.rs", "        Ok(false) => Token::Bad,\n", "        Ok(false) => Token::Good,\n", PLATFORM_SECRETS),
+    ("compared-token-any", "server/src/secrets.rs", "            Ok(false) => return Token::Bad,\n", "            Ok(false) => return Token::Good,\n", PLATFORM_SECRETS),
     ("library-secret-any-host", "server/src/secrets.rs", "            && !rule.hosts.contains(&host)\n", "            && false\n", PLATFORM_SECRETS),
     ("moved-address-keeps-secret", "server/src/settings.rs", "            tied.push(secret);\n", "", PLATFORM_SECRETS),
     # The whole router builds: no path and method mounted twice.
