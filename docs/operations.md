@@ -206,6 +206,12 @@ The app `gb`'s settings:
 | `gb.hmrc_url` | `FERRUM_GB_HMRC_URL` | text |  | installation, at once | Another address for HMRC's Making Tax Digital API. Outside development only HMRC's own hosts are called, so a company's credentials go nowhere else. |
 | `gb.public_ip` | `FERRUM_PUBLIC_IP` | text |  | installation, at once | The server's public address, sent in HMRC's fraud-prevention headers; found from the public address unless set. |
 
+The app `india`'s settings:
+
+| Setting | Variable | Type | Default | Where it lives | Meaning |
+|---|---|---|---|---|---|
+| `india.irp_hosts` | `FERRUM_IN_IRP_HOSTS` | text |  | installation, at once | More hosts a company's IRP API address may be on (another GSP's, or a development server's test double), separated by commas, beside NIC's and the GSPs' India knows. An address on any other host is refused, when it is saved and before anything is sent, so a company's IRP credentials go nowhere else. |
+
 The app `metrics`'s settings:
 
 | Setting | Variable | Type | Default | Where it lives | Meaning |
