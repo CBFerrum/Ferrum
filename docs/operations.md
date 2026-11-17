@@ -1185,6 +1185,23 @@ What was waiting is set aside, because some of it may have happened after the ba
 here can tell. Mail and webhooks go to the dead events and deliveries, jobs fail with a reason, and operations
 and commands become unknown. `ferrum task doctor` says so.
 
+In the same transaction it signs everyone out, in every workspace, because what was revoked after the backup was
+taken came back with it: every person's token version moves on (by 1,000, past any a token signed since could carry),
+and every browser session, API key and OAuth refresh token is revoked. The hold's reason says so. People sign in again
+with their passwords, administrators first, or by single sign-on; a password is as the backup had it, so one changed
+since is the old one again until it is changed once more. Integrations need new API keys.
+
+The database cannot do the rest by itself: the platform's own secrets are in the vault, in the database, and come back
+as the backup had them. A token the server compares (`bootstrap_token`, `metrics_token`, `operator_token`) that was
+changed since is the old one again, and the key that signs sessions is the one that signed then. Change each that was
+changed since the backup, or that may have leaked, before releasing the hold (*The platform's secrets*):
+`ferrum task secret_set name:operator_token` (and the others), and `ferrum task secret_set name:jwt_secret`. Every
+token signed before the restore carries a token version from before, and is refused; but the key the backup brought
+back still verifies until the longest token could have run out (*The key that signs sessions*), so whoever holds it
+can sign new ones meanwhile; nothing here ends it sooner (a rotation after a leak leaves the same window). With
+`JWT_SECRET` in the environment, a restore leaves it as it is: change it there if it may have leaked, which signs
+everyone out.
+
 A failover to a synchronous replica is also a new timeline, and loses nothing. Set
 `FERRUM_HOLD_ON_TIMELINE=false` if that is the only way a timeline changes here (*Any PostgreSQL* says which services
 fail over that way). Then an in-place point-in-time restore is not noticed by the timeline, only by the marker below.

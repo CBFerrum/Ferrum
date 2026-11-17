@@ -394,10 +394,18 @@ async fn a_restored_database_does_not_act_on_its_past() {
     drain(&k).await;
     assert_eq!(sent.count.load(Ordering::SeqCst), 1);
     pay(&k, admin.tenant).await;
+    // The backup also holds a browser session, an API key and what a token from signing in carries (S6).
+    let signed_in = k.login("acme", "admin@acme.test", "Correct-Horse-9").await.unwrap();
+    let browser = k.open_session(&signed_in, Duration::from_secs(3600), "it", "203.0.113.7", None).await.unwrap();
+    let (key_id, key) = k.create_api_key(&admin, admin.user, "laptop", None, None).await.unwrap();
     let dump = backup(&live);
     // It goes out after the backup, as far as the world is concerned. The backup does not know.
     drain(&k).await;
     assert_eq!(sent.count.load(Ordering::SeqCst), 2);
+    // Nor does it know that the key was stolen and revoked since, and the session signed out.
+    k.revoke_api_key(&admin, key_id).await.unwrap();
+    k.revoke_session(&admin, browser).await.unwrap();
+    assert!(k.verify_api_key(&key).await.is_err() && k.check_session(admin.tenant, admin.user, browser).await.is_err());
 
     // The database is lost, and comes back from that backup.
     restore(&dump, &restored).await;
@@ -405,6 +413,16 @@ async fn a_restored_database_does_not_act_on_its_past() {
     let k = kernel(database(&restored, false).await, sent.clone(), app.clone()).await;
     assert!(k.holding().await.unwrap(), "this is not the database this server knew");
     assert_eq!(app.told.load(Ordering::SeqCst), 1, "and what apps had in hand is theirs to set aside");
+
+    // What was revoked after the backup does not come back with it: everyone is signed out, and says so.
+    assert!(k.verify_api_key(&key).await.is_err(), "the key revoked since the backup is refused");
+    assert!(k.check_session(admin.tenant, admin.user, browser).await.is_err(), "and so is the session signed out since");
+    assert!(k.load_ctx(admin.tenant, admin.user, Some(signed_in.token_version), "it".into()).await.is_err(), "and any token from before");
+    let because: String = sqlx::query_scalar("select held_because from platform_incarnation").fetch_one(&k.db.pool).await.unwrap();
+    assert!(because.contains("signed out"), "{because}");
+    // An administrator gets back in with their password.
+    let again = k.login("acme", "admin@acme.test", "Correct-Horse-9").await.expect("signing in by password");
+    k.load_ctx(admin.tenant, again.user, Some(again.token_version), "it".into()).await.expect("a token from now");
 
     // The payment that was waiting does not go out again by itself.
     drain(&k).await;

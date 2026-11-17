@@ -349,7 +349,7 @@ MUTANTS = [
     ("extract-old-password-returns", "crates/kernel/src/recovery.rs", "password_hash = p.password_hash, ", "", RECOVERY),
     ("extract-leaver-returns", "crates/kernel/src/recovery.rs", ", is_active = p.is_active", "", RECOVERY),
     ("extract-sessions-survive", "crates/kernel/src/recovery.rs", 'sqlx::query("update app_user set token_version = $2 where tenant_id = $1").bind(tenant).bind(version).execute(&mut *tx).await?;\n', "", RECOVERY),
-    ("extract-keys-survive", "crates/kernel/src/recovery.rs", 'sqlx::query("update api_key set revoked_at = now() where tenant_id = $1 and revoked_at is null").bind(tenant).execute(&mut *tx).await?;\n', "", RECOVERY),
+    ("extract-keys-survive", "crates/kernel/src/recovery.rs", 'for table in ["user_session", "api_key", "oauth_refresh"] {', 'for table in ["user_session", "oauth_refresh"] {', RECOVERY),
     ("extract-waiting-work-runs", "crates/kernel/src/recovery.rs", "        self.set_aside(&mut tx, Some(tenant)).await?;\n", "", RECOVERY),
     ("extract-unerases", "crates/kernel/src/recovery.rs", "erased_again += self.erase_again(&mut tx, &system, erasure).await?.0;", "erased_again += usize::from(system.is_system && erasure.is_null());", RECOVERY),
     ("extract-files-unchecked", "crates/kernel/src/recovery.rs", "Ok(if store.exists(&key).await? { None } else { Some(t) })", "Ok(if store.exists(&key).await? || true { None } else { Some(t) })", RECOVERY),
