@@ -7,7 +7,7 @@
 # editors need HTTPS, or localhost).
 services:
   editors:
-    image: ${FERRUM_EDITORS_IMAGE:-ghcr.io/cbferrum/ferrum-editors:latest}
+    image: ${FERRUM_EDITORS_IMAGE:?set FERRUM_EDITORS_IMAGE to a commit tag, docs/operations.md "Images"}
     build:
       context: editors
     restart: unless-stopped

@@ -455,7 +455,8 @@ Past the limit a request waits for its pool and answers 503; nothing queues with
    with `india`, GST templates are set up automatically) and a fiscal year.
 
 Single host: `cp deploy/.env.example deploy/.env`, set the database's two passwords (`POSTGRES_PASSWORD`,
-`FERRUM_DB_PASSWORD`; nothing else is required), then
+`FERRUM_DB_PASSWORD`) and the image, `FERRUM_IMAGE`, to a commit's tag (*Images*; Compose refuses to start
+without it); nothing else is required. Then
 `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
 
 **Installing with the Helm chart.** `deploy/helm/ferrum` renders what `deploy/k8s` renders, so one command
@@ -530,7 +531,8 @@ them with `gh attestation verify oci://<image>@<digest> --repo CBFerrum/Ferrum`.
 release only after it also passes the Kubernetes qualification. The server's image answers every page: it carries the shell's and Studio's interfaces,
 built from Ferrum-Frontend at the commit its Dockerfile pins (`FRONTEND_REV`), and apps' interfaces
 come compiled into their crates; Ferrum-Frontend publishes no image of its own. On a single host,
-pin them with `FERRUM_IMAGE` and `FERRUM_EDITORS_IMAGE`. Deploy a commit's tag and change it to upgrade: `latest`
+pin them with `FERRUM_IMAGE` and `FERRUM_EDITORS_IMAGE`: the Compose files have no default for either and
+refuse to start without them (`scripts/local_ci.sh audit` fails a Compose file that gives one). Deploy a commit's tag and change it to upgrade: `latest`
 moves, so pods started later (a rescheduled replica, a new node) would run another release. If
 pulling needs signing in (private packages, or your own mirror), use a token that may read
 packages: `docker login ghcr.io` on a single host; on Kubernetes,
@@ -1872,7 +1874,7 @@ stay `unscanned`, and signatures added later do not reach files already stored.
 ## Checking a deployment
 
 **Before the first start**, `deploy/preflight.sh` looks at the host and `deploy/.env`: Docker, secrets
-left as placeholders, TLS, DNS, memory, disk and ports. `--generate` fills in missing secrets, makes the online
+left as placeholders, an image not pinned to a commit, TLS, DNS, memory, disk and ports. `--generate` fills in missing secrets, makes the online
 editor's WOPI proof key (`deploy/office-proof-key`) when there is none, and changes nothing else. Blockers exit non-zero; warnings do not.
 
 **Once it runs**, `ferrum task doctor` reports on the deployment itself, blockers apart from warnings,

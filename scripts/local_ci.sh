@@ -238,6 +238,7 @@ job_audit() {
   base=$(git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD)
   run "audit registry, accepted advisories and generated documents" sh -c 'python3 scripts/registry.py check && python3 scripts/test_registry.py && python3 scripts/test_manifests.py && python3 scripts/mutants.py --check && python3 scripts/test_baseline.py && python3 scripts/test_mutation_paths.py && python3 scripts/test_builder_inventory.py'
   run "audit two-version window (since $(git rev-parse --short "$base"))" sh -c "python3 scripts/test_window.py && python3 scripts/window.py --range $base..HEAD"
+  run "audit Compose files pin their image" sh -c '! grep -rnE "FERRUM_(EDITORS_)?IMAGE:-" deploy --include="*.yml" --include="*.yaml"'
   run "audit Helm chart against deploy/k8s" bash deploy/helm/test.sh
   run "audit Helm chart's deployment shapes" bash deploy/helm/test_pools.sh
   run "audit offline bundles" python3 deploy/offline/test_offline.py

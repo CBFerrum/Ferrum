@@ -7,7 +7,7 @@
 # The store keeps its data, its keys and its encryption key. Rotating the keys: docs/operations.md.
 services:
   store-files:
-    image: ${FERRUM_IMAGE:-ghcr.io/cbferrum/ferrum:latest}
+    image: ${FERRUM_IMAGE:?set FERRUM_IMAGE to a commit tag, docs/operations.md "Images"}
     restart: "no"
     depends_on:
       db:
