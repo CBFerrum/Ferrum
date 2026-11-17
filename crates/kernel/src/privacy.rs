@@ -8,7 +8,8 @@
 //!
 //! Erasure blanks the declared fields of those records (a placeholder where a value is required),
 //! deletes the files attached to them, takes the same fields' past values out of the records' audit
-//! history (each event keeps its hash and place in the chain and records the redaction), and
+//! history (each event keeps its hash and place in the chain and records the redaction), takes the
+//! records out of their events (the outbox's and webhook deliveries': such an event is not replayed), and
 //! anonymizes and deactivates the person's login account, with what hangs off it: sessions, keys,
 //! notifications, preferences, devices, and the workspace's stored exports, copies from before.
 //! Records a package keeps for a stated reason (`retain`) are
@@ -229,6 +230,8 @@ async fn erase_rows(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: Uui
             k.set_child_values_tx(&engine, tx, entity, table, *row, values).await?;
         }
     }
+    // The record's events carried its rows as they were.
+    forget_events(tx, ctx.tenant, entity, id).await?;
     audit::record(tx, ctx, entity, id, "erase_personal_data", None, json!({"table": table, "rows": rows.len(), "fields": erase, "reason": reason})).await?;
     Ok(())
 }
@@ -386,6 +389,30 @@ async fn redact(tx: &mut Tx, ctx: &Ctx, entity: &str, record: Uuid, fields: &[St
     Ok(done.rows_affected())
 }
 
+/// What a record's events carried of it (`doc`, `was`) goes from the outbox and from every webhook delivery of them,
+/// handled, waiting or dead; each says it was erased instead, and is not replayed (crate::outbox).
+async fn forget_events(tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid) -> Result<()> {
+    sqlx::query(
+        "update outbox set payload = payload - 'doc' - 'was' || '{\"erased\": true}' \
+         where tenant_id = $1 and record_id = $2 and entity = $3 and payload ?| array['doc', 'was']",
+    )
+    .bind(tenant)
+    .bind(record)
+    .bind(entity)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "update webhook_delivery set payload = payload - 'doc' - 'was' || '{\"erased\": true}' \
+         where tenant_id = $1 and record_id = $2::text and payload->>'entity' = $3 and payload ?| array['doc', 'was']",
+    )
+    .bind(tenant)
+    .bind(record)
+    .bind(entity)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// A record's files: id, name and storage key.
 async fn attached(tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid) -> Result<Vec<(Uuid, String, String)>> {
     Ok(sqlx::query_as("select id, file_name, storage_key from file_object where tenant_id = $1 and entity = $2 and record_id = $3 order by id")
@@ -416,6 +443,7 @@ async fn erase_record(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: U
         k.set_values_tx(&engine, tx, entity, id, values).await?;
     }
     let events = redact(tx, ctx, entity, id, fields, reason).await?;
+    forget_events(tx, ctx.tenant, entity, id).await?;
     // What runs keep of the record goes too, and stays gone when a runtime reports a run again (FLC-OPS-006).
     let runs = crate::process::erase_run_copies(tx, ctx.tenant, entity, id, fields).await?;
     let files = attached(tx, ctx.tenant, entity, id).await?;

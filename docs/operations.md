@@ -3351,7 +3351,9 @@ when and why), files attached to those records are deleted, and their login acco
 and closed, with its sessions, keys, notifications, preferences and devices. An administrator's
 account is not erased until it is no longer one. What durable processes keep of the records erased (the
 event that started a run, the run's own record, the material shown) loses those fields too, and keeps them out
-when the run is reported again. The same is available as `GET
+when the run is reported again. The events of the records erased lose the record they carried (`doc` and `was`), in
+the outbox and in every webhook delivery of them, handled, waiting or dead; each says `erased` instead, and an
+administrator's replay of a dead one is refused (409), since it would go out without the record. The same is available as `GET
 /api/admin/personal-data` and `POST /api/admin/personal-data/erase`; packages and apps declare their
 entities with `personal_data` in their manifests. What an app keeps of people in tables of its own,
 outside its entities (a meeting's transcript, say), it reports and erases itself

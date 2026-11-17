@@ -333,7 +333,60 @@ async fn scenario() {
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let part_key: String = sqlx::query_scalar("select storage_key from file_object where id = $1").bind(part).fetch_one(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+    // A webhook hears every change, the record with it; one of the visitor's events gave up, and so did one of its
+    // deliveries, as they may (K5).
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, topics) values ($1, $2, 'everything', 'https://hooks.test/all', '{*}')")
+        .bind(tenant)
+        .bind(Uuid::now_v7())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    k.update(&admin, "Visitor", early_id, obj(json!({"notes": "Allergic to nuts and shellfish"})), None).await.unwrap();
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
+    let mut tx = k.db.system_tx().await.unwrap();
+    let dead_event: i64 = sqlx::query_scalar(
+        "update outbox set dead = true, processed_at = null where id = (select max(id) from outbox where tenant_id = $1 and record_id = $2) returning id",
+    )
+    .bind(tenant)
+    .bind(early_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let dead_delivery: Uuid = sqlx::query_scalar("update webhook_delivery set status = 'dead' where tenant_id = $1 and outbox_id = $2 returning id")
+        .bind(tenant)
+        .bind(dead_event)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
     let done = k.erase_personal_data(&admin, "pat@old.test", "Request 1").await.unwrap();
+    // What the visitor's and the visit's events carried of them is gone from the outbox and from every webhook delivery,
+    // and an administrator's replay sends none of it.
+    let mut tx = k.db.system_tx().await.unwrap();
+    let carried: Vec<String> = sqlx::query_scalar(
+        "select payload::text from outbox where tenant_id = $1 and record_id = any($2) \
+         union all select payload::text from webhook_delivery where tenant_id = $1 and payload->>'id' = any($3)",
+    )
+    .bind(tenant)
+    .bind(vec![early_id, visit["id"].as_str().unwrap().parse::<Uuid>().unwrap()])
+    .bind(vec![early_id.to_string(), visit["id"].as_str().unwrap().to_string()])
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(carried.len() >= 6, "the visitor's two events, the visit's, and a delivery of each: {carried:?}");
+    for payload in &carried {
+        for theirs in ["Pat Lee", "pat@old.test", "15550100", "Allergic", "nut-free"] {
+            assert!(!payload.contains(theirs), "an event of an erased record still carries {theirs}: {payload}");
+        }
+    }
+    assert!(
+        matches!(k.replay_event(&admin, dead_event).await, Err(Error::Conflict(_))),
+        "a dead event of an erased record is not sent again, with nothing of theirs in it"
+    );
+    assert!(matches!(k.replay_webhook_delivery(&admin, dead_delivery).await, Err(Error::Conflict(_))), "nor is its dead delivery");
     assert_eq!(done["apps"], json!([{"app": "notes", "erased": 1}]), "{done}");
     let notes: Vec<(Uuid, String)> = sqlx::query_as("select speaker, text from test_notes order by text").fetch_all(&k.db.pool).await.unwrap();
     assert_eq!(notes, vec![(pat, String::new()), (admin.user, "The administrator said this".to_string())], "theirs went, and only theirs");

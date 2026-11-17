@@ -82,9 +82,9 @@ days.
 | Request | Does |
 |---|---|
 | `GET /api/admin/events/dead?limit=` | Lists the workspace's dead events: topic, record, attempts, last error, correlation id. Never payloads, which can hold anything. |
-| `POST /api/admin/events/{id}/replay` | Queues one again from its first attempt. Consumers that already handled it are not repeated. |
+| `POST /api/admin/events/{id}/replay` | Queues one again from its first attempt. Consumers that already handled it are not repeated. One whose record has been erased since is refused (409): the erasure took the record out of it, and it would go out without it. |
 | `GET /api/admin/webhook-deliveries/dead?limit=` | Lists the webhook deliveries that gave up: webhook, topic, attempts, the endpoint's last answer and error. Never payloads. |
-| `POST /api/admin/webhook-deliveries/{id}/replay` | The same for one webhook delivery. |
+| `POST /api/admin/webhook-deliveries/{id}/replay` | The same for one webhook delivery, refused the same way. |
 
 These are for administrators, stay within their workspace, and are recorded in the audit trail.
 `GET /api/admin/operations/{id}` lists everything one operation set off in the workspace (its events, jobs,

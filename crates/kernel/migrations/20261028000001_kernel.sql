@@ -191,6 +191,8 @@ create table outbox (
 );
 create index outbox_pending on outbox (available_at, id) where processed_at is null and not dead;
 create index outbox_tenant on outbox (tenant_id, created_at desc);
+-- A record's events, which its erasure finds (crate::privacy).
+create index outbox_record on outbox (tenant_id, record_id) where record_id is not null;
 
 create or replace function ferrum_outbox_notify() returns trigger
 language plpgsql as $$
@@ -231,6 +233,8 @@ create table webhook_delivery (
   outbox_id bigint not null,
   topic text not null,
   payload jsonb not null,
+  -- The record a delivery is about, which its erasure finds (crate::privacy), also once its event is gone.
+  record_id text generated always as (payload->>'id') stored,
   status text not null default 'pending' check (status in ('pending', 'delivered', 'dead')),
   attempts int not null default 0,
   next_attempt_at timestamptz not null default now(),
@@ -243,6 +247,7 @@ create table webhook_delivery (
   foreign key (tenant_id, webhook_id) references webhook (tenant_id, id) on delete cascade
 );
 create index webhook_delivery_due on webhook_delivery (next_attempt_at) where status = 'pending';
+create index webhook_delivery_record on webhook_delivery (tenant_id, record_id) where payload ?| array['doc', 'was'];
 
 create table automation (
   tenant_id uuid not null references tenant(id) on delete cascade,

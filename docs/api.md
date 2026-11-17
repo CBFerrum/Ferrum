@@ -1222,7 +1222,7 @@ Failed events ([events](events.md)): `GET /api/admin/events/dead?limit=` → `{e
 entity, record_id, attempts, last_error, created_at, correlation_id}]}`; `POST
 /api/admin/events/{id}/replay`; `GET /api/admin/webhook-deliveries/dead?limit=` → `{deliveries: [{id,
 webhook, webhook_name, topic, attempts, response_code, last_error, created_at, updated_at}]}`; `POST
-/api/admin/webhook-deliveries/{id}/replay`; `GET /api/admin/operations/{id}` → `{operation, events, jobs, runs,
+/api/admin/webhook-deliveries/{id}/replay` (either replay: `409` when the record it is about has been erased since); `GET /api/admin/operations/{id}` → `{operation, events, jobs, runs,
 effects, deliveries}`: everything the operation a person quotes set off in the workspace (each with how it stands
 and why, at most 200 of each, never what it carried).
 
