@@ -517,7 +517,13 @@ Apps add HTTP endpoints under `/api/app/{package}/{path}` (signed in, any method
 app documents its own in `packages/<package>/README.md` of its repository. Request bodies are
 limited per app and route (1 MB unless the app allows more, `Site::max_body_for`; at most 1 GiB,
 `server/src/controllers/sites.rs`). `x-ferrum-site-api` and
-`x-ferrum-site-origin` never reach an app from the caller (see public sites below).
+`x-ferrum-site-origin` never reach an app from the caller (see public sites below). An answer is never sniffed
+(`X-Content-Type-Options: nosniff`) and, unless it is JSON or an attachment, carries the policy stored files are served
+under (`default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox`: nothing runs on the workspace's origin)
+when the app sets no `Content-Security-Policy` of its own; a page with scripts of its own declares its policy, as
+Sign's, Learn's and Live's do. `/api/site/{workspace}/…` answers on that workspace's hosts and on hosts of no
+workspace (the hooks host, a shared host, one the cluster does not know); on another workspace's host, or the accounts
+host, it is `404` as for a workspace that does not exist.
 
 The portal's endpoints, for whoever signed in (portal people included), answering by the address
 they signed in with:
@@ -644,7 +650,9 @@ Pages, for browsers, with the session cookie:
   `x-ferrum-site-origin: {scheme}://{host}` set by the server; without a session; rate-limited per
   address; with `X-Content-Type-Options`, `Referrer-Policy` and a strict
   `Content-Security-Policy` unless the app sets its own. The API's paths (`/api/…`, `/files/…`)
-  work on every host.
+  work on every host, but those that name a workspace in their path for the public
+  (`/api/public/{workspace}/{plugin}/…`, `/api/site/{workspace}/{package}/…`) only on that workspace's hosts and on
+  hosts of no workspace ([App endpoints](#app-endpoints)).
 * `GET /_ui/{app}/{digest}/{path}` → a file of an interface release: public, `immutable`.
 * `GET /_shell/v1/{file}` → the shell's own files (`runtime.js`, `live-worker.js`, …), the newest of
   v1, kept by browsers for five minutes. Pages name `runtime.js`, `portal.js`, `login.js` and `pages.css`
@@ -1144,8 +1152,11 @@ Plugins (sandboxed WebAssembly, see README): `GET /api/admin/plugins` → `{plug
 `PUT /api/admin/plugins/{id}/enabled` `{enabled}`; `DELETE /api/admin/plugins/{id}`.
 
 `PUT /api/admin/plugins/{id}/config` `{config}` replaces a plugin's settings and secrets; `PATCH` merges the given keys. Plugin endpoints:
-any method on `/api/ext/{plugin}/{path}` (signed in) or `/api/public/{tenant}/{plugin}/{path}` (public routes),
-and WebSockets at `/ws/ext/{tenant}/{plugin}/{path}` (token in `Authorization` or `access_token` unless public).
+any method on `/api/ext/{plugin}/{path}` (signed in) or `/api/public/{tenant}/{plugin}/{path}` (public routes; on that
+workspace's hosts and hosts of no workspace, as [App endpoints](#app-endpoints) are), and WebSockets at
+`/ws/ext/{tenant}/{plugin}/{path}` (token in `Authorization` or `access_token` unless public). A plugin's answer keeps
+none of the cookies, `Content-Security-Policy` or `X-Frame-Options` it sets: unless it is JSON or an attachment, it
+goes out under the policy stored files are served under, never sniffed.
 Manifest, contract and host calls: [plugins.md](plugins.md).
 
 People leaving and provisioning ([identity lifecycle](identity-lifecycle.md)): `POST

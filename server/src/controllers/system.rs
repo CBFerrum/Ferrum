@@ -442,6 +442,24 @@ pub fn file_headers(h: &mut HeaderMap, ctype: &str, name: &str, inline: bool) {
     }
 }
 
+/// A reply a plugin or an app's site made, as the application's own origin sends it: never sniffed, and, unless it is
+/// JSON or an attachment, under [`FILE_SANDBOX`] when it brings no policy of its own, so a page runs nothing there with
+/// the session of whoever opens it. Only a native app's page brings one (a plugin's is taken off first, plugins.rs).
+pub fn contain(h: &mut HeaderMap) {
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    // Every value a header has, by what comes before its parameters, as a browser reads it; none: not so.
+    let all = |name: header::HeaderName, ok: &dyn Fn(&str) -> bool| {
+        let said: Vec<String> =
+            h.get_all(name).iter().map(|v| v.to_str().unwrap_or_default().split(';').next().unwrap_or_default().trim().to_ascii_lowercase()).collect();
+        !said.is_empty() && said.iter().all(|v| ok(v))
+    };
+    let json = all(header::CONTENT_TYPE, &|t| t == "application/json" || (t.starts_with("application/") && t.ends_with("+json")));
+    let attachment = all(header::CONTENT_DISPOSITION, &|d| d == "attachment");
+    if !json && !attachment && !h.contains_key(header::CONTENT_SECURITY_POLICY) {
+        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(FILE_SANDBOX));
+    }
+}
+
 /// A stored object as a streamed response, so a large file never sits whole in memory: the range
 /// of it the request asks for, when it asks one (a player seeking in a video).
 async fn streamed(st: &crate::state::AppState, key: &str, headers: &HeaderMap) -> ApiResult<Response> {

@@ -161,7 +161,9 @@ async fn app(
     let tenant = ctx.tenant;
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let req = request(tenant, Some(ctx), method, &uri, path, query, &headers, body)?;
-    respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await
+    let mut res = respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await?;
+    super::system::contain(res.headers_mut());
+    Ok(res)
 }
 
 async fn public(
@@ -176,7 +178,7 @@ async fn public(
     let st = app_state(&app)?;
     st.public_limiter.check(&format!("{}|{}", client_ip(&headers), tenant.to_lowercase())).await?;
     let (tenant, status) = st.kernel.tenant_by_slug(&tenant).await?;
-    if status != "active" {
+    if status != "active" || !st.shell.answers_for(&headers, tenant).await? {
         return Err(ApiError(Error::NotFound("tenant".into())));
     }
     let schema = st.kernel.registry.schema(tenant).await?;
@@ -184,7 +186,9 @@ async fn public(
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let req = request(tenant, None, method, &uri, path, query, &headers, body)?;
-    respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await
+    let mut res = respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await?;
+    super::system::contain(res.headers_mut());
+    Ok(res)
 }
 
 pub fn routes() -> Routes {

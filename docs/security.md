@@ -392,7 +392,13 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 
 **Browser**
 * The web app's Content Security Policy allows scripts only from its own bundle; responses carry
-  `X-Content-Type-Options: nosniff`, a referrer policy and same-origin framing. Served over HTTPS (`PUBLIC_URL`
+  `X-Content-Type-Options: nosniff`, a referrer policy and same-origin framing. What a plugin or an app's site answers
+  (`/api/ext/…`, `/api/public/…`, `/api/app/…`, `/api/site/…`) is never sniffed and, unless it is JSON or an attachment,
+  goes out under the sandbox policy stored files get, so it runs no script with the session of whoever opens it; only a
+  native app's page may declare a policy of its own, and a plugin's own policy, framing and cookies are dropped
+  (`contain` in server/src/controllers/system.rs). The public ones that name a workspace answer on that workspace's
+  hosts and hosts of no workspace, never on another workspace's host or the accounts host
+  (`Shell::answers_for`). Served over HTTPS (`PUBLIC_URL`
   https), every answer, whichever part of the server made it, carries `Strict-Transport-Security: max-age=31536000;
   includeSubDomains`; over plain http none does. A browser's session
   travels in the `__Host-ferrum` cookie (`ferrum_session` on a plain-http development server): `HttpOnly`,
