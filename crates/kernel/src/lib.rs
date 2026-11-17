@@ -328,6 +328,9 @@ pub struct Kernel {
     pub(crate) keyed: vault::Ring,
     /// What this process knows of the restore marker (recovery.rs).
     pub(crate) marker: recovery::Marker,
+    /// The event dispatcher's and the webhook sender's turns at the pool ([`db::background_connections`]): a claim, an
+    /// event or a webhook's secret holds one while it holds a connection, so that their fan-out never takes the pool.
+    pub(crate) background: tokio::sync::Semaphore,
 }
 
 impl Kernel {
@@ -475,6 +478,7 @@ impl Kernel {
         db.ask_moves();
         let registry = Arc::new(Registry::new(&catalog, Arc::new(full), db.clone()));
         let live = std::sync::RwLock::new(Arc::new(settings.clone()));
+        let background = tokio::sync::Semaphore::new(db::background_connections(db.config.max_connections) as usize);
         let kernel = Arc::new(Kernel {
             db,
             booted,
@@ -494,6 +498,7 @@ impl Kernel {
             live,
             keyed: vault::Ring::default(),
             marker: Default::default(),
+            background,
         });
         kernel.notice_restore().await?;
         Ok(kernel)

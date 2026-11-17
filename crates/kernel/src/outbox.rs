@@ -327,6 +327,12 @@ fn backoff(attempts: i32) -> f64 {
 }
 
 impl Kernel {
+    /// A turn at the pool for the dispatcher or the webhook sender ([`Kernel::background`]), held while one claim, event
+    /// or webhook's secret holds a connection: together they never hold more than their share.
+    async fn turn(&self) -> Result<tokio::sync::SemaphorePermit<'_>> {
+        self.background.acquire().await.map_err(Error::internal)
+    }
+
     /// Claims and handles one batch. Returns how many events were processed.
     ///
     /// The claim is a lease: a short transaction moves the batch's `available_at` half a minute
@@ -345,6 +351,7 @@ impl Kernel {
         if self.db.fenced() || self.holding().await? {
             return Ok(0);
         }
+        let turn = self.turn().await?;
         let mut tx = self.db.system_tx().await?;
         // A loose index scan finds the workspaces with work, however long their backlogs. They come
         // in random order, so that more workspaces than a batch holds all get their turn.
@@ -373,6 +380,7 @@ impl Kernel {
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
+        drop(turn);
         let claimed = events.len();
         let mut by_tenant: BTreeMap<Uuid, Vec<Event>> = BTreeMap::new();
         for ev in events {
@@ -388,6 +396,8 @@ impl Kernel {
     async fn handle_events(&self, mut events: Vec<Event>, stopping: &watch::Receiver<bool>) -> Result<()> {
         events.sort_by_key(|e| e.id);
         for (begun, ev) in events.iter().enumerate() {
+            // Workspaces are handled side by side, as many at once as there are turns.
+            let _turn = self.turn().await?;
             // The replica is stopping: what it has not begun goes back now, not when the claim runs out.
             if *stopping.borrow() {
                 let rest: Vec<i64> = events[begun..].iter().map(|e| e.id).collect();
@@ -826,8 +836,8 @@ impl Kernel {
     }
 
     /// Sends one batch of webhooks. Like the outbox, the claim is a lease and no transaction stays
-    /// open across a request: a slow endpoint holds no row and no connection, and the batch's
-    /// requests run side by side, so it delays no other endpoint either.
+    /// open across a request: a slow endpoint holds no row, no connection and no turn at the pool,
+    /// and the batch's requests run side by side, so it delays no other endpoint either.
     pub async fn deliver_webhooks_once(&self) -> Result<usize> {
         if self.db.fenced() || self.holding().await? {
             return Ok(0);
@@ -842,6 +852,7 @@ impl Kernel {
             attempts: i32,
             url: String,
         }
+        let turn = self.turn().await?;
         let mut tx = self.db.system_tx().await?;
         let due: Vec<Due> = sqlx::query_as(
             "with claimed as (select tenant_id, id from webhook_delivery where status = 'pending' and next_attempt_at <= now() \
@@ -855,14 +866,20 @@ impl Kernel {
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
+        drop(turn);
         let outcomes = futures::future::join_all(due.iter().map(|d| async move {
-            // Nothing goes out for a sandbox (sandbox.rs).
-            self.outward(d.tenant_id).await.map_err(|e| (None, e.to_string()))?;
-            // One whose secret cannot be opened is not sent unsigned: it fails, and says why.
-            let secret = self.webhook_secret(d.tenant_id, d.webhook_id).await.map_err(|e| (None, e.to_string()))?;
+            // A turn at the pool while it reads what it needs, never while it waits for the endpoint.
+            let secret = {
+                let _turn = self.turn().await.map_err(|e| (None, e.to_string()))?;
+                // Nothing goes out for a sandbox (sandbox.rs).
+                self.outward(d.tenant_id).await.map_err(|e| (None, e.to_string()))?;
+                // One whose secret cannot be opened is not sent unsigned: it fails, and says why.
+                self.webhook_secret(d.tenant_id, d.webhook_id).await.map_err(|e| (None, e.to_string()))?
+            };
             self.post_webhook(&d.url, &secret, &d.topic, d.id, &d.payload).await
         }))
         .await;
+        let _turn = self.turn().await?;
         let mut tx = self.db.system_tx().await?;
         for (d, outcome) in due.iter().zip(outcomes) {
             let attempts = d.attempts + 1;

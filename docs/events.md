@@ -59,7 +59,10 @@ the same workspace (an older server leaves it for a newer one, docs/operations.m
 Anything that depends on order compares `source_version`.
 
 **Fairness.** A batch gives each workspace with work at most 10 events, of 50, and handles workspaces
-side by side. So one workspace's backlog, or its slow provider, does not delay another's events.
+side by side. So one workspace's backlog, or its slow provider, does not delay another's events. Side by
+side means as many events at once as a quarter of the replica's database pool (7 of the default 30), shared
+with the webhook sender's reads, so that a backlog never takes the connections requests need; slow providers
+holding all of those at once delay the rest by up to their handlers' 120 seconds.
 Within a workspace, mail and push go first and bulk work last: bulk operations, imports, jobs at
 bulk priority and sends to a whole list. A mail sent under bulk priority stays there, so 50,000
 campaign messages do not stand in front of someone's password reset. Run anything of the kind under

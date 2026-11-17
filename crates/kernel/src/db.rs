@@ -23,6 +23,12 @@ pub fn side_connections(main: u32) -> u32 {
     main.div_ceil(8).max(SIDE_CONNECTIONS)
 }
 
+/// How many connections of a main pool of `main` the event dispatcher and the webhook sender hold at most, together: a
+/// quarter of it, at least one (`Kernel::background`). However much is queued, requests keep the rest.
+pub fn background_connections(main: u32) -> u32 {
+    (main / 4).max(1)
+}
+
 /// The server's LISTEN loops, each holding one connection of [`Db::direct`] for as long as it runs: metadata and users
 /// (kernel), plugin sockets, live updates and co-editing (server).
 pub const LISTENERS: u32 = 5;

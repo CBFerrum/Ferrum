@@ -1,14 +1,44 @@
 //! The kernel's health report against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`; the database is
-//! reset first): it finds what is really wrong, and holds nothing it should not.
+//! reset first): it finds what is really wrong, and holds nothing it should not. Then scenario F7: a
+//! burst of events leaves requests their connections, as many as the doctor says.
 
+use async_trait::async_trait;
 use ferrum_kernel::doctor::Level;
+use ferrum_kernel::outbox::{self, Event};
 use ferrum_kernel::tenant::NewTenant;
-use ferrum_kernel::{Db, DbConfig, HookRegistry, Kernel, KernelSettings};
+use ferrum_kernel::{Db, DbConfig, EventSink, HookRegistry, Kernel, KernelSettings, Result};
 use ferrum_meta::Catalog;
 use serde_json::json;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+/// Holds a transaction of the event's workspace for three seconds, as a sink at work holds a connection, and counts how many
+/// do at once.
+#[derive(Default)]
+struct Busy {
+    now: AtomicUsize,
+    most: AtomicUsize,
+    done: AtomicUsize,
+}
+
+#[async_trait]
+impl EventSink for Busy {
+    async fn on_event(&self, k: &Kernel, ev: &Event) -> Result<()> {
+        if ev.topic != "burst" {
+            return Ok(());
+        }
+        let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
+        self.most.fetch_max(self.now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+        sqlx::query("select pg_sleep(3)").execute(&mut *tx).await?;
+        self.now.fetch_sub(1, Ordering::SeqCst);
+        tx.commit().await?;
+        self.done.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
 
 #[test]
 fn the_doctor_finds_what_is_wrong() {
@@ -142,6 +172,57 @@ async fn scenario() {
 
     let text = json!(f).to_string();
     assert!(!text.contains(&url) && !text.contains("ferrum:ferrum"), "no connection string");
+
+    // ───────────── scenario F7: an event burst does not starve requests ─────────────
+    // A replica with a pool of 30, and one event waiting in each of 60 workspaces, each handled by a sink at work.
+    let busy = Arc::new(Busy::default());
+    let mut hooks = HookRegistry::default();
+    hooks.add_event_sink(busy.clone());
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 30, ..Default::default() }).await.expect("connect");
+    let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
+    let r = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
+    let mut tx = r.db.system_tx().await.unwrap();
+    let burst: Vec<Uuid> = sqlx::query_scalar(
+        "insert into tenant (id, slug, name) select gen_random_uuid(), 'burst-' || n, 'Burst ' || n from generate_series(1, 60) n returning id",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    for t in &burst {
+        let mut tx = r.db.tenant_tx(*t).await.unwrap();
+        outbox::enqueue(&mut tx, *t, "burst", None, None, json!({})).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    let draining = {
+        let r = r.clone();
+        tokio::spawn(async move { while r.dispatch_outbox_once().await.unwrap() > 0 {} })
+    };
+    // A request comes once the burst holds what it can: at least the events' share of the pool at work, and no more joining.
+    let share = ferrum_kernel::db::background_connections(30) as usize;
+    let mut seen = 0;
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let now = busy.now.load(Ordering::SeqCst);
+        if now >= share && now == seen {
+            break;
+        }
+        seen = now;
+    }
+    assert!(busy.now.load(Ordering::SeqCst) >= share, "the burst is being handled");
+    let asked = Instant::now();
+    let request = r.db.tenant_tx(burst[0]).await.expect("a request's transaction");
+    let waited = asked.elapsed();
+    drop(request);
+    assert!(waited < Duration::from_millis(1500), "a request got a connection within a second or so while the burst drained: it waited {waited:?}");
+    draining.await.unwrap();
+    assert_eq!(busy.done.load(Ordering::SeqCst), 60, "every event of the burst was handled");
+    // At most their share of the pool at once, which is what the doctor counts them as.
+    let most = busy.most.load(Ordering::SeqCst);
+    assert!(most <= share, "events were handled at most {share} at once (a quarter of the pool): {most}");
+    let pool = r.doctor(30).await.unwrap().into_iter().find(|f| f.check == "database.pool").unwrap();
+    let own = ferrum_kernel::doctor::background(30);
+    assert!(pool.detail.contains(&format!("can hold {own} at once")) && own as usize >= share + 4, "{pool:?}");
 
     // A release older than its database does not start on it: a migration it does not know was applied by a
     // newer one, and going back that way is refused (FEO-080); the way back is a restore or upgrade_back.

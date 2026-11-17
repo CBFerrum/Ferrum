@@ -46,9 +46,16 @@ impl Finding {
 const STALE_EVENT_SECS: f64 = 300.0;
 /// Connections the application must leave for an administrator, replication and a migration.
 const RESERVED_CONNECTIONS: i32 = 20;
-/// Fewer connections than this per replica and requests wait behind the replica's own work: its job workers and
-/// event loops can hold seven at once. With four, a server could not answer its health check.
-pub const POOL_FLOOR: u32 = 10;
+/// The most connections of a pool of `pool_size` a replica's own work holds at once: one for each job worker, the events
+/// and webhooks it handles together ([`crate::db::background_connections`], a quarter of the pool), one each for the
+/// schedule scanner and the OpenID sweep, and two for hourly maintenance (its lock and the step it is at).
+pub fn background(pool_size: u32) -> u32 {
+    crate::jobs::WORKERS as u32 + crate::db::background_connections(pool_size) + 4
+}
+
+/// The smallest pool the replica's own work cannot fill ([`background`]): with fewer connections, requests wait behind
+/// its job workers and event loops. With four, a server could not answer its health check.
+pub const POOL_FLOOR: u32 = 11;
 
 /// What one server replica opens besides its pool (`FERRUM_DB_MAX_CONNECTIONS`): the side pool's 4 and Loco's own 2
 /// (docs/operations.md, "Database role").
@@ -83,13 +90,14 @@ impl Kernel {
                 "Raise max_connections, or lower FERRUM_DB_MAX_CONNECTIONS (docs/operations.md, Database role).",
             )
         });
+        let own = background(pool_size);
         out.push(if pool_size >= POOL_FLOOR {
-            Finding::ok("database.pool", format!("{pool_size} connections per replica"))
+            Finding::ok("database.pool", format!("{pool_size} connections per replica, of which its job workers and event loops can hold {own} at once"))
         } else {
             Finding::warning(
                 "database.pool",
-                format!("{pool_size} connections per replica, and its job workers and event loops can hold seven at once: requests wait behind them"),
-                "Set FERRUM_DB_MAX_CONNECTIONS to at least 10 (docs/operations.md, Configuration).",
+                format!("{pool_size} connections per replica, and its job workers and event loops can hold {own} at once: requests wait behind them"),
+                "Set FERRUM_DB_MAX_CONNECTIONS to at least 11 (docs/operations.md, Configuration).",
             )
         });
         let limit: i32 = sqlx::query_scalar("select rolconnlimit from pg_roles where rolname = current_user").fetch_one(&mut *tx).await?;
@@ -363,6 +371,13 @@ fn newer_packages(rows: &[(String, String, i64)], build: impl Fn(&str) -> Option
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_floor_is_the_smallest_pool_the_replicas_own_work_cannot_fill() {
+        assert!(super::background(super::POOL_FLOOR) < super::POOL_FLOOR);
+        assert!(super::background(super::POOL_FLOOR - 1) >= super::POOL_FLOOR - 1);
+        assert_eq!(super::background(30), 15, "half of the default pool: 4 job workers, 7 for events and webhooks, 4 more");
+    }
+
     #[test]
     fn packages_newer_than_the_build_are_reported() {
         let build = |p: &str| (p == "crm").then(|| "0.4.0".to_string());

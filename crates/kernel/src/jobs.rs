@@ -35,7 +35,7 @@ const RENEW: Duration = Duration::from_secs(5);
 /// How often an idle replica looks for work.
 const POLL: Duration = Duration::from_secs(1);
 /// Jobs one replica runs at once ...
-const WORKERS: usize = 4;
+pub(crate) const WORKERS: usize = 4;
 /// ... and one workspace across all of them (replicas claiming at the same moment can pass this by
 /// one each: it shares capacity, it guards nothing).
 const TENANT_RUNNING: i64 = 3;
