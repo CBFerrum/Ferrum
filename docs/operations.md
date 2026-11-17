@@ -3375,8 +3375,9 @@ and closed, with its sessions, keys, notifications, preferences and devices. An 
 account is not erased until it is no longer one. What durable processes keep of the records erased (the
 event that started a run, the run's own record, the material shown) loses those fields too, and keeps them out
 when the run is reported again. The events of the records erased lose the record they carried (`doc` and `was`), in
-the outbox and in every webhook delivery of them, handled, waiting or dead; each says `erased` instead, and an
-administrator's replay of a dead one is refused (409), since it would go out without the record. The receipts the gate
+the outbox and in every webhook delivery of them, handled, waiting or dead; each says `erased` instead, one still
+waiting reaches no consumer (docs/events.md), and an administrator's replay of a dead one is refused (409), since it
+would go out without the record. The receipts the gate
 keeps of operations on them (a process's, an app's call, an agent's) keep only the record's id and version. The
 person's conversations with the assistant are deleted, and a tool result in anyone else's that names a record erased
 (by its id) is blanked (*The assistant*, Deleting). The same is available as `GET

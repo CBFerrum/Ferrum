@@ -707,6 +707,11 @@ impl Kernel {
             tx.commit().await?;
             return self.mail_settled(ev.tenant_id, send, "sent", None).await;
         }
+        // Its record was erased after the change and before this (crate::privacy): the event no longer carries it, and no
+        // webhook, follower, automation or sink is handed a change to a record it cannot show. It is handled, as nothing.
+        if ev.payload.get("erased") == Some(&Value::Bool(true)) {
+            return Ok(());
+        }
         self.queue_deliveries(ev).await?;
         if ev.topic == crate::lifecycle::DEPROVISIONED_TOPIC {
             self.hand_over(ev).await?;

@@ -392,4 +392,26 @@ async fn scenario() {
     drain(&k).await;
     assert_eq!(pending(&k, quiet, "flaky").await, 0, "and was handled the second time");
     assert_eq!(tally.times(flaky), 1, "the other sink ran once across both attempts");
+
+    // ───────────── a record erased while its event waited ─────────────
+    // Erasure took the record out of the event (crate::privacy): no consumer is handed a change to a record it lacks.
+    let mut tx = k.db.tenant_tx(quiet).await.unwrap();
+    sqlx::query("insert into automation (tenant_id, id, name, entity, event, actions) values ($1, $2, 'on update', 'Company', 'updated', $3)")
+        .bind(quiet)
+        .bind(Uuid::now_v7())
+        .bind(json!([{"type": "create_document", "entity": "Ticket", "values": {}}]))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let record = Uuid::now_v7();
+    outbox::enqueue(&mut tx, quiet, "Company.updated", Some("Company"), Some(record), json!({"id": record, "event": "updated", "erased": true})).await.unwrap();
+    tx.commit().await.unwrap();
+    let erased = last(&k, "Company.updated").await;
+    drain(&k).await;
+    assert_eq!(tally.times(erased), 0, "no sink hears of it");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let ran: i64 = sqlx::query_scalar("select count(*) from automation_run where outbox_id = $1").bind(erased).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(ran, 0, "no automation runs on it");
+    assert_eq!(pending(&k, quiet, "Company.updated").await, 0, "and it is handled, not dead");
 }

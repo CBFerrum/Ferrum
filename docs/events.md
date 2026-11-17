@@ -45,7 +45,9 @@ does not fail the event; an automation that ran is not run again for the event. 
 is not called for it again when the event is retried or replayed: when an attempt fails or runs out of time,
 the sinks that handled it are recorded in `event_receipt` under their names (`{app}.{what}`, from
 `EventSink::name`). Only a replica that dies while handling an event can call again a sink that had finished,
-so a sink whose work must happen once asks `outbox::first_time` in the transaction that does it.
+so a sink whose work must happen once asks `outbox::first_time` in the transaction that does it. An event
+whose record was erased while it waited carries nothing of the record any more (it says `erased`): it reaches
+no webhook, follower, automation or sink, and counts as handled.
 
 **Order** holds within a workspace and a priority, until something fails: a retry goes behind later
 events. During an upgrade or after a rollback, an event written by a newer build can be delivered after later events of
