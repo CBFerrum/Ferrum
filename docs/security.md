@@ -143,8 +143,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   staff sign-in machinery (not served where a zone admits no staff, the provider's way back aside), and log no
   challenge, assertion, code or token.
 * `record_reads` names entities whose reads are audit events of category `access`: who, when, which record or
-  which query (fields and operators, never values), how many rows, the address and zone. A marked read whose
-  event cannot be written fails. An unmarked read sends no statement more.
+  which query (fields and operators, never values), how many rows, the address and zone. An entity's app may declare
+  the same in its definition, in force wherever the workspace's setting does not name that entity (its `off` stops
+  it). A marked read whose event cannot be written fails. An unmarked read sends no statement more.
 
 **Sites and devices** ([threat model](registry/threat-model.md), [authority](operations-authority.md))
 * Ferrum never replaces a safety system, and a safety function never depends on it.

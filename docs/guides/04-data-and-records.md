@@ -76,6 +76,7 @@ An entity (`EntityDef`) is a kind of record. GRC's `Finding` (`ferrum-app-grc/pa
 | `company_scoped` | needs a `company` link; records are limited to the person's companies |
 | `owner_fields` | email fields (or `table.field`) that make a record a person's own, besides who created it |
 | `internal` | not to leave for an AI provider unless a workspace says otherwise (pay, health, personnel files) |
+| `record_reads` | `open` or `all`: its reads are recorded on the audit trail wherever the workspace's own `record_reads` does not name it (a patient's chart, a personnel file); [operations](../operations.md#recording-who-read-what) |
 | `mergeable`, `duplicate_fields` | duplicates may be merged; which fields suggest two records are one |
 | `unique`, `indexes`, `exclusion` | unique groups of fields, indexes, and PostgreSQL exclusion constraints on overlapping validity (`{fields, from, to, message, when_not}`) |
 | `rules` | checks on save, submit or a transition (below) |

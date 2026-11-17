@@ -5,8 +5,9 @@
 //!   proved who they are again recently. Zones add their own (`step_up: true` in `FERRUM_ZONES`). Checked in
 //!   [`crate::Ctx::require`], the one place every record operation asks for its rights, after the rights themselves.
 //! * **Who read it** (`record_reads`): the entities whose reads are recorded on the audit trail (category `access`), a
-//!   single record opened (`open`), or lists, searches, reports and exports too (`all`). A read whose event cannot be
-//!   written fails.
+//!   single record opened (`open`), or lists, searches, reports and exports too (`all`), or not at all (`off`). An
+//!   entity's definition may declare `open` or `all` itself, in force where the setting does not name it. A read whose
+//!   event cannot be written fails.
 //!
 //! Both are read with the workspace's schema (`Schema::controls`), so a read or a change of an entity nobody marked
 //! asks the database nothing more. What cannot be read counts as marked.
@@ -285,10 +286,11 @@ pub async fn record_read_alone(k: &crate::Kernel, ctx: &Ctx, entity: &str, read:
     Ok(())
 }
 
-/// Reads the workspace's settings into what its schema keeps. A setting that is there but cannot be read makes every
-/// entity marked (said in the schema's warnings).
-pub fn load(settings: &Value) -> (Controls, Option<String>) {
-    let mut c = Controls::default();
+/// Reads the workspace's settings into what its schema keeps, over the reads its entities declare recorded (`declared`:
+/// each such entity, and whether at `all`): its `record_reads` wins for each entity it names, `off` taking one away. A
+/// setting that is there but cannot be read makes every entity marked (said in the schema's warnings).
+pub fn load(settings: &Value, declared: impl IntoIterator<Item = (String, bool)>) -> (Controls, Option<String>) {
+    let mut c = Controls { reads: declared.into_iter().collect(), ..Default::default() };
     let mut wrong = None;
     match settings.get("step_up").filter(|v| !v.is_null()).map(check_step_up) {
         None => {}
@@ -305,7 +307,11 @@ pub fn load(settings: &Value) -> (Controls, Option<String>) {
         None => {}
         Some(Ok(v)) => {
             for (e, level) in v.as_object().into_iter().flatten() {
-                c.reads.insert(e.clone(), level == "all");
+                if level == "off" {
+                    c.reads.remove(e);
+                } else {
+                    c.reads.insert(e.clone(), level == "all");
+                }
             }
         }
         Some(Err(e)) => wrong = Some(format!("record_reads: {e}")),
@@ -362,9 +368,10 @@ pub fn check_step_up(v: &Value) -> std::result::Result<Value, String> {
     Ok(json!({"minutes": minutes, "entities": out}))
 }
 
-/// The `record_reads` setting, checked: `{"Employee": "open", "Payslip": "all"}`.
+/// The `record_reads` setting, checked: `{"Employee": "open", "Payslip": "all", "Patient": "off"}` (`off`: not recorded,
+/// whatever the entity declares).
 pub fn check_reads(v: &Value) -> std::result::Result<Value, String> {
-    const SHAPE: &str = "must be {\"Entity\": \"open\" or \"all\"}";
+    const SHAPE: &str = "must be {\"Entity\": \"open\", \"all\" or \"off\"}";
     let o = v.as_object().ok_or(SHAPE)?;
     if o.len() > MAX_ENTITIES {
         return Err(format!("may name at most {MAX_ENTITIES} entities"));
@@ -374,7 +381,7 @@ pub fn check_reads(v: &Value) -> std::result::Result<Value, String> {
         if !entity_name(name) {
             return Err(format!("{name:?} is not an entity's name"));
         }
-        let level = level.as_str().filter(|l| *l == "open" || *l == "all").ok_or(SHAPE)?;
+        let level = level.as_str().filter(|l| matches!(*l, "open" | "all" | "off")).ok_or(SHAPE)?;
         out.insert(name.clone(), json!(level));
     }
     Ok(json!(out))
@@ -408,6 +415,7 @@ mod tests {
             assert!(check_step_up(&bad).is_err(), "{bad}");
         }
         assert_eq!(check_reads(&json!({"Employee": "all", "Lead": "open"})).unwrap(), json!({"Employee": "all", "Lead": "open"}));
+        assert_eq!(check_reads(&json!({"Patient": "off"})).unwrap(), json!({"Patient": "off"}));
         for bad in [json!({"Employee": "some"}), json!({"Employee": true}), json!(["Employee"])] {
             assert!(check_reads(&bad).is_err(), "{bad}");
         }
@@ -416,14 +424,24 @@ mod tests {
     #[test]
     fn what_cannot_be_read_marks_everything() {
         let (c, wrong) =
-            load(&json!({"step_up": {"entities": {"Employee": {"work": ["write"], "keys": false}}, "minutes": 5}, "record_reads": {"Employee": "open"}}));
+            load(&json!({"step_up": {"entities": {"Employee": {"work": ["write"], "keys": false}}, "minutes": 5}, "record_reads": {"Employee": "open"}}), []);
         assert!(wrong.is_none() && !c.unreadable);
         assert_eq!(c.step_up_secs, 300);
         assert_eq!(c.step_up["Employee"], (BTreeSet::from(["write".to_string()]), false));
         assert!(!c.reads["Employee"]);
-        let (c, wrong) = load(&json!({"record_reads": {"Employee": "sometimes"}}));
+        let (c, wrong) = load(&json!({"record_reads": {"Employee": "sometimes"}}), []);
         assert!(c.unreadable && wrong.is_some());
-        assert_eq!(load(&json!({})).0, Controls::default(), "nothing set: nothing marked");
+        assert_eq!(load(&json!({}), []).0, Controls::default(), "nothing set: nothing marked");
+    }
+
+    #[test]
+    fn what_entities_declare_is_read_under_the_workspaces_own_setting() {
+        let declared = || [("Patient".to_string(), false), ("Claim".to_string(), true)];
+        let both = BTreeMap::from([("Claim".to_string(), true), ("Patient".to_string(), false)]);
+        assert_eq!(load(&json!({}), declared()).0.reads, both, "nothing set: as declared");
+        let (c, wrong) = load(&json!({"record_reads": {"Patient": "off", "Claim": "open", "Lead": "all"}}), declared());
+        assert!(wrong.is_none());
+        assert_eq!(c.reads, BTreeMap::from([("Claim".to_string(), false), ("Lead".to_string(), true)]), "the workspace's own wins, off included");
     }
 
     #[test]

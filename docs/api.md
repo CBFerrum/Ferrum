@@ -755,7 +755,7 @@ staff, each route's own check decides (most are an administrator's alone, readin
 
 Workspace settings: `GET /api/admin/settings` → `{timezone, language, fiscal_year_start_month, require_two_factor,
 require_sso, assistant, assistant_model, assistant_monthly_tokens, assistant_egress, offline, messages,
-new_device_notice, break_glass, idle_minutes, staff_networks, step_up, record_reads}`;
+new_device_notice, break_glass, idle_minutes, staff_networks, step_up, record_reads, record_reads_declared}`;
 `PUT` with any of them (`timezone` is an IANA name such as `Asia/Kolkata`; `language` a language tag or `null` for
 English; `fiscal_year_start_month` 1 to 12; `require_two_factor`
 applies from each person's next sign-in; `offline` is `{allowed, hours}` ([offline](offline.md));
@@ -776,9 +776,11 @@ it is them (as `GET /api/auth/step-up/ways`; `[]` and a message saying to ask an
 succeeds after any of them: `POST /api/auth/step-up`, a passkey (here, or at the accounts host), or signing in again at the provider (the bar's runtime
 asks on every page, in those ways, and sends the request again). People from outside (portal, guest) are never
 asked: let through, or `403` (not `step_up`) where the rule says `"keys": false`. `record_reads`
-(`null`, or `{"Entity": "open" | "all"}`) names entities whose reads are audit events of category `access`. Both refuse
-(422) an entity the workspace does not have, or that the caller's zone leaves out
-([operations](operations.md#asking-again-before-sensitive-work)).
+(`null`, or `{"Entity": "open" | "all" | "off"}`) names entities whose reads are audit events of category `access`,
+or (`off`) are not. Both refuse (422) an entity the workspace does not have, or that the caller's zone leaves out
+([operations](operations.md#asking-again-before-sensitive-work)). `record_reads_declared` (read only, `{"Entity":
+"open" | "all"}`) is what the workspace's entities declare in their definitions, in force for each one `record_reads`
+does not name ([operations](operations.md#recording-who-read-what)).
 
 Audit log: `GET /api/admin/audit?category=&before=&limit=` → `{events, next_before}`, newest first, at most
 500 (`limit`, 100 by default); `category` is `sign_in`, `administration`, `records` or `access`; pass `next_before` as

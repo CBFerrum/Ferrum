@@ -2635,11 +2635,20 @@ administration event on the audit trail. Switching it on keeps builds that would
 
 ## Recording who read what
 
-A workspace's administrators can name entities whose reads are recorded on the audit trail. Off unless set.
+A workspace's administrators can name entities whose reads are recorded on the audit trail. Off unless set, or
+declared by the entity's app (below).
 
 | Workspace setting (`GET`/`PUT /api/admin/settings`) | Meaning | Default |
 |---|---|---|
-| `record_reads` | `{"Employee": "open", "Payslip": "all"}`, at most 200 entities | `null`: off |
+| `record_reads` | `{"Employee": "open", "Payslip": "all", "Patient": "off"}`, at most 200 entities | `null`: what the entities declare, else off |
+
+**Declared by an app.** An entity holding sensitive records (a patient's chart, a personnel file) may declare in its
+definition that its reads are recorded, `record_reads: open` or `all` ([guide](guides/04-data-and-records.md)). It is
+recorded so on every workspace whose own `record_reads` does not name it; where that names it, the workspace's value
+wins, `off` included, which stops it. Nothing is written into the workspace's settings: the default is read from the
+definition, so an upgrade that changes it applies at once and an uninstall leaves nothing behind. `GET
+/api/admin/settings` shows the declared defaults as `record_reads_declared` (`{"Patient": "open"}`), beside the
+workspace's own `record_reads`.
 
 **What is recorded.** `open`: each single record a request returns the fields of: the records API, a card, a print or a
 document made from it, an MCP `get_record`, an approver's view. `all`: those, and lists, searches (the search bar and
