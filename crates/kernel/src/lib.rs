@@ -119,6 +119,9 @@ use uuid::Uuid;
 /// A document: field name → canonical JSON value (child tables are arrays of row objects).
 pub type Doc = serde_json::Map<String, serde_json::Value>;
 
+/// Advisory lock: one replica's [`Kernel::maintenance`] at a time.
+const MAINTENANCE_LOCK: i64 = 0x0FE2_207B;
+
 #[async_trait]
 pub trait Mailer: Send + Sync {
     async fn send(&self, to: &str, subject: &str, html: &str) -> Result<()>;
@@ -531,47 +534,63 @@ impl Kernel {
         ]
     }
 
-    /// Hourly: anchor yesterday's audit trail, purge expired events and idempotency keys.
+    /// Hourly, on one replica at a time (one that finds another running it leaves it): anchor yesterday's audit trail,
+    /// queue retention, close what has expired, purge what is past its time (each purge in batches, [`Db::in_batches`]).
+    /// Each step stands alone: one that fails is logged by its name and the next still runs, every hour; the error at
+    /// the end names those that failed.
     pub async fn maintenance(&self) -> Result<()> {
+        // The try-lock of a transaction kept open (on one connection of the pool, through a pooler too) while the steps
+        // run on others, past the 60-second idle limit; it ends with the round, or with this process.
+        let mut lock = self.db.pool.begin().await?;
+        let mine: bool =
+            sqlx::query_scalar("select pg_try_advisory_xact_lock($1) and set_config('idle_in_transaction_session_timeout', '0', true) is not null")
+                .bind(MAINTENANCE_LOCK)
+                .fetch_one(&mut *lock)
+                .await?;
+        if !mine {
+            return Ok(());
+        }
+        let failed = self.maintenance_steps().await;
+        let _ = lock.rollback().await;
+        if failed.is_empty() { Ok(()) } else { Err(Error::Internal(format!("maintenance steps failed: {}", failed.join(", ")))) }
+    }
+
+    async fn maintenance_steps(&self) -> Vec<&'static str> {
+        let mut failed = Vec::new();
+        let mut step = |name: &'static str, done: Result<u64>| {
+            done.map_err(|e| {
+                tracing::warn!(step = name, "maintenance: {e}");
+                failed.push(name);
+            })
+            .unwrap_or(0)
+        };
         let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
-        audit::anchor_day(&self.db, yesterday).await?;
-        if let Err(e) = self.queue_retention().await {
-            tracing::warn!("queueing retention: {e}");
-        }
-        if let Err(e) = self.record_usage().await {
-            tracing::warn!("recording usage: {e}");
-        }
-        if let Err(e) = self.expire_support().await {
-            tracing::warn!("closing expired support access: {e}");
-        }
-        if let Err(e) = self.expire_roles().await {
-            tracing::warn!("removing ended role grants: {e}");
-        }
-        if let Err(e) = self.start_backfills().await {
-            tracing::warn!("starting backfills: {e}");
-        }
-        if let Err(e) = vault::upkeep(self).await {
-            tracing::warn!("the vault's upkeep: {e}");
-        }
-        let purged = self.purge_old_events(self.settings.event_retention_days).await?
-            + self.oauth_purge().await?
-            + self.openid_purge().await?
-            + self.purge_sessions().await?
-            + self.purge_exports().await?
-            + self.purge_connection_events().await?
-            + self.purge_connections().await?
-            + self.purge_public_files().await?
-            + self.prune_occurrences().await?;
+        step("anchoring yesterday's audit trail", audit::anchor_day(&self.db, yesterday).await.map(|n| n as u64));
+        step("queueing retention", self.queue_retention().await.map(|_| 0));
+        step("recording usage", self.record_usage().await.map(|_| 0));
+        step("closing expired support access", self.expire_support().await);
+        step("removing ended role grants", self.expire_roles().await);
+        step("starting backfills", self.start_backfills().await.map(|n| n as u64));
+        step("the vault's upkeep", vault::upkeep(self).await.map(|_| 0));
+        let purged = step("purging events", self.purge_old_events(self.settings.event_retention_days).await)
+            + step("purging operation receipts", self.purge_receipts().await)
+            + step("blanking the assistant's old tool results", self.purge_tool_results().await)
+            + step("purging OAuth codes, tokens and clients", self.oauth_purge().await)
+            + step("purging OpenID codes and sign-ins", self.openid_purge().await)
+            + step("purging sessions", self.purge_sessions().await)
+            + step("purging exports and jobs", self.purge_exports().await)
+            + step("purging connection events", self.purge_connection_events().await)
+            + step("purging connection logs", self.purge_connections().await)
+            + step("purging public file addresses", self.purge_public_files().await)
+            + step("purging schedule occurrences", self.prune_occurrences().await);
         if purged > 0 {
             tracing::info!(purged, "old events purged");
         }
-        // A failed digest waits for the next run; it must not stop the rest of the upkeep.
-        match self.send_digests().await {
-            Ok(0) => {}
-            Ok(digests) => tracing::info!(digests, "notification digests queued"),
-            Err(e) => tracing::warn!("notification digests failed: {e}"),
+        let digests = step("queueing notification digests", self.send_digests().await.map(|n| n as u64));
+        if digests > 0 {
+            tracing::info!(digests, "notification digests queued");
         }
-        Ok(())
+        failed
     }
 
     /// The settings as they are now: those that apply at once (docs/operations.md, "Settings in the database") as the

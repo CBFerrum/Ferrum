@@ -1,6 +1,7 @@
 # Stateless API replicas. Every replica runs the outbox, webhook and maintenance loops;
 # they coordinate through the database, so any replica can die at any time.
 {{- /* With `pools` (values.yaml) there is one Deployment for each pool; the first keeps these names. */}}
+{{- include "ferrum.placeholders" . }}
 {{- $root := . }}
 {{- $pooled := not (empty .Values.pools) }}
 {{- $pools := (include "ferrum.pools" . | fromJson).pools }}

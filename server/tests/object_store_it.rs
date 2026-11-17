@@ -248,18 +248,21 @@ async fn scenario() {
     k.remove_file(&admin, left).await.unwrap();
 
     // ───────────── deletions that wait ─────────────
-    let releases = Arc::new(Releases::new(db.clone(), 30));
+    // On the defaults, a deleted file stays as long as the database's backups reach (D3).
+    let defaults = settings(&old, true);
+    let releases = Arc::new(Releases::new(db.clone(), defaults.files_delete_after_days));
     let waiting = Arc::new(Objects::local(bucket.to_str().unwrap()).unwrap().with_releases(releases.clone()));
     swap.set(&waiting);
     let id = store_file(500).await;
     k.remove_file(&admin, id).await.unwrap();
-    assert!(bucket.join(key(id)).exists(), "kept while its deletion waits");
-    let due: bool = sqlx::query_scalar("select due_at > now() + interval '29 days' from object_release where key = $1")
+    assert!(bucket.join(key(id)).exists(), "on the defaults, kept while its deletion waits");
+    let due: bool = sqlx::query_scalar("select due_at > now() + make_interval(days => $2) - interval '1 hour' from object_release where key = $1")
         .bind(key(id))
+        .bind(defaults.backup_reach_days as i32)
         .fetch_one(&mut *db.system_tx().await.unwrap())
         .await
         .unwrap();
-    assert!(due);
+    assert!(due && defaults.backup_reach_days >= 30, "as long as the backups reach: {} days", defaults.backup_reach_days);
     // Not swept before its time, nor while a restore is held; swept once due.
     assert_eq!(store::sweep(&k, &waiting).await.unwrap(), 0);
     sql(&db, &format!("update object_release set due_at = now() - interval '1 minute' where key = '{}'", key(id))).await;

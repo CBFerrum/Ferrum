@@ -447,22 +447,22 @@
 - key: files_delete_after_days
   env: FERRUM_FILES_DELETE_AFTER_DAYS
   type: int
-  default: "0"
+  default: "30"
   applies: live
   path: settings.files_delete_after_days
   doc: >-
-    Days a deleted file stays in object storage before it goes (0, the default: at once). At least
-    `backup_reach_days`, so that a database restored to any moment its backups reach finds every file it names (see
-    *Backups of files*).
+    Days a deleted file stays in object storage before it goes. At least `backup_reach_days`, so that a database
+    restored to any moment its backups reach finds every file it names (see *Backups of files*); in production the
+    doctor blocks while it is less. 0: at once, for an installation without backups to restore.
 - key: backup_reach_days
   env: FERRUM_BACKUP_REACH_DAYS
   type: int
-  default: "0"
+  default: "30"
   applies: live
   path: settings.backup_reach_days
   doc: >-
-    How many days back the database's backups reach (the chart's `database.backup.retention`; 0: not said). The
-    doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule.
+    How many days back the database's backups reach (the chart sets it from its `database.backup.retention`; 0: not
+    said). The doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule.
 - key: files_direct_links
   env: FERRUM_FILES_DIRECT_LINKS
   type: bool

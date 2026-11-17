@@ -76,8 +76,10 @@ person's request takes, so every hook, rule, row scope, field permission and aud
 - **A failure leaves nothing.** If the operation fails before the commit, neither the change nor the receipt
   is kept, and the same key can try again.
 
-Receipts are kept per workspace and environment. Nothing removes them yet; how long each is kept is part of
-its capability (`retention_days`).
+Receipts are kept per workspace and environment, for as long as their capability says (`retention_days`: 400 days
+unless an action's contract says otherwise); the hourly maintenance deletes them after that, and the key is then free
+again. An erasure takes the record out of the receipts of operations on it, keeping its id and version: a repeat of
+the key still answers which record it was, as it may be seen now.
 
 ## Refusals
 

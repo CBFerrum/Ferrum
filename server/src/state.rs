@@ -26,6 +26,11 @@ fn default_upload_max() -> usize {
 fn default_direct_upload_max() -> u64 {
     2 * 1024 * 1024 * 1024
 }
+/// How far back the database's backups reach unless an operator says otherwise: the Helm chart's own retention, 30 days.
+fn default_backup_days() -> u64 {
+    30
+}
+
 fn default_true() -> bool {
     true
 }
@@ -108,11 +113,12 @@ pub struct Settings {
     /// Make the bucket and turn on versioning, lifecycle rules and encryption where it has none (crate::store).
     #[serde(default)]
     pub s3_set_up_bucket: bool,
-    /// Days a deleted file stays in object storage before it goes (0: at once).
-    #[serde(default)]
+    /// Days a deleted file stays in object storage before it goes: as long as backups reach by default (0: at once, an
+    /// installation without backups to restore).
+    #[serde(default = "default_backup_days")]
     pub files_delete_after_days: u64,
     /// How many days back the database's backups reach (0: not said), for the doctor.
-    #[serde(default)]
+    #[serde(default = "default_backup_days")]
     pub backup_reach_days: u64,
     /// Downloads answer with a short-lived link signed for the object store (crate::controllers::system).
     #[serde(default)]

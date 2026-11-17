@@ -16,7 +16,7 @@ cd "$(dirname "$0")/../.."
 
 NS=ferrum
 CHART=deploy/helm/ferrum
-HOST=erp.example.com
+HOST=erp.kind.test
 PROBE_IMAGE=curlimages/curl:8.21.0
 GATEWAYS=envoy-gateway-system
 work=$(mktemp -d)
@@ -42,12 +42,15 @@ finish() {
 }
 trap finish EXIT
 
-# The values kind needs: the loaded image, the S3 emulator (install.sh), a smaller database, no online editor.
+# The values kind needs: the loaded image, the S3 emulator (install.sh), a smaller database, no online editor, and its
+# own names for what the chart ships as placeholders (given last, so that a preset's do not come back).
 cat >"$work/kind.yaml" <<'EOF'
 image: {repository: ferrum, tag: ci}
+publicUrl: https://erp.kind.test
+gateway: {hostname: erp.kind.test}
 storage: {bucket: ferrum-files, region: us-east-1, endpoint: "http://s3.ci-s3.svc.cluster.local:5000"}
 office: {enabled: false}
-privateGateway: {clusterIssuer: letsencrypt}
+privateGateway: {clusterIssuer: letsencrypt, hostnames: [erp.internal.kind.test]}
 database:
   storageSize: 5Gi
   walStorageSize: 2Gi
@@ -57,7 +60,7 @@ database:
     destinationPath: s3://ferrum-backups/pools
     endpointURL: "http://s3.ci-s3.svc.cluster.local:5000"
 EOF
-upgrade() { helm upgrade --install ferrum "$CHART" -n "$NS" --create-namespace -f "$work/kind.yaml" "$@" --wait --timeout 20m; }
+upgrade() { helm upgrade --install ferrum "$CHART" -n "$NS" --create-namespace "$@" -f "$work/kind.yaml" --wait --timeout 20m; }
 servers() { k get deploy -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E '^ferrum($|-general$|-public$|-finance$|-worker$)' | sort | tr '\n' ' '; }
 rollouts() { for d in $(servers); do k rollout status "deploy/$d" --timeout=10m; done; }
 

@@ -224,14 +224,12 @@ impl Kernel {
 
     /// Upkeep: addresses past their time (or ended) longer than [`KEEP_DAYS`] ago.
     pub(crate) async fn purge_public_files(&self) -> Result<u64> {
-        let mut tx = self.db.system_tx().await?;
-        let n = sqlx::query("delete from conn_file_address where coalesce(ended_at, expires_at) < now() - make_interval(days => $1::int) and not ferrum_workspace_held(tenant_id)")
-            .bind(KEEP_DAYS)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        tx.commit().await?;
-        Ok(n)
+        self.db
+            .purge(&[(
+                "conn_file_address",
+                format!("coalesce(ended_at, expires_at) < now() - make_interval(days => {KEEP_DAYS}) and not ferrum_workspace_held(tenant_id)"),
+            )])
+            .await
     }
 }
 

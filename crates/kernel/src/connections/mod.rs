@@ -2481,36 +2481,34 @@ impl Kernel {
     /// Upkeep: debug captures past the longest a capture stays on, calls logged more than [`LOG_DAYS`] ago, inbound
     /// calls processed that long ago, sign-ins never finished.
     pub(crate) async fn purge_connections(&self) -> Result<u64> {
-        let mut tx = self.db.system_tx().await?;
-        let mut n = sqlx::query("update conn_call set debug = null where debug is not null and at < now() - make_interval(mins => $1::int) and not ferrum_workspace_held(tenant_id)")
-            .bind(DEBUG_MAX_MINUTES)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        n += sqlx::query("delete from conn_call where at < now() - make_interval(days => $1::int) and (key is null or outcome <> 'ok') and not ferrum_workspace_held(tenant_id)")
-            .bind(LOG_DAYS)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        n += sqlx::query(
-            "delete from conn_inbound where state = 'done' and received_at < now() - make_interval(days => $1::int) and not ferrum_workspace_held(tenant_id)",
-        )
-        .bind(LOG_DAYS)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        n += sqlx::query("delete from conn_signin where expires_at < now()").execute(&mut *tx).await?.rows_affected();
-        n += sqlx::query("delete from conn_rate where slot < extract(epoch from now())::bigint - 86400 and not ferrum_workspace_held(tenant_id)")
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        n += sqlx::query("delete from conn_attempt where at < now() - make_interval(days => $1::int) and not ferrum_workspace_held(tenant_id)")
-            .bind(LOG_DAYS)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        tx.commit().await?;
-        Ok(n)
+        let cleared = self
+            .db
+            .in_batches(|tx| {
+                Box::pin(async move {
+                    Ok(sqlx::query(
+                        "update conn_call set debug = null where ctid = any(array(select ctid from conn_call where debug is not null \
+                           and at < now() - make_interval(mins => $1::int) and not ferrum_workspace_held(tenant_id) limit $2))",
+                    )
+                    .bind(DEBUG_MAX_MINUTES)
+                    .bind(crate::db::PURGE_BATCH as i64)
+                    .execute(&mut **tx)
+                    .await?
+                    .rows_affected())
+                })
+            })
+            .await;
+        let past = format!("now() - make_interval(days => {LOG_DAYS}) and not ferrum_workspace_held(tenant_id)");
+        let purged = self
+            .db
+            .purge(&[
+                ("conn_call", format!("(key is null or outcome <> 'ok') and at < {past}")),
+                ("conn_inbound", format!("state = 'done' and received_at < {past}")),
+                ("conn_signin", "expires_at < now()".into()),
+                ("conn_rate", "slot < extract(epoch from now())::bigint - 86400 and not ferrum_workspace_held(tenant_id)".into()),
+                ("conn_attempt", format!("at < {past}")),
+            ])
+            .await;
+        Ok(cleared? + purged?)
     }
 }
 

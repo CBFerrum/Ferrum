@@ -10,24 +10,40 @@ trap 'rm -rf "$tmp"' EXIT
 digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 printf 'image:\n  digest: %s\n' "$digest" > "$tmp/digest.yaml"
+# What ships as a placeholder is a site's own to set (the chart refuses it otherwise): one site's, for every render.
+printf 'publicUrl: https://erp.acme.test\nstorage: {bucket: acme-files}\ngateway: {hostname: erp.acme.test}\nprivateGateway: {hostnames: [erp.internal.acme.test]}\noffice: {host: office.acme.test}\neditors: {host: editors.acme.test}\ndatabase: {backup: {destinationPath: "s3://acme-backups/ferrum"}}\n' > "$tmp/site.yaml"
 printf 'image:\n  tag: abc\neditors:\n  enabled: true\n  image: {tag: abc}\nmetricsEngine:\n  enabled: true\n  image: {tag: abc}\n' > "$tmp/all.yaml"
 # The Namespace is rendered here because deploy/k8s has it; with Helm, --create-namespace does it.
-tpl() { helm template ferrum "$chart" --namespace ferrum --set namespace.create=true "$@"; }
+tpl() { helm template ferrum "$chart" --namespace ferrum --set namespace.create=true "$@" -f "$tmp/site.yaml"; }
 
 echo "lint"
-helm lint "$chart" -f "$tmp/digest.yaml"
+helm lint "$chart" -f "$tmp/digest.yaml" -f "$tmp/site.yaml"
+
+echo "the placeholders fail, naming each one still set"
+if err=$(helm template ferrum "$chart" -f "$tmp/digest.yaml" 2>&1); then echo "rendered with its placeholders"; exit 1; fi
+for v in publicUrl storage.bucket database.backup.destinationPath gateway.hostname office.host; do
+  grep -q "$v" <<<"$err" || { echo "the error does not name $v: $err"; exit 1; }
+done
+if err=$(helm template ferrum "$chart" -f "$tmp/digest.yaml" -f "$tmp/site.yaml" --set editors.enabled=true --set editors.image.tag=abc \
+  --set editors.host=editors.example.com --set privateGateway.enabled=true --set-json 'privateGateway.hostnames=["erp.internal.example.com"]' 2>&1); then
+  echo "rendered with an enabled component's placeholder"; exit 1; fi
+grep -q "editors.host" <<<"$err" && grep -q "privateGateway.hostnames" <<<"$err" || { echo "unexpected error: $err"; exit 1; }
 
 echo "no digest and no tag fails"
-if err=$(helm template ferrum "$chart" 2>&1); then echo "rendered without an image version"; exit 1; fi
+if err=$(helm template ferrum "$chart" -f "$tmp/site.yaml" 2>&1); then echo "rendered without an image version"; exit 1; fi
 grep -q 'no default image version' <<<"$err" || { echo "unexpected error: $err"; exit 1; }
-if err=$(helm template ferrum "$chart" -f "$tmp/digest.yaml" --set editors.enabled=true 2>&1); then echo "editors rendered without an image version"; exit 1; fi
+if err=$(helm template ferrum "$chart" -f "$tmp/digest.yaml" -f "$tmp/site.yaml" --set editors.enabled=true 2>&1); then echo "editors rendered without an image version"; exit 1; fi
 grep -q 'editors.image' <<<"$err" || { echo "unexpected error: $err"; exit 1; }
 
 echo "a digest wins over a tag"
 tpl -f "$tmp/digest.yaml" --set image.tag=abc | grep -q "image: ghcr.io/cbferrum/ferrum@$digest"
 
 # The online editor is a second kustomization (its own namespace): the two are compared with the chart together.
-kust() { { kubectl kustomize "$1"; echo ---; kubectl kustomize "$1/office"; } > "$2"; }
+kust() {
+  { kubectl kustomize "$1"; echo ---; kubectl kustomize "$1/office"; } | sed -e 's/erp\.example\.com/erp.acme.test/g' \
+    -e 's/office\.example\.com/office.acme.test/g' -e 's/editors\.example\.com/editors.acme.test/g' \
+    -e 's/CHANGE-ME-files-bucket/acme-files/g' -e 's/CHANGE-ME-backup-bucket/acme-backups/g' > "$2"
+}
 
 echo "defaults against deploy/k8s and deploy/k8s/office"
 kust deploy/k8s "$tmp/k.yaml"
@@ -123,14 +139,14 @@ c = dep["spec"]["template"]["spec"]["containers"][0]
 env = {e["name"]: e["value"] for e in c["env"]}
 assert env["aliasgroup1"] == "http://ferrum.ferrum.svc.cluster.local:80", env
 assert "*" not in env["aliasgroup1"], env
-assert "admin_console.enable=false" in env["extra_params"] and "net.frame_ancestors=https://erp.example.com" in env["extra_params"], env
+assert "admin_console.enable=false" in env["extra_params"] and "net.frame_ancestors=https://erp.acme.test" in env["extra_params"], env
 assert dep["spec"]["template"]["spec"]["securityContext"]["runAsNonRoot"] is True
 assert c["securityContext"]["capabilities"]["drop"] == ["ALL"]
 assert c["resources"]["limits"]["memory"] and c["resources"]["requests"]["memory"]
 assert c["readinessProbe"] and c["livenessProbe"]
 srv = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ferrum")
 senv = {e["name"]: e.get("value") for e in srv["spec"]["template"]["spec"]["containers"][0]["env"]}
-assert senv["FERRUM_OFFICE_ORIGIN"] == "https://office.example.com", senv
+assert senv["FERRUM_OFFICE_ORIGIN"] == "https://office.acme.test", senv
 PY
 
 echo "migration job is a pre-install,pre-upgrade hook, and off by default"
@@ -203,7 +219,7 @@ def check(dep, pool):
 docs, servers, doc = load(sys.argv[1])
 check(servers["ferrum"], "default")
 inst = doc["installation"]
-assert inst["public_url"] == "https://erp.example.com" and inst["s3_bucket"] == "CHANGE-ME-files-bucket", inst
+assert inst["public_url"] == "https://erp.acme.test" and inst["s3_bucket"] == "acme-files", inst
 assert inst["session_days"] == "7" and inst["log_level"] == "warn", "the document's own over the chart's"
 assert inst["pdf_url"].startswith("http://ferrum-pdf"), inst
 assert not {"database_url", "jwt_secret", "secret_key", "office_url", "db_max_connections", "zone"} & set(inst), inst

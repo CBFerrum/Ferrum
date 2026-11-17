@@ -16,9 +16,15 @@ create table logic_effect (
   actor uuid,
   correlation_id text default nullif(current_setting('ferrum.correlation', true), ''),
   created_at timestamptz not null default now(),
+  -- How long a repeat may find it, as its capability declares (`retention_days`); the hourly maintenance deletes it
+  -- after that (UTC).
+  retention_days int not null check (retention_days >= 0),
+  kept_until timestamp generated always as ((created_at at time zone 'UTC') + make_interval(days => retention_days)) stored,
   primary key (tenant_id, environment, capability, effect_key)
 );
-create index logic_effect_created on logic_effect (created_at);
+create index logic_effect_kept on logic_effect (kept_until);
+-- A record's receipts, which its erasure finds (crate::privacy).
+create index logic_effect_record on logic_effect (tenant_id, record_id) where record_id is not null;
 
 alter table logic_effect enable row level security;
 alter table logic_effect force row level security;

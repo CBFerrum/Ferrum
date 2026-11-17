@@ -7,7 +7,9 @@ cd "$(dirname "$0")/../.."
 chart=deploy/helm/ferrum
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-tpl() { helm template ferrum "$chart" --namespace ferrum --set image.tag=abc "$@"; }
+# What ships as a placeholder is a site's own to set (the chart refuses it otherwise): one site's, last, for every render.
+printf 'publicUrl: https://erp.acme.test\nstorage: {bucket: acme-files}\ngateway: {hostname: erp.acme.test}\nprivateGateway: {hostnames: [erp.internal.acme.test]}\noffice: {host: office.acme.test}\neditors: {host: editors.acme.test}\ndatabase: {backup: {destinationPath: "s3://acme-backups/ferrum"}}\n' > "$tmp/site.yaml"
+tpl() { helm template ferrum "$chart" --namespace ferrum --set image.tag=abc "$@" -f "$tmp/site.yaml"; }
 
 for preset in single split pools zones; do
   echo "$preset renders, fits the database and keeps its promises"

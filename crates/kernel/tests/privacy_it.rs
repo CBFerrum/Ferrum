@@ -3,6 +3,7 @@
 //! why; what is not searched is named; a legal hold stops erasure and deletion; and a database
 //! restored from before an erasure can be erased again from the journal.
 
+use ferrum_kernel::capability::Invocation;
 use ferrum_kernel::files::FileStore;
 use ferrum_kernel::privacy::{JOURNAL_PREFIX, Person, PersonalHeld};
 use ferrum_kernel::tenant::NewTenant;
@@ -333,7 +334,124 @@ async fn scenario() {
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let part_key: String = sqlx::query_scalar("select storage_key from file_object where id = $1").bind(part).fetch_one(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+    // A webhook hears every change, the record with it; one of the visitor's events gave up, and so did one of its
+    // deliveries, as they may (K5).
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, topics) values ($1, $2, 'everything', 'https://hooks.test/all', '{*}')")
+        .bind(tenant)
+        .bind(Uuid::now_v7())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    k.update(&admin, "Visitor", early_id, obj(json!({"notes": "Allergic to nuts and shellfish"})), None).await.unwrap();
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
+    let mut tx = k.db.system_tx().await.unwrap();
+    let dead_event: i64 = sqlx::query_scalar(
+        "update outbox set dead = true, processed_at = null where id = (select max(id) from outbox where tenant_id = $1 and record_id = $2) returning id",
+    )
+    .bind(tenant)
+    .bind(early_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let dead_delivery: Uuid = sqlx::query_scalar("update webhook_delivery set status = 'dead' where tenant_id = $1 and outbox_id = $2 returning id")
+        .bind(tenant)
+        .bind(dead_event)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // The assistant's conversations, kept as the server keeps them (A8): Pat's own, and the administrator's, in which a
+    // tool read Pat's visitor record and the model answered.
+    let conversation = async |owner: Uuid, messages: Vec<(&str, Value)>| -> Uuid {
+        let thread = Uuid::now_v7();
+        let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+        sqlx::query("insert into assistant_thread (tenant_id, id, user_id) values ($1, $2, $3)")
+            .bind(tenant)
+            .bind(thread)
+            .bind(owner)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        for (seq, (role, content)) in messages.into_iter().enumerate() {
+            sqlx::query("insert into assistant_message (tenant_id, thread_id, seq, role, content) values ($1, $2, $3, $4, $5)")
+                .bind(tenant)
+                .bind(thread)
+                .bind(seq as i32 + 1)
+                .bind(role)
+                .bind(content)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+        thread
+    };
+    let read = k.get(&admin, "Visitor", early_id, false).await.unwrap();
+    let words = |text: &str| json!([{"type": "text", "text": text}]);
+    let tool_said = |text: String| json!([{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": text}], "is_error": false}]);
+    conversation(pat, vec![("user", words("When is my next visit?"))]).await;
+    let theirs = conversation(
+        admin.user,
+        vec![
+            ("user", words("Which visitors have allergies?")),
+            ("assistant", json!([{"type": "tool_use", "id": "t1", "name": "find_records", "input": {"entity": "Visitor"}}])),
+            ("user", tool_said(serde_json::to_string_pretty(&json!([read])).unwrap())),
+            ("assistant", words("One visitor has an allergy noted.")),
+        ],
+    )
+    .await;
     let done = k.erase_personal_data(&admin, "pat@old.test", "Request 1").await.unwrap();
+    // A8: Pat's own conversations are gone; another's keeps its words, without what a tool read of the erased records.
+    let mut tx = k.db.system_tx().await.unwrap();
+    let (mine, kept): (i64, Vec<String>) = (
+        sqlx::query_scalar("select count(*) from assistant_thread where tenant_id = $1 and user_id = $2")
+            .bind(tenant)
+            .bind(pat)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        sqlx::query_scalar("select content::text from assistant_message where tenant_id = $1 order by thread_id, seq")
+            .bind(tenant)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap(),
+    );
+    tx.commit().await.unwrap();
+    assert_eq!(mine, 0, "the erased person's own conversations go");
+    for message in &kept {
+        for theirs in ["Pat Lee", "pat@old.test", "15550100", "Allergic"] {
+            assert!(!message.contains(theirs), "an assistant's message still holds {theirs}: {message}");
+        }
+    }
+    assert_eq!(kept.len(), 4, "the administrator's conversation stays, message for message: {kept:?}");
+    let _ = theirs;
+    // What the visitor's and the visit's events carried of them is gone from the outbox and from every webhook delivery,
+    // and an administrator's replay sends none of it.
+    let mut tx = k.db.system_tx().await.unwrap();
+    let carried: Vec<String> = sqlx::query_scalar(
+        "select payload::text from outbox where tenant_id = $1 and record_id = any($2) \
+         union all select payload::text from webhook_delivery where tenant_id = $1 and payload->>'id' = any($3)",
+    )
+    .bind(tenant)
+    .bind(vec![early_id, visit["id"].as_str().unwrap().parse::<Uuid>().unwrap()])
+    .bind(vec![early_id.to_string(), visit["id"].as_str().unwrap().to_string()])
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(carried.len() >= 6, "the visitor's two events, the visit's, and a delivery of each: {carried:?}");
+    for payload in &carried {
+        for theirs in ["Pat Lee", "pat@old.test", "15550100", "Allergic", "nut-free"] {
+            assert!(!payload.contains(theirs), "an event of an erased record still carries {theirs}: {payload}");
+        }
+    }
+    assert!(
+        matches!(k.replay_event(&admin, dead_event).await, Err(Error::Conflict(_))),
+        "a dead event of an erased record is not sent again, with nothing of theirs in it"
+    );
+    assert!(matches!(k.replay_webhook_delivery(&admin, dead_delivery).await, Err(Error::Conflict(_))), "nor is its dead delivery");
     assert_eq!(done["apps"], json!([{"app": "notes", "erased": 1}]), "{done}");
     let notes: Vec<(Uuid, String)> = sqlx::query_as("select speaker, text from test_notes order by text").fetch_all(&k.db.pool).await.unwrap();
     assert_eq!(notes, vec![(pat, String::new()), (admin.user, "The administrator said this".to_string())], "theirs went, and only theirs");
@@ -566,4 +684,67 @@ async fn scenario() {
     assert_eq!(restored["companions"].as_array().unwrap().len(), 1, "her row went again: {restored:?}");
     let kept = k.get(&admin, "Visitor", namesake["id"].as_str().unwrap().parse().unwrap(), false).await.unwrap();
     assert_eq!(kept["email"], json!("p.lee@else.test"), "the namesake is untouched");
+
+    // ───────────── what the gate keeps of an operation (I6) ─────────────
+    // A record made through the gate leaves a receipt of what was done; the erasure takes the person out of it, and the
+    // same key asked again still answers which record it made.
+    let signup = || {
+        Invocation::new("people.visitor.create", json!({"values": {"full_name": "Quinn Gate", "email": "quinn@gate.test", "notes": "Prefers mornings"}}))
+            .key("signup-quinn")
+    };
+    let made = k.invoke(&admin, signup()).await.unwrap();
+    assert_eq!(made.result["email"], json!("quinn@gate.test"), "a first call answers the record as made");
+    let quinn = made.result["id"].clone();
+    k.erase_personal_data(&admin, "quinn@gate.test", "Request 6").await.unwrap();
+    let receipt = async || -> Option<Value> {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let kept = sqlx::query_scalar("select result from logic_effect where tenant_id = $1 and effect_key = 'signup-quinn'")
+            .bind(tenant)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        kept
+    };
+    let kept = receipt().await.expect("the receipt").to_string();
+    for theirs in ["Quinn", "quinn@gate.test", "mornings"] {
+        assert!(!kept.contains(theirs), "the receipt of an erased record still holds {theirs}: {kept}");
+    }
+    let again = k.invoke(&admin, signup()).await.unwrap();
+    assert!(again.repeated && again.result["id"] == quinn, "a repeat of the key answers the record it made: {again:?}");
+    // A receipt past its capability's retention (400 days for a create) goes with the hourly maintenance.
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update logic_effect set created_at = now() - interval '401 days' where tenant_id = $1 and effect_key = 'signup-quinn'")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // What a tool gave the assistant is kept 90 days (A8): the conversation stays, the result is blanked.
+    let old_result = conversation(admin.user, vec![("user", words("Old question")), ("user", tool_said("Kept too long".into()))]).await;
+    let new_result = conversation(admin.user, vec![("user", tool_said("Read just now".into()))]).await;
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update assistant_message set created_at = now() - interval '91 days' where tenant_id = $1 and thread_id = $2")
+        .bind(tenant)
+        .bind(old_result)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    k.maintenance().await.expect("maintenance");
+    assert_eq!(receipt().await, None, "a receipt past its retention is gone after maintenance");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let thread_text = async |tx: &mut ferrum_kernel::Tx, thread: Uuid| -> String {
+        let texts: Vec<String> = sqlx::query_scalar("select content::text from assistant_message where tenant_id = $1 and thread_id = $2 order by seq")
+            .bind(tenant)
+            .bind(thread)
+            .fetch_all(&mut **tx)
+            .await
+            .unwrap();
+        texts.join(" ")
+    };
+    let (old_text, new_text) = (thread_text(&mut tx, old_result).await, thread_text(&mut tx, new_result).await);
+    tx.commit().await.unwrap();
+    assert!(!old_text.contains("Kept too long") && old_text.contains("Old question") && old_text.contains("tool_result"), "{old_text}");
+    assert!(new_text.contains("Read just now"), "a recent result stays: {new_text}");
 }

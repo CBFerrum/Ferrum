@@ -308,6 +308,9 @@ const LEASE_SECS: f64 = 600.0;
 /// The same for webhooks: requests run side by side and time out after 10 seconds.
 const WEBHOOK_LEASE_SECS: f64 = 60.0;
 
+/// Why a dead event or delivery of a record erased since is not replayed: it would go out without the record.
+const ERASED_SINCE: &str = "the record this is about has been erased since: it is not sent again";
+
 fn require_admin(ctx: &Ctx) -> Result<()> {
     if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("this is for administrators".into())) }
 }
@@ -522,10 +525,19 @@ impl Kernel {
     }
 
     /// Queues a dead event again, from the first attempt. Consumers are idempotent, so those that
-    /// handled it before it failed are not repeated. Audited (administrators only).
+    /// handled it before it failed are not repeated. One whose record has been erased since is not:
+    /// it would go out without the record (crate::privacy). Audited (administrators only).
     pub async fn replay_event(&self, ctx: &Ctx, id: i64) -> Result<()> {
         require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let erased: Option<bool> = sqlx::query_scalar("select payload ? 'erased' from outbox where tenant_id = $1 and id = $2 and dead")
+            .bind(ctx.tenant)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if erased == Some(true) {
+            return Err(Error::Conflict(ERASED_SINCE.into()));
+        }
         // Replayed by a person's decision, it starts a chain of its own: its depth and its chain's count
         // start again, so it is not stopped at once for what it was stopped for before.
         let topic: Option<String> = sqlx::query_scalar(
@@ -602,10 +614,19 @@ impl Kernel {
         Ok(rows)
     }
 
-    /// Queues a webhook delivery that gave up again, from the first attempt (administrators only).
+    /// Queues a webhook delivery that gave up again, from the first attempt (administrators only); not one whose record
+    /// has been erased since, as [`Kernel::replay_event`].
     pub async fn replay_webhook_delivery(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
         require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let erased: Option<bool> = sqlx::query_scalar("select payload ? 'erased' from webhook_delivery where tenant_id = $1 and id = $2 and status = 'dead'")
+            .bind(ctx.tenant)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if erased == Some(true) {
+            return Err(Error::Conflict(ERASED_SINCE.into()));
+        }
         let topic: Option<String> = sqlx::query_scalar(
             "update webhook_delivery set status = 'pending', attempts = 0, last_error = null, next_attempt_at = now(), updated_at = now() \
              where tenant_id = $1 and id = $2 and status = 'dead' returning topic",
@@ -879,35 +900,17 @@ impl Kernel {
 
     /// Deletes processed outbox rows, delivered webhooks and expired idempotency keys.
     pub async fn purge_old_events(&self, keep_days: i32) -> Result<u64> {
-        let mut tx = self.db.system_tx().await?;
-        let mut n = sqlx::query("delete from outbox where processed_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
-            .bind(keep_days)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        n += sqlx::query("delete from webhook_delivery where status = 'delivered' and updated_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
-            .bind(keep_days)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        n += sqlx::query("delete from event_receipt where received_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
-            .bind(keep_days)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        // A receipt answers a request sent again for as long as a device's work may wait offline.
-        n += sqlx::query("delete from idempotency_key where created_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
-            .bind(crate::receipt::RECEIPT_DAYS)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        n += sqlx::query("delete from event_chain where first_at < now() - make_interval(days => $1) and not ferrum_workspace_held(tenant_id)")
-            .bind(keep_days)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        tx.commit().await?;
-        Ok(n)
+        let past = |column: &str, days: i32| format!("{column} < now() - make_interval(days => {days}) and not ferrum_workspace_held(tenant_id)");
+        self.db
+            .purge(&[
+                ("outbox", past("processed_at", keep_days)),
+                ("webhook_delivery", format!("status = 'delivered' and {}", past("updated_at", keep_days))),
+                ("event_receipt", past("received_at", keep_days)),
+                // A receipt answers a request sent again for as long as a device's work may wait offline.
+                ("idempotency_key", past("created_at", crate::receipt::RECEIPT_DAYS)),
+                ("event_chain", past("first_at", keep_days)),
+            ])
+            .await
     }
 }
 

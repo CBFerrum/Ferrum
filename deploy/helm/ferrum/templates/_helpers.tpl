@@ -19,6 +19,21 @@ app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
 {{- end -}}
 {{- end -}}
 
+{{/* The values that ship as placeholders (a CHANGE-ME bucket, a host on example.com): rendering fails naming each one still
+set, so that nothing installs with them. */}}
+{{- define "ferrum.placeholders" -}}
+{{- $example := "(^|[/.])example[.]com([/:]|$)" -}}
+{{- $unset := list -}}
+{{- if regexMatch $example .Values.publicUrl }}{{ $unset = append $unset "publicUrl" }}{{ end -}}
+{{- if contains "CHANGE-ME" .Values.storage.bucket }}{{ $unset = append $unset "storage.bucket" }}{{ end -}}
+{{- if and .Values.database.enabled (contains "CHANGE-ME" .Values.database.backup.destinationPath) }}{{ $unset = append $unset "database.backup.destinationPath" }}{{ end -}}
+{{- if and .Values.gateway.enabled (regexMatch $example .Values.gateway.hostname) }}{{ $unset = append $unset "gateway.hostname" }}{{ end -}}
+{{- if and .Values.privateGateway.enabled (regexMatch $example (join " " .Values.privateGateway.hostnames)) }}{{ $unset = append $unset "privateGateway.hostnames" }}{{ end -}}
+{{- if and .Values.office.enabled (regexMatch $example .Values.office.host) }}{{ $unset = append $unset "office.host" }}{{ end -}}
+{{- if and .Values.editors.enabled (regexMatch $example .Values.editors.host) }}{{ $unset = append $unset "editors.host" }}{{ end -}}
+{{- with $unset }}{{ fail (printf "these ship as placeholders, set each to your own: %s" (join ", " .)) }}{{ end -}}
+{{- end -}}
+
 {{/* A key of the existing Secret. Call with (list . "KEY" optional). */}}
 {{- define "ferrum.secretEnv" -}}
 - name: {{ index . 1 }}
@@ -29,6 +44,17 @@ app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
 {{- if index . 2 }}
       optional: true
 {{- end }}
+{{- end -}}
+
+{{/* How far back the database's backups reach, in days: database.backup.retention, CloudNativePG's (30d, 4w, 3m; a month
+counted as 31 days, so that deleted files are kept at least as long). */}}
+{{- define "ferrum.backupDays" -}}
+{{- $r := toString .Values.database.backup.retention -}}
+{{- if not (regexMatch "^[1-9][0-9]*[dwm]$" $r) -}}
+{{- fail (printf "database.backup.retention: %q is not days, weeks or months (30d, 4w, 3m)" $r) -}}
+{{- end -}}
+{{- $n := atoi (trimSuffix "d" (trimSuffix "w" (trimSuffix "m" $r))) -}}
+{{- if hasSuffix "w" $r }}{{ mul $n 7 }}{{ else if hasSuffix "m" $r }}{{ mul $n 31 }}{{ else }}{{ $n }}{{ end -}}
 {{- end -}}
 
 {{/* The server's environment, shared by the Deployment and the migration Job. */}}
@@ -85,6 +111,12 @@ generates is letters and digits only, so it needs no escaping in the address. */
 - {name: FERRUM_S3_REGION, value: {{ .Values.storage.region | quote }}}
 {{- with .Values.storage.endpoint }}
 - {name: FERRUM_S3_ENDPOINT, value: {{ . | quote }}}
+{{- end }}
+{{- if .Values.database.enabled }}
+{{- /* A deleted file stays as long as the database's backups reach (docs/operations.md, Backups of files). */}}
+{{- $days := include "ferrum.backupDays" . }}
+- {name: FERRUM_BACKUP_REACH_DAYS, value: {{ $days | quote }}}
+- {name: FERRUM_FILES_DELETE_AFTER_DAYS, value: {{ $days | quote }}}
 {{- end }}
 - {name: PUBLIC_URL, value: {{ .Values.publicUrl | quote }}}
 {{- with .Values.names.accountsHost }}

@@ -13,7 +13,9 @@ image:
   digest: ""    # sha256:...
   tag: ""       # a commit's full SHA
 
-# The address users open; the Gateway's host below should match.
+# The address users open; the Gateway's host below should match. This, storage.bucket, gateway.hostname,
+# database.backup.destinationPath and office.host (editors.host, privateGateway.hostnames when those are on) ship as
+# placeholders: the chart refuses to render until each is your own.
 publicUrl: https://erp.example.com
 # Names that should never change (docs/operations.md, "Names that should never change"); empty
 # keeps each as the server had it before the setting existed.

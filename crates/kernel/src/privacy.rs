@@ -8,7 +8,9 @@
 //!
 //! Erasure blanks the declared fields of those records (a placeholder where a value is required),
 //! deletes the files attached to them, takes the same fields' past values out of the records' audit
-//! history (each event keeps its hash and place in the chain and records the redaction), and
+//! history (each event keeps its hash and place in the chain and records the redaction), takes the
+//! records out of their events (the outbox's and webhook deliveries': such an event is not replayed)
+//! and out of the gate's receipts of operations on them (the id and version stay), and
 //! anonymizes and deactivates the person's login account, with what hangs off it: sessions, keys,
 //! notifications, preferences, devices, and the workspace's stored exports, copies from before.
 //! Records a package keeps for a stated reason (`retain`) are
@@ -44,6 +46,25 @@ pub const JOURNAL_PREFIX: &str = "privacy-journal/";
 /// person's), and one that retains them: a working life of attendance is still one person's.
 const MAX_RECORDS: i64 = 1000;
 const MAX_RETAINED: i64 = 20_000;
+
+/// How long the assistant keeps what its tools gave the model (`assistant_message`): after that the hourly maintenance
+/// blanks it, and the conversation stays ([`Kernel::purge_tool_results`]).
+pub const TOOL_RESULT_DAYS: i32 = 90;
+
+/// The assistant's messages that hold a tool result not blanked yet: the same text as the index
+/// `assistant_message_results` (kernel migration 20261031000050), so that it is used.
+const HOLDS_RESULTS: &str =
+    r#"role = 'user' and jsonb_path_exists(content, '$[*] ? (@.type == "tool_result" && !(@.content[0].text starts with "(removed"))')"#;
+
+/// A message's content with the tool results `which` picks (SQL over the block `b`) blanked, saying `why`, and the rest
+/// as it was: the conversation stays one the model takes back.
+fn blanked(which: &str, why: &str) -> String {
+    format!(
+        "(select jsonb_agg(case when b->>'type' = 'tool_result' and {which} \
+           then jsonb_set(b, '{{content}}', jsonb_build_array(jsonb_build_object('type', 'text', 'text', '{why}'))) else b end order by i) \
+         from jsonb_array_elements(content) with ordinality e(b, i))"
+    )
+}
 
 /// An app that keeps people's data in tables of its own, outside the entities it declares (a meeting's
 /// transcript, say): it says what it holds of a person in their report, and erases it with their
@@ -229,6 +250,8 @@ async fn erase_rows(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: Uui
             k.set_child_values_tx(&engine, tx, entity, table, *row, values).await?;
         }
     }
+    // The record's events carried its rows as they were.
+    forget_copies(tx, ctx.tenant, entity, id).await?;
     audit::record(tx, ctx, entity, id, "erase_personal_data", None, json!({"table": table, "rows": rows.len(), "fields": erase, "reason": reason})).await?;
     Ok(())
 }
@@ -386,6 +409,71 @@ async fn redact(tx: &mut Tx, ctx: &Ctx, entity: &str, record: Uuid, fields: &[St
     Ok(done.rows_affected())
 }
 
+/// What the platform keeps of a record elsewhere goes. Its events' (`doc`, `was`), from the outbox and from every webhook
+/// delivery of them, handled, waiting or dead: each says it was erased instead, and is not replayed (crate::outbox). The
+/// receipts of operations on it (crate::capability): the id and version stay, which is all a repeat of the key answers
+/// with besides the record as it now is.
+async fn forget_copies(tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid) -> Result<()> {
+    sqlx::query(
+        "update outbox set payload = payload - 'doc' - 'was' || '{\"erased\": true}' \
+         where tenant_id = $1 and record_id = $2 and entity = $3 and payload ?| array['doc', 'was']",
+    )
+    .bind(tenant)
+    .bind(record)
+    .bind(entity)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "update webhook_delivery set payload = payload - 'doc' - 'was' || '{\"erased\": true}' \
+         where tenant_id = $1 and record_id = $2::text and payload->>'entity' = $3 and payload ?| array['doc', 'was']",
+    )
+    .bind(tenant)
+    .bind(record)
+    .bind(entity)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "update logic_effect set result = jsonb_strip_nulls(jsonb_build_object('id', result->'id', 'version', result->'version')) \
+         where tenant_id = $1 and record_id = $2 and record_entity = $3",
+    )
+    .bind(tenant)
+    .bind(record)
+    .bind(entity)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// What the assistant's tools read of these records, in anyone's conversation: each tool result that names one of them
+/// by id is blanked, the conversation kept. The model's words and the person's are not searched.
+async fn forget_tool_results(tx: &mut Tx, tenant: Uuid, ids: &[Uuid]) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let like: Vec<String> = ids.iter().map(|id| format!("%{id}%")).collect();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "update assistant_message set content = {} where tenant_id = $1 and {HOLDS_RESULTS} and content::text like any($2)",
+        blanked("b::text like any($2)", "(removed: it held a record since erased)")
+    )))
+    .bind(tenant)
+    .bind(&like)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// The ids an erasure's journal names: each record's, or the rows it took from one.
+fn journalled(records: &[Value]) -> Vec<Uuid> {
+    let id = |v: &Value| v.as_str().and_then(|s| s.parse().ok());
+    records
+        .iter()
+        .flat_map(|r| match r["rows"].as_array() {
+            Some(rows) => rows.iter().filter_map(id).collect(),
+            None => id(&r["id"]).into_iter().collect::<Vec<_>>(),
+        })
+        .collect()
+}
+
 /// A record's files: id, name and storage key.
 async fn attached(tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid) -> Result<Vec<(Uuid, String, String)>> {
     Ok(sqlx::query_as("select id, file_name, storage_key from file_object where tenant_id = $1 and entity = $2 and record_id = $3 order by id")
@@ -416,6 +504,7 @@ async fn erase_record(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: U
         k.set_values_tx(&engine, tx, entity, id, values).await?;
     }
     let events = redact(tx, ctx, entity, id, fields, reason).await?;
+    forget_copies(tx, ctx.tenant, entity, id).await?;
     // What runs keep of the record goes too, and stays gone when a runtime reports a run again (FLC-OPS-006).
     let runs = crate::process::erase_run_copies(tx, ctx.tenant, entity, id, fields).await?;
     let files = attached(tx, ctx.tenant, entity, id).await?;
@@ -431,6 +520,23 @@ async fn erase_record(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: U
 }
 
 impl Kernel {
+    /// What the assistant's tools gave the model more than [`TOOL_RESULT_DAYS`] ago, blanked: hourly, from
+    /// [`Kernel::maintenance`].
+    pub(crate) async fn purge_tool_results(&self) -> Result<u64> {
+        let sql = format!(
+            "update assistant_message set content = {} where ctid = any(array(select ctid from assistant_message where {HOLDS_RESULTS} \
+               and created_at < now() - make_interval(days => {TOOL_RESULT_DAYS}) and not ferrum_workspace_held(tenant_id) limit {}))",
+            blanked("true", &format!("(removed: kept {TOOL_RESULT_DAYS} days)")),
+            crate::db::PURGE_BATCH
+        );
+        self.db
+            .in_batches(|tx| {
+                let sql = sql.clone();
+                Box::pin(async move { Ok(sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&mut **tx).await?.rows_affected()) })
+            })
+            .await
+    }
+
     /// Blanks the fields a package declares personal on one record: a retention rule's work.
     pub(crate) async fn anonymize_record(&self, sys: &Ctx, entity: &str, id: Uuid, reason: &str) -> Result<()> {
         let ent = self.entity(sys, entity)?;
@@ -501,6 +607,8 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
         "sign_in_code",
         "sign_in_failure",
         "known_device",
+        // Their conversations with the assistant, with every message in them.
+        "assistant_thread",
     ] {
         sqlx::query(sqlx::AssertSqlSafe(format!("delete from {table} where tenant_id = $1 and user_id = $2"))).bind(tenant).bind(id).execute(&mut **tx).await?;
     }
@@ -757,6 +865,7 @@ impl Kernel {
         if let Some(id) = account {
             erase_account(&mut tx, ctx, id, reason).await?;
         }
+        forget_tool_results(&mut tx, ctx.tenant, &journalled(&journal)).await?;
         // What apps keep of them in tables of their own goes with it.
         let mut apps = Vec::new();
         for app in self.hooks.personal_held() {
@@ -901,6 +1010,7 @@ impl Kernel {
             }
         }
         let addresses: Vec<String> = addresses.into_iter().collect();
+        forget_tool_results(tx, tenant, &journalled(erasure["records"].as_array().map(Vec::as_slice).unwrap_or_default())).await?;
         // What apps keep in tables of their own, as the restore brought it back.
         for app in self.hooks.personal_held() {
             done += app.erase(tx, tenant, account, &addresses, reason).await? as usize;

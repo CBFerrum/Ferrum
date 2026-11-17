@@ -880,20 +880,17 @@ impl Kernel {
     /// Drops what is a day past its end (requests, codes and access tokens: a client's nonces are kept that long), and
     /// sign-ins a week after their app was told they ended; nothing of a workspace that is moving.
     pub async fn openid_purge(&self) -> Result<u64> {
-        let mut tx = self.db.system_tx().await?;
-        let n = sqlx::query(
-            "delete from oidc_code where expires_at < now() - interval '1 day' and (access_expires_at is null or access_expires_at < now() - interval '1 day') \
-             and not ferrum_workspace_held(tenant_id)",
-        )
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-            + sqlx::query("delete from oidc_sign_in where ended_at < now() - interval '7 days' and not ferrum_workspace_held(tenant_id)")
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
-        tx.commit().await?;
-        Ok(n)
+        self.db
+            .purge(&[
+                (
+                    "oidc_code",
+                    "expires_at < now() - interval '1 day' and (access_expires_at is null or access_expires_at < now() - interval '1 day') \
+                     and not ferrum_workspace_held(tenant_id)"
+                        .into(),
+                ),
+                ("oidc_sign_in", "ended_at < now() - interval '7 days' and not ferrum_workspace_held(tenant_id)".into()),
+            ])
+            .await
     }
 }
 

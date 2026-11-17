@@ -45,6 +45,13 @@ pub trait Restored: Send + Sync {
 }
 
 const NOTE: &str = "the database was restored: this may or may not have happened since, so a person decides";
+/// What a whole database's hold adds to its reason ([`Kernel::set_aside`]).
+const SIGNED_OUT: &str = "; everyone was signed out (every session, API key and refresh token revoked, every token version moved on): people sign in again";
+/// How far a restore moves every person's token version on: past those of tokens signed since the backup was taken,
+/// which a bearer token's version alone cannot tell from the backup's.
+// ponytail: past any version a token since the backup could carry, unless someone's moved on a thousand times since; a
+// not-before time checked with each token closes it for good.
+const RESTORED_TOKEN_STEP: i32 = 1000;
 
 /// What stays as it is when a workspace goes back, because it happened: the audit trail, and who was
 /// let in, and what they did there; and what the people its data is about asked for and what the law
@@ -409,7 +416,10 @@ impl Kernel {
         Ok(())
     }
 
-    /// Puts what was waiting where a person can see it, so that nothing runs because its record came back.
+    /// Puts what was waiting where a person can see it, so that nothing runs because its record came back; and signs
+    /// everyone out (of one workspace, or all), so that nothing revoked since the backup works again: every token version
+    /// moves on, and every session, API key and OAuth refresh token is revoked. Passwords stay as the database has them,
+    /// so people, administrators first, sign in again with theirs (or by single sign-on); integrations need new keys.
     async fn set_aside(&self, tx: &mut crate::Tx, tenant: Option<Uuid>) -> Result<()> {
         sqlx::query("update outbox set dead = true, last_error = $1 where processed_at is null and not dead and ($2::uuid is null or tenant_id = $2)")
             .bind(NOTE)
@@ -431,6 +441,25 @@ impl Kernel {
         .bind(tenant)
         .execute(&mut **tx)
         .await?;
+        sqlx::query("update app_user set token_version = token_version + $1 where ($2::uuid is null or tenant_id = $2)")
+            .bind(RESTORED_TOKEN_STEP)
+            .bind(tenant)
+            .execute(&mut **tx)
+            .await?;
+        for table in ["user_session", "api_key", "oauth_refresh"] {
+            sqlx::query(AssertSqlSafe(format!("update {table} set revoked_at = now() where revoked_at is null and ($1::uuid is null or tenant_id = $1)")))
+                .bind(tenant)
+                .execute(&mut **tx)
+                .await?;
+        }
+        match tenant {
+            Some(t) => notify_users(tx, t, None).await?,
+            // Every replica forgets everyone it knows; the hold says why.
+            None => {
+                sqlx::query("select pg_notify($1, 'all')").bind(crate::auth::USERS_CHANNEL).execute(&mut **tx).await?;
+                sqlx::query("update platform_incarnation set held_because = held_because || $1").bind(SIGNED_OUT).execute(&mut **tx).await?;
+            }
+        }
         for app in self.hooks.restored() {
             app.set_aside(tx, tenant).await?;
         }
@@ -604,8 +633,7 @@ impl Kernel {
         .await?;
         sqlx::query("update app_user set token_version = $2 where tenant_id = $1").bind(tenant).bind(version).execute(&mut *tx).await?;
         sqlx::query("delete from passkey where tenant_id = $1 and not (id = any($2))").bind(tenant).bind(&passkeys).execute(&mut *tx).await?;
-        sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and revoked_at is null").bind(tenant).execute(&mut *tx).await?;
-        sqlx::query("update api_key set revoked_at = now() where tenant_id = $1 and revoked_at is null").bind(tenant).execute(&mut *tx).await?;
+        // Sessions, keys and refresh tokens are revoked with what was waiting.
         self.set_aside(&mut tx, Some(tenant)).await?;
         // Erasures since the copy was taken stay done: each one this workspace made is erased again before
         // anyone sees what came back, with the triggers on again, so that what keeps derived copies sees it.

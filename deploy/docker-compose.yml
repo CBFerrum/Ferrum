@@ -94,10 +94,10 @@ services:
       FERRUM_S3_BUCKET: ${FERRUM_S3_BUCKET:-ferrum}
       FERRUM_S3_ENDPOINT: ${FERRUM_S3_ENDPOINT:-http://store:8333}
       FERRUM_S3_REGION: ${FERRUM_S3_REGION:-us-east-1}
-      # Days a deleted file stays in the store, and how far back your database dumps reach (docs/operations.md, "Backups
-      # of files"); 0, 0: at once, not said.
-      FERRUM_FILES_DELETE_AFTER_DAYS: ${FERRUM_FILES_DELETE_AFTER_DAYS:-0}
-      FERRUM_BACKUP_REACH_DAYS: ${FERRUM_BACKUP_REACH_DAYS:-0}
+      # Days a deleted file stays in the store, at least as far back as your database dumps reach (docs/operations.md,
+      # "Backups of files"); 30 each by default. 0 deletes at once: say so only without dumps to restore.
+      FERRUM_FILES_DELETE_AFTER_DAYS: ${FERRUM_FILES_DELETE_AFTER_DAYS:-30}
+      FERRUM_BACKUP_REACH_DAYS: ${FERRUM_BACKUP_REACH_DAYS:-30}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       # PDFs of print formats (Download PDF, apps that attach documents); empty turns them off.

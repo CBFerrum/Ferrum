@@ -314,19 +314,13 @@ impl Kernel {
 
     /// Drops expired codes and tokens and clients that never got a token. Part of maintenance.
     pub async fn oauth_purge(&self) -> Result<u64> {
-        let mut tx = self.db.system_tx().await?;
-        let mut n = sqlx::query("delete from oauth_code where expires_at < now() - interval '1 day'").execute(&mut *tx).await?.rows_affected();
-        n += sqlx::query("delete from oauth_refresh where expires_at < now() or revoked_at < now() - interval '30 days'")
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        n += sqlx::query("delete from oauth_client where coalesce(last_used_at, created_at) < now() - make_interval(days => $1)")
-            .bind(IDLE_CLIENT_DAYS)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        tx.commit().await?;
-        Ok(n)
+        self.db
+            .purge(&[
+                ("oauth_code", "expires_at < now() - interval '1 day'".into()),
+                ("oauth_refresh", "expires_at < now() or revoked_at < now() - interval '30 days'".into()),
+                ("oauth_client", format!("coalesce(last_used_at, created_at) < now() - make_interval(days => {IDLE_CLIENT_DAYS})")),
+            ])
+            .await
     }
 }
 
