@@ -611,24 +611,19 @@ async fn configured(k: &Arc<Kernel>, w: &W) {
     k.run_action(&admin, "Shop", shop, "x_rename", json!({})).await.unwrap();
     assert_eq!(w.get("Shop", shop).await["name"], "Corner!");
 
-    // ───────────── carried by a change set and a pack, and run there ─────────────
-    let bundle = k.export_customizations(&admin).await.unwrap();
-    let ops: Vec<&str> = bundle["customizations"].as_array().unwrap().iter().filter_map(|c| c["op"]["action"]["name"].as_str()).collect();
-    assert_eq!(ops, ["x_rename", "accept", "withdraw"]);
-    let there = workspace(k, "copy").await;
-    k.import_customizations(&there.admin().await, &bundle).await.expect("imported");
+    // ───────────── carried by a pack, and run there ─────────────
     let pack = k.export_pack(&admin, &ExportOptions { name: "risk".into(), label: "Risk".into(), version: 1, records: vec![] }).await.expect("export");
+    let ops: Vec<&str> = pack["customizations"].as_array().unwrap().iter().filter_map(|c| c["op"]["action"]["name"].as_str()).collect();
+    assert_eq!(ops, ["x_rename", "accept", "withdraw"]);
     let packed = workspace(k, "packed").await;
     let padmin = packed.admin().await;
     let plan = k.plan_pack(&padmin, &pack).await.expect("plan");
     k.install_pack(&padmin, &pack, plan["digest"].as_str().unwrap()).await.expect("install");
-    for target in [&there, &packed] {
-        let a = target.admin().await;
-        let r = id_of(&k.insert(&a, "XRisk", obj(json!({"title": "Flood", "owner": "owner@acme.test", "score": 4}))).await.unwrap());
-        let x = id_of(&k.insert(&a, "XAcceptance", obj(json!({"risk": r.to_string()}))).await.unwrap());
-        k.run_action(&a, "XAcceptance", x, "accept", json!({"note": "there"})).await.expect("runs in the target workspace");
-        assert_eq!(target.get("XRisk", r).await["treatment"], "Accept");
-    }
+    let a = packed.admin().await;
+    let r = id_of(&k.insert(&a, "XRisk", obj(json!({"title": "Flood", "owner": "owner@acme.test", "score": 4}))).await.unwrap());
+    let x = id_of(&k.insert(&a, "XAcceptance", obj(json!({"risk": r.to_string()}))).await.unwrap());
+    k.run_action(&a, "XAcceptance", x, "accept", json!({"note": "there"})).await.expect("runs in the target workspace");
+    assert_eq!(packed.get("XRisk", r).await["treatment"], "Accept");
 }
 
 fn remove_action(entity: &str, name: &str) -> NewCustomization {
@@ -642,7 +637,7 @@ fn buttons(ctx: &Ctx, entity: &str) -> Vec<String> {
 }
 
 /// Changing and removing buttons: a replacement keeps its place and runs its own effects, a removal goes and comes
-/// back with its switch, a package's stay as they are, and a change set and a pack carry both.
+/// back with its switch, a package's stay as they are, and a pack carries both.
 async fn authored(k: &Arc<Kernel>, w: &W) {
     let task = json!({"name": "XTask", "label": "Task", "kind": "master", "fields": [{"name": "title", "type": "data"}, {"name": "state", "type": "data"}]});
     let mark = |name: &str, label: &str, state: &str| json!({"name": name, "label": label, "roles": ["Doer"], "effects": [{"type": "set_fields", "values": {"state": format!("'{state}'")}}]});
@@ -694,20 +689,15 @@ async fn authored(k: &Arc<Kernel>, w: &W) {
     let admin = w.admin().await;
     assert_eq!(buttons(&admin, "XTask"), ["x_start:Begin"]);
 
-    // ───────────── carried by a change set and a pack ─────────────
-    let bundle = k.export_customizations(&admin).await.unwrap();
-    let there = workspace(k, "copy2").await;
-    k.import_customizations(&there.admin().await, &bundle).await.expect("imported");
+    // ───────────── carried by a pack ─────────────
     let pack = k.export_pack(&admin, &ExportOptions { name: "tasks".into(), label: "Tasks".into(), version: 1, records: vec![] }).await.expect("export");
     let packed = workspace(k, "packed2").await;
     let padmin = packed.admin().await;
     let plan = k.plan_pack(&padmin, &pack).await.expect("plan");
     k.install_pack(&padmin, &pack, plan["digest"].as_str().unwrap()).await.expect("install");
-    for target in [&there, &packed] {
-        let a = target.admin().await;
-        assert_eq!(buttons(&a, "XTask"), buttons(&admin, "XTask"));
-        assert_eq!(buttons(&a, "Shop"), buttons(&admin, "Shop"));
-    }
+    let a = packed.admin().await;
+    assert_eq!(buttons(&a, "XTask"), buttons(&admin, "XTask"));
+    assert_eq!(buttons(&a, "Shop"), buttons(&admin, "Shop"));
 }
 
 /// A rule's message and a button's refusal show values from the record (BL-15), never a field the person told

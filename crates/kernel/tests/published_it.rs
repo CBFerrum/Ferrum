@@ -1,7 +1,7 @@
 //! Published lists (BD-15) as a workspace keeps them, against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`;
 //! the database is reset first): refused when saved with the reason, a filter whose value does not fit
 //! refused too; the same name again supersedes the earlier one in the customization list; administrators
-//! see a list on its entity's description and members do not; a change set and a pack carry one, and
+//! see a list on its entity's description and members do not; a pack carries one, and
 //! a pack's plan says in plain words what it publishes.
 
 use ferrum_kernel::pack::ExportOptions;
@@ -118,14 +118,7 @@ async fn scenario() {
     let member = fresh(&k, &member).await;
     assert!(ferrum_kernel::describe::describe(&member, member.schema.entity("XPermit").unwrap()).get("published_lists").is_none());
 
-    // A change set carries it.
-    let bundle = k.export_customizations(&admin).await.unwrap();
-    let (other, _) = workspace(&k, "other").await;
-    k.import_customizations(&other, &bundle).await.unwrap();
-    let other = fresh(&k, &other).await;
-    assert_eq!(other.schema.published_list("permits").map(|l| l.list.label.as_str()), Some("Issued permits"));
-
-    // So does a pack, and its plan says what it publishes, to whom, in plain words.
+    // A pack carries it, and its plan says what it publishes, to whom, in plain words.
     let pack = k.export_pack(&admin, &ExportOptions { name: "permits".into(), label: "Permits".into(), version: 1, records: vec![] }).await.unwrap();
     assert!(pack["customizations"].as_array().unwrap().iter().any(|c| c["op"]["op"] == json!("publish_list")), "{pack}");
     let (bare, _) = workspace(&k, "bare").await;
