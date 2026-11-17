@@ -37,7 +37,8 @@ recorded (below). There is no exactly-once, and nothing should assume it.
 **What one event goes through, in order:** webhook deliveries are queued for the subscribed webhooks
 (an audit event only for those that name its topic, never for `*`; an app's webhook gets which record,
 never `doc` or `was`), followers are told (first attempt only), automations run, then each registered
-event sink is called, in registration order (plugin subscriptions are one). Each automation and each sink
+event sink is called, in registration order (plugin subscriptions are one): an app's sinks only in the
+workspaces that installed one of its packages, as its document hooks run. Each automation and each sink
 has its own outcome: one that fails does not stop the others, and the event is tried again for what failed
 alone. An automation run that can never succeed (it creates an entity no longer installed, the record lacks a
 field it needs: an error that says invalid, not found or forbidden) is recorded as failed, saying why, and

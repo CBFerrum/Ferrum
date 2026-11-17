@@ -75,13 +75,17 @@ async fn last(k: &Kernel, topic: &str) -> i64 {
 }
 
 async fn workspace(k: &Kernel, slug: &str) -> Uuid {
+    workspace_with(k, slug, &[]).await
+}
+
+async fn workspace_with(k: &Kernel, slug: &str, packages: &[&str]) -> Uuid {
     k.create_tenant(NewTenant {
         slug: slug.into(),
         name: slug.into(),
         admin_email: format!("admin@{slug}.test"),
         admin_password: "Correct-Horse-9".into(),
         admin_name: None,
-        packages: vec![],
+        packages: packages.iter().map(|p| p.to_string()).collect(),
         settings: None,
     })
     .await
@@ -134,6 +138,11 @@ async fn scenario() {
     let mut hooks = HookRegistry::default();
     hooks.add_event_sink(tally.clone());
     hooks.add_event_sink(sink.clone());
+    // An app's sink, registered as the server registers an app: for the workspaces that have one of its packages.
+    let journeys = Arc::new(Tally::default());
+    hooks.app("journeys", &["contacts".to_string()], |h| {
+        h.add_event_sink(journeys.clone());
+    });
     let settings = KernelSettings { webhooks_allow_private: true, ..Default::default() };
     let k = Kernel::boot(db, catalog, hooks, settings, None).await.expect("boot");
     let (loud, quiet) = (workspace(&k, "loud").await, workspace(&k, "quiet").await);
@@ -414,4 +423,15 @@ async fn scenario() {
     tx.commit().await.unwrap();
     assert_eq!(ran, 0, "no automation runs on it");
     assert_eq!(pending(&k, quiet, "Company.updated").await, 0, "and it is handled, not dead");
+
+    // ───────────── an app's sink hears the workspaces that have the app, and no other ─────────────
+    let with = workspace_with(&k, "with-contacts", &["contacts"]).await;
+    emit(&k, quiet, "scoped", 1).await;
+    let elsewhere = last(&k, "scoped").await;
+    emit(&k, with, "scoped", 1).await;
+    let there = last(&k, "scoped").await;
+    drain(&k).await;
+    assert_eq!(journeys.times(elsewhere), 0, "a workspace without the app's packages does not call its sink");
+    assert_eq!(journeys.times(there), 1, "one with them does");
+    assert_eq!((tally.times(elsewhere), tally.times(there)), (1, 1), "the platform's own sinks hear every workspace");
 }

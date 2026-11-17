@@ -728,6 +728,9 @@ impl Kernel {
                 tracing::warn!(topic = %ev.topic, "follower notifications failed: {e}");
             }
         }
+        // The workspace's sinks: an app's only where one of its packages is installed.
+        let schema = self.registry.schema(ev.tenant_id).await?;
+        let sinks: Vec<_> = self.hooks.event_sinks(&schema.packages).collect();
         let mut tx = self.db.tenant_tx(ev.tenant_id).await?;
         // An audit event (crate::audit) goes only to webhooks that name its topic or `audit.*`, never to `*` or an app's:
         // it holds people's data.
@@ -748,8 +751,8 @@ impl Kernel {
         .bind(entity_wildcard)
         .execute(&mut *tx)
         .await?;
-        // The sinks that handled it on an attempt that failed, or before it was dead and replayed.
-        let names: Vec<&str> = self.hooks.event_sinks().map(|(name, _)| name).collect();
+        // Those that handled it on an attempt that failed, or before it was dead and replayed.
+        let names: Vec<&str> = sinks.iter().map(|(name, _)| *name).collect();
         let before: Vec<String> = sqlx::query_scalar("select consumer from event_receipt where tenant_id = $1 and consumer = any($2) and event_id = $3")
             .bind(ev.tenant_id)
             .bind(&names)
@@ -763,7 +766,7 @@ impl Kernel {
         if let Err(e) = crate::automation::run_for_event(self, ev).await {
             failed.push(format!("automations: {e}"));
         }
-        for (name, sink) in self.hooks.event_sinks().filter(|(name, _)| !before.iter().any(|b| b == name)) {
+        for (name, sink) in sinks.into_iter().filter(|(name, _)| !before.iter().any(|b| b == name)) {
             match sink.on_event(self, ev).await {
                 Ok(()) => handled.lock().unwrap_or_else(|e| e.into_inner()).push(name.to_string()),
                 Err(e) => failed.push(format!("{name}: {e}")),

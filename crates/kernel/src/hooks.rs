@@ -233,8 +233,9 @@ pub trait DocHost: Send + Sync {
 #[derive(Default, Clone)]
 pub struct HookRegistry {
     by_entity: HashMap<String, Vec<ScopedHook>>,
-    /// Event sinks by name (`{app}.{what}`; `platform.{what}` outside any app's registration), in registration order.
-    sinks: Vec<(String, Arc<dyn EventSink>)>,
+    /// Event sinks by name (`{app}.{what}`; `platform.{what}` outside any app's registration), each with the packages it
+    /// is called for (as [`ScopedHook::packages`]), in registration order.
+    sinks: Vec<(String, Option<Arc<[String]>>, Arc<dyn EventSink>)>,
     sites: HashMap<String, Arc<dyn Site>>,
     doc_hosts: HashMap<String, Arc<dyn DocHost>>,
     job_handlers: HashMap<&'static str, Arc<dyn crate::jobs::JobHandler>>,
@@ -595,20 +596,26 @@ impl HookRegistry {
         out
     }
 
-    /// Adds an event sink, named `{app}.{name}` after the app whose registration is running ([`EventSink::name`]). A
-    /// name two sinks share stops the server ([`HookRegistry::settle`]): what one handled would pass for the other's.
+    /// Adds an event sink, named `{app}.{name}` after the app whose registration is running ([`EventSink::name`]), and
+    /// called only for the workspaces that installed one of that app's packages, as its document hooks are
+    /// ([`HookRegistry::scoped`]). A name two sinks share stops the server ([`HookRegistry::settle`]): what one handled
+    /// would pass for the other's.
     pub fn add_event_sink(&mut self, sink: Arc<dyn EventSink>) -> &mut Self {
         let name = format!("{}.{}", self.app.as_deref().unwrap_or("platform"), sink.name());
-        if self.sinks.iter().any(|(n, _)| *n == name) {
+        if self.sinks.iter().any(|(n, _, _)| *n == name) {
             self.problems.push(format!("two event sinks are named {name}: give one another name (EventSink::name)"));
         }
-        self.sinks.push((name, sink));
+        self.sinks.push((name, self.scope.clone(), sink));
         self
     }
 
-    /// The event sinks, by name, in registration order.
-    pub fn event_sinks(&self) -> impl Iterator<Item = (&str, &Arc<dyn EventSink>)> {
-        self.sinks.iter().map(|(name, sink)| (name.as_str(), sink))
+    /// The event sinks of a workspace with the `installed` packages, by name, in registration order: an app's only where
+    /// one of its packages is (as [`HookRegistry::for_tenant`] gives document hooks).
+    pub fn event_sinks(&self, installed: &[String]) -> impl Iterator<Item = (&str, &Arc<dyn EventSink>)> {
+        self.sinks
+            .iter()
+            .filter(move |(_, packages, _)| packages.as_ref().is_none_or(|ps| ps.iter().any(|p| installed.contains(p))))
+            .map(|(name, _, sink)| (name.as_str(), sink))
     }
 
     /// Adds a kind of background work (crate::jobs). Kinds are `{app}.{what}`.
@@ -991,7 +998,7 @@ mod tests {
         r.app("crm", &[], |h| {
             h.add_event_sink(Arc::new(Quiet));
         });
-        assert_eq!(r.event_sinks().map(|(name, _)| name).collect::<Vec<_>>(), ["platform.Quiet", "crm.Quiet"]);
+        assert_eq!(r.event_sinks(&[]).map(|(name, _)| name).collect::<Vec<_>>(), ["platform.Quiet", "crm.Quiet"]);
         assert!(r.settle().is_ok());
         r.app("hr", &[], |h| {
             h.add_event_sink(Arc::new(Quiet));

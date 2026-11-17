@@ -101,8 +101,9 @@ impl EventSink for Departures {
 }
 ```
 
-(Bookings' `src/departures.rs`.) Every sink sees every event, so it filters by topic first and checks that the
-workspace has its package.
+(Bookings' `src/departures.rs`.) A sink is called only for the workspaces that installed one of its app's packages, as
+the app's document hooks run (the platform's own sinks, and an app's registered without packages, hear every
+workspace), so its own check of the package is no longer needed; it filters by topic first.
 
 **At least once, so the first time is asked.** A worker leases a batch; if it dies, another replica takes the events
 again. There is no exactly-once ([docs/events.md](../events.md), *Delivery*). A handler is either naturally idempotent
