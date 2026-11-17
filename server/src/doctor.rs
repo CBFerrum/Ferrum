@@ -40,7 +40,8 @@ pub fn settings_findings(production: bool, jwt_secret: &str, st: &crate::state::
         )
     });
     out.push(if st.metrics_token.trim().is_empty() {
-        Finding::warning("secrets.metrics", "/metrics needs no token", "Set FERRUM_METRICS_TOKEN.")
+        let detail = if production { "no metrics token is set: /metrics answers nobody" } else { "/metrics needs no token" };
+        Finding::warning("secrets.metrics", detail, "Set one: ferrum task secret_set name:metrics_token (shown once), or FERRUM_METRICS_TOKEN.")
     } else {
         Finding::ok("secrets.metrics", "/metrics needs a token")
     });

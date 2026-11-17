@@ -222,7 +222,8 @@
   secret: true
   vault: compared
   doc: >-
-    `/metrics` then requires `Authorization: Bearer <token>`. Recommended.
+    `/metrics` answers only `Authorization: Bearer <token>`. Required in production: while none is set, `/metrics`
+    answers nobody (`401`); in development and tests it is open without one.
 
 # The database.
 - key: migrate_at_start
@@ -341,9 +342,10 @@
   applies: live
   path: settings.address_requests_per_minute
   doc: >-
-    Requests one client address may make per minute in a pool, counted for requests that came through the proxy
-    (`X-Forwarded-For`); default 6000, `0` turns it off. Each replica allows this divided by the pool's live
-    replicas. Health probes and in-cluster calls are not counted.
+    Requests one client address may make per minute in a pool; default 6000, `0` turns it off. Each replica allows
+    this divided by the pool's live replicas. With no proxy in front (`proxy_hops` 0) every request is counted, by
+    its connection's address; behind proxies only those that came through them (`X-Forwarded-For`), so health
+    probes and in-cluster calls are not.
 - key: tenant_requests
   env: FERRUM_TENANT_REQUESTS
   type: int
@@ -362,17 +364,17 @@
   doc: >-
     How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your
     own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2
-    with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits is the
-    entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their
-    own (too high).
+    with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits, zones
+    and networks is the entry that many from the right; at 0 it is the connection's own address and the header is
+    not read. Set it wrong and everyone shares one address (too low) or clients choose their own (too high).
 - key: operator_token
   env: FERRUM_OPERATOR_TOKEN
   path: settings.operator_token
   secret: true
   vault: compared
   doc: >-
-    Enables the settings routes (`/api/operator/settings`, docs/api.md) with header `X-Ferrum-Operator-Token`; empty
-    (the default) disables them.
+    Enables the operator's routes (`/api/operator/…`, docs/api.md) with header `X-Ferrum-Operator-Token`, in a zone
+    whose rule says `operator: true` (they are in no other); empty (the default) disables them.
 
 
 # Files.
@@ -682,7 +684,8 @@
   path: settings.zones
   doc: >-
     Zones, JSON: zone name → rule, `{"public": {"staff": "none"}, "office": {"staff": "all", "networks":
-    ["10.0.0.0/8"]}}`. Default none: everyone is admitted everywhere, as before. See [Zones](#zones).
+    ["10.0.0.0/8"]}}`. Default none: everyone is admitted everywhere, as before, and the operator's routes are nowhere
+    (a rule with `operator: true` has them). See [Zones](#zones).
 - key: zone
   env: FERRUM_ZONE
   scope: pool

@@ -1,13 +1,14 @@
 //! The platform's own secrets (docs/operations.md, "The platform's secrets"; docs/plan/stateless.md, D5). Each the
 //! registry marks `vault:` belongs to the owner `platform` at the installation's scope, under its name there. Through
-//! this release the environment, when it sets one, still wins, so that a rollback behaves; otherwise the vault decides;
-//! with the vault closed everything is as before. What a replica's environment sets and the vault lacks is stored there
-//! once, as the replica starts to serve (`adopt`). Three kinds:
+//! this release the environment, when it sets one, still wins, so that a rollback behaves, but for a token the server
+//! compares; otherwise the vault decides; with the vault closed everything is as before. What a replica's environment
+//! sets and the vault lacks is stored there once, as the replica starts to serve (`adopt`). Three kinds:
 //!
 //! * `session`: `JWT_SECRET` (crate::sessions);
 //! * `compared`: tokens the server only compares (bootstrap, metrics, operator). The vault keeps a digest of each, which
 //!   is not the token; a caller's token is checked against it there (HMAC, in constant time), its version before too
-//!   while a rotation's overlap lasts. They apply at once.
+//!   while a rotation's overlap lasts. They apply at once. Once the vault holds one, it is the token: a copy left in an
+//!   environment is refused, so that changing it in the vault revokes the copy.
 //! * `library`: what the server hands a library (the mail server's password, the object store's keys, the model
 //!   provider's key, the audit sink's key). Only the platform reveals them, at start; a change applies at the next start.
 //!   One that is sent to an address (`sends:` in the registry) is bound to the host it was set for, and given to no
@@ -219,24 +220,26 @@ pub enum Token {
     Bad,
 }
 
-/// Whether `given` is the platform's token `key` (`bootstrap_token`, `metrics_token`, `operator_token`): the
-/// configuration's, when it sets one, compared in constant time; else the vault's, its current version or the one before
-/// while a rotation's overlap lasts. A vault that cannot be asked refuses.
+/// Whether `given` is the platform's token `key` (`bootstrap_token`, `metrics_token`, `operator_token`): the vault's
+/// once it holds one, its current version or the one before while a rotation's overlap lasts, so that a change there
+/// revokes a copy left in the configuration; until then the configuration's, when it sets one, compared in constant
+/// time. A vault that cannot be asked refuses.
 pub async fn token(st: &AppState, key: &str, configured: &str, given: &str) -> Token {
-    if !configured.is_empty() {
-        return if crate::controllers::system::same_secret(given, configured) { Token::Good } else { Token::Bad };
-    }
-    if !st.vault_open {
-        return Token::NotSet;
-    }
-    match st.vault.verify(&st.kernel, Scope::Installation, key, PROOF, &proof(given)).await {
-        Ok(true) => Token::Good,
-        Ok(false) => Token::Bad,
-        Err(Error::NotFound(_)) => Token::NotSet,
-        Err(e) => {
-            tracing::warn!(token = key, "checking a token against the vault: {e}");
-            Token::Bad
+    if st.vault_open {
+        match st.vault.verify(&st.kernel, Scope::Installation, key, PROOF, &proof(given)).await {
+            Ok(true) => return Token::Good,
+            Ok(false) => return Token::Bad,
+            Err(Error::NotFound(_)) => {}
+            Err(e) => {
+                tracing::warn!(token = key, "checking a token against the vault: {e}");
+                return Token::Bad;
+            }
         }
+    }
+    match configured {
+        "" => Token::NotSet,
+        c if crate::controllers::system::same_secret(given, c) => Token::Good,
+        _ => Token::Bad,
     }
 }
 
@@ -300,6 +303,8 @@ pub async fn sources(st: &AppState) -> BTreeMap<String, (&'static str, Option<De
     declared()
         .map(|d| {
             let source = match (configured(d, config).is_some(), d.vault == Some(Held::Session) && st.sessions.vault_signs().is_some(), held.get(&d.key)) {
+                // A token the vault holds is the vault's (crate::secrets::token), whatever the configuration says.
+                (_, _, Some(_)) if d.vault == Some(Held::Compared) => "vault",
                 (true, _, _) => "environment",
                 (false, true, _) | (false, false, Some(_)) => "vault",
                 _ => "default",

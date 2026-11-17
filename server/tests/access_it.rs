@@ -66,6 +66,21 @@ async fn call(r: &axum::Router, method: Method, path: &str, ip: &str, cred: Cred
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// `req` as it arrives straight from `peer`'s connection, no proxy in front: what it says of itself in its headers is all
+/// the client's.
+async fn direct(r: &axum::Router, peer: &str, req: axum::http::request::Builder, body: Option<Value>) -> (StatusCode, String) {
+    let req = req.header(header::HOST, HOST).extension(axum::extract::ConnectInfo(std::net::SocketAddr::new(peer.parse().unwrap(), 40000)));
+    let req = match body {
+        Some(b) => req.header(header::CONTENT_TYPE, "application/json").body(Body::from(b.to_string())),
+        None => req.body(Body::empty()),
+    }
+    .unwrap();
+    let res = r.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// A password sign-in: status, answer, and the cookie's token when signed in from a page.
 async fn sign_in(r: &axum::Router, ip: &str, email: &str, password: &str, page: bool) -> (StatusCode, Value, Option<String>) {
     let mut req = Request::builder()
@@ -208,6 +223,77 @@ async fn scenario() {
     }
     let (_, body, _) = sign_in(&r, INSIDE, "admin@acme.test", PASSWORD, false).await;
     let admin_token = body["token"].as_str().unwrap().to_string();
+
+    // ── Administration is not for outside people ──
+    // Every route under /api/admin/, each of its methods, as a portal person and as a guest: refused before the route
+    // reads anything, whatever it is. And the workspace's settings, its security among them, are no member's either.
+    let guest = k.create_user(&admin, "guest@acme.test", "Guest", Some(PASSWORD), &[], false).await.unwrap();
+    k.set_user_kind(&admin, guest, "guest").await.unwrap();
+    let (status, body, _) = sign_in(&r, INSIDE, "guest@acme.test", PASSWORD, false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let guest_token = body["token"].as_str().unwrap().to_string();
+    let administration: Vec<(Method, String)> = App::routes(&ctx)
+        .collect()
+        .iter()
+        .filter(|route| route.uri.starts_with("/api/admin/"))
+        .flat_map(|route| route.actions.iter().map(|m| (m.clone(), route.uri.clone())))
+        .collect();
+    assert!(administration.len() > 100, "{} routes", administration.len());
+    let id = Uuid::now_v7().to_string();
+    let mut admitted = vec![];
+    for (who, token) in [("a portal person", &holds[1].token), ("a guest", &guest_token)] {
+        for (method, route) in &administration {
+            let path: Vec<&str> = route
+                .split('/')
+                .map(|s| {
+                    if s == "{n}" {
+                        "1"
+                    } else if s.starts_with('{') {
+                        id.as_str()
+                    } else {
+                        s
+                    }
+                })
+                .collect();
+            let (status, answer) = call(&r, method.clone(), &path.join("/"), INSIDE, Cred::Bearer(token), Some(json!({}))).await;
+            if status != StatusCode::FORBIDDEN {
+                admitted.push(format!("{who}: {method} {route}: {status} {answer}"));
+            }
+        }
+    }
+    assert!(admitted.is_empty(), "{} of {} answered other than 403: {admitted:#?}", admitted.len(), 2 * administration.len());
+    let (status, answer) = call(&r, Method::GET, "/api/admin/settings", INSIDE, Cred::Bearer(&holds[0].token), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a member: {answer}");
+    let (status, answer) = call(&r, Method::GET, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), None).await;
+    assert_eq!(status, StatusCode::OK, "an administrator: {answer}");
+
+    // ── Served over HTTPS, every answer keeps browsers on it, those of the layers outside the routes too ──
+    let https = {
+        let storage = std::sync::Arc::new(loco_rs::storage::Storage::single(loco_rs::storage::drivers::mem::new()));
+        let shell = ferrum_server::shell::Shell::new(k.clone(), storage, &st.settings, "https://erp.acme.test");
+        let st = AppState { shell: std::sync::Arc::new(shell), ..st.clone() };
+        let ctx = AppContext::builder(Environment::Test, Default::default(), base.config.clone()).build();
+        ctx.shared_store.insert(st);
+        let router = App::routes(&ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
+        App::after_routes(router, &ctx).await.expect("layers")
+    };
+    let hsts = |router: &axum::Router, req: Request<Body>| {
+        let router = router.clone();
+        async move {
+            let res = router.oneshot(req).await.unwrap();
+            let said: Vec<String> = res.headers().get_all(header::STRICT_TRANSPORT_SECURITY).iter().map(|v| v.to_str().unwrap().to_string()).collect();
+            (res.status(), said)
+        }
+    };
+    let ping = || Request::get("/_ping").header(header::HOST, HOST).body(Body::empty()).unwrap();
+    // A screen's call off the paths screens may call, refused by a layer before any route.
+    let off_paths = || Request::get("/api/admin/users").header(header::HOST, HOST).header("x-ferrum-app", "board").body(Body::empty()).unwrap();
+    let a_year = vec!["max-age=31536000; includeSubDomains".to_string()];
+    assert_eq!(hsts(&https, ping()).await, (StatusCode::OK, a_year.clone()), "a route's answer");
+    assert_eq!(hsts(&https, off_paths()).await, (StatusCode::FORBIDDEN, a_year), "a layer's answer");
+    for req in [ping(), off_paths()] {
+        assert_eq!(hsts(&r, req).await.1, Vec::<String>::new(), "over plain http (PUBLIC_URL http://)");
+    }
 
     // ── 0. Code the operator does not take ──
     // A plugin module on its own is signed by no key: where the server takes no upload a trusted key did not sign (the
@@ -360,6 +446,30 @@ async fn scenario() {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(why["reason"], "the office moved");
+
+    // ── With no proxy in front (FERRUM_PROXY_HOPS=0, as Compose sets it), the address is the connection's ──
+    let (status, _) = call(&r, Method::PUT, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), Some(networks.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+    ferrum_server::extract::PROXY_HOPS.store(0, std::sync::atomic::Ordering::Relaxed);
+    let me = || Request::get("/api/auth/me").header(header::AUTHORIZATION, format!("Bearer {}", holds[0].token));
+    // What the client writes in X-Forwarded-For is not its address.
+    let (status, answer) = direct(&r, OUTSIDE, Request::get("/_zone").header("x-forwarded-for", INSIDE), None).await;
+    assert_eq!((status, serde_json::from_str::<Value>(&answer).unwrap()["address"].clone()), (StatusCode::OK, json!(OUTSIDE)), "{answer}");
+    let (status, answer) = direct(&r, OUTSIDE, me().header("x-forwarded-for", INSIDE), None).await;
+    assert!(refused_by_network(status, &answer), "staff from outside, the header saying inside: {status} {answer}");
+    assert_eq!(direct(&r, INSIDE, me(), None).await.0, StatusCode::OK, "staff from inside");
+    // Callers are not one address: the tries one address uses up are its own.
+    let try_from = |peer: &'static str, email: &'static str, password: &'static str| {
+        let r = r.clone();
+        async move { direct(&r, peer, Request::post("/api/auth/login"), Some(json!({"tenant": "acme", "email": email, "password": password}))).await.0 }
+    };
+    for _ in 0..20 {
+        assert_eq!(try_from("198.51.100.21", "nobody@acme.test", "Wrong-Horse-99").await, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(try_from("198.51.100.21", "nobody@acme.test", "Wrong-Horse-99").await, StatusCode::TOO_MANY_REQUESTS, "the 21st from there");
+    assert_eq!(try_from("198.51.100.22", "portal@acme.test", PASSWORD).await, StatusCode::OK, "another address signs in");
+    ferrum_server::extract::PROXY_HOPS.store(1, std::sync::atomic::Ordering::Relaxed);
+    k.clear_staff_networks("acme", "test").await.unwrap();
 
     // ── 2. An API key pinned to networks ──
     let member_token = holds[0].token.clone();

@@ -285,8 +285,18 @@ impl FromRequestParts<AppContext> for BrowserSession {
     async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
         let st = app_state(state)?;
         let (ctx, sid) = caller(&st, parts).await?;
+        not_outside_administration(parts.uri.path(), &ctx)?;
         Ok(BrowserSession(ctx, sid))
     }
+}
+
+/// Administration (`/api/admin/…`) is staff's, each route's own check deciding which of them: portal people and guests
+/// are refused there by the credential that brings them ([`Auth`], [`BrowserSession`]), before the route reads anything.
+fn not_outside_administration(path: &str, ctx: &Ctx) -> Result<(), ApiError> {
+    if ctx.outside && path.starts_with("/api/admin/") {
+        return Err(ApiError(Error::Forbidden("administration is not open to portal people and guests".into())));
+    }
+    Ok(())
 }
 
 /// A socket's credential at the upgrade: a bearer token, or the session cookie when the page
@@ -326,6 +336,7 @@ impl FromRequestParts<AppContext> for Auth {
         let st = app_state(state)?;
         let place = parts.extensions.get::<crate::state::Place>().cloned();
         let (mut ctx, _, token_app, records) = caller_with_app(&st, &parts.method, &parts.headers, place.as_ref()).await?;
+        not_outside_administration(parts.uri.path(), &ctx)?;
         // Administration where the zone keeps administrators out (crate::zones, level 2): refused as level 1 refuses,
         // naming where the whole workspace opens. Nobody is an administrator there, so nothing else is lost.
         if parts.uri.path().starts_with("/api/admin/") && !ctx.is_admin && ctx.zone.as_ref().is_some_and(|e| e.keeps_admins_out()) {
@@ -428,13 +439,29 @@ pub fn if_match(headers: &HeaderMap) -> Result<Option<i64>, ApiError> {
     n.parse::<i64>().map(Some).map_err(|_| ApiError(Error::invalid("If-Match must carry the document version, e.g. \"v3\"")))
 }
 
-/// How many proxies in front of the server append to `X-Forwarded-For`: the gateway alone is 1; a
-/// CDN or a load balancer before it makes 2 (`settings.proxy_hops`, set once at boot).
+/// How many proxies in front of the server append to `X-Forwarded-For`: none (browsers reach it directly) is 0; the
+/// gateway alone is 1; a CDN or a load balancer before it makes 2 (`settings.proxy_hops`, at start and when it changes).
 pub static PROXY_HOPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
-/// The client's address as the outermost trusted proxy saw it (`"local"` without proxies).
+/// The client's address: as the outermost trusted proxy saw it, or with none in front the connection's own
+/// ([`peer_address`]); `"local"` for a request that has none (behind proxies, one that came through none of them).
 pub fn client_ip(headers: &HeaderMap) -> String {
     client_ip_behind(headers, PROXY_HOPS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// With no proxy in front (`proxy_hops` 0), an `X-Forwarded-For` is whatever the client wrote: the connection's own
+/// address takes its place, so that [`client_ip`], and every limit, zone and network that goes by it, has the peer.
+/// Outside every layer that reads the address (app.rs).
+pub async fn peer_address(mut req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    if PROXY_HOPS.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        let peer = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip().to_canonical());
+        let headers = req.headers_mut();
+        headers.remove("x-forwarded-for");
+        if let Some(ip) = peer.and_then(|ip| HeaderValue::from_str(&ip.to_string()).ok()) {
+            headers.insert("x-forwarded-for", ip);
+        }
+    }
+    next.run(req).await
 }
 
 /// The entry `hops` from the right of `X-Forwarded-For`: what a client puts there itself lies to

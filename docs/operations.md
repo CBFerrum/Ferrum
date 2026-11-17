@@ -60,8 +60,8 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `kms_kubernetes_token_file` | `FERRUM_KMS_KUBERNETES_TOKEN_FILE` | text | `/var/run/secrets/kubernetes.io/serviceaccount/token` | the environment (the key-management client (through R1; a file the server sends is never named by the database)) | The service account's token file, where it is not at its standard path. |
 | `kms_ca_file` | `FERRUM_KMS_CA_FILE` | text |  | the environment (the key-management client (through R1; the file is /run/ferrum/kms-ca.pem from now on)) | A certificate authority (PEM) Transit's certificate is checked against, beside the usual ones. Mount it at `/run/ferrum/kms-ca.pem` instead. |
 | `kms_namespace` | `FERRUM_KMS_NAMESPACE` | text |  | installation, next start | The Vault namespace of `kms_transit`. |
-| `bootstrap_token` | `FERRUM_BOOTSTRAP_TOKEN` | text |  | secret: the environment, else the vault (compared) | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it. |
-| `metrics_token` | `FERRUM_METRICS_TOKEN` | text |  | secret: the environment, else the vault (compared) | `/metrics` then requires `Authorization: Bearer <token>`. Recommended. |
+| `bootstrap_token` | `FERRUM_BOOTSTRAP_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it. |
+| `metrics_token` | `FERRUM_METRICS_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | `/metrics` answers only `Authorization: Bearer <token>`. Required in production: while none is set, `/metrics` answers nobody (`401`); in development and tests it is open without one. |
 | `migrate_at_start` | `FERRUM_MIGRATE_AT_START` | bool | `true` | installation, next start | Default `true`: the server migrates the database, syncs the schema and runs the upgrade steps as it starts. `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe. Either way, on a database a newer build migrated, the server starts as a guest that changes nothing, or refuses (*Rolling back and the two-version window*). |
 | `db_max_connections` | `FERRUM_DB_MAX_CONNECTIONS` | int | `30` | each pool, next start | Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so. |
 | `database_direct_url` | `FERRUM_DATABASE_DIRECT_URL` | text |  | secret: the environment | With a pooler: PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler*. A secret while the address holds the password. |
@@ -75,10 +75,10 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `authority_ttl_secs` | `FERRUM_AUTHORITY_TTL_SECS` | int | `30` | installation, next start | How long a region holds the right to write between renewals (default 30). |
 | `run_background` | `FERRUM_RUN_BACKGROUND` | bool | `true` | each pool, next start | `false` turns a replica into API-only. |
 | `user_requests_per_minute` | `FERRUM_USER_REQUESTS_PER_MINUTE` | int | `3000` | installation, at once | Requests one user (with any of their sessions and API keys) may make per minute in a pool; beyond it they get `429` with `Retry-After`. Default 3000; `0` turns it off. Each replica allows its share: this divided by the pool's live replicas (the `replica` table). |
-| `address_requests_per_minute` | `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | int | `6000` | installation, at once | Requests one client address may make per minute in a pool, counted for requests that came through the proxy (`X-Forwarded-For`); default 6000, `0` turns it off. Each replica allows this divided by the pool's live replicas. Health probes and in-cluster calls are not counted. |
+| `address_requests_per_minute` | `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | int | `6000` | installation, at once | Requests one client address may make per minute in a pool; default 6000, `0` turns it off. Each replica allows this divided by the pool's live replicas. With no proxy in front (`proxy_hops` 0) every request is counted, by its connection's address; behind proxies only those that came through them (`X-Forwarded-For`), so health probes and in-cluster calls are not. |
 | `tenant_requests` | `FERRUM_TENANT_REQUESTS` | int |  | installation, next start | One workspace's API requests that run at once on each replica. The rest wait their turn, and one that waits five seconds is refused with `429`. A response that waited says how long in `X-Ferrum-Waited-Ms`. Default half of `FERRUM_DB_MAX_CONNECTIONS`, at least 2, so a workspace that floods the server holds at most half its database connections and everyone else has the others; `0` turns it off. |
-| `proxy_hops` | `FERRUM_PROXY_HOPS` | int | `1` | installation, at once | How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2 with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits is the entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their own (too high). |
-| `operator_token` | `FERRUM_OPERATOR_TOKEN` | text |  | secret: the environment, else the vault (compared) | Enables the settings routes (`/api/operator/settings`, docs/api.md) with header `X-Ferrum-Operator-Token`; empty (the default) disables them. |
+| `proxy_hops` | `FERRUM_PROXY_HOPS` | int | `1` | installation, at once | How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2 with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits, zones and networks is the entry that many from the right; at 0 it is the connection's own address and the header is not read. Set it wrong and everyone shares one address (too low) or clients choose their own (too high). |
+| `operator_token` | `FERRUM_OPERATOR_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | Enables the operator's routes (`/api/operator/…`, docs/api.md) with header `X-Ferrum-Operator-Token`, in a zone whose rule says `operator: true` (they are in no other); empty (the default) disables them. |
 | `packages_dir` | `FERRUM_PACKAGES_DIR` | text | `packages` | installation, next start | Where the platform's packages are (the image's). |
 | `files_dir` | `FERRUM_FILES_DIR` | text | `/var/lib/ferrum/files` | installation, next start | Local attachment directory (default `/var/lib/ferrum/files`). |
 | `require_object_storage` | `FERRUM_REQUIRE_OBJECT_STORAGE` | bool | `true` | installation, next start | Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false` only for single-server installs. |
@@ -118,7 +118,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `dns_resolvers` | `FERRUM_DNS_RESOLVERS` | text |  | installation, at once | The DNS servers asked for that record, as addresses separated by commas (`10.96.0.10`, `10.0.0.2:5353`). Default: the system's (`/etc/resolv.conf`). The server does not start with one that is not an address. |
 | `region` | `FERRUM_REGION` | text |  | installation, next start | This cluster's region (`eu`): see `FERRUM_REGIONS`. |
 | `regions` | `FERRUM_REGIONS` | text |  | installation, next start | The other regions' accounts hosts, `name=https://accounts.example.eu,…`: the sign-in page offers them, and a workspace not found here is looked up there. |
-| `zones` | `FERRUM_ZONES` | json |  | installation, next start | Zones, JSON: zone name → rule, `{"public": {"staff": "none"}, "office": {"staff": "all", "networks": ["10.0.0.0/8"]}}`. Default none: everyone is admitted everywhere, as before. See [Zones](#zones). |
+| `zones` | `FERRUM_ZONES` | json |  | installation, next start | Zones, JSON: zone name → rule, `{"public": {"staff": "none"}, "office": {"staff": "all", "networks": ["10.0.0.0/8"]}}`. Default none: everyone is admitted everywhere, as before, and the operator's routes are nowhere (a rule with `operator: true` has them). See [Zones](#zones). |
 | `zone` | `FERRUM_ZONE` | text |  | each pool, next start | The zone this replica is in for every request (one of `FERRUM_ZONES`). Default none: each request's host, network or the default decides. |
 | `zone_default` | `FERRUM_ZONE_DEFAULT` | text |  | installation, next start | The zone of a request no host and no network places, on replicas without `FERRUM_ZONE`. Default none: admitted as without zones. |
 | `zone_mode` | `FERRUM_ZONE_MODE` | empty, `enforce`, `report` |  | installation, at once | `enforce` (the default) refuses what a zone's rule refuses; `report` admits it, and counts and logs it. |
@@ -299,7 +299,7 @@ storage, the mail server); one refused, nothing is written. A secret is never ac
 reads from the environment (set those there). What is written is recorded in `setting_change`, with the value before
 and after and who wrote it (`task`, `document`, `operator` or `environment`), which no workspace sees, and announced
 to every replica. The Operations screen does the same over HTTP with the operator's token, `FERRUM_OPERATOR_TOKEN`
-(docs/api.md, *Settings*).
+(docs/api.md, *Settings*), from a zone whose rule says `operator: true` and nowhere else (*Zones*).
 
 **Copied once.** As a replica starts to serve, each setting its environment sets and the table does not hold yet is
 written to the table, once, as the environment's (`updated_by` is `environment`; replicas starting together write it
@@ -1481,8 +1481,10 @@ rotation; which of the platform's secrets the environment still decides; and a w
 ### The platform's secrets
 
 The server's own secrets are kept in the vault, each under the owner `platform` at the installation's scope, by its
-setting's key. The environment, when it sets one, still wins; with the vault closed nothing changes. `ferrum task settings` (and `GET /api/operator/settings`) says where each comes
-from: `environment`, `vault` or `default` (none).
+setting's key. The environment, when it sets one, still wins, but for the three tokens the server compares: once the
+vault holds one of those, the vault's is the token, and a copy left in an environment is refused (so a change in the
+vault revokes it). With the vault closed nothing changes. `ferrum task settings` (and `GET /api/operator/settings`)
+says where each comes from: `environment`, `vault` or `default` (none).
 
 | Secret | Kept as | Used | A change applies |
 |---|---|---|---|
@@ -1493,8 +1495,8 @@ from: `environment`, `vault` or `default` (none).
 **Copied once.** As a replica starts to serve, each of these its environment sets and the vault does not hold yet is
 stored there, once however many replicas start together, and recorded in the vault's record (`adopt`, `by`
 `environment`; never the value). What the vault holds stays when the environment later says something else: the
-environment wins while it sets it, and the doctor lists what it still decides. A token is stored as its digest; the
-mail password and the model provider's key are bound to the host they are sent to then.
+environment wins while it sets it (a token excepted: the vault's), and the doctor lists what it still decides. A token
+is stored as its digest; the mail password and the model provider's key are bound to the host they are sent to then.
 
 **Tied to where it goes.** `MAILER_PASSWORD` goes only to the mail server it was set for, `FERRUM_ASSISTANT_API_KEY`
 only to the model provider's host: a replica whose mail server (from the table) is another host leaves the password
@@ -1541,7 +1543,8 @@ it. The first rotation run where `JWT_SECRET` is no longer set gives the copy an
 ### Taking the secrets out of the environment
 
 1. Start every replica with its environment as it is. Each secret the environment sets is copied into
-   the vault (`ferrum task vault_events` shows each `adopt`; `ferrum task settings` shows each from `environment`).
+   the vault (`ferrum task vault_events` shows each `adopt`; `ferrum task settings` shows each from `environment`,
+   and the three tokens from `vault`, which decides them from then on).
    Keep a recovery key (`ferrum task vault_recovery`): from now on the vault holds what the environment did.
 2. Take the variables out of the environment (the chart's or Compose's secret, the Deployment) and start the replicas
    again. Each then comes from the vault (`ferrum task settings`: `vault`). People stay signed in: the copy of
@@ -1919,6 +1922,10 @@ step. The report holds no secret or connection string, so it can be pasted into 
 
 ## Monitoring
 
+`/metrics` answers a scraper that sends the metrics token (`Authorization: Bearer <token>`; `ferrum task secret_set
+name:metrics_token` makes one and shows it once, or `FERRUM_METRICS_TOKEN`). In production it is required: while
+none is set, `/metrics` answers nobody (`401`). In development and tests it is open without one.
+
 `/metrics` (Prometheus text) exposes `ferrum_up`, uptime, database pool size and idle
 connections, the outbox backlog (pending, dead, age of the oldest pending event), webhook
 deliveries (pending, dead), the job queue (queued, running, failed in the last day, longest wait),
@@ -2256,6 +2263,12 @@ outside people and machines get.
 | `scim` | In a zone that admits no staff, an identity provider's key (scope `scim`) is admitted all the same | `false` |
 | `networks` | Addresses that place a caller in this zone, `10.0.0.0/8` or `2001:db8::/32`. Two zones may not share an address | none |
 | `step_up` | Staff here prove who they are again before changes, and before reading what the workspace marked ([Asking again before sensitive work](#asking-again-before-sensitive-work)). Not with `staff: none` | `false` |
+| `operator` | The operator's routes (`/api/operator/…`, the Operations screen's) are here. In every other zone, and on a server without zones, they answer `404` as a path the server does not have, whatever the mode | `false` |
+
+The operator's routes are best kept off the public gateway: give `operator: true` to the zone of a private pool, or
+to one placed by your own network (`{"operations": {"operator": true, "networks": ["10.0.0.0/8"]}}`). Without such a
+zone, the settings and the platform's own secrets are still the tasks' (`ferrum task set`, `secret_set`,
+`vault_status`), run with the servers' environment.
 
 `FERRUM_ZONE` pins a replica: every request it serves is in that zone (the chart sets it from a pool's
 `zone`). `FERRUM_ZONE_DEFAULT` is the zone of a request nothing else places, on replicas without a pin.
@@ -2265,8 +2278,8 @@ start, saying what: an unknown key, a pin or default that names no zone, a netwo
 **Which zone a request is in**, in this order: the replica's pin; else the zone of the host it came to
 (set with `ferrum task set_host_zone`); else the first zone whose `networks` hold the caller's address;
 else the default; else none, which admits everyone, as without zones. The caller's address is the one the
-server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS`, and nothing else the client sends counts. When
-the host's zone cannot be read, staff are refused.
+server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS` (with 0, the connection's own), and nothing else the
+client sends counts. When the host's zone cannot be read, staff are refused.
 
 **What a zone with `staff: none` does.**
 * A staff credential is refused there, whatever its kind: the browser's session, a session token, an API
@@ -2421,8 +2434,9 @@ session, session tokens, OAuth and MCP tokens that act for a person, app passwor
 apps, app tokens, sockets, and signing in. It does not hold API keys and SCIM keys: those are machines',
 and a key has networks of its own. It does not hold support access, which an administrator grants for a
 while and which the workspace sees request by request. Portal people, guests and service accounts are never
-held to it. The caller's address is the one the server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS`;
-without a proxy in front there is no address, which is outside every list.
+held to it. The caller's address is the one the server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS`, or
+with no proxy in front (0) the connection's own; behind proxies, a request that came through none of them has no
+address, which is outside every list.
 
 **A key's own networks.** An API key (of any scope, an app password and a SCIM key included) may be pinned to
 networks of its own when it is made, or later (`networks` in the keys API); from anywhere else it is refused

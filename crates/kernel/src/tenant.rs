@@ -353,13 +353,16 @@ impl Kernel {
         Ok(zone.filter(|z| z.parse::<chrono_tz::Tz>().is_ok()))
     }
 
-    /// The workspace's settings administrators may change: `timezone` (IANA name), `language` (the
-    /// interface's, for everyone who chose none),
+    /// The workspace's settings administrators may change, which only they read (its security among them): `timezone`
+    /// (IANA name), `language` (the interface's, for everyone who chose none),
     /// `fiscal_year_start_month` (1-12), `require_two_factor` (everyone signs in with an
     /// authenticator app; it applies from each person's next sign-in), `require_sso` (everyone
     /// but administrators signs in through a single sign-on provider) and `assistant` (the
     /// assistant, where the server has one; on unless turned off).
     pub async fn tenant_settings(&self, ctx: &Ctx) -> Result<Value> {
+        if !ctx.is_admin {
+            return Err(Error::Forbidden("only administrators can read workspace settings".into()));
+        }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let settings: Value = sqlx::query_scalar("select settings from tenant where id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
         tx.commit().await?;

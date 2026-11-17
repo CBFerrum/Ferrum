@@ -95,10 +95,13 @@ async fn zone(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Re
 
 async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    // The environment's token, else the vault's (crate::secrets); none at all: open, as before.
+    // The vault's token once it holds one, else the environment's (crate::secrets). While none is set, open where people
+    // develop and test, and nobody's in production.
     let given = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or_default();
-    if crate::secrets::token(&st, "metrics_token", &st.settings.metrics_token, given).await == crate::secrets::Token::Bad {
-        return Err(ApiError(Error::Unauthorized("metrics require the metrics token".into())));
+    match crate::secrets::token(&st, "metrics_token", &st.settings.metrics_token, given).await {
+        crate::secrets::Token::Good => {}
+        crate::secrets::Token::NotSet if app.environment != loco_rs::environment::Environment::Production => {}
+        _ => return Err(ApiError(Error::Unauthorized("metrics require the metrics token".into()))),
     }
     LazyLock::force(&STARTED);
     let mut tx = st.kernel.db.system_tx().await?;

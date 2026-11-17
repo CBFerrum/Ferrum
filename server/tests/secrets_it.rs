@@ -104,13 +104,25 @@ impl Answer {
     }
 }
 
-/// The server's routes and layers, as the binary serves them.
-async fn serve(ctx: &AppContext) -> Served {
-    let routes = <App as Hooks>::routes(ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
-    Served { router: <App as Hooks>::after_routes(routes, ctx).await.expect("layers") }
+/// The server's routes and layers, as the binary serves them in `environment` (`ferrum -e <environment> start`), with
+/// `zones` (`FERRUM_ZONES`) in place of the configured.
+async fn serve_in(ctx: &AppContext, environment: Environment, zones: &str) -> Served {
+    let st = AppState { zones: Arc::new(ferrum_kernel::zones::Zones::parse(zones, "", "", "").expect("zones")), ..state(ctx) };
+    let ctx = AppContext::builder(environment, Default::default(), ctx.config.clone()).build();
+    ctx.shared_store.insert(st);
+    let routes = <App as Hooks>::routes(&ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
+    Served { router: <App as Hooks>::after_routes(routes, &ctx).await.expect("layers") }
 }
 
-/// A request with `headers`; a body as JSON.
+/// A zone that has the operator's routes, which every [`call`] is in by its address.
+const OPERATIONS: &str = r#"{"operations": {"operator": true, "networks": ["10.9.8.0/24"]}}"#;
+
+/// [`serve_in`] the test environment and [`OPERATIONS`].
+async fn serve(ctx: &AppContext) -> Served {
+    serve_in(ctx, Environment::Test, OPERATIONS).await
+}
+
+/// A request with `headers` (an `x-forwarded-for` among them names the address it comes from); a body as JSON.
 async fn call(s: &Served, method: Method, path: &str, headers: &[(&str, &str)], body: Option<Value>) -> Answer {
     let mut req = Request::builder().method(method).uri(path).header(header::HOST, "localhost").header("x-forwarded-for", "10.9.8.7");
     for (h, v) in headers {
@@ -166,6 +178,12 @@ async fn scenario() {
     <App as Hooks>::before_run(&a_ctx).await.expect("serving");
     <App as Hooks>::before_run(&b_ctx).await.expect("serving");
     let mut needles: Vec<String> = vec![LEGACY.into()];
+
+    // ── /metrics while no token is set: open where people develop and test, nobody's in production ──
+    assert_eq!(ferrum_server::secrets::token(&a, "metrics_token", "", "").await, Token::NotSet, "nothing sets one yet");
+    assert_eq!(call(&serve(&a_ctx).await, Method::GET, "/metrics", &[], None).await.status, StatusCode::OK, "in development and tests");
+    let production = call(&serve_in(&a_ctx, Environment::Production, OPERATIONS).await, Method::GET, "/metrics", &[], None).await;
+    assert_eq!(production.status, StatusCode::UNAUTHORIZED, "in production: {}", production.body);
 
     adopted(&a, &b, &mut needles).await;
     sessions(&a, &b, &mut needles).await;
@@ -305,6 +323,18 @@ async fn sessions(a: &AppState, b: &AppState, needles: &mut Vec<String>) {
 /// Tokens the server compares: kept as digests; the vault's taken where the configuration sets none; changed over with
 /// an overlap on every replica at once.
 async fn tokens(a: &AppState, a_ctx: &AppContext, b_ctx: &AppContext, needles: &mut Vec<String>) {
+    // The operator's routes are not there where no zone has them, as when an installation starts: what any path the
+    // server does not have answers, before a token is looked at.
+    let bare = serve_in(a_ctx, Environment::Test, "").await;
+    let unknown = call(&bare, Method::GET, "/api/nothing-here", &[], None).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    let as_unknown = |path: &str| {
+        let said = unknown.json()["message"].as_str().unwrap_or_default().replace("/api/nothing-here", path);
+        (StatusCode::NOT_FOUND, unknown.json()["error"].clone(), json!(said))
+    };
+    let answer = |a: &Answer| (a.status, a.json()["error"].clone(), a.json()["message"].clone());
+    let asked = call(&bare, Method::GET, "/api/operator/vault", &[("x-ferrum-operator-token", "a-guess-of-a-token")], None).await;
+    assert_eq!(answer(&asked), as_unknown("/api/operator/vault"), "{}", asked.body);
     let (sa, sb) = (serve(a_ctx).await, serve(b_ctx).await);
     let bearer = |t: &str| format!("Bearer {t}");
     let metrics = |t: String| {
@@ -315,6 +345,9 @@ async fn tokens(a: &AppState, a_ctx: &AppContext, b_ctx: &AppContext, needles: &
     assert_eq!(metrics(bearer("Mt-9999-another-value")).await, StatusCode::UNAUTHORIZED);
     let stored = hex::encode(ring::digest::digest(&ring::digest::SHA256, b"Mt-1234-from-the-environment"));
     assert_eq!(metrics(bearer(&stored)).await, StatusCode::UNAUTHORIZED, "what is stored is not the token");
+    let production = serve_in(a_ctx, Environment::Production, OPERATIONS).await;
+    let auth = bearer("Mt-1234-from-the-environment");
+    assert_eq!(call(&production, Method::GET, "/metrics", &[("authorization", &auth)], None).await.status, StatusCode::OK, "in production, with it");
 
     let operator = |t: &str, s: &Served| {
         let t = t.to_string();
@@ -330,6 +363,25 @@ async fn tokens(a: &AppState, a_ctx: &AppContext, b_ctx: &AppContext, needles: &
     let one = made(0).await;
     let asked = call(&sa, Method::GET, "/api/operator/vault", &[("x-ferrum-operator-token", &one), ("accept-encoding", "gzip, br")], None).await;
     assert!(asked.status == StatusCode::OK && asked.headers.contains_key(header::CONTENT_ENCODING), "as a browser asks: {}", asked.status);
+    // Even the right token finds nothing where no zone has the routes: no zones, a zone without `operator`, or an
+    // address outside the operator's zone.
+    let other = serve_in(a_ctx, Environment::Test, r#"{"operations": {"networks": ["10.9.8.0/24"]}}"#).await;
+    for (s, from) in [(&bare, "10.9.8.7"), (&other, "10.9.8.7"), (&sa, "203.0.113.50")] {
+        let r = call(s, Method::PUT, "/api/operator/settings/session_days", &[("x-ferrum-operator-token", &one), ("x-forwarded-for", from)], None).await;
+        assert_eq!(answer(&r), as_unknown("/api/operator/settings/session_days"), "from {from}: {}", r.body);
+    }
+    // Tries are counted by address before the token is compared, as sign-ins are: 20 a minute, then refused whatever
+    // the token; another address has its own.
+    let from = |ip: &'static str, t: &str| {
+        let (sa, t) = (&sa, t.to_string());
+        async move { call(sa, Method::GET, "/api/operator/vault", &[("x-ferrum-operator-token", &t), ("x-forwarded-for", ip)], None).await.status }
+    };
+    for _ in 0..20 {
+        assert_eq!(from("10.9.8.66", "a-guess-of-a-token").await, StatusCode::FORBIDDEN);
+    }
+    assert_eq!(from("10.9.8.66", "a-guess-of-a-token").await, StatusCode::TOO_MANY_REQUESTS, "the 21st in a minute");
+    assert_eq!(from("10.9.8.66", &one).await, StatusCode::TOO_MANY_REQUESTS, "the right one too, from there");
+    assert_eq!(from("10.9.8.67", &one).await, StatusCode::OK, "another address");
     let status = operator(&one, &sb).await;
     assert_eq!((status.status, status.json()["open"].clone()), (StatusCode::OK, json!(true)), "the other replica takes it at once");
     let two = made(600).await;
@@ -340,14 +392,27 @@ async fn tokens(a: &AppState, a_ctx: &AppContext, b_ctx: &AppContext, needles: &
     assert_eq!(operator(&two, &sb).await.status, StatusCode::FORBIDDEN, "no overlap asked: the one before stops");
     assert_eq!(operator(&one, &sa).await.status, StatusCode::FORBIDDEN);
     assert_eq!(operator(&three, &sa).await.status, StatusCode::OK);
-    // The configuration's bootstrap token wins: the vault's is not taken while it is set.
+    // A copy of the operator's token left in a replica's environment is refused once the vault holds one: changing it
+    // there revokes the copy.
+    let mut with_copy = config(&url(), "");
+    with_copy.settings.as_mut().unwrap()["operator_token"] = json!("Op-0000-a-copy-in-the-environment");
+    let copy_ctx = replica(with_copy).await;
+    let sc = serve(&copy_ctx).await;
+    let copied = |t: &str| {
+        let (sc, t) = (&sc, t.to_string());
+        async move { call(sc, Method::GET, "/api/operator/vault", &[("x-ferrum-operator-token", &t), ("x-forwarded-for", "10.9.8.8")], None).await.status }
+    };
+    assert_eq!(copied("Op-0000-a-copy-in-the-environment").await, StatusCode::FORBIDDEN, "the environment's copy");
+    assert_eq!(copied(&three).await, StatusCode::OK, "the vault's");
+    state(&copy_ctx).kernel.db.close().await;
+    // So too the bootstrap token: the configuration's is taken only until the vault holds one.
     let vaults = ferrum_server::secrets::set(a, find("bootstrap_token"), Given::Made, 0).await.unwrap()["shown"].as_str().unwrap().to_string();
     let tenant = json!({"slug": "boot", "name": "Boot", "admin_email": "admin@boot.test", "admin_password": PASSWORD});
-    assert_eq!(call(&sa, Method::POST, "/api/tenants", &[("x-ferrum-bootstrap-token", &vaults)], Some(tenant.clone())).await.status, StatusCode::FORBIDDEN);
     assert_eq!(
-        call(&sa, Method::POST, "/api/tenants", &[("x-ferrum-bootstrap-token", "test-bootstrap-token")], Some(tenant)).await.status,
-        StatusCode::CREATED
+        call(&sa, Method::POST, "/api/tenants", &[("x-ferrum-bootstrap-token", "test-bootstrap-token")], Some(tenant.clone())).await.status,
+        StatusCode::FORBIDDEN
     );
+    assert_eq!(call(&sa, Method::POST, "/api/tenants", &[("x-ferrum-bootstrap-token", &vaults)], Some(tenant)).await.status, StatusCode::CREATED);
     needles.extend([one, two, three.clone(), vaults]);
     // Kept for the routes below.
     OPERATOR.set(three).unwrap();

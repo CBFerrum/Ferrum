@@ -293,7 +293,9 @@ def rows(entries):
         if kind == "choice":
             kind = ", ".join(f"`{v}`" if v else "empty" for v in e["values"])
         default = e.get("default", "")
-        if e.get("secret") and e.get("vault"):
+        if e.get("secret") and e.get("vault") == "compared":
+            where = "secret: the vault once it holds one, else the environment (compared)"
+        elif e.get("secret") and e.get("vault"):
             where = f"secret: the environment, else the vault ({e['vault']})"
         elif e.get("secret") and e.get("app"):
             where = f"secret: `{e['app']}`'s own vault; the environment's, while set, wins and is adopted there once"

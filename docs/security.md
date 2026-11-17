@@ -382,7 +382,8 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   app asks for (`Kernel::rate_limit`) fails closed instead, refusing the request with the database's error. Every client address has a request budget too
   (6000 a minute in a pool of replicas by default, each replica allowing its share), taken from the entry `FERRUM_PROXY_HOPS` from the
   right of `X-Forwarded-For`: when that matches the proxies in front, what a client writes there itself is never
-  counted as its address.
+  counted as its address. With none in front (0, as Compose sets it) the address is the connection's own, and the
+  header is not read.
 * Every user has a request budget (3000 a minute in a pool of replicas by default, across all their
   sessions and API keys): a runaway script with a valid token is slowed down to `429`s instead of
   slowing everyone down.
@@ -391,7 +392,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 
 **Browser**
 * The web app's Content Security Policy allows scripts only from its own bundle; responses carry
-  `X-Content-Type-Options: nosniff`, a referrer policy and same-origin framing. A browser's session
+  `X-Content-Type-Options: nosniff`, a referrer policy and same-origin framing. Served over HTTPS (`PUBLIC_URL`
+  https), every answer, whichever part of the server made it, carries `Strict-Transport-Security: max-age=31536000;
+  includeSubDomains`; over plain http none does. A browser's session
   travels in the `__Host-ferrum` cookie (`ferrum_session` on a plain-http development server): `HttpOnly`,
   `SameSite=Lax`, `Secure`, `Path=/` (server/src/shell.rs); other clients send a token in the
   `Authorization` header. Against cross-site request forgery, a request the cookie authenticates may

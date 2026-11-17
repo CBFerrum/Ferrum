@@ -705,10 +705,12 @@ impl Hooks for App {
 
     async fn after_routes(router: axum::Router, ctx: &AppContext) -> Result<axum::Router> {
         let state = crate::state::app_state(ctx).map_err(|e| Error::Message(e.0.to_string()))?;
+        let secure = state.shell.secure;
         let limiter = state.address_limiter.clone();
         let st = Arc::new(state.clone());
         let origins = st.clone();
         let forwards = st.clone();
+        let operators = st.clone();
         Ok(router
             .layer(axum::middleware::from_fn(move |req, next| step_up_ways(st.clone(), req, next)))
             .layer(axum::middleware::from_fn(hold_place))
@@ -716,14 +718,19 @@ impl Hooks for App {
             .layer(axum::middleware::from_fn(move |req, next| per_address(limiter.clone(), req, next)))
             .layer(axum::middleware::from_fn(api_no_store))
             .layer(axum::middleware::from_fn(speculation_csp))
+            .layer(axum::middleware::from_fn(move |req, next| controllers::operator::only_in_their_zone(operators.clone(), req, next)))
             .layer(axum::middleware::from_fn(screen_paths))
             .layer(axum::middleware::from_fn(isolated_cors))
             .layer(axum::middleware::from_fn(traced))
             // A signed-out page goes by the browser's language (sign-in, a status page).
             .layer(axum::middleware::from_fn(crate::shell_words::browser))
             .layer(axum::middleware::from_fn(move |req, next| app_origins(origins.clone(), req, next)))
-            // Outermost: a request's whole time, by app and kind (/metrics).
-            .layer(axum::middleware::from_fn(crate::request_metrics::count)))
+            // A request's whole time, by app and kind (/metrics).
+            .layer(axum::middleware::from_fn(crate::request_metrics::count))
+            // The client's address, before anything reads it.
+            .layer(axum::middleware::from_fn(crate::extract::peer_address))
+            // Outermost: HSTS on every answer, whichever layer made it.
+            .layer(axum::middleware::from_fn(move |req, next| strict_transport(secure, req, next))))
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
@@ -843,8 +850,6 @@ fn proof_floor(setting: &str) -> bool {
     setting.trim().eq_ignore_ascii_case("record")
 }
 
-/// Each client address's budget. Only requests that came through the proxy (`X-Forwarded-For`)
-/// count: probes, port-forwards and the cluster's own calls have no address to tell apart.
 /// Runs a request under its trace: the events it writes name its request id, and the caller's W3C
 /// trace context travels with them. This layer sits outside Loco's request id, so it settles the id
 /// and puts it on the request: the log, the request's context and its events all name the same one.
@@ -865,6 +870,9 @@ fn valid_traceparent(v: &str) -> bool {
         && parts.iter().all(|p| p.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
 }
 
+/// Each client address's budget, counted for every request that has an address (`X-Forwarded-For`): with no proxy in
+/// front, every connection's (crate::extract::peer_address); behind proxies, those that came through them, as probes,
+/// port-forwards and the cluster's own calls have no address to tell apart.
 async fn per_address(limiter: Arc<RateLimiter>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::response::IntoResponse;
     if req.headers().contains_key("x-forwarded-for")
@@ -1027,6 +1035,20 @@ async fn step_up_ways(st: Arc<AppState>, req: axum::extract::Request, next: axum
         return res;
     }
     crate::controllers::auth::with_ways(&st, &headers, res).await
+}
+
+/// HSTS: served over HTTPS (`PUBLIC_URL`), every answer tells browsers to come back over HTTPS only, for a year, to this
+/// host and those under it; over plain http none says it (a browser would not take it there). Set here, outside every
+/// other layer, so that the answers those make carry it too, and nowhere else.
+async fn strict_transport(secure: bool, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::http::{HeaderValue, header::STRICT_TRANSPORT_SECURITY};
+    let mut res = next.run(req).await;
+    if secure {
+        res.headers_mut().insert(STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=31536000; includeSubDomains"));
+    } else {
+        res.headers_mut().remove(STRICT_TRANSPORT_SECURITY);
+    }
+    res
 }
 
 /// API answers belong to one user and can change without a new version (an engine-set status, a

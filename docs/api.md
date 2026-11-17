@@ -740,6 +740,9 @@ has when it runs, not when they asked. A bulk job's `result` is `{total, succeed
 
 ## Administration (administrators only)
 
+Every route under `/api/admin/` answers portal people and guests `403` before it reads anything of the request; for
+staff, each route's own check decides (most are an administrator's alone, reading the settings among them).
+
 Workspace settings: `GET /api/admin/settings` → `{timezone, language, fiscal_year_start_month, require_two_factor,
 require_sso, assistant, assistant_model, assistant_monthly_tokens, assistant_egress, offline, messages,
 new_device_notice, break_glass, idle_minutes, staff_networks, step_up, record_reads}`;
@@ -2259,15 +2262,18 @@ Public files (`public=true`; images and PDFs only — logos, product photos, bro
 
 ## System
 
-`GET /_zone` on any host, no session, limited per address like other public endpoints: `{"zone": "public" | null, "staff": "all" | "none" | ["crm", …], "admin": bool, "address": "203.0.113.7"}`, the zone this request is in, its rule (the list of apps where it limits staff to some), and the caller's address as the server sees it ([Zones](operations.md#zones)). `GET /api/ready` (DB reachable), `GET /api/version`, `GET /metrics` (Prometheus), `POST /api/tenants` (requires `X-Ferrum-Bootstrap-Token`; a slug any workspace ever used is taken for good), `GET /_ping`, `GET /_health`.
+`GET /_zone` on any host, no session, limited per address like other public endpoints: `{"zone": "public" | null, "staff": "all" | "none" | ["crm", …], "admin": bool, "address": "203.0.113.7"}`, the zone this request is in, its rule (the list of apps where it limits staff to some), and the caller's address as the server sees it ([Zones](operations.md#zones)). `GET /api/ready` (DB reachable), `GET /api/version`, `GET /metrics` (Prometheus; the metrics token as `Authorization: Bearer`, which production requires: while none is set, `401` for everyone, [Monitoring](operations.md#monitoring)), `POST /api/tenants` (requires `X-Ferrum-Bootstrap-Token`; a slug any workspace ever used is taken for good), `GET /_ping`, `GET /_health`.
 
 ## Settings — `/api/operator/settings` (the installation's operator)
 
 The installation's settings in the database ([operations](operations.md#settings-in-the-database)), for the
-Operations screen. Every call needs the operator's token in `X-Ferrum-Operator-Token` (`FERRUM_OPERATOR_TOKEN` where
-the environment sets it, else the vault's, [operations](operations.md#the-platforms-secrets); compared in constant
-time); without it, or while the server has none, `403` with the same answer either way. Answers are never cached
-(`Cache-Control: no-store`).
+Operations screen. These routes, and the vault's below, are there only for a request in a zone whose rule says
+`operator: true` ([Zones](operations.md#zones)); anywhere else, without zones too, they answer `404` as a path the
+server does not have, before any body or token is read. Every call needs the operator's token in
+`X-Ferrum-Operator-Token` (the vault's once it holds one, else `FERRUM_OPERATOR_TOKEN`,
+[operations](operations.md#the-platforms-secrets); compared in constant time); without it, or while the server has
+none, `403` with the same answer either way. Each client address has 20 calls a minute, counted before the token is
+compared as sign-ins are: then `429`. Answers are never cached (`Cache-Control: no-store`).
 
 * `GET /api/operator/settings` → `{version, pool, settings: [...], replicas: [...]}`. `version`: the table's highest
   version; `pool`: the pool of the replica that answered. Each setting: `key`, `env` (its variable), `type` (`text`,

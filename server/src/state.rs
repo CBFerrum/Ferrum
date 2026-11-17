@@ -66,15 +66,15 @@ pub struct Settings {
     #[serde(default = "default_user_requests")]
     pub user_requests_per_minute: u32,
     /// Requests one client address may make per minute on each replica, counted for requests that
-    /// came through the proxy (`X-Forwarded-For`); 0: no limit.
+    /// have one (`proxy_hops`); 0: no limit.
     #[serde(default = "default_address_requests")]
     pub address_requests_per_minute: u32,
     /// One workspace's requests that run at once on each replica. The rest wait their turn, and are
     /// refused after five seconds. Unset: half of `db_max_connections`, at least 2. 0: no limit.
     #[serde(default)]
     pub tenant_requests: Option<u32>,
-    /// Proxies in front that append to `X-Forwarded-For` (the gateway: 1; a CDN or load balancer
-    /// before it: 2): whose entry is the client's address for rate limits.
+    /// Proxies in front that append to `X-Forwarded-For` (none: 0; the gateway: 1; a CDN or load
+    /// balancer before it: 2): whose entry is the client's address, or with none the connection's.
     #[serde(default = "default_proxy_hops")]
     pub proxy_hops: usize,
     /// Run outbox/webhook/maintenance loops in this process.
@@ -134,11 +134,12 @@ pub struct Settings {
     /// The scanner's `StreamMaxLength` in MiB (`FERRUM_CLAMAV_MAX_MB`): files past it stay unscanned.
     #[serde(default = "default_clamav_max_mb")]
     pub clamav_max_mb: u64,
-    /// When set, `/metrics` requires `Authorization: Bearer <token>`.
+    /// When set (or the vault holds one), `/metrics` requires `Authorization: Bearer <token>`; in production, while none
+    /// is set, `/metrics` answers nobody.
     #[serde(default)]
     pub metrics_token: String,
-    /// `FERRUM_OPERATOR_TOKEN`: the settings routes (`/api/operator/settings`) require it as `X-Ferrum-Operator-Token`.
-    /// Empty: they answer nobody.
+    /// `FERRUM_OPERATOR_TOKEN`: the operator's routes (`/api/operator/…`, in a zone with `operator: true`) require it
+    /// as `X-Ferrum-Operator-Token` until the vault holds one. Empty: they answer nobody.
     #[serde(default)]
     pub operator_token: String,
     /// Base URL of a Gotenberg-compatible service that lays print formats out as PDFs.
