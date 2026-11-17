@@ -911,23 +911,33 @@ impl Kernel {
     }
 }
 
+/// An address nothing the server sends out reaches unless the operator allows it: private, loopback, link-local (the
+/// cloud's metadata addresses among them), shared, multicast, reserved, benchmarking, and the v6 forms that carry one
+/// of them (mapped, IPv4-compatible, NAT64). The one check for every way out: webhooks, the vetted client, plugins'
+/// `http.fetch`, connections, and apps' own sockets.
 pub fn is_private(ip: IpAddr) -> bool {
-    match ip {
+    match ip.to_canonical() {
         IpAddr::V4(v4) => {
+            let o = v4.octets();
             v4.is_private()
                 || v4.is_loopback()
                 || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1])
-                || v4.octets()[0] == 0
+                || v4.is_multicast()
+                || o[0] == 0
+                || o[0] >= 240
+                || (o[0] == 100 && (64..=127).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+                || (o[0] == 198 && (o[1] & 0xfe) == 18)
         }
         IpAddr::V6(v6) => {
+            let s = v6.segments();
+            let carried = std::net::Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8);
             v6.is_loopback()
                 || v6.is_unspecified()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
-                || v6.to_ipv4_mapped().is_some_and(|v4| is_private(IpAddr::V4(v4)))
+                || v6.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || ((s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] || s[..6] == [0; 6]) && is_private(IpAddr::V4(carried)))
         }
     }
 }
@@ -954,10 +964,34 @@ mod tests {
 
     #[test]
     fn private_ranges() {
-        for ip in ["127.0.0.1", "10.1.2.3", "192.168.0.1", "172.16.5.4", "169.254.169.254", "100.64.0.1", "::1", "fd00::1", "::ffff:10.0.0.1"] {
+        for ip in [
+            // The cloud's metadata address through NAT64, as an IPv6-only cluster reaches it.
+            "64:ff9b::a9fe:a9fe",
+            "::127.0.0.1",
+            "::ffff:198.18.0.1",
+            "ff02::1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "255.255.255.255",
+            "198.18.0.1",
+            "192.0.0.170",
+            "0.0.0.0",
+            "127.0.0.1",
+            "10.1.2.3",
+            "192.168.0.1",
+            "172.16.5.4",
+            "169.254.169.254",
+            "100.64.0.1",
+            "100.100.100.200",
+            "::1",
+            "fe80::1",
+            "fd00::1",
+            "fd00:ec2::254",
+            "::ffff:10.0.0.1",
+        ] {
             assert!(is_private(ip.parse().unwrap()), "{ip}");
         }
-        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700::1111"] {
+        for ip in ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700::1111", "64:ff9b::101:101", "::ffff:1.1.1.1"] {
             assert!(!is_private(ip.parse().unwrap()), "{ip}");
         }
     }

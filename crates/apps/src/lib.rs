@@ -11,7 +11,7 @@
 //! | `app.yaml` | the manifest ([`AppManifest`]); required |
 //! | `README.md`, `CHANGELOG.md`, `LICENSE` | documentation |
 //! | `plugin.json`, `plugin.wasm` | wasm apps only: the plugin manifest and the core WebAssembly module |
-//! | `packages/<name>/package.yaml`, `README.md`, `entities/*.yaml`, `sql/*.sql`, `print/*.html` | the app's metadata packages |
+//! | `packages/<name>/package.yaml`, `README.md`, `entities/*.yaml`, `sql/*.sql`, `print/*.html` | the app's metadata packages; `sql/` in native apps only (the schema sync runs it as the database's owner) |
 //! | `assets/**/*.{png,jpg,jpeg,gif,webp,svg}` | icon and screenshots |
 //! | `industrial/profiles/*.yaml`, `industrial/acceptance/*.yaml` | an industrial solution's device profiles and acceptance procedures ([`industrial`]) |
 //! | `ui/**` | wasm and meta apps: screens (`html`, `js`, `mjs`, `css`, `json`, `map`, `txt`, `svg`, and `wasm`, `woff2` and raster images up to [`MAX_UI_BINARY`] bytes) |

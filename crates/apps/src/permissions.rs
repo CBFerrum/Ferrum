@@ -447,7 +447,7 @@ mod tests {
         let moved = Permissions { services: set(&["other.example.com"]), ..p.clone() };
         assert_eq!(moved.increases(&p), ["runs outside Ferrum, as an account of its own, at: other.example.com"], "a new host asks again");
         files.insert("packages/kit/sql/001.sql".into(), b"select 1;".to_vec());
-        assert!(Bundle::from_files(files).unwrap_err().to_string().contains("service apps carry no code and no SQL"));
+        assert!(Bundle::from_files(files).unwrap_err().to_string().contains("service apps carry no SQL"));
     }
 
     #[test]
@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(p.schedules, set(&["sweep every 300 s"]));
         assert_eq!(p.subscriptions, set(&["SalesInvoice.*"]));
         assert_eq!(p.new_entities, set(&["GwDevice", "XGwReading"]));
-        assert_eq!(p.sql, set(&["gw/001_init.sql"]));
+        assert!(p.sql.is_empty(), "only native apps carry SQL");
         assert!(p.overlays.is_empty() && p.roles.is_empty());
     }
 
@@ -507,10 +507,12 @@ mod tests {
         let mut files = meta_app();
         let yaml = String::from_utf8(files["app.yaml"].clone()).unwrap().replace("runtime: meta", "runtime: native");
         files.insert("app.yaml".into(), yaml.into_bytes());
+        files.insert("packages/kit/sql/001_init.sql".into(), b"create index if not exists kt_title on e_kt_thing (title);\n".to_vec());
         let native = Bundle::from_files(files).unwrap().permissions().unwrap();
         let meta = Bundle::from_files(meta_app()).unwrap().permissions().unwrap();
         assert!(native.native && !meta.native);
-        assert_eq!(native.increases(&meta), vec!["runs native code inside the server, with full access"]);
+        assert_eq!(native.sql, set(&["kit/001_init.sql"]));
+        assert_eq!(native.increases(&meta), vec!["runs native code inside the server, with full access", "runs SQL: kit/001_init.sql"]);
         assert!(meta.increases(&native).is_empty());
         assert!(!serde_json::to_string(&meta).unwrap().contains("native"), "absent unless true");
     }

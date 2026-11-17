@@ -168,8 +168,8 @@ MUTANTS = [
     ("zones2-app-endpoint-open", "server/src/controllers/sites.rs", "    if !ctx.sees_package(&package) {", "    if false {", ZONES2),
     ("zones2-effect-reaches-hidden", "crates/kernel/src/actions.rs", "perms: Arc::new(PermSet { admin: true, limit: ctx.perms.limit.clone(), ..Default::default() }),", "perms: Arc::new(PermSet { admin: true, ..Default::default() }),", ZONES2),
     # BD-29: a connection reaches only public addresses on its own hosts, within its limits, once per key, for whom it says.
-    ('conn-private-address-called', 'crates/kernel/src/connections/mod.rs', 'if !open && addrs.iter().any(|a| blocked(a.ip())) {', 'if false && addrs.iter().any(|a| blocked(a.ip())) {', CONNECTIONS),
-    ('conn-blocked-ranges-shrunk', 'crates/kernel/src/connections/mod.rs', 'if crate::outbox::is_private(ip) {\n        return true;\n    }', 'if crate::outbox::is_private(ip) {\n        return false;\n    }', CONNECTIONS_UNIT),
+    ('conn-private-address-called', 'crates/kernel/src/connections/mod.rs', 'if !open && addrs.iter().any(|a| crate::outbox::is_private(a.ip())) {', 'if false && addrs.iter().any(|a| crate::outbox::is_private(a.ip())) {', CONNECTIONS),
+    ('private-ranges-shrunk', 'crates/kernel/src/outbox.rs', '((s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] || s[..6] == [0; 6]) && is_private(IpAddr::V4(carried)))', '(s[..6] == [0; 6] && is_private(IpAddr::V4(carried)))', ("-p", "ferrum-kernel", "--lib", "outbox::tests")),
     ('conn-other-host-reached', 'crates/kernel/src/connections/mod.rs', 'if !reach.any && !reach.hosts.is_empty() && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', 'if false && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', CONNECTIONS),
     # BD-64, BD-65: a public address's signature checked; reading any host only for a description without credentials.
     ('conn-pulled-signature-ignored', 'crates/kernel/src/connections/public.rs', '.any(|(_, k)| same(&k.fingerprint("pulled-file", &id), signature))', '.any(|_| true)', PULLED_FILES),
@@ -1018,7 +1018,7 @@ MUTANTS = [
     ("keyed-opt-out-unchecked", "crates/kernel/src/messages.rs", '.any(|(_, k)| subtle_eq(k.fingerprint("message opt-out", &said).as_bytes(), sig.as_bytes()))', ".any(|_| true)", MESSAGES),
     ("session-unsigned-verifies", "server/src/sessions.rs", "    ring::hmac::verify(&ring::hmac::Key::new(ring::hmac::HMAC_SHA512, key), signed.as_bytes(), &signature).ok()?;\n", "", SESSIONS_UNIT),
     ("session-key-past-its-end", "server/src/sessions.rs", "self.0.get(&n).filter(|h| h.until.is_none_or(|t| t > Utc::now()))", "self.0.get(&n)", SESSIONS_UNIT),
-    ("compared-token-any", "server/src/secrets.rs", "        Ok(false) => Token::Bad,\n", "        Ok(false) => Token::Good,\n", PLATFORM_SECRETS),
+    ("compared-token-any", "server/src/secrets.rs", "            Ok(false) => return Token::Bad,\n", "            Ok(false) => return Token::Good,\n", PLATFORM_SECRETS),
     ("library-secret-any-host", "server/src/secrets.rs", "            && !rule.hosts.contains(&host)\n", "            && false\n", PLATFORM_SECRETS),
     ("moved-address-keeps-secret", "server/src/settings.rs", "            tied.push(secret);\n", "", PLATFORM_SECRETS),
     # The whole router builds: no path and method mounted twice.

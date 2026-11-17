@@ -33,6 +33,19 @@ impl From<serde_json::Error> for ApiError {
     }
 }
 
+/// A request whose body is larger than its route takes: `413`, `too_large`, in the shape of every refusal.
+pub fn too_large(message: impl Into<String>) -> Error {
+    Error::Refused { code: "too_large", status: 413, message: message.into(), pointer: None }
+}
+
+impl From<axum::extract::multipart::MultipartError> for ApiError {
+    /// A form past its route's limit is too large; one that cannot be read is invalid.
+    fn from(e: axum::extract::multipart::MultipartError) -> Self {
+        let said = format!("upload: {}", e.body_text());
+        ApiError(if e.status() == StatusCode::PAYLOAD_TOO_LARGE { too_large(said) } else { Error::Invalid(said) })
+    }
+}
+
 impl ApiError {
     /// The response, with `extra`'s keys added to its JSON (a batch's `index`).
     pub fn with(self, extra: serde_json::Map<String, serde_json::Value>) -> Response {

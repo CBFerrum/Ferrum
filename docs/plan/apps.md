@@ -72,9 +72,9 @@ uninstall: keep                 # keep | ask — whether removing offers to dele
 Rules enforced on publish and install: `id`, `version`, `runtime`, `platform` required; packages
 must exist in the bundle and validate against the platform's metadata schema (the same validator
 Ferrum boots with); third-party entity names start with `prefix`; a wasm app's plugin manifest is
-validated like an uploaded plugin; meta apps carry no code and no `sql/`; `sql/` in packages is
-allowed only for **verified** publishers (it runs with the application role, still under row-level
-tenant isolation).
+validated like an uploaded plugin; meta apps carry no code; `sql/` in packages only in native apps
+(the schema sync runs it as the database's owner for the whole installation, so a wasm, meta or
+service bundle carrying it is refused).
 
 ## 4. Bundle format
 
@@ -98,7 +98,7 @@ tenant isolation).
   several keys may be trusted at once.
 * **Review.** Automatic checks on submission (manifest, metadata validation, wasm validation,
   size, permission diff against the previous version, known-vulnerable dependencies) and a human
-  review before the store signs; a "verified publisher" tier unlocks `sql/`.
+  review before the store signs. No publisher tier unlocks `sql/`: only native apps carry it.
 * **Permissions review.** Installing shows exactly what the app asks for (records it reads and
   writes, hosts it calls, public endpoints, sockets, schedules); the administrator's consent is
   recorded in the audit trail with the permission digest. An upgrade that asks for more stops for

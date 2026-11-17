@@ -253,6 +253,7 @@ async fn erase_personal_data(Auth(ctx): Auth, State(app): State<AppContext>, Jso
 // ── packages ──
 
 async fn list_packages(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    admin(&ctx)?;
     let st = app_state(&app)?;
     let all: Vec<Value> = st
         .kernel

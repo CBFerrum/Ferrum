@@ -6,7 +6,7 @@
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Auth, bearer, ctx_from_token, request_id};
 use crate::state::{AppState, app_state};
-use axum::body::Bytes;
+use axum::body::Body;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
@@ -43,21 +43,30 @@ fn plugin_headers(headers: &HeaderMap) -> Map<String, Value> {
 fn to_response(r: HttpReply) -> Response {
     let mut resp = (StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK), r.body).into_response();
     for (k, v) in r.headers {
-        // Plugins may not set cookies or framing headers on Ferrum's origin.
-        if matches!(k.as_str(), "set-cookie" | "content-length" | "transfer-encoding" | "connection") {
+        // Plugins may not set cookies, the message's framing, or a page's policy and framing on Ferrum's origin.
+        if matches!(
+            k.as_str(),
+            "set-cookie"
+                | "content-length"
+                | "transfer-encoding"
+                | "connection"
+                | "content-security-policy"
+                | "content-security-policy-report-only"
+                | "x-frame-options"
+        ) {
             continue;
         }
         if let (Ok(name), Ok(value)) = (HeaderName::try_from(k), HeaderValue::from_str(&v)) {
             resp.headers_mut().insert(name, value);
         }
     }
+    super::system::contain(resp.headers_mut());
     resp
 }
 
-fn call(method: Method, path: String, query: HashMap<String, String>, headers: &HeaderMap, body: Bytes) -> Result<HttpCall, ApiError> {
-    if body.len() > MAX_BODY {
-        return Err(ApiError(Error::invalid("request body larger than 1 MB")));
-    }
+/// A request as a plugin's route takes it, its body read up to [`MAX_BODY`] (`413` past it).
+async fn call(method: Method, path: String, query: HashMap<String, String>, headers: &HeaderMap, body: Body) -> Result<HttpCall, ApiError> {
+    let body = super::sites::read_body(headers, body, MAX_BODY).await?;
     Ok(HttpCall {
         method: method.to_string(),
         path: format!("/{}", path.trim_start_matches('/')),
@@ -74,12 +83,12 @@ async fn ext(
     method: Method,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Body,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let tenant = ctx.tenant;
     crate::zone::plugin_admitted(&st, &ctx, &plugin).await?;
-    let reply = st.plugins.handle_http(&st.kernel, tenant, &plugin, call(method, path, query, &headers, body)?, Some(ctx)).await?;
+    let reply = st.plugins.handle_http(&st.kernel, tenant, &plugin, call(method, path, query, &headers, body).await?, Some(ctx)).await?;
     Ok(to_response(reply))
 }
 
@@ -89,16 +98,16 @@ async fn public(
     method: Method,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Body,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let (tenant, status) = st.kernel.tenant_by_slug(&tenant).await?;
-    if status != "active" {
+    if status != "active" || !st.shell.answers_for(&headers, tenant).await? {
         return Err(ApiError(Error::NotFound("tenant".into())));
     }
     // A public endpoint's calls (webhooks in) are its workspace's load, whatever host they came to (crate::request_metrics).
     crate::request_metrics::note_workspace(tenant);
-    let reply = st.plugins.handle_http(&st.kernel, tenant, &plugin, call(method, path, query, &headers, body)?, None).await?;
+    let reply = st.plugins.handle_http(&st.kernel, tenant, &plugin, call(method, path, query, &headers, body).await?, None).await?;
     Ok(to_response(reply))
 }
 

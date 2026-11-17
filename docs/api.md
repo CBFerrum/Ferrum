@@ -516,8 +516,16 @@ Apps add HTTP endpoints under `/api/app/{package}/{path}` (signed in, any method
 `/api/site/{tenant}/{package}/{path}` (public pages, webhooks; rate-limited per IP, 300/min). Each
 app documents its own in `packages/<package>/README.md` of its repository. Request bodies are
 limited per app and route (1 MB unless the app allows more, `Site::max_body_for`; at most 1 GiB,
-`server/src/controllers/sites.rs`). `x-ferrum-site-api` and
-`x-ferrum-site-origin` never reach an app from the caller (see public sites below).
+`server/src/controllers/sites.rs`); a larger one is refused with `413` (`too_large`) before it is read whole, as a
+plugin's route refuses one past 1 MB. `x-ferrum-site-api` and
+`x-ferrum-site-origin` never reach an app from the caller (see public sites below). An answer is never sniffed
+(`X-Content-Type-Options: nosniff`) and, unless it is JSON or an attachment, carries the policy stored files are served
+under (`default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox`: nothing runs on the workspace's origin)
+when the app sets no `Content-Security-Policy` of its own; a page with scripts of its own declares its policy, as
+Sign's, Learn's and Live's do. `/api/site/{workspace}/…` answers on that workspace's hosts, on hosts of no
+workspace (the hooks host, a shared host, one the cluster does not know) and on the address the platform gives outside
+callers (`FERRUM_HOOKS_HOST`, else `PUBLIC_URL`'s host), whichever workspace that address otherwise is; on another
+workspace's own host, or the accounts host, it is `404` as for a workspace that does not exist.
 
 The portal's endpoints, for whoever signed in (portal people included), answering by the address
 they signed in with:
@@ -644,7 +652,9 @@ Pages, for browsers, with the session cookie:
   `x-ferrum-site-origin: {scheme}://{host}` set by the server; without a session; rate-limited per
   address; with `X-Content-Type-Options`, `Referrer-Policy` and a strict
   `Content-Security-Policy` unless the app sets its own. The API's paths (`/api/…`, `/files/…`)
-  work on every host.
+  work on every host, but those that name a workspace in their path for the public
+  (`/api/public/{workspace}/{plugin}/…`, `/api/site/{workspace}/{package}/…`) not on another workspace's own host
+  ([App endpoints](#app-endpoints) says where).
 * `GET /_ui/{app}/{digest}/{path}` → a file of an interface release: public, `immutable`.
 * `GET /_shell/v1/{file}` → the shell's own files (`runtime.js`, `live-worker.js`, …), the newest of
   v1, kept by browsers for five minutes. Pages name `runtime.js`, `portal.js`, `login.js` and `pages.css`
@@ -1144,8 +1154,11 @@ Plugins (sandboxed WebAssembly, see README): `GET /api/admin/plugins` → `{plug
 `PUT /api/admin/plugins/{id}/enabled` `{enabled}`; `DELETE /api/admin/plugins/{id}`.
 
 `PUT /api/admin/plugins/{id}/config` `{config}` replaces a plugin's settings and secrets; `PATCH` merges the given keys. Plugin endpoints:
-any method on `/api/ext/{plugin}/{path}` (signed in) or `/api/public/{tenant}/{plugin}/{path}` (public routes),
-and WebSockets at `/ws/ext/{tenant}/{plugin}/{path}` (token in `Authorization` or `access_token` unless public).
+any method on `/api/ext/{plugin}/{path}` (signed in) or `/api/public/{tenant}/{plugin}/{path}` (public routes; not on another
+workspace's own host, as [App endpoints](#app-endpoints) are not), and WebSockets at
+`/ws/ext/{tenant}/{plugin}/{path}` (token in `Authorization` or `access_token` unless public). A plugin's answer keeps
+none of the cookies, `Content-Security-Policy` or `X-Frame-Options` it sets: unless it is JSON or an attachment, it
+goes out under the policy stored files are served under, never sniffed.
 Manifest, contract and host calls: [plugins.md](plugins.md).
 
 People leaving and provisioning ([identity lifecycle](identity-lifecycle.md)): `POST
@@ -1256,7 +1269,7 @@ of this API answers with 422 is 400 here, with a `scimType`.
 * `POST /api/admin/apps/{id}/disable` / `enable` → 204. Disabling turns the plugin off and takes the app's packages out of the workspace (rows kept; role assignments to the app's roles are dropped); refused while an enabled app requires it. Enabling is refused for a revoked release.
 * `DELETE /api/admin/apps/{id}?delete_data=true` → `{removed, deleted_data, leftovers}`: packages out (with their roles), plugin and its private data removed, record forgotten. The app's data is deleted only with `delete_data` **and** `uninstall: ask` in its manifest (`keep` apps never lose data): the workspace's rows in its entities' tables and in the tables its packages' SQL files create, the files attached to its records (their bytes leave storage once the removal commits) and its live documents. Refused while another installed app requires it. `leftovers` are the apps its installation brought in (a suite's members, what it required) that nothing installed needs now, in an order they can be removed in; an app an administrator installed for itself is never among them.
 * `GET|PUT|DELETE /api/admin/apps/{id}/dev-ui` (development servers only, `FERRUM_DEV_UI=true`; `404` elsewhere) → `{app, dev_ui}`: `PUT {url}` serves the installed app's pages in this workspace from its interface's Vite server on this machine (`http://localhost:<port>`, `127.0.0.1` or `[::1]`), behind the real session, bar and bootstrap, with hot reload (`ferrum-app dev --ui`); an isolated interface stays isolated, framed from there. The pages' release is `dev` (no "new version" notices), and their policy allows that server's files and socket. `DELETE` serves the release again; a restart forgets them all.
-* `POST /api/admin/apps/upload` (multipart, field `bundle`, ≤ 50 MB) → `201 {app: AppSummary, plan}`. Verified against `apps.trusted_keys`; unsigned or untrusted bundles only with `apps.allow_unsigned_uploads`. `uploads: private` accepts sandboxed apps without packages, visible only in this workspace; `cluster` makes the app available to every workspace. Native apps, apps for another platform version, older versions than the one available, and roles granting entities the app does not define (the role rule) are refused.
+* `POST /api/admin/apps/upload` (multipart, field `bundle`, ≤ 50 MB, a larger one `413`) → `201 {app: AppSummary, plan}`. Verified against `apps.trusted_keys`; unsigned or untrusted bundles only with `apps.allow_unsigned_uploads`. `uploads: private` accepts sandboxed apps without packages, visible only in this workspace; `cluster` makes the app available to every workspace. Native apps, apps for another platform version, older versions than the one available, and roles granting entities the app does not define (the role rule) are refused.
 
 * `PUT /api/admin/apps/{id}/licence {licence}`: the licence of an app a store sells (bought there for this workspace), kept once a store this server uses signs it, it is for that app and for one of the workspace's own hosts, and it is live; `DELETE` forgets it; `GET /api/admin/apps/licences` → `{"licences": [{app, store, live, period_end, checked_at, last_error}]}`. A sold app installs or upgrades only with a live licence, asked of its store at that moment (`403` otherwise, saying why); every licence is read again with the revocation list, and a lapse shows there without removing anything.
 * `GET /api/admin/apps/connections` → `{uses: [{app, package, capability, range, installed}], hooks: [{app, entity, hook}], calls: [{app, capability, count, latest}]}`: how the workspace's apps use each other ([app contract](app-contract.md#using-another-apps-operations)). `uses` are the operations of other apps each installed package declares, with the range it was built for and the version installed here (`null` where the operation is not); `hooks` are the hooks apps run on records another package defines, or on every record (`*`); `calls` are the calls apps made through the gate in the last 30 days, by app and capability, with a count and the latest time.
@@ -2125,7 +2138,12 @@ these). Off unless the server has `FERRUM_ASSISTANT_API_KEY`.
 
 `POST /mcp` — Model Context Protocol, Streamable HTTP, stateless (JSON responses, no session id;
 `GET`/`DELETE` → 405). Auth as above (`Bearer` session token or API key); 401 carries
-`WWW-Authenticate`. Methods: `initialize` (versions 2025-06-18, 2025-03-26, 2024-11-05), `ping`,
+`WWW-Authenticate`. A client reads under the workspace's policy for the assistant ([operations](operations.md#the-assistant)):
+`403` where the workspace turned the assistant off (`assistant: false`), and what `assistant_egress` does not let go to
+an AI provider (internal entities, fields in a permission group, secrets) is left out of every tool's answer. For an MCP
+client to receive a field group, or an internal entity, an administrator lists it there:
+`PUT /api/admin/settings {"assistant_egress": {"groups": ["payroll"], "entities": ["Payslip"]}}` (the assistant's
+provider receives it too). Secrets never go. Methods: `initialize` (versions 2025-06-18, 2025-03-26, 2024-11-05), `ping`,
 `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `resources/read`
 (`ferrum://overview`, `ferrum://entity/{name}`, `ferrum://record/{entity}/{id}`), `prompts/list`,
 `prompts/get`. Tool failures come back as results with `isError: true` and the same error JSON as
@@ -2233,7 +2251,7 @@ session is its app's to end on that event (docs/app-contract.md, *A companion's 
 
 ## Files
 
-`POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download, streamed; one `Range: bytes=…` answered with 206; with `files_direct_links` on, `307` to a link signed for the object store instead, working for `files_direct_link_seconds`, never for an entity whose reads are recorded, an outside person or a type a browser would run: docs/operations.md, "Object storage"). Every download carries its type (a file kept without one as `application/octet-stream`), `X-Content-Type-Options: nosniff` and `Content-Disposition: attachment` with its name; a type a browser would run (HTML, SVG, XML, script) also a sandboxing CSP, also on the public route, where other types are inline. A generated document keeps the type it was made as ([BD-37](builder/decisions.md#bd-37-generated-documents-keep-their-type)).
+`POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB, a larger file `413` `too_large`) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download, streamed; one `Range: bytes=…` answered with 206; with `files_direct_links` on, `307` to a link signed for the object store instead, working for `files_direct_link_seconds`, never for an entity whose reads are recorded, an outside person or a type a browser would run: docs/operations.md, "Object storage"). Every download carries its type (a file kept without one as `application/octet-stream`), `X-Content-Type-Options: nosniff` and `Content-Disposition: attachment` with its name; a type a browser would run (HTML, SVG, XML, script) also a sandboxing CSP, also on the public route, where other types are inline. A generated document keeps the type it was made as ([BD-37](builder/decisions.md#bd-37-generated-documents-keep-their-type)).
 
 Who may attach and download (the uploads below alike):
 
@@ -2251,7 +2269,7 @@ Larger files (up to 2 GB by default, S3-compatible storage only) go straight fro
 Or, on any store, through the server in parts that survive a dropped connection (up to the same 2 GB):
 
 1. `POST /api/files/uploads` `{file_name, content_type, size, entity?, record_id?, parts: true}` → `201 {upload_id, parts: true, part_bytes, size, offset: 0, expires_at}`. Refused at once when the workspace has no room for `size`.
-2. `PUT /api/files/uploads/{upload_id}/parts/{offset}` with the next bytes as the body (1 to `part_bytes`, 8 MiB) → `{upload_id, size, offset}`, the offset the next part starts at. A part must start where the upload stands: `409` otherwise (one sent again after its answer was lost, say). Each part keeps the upload for another 24 hours.
+2. `PUT /api/files/uploads/{upload_id}/parts/{offset}` with the next bytes as the body (1 to `part_bytes`, 8 MiB; a larger part `413`) → `{upload_id, size, offset}`, the offset the next part starts at. A part must start where the upload stands: `409` otherwise (one sent again after its answer was lost, say). Each part keeps the upload for another 24 hours.
 3. After a dropped connection, `GET /api/files/uploads/{upload_id}` → `{upload_id, parts, size, offset, part_bytes, expires_at}` says where to go on from.
 4. `POST /api/files/uploads/{upload_id}/complete` once every byte has arrived (`409` before) joins the parts and records the file as above. The parts stay until it is recorded, so a completion that failed (the scanner down) can be asked for again.
 

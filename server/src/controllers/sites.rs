@@ -21,10 +21,11 @@ use uuid::Uuid;
 const MAX_BODY: usize = 1 << 30;
 
 /// Reads a request body up to the route's `limit`: refused at once when its declared length is
-/// larger, and as soon as it grows past the limit otherwise, so no route buffers more than it takes.
+/// larger, and as soon as it grows past the limit otherwise, so no route buffers more than it takes
+/// (`413`). Sites, DAV and plugins read theirs here.
 pub(crate) async fn read_body(headers: &HeaderMap, body: Body, limit: usize) -> Result<Bytes, ApiError> {
     let limit = limit.min(MAX_BODY);
-    let too_large = || ApiError(Error::invalid(format!("request body larger than {} KB", limit / 1024)));
+    let too_large = || ApiError(crate::error::too_large(format!("request body larger than {} KB", limit / 1024)));
     let declared = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
     if declared.is_some_and(|n| n > limit as u64) {
         return Err(too_large());
@@ -161,7 +162,9 @@ async fn app(
     let tenant = ctx.tenant;
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let req = request(tenant, Some(ctx), method, &uri, path, query, &headers, body)?;
-    respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await
+    let mut res = respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await?;
+    super::system::contain(res.headers_mut());
+    Ok(res)
 }
 
 async fn public(
@@ -176,7 +179,7 @@ async fn public(
     let st = app_state(&app)?;
     st.public_limiter.check(&format!("{}|{}", client_ip(&headers), tenant.to_lowercase())).await?;
     let (tenant, status) = st.kernel.tenant_by_slug(&tenant).await?;
-    if status != "active" {
+    if status != "active" || !st.shell.answers_for(&headers, tenant).await? {
         return Err(ApiError(Error::NotFound("tenant".into())));
     }
     let schema = st.kernel.registry.schema(tenant).await?;
@@ -184,7 +187,9 @@ async fn public(
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let req = request(tenant, None, method, &uri, path, query, &headers, body)?;
-    respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await
+    let mut res = respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await?;
+    super::system::contain(res.headers_mut());
+    Ok(res)
 }
 
 pub fn routes() -> Routes {
@@ -204,13 +209,15 @@ mod tests {
             h.insert(header::CONTENT_LENGTH, HeaderValue::from(n));
             h
         };
+        let refused = |r: Result<Bytes, ApiError>| r.err().map(|e| (e.0.status(), e.0.code()));
+        let too_large = Some((413, "too_large"));
         // Refused on its declared length, before a byte is read.
-        assert!(read_body(&declared(2_000), Body::from(vec![0u8; 10]), 1_000).await.is_err());
+        assert_eq!(refused(read_body(&declared(2_000), Body::from(vec![0u8; 10]), 1_000).await), too_large);
         // Without a length, refused once it grows past the limit.
-        assert!(read_body(&HeaderMap::new(), Body::from(vec![0u8; 2_000]), 1_000).await.is_err());
+        assert_eq!(refused(read_body(&HeaderMap::new(), Body::from(vec![0u8; 2_000]), 1_000).await), too_large);
         let ok = read_body(&declared(10), Body::from(vec![7u8; 10]), 1_000).await.unwrap();
         assert_eq!(ok.as_ref(), [7u8; 10]);
         // The ceiling holds whatever a route asks for.
-        assert!(read_body(&declared(MAX_BODY + 1), Body::empty(), usize::MAX).await.is_err());
+        assert_eq!(refused(read_body(&declared(MAX_BODY + 1), Body::empty(), usize::MAX).await), too_large);
     }
 }

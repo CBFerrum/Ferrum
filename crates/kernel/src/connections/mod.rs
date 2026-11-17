@@ -981,29 +981,6 @@ impl Operation {
     }
 }
 
-// ── the guard ──
-
-/// An address no connection reaches unless the operator names its host: private, loopback, link-local (the cloud
-/// metadata addresses among them), shared, multicast, reserved, benchmarking, and v6 forms carrying one of them.
-pub(crate) fn blocked(ip: IpAddr) -> bool {
-    let ip = ip.to_canonical();
-    if crate::outbox::is_private(ip) {
-        return true;
-    }
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            v4.is_multicast() || o[0] >= 240 || (o[0] == 192 && o[1] == 0 && o[2] == 0) || (o[0] == 198 && (o[1] & 0xfe) == 18)
-        }
-        IpAddr::V6(v6) => {
-            let s = v6.segments();
-            let nat64 = s[0] == 0x64 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0];
-            let embedded = std::net::Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8);
-            v6.is_multicast() || (nat64 && blocked(IpAddr::V4(embedded))) || (s[..6] == [0, 0, 0, 0, 0, 0] && blocked(IpAddr::V4(embedded)))
-        }
-    }
-}
-
 /// A request, made: where, how, what.
 #[derive(Debug, Clone)]
 pub(crate) struct Request {
@@ -1100,7 +1077,7 @@ impl Kernel {
         if addrs.is_empty() {
             return Err(Error::Unavailable(format!("{host} does not resolve")));
         }
-        if !open && addrs.iter().any(|a| blocked(a.ip())) {
+        if !open && addrs.iter().any(|a| crate::outbox::is_private(a.ip())) {
             return Err(Error::invalid(format!("{host} is a private, loopback, link-local or reserved address")));
         }
         reqwest::Client::builder()
@@ -2675,36 +2652,6 @@ mod tests {
             "said": {"changes": true, "steps": [{"name": "a", "operation": "get"}]}}}))
         .unwrap();
         assert_eq!(["reads", "writes", "said", "get", "post"].map(|o| d.changes(o)), [false, true, true, false, true]);
-    }
-
-    #[test]
-    fn the_guard_blocks_what_is_not_public() {
-        for ip in [
-            "127.0.0.1",
-            "10.1.2.3",
-            "172.16.0.1",
-            "192.168.1.1",
-            "169.254.169.254",
-            "100.100.100.200",
-            "0.0.0.0",
-            "224.0.0.1",
-            "240.0.0.1",
-            "198.18.0.1",
-            "192.0.0.170",
-            "::1",
-            "fe80::1",
-            "fd00:ec2::254",
-            "::ffff:10.0.0.1",
-            "::ffff:198.18.0.1",
-            "64:ff9b::a9fe:a9fe",
-            "::127.0.0.1",
-            "ff02::1",
-        ] {
-            assert!(blocked(ip.parse().unwrap()), "{ip}");
-        }
-        for ip in ["93.184.216.34", "1.1.1.1", "2606:4700:4700::1111", "64:ff9b::101:101"] {
-            assert!(!blocked(ip.parse().unwrap()), "{ip}");
-        }
     }
 
     #[test]

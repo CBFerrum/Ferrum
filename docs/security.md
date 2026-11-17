@@ -178,6 +178,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   schema before anything runs; a reply that was cut off or declined runs none of its calls.
 * What goes to the model's API is limited to what the person could read; the key stays on the
   server; workspaces can turn the assistant off.
+* An AI client at `/mcp` is held to the same policy, read the same way (`Assistant::ai_policy`): where the
+  workspace turned the assistant off, `/mcp` answers `403`; what `assistant_egress` does not let go to an AI
+  provider (internal entities, fields in a permission group, secrets) it does not read.
 
 **Signing in**
 * Passwords: Argon2id; at least 10 characters with three character classes; 5 failures lock the
@@ -343,9 +346,11 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   else, for codes NIC issued, under NIC's published signing keys (shipped in
   India's add-on, `addons/india/src/nic_keys` in ferrum-app-erp, verified against NIC's own signed
   sample).
-* Outbound requests (webhooks, plugins, identity providers, the IRP, push services): https, hosts
-  resolved once and pinned, private and loopback addresses refused, no redirects, time and size
-  limits. Plugins reach only the hosts they declare; identity providers on a private network need
+* Outbound requests (webhooks, plugins, connections, identity providers, the IRP, push services): https, hosts
+  resolved once and pinned, no redirects, time and size limits, and every resolved address refused when it is
+  private, loopback, link-local (the cloud's metadata address), shared, multicast, reserved, benchmarking, or a v6
+  form carrying one (mapped, IPv4-compatible, NAT64 `64:ff9b::/96`): one check for every way out,
+  `ferrum_kernel::outbox::is_private`. Plugins reach only the hosts they declare; identity providers on a private network need
   `FERRUM_SSO_ALLOW_PRIVATE`; pushes go only to the browsers' push services
   (`FERRUM_PUSH_SERVICES`), whatever endpoint a subscription names.
 * Plugins run as WebAssembly without ambient access, with CPU fuel, a memory cap, a host-call
@@ -392,7 +397,13 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 
 **Browser**
 * The web app's Content Security Policy allows scripts only from its own bundle; responses carry
-  `X-Content-Type-Options: nosniff`, a referrer policy and same-origin framing. Served over HTTPS (`PUBLIC_URL`
+  `X-Content-Type-Options: nosniff`, a referrer policy and same-origin framing. What a plugin or an app's site answers
+  (`/api/ext/…`, `/api/public/…`, `/api/app/…`, `/api/site/…`) is never sniffed and, unless it is JSON or an attachment,
+  goes out under the sandbox policy stored files get, so it runs no script with the session of whoever opens it; only a
+  native app's page may declare a policy of its own, and a plugin's own policy, framing and cookies are dropped
+  (`contain` in server/src/controllers/system.rs). The public ones that name a workspace answer on that workspace's
+  hosts, hosts of no workspace and the address callbacks are given (`FERRUM_HOOKS_HOST`, else `PUBLIC_URL`'s host),
+  never on another workspace's own host or the accounts host (`Shell::answers_for`). Served over HTTPS (`PUBLIC_URL`
   https), every answer, whichever part of the server made it, carries `Strict-Transport-Security: max-age=31536000;
   includeSubDomains`; over plain http none does. A browser's session
   travels in the `__Host-ferrum` cookie (`ferrum_session` on a plain-http development server): `HttpOnly`,

@@ -689,6 +689,28 @@ impl Shell {
         }
     }
 
+    /// Whether a route that names its workspace in its path (`/api/public/{workspace}/{plugin}/…`,
+    /// `/api/site/{workspace}/{package}/…`) answers on this host: that workspace's own hosts, still its own once moved,
+    /// hosts of no workspace (the hooks host, a shared host that serves every workspace in turn, a host the cluster does
+    /// not know), and the host the platform gives outside callers for every workspace (`callback_base`: the hooks host
+    /// when set, else `PUBLIC_URL`'s), whichever workspace it otherwise is. Never another workspace's own host or the
+    /// accounts host, where other people's sessions are.
+    pub async fn answers_for(&self, headers: &HeaderMap, tenant: Uuid) -> Result<bool> {
+        let callbacks = self.kernel.settings.callback_base().as_deref().and_then(public_host);
+        if callbacks.is_some() && request_host(headers).and_then(ferrum_kernel::shell::normalize_host) == callbacks {
+            return Ok(true);
+        }
+        Ok(match self.place(headers).await? {
+            Place::Workspace(t) | Place::Portal(t) | Place::Site(t, _) => t == tenant,
+            Place::Moved(_) => matches!(
+                self.kernel.route_host(request_host(headers).unwrap_or_default()).await?,
+                HostRoute::Moved { tenant: t, .. } | HostRoute::Leaving { tenant: t, .. } | HostRoute::Forward { tenant: t, .. } if t == tenant
+            ),
+            Place::Accounts => false,
+            Place::Hooks | Place::Any | Place::Nowhere => true,
+        })
+    }
+
     /// Refuses the directory's tokens anywhere but on the accounts host (bearer tokens, which
     /// [`Shell::check_host`] does not see).
     pub async fn check_directory(&self, headers: &HeaderMap, tenant: Uuid) -> Result<()> {

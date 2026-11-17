@@ -63,7 +63,7 @@ removes it with its private data (records it created stay).
 | `entities` | Entity definitions it brings (masters, documents or their child entities, names start with `X`), stored without DDL |
 | `permissions` | `[{entity, read, write, create, delete, submit, cancel, export, import}]` — its service user's role, and the most it may do on a user's behalf |
 | `hooks` | `[{entity, stage}]` with stage `before_validate`, `validate`, `before_submit`, `on_submit`, `before_cancel`, `on_cancel`, `before_delete`; entity `*` for all |
-| `routes` | `[{path, public}]`; `/x` or `/x/*`. Signed-in: `/api/ext/{plugin}{path}`; public: `/api/public/{tenant}/{plugin}{path}` |
+| `routes` | `[{path, public}]`; `/x` or `/x/*`. Signed-in: `/api/ext/{plugin}{path}`; public: `/api/public/{tenant}/{plugin}{path}`, answered on the workspace's own hosts, hosts of no workspace (the hooks host, a shared host) and the address callbacks are given (`FERRUM_HOOKS_HOST`, else `PUBLIC_URL`'s host), `404` on another workspace's own. A reply's `set-cookie`, `content-security-policy` and `x-frame-options` are dropped; unless it is JSON or an attachment it is sent sandboxed (`default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox`), never sniffed: a page of a plugin's runs no script on Ferrum's origin |
 | `sockets` | `[{path, public, subprotocols}]` at `/ws/ext/{tenant}/{plugin}{path}`; clients must offer one of the subprotocols |
 | `subscriptions` | Outbox topics: `SalesInvoice.submitted`, `SalesInvoice.*`, `plugin.other.*`, `*` |
 | `schedules` | `[{name, every_seconds}]` (at least 60) |

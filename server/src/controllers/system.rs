@@ -302,16 +302,16 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
     let mut record: Option<Uuid> = None;
     let mut public = false;
     let mut file: Option<(String, String, bytes::Bytes)> = None;
-    while let Some(field) = mp.next_field().await.map_err(|e| ApiError(Error::invalid(format!("multipart: {e}"))))? {
+    while let Some(field) = mp.next_field().await? {
         match field.name().unwrap_or_default() {
-            "entity" => entity = Some(field.text().await.map_err(|e| ApiError(Error::invalid(e.to_string())))?),
+            "entity" => entity = Some(field.text().await?),
             "record_id" => record = field.text().await.ok().and_then(|s| s.parse().ok()),
             "public" => public = field.text().await.ok().is_some_and(|s| s == "true" || s == "1"),
             "file" => {
                 let name =
                     field.file_name().unwrap_or("upload.bin").chars().filter(|c| !c.is_control() && *c != '/' && *c != '\\').take(200).collect::<String>();
                 let ctype = field.content_type().unwrap_or("application/octet-stream").to_lowercase();
-                let data = field.bytes().await.map_err(|e| ApiError(Error::invalid(format!("upload: {e}"))))?;
+                let data = field.bytes().await?;
                 file = Some((name, ctype, data));
             }
             _ => {}
@@ -319,7 +319,7 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
     }
     let (name, ctype, data) = file.ok_or_else(|| ApiError(Error::field("file", "is required")))?;
     if data.len() > st.settings.upload_max_bytes {
-        return Err(ApiError(Error::field("file", format!("larger than {} bytes", st.settings.upload_max_bytes))));
+        return Err(ApiError(crate::error::too_large(format!("the file is larger than {} bytes", st.settings.upload_max_bytes))));
     }
     let ctype = if BLOCKED_TYPES.contains(&ctype.as_str()) { "application/octet-stream".to_string() } else { ctype };
     match (&entity, record) {
@@ -439,6 +439,24 @@ pub fn file_headers(h: &mut HeaderMap, ctype: &str, name: &str, inline: bool) {
     let how = if inline && !runs { "inline" } else { "attachment" };
     if let Ok(v) = HeaderValue::from_str(&format!("{how}; filename=\"{}\"", name.replace(['"', '\\'], ""))) {
         h.insert(header::CONTENT_DISPOSITION, v);
+    }
+}
+
+/// A reply a plugin or an app's site made, as the application's own origin sends it: never sniffed, and, unless it is
+/// JSON or an attachment, under [`FILE_SANDBOX`] when it brings no policy of its own, so a page runs nothing there with
+/// the session of whoever opens it. Only a native app's page brings one (a plugin's is taken off first, plugins.rs).
+pub fn contain(h: &mut HeaderMap) {
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    // Every value a header has, by what comes before its parameters, as a browser reads it; none: not so.
+    let all = |name: header::HeaderName, ok: &dyn Fn(&str) -> bool| {
+        let said: Vec<String> =
+            h.get_all(name).iter().map(|v| v.to_str().unwrap_or_default().split(';').next().unwrap_or_default().trim().to_ascii_lowercase()).collect();
+        !said.is_empty() && said.iter().all(|v| ok(v))
+    };
+    let json = all(header::CONTENT_TYPE, &|t| t == "application/json" || (t.starts_with("application/") && t.ends_with("+json")));
+    let attachment = all(header::CONTENT_DISPOSITION, &|d| d == "attachment");
+    if !json && !attachment && !h.contains_key(header::CONTENT_SECURITY_POLICY) {
+        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(FILE_SANDBOX));
     }
 }
 

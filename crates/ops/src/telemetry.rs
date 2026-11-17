@@ -61,9 +61,12 @@ pub async fn ensure_partitions(k: &Kernel, now: DateTime<Utc>) -> Result<()> {
     while day <= newest {
         let name = partition(day);
         if !have.contains(&name) {
-            // The names and days are made here, from dates, never from input.
+            // The names and days are made here, from dates, never from input. A partition read by its own name is a
+            // table of its own, which op_measurement's policy does not reach: forced, with no policy of its own, such a
+            // read finds nothing, while what goes through op_measurement is held to its policy (as ERP's journal).
             sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-                "create table {name} partition of op_measurement for values from ('{day}') to ('{}')",
+                "create table {name} partition of op_measurement for values from ('{day}') to ('{}'); \
+                 alter table {name} enable row level security; alter table {name} force row level security",
                 day.succ_opt().ok_or_else(|| Error::internal("no day follows"))?
             )))
             .execute(&mut *tx)

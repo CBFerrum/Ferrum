@@ -47,7 +47,7 @@ pub(crate) const GW_PLUGIN: &str = r#"{
   "entities": [{"name": "XGwReading", "label": "Reading", "kind": "master", "fields": [{"name": "value", "type": "decimal"}]}]
 }"#;
 
-/// A wasm app with a plugin that uses every kind of permission, and a package with SQL.
+/// A wasm app with a plugin that uses every kind of permission, and a package.
 pub(crate) fn wasm_app() -> BTreeMap<String, Vec<u8>> {
     files(&[
         (
@@ -59,7 +59,6 @@ platform: \"^0.3\"\nrequires: {kit: \"^1\"}\npackages: [gw]\nplugin: plugin.json
         ("plugin.wasm", b"\0asm\x01\0\0\0"),
         ("packages/gw/package.yaml", b"package: gw\nversion: 2.1.0\n"),
         ("packages/gw/entities/device.yaml", b"name: GwDevice\nlabel: Device\nkind: master\nfields:\n  - {name: serial, type: data}\n"),
-        ("packages/gw/sql/001_init.sql", b"create index if not exists gw_serial on e_gw_device (serial);\n"),
     ])
 }
 
