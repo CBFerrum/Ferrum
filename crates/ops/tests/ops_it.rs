@@ -242,6 +242,7 @@ async fn scenario() {
     let k = boot().await;
     a_charger_is_where_its_connection_is(&k).await;
     envelopes_and_exclusive_work(&k).await;
+    the_ledger_asks_who_is_asking(&k).await;
     let t = workspace(&k, "north").await;
     let site = id_of(&k.insert(&t.admin, "Site", obj(json!({"site_name": "North DC", "site_code": "north"}))).await.expect("site"));
     let (gw_id, gw) = gateway(&t, "GW-1", site, 7).await;
@@ -1085,6 +1086,43 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
     cancelled.expect("stopped before it left");
     let again = exclusive(held("1"), "wms-task:1").await;
     assert!(!again.repeated && again.id != first.id, "once it has ended, the next attempt is its own");
+}
+
+/// A1: whoever asks in person, or an agent in their name, needs the dispatch role and a site that admits
+/// them, in the ledger itself: another app writing commands (Edge's bulk command does, for up to 500
+/// devices) cannot skip either. An app's engine answers for its own gates.
+async fn the_ledger_asks_who_is_asking(k: &Arc<Kernel>) {
+    let t = workspace(k, "guarded").await;
+    let site = id_of(&k.insert(&t.admin, "Site", obj(json!({"site_name": "Cleanroom", "site_code": "clean"}))).await.unwrap());
+    let (gw_id, _gw) = gateway(&t, "GW-C", site, 21).await;
+    activate(&t, gw_id).await;
+    let fan = robot(&t, "FAN-1", site).await;
+    let members = json!([{"user_email": "member@guarded.test"}, {"user_email": "setup@guarded.test"}]);
+    k.update(&t.admin, "Site", site, obj(json!({"restricted": true, "members": members})), None).await.expect("members only");
+    let outsider = person(&t, "contractor@guarded.test", &["Ops Dispatcher"]).await;
+    let setup = person(&t, "setup@guarded.test", &["Device Administrator", "Ops Viewer"]).await;
+    let member = person(&t, "member@guarded.test", &["Ops Dispatcher"]).await;
+    let written = async || -> i64 {
+        let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+        let n = sqlx::query_scalar("select count(*) from op_command where target_id = $1").bind(fan).fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        n
+    };
+    // As another app calls it: straight to the write function, with the caller's own context.
+    for issuer in [Issuer::Person, Issuer::Ai] {
+        let asked = issue(&t, &outsider, NewCommand { issuer, ..move_tote(fan) }).await;
+        assert!(matches!(asked, Err(Error::NotFound(_))), "a members-only site is closed to whoever it does not list, as {issuer:?}: {asked:?}");
+        let asked = issue(&t, &setup, NewCommand { issuer, ..move_tote(fan) }).await;
+        assert!(matches!(asked, Err(Error::Forbidden(_))), "configuring a device is not dispatching to it, as {issuer:?}: {asked:?}");
+    }
+    assert_eq!(written().await, 0, "and nothing was written");
+    assert_eq!(issue(&t, &member, move_tote(fan)).await.unwrap().state, State::Queued, "a dispatcher the site lists");
+    // An engine releasing its own work (a warehouse task a person released there) is not asked again.
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+    let engine = commands::issue_exclusive(&mut tx, &outsider, NewCommand { issuer: Issuer::Engine, ..move_tote(fan) }, "wms-task:7").await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(engine.state, State::Queued);
+    assert_eq!(written().await, 2);
 }
 
 /// A device that exists and is not active.

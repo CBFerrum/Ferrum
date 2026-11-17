@@ -58,6 +58,13 @@ authorization.
 | Reconcile | Ops Recovery | Needs what was found, in words |
 | Enroll, change lifecycle, move authority, set PINs | Device Administrator | |
 
+The ledger asks it of whoever writes a command, whichever app writes it (`commands::issue`): a command
+issued as a person's, or an agent's in a person's name, needs Ops Dispatcher or Ops Manager, and a site
+that admits them. A site marked members-only admits only the people it lists, whatever their roles.
+Operations' endpoints, Edge's bulk command and any other app are refused alike, and nothing is written.
+An app's engine issuing work a person released there (a warehouse task, a production run) answers for
+its own gates.
+
 Agents hold none of these. They read, and they propose; a proposal runs only when a person approves
 it (`crates/ops/src/mcp.rs`).
 

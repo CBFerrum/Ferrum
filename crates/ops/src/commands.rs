@@ -20,7 +20,7 @@ pub const MAX_LIFETIME_HOURS: i64 = 7 * 24;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Issuer {
-    /// A person asked, through the ledger's own endpoints.
+    /// A person asked, through any app: the ledger asks for the dispatch role and a site that admits them.
     #[default]
     Person,
     /// An app's engine, on behalf of what a person did there (releasing a wave).
@@ -303,9 +303,10 @@ async fn existing(tx: &mut Tx, tenant: Uuid, cmd: &NewCommand, exclusive: Option
     Ok(Some(Issued { id, state, repeated: true }))
 }
 
-/// Writes a command in the caller's transaction. Engines call this for work a person released in
-/// their own app; the ledger's endpoints check the caller's role first. Whatever the caller's rights,
-/// a device receives only what it was commissioned for, and software proposes rather than decides.
+/// Writes a command in the caller's transaction. Asked as a person, or as an agent, it takes the
+/// dispatch role and a site that admits them, whichever app calls; an app's engine, writing work a
+/// person released in that app, answers for its own gates. Whatever the caller's rights, a device
+/// receives only what it was commissioned for, and software proposes rather than decides.
 pub async fn issue(tx: &mut Tx, ctx: &Ctx, cmd: NewCommand) -> Result<Issued> {
     write(tx, ctx, cmd, None).await
 }
@@ -319,6 +320,12 @@ pub async fn issue_exclusive(tx: &mut Tx, ctx: &Ctx, cmd: NewCommand, key: &str)
 }
 
 async fn write(tx: &mut Tx, ctx: &Ctx, cmd: NewCommand, exclusive: Option<&str>) -> Result<Issued> {
+    // Whoever asks in person, or an agent in a person's name, needs the dispatch role and a site that admits
+    // them, whichever app writes it. An app's engine answers for its own gates.
+    if matches!(cmd.issuer, Issuer::Person | Issuer::Ai) {
+        crate::site::may(ctx, crate::site::DISPATCH)?;
+        crate::site::device_site_tx(tx, ctx, cmd.target).await?;
+    }
     if cmd.operation.is_empty() || cmd.operation.len() > 100 {
         return Err(Error::field("operation", "is required, at most 100 characters"));
     }
