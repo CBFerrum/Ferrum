@@ -3354,7 +3354,9 @@ event that started a run, the run's own record, the material shown) loses those 
 when the run is reported again. The events of the records erased lose the record they carried (`doc` and `was`), in
 the outbox and in every webhook delivery of them, handled, waiting or dead; each says `erased` instead, and an
 administrator's replay of a dead one is refused (409), since it would go out without the record. The receipts the gate
-keeps of operations on them (a process's, an app's call, an agent's) keep only the record's id and version. The same is available as `GET
+keeps of operations on them (a process's, an app's call, an agent's) keep only the record's id and version. The
+person's conversations with the assistant are deleted, and a tool result in anyone else's that names a record erased
+(by its id) is blanked (*The assistant*, Deleting). The same is available as `GET
 /api/admin/personal-data` and `POST /api/admin/personal-data/erase`; packages and apps declare their
 entities with `personal_data` in their manifests. What an app keeps of people in tables of its own,
 outside its entities (a meeting's transcript, say), it reports and erases itself
@@ -3834,7 +3836,11 @@ It is off unless you set a key:
   taken as stopped after 15 minutes, and calls it left half done are reported to the model as
   interrupted.
 * **Deleting.** People delete their conversations from the Conversations menu; removing a
-  workspace removes its conversations.
+  workspace removes its conversations. What a tool gave the model is kept 90 days (a fixed period,
+  `privacy::TOOL_RESULT_DAYS`): after that the hourly maintenance blanks it, and the conversation, the
+  person's words and the model's stay. Erasing a person deletes their own conversations, and blanks every
+  tool result in anyone's that names a record the erasure reached, by its id; the model's words and the
+  person's are not searched.
 
 
 **What may leave.** Reading something does not make it the person's to send to a third party. So

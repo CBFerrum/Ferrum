@@ -35,6 +35,10 @@ create table assistant_message (
 
 -- A person's calls to the model in the last hour (their allowance): one assistant message each.
 create index assistant_message_calls on assistant_message (tenant_id, created_at) where role = 'assistant';
+-- Messages that hold what a tool gave the model and is not blanked yet: the hourly maintenance blanks it after a while,
+-- an erasure when it names a record erased (crates/kernel/src/privacy.rs, HOLDS_RESULTS, the same text).
+create index assistant_message_results on assistant_message (created_at)
+  where role = 'user' and jsonb_path_exists(content, '$[*] ? (@.type == "tool_result" && !(@.content[0].text starts with "(removed"))');
 
 alter table assistant_thread enable row level security;
 alter table assistant_thread force row level security;

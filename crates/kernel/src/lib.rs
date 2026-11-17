@@ -574,6 +574,7 @@ impl Kernel {
         step("the vault's upkeep", vault::upkeep(self).await.map(|_| 0));
         let purged = step("purging events", self.purge_old_events(self.settings.event_retention_days).await)
             + step("purging operation receipts", self.purge_receipts().await)
+            + step("blanking the assistant's old tool results", self.purge_tool_results().await)
             + step("purging OAuth codes, tokens and clients", self.oauth_purge().await)
             + step("purging OpenID codes and sign-ins", self.openid_purge().await)
             + step("purging sessions", self.purge_sessions().await)
