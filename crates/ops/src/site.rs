@@ -63,9 +63,12 @@ fn time(req: &SiteRequest, k: &str) -> Result<Option<DateTime<Utc>>> {
 }
 
 /// Roles that each kind of act needs. Read, dispatch, configuration and recovery are separate
-/// privileges: who may move a robot need not be who may change what it is allowed to do.
+/// privileges: who may move a robot need not be who may change what it is allowed to do. An
+/// administrator reads and configures without them, and dispatches, approves and settles only with
+/// the role, which they can give themselves (`has_role` holds every role for an administrator).
 pub(crate) fn may(ctx: &Ctx, roles: &[&str]) -> Result<()> {
-    if ctx.is_admin || roles.iter().any(|r| ctx.has_role(r)) {
+    let admin = ctx.is_admin && [READ, CONFIGURE].contains(&roles);
+    if admin || roles.iter().any(|r| ctx.roles.iter().any(|held| held == r)) {
         return Ok(());
     }
     Err(Error::Forbidden(format!("this takes one of: {}", roles.join(", "))))

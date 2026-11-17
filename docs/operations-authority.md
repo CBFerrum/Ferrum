@@ -65,6 +65,10 @@ Operations' endpoints, Edge's bulk command and any other app are refused alike, 
 An app's engine issuing work a person released there (a warehouse task, a production run) answers for
 its own gates.
 
+A workspace administrator sees everything here and does what a Device Administrator does without
+these roles, but issues, stops, approves, refuses and reconciles only with the role itself, which an
+administrator can give themselves.
+
 Agents hold none of these. They read, and they propose; a proposal runs only when a person approves
 it (`crates/ops/src/mcp.rs`).
 

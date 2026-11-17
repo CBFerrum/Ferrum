@@ -73,6 +73,9 @@ async fn workspace(k: &Arc<Kernel>, slug: &str) -> T {
         .expect("tenant");
     let session = k.login(slug, &email, "Correct-Horse-9").await.unwrap();
     let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.unwrap();
+    // The scenarios' administrator dispatches, approves and settles too, which takes the role (A18).
+    k.set_user_roles(&admin, session.user, &["Ops Manager".into()]).await.unwrap();
+    let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.unwrap();
     T { k: k.clone(), tenant, admin }
 }
 
@@ -1134,6 +1137,22 @@ async fn the_ledger_asks_who_is_asking(k: &Arc<Kernel>) {
     tx.commit().await.unwrap();
     assert_eq!(engine.state, State::Queued);
     assert_eq!(written().await, 2);
+
+    // A18: an administrator reads and configures here without a role, and dispatches, approves and settles
+    // only with one, which they can give themselves.
+    let it = k.create_user(&t.admin, "it@guarded.test", "IT", Some("Correct-Horse-9"), &[], true).await.unwrap();
+    let it_admin = k.load_ctx(t.tenant, it, None, "it".into()).await.unwrap();
+    let asked = issue(&t, &it_admin, move_tote(fan)).await;
+    assert!(matches!(asked, Err(Error::Forbidden(_))), "an administrator without the role does not dispatch: {asked:?}");
+    let door = issue(&t, &member, NewCommand { operation: "door.force".into(), payload: json!({"door": 1}), ..move_tote(fan) }).await.unwrap();
+    assert_eq!(door.state, State::Proposed);
+    assert!(matches!(api(&t, &it_admin, "POST", &format!("/commands/{}/approve", door.id), Value::Null).await, Err(Error::Forbidden(_))), "nor approves");
+    assert!(api(&t, &it_admin, "GET", "/overview", Value::Null).await.is_ok(), "reading is theirs");
+    let pin = api(&t, &it_admin, "POST", "/operators/pin", json!({"site": site, "email": "member@guarded.test", "pin": "204060"})).await;
+    assert!(pin.is_ok_and(|r| r.status == 204), "and configuring");
+    k.set_user_roles(&t.admin, it, &["Ops Dispatcher".into()]).await.unwrap();
+    let it_admin = k.load_ctx(t.tenant, it, None, "it".into()).await.unwrap();
+    assert_eq!(issue(&t, &it_admin, move_tote(fan)).await.unwrap().state, State::Queued, "given the role, they dispatch");
 }
 
 /// A device that exists and is not active.
