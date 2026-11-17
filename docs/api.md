@@ -1302,7 +1302,10 @@ recently the record changed: `{results: [{kind: "record", entity, id, title, sub
 pages, partial, took_ms}`; a record with neither a title nor a number is left to its app's own
 search. `pages` ("Go to") are the lists the caller may open whose name matches, at most five:
 `{kind: "page", entity, title, subtitle, url: "/open/{entity}", icon}`. At least two characters; at most 100; `limit` up to 50 (default 20). `partial` is
-true when an entity took longer than its time budget and was left out. The bar's search asks this
+true when an entity took longer than its time budget (300 ms) or the whole search reached its deadline (800 ms),
+and what had not finished was left out. The entities are searched six at a time as the request's own work: once
+the deadline passes or the caller goes away (the bar drops a search at the next keystroke), no further query of it
+starts, and those already sent end with their statement. The bar's search asks this
 and the apps' `shell.search` providers together; a provider answers `GET {endpoint}?q=&limit=` with
 `{results: [{title, subtitle?, url, icon?, updated_at?}]}`, each `url` a page of this site the caller
 may open.
