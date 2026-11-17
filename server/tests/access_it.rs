@@ -66,6 +66,21 @@ async fn call(r: &axum::Router, method: Method, path: &str, ip: &str, cred: Cred
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// `req` as it arrives straight from `peer`'s connection, no proxy in front: what it says of itself in its headers is all
+/// the client's.
+async fn direct(r: &axum::Router, peer: &str, req: axum::http::request::Builder, body: Option<Value>) -> (StatusCode, String) {
+    let req = req.header(header::HOST, HOST).extension(axum::extract::ConnectInfo(std::net::SocketAddr::new(peer.parse().unwrap(), 40000)));
+    let req = match body {
+        Some(b) => req.header(header::CONTENT_TYPE, "application/json").body(Body::from(b.to_string())),
+        None => req.body(Body::empty()),
+    }
+    .unwrap();
+    let res = r.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// A password sign-in: status, answer, and the cookie's token when signed in from a page.
 async fn sign_in(r: &axum::Router, ip: &str, email: &str, password: &str, page: bool) -> (StatusCode, Value, Option<String>) {
     let mut req = Request::builder()
@@ -360,6 +375,30 @@ async fn scenario() {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(why["reason"], "the office moved");
+
+    // ── With no proxy in front (FERRUM_PROXY_HOPS=0, as Compose sets it), the address is the connection's ──
+    let (status, _) = call(&r, Method::PUT, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), Some(networks.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+    ferrum_server::extract::PROXY_HOPS.store(0, std::sync::atomic::Ordering::Relaxed);
+    let me = || Request::get("/api/auth/me").header(header::AUTHORIZATION, format!("Bearer {}", holds[0].token));
+    // What the client writes in X-Forwarded-For is not its address.
+    let (status, answer) = direct(&r, OUTSIDE, Request::get("/_zone").header("x-forwarded-for", INSIDE), None).await;
+    assert_eq!((status, serde_json::from_str::<Value>(&answer).unwrap()["address"].clone()), (StatusCode::OK, json!(OUTSIDE)), "{answer}");
+    let (status, answer) = direct(&r, OUTSIDE, me().header("x-forwarded-for", INSIDE), None).await;
+    assert!(refused_by_network(status, &answer), "staff from outside, the header saying inside: {status} {answer}");
+    assert_eq!(direct(&r, INSIDE, me(), None).await.0, StatusCode::OK, "staff from inside");
+    // Callers are not one address: the tries one address uses up are its own.
+    let try_from = |peer: &'static str, email: &'static str, password: &'static str| {
+        let r = r.clone();
+        async move { direct(&r, peer, Request::post("/api/auth/login"), Some(json!({"tenant": "acme", "email": email, "password": password}))).await.0 }
+    };
+    for _ in 0..20 {
+        assert_eq!(try_from("198.51.100.21", "nobody@acme.test", "Wrong-Horse-99").await, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(try_from("198.51.100.21", "nobody@acme.test", "Wrong-Horse-99").await, StatusCode::TOO_MANY_REQUESTS, "the 21st from there");
+    assert_eq!(try_from("198.51.100.22", "portal@acme.test", PASSWORD).await, StatusCode::OK, "another address signs in");
+    ferrum_server::extract::PROXY_HOPS.store(1, std::sync::atomic::Ordering::Relaxed);
+    k.clear_staff_networks("acme", "test").await.unwrap();
 
     // ── 2. An API key pinned to networks ──
     let member_token = holds[0].token.clone();

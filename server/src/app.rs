@@ -722,8 +722,10 @@ impl Hooks for App {
             // A signed-out page goes by the browser's language (sign-in, a status page).
             .layer(axum::middleware::from_fn(crate::shell_words::browser))
             .layer(axum::middleware::from_fn(move |req, next| app_origins(origins.clone(), req, next)))
-            // Outermost: a request's whole time, by app and kind (/metrics).
-            .layer(axum::middleware::from_fn(crate::request_metrics::count)))
+            // A request's whole time, by app and kind (/metrics).
+            .layer(axum::middleware::from_fn(crate::request_metrics::count))
+            // Outermost: the client's address, before anything reads it.
+            .layer(axum::middleware::from_fn(crate::extract::peer_address)))
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
@@ -843,8 +845,6 @@ fn proof_floor(setting: &str) -> bool {
     setting.trim().eq_ignore_ascii_case("record")
 }
 
-/// Each client address's budget. Only requests that came through the proxy (`X-Forwarded-For`)
-/// count: probes, port-forwards and the cluster's own calls have no address to tell apart.
 /// Runs a request under its trace: the events it writes name its request id, and the caller's W3C
 /// trace context travels with them. This layer sits outside Loco's request id, so it settles the id
 /// and puts it on the request: the log, the request's context and its events all name the same one.
@@ -865,6 +865,9 @@ fn valid_traceparent(v: &str) -> bool {
         && parts.iter().all(|p| p.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
 }
 
+/// Each client address's budget, counted for every request that has an address (`X-Forwarded-For`): with no proxy in
+/// front, every connection's (crate::extract::peer_address); behind proxies, those that came through them, as probes,
+/// port-forwards and the cluster's own calls have no address to tell apart.
 async fn per_address(limiter: Arc<RateLimiter>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::response::IntoResponse;
     if req.headers().contains_key("x-forwarded-for")

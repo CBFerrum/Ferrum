@@ -75,9 +75,9 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `authority_ttl_secs` | `FERRUM_AUTHORITY_TTL_SECS` | int | `30` | installation, next start | How long a region holds the right to write between renewals (default 30). |
 | `run_background` | `FERRUM_RUN_BACKGROUND` | bool | `true` | each pool, next start | `false` turns a replica into API-only. |
 | `user_requests_per_minute` | `FERRUM_USER_REQUESTS_PER_MINUTE` | int | `3000` | installation, at once | Requests one user (with any of their sessions and API keys) may make per minute in a pool; beyond it they get `429` with `Retry-After`. Default 3000; `0` turns it off. Each replica allows its share: this divided by the pool's live replicas (the `replica` table). |
-| `address_requests_per_minute` | `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | int | `6000` | installation, at once | Requests one client address may make per minute in a pool, counted for requests that came through the proxy (`X-Forwarded-For`); default 6000, `0` turns it off. Each replica allows this divided by the pool's live replicas. Health probes and in-cluster calls are not counted. |
+| `address_requests_per_minute` | `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | int | `6000` | installation, at once | Requests one client address may make per minute in a pool; default 6000, `0` turns it off. Each replica allows this divided by the pool's live replicas. With no proxy in front (`proxy_hops` 0) every request is counted, by its connection's address; behind proxies only those that came through them (`X-Forwarded-For`), so health probes and in-cluster calls are not. |
 | `tenant_requests` | `FERRUM_TENANT_REQUESTS` | int |  | installation, next start | One workspace's API requests that run at once on each replica. The rest wait their turn, and one that waits five seconds is refused with `429`. A response that waited says how long in `X-Ferrum-Waited-Ms`. Default half of `FERRUM_DB_MAX_CONNECTIONS`, at least 2, so a workspace that floods the server holds at most half its database connections and everyone else has the others; `0` turns it off. |
-| `proxy_hops` | `FERRUM_PROXY_HOPS` | int | `1` | installation, at once | How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2 with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits is the entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their own (too high). |
+| `proxy_hops` | `FERRUM_PROXY_HOPS` | int | `1` | installation, at once | How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2 with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits, zones and networks is the entry that many from the right; at 0 it is the connection's own address and the header is not read. Set it wrong and everyone shares one address (too low) or clients choose their own (too high). |
 | `operator_token` | `FERRUM_OPERATOR_TOKEN` | text |  | secret: the environment, else the vault (compared) | Enables the settings routes (`/api/operator/settings`, docs/api.md) with header `X-Ferrum-Operator-Token`; empty (the default) disables them. |
 | `packages_dir` | `FERRUM_PACKAGES_DIR` | text | `packages` | installation, next start | Where the platform's packages are (the image's). |
 | `files_dir` | `FERRUM_FILES_DIR` | text | `/var/lib/ferrum/files` | installation, next start | Local attachment directory (default `/var/lib/ferrum/files`). |
@@ -2265,8 +2265,8 @@ start, saying what: an unknown key, a pin or default that names no zone, a netwo
 **Which zone a request is in**, in this order: the replica's pin; else the zone of the host it came to
 (set with `ferrum task set_host_zone`); else the first zone whose `networks` hold the caller's address;
 else the default; else none, which admits everyone, as without zones. The caller's address is the one the
-server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS`, and nothing else the client sends counts. When
-the host's zone cannot be read, staff are refused.
+server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS` (with 0, the connection's own), and nothing else the
+client sends counts. When the host's zone cannot be read, staff are refused.
 
 **What a zone with `staff: none` does.**
 * A staff credential is refused there, whatever its kind: the browser's session, a session token, an API
@@ -2421,8 +2421,9 @@ session, session tokens, OAuth and MCP tokens that act for a person, app passwor
 apps, app tokens, sockets, and signing in. It does not hold API keys and SCIM keys: those are machines',
 and a key has networks of its own. It does not hold support access, which an administrator grants for a
 while and which the workspace sees request by request. Portal people, guests and service accounts are never
-held to it. The caller's address is the one the server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS`;
-without a proxy in front there is no address, which is outside every list.
+held to it. The caller's address is the one the server takes from `X-Forwarded-For` by `FERRUM_PROXY_HOPS`, or
+with no proxy in front (0) the connection's own; behind proxies, a request that came through none of them has no
+address, which is outside every list.
 
 **A key's own networks.** An API key (of any scope, an app password and a SCIM key included) may be pinned to
 networks of its own when it is made, or later (`networks` in the keys API); from anywhere else it is refused
