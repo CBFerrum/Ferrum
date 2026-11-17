@@ -50,7 +50,7 @@ Everything from a browser, a public page, a webhook, a provider, a plugin or a f
 | Input | Rule | Where the platform helps |
 |---|---|---|
 | SQL | Bind every value; an identifier only from metadata, quoted | `crates/kernel/src/ddl.rs` `q`; statements built with `format!` must be wrapped in `sqlx::AssertSqlSafe`, which makes them visible to review |
-| Request bodies | A size limit per route | `Site::max_body` (1 MiB default) and `max_body_for`; the server reads no further, at most 1 GiB |
+| Request bodies | A size limit per route | `Site::max_body` (1 MiB default) and `max_body_for`; the server reads no further, at most 1 GiB, and answers `413` (`too_large`) |
 | Rich text | Clean it on the server, whatever the browser sent | `ferrum_kernel::richtext::sanitize_html` (the same allow-list as the kit's editor), `html_to_text` for a mail's text part |
 | Templates | Escape every value | Print formats and messages are MiniJinja with HTML auto-escaping and a fuel limit |
 | Files | Never served inline as the type they claim when a browser would run it | `files::runs_in_browser`, `ACTIVE_TYPES`; the scanner ([09](09-files-and-storage.md)) |

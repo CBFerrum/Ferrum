@@ -21,10 +21,11 @@ use uuid::Uuid;
 const MAX_BODY: usize = 1 << 30;
 
 /// Reads a request body up to the route's `limit`: refused at once when its declared length is
-/// larger, and as soon as it grows past the limit otherwise, so no route buffers more than it takes.
+/// larger, and as soon as it grows past the limit otherwise, so no route buffers more than it takes
+/// (`413`). Sites, DAV and plugins read theirs here.
 pub(crate) async fn read_body(headers: &HeaderMap, body: Body, limit: usize) -> Result<Bytes, ApiError> {
     let limit = limit.min(MAX_BODY);
-    let too_large = || ApiError(Error::invalid(format!("request body larger than {} KB", limit / 1024)));
+    let too_large = || ApiError(crate::error::too_large(format!("request body larger than {} KB", limit / 1024)));
     let declared = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
     if declared.is_some_and(|n| n > limit as u64) {
         return Err(too_large());
@@ -208,13 +209,15 @@ mod tests {
             h.insert(header::CONTENT_LENGTH, HeaderValue::from(n));
             h
         };
+        let refused = |r: Result<Bytes, ApiError>| r.err().map(|e| (e.0.status(), e.0.code()));
+        let too_large = Some((413, "too_large"));
         // Refused on its declared length, before a byte is read.
-        assert!(read_body(&declared(2_000), Body::from(vec![0u8; 10]), 1_000).await.is_err());
+        assert_eq!(refused(read_body(&declared(2_000), Body::from(vec![0u8; 10]), 1_000).await), too_large);
         // Without a length, refused once it grows past the limit.
-        assert!(read_body(&HeaderMap::new(), Body::from(vec![0u8; 2_000]), 1_000).await.is_err());
+        assert_eq!(refused(read_body(&HeaderMap::new(), Body::from(vec![0u8; 2_000]), 1_000).await), too_large);
         let ok = read_body(&declared(10), Body::from(vec![7u8; 10]), 1_000).await.unwrap();
         assert_eq!(ok.as_ref(), [7u8; 10]);
         // The ceiling holds whatever a route asks for.
-        assert!(read_body(&declared(MAX_BODY + 1), Body::empty(), usize::MAX).await.is_err());
+        assert_eq!(refused(read_body(&declared(MAX_BODY + 1), Body::empty(), usize::MAX).await), too_large);
     }
 }

@@ -7,7 +7,6 @@ use crate::error::{ApiError, ApiResult};
 use crate::extract::Auth;
 use crate::state::{Uploads, app_state};
 use axum::Json;
-use axum::extract::multipart::MultipartError;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
@@ -156,10 +155,6 @@ async fn uninstall(Auth(ctx): Auth, State(app): State<AppContext>, uri: Uri, Que
     Ok(Json(json!({"removed": id, "deleted_data": deleted, "leftovers": leftovers})).into_response())
 }
 
-fn bad_form(e: MultipartError) -> ApiError {
-    ApiError(Error::invalid(format!("upload: {}", e.body_text())))
-}
-
 /// `multipart/form-data` with the bundle in the field `bundle` (≤ 50 MB).
 async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut form: Multipart) -> ApiResult<Response> {
     let st = app_state(&app)?;
@@ -171,14 +166,14 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut form: Multip
         return Err(ApiError(Error::Forbidden("uploading apps is turned off on this server (apps.uploads)".into())));
     }
     let mut bundle = None;
-    while let Some(mut field) = form.next_field().await.map_err(bad_form)? {
+    while let Some(mut field) = form.next_field().await? {
         if field.name() != Some("bundle") {
             continue;
         }
         let mut data = Vec::new();
-        while let Some(chunk) = field.chunk().await.map_err(bad_form)? {
+        while let Some(chunk) = field.chunk().await? {
             if data.len() + chunk.len() > MAX_BUNDLE {
-                return Err(ApiError(Error::invalid("app bundles are limited to 50 MB")));
+                return Err(ApiError(crate::error::too_large("app bundles are limited to 50 MB")));
             }
             data.extend_from_slice(&chunk);
         }

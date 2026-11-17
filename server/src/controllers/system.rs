@@ -302,16 +302,16 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
     let mut record: Option<Uuid> = None;
     let mut public = false;
     let mut file: Option<(String, String, bytes::Bytes)> = None;
-    while let Some(field) = mp.next_field().await.map_err(|e| ApiError(Error::invalid(format!("multipart: {e}"))))? {
+    while let Some(field) = mp.next_field().await? {
         match field.name().unwrap_or_default() {
-            "entity" => entity = Some(field.text().await.map_err(|e| ApiError(Error::invalid(e.to_string())))?),
+            "entity" => entity = Some(field.text().await?),
             "record_id" => record = field.text().await.ok().and_then(|s| s.parse().ok()),
             "public" => public = field.text().await.ok().is_some_and(|s| s == "true" || s == "1"),
             "file" => {
                 let name =
                     field.file_name().unwrap_or("upload.bin").chars().filter(|c| !c.is_control() && *c != '/' && *c != '\\').take(200).collect::<String>();
                 let ctype = field.content_type().unwrap_or("application/octet-stream").to_lowercase();
-                let data = field.bytes().await.map_err(|e| ApiError(Error::invalid(format!("upload: {e}"))))?;
+                let data = field.bytes().await?;
                 file = Some((name, ctype, data));
             }
             _ => {}
@@ -319,7 +319,7 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
     }
     let (name, ctype, data) = file.ok_or_else(|| ApiError(Error::field("file", "is required")))?;
     if data.len() > st.settings.upload_max_bytes {
-        return Err(ApiError(Error::field("file", format!("larger than {} bytes", st.settings.upload_max_bytes))));
+        return Err(ApiError(crate::error::too_large(format!("the file is larger than {} bytes", st.settings.upload_max_bytes))));
     }
     let ctype = if BLOCKED_TYPES.contains(&ctype.as_str()) { "application/octet-stream".to_string() } else { ctype };
     match (&entity, record) {

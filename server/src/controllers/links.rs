@@ -194,22 +194,23 @@ async fn posted(req: axum::extract::Request) -> Result<(HashMap<String, String>,
     if !multipart {
         return Form::<HashMap<String, String>>::from_request(req, &()).await.map(|Form(f)| (f, vec![])).map_err(IntoResponse::into_response);
     }
-    let bad = |m: String| (StatusCode::BAD_REQUEST, m).into_response();
+    // Past the route's limit, too large (413); otherwise not a form it can read (400).
+    let bad = |e: axum::extract::multipart::MultipartError| (e.status(), e.body_text()).into_response();
     let mut parts = axum::extract::Multipart::from_request(req, &()).await.map_err(IntoResponse::into_response)?;
     let (mut form, mut files) = (HashMap::new(), Vec::new());
-    while let Some(part) = parts.next_field().await.map_err(|e| bad(e.to_string()))? {
+    while let Some(part) = parts.next_field().await.map_err(bad)? {
         let name = part.name().unwrap_or_default().to_string();
         match part.file_name().map(str::to_string) {
             // A file box left empty sends a part without a name or bytes.
             Some(file_name) => {
                 let content_type = part.content_type().unwrap_or("application/octet-stream").to_string();
-                let data = part.bytes().await.map_err(|e| bad(e.to_string()))?.to_vec();
+                let data = part.bytes().await.map_err(bad)?.to_vec();
                 if !file_name.is_empty() || !data.is_empty() {
                     files.push(LinkFile { param: name, file_name, content_type, data });
                 }
             }
             None => {
-                form.insert(name, part.text().await.map_err(|e| bad(e.to_string()))?);
+                form.insert(name, part.text().await.map_err(bad)?);
             }
         }
     }

@@ -137,7 +137,7 @@ async fn scenario() {
     assert_eq!(up::status(&k, &admin, upload).await.unwrap()["offset"], json!(PART_BYTES));
     assert!(matches!(up::complete(&k, &objects, &admin, upload).await, Err(Error::Conflict(_))), "not every byte has arrived");
     let oversized = up::append(&k, &objects, &admin, upload, PART_BYTES, bytes::Bytes::from(vec![0u8; p + 1])).await;
-    assert!(matches!(oversized, Err(Error::Validation(_))), "a part is at most PART_BYTES: {oversized:?}");
+    assert!(matches!(oversized, Err(ref e) if e.status() == 413), "a part is at most PART_BYTES, past it too large: {oversized:?}");
     up::append(&k, &objects, &admin, upload, PART_BYTES, part(p, 2 * p)).await.unwrap();
     let past = up::append(&k, &objects, &admin, upload, 2 * PART_BYTES, bytes::Bytes::from(vec![0u8; 124])).await;
     assert!(matches!(past, Err(Error::Validation(_))), "past the size announced: {past:?}");

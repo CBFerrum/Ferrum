@@ -469,7 +469,10 @@ pub async fn status(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<Value> {
 /// upload stands: a part sent again after its answer was lost is refused, and the caller reads
 /// where it stands. Each part keeps the upload for another day. Returns `{upload_id, size, offset}`.
 pub async fn append(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid, offset: u64, part: bytes::Bytes) -> Result<Value> {
-    if part.is_empty() || part.len() as u64 > PART_BYTES {
+    if part.len() as u64 > PART_BYTES {
+        return Err(crate::error::too_large(format!("a part is at most {PART_BYTES} bytes")));
+    }
+    if part.is_empty() {
         return Err(Error::field("part", format!("must be between 1 and {PART_BYTES} bytes")));
     }
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
