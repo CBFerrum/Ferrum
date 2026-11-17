@@ -91,6 +91,26 @@ async fn scenario() {
     sqlx::raw_sql("alter table leaky enable row level security").execute(&k.db.pool).await.unwrap();
     assert_eq!(level(&k.doctor(30).await.unwrap(), "isolation.row_security"), Some(Level::Blocker), "not forced: the owner still sees everything");
     sqlx::raw_sql("drop table leaky").execute(&k.db.pool).await.unwrap();
+    // A partition read by its own name is a table of its own: its parent's policy does not hold there.
+    sqlx::raw_sql(
+        "create table leaky_days (tenant_id uuid not null, day date not null) partition by range (day); \
+         alter table leaky_days enable row level security; alter table leaky_days force row level security; \
+         create table leaky_day partition of leaky_days for values from ('2026-01-01') to ('2026-01-02')",
+    )
+    .execute(&k.db.pool)
+    .await
+    .unwrap();
+    let f = k.doctor(30).await.unwrap();
+    let leak = f.iter().find(|x| x.check == "isolation.row_security").unwrap();
+    assert!(leak.level == Level::Blocker && leak.detail.contains("leaky_day") && !leak.detail.contains("leaky_days"), "{leak:?}");
+    sqlx::raw_sql("alter table leaky_day enable row level security; alter table leaky_day force row level security").execute(&k.db.pool).await.unwrap();
+    assert_eq!(level(&k.doctor(30).await.unwrap(), "isolation.row_security"), Some(Level::Ok), "forced on the partition too");
+    // So is a table in a schema of its own.
+    sqlx::raw_sql("create schema elsewhere; create table elsewhere.notes (tenant_id uuid not null)").execute(&k.db.pool).await.unwrap();
+    let f = k.doctor(30).await.unwrap();
+    let leak = f.iter().find(|x| x.check == "isolation.row_security").unwrap();
+    assert!(leak.level == Level::Blocker && leak.detail.contains("elsewhere.notes"), "{leak:?}");
+    sqlx::raw_sql("drop schema elsewhere cascade; drop table leaky_days").execute(&k.db.pool).await.unwrap();
 
     let mut tx = k.db.system_tenant_tx(tenant).await.unwrap();
     sqlx::query("insert into outbox (tenant_id, topic, payload, dead) values ($1, 'x.y', '{}', true)").bind(tenant).execute(&mut *tx).await.unwrap();

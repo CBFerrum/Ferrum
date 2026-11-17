@@ -187,10 +187,12 @@ impl Kernel {
                 "Raise the role's limit (ALTER ROLE ... CONNECTION LIMIT, below max_connections), or lower FERRUM_DB_MAX_CONNECTIONS or the replicas.",
             )
         });
+        // Partitions too (read by its own name, a partition is a table of its own), in every schema but the vault's.
         let exposed: Vec<String> = sqlx::query_scalar(
-            "select c.relname::text from pg_class c join pg_attribute a on a.attrelid = c.oid and a.attname = 'tenant_id' and not a.attisdropped \
-             where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') and not c.relispartition and not (c.relrowsecurity and c.relforcerowsecurity) \
-             and not c.relname = any($1) order by 1",
+            "select c.oid::regclass::text from pg_class c join pg_namespace n on n.oid = c.relnamespace \
+             join pg_attribute a on a.attrelid = c.oid and a.attname = 'tenant_id' and not a.attisdropped \
+             where n.nspname <> 'vault' and n.nspname not like 'pg\\_%' and c.relkind in ('r', 'p') and not (c.relrowsecurity and c.relforcerowsecurity) \
+             and not (n.nspname = 'public' and c.relname = any($1)) order by 1",
         )
         .bind(&CLUSTER_TABLES[..])
         .fetch_all(&mut *tx)

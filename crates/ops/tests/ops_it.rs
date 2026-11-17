@@ -672,6 +672,22 @@ async fn scenario() {
     tx.commit().await.unwrap();
     assert_eq!((quality, stored_for), (Quality::Bad.code(), bot));
     assert_eq!(telemetry::quality_name(quality), "bad");
+    // A day's partition is a table of its own, which op_measurement's policy does not reach: another workspace naming
+    // it reads nothing of this one's.
+    let mut tx = k.db.system_tx().await.unwrap();
+    let days: Vec<String> =
+        sqlx::query_scalar("select c.relname::text from pg_inherits i join pg_class c on c.oid = i.inhrelid where i.inhparent = 'op_measurement'::regclass")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert!(!days.is_empty());
+    let mut tx = k.db.tenant_tx(other.tenant).await.unwrap();
+    for day in &days {
+        let seen: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("select count(*) from {day}"))).fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(seen, 0, "another workspace naming {day}");
+    }
+    tx.commit().await.unwrap();
 
     // A workspace's allowance is the operator's. Past it measurements stay at the gateway, and the
     // rest of an exchange goes on as it did.

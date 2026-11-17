@@ -377,7 +377,10 @@ The rules:
   every primary key and index.
 - **Row-level security enabled and forced, with the `tenant_isolation` policy above**, exactly as the kernel makes
   it for entity tables (`Ddl::rls` in `crates/kernel/src/ddl.rs`). Without `force`, the table's owner (the
-  application's role) reads every workspace's rows. The doctor fails such a table as a blocker:
+  application's role) reads every workspace's rows. **Each partition too**: read by its own name, a partition is a
+  table of its own that its parent's policy does not reach, so make every one enabled and forced as you create it
+  (ERP's journal years, Operations' measurement days); with no policy of its own, such a read finds nothing. The
+  doctor fails such a table, a partition or a table in another schema than the vault's as a blocker:
   `isolation.row_security: N tables hold workspaces' rows without enforcing row-level security: …` (`ferrum task
   doctor`; `crates/kernel/src/doctor.rs`).
 - **Files run once each, in file-name order, per cluster**, after entity tables exist, each in its own transaction,
@@ -440,8 +443,9 @@ indexes for performance are in [14-operations-for-apps.md](14-operations-for-app
   names, custom fields' `x_`.
 - `crates/kernel/src/doc.rs`: validation, versions, permissions on every record operation.
 - `crates/kernel/src/ddl.rs`: tables, columns, row-level security; package SQL applied once and never edited.
-- `ferrum task doctor` (`crates/kernel/src/doctor.rs`, `isolation.row_security`): every table with a `tenant_id`
-  forces row-level security; held to it by the mutant `doctor-misses-unforced-security` in `scripts/mutants.py`.
+- `ferrum task doctor` (`crates/kernel/src/doctor.rs`, `isolation.row_security`): every table with a `tenant_id`,
+  partitions included, in every schema but `vault`, forces row-level security; held to it by the mutant
+  `doctor-misses-unforced-security` in `scripts/mutants.py`.
 - `scripts/mutation_paths.py` and [docs/registry/mutation-paths.md](../registry/mutation-paths.md): direct writes to
   entity tables.
 - `scripts/secret_paths.py`: no package SQL names the vault's tables.
