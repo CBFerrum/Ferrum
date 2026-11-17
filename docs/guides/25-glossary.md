@@ -23,9 +23,6 @@ Rust crate and often an interface, in its own repository `ferrum-app-<name>`. [0
 **App contract.** What every app gives, in `docs/app-contract.md`: the parts `scripts/check_apps.py` checks and the
 parts a person reviews. [README](README.md), [24](24-review-checklist.md)
 
-**`app_upgrading`.** The `503` an app's API answers while its upgrade migrates a workspace; the client waits and
-retries. [21](21-apis-and-docs.md)
-
 **Approval.** A policy that holds a workflow transition or an action until named people decide.
 [05](05-permissions-and-people.md)
 
@@ -40,17 +37,18 @@ every consumer is idempotent. [06](06-events-jobs-and-logic.md)
 **Bar.** `<ferrum-bar>`, the platform's top bar drawn by the shell runtime on every app's page: launcher, search,
 Create, notifications, assistant, account, upload tray. [17](17-the-interface.md)
 
-**Baseline (UI lint).** `ui-lint-baseline.json` in an app's `ui/`: how many findings of each lint rule a file may
-still have; it only goes down. [17](17-the-interface.md)
-
 **Bootstrap.** The JSON the server puts in every app page as `#ferrum-bootstrap`: the workspace, the person, the
 app's routes and release, the locale, the theme, the offline lease. Read with `bootstrap()`. [17](17-the-interface.md)
 
 **Builder.** The program that makes industries configuration rather than code (`docs/builder/`), binding the
 platform's engines to any entity. [06](06-events-jobs-and-logic.md)
 
+**`call_tx`.** `Kernel::call_tx`: an app calls, in its own transaction and with its vault handle, an operation
+another app offers and one of its packages declares in `uses:`; done once per key, or refused and leaving nothing
+behind (`docs/app-contract.md`, *Using another app's operations*).
+
 **Capability (logic).** A business operation offered through one gate that checks rights and records the call
-(`docs/logic/capabilities.md`). Not the same as a shell capability (`shell().supports(...)`).
+(`docs/logic/capabilities.md`); a package that calls another app's declares it in `uses:`. Not the same as a shell capability (`shell().supports(...)`).
 [06](06-events-jobs-and-logic.md)
 
 **Carry.** The vault verb that puts a secret on an outbound request for the hosts its rule names, so the app's code
@@ -170,6 +168,9 @@ service user. [05](05-permissions-and-people.md)
 **Module.** A group of entities and reports in a package's left menu (`modules:` in `package.yaml`, with `icon:`).
 [17](17-the-interface.md)
 
+**`mountApp`.** `@ferrum/records/frame`'s start of an app's interface: its catalogs, its router at its address, and the
+page drawn once the words are in, with the toasts and confirmations. [17](17-the-interface.md)
+
 **Move.** Taking a workspace, or a whole installation, to another database or region. [12](12-privacy-and-data-duties.md),
 [14](14-operations-for-apps.md)
 
@@ -212,9 +213,6 @@ with a code and sees only what their address belongs to. [05](05-permissions-and
 
 **Process (durable).** A long-running run of steps that waits for people and events and recovers
 (`docs/logic/processes.md`). [06](06-events-jobs-and-logic.md)
-
-**R1, R2.** The two releases of the stateless program: through R1 every environment variable still works and wins;
-after R2 a program reads `DATABASE_URL` only. [07](07-stateless-apps.md)
 
 **Records frame.** `@ferrum/records/frame`: the sidebar of an app's modules with the generic lists, forms and reports
 of its entities. [17](17-the-interface.md)
@@ -287,16 +285,21 @@ literal. [19](19-languages-and-formats.md)
 
 **Tenant.** The code's name for a workspace (`tenant_id`). [04](04-data-and-records.md)
 
+**Test kit.** `ferrum-testkit` (`crates/testkit`): boots the kernel as the server does for an app's integration suite;
+a dev-dependency only (`docs/testkit.md`). [15](15-testing-and-ci.md)
+
 **Token (design).** A named value in Ferrum-Frontend's `src/index.css` (`--surface`, `--text`, `--primary`,
 `--control-h`), the only source of colours and sizes. [17](17-the-interface.md)
 
 **Type role.** One of the text sizes `text-xs` to `text-2xl`, each for a purpose. [17](17-the-interface.md)
 
 **UI lint.** Ferrum-Frontend's `packages/build/uilint.mjs`: raw colours, small text, arbitrary sizes, blank
-fallbacks, zoom locks, forked primitives. [17](17-the-interface.md)
+fallbacks, zoom locks, forked primitives, allow comments without a reason; any finding fails `cli.mjs check`.
+[17](17-the-interface.md)
 
-**`ui_outdated`.** The `409` an app answers a call it cannot serve for an old interface; the kit offers to reload.
-[21](21-apis-and-docs.md)
+**`uses`.** A package's list of the operations of other apps it calls, each a `capability` and a version range; the
+install screen shows it and an upgrade that adds one asks again (`docs/app-contract.md`, *Using another app's
+operations*).
 
 **Vault.** The platform's store of keys and secrets, sealed in the server; an app reaches only its own through its
 handle (`h.vault()`). [08](08-secrets-and-the-vault.md)

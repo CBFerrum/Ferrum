@@ -4,6 +4,19 @@ An app owns a workflow and its records. A connector translates a provider's mode
 events and limits into them, so that a provider's change does not mean rewriting the app. A
 customization changes behaviour inside an app; neither is the other.
 
+Two frameworks exist side by side:
+
+* **Connections** (`crates/kernel/src/connections/`, [API](api.md#connections)): a provider is a description
+  (an address, how to authenticate, named operations, what it sends, what is pulled) that a workspace, a package
+  or a pack supplies. No code per provider. Apps use this one: ERP's shipping and Social call connections from
+  Rust (`ferrum_kernel::connections::call`), and the packages of CRM, ITSM and Social declare connections of
+  their own. Buttons, automations and processes call them too (the `call` effect, `ferrum.call`).
+* **Connectors** (this page): a provider written as code, with its own sync, mapping, reconciliation and delivery,
+  compiled in or shipped as a plugin. No app uses it. The server compiles none in, so the only providers that
+  exist are plugins that declare `connector` in their manifest, and the tests' stand-ins.
+
+The rest of this page is about connectors.
+
 A provider implements `Connector` (crates/kernel/src/connect.rs), compiled in and registered with
 `HookRegistry::add_connector`, or as a plugin (below). It describes what its API really offers
 (`ConnectorInfo`: streams, what it writes, webhooks, API version, what using it takes, and each thing

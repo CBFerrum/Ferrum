@@ -6,7 +6,7 @@ nothing of the kit, nor what it depends on, is in a server that ships.
 
 What it does, as `server/src/app.rs` and `server/src/packages.rs` do:
 
-- empties the suite's database, the vault's schema included, a few dozen tables to a statement;
+- empties the suite's database, the vault's schema included, fifty tables to a statement;
 - opens the vault before the kernel, with its credential slot made from the address's password (a cheap Argon2id);
 - builds the catalog from the platform's packages (`ferrum_domain`) and each app's, leaving out a package that needs
   one the build lacks;
@@ -17,29 +17,7 @@ What it does, as `server/src/app.rs` and `server/src/packages.rs` do:
 
 It fails when the vault does not open.
 
-## A suite before and after
-
-Before (Construction's `tests/construction_it.rs`, about a hundred lines with its helpers):
-
-```rust
-let url = std::env::var("FERRUM_CONSTRUCTION_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_construction_test".into());
-let db = Db::connect(DbConfig { url, max_connections: 16, ..Default::default() }).await.expect("connect");
-sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset"); // the vault's schema stays
-let mut packages = ferrum_domain::packages().expect("platform packages");
-packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
-packages.extend(ferrum_app_construction::packages().expect("app packages"));
-let mut hooks = HookRegistry::default();
-ferrum_domain::register(&mut hooks);
-hooks.app("erp", &[], ferrum_app_erp::register);
-ferrum_app_construction::register(&mut hooks);              // runs in every workspace, has no vault handle
-let k = Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, KernelSettings::default(), None).await.expect("boot");
-ferrum_app_erp::maintenance(&k).await.expect("partitions");
-let tenant = k.create_tenant(NewTenant { slug: "brick".into(), /* six more fields */ }).await.expect("tenant");
-let session = k.login("brick", "admin@brick.test", "Correct-Horse-9").await.expect("login");
-let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
-```
-
-After:
+## A suite on the kit
 
 ```rust
 use ferrum_testkit::{Kit, app, database, obj, refused, run, uid};
@@ -79,7 +57,7 @@ async fn scenario() {
 | `ws.admin`, `ws.tenant`, `ws.slug`, `ws.k` | the workspace |
 | `ws.user(email, &roles)` | a person holding those roles, signed in with `PASSWORD` |
 | `ws.drain()` | dispatches events until none of this workspace's is left, waiting for those another scenario's dispatcher holds; fails after two minutes naming each event left and its last error |
-| `obj(json)`, `uid(&doc)` or `uid(&doc["customer"])`, `dec(&value)` | a record from JSON, a record's id, a decimal (none for null) |
+| `obj(json)`, `uid(&doc)` or `uid(&doc["customer"])`, `dec(&value)` | a record from JSON, a record's id, a decimal (zero for null) |
 | `refused(result, kind, says)` | refused as `invalid` (a validation error too) or as the error's code with spaces (`forbidden`, `not found`, `conflict`, …), its text saying `says` |
 
 ## What it does not do
@@ -91,23 +69,19 @@ async fn scenario() {
 - **Two databases at once.** Each boot empties its database. Scenarios that run side by side share one `Kit` (a
   `tokio::sync::OnceCell<Kit>` in the suite) and make a workspace each.
 
-## Adopting it in an app's repository
+## Using it in an app's repository
 
 1. `Cargo.toml`, `[dev-dependencies]`: `ferrum-testkit = { git = "https://github.com/CBFerrum/Ferrum", branch = "main" }`.
    For local development, `.cargo/config.toml`'s patch gets `ferrum-testkit = { path = "<platform>/crates/testkit" }`
    (`scripts/app_ci.sh` writes one line per platform crate, this one included).
-2. In each suite, the block from `Db::connect` to `load_ctx` becomes `Kit::boot` and `kit.workspace`. Every app the suite
-   registered is an `app!` entry, ERP and the siblings included; a bare `ferrum_app_x::register(&mut hooks)` becomes
-   `app!("x", ferrum_app_x)`, which scopes its hooks to its packages as the server does. A suite that kept the app's
-   vault handle from inside its registration takes `kit.vault("x")`.
-3. The suite's own `obj`, `uid`, `dec`, `refused`, `user`, `drain`, in-memory file store, mail capture and runtime builder
-   go; it imports the kit's. A helper of the same name that means something else stays (a `dec` giving `f64`).
-4. `KernelSettings` go to `Kit::boot_with`. `secret_key` goes: the kit refuses it.
-5. `ferrum_domain::maintenance(&k)` and `ferrum_app_erp::maintenance(&k)` after boot go: the kit runs every app's upkeep
-   once. Calls later in a scenario stay.
-6. `while k.dispatch_outbox_once().await? > 0 {}` becomes `ws.drain().await`.
-7. The variable names stay. `scripts/app_ci.sh` finds each one a suite gives `database("…")`, as it found the suites'
-   own defaults, and gives it a database of its own (`ferrum_x_test_localci`). Run the suite.
+2. Every app the suite registers is an `app!` entry, ERP and the siblings included: `app!("x", ferrum_app_x)` scopes its
+   hooks to its packages as the server does. A suite that needs the app's vault handle from its registration takes
+   `kit.vault("x")`.
+3. The kit runs every app's upkeep once after boot. Calls later in a scenario stay.
+4. Events are delivered with `ws.drain().await`.
+5. The variable a suite gives `database("FERRUM_X_TEST_DATABASE_URL")` is the one `scripts/app_ci.sh` finds: it gives it
+   a database of its own (`ferrum_x_test_localci`).
 
-Converted so far: `crates/kernel/tests/consent_it.rs` (a package of its own, the vault, mail) and
-`crates/studio/tests/government_pack_it.rs` (ERP and Studio, scheduled work, events drained).
+Suites in this repository that start from the kit: `crates/kernel/tests/consent_it.rs` (a package of its own, the vault, mail),
+`crates/kernel/tests/app_uses_it.rs` (one app using another's operation), and `crates/studio/tests/government_pack_it.rs`
+(ERP and Studio, scheduled work, events drained).

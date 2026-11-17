@@ -61,7 +61,7 @@ a person does, at review. Scripts run on the developer's machine (`scripts/local
 
 | Rule | Guide | Enforced by |
 |---|---|---|
-| A repository of its own, `ferrum-app-<name>`; never in the platform's `crates/` | [01](01-what-an-app-is.md) | `scripts/check_apps.py` checks only `ferrum-app-*` sources; an app inside the platform's workspace is reviewed (Operations and Studio are exceptions from before the rule) |
+| A repository of its own, `ferrum-app-<name>`; never in the platform's `crates/` | [01](01-what-an-app-is.md) | `scripts/check_apps.py` checks only `ferrum-app-*` sources; an app inside the platform's workspace is reviewed (Operations and Studio are the exceptions) |
 | A licence Ferrum may ship (AGPL-3.0 or compatible) | [01](01-what-an-app-is.md), [13](13-security-rules.md) | `scripts/check_apps.py` (`LICENSES`); its dependencies `scripts/licenses.py` |
 | A manifest with id, name, version, publisher, summary, categories, licence, homepage, support | [03](03-the-manifest.md) | `AppManifest::parse` (`crates/apps/src/manifest.rs`); `scripts/check_apps.py` |
 | No field the server does not know | [03](03-the-manifest.md) | `AppManifest::parse` (`deny_unknown_fields`) |
@@ -123,6 +123,7 @@ a person does, at review. Scripts run on the developer's machine (`scripts/local
 |---|---|---|
 | Outside calls through connections and vetted clients, to declared hosts, with timeouts | [11](11-integrations.md) | the kernel's outbound client and the plugin host; reviewed for native code |
 | Another app's records through the kernel, never its tables | [11](11-integrations.md) | reviewed; zones refuse other apps' endpoints |
+| Another app's operations only through a declared `uses` and `Kernel::call_tx` | [11](11-integrations.md) | the catalog (a `uses` of a package it depends on, at a version range); the kernel (declared where installed, within the range) |
 | Personal data declared (`personal_data`, `handover`) so erasure and export reach it | [12](12-privacy-and-data-duties.md) | the catalog checks what is declared; reviewed for what is not |
 | Fail closed; input checked at every trust boundary; rate limits on public routes | [13](13-security-rules.md) | the kernel and server for their part; reviewed for the app's |
 | No raw HTML from a description or a person's text | [13](13-security-rules.md), [22](22-readme-and-repository.md) | `crates/apps/src/description.rs`; `crates/kernel/src/richtext.rs` |
@@ -133,7 +134,7 @@ a person does, at review. Scripts run on the developer's machine (`scripts/local
 
 | Rule | Guide | Enforced by |
 |---|---|---|
-| A scenario test (`tests/*_it.rs`) against a real PostgreSQL, as a non-superuser | [15](15-testing-and-ci.md) | `scripts/check_apps.py`; `scripts/app_ci.sh` |
+| A scenario test (`tests/*_it.rs`), booted from the test kit ([docs/testkit.md](../testkit.md)), against a real PostgreSQL, as a non-superuser | [15](15-testing-and-ci.md) | `scripts/check_apps.py` (that it exists); `scripts/app_ci.sh` (runs it as a non-superuser) |
 | Formatting, clippy with warnings as errors, the tests, the interface's checks pass on the developer's machine | [15](15-testing-and-ci.md) | `scripts/app_ci.sh` |
 | Tests that fail when the invariant goes | [15](15-testing-and-ci.md) | `scripts/mutants.py` for the platform; reviewed for apps |
 | What was never run is said, never claimed | [15](15-testing-and-ci.md), [20](20-writing-for-people.md), [22](22-readme-and-repository.md) | reviewed; `scripts/registry.py` for the platform's registry |
@@ -141,7 +142,7 @@ a person does, at review. Scripts run on the developer's machine (`scripts/local
 | No attribution lines in commits | [16](16-releasing.md) | reviewed |
 | `ui/dist` built from the sources and committed, with `.source` | [17](17-the-interface.md) | `cli.mjs check` (Frontend `packages/build`); `scripts/check_apps.py` |
 | Size budgets: entry script 200 KB compressed, CSS 50 KB | [17](17-the-interface.md) | `cli.mjs check` |
-| Kit tokens and type roles; no raw colours, no text under 12px, no zoom locks | [17](17-the-interface.md), [18](18-accessibility.md) | the UI lint in `cli.mjs check`, against `ui-lint-baseline.json` |
+| Kit tokens and type roles; no raw colours, no text under 12px, no zoom locks | [17](17-the-interface.md), [18](18-accessibility.md) | the UI lint in `cli.mjs check`, which fails on any finding |
 | An icon on every launcher entry and left-menu row, one the shell draws | [17](17-the-interface.md), [03](03-the-manifest.md) | `scripts/check_apps.py`, `compiled_apps_fit_together` (launcher); menu rows reviewed |
 | Phone width, dark mode, labels on fields; a walk on a running server before a release that changes flows | [17](17-the-interface.md), [18](18-accessibility.md) | reviewed ([docs/app-contract.md](../app-contract.md)); for an uploaded bundle, the install dialog's automatic look (lang, title, viewport, `alt`) |
 | WCAG 2.2 AA | [18](18-accessibility.md) | partly the lint; otherwise reviewed. No app has been audited with assistive technology |

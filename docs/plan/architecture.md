@@ -2,7 +2,7 @@
 
 > Codename **Ferrum** (iron, the thing rust is made of). A metadata-driven ERP kernel in Rust on PostgreSQL that keeps
 > what Frappe/ERPNext got right (DocTypes as data, docstatus lifecycle, customize-without-code), and removes the
-> structural limits found in [analysis-erpnext.md](analysis-erpnext.md).
+> structural limits found in Frappe and ERPNext.
 > Library picks and versions are in §3.
 
 ---

@@ -34,6 +34,7 @@ endpoints. The app's manifest lists it under `packages`. Everything is embedded 
 | `messages`, `documents` | the messages it sends and the documents it renders, each a template a workspace may edit |
 | `connections` | outside services it describes, never with a secret ([11-integrations.md](11-integrations.md)) |
 | `approvals`, `automations` | default approval policies and automations on its own entities, which a workspace may switch off or edit |
+| `uses` | operations of packages it depends on that its app calls with `Kernel::call_tx`: `{capability: {package}.{entity}.{operation}, version: <semver range>}`, approved with the app at install ([11-integrations.md](11-integrations.md), [docs/app-contract.md](../app-contract.md), *Using another app's operations*) |
 
 **A package works with only its dependencies installed.** The catalog refuses one whose links, overlays,
 workflows, seeds or personal-data rules reach an entity outside its dependencies (`… seeds X, which is not among its
@@ -80,6 +81,8 @@ An entity (`EntityDef`) is a kind of record. GRC's `Finding` (`ferrum-app-grc/pa
 | `rules` | checks on save, submit or a transition (below) |
 | `list`, `form`, `search_fields` | the list's columns and sort; form sections `{label, fields, columns, collapsible, tab, visible_if}`; fields search reads |
 | `actions` | buttons the app's hooks implement (below) |
+| `targets` | service targets: what must happen within so much working time ([docs/api.md](../api.md), *Service targets*) |
+| `table` | the physical table when it is not `e_<name>` (a ledger entity points at an engine's table) |
 | `module`, `icon`, `description`, `label`, `label_plural` | where it shows and what it is called; `description` is what the help center searches |
 
 Every entity table has columns the platform keeps, which no field may use: `id`, `tenant_id`, `version`,
@@ -173,7 +176,7 @@ may use:
 | `add_rule` | adds a rule |
 | `add_options` | adds options to a select |
 | `set_entity_property` | changes an entity's property |
-| `add_action` | a document action on the other entity, implemented by the overlaying package's hooks (Projects adds "Make Sales Invoice" to Project) |
+| `add_action` | a document action on the other entity, implemented by the overlaying package's hooks (Projects' connector with ERP adds "Create Sales Invoice" to Project) |
 | `add_section` | a form section for the fields it adds |
 
 The rest (`define_entity`, `set_workflow`, `set_print_template`, `define_module`, `publish_list`, `set_approval`
@@ -288,6 +291,7 @@ actions:
 | `hidden` | for code, never a button |
 | `group` | buttons of one group show under one menu |
 | `contract` | what it promises to processes and agents ([06-events-jobs-and-logic.md](06-events-jobs-and-logic.md)) |
+| `effects`, `roles`, `refuse_if` | a configured action (a workspace's, with no handler): what it does in order as the system (`set_fields`, `update_linked`, `create_document`, `notify`, `email`); the roles besides the permission; the reasons `{when, message}` that refuse it |
 
 The kernel records `action:<name>` with its parameters on the audit trail before the handler runs, in the action's
 transaction (`docs/registry/mutation-paths.md`, *What holds on every path*). A role's rule may name actions its
@@ -320,7 +324,7 @@ Optimistic concurrency: records carry `version`; pass the expected version (`If-
 
 `Kernel::set_values_tx(ctx, tx, entity, id, values)` writes derived fields (status, progress, outstanding) with no
 validation, hooks or audit of their own, as consequences of an audited operation in the same transaction
-(`crates/kernel/src/doc.rs`). GRC's `publish` action uses it for `status`, `revision` and `published_on`.
+(`crates/kernel/src/doc.rs`). GRC's `publish` action uses it for `status`, `revision`, `published_text` and `published_on`.
 
 An SQL `update`, `insert into` or `delete from` of an entity table (`e_*`) in an app's code skips the pipeline
 altogether. Each one is listed by app, file, table and function in
@@ -345,7 +349,7 @@ not deleted by any statement (the `ferrum_held` guard); actions are audited befo
 ## An app's own tables
 
 An engine that needs tables the metadata cannot describe (a queue, presence, a journal, an index) keeps them in its
-package's `sql/` files. Drive's `packages/drive/sql/004_collaboration.sql`:
+package's `sql/` files. Drive's `packages/drive/sql/001_drive.sql`:
 
 ```sql
 create table drive_presence (
@@ -378,7 +382,7 @@ The rules:
   doctor`; `crates/kernel/src/doctor.rs`).
 - **Files run once each, in file-name order, per cluster**, after entity tables exist, each in its own transaction,
   recorded with a checksum in `cluster_package_sql`. **Never edit a file once it has been applied**: the next start
-  refuses (`package SQL drive/004_collaboration.sql changed after it was applied; add a new file instead of editing
+  refuses (`package SQL drive/001_drive.sql changed after it was applied; add a new file instead of editing
   it`). Number them `001_…`, `002_…`.
 - **Only add.** The schema sync never drops, retypes or renames a column; neither does a package file. A removal or
   a rename ships in two releases: the first stops using what is to go, the second removes it

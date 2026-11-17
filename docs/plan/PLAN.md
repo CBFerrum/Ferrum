@@ -46,19 +46,7 @@ SAP, Oracle, Microsoft and Odoo where they are weakest.
 | Doc | What's in it |
 |---|---|
 | [ferrum/README.md](../../README.md) | **The implementation**: kernel, domain engines, plugins, server, web app, deployment ([runbook](../operations.md), [API](../api.md)) |
-| [docs/analysis-erpnext.md](analysis-erpnext.md) | How Frappe + ERPNext actually work (v17-dev, cloned 2026-10-28), what to keep, every deficiency with file:line evidence |
-| [docs/market.md](market.md) | SAP, Oracle, Microsoft, Odoo, others: what they do well, where they're weak, gaps we can win |
 | [docs/architecture.md](architecture.md) | The Rust + PostgreSQL design: metadata kernel, layered customization, WASM packages, ledger/inventory engines, scale-out, robustness |
-| `graphify-out/` (generated locally, not in this repo) | Knowledge graph of Frappe + ERPNext (graph.html, GRAPH_REPORT.md, graph.json) |
-| `upstream/` (local clones, not in this repo) | Shallow clones: `erpnext`, `frappe`, `rea` |
-
-**How the analysis was done**
-* **graphify**, AST mode: 55,861 nodes, 137,711 edges, 3,617 communities over 7,737 code files of Frappe + ERPNext.
-* **REA**: static reconstruction of the 439-file desk frontend. It's a global-namespace app with no ES-module graph.
-* **Parallel audits**: Frappe internals, ERPNext domain, market (sourced), Rust ecosystem (crates.io-verified).
-* **Hand checks**: high-impact claims were re-verified in the source during the session.
-
-Details and evidence: [docs/analysis-erpnext.md](analysis-erpnext.md).
 
 ---
 

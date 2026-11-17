@@ -10,7 +10,7 @@ plugins, apps' event sinks, mail and push.
 |---|---|
 | `id` | The event's identity, increasing with time. Consumers deduplicate on it. |
 | `tenant_id` | The workspace. |
-| `topic` | `{Entity}.{created,updated,submitted,cancelled,deleted}`, `{Entity}.emailed` (the record was mailed from its form: to whom, and whether its PDF went along), `plugin.{plugin}.{topic}`, or `ferrum.*` for the platform's own. |
+| `topic` | `{Entity}.{created,updated,submitted,cancelled,deleted}`, `{Entity}.transitioned` (a workflow move within one document status), `{Entity}.opened` (a signed action link was used for the first time), `{Entity}.scheduled` (a scheduled automation's moment), `{Entity}.merged`, `{Entity}.emailed` (the record was mailed from its form: to whom, and whether its PDF went along), `audit.{category}` (audit events, which only webhooks that name them receive), `plugin.{plugin}.{topic}`, or `ferrum.*` for the platform's own. |
 | `entity`, `record_id`, `source_version` | The record it is about, and the version that change made. |
 | `actor` | Who made the change; empty for background work. |
 | `legal_entity` | The record's company, when it has one. |
@@ -28,12 +28,21 @@ Tasks a handler spawns start without a trace; run them under one if their events
 
 ## Delivery
 
-**At least once.** A worker takes a lease on a batch and handles it outside any long transaction. If
-it dies the lease expires and another replica takes the events. Consumers must be idempotent, and
-the platform's are: webhook deliveries are unique per webhook and event, plugin runs per plugin and
-event, automation runs per automation and event (a scheduled automation's moments per automation, record
-and moment). There is no exactly-once, and nothing should
-assume it.
+**At least once.** A worker takes a lease on a batch (ten minutes) and handles it outside any long
+transaction. If it dies the lease expires and another replica takes the events. Consumers must be
+idempotent, and the platform's are: webhook deliveries are unique per webhook and event, plugin runs per
+plugin and event, automation runs per automation and event (a scheduled automation's moments per
+automation, record and moment). There is no exactly-once, and nothing should assume it.
+
+**What one event goes through, in order:** webhook deliveries are queued for the subscribed webhooks
+(an audit event only for those that name its topic, never for `*`; an app's webhook gets which record,
+never `doc` or `was`), followers are told (first attempt only), automations run, then each registered
+event sink is called, in registration order (plugin subscriptions are one). The event is done only when
+all of that returned. An error from any step, a sink's included, fails the event as a whole: it is tried
+again from the start, so automations and sinks that ran before the failing one run again for the same
+event, and the sinks after it have not run yet. A consumer outside the platform's own deduplicates on `id`
+(`EventSink::on_event` gets the event and nothing remembers what it did), and does its own work in a
+transaction it can repeat.
 
 **Order** holds within a workspace and a priority, until something fails: a retry goes behind later
 events. During an upgrade or after a rollback, an event written by a newer build can be delivered after later events of
@@ -47,12 +56,28 @@ bulk priority and sends to a whole list. A mail sent under bulk priority stays t
 campaign messages do not stand in front of someone's password reset. Run anything of the kind under
 `Trace::at_priority(PRIORITY_BULK)`.
 
-**Retries.** A failed event waits 10 s, 20 s, 40 s and so on, up to an hour, and is dead after 15
-attempts. One event's handlers get 120 seconds before they count as failed. Webhooks get 12 attempts
-of their own, and a request that takes more than 10 seconds fails.
+**Retries.** A failed event waits 10 s, 20 s, 40 s and so on, up to an hour (each a little shorter by
+chance, so what failed together does not return together), and is dead after 15 attempts. One event's
+handlers get 120 seconds before they count as failed.
+
+**Chains.** An event written while handling another is one step further from the change that started
+the chain. An event 8 steps deep, or the 1,001st from one change, is not handled: it is dead at once, its
+last error naming the chain, for whoever fixes the rule, automation, plugin or app that answers its own
+changes and then replays it. A request's or job's own events never count: an import of ten thousand rows
+is one step.
+
+**Webhooks** are delivered apart from the event, 20 at a time, each its own request: `POST` of the
+payload (at most 256 KiB, or the delivery fails) with `X-Ferrum-Event` (the topic), `X-Ferrum-Delivery`
+(the delivery's id, the same on every attempt) and `X-Ferrum-Signature: t=<unix seconds>,v1=<hex
+HMAC-SHA256 of '<t>.<body>' with the webhook's secret>` ([how to check it](operations.md#sending-the-audit-log-elsewhere)).
+Any answer but 2xx fails the attempt. A request that takes more than 10 seconds fails, redirects are not
+followed, and an address that resolves to a private one is refused unless the operator allows it. A
+failed delivery is tried again after 1 minute, 2, 4 and so on up to 6 hours, and is dead after 12
+attempts. A sandbox sends nothing: its deliveries are dead at once, saying why.
 
 **Dead events** stay in the table for a person to look at; the `ferrum_outbox_dead` and
-`ferrum_webhook_dead` metrics count them.
+`ferrum_webhook_dead` metrics count them. Handled events and delivered webhooks are deleted after 30
+days.
 
 | Request | Does |
 |---|---|
@@ -75,6 +100,8 @@ rights its requester has now, so someone who has left gets nothing from it.
 | Topic | Payload | Listen to |
 |---|---|---|
 | `ferrum.user.deprovisioned` | `{user, email, reassign_to, reason}` | Hand over what a package's `handover` declaration cannot express. It also fires when an administrator names a successor later, so handlers must be idempotent. |
+| `ferrum.portal.signed_up` | `{user, email, name, role, passed}` | Enrol someone who confirmed a public sign-up to a portal role ([API](api.md#public-sign-up)). |
+| `ferrum.companion.signed_out` | `{user, subject, client_id, app, companion, session, reason}` | End a companion program's own session when its person's session ended (`reason`: `signed_out`, `signed_out_everywhere`, `access_ended`, `expired` or `client_removed`). |
 | `ferrum.privacy.erased` | `{account, records: [{entity, id, fields}], reason}` | The platform writes the journal from it. No value it erased is in it. |
 | `ops.command.{state}` | `{command, state, site, domain, target, operation, workflow_id, outcome}` | A command moved. `workflow_id` says whose it is (`wms-task:{id}`, `mes-run:{id}`). At least once and in any order, so a consumer works from the state, not the sequence. |
 | `ops.fact.{kind}` | `{site, kind, at_source, actor, body}` | Something recorded at a site, arriving when the link allowed. `mes.event` is a floor report from a console. |

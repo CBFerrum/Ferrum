@@ -22,7 +22,7 @@ all run, not written): [13](13-security-rules.md), *Dependencies and licences*.
 
 ### Declaring a service
 
-Inside the app's registration (`crates/kernel/src/hooks.rs:481`):
+Inside the app's registration (`HookRegistry::add_companion`, `crates/kernel/src/hooks.rs`):
 
 ```rust
 // ferrum-app-comms/src/lib.rs, inside hooks.app("comms", …)
@@ -30,7 +30,7 @@ hooks.add_companion("meet", Arc::new(meet::Service));
 hooks.add_companion("mail", Arc::new(hosted::Service));
 ```
 
-A service implements `companion::Companion` (`crates/kernel/src/companion.rs:23`):
+A service implements `companion::Companion` (`crates/kernel/src/companion.rs`):
 
 | Method | Required | What it says |
 |---|---|---|
@@ -48,14 +48,14 @@ secret.
 
 ### Rendering
 
-`render` is given a `Rendering` (`companion.rs:88`), made by the kernel for one render:
+`render` is given a `Rendering` (`companion.rs`), made by the kernel for one render:
 
 | Call | What it gives |
 |---|---|
 | `r.vault()` | The app's own handle (the same verbs as [08](08-secrets-and-the-vault.md)) |
 | `r.kernel()` | The kernel |
 | `r.service()` | The service's name |
-| `r.setting(name)` | A setting's value by key or variable, as the server resolved it (the environment's through R1, else the table's), trimmed; `None` where nothing sets it to something. Only the server's registry: a service never reads past it into the environment |
+| `r.setting(name)` | A setting's value by key or variable, as the server resolved it (the environment's, else the table's), trimmed; `None` where nothing sets it to something. Only the server's registry: a service never reads past it into the environment |
 | `r.needs(name)` | The same, or refused: "the service X needs the setting N, which is not set: ferrum task set key:N value:<value>" |
 | `r.made(name, rule)` | Makes a secret the service declares in `made()`, where there is none: 32 random bytes as 43 characters of base64url, under `rule`, marked as the app's to manage. Renders and replicas at once make one. One a person set there is refused |
 | `r.keep(name, rule)` | Takes a secret the app holds already (adopted from the environment, or set by a person) as the service's from now on: marked, given `rule`, its value as it is. Nothing made; refused where there is none |
@@ -273,9 +273,8 @@ session should end that session instead.
 - Rehearsed against the real program. The platform's `scripts/oidc_rehearsal.sh` does it for the forge with a stand-in
   for the Cloud app (`server/examples/oidc_rehearsal.rs`): a person signed in to a real Forgejo 17.0.1, then every way of
   leaving. Do the same for yours, and say in the README what was not run.
-- Note that Cloud's code no longer configures the forge as the contract's *The forge, as Cloud configures it* describes
-  (`forgejo admin auth add-oauth`, automatic registration and linking): it writes each workspace's sign-in source in the
-  forge's own database and lets the forge make and link no account by itself (`src/code/sign_in.rs`). Follow the code.
+- Cloud's own: it writes each workspace's sign-in source in the forge's own database, and the forge makes and links no
+  account by itself (`src/code/sign_in.rs`; [docs/app-contract.md](../app-contract.md), *The forge, as Cloud configures it*).
 
 ## Checked by
 

@@ -1,6 +1,6 @@
 # Industrial solutions in an app
 
-An app can carry an industrial solution (FERRUM-IND-018) in its bundle beside its packages. The
+An app can carry an industrial solution in its bundle beside its packages. The
 solution says three things:
 
 - which connections the site runtime must open for it;
@@ -59,8 +59,9 @@ A bundle is refused when:
 - a profile speaks a scheme `connectors` leaves out;
 - a command writes a missing or read-only point;
 - a step names a profile, point or command the bundle does not define;
-- a read expects nothing, or a manual step says nothing;
-- an id is repeated.
+- a read expects nothing, or a manual step says nothing, or a step's minimum is above its maximum;
+- a profile has no points, or a procedure no steps;
+- an id is repeated, or is not lower case letters, digits, `-` and `_`.
 
 Which schemes a site can open is the site runtime's to say: this checks their names only.
 `Bundle::industrial()` reads the solution for whoever imports it.

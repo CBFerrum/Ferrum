@@ -4,7 +4,7 @@ Every word a person reads goes through the platform's catalogs, every date and t
 number and amount is written in the person's locale from an exact value. Country and sector content is data or an
 add-on, never code in an engine. This guide says how, with the functions that exist today and the gaps that do not.
 
-Sources: Ferrum-Frontend `3bec041`, `src/lib/i18n.ts` and `src/lib/format.ts` (exported by `@ferrum/client`) and
+Sources: Ferrum-Frontend `src/lib/i18n.ts` and `src/lib/format.ts` (exported by `@ferrum/client`) and
 `packages/build/words.mjs`; the platform's `server/src/shell_words.rs`, `docs/api.md` (*Conventions*, *Messages*),
 `docs/limits.md`, `docs/plan/localization.md`.
 
@@ -51,7 +51,7 @@ An app's own words, by language, in its `ui/`:
 
 | File | Holds | Read by |
 |---|---|---|
-| `ui/src/locales/<language>.json` | English → the language's words, for the app's pages | `addCatalogs({ ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") })` in `main.tsx`; fetched only for a page in that language |
+| `ui/src/locales/<language>.json` | English → the language's words, for the app's pages | the `catalogs` of `mountApp({ route, routes, catalogs: { ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") } })` in `main.tsx` (`addCatalogs` takes the same); fetched only for a page in that language |
 | `ui/src/locales/names/<language>.json` | English → the language's words for the names the app's model and manifest give pages (entity, field, option, action, report, module and app labels and descriptions) | copied to `dist/names/` by the build; the server merges them for every page (`/api/shell/names`, the bootstrap's `locale.names`) |
 | `ui/dist/words.json` | every word the sources give `t()`, sorted (written by the build) | Administration → Interface words, where a workspace puts them in its own language as `InterfaceWord` records (key `[language, english]`) |
 
@@ -64,7 +64,7 @@ The workspace's own words stand over every catalog, the app's included (`applyLo
 the language stand over every catalog"). The order is: workspace words, then the app's names, then the interface's
 words.
 
-Draw only after `wordsReady()` settles: `void wordsReady().then(() => createRoot(…).render(…))`.
+Draw only after `wordsReady()` settles; `mountApp` does ([17-the-interface.md](17-the-interface.md)).
 
 ## Places and variables
 
@@ -86,7 +86,7 @@ export const items = (n: number) => (n === 1 ? t("1 item") : t("{n} items", { n 
 ```
 
 That is right for English and Hindi and wrong for Arabic, which has six plural forms. Until the kit has plural
-support (`Intl.PluralRules` is not used anywhere in Ferrum-Frontend at `3bec041`):
+support (`Intl.PluralRules` is not used anywhere in Ferrum-Frontend):
 
 - prefer sentences whose words do not change with the count: `t("Items: {n}")`, `t("{n} selected")`;
 - where you must, use the two-key form above, and know it is wrong for Arabic;
@@ -95,12 +95,11 @@ support (`Intl.PluralRules` is not used anywhere in Ferrum-Frontend at `3bec041`
 ## What never to concatenate
 
 Build whole sentences with places; never glue translated pieces together, because word order differs between
-languages. Seen in Drive 0.18.0 and to be avoided:
+languages. Seen in Drive and to be avoided:
 
-- `ui/src/Share.tsx` lines 36 to 39 push `"password"`, `` `${ended ? "ended" : "ends"} ${day(…)}` `` and
-  `` `${n} ${n === 1 ? "use" : "uses"}` `` without `t()`: three English fragments on every language's page.
-- `ui/src/Edit.tsx` line 163 adds `t(" (viewing)")` to a name: a fragment that assumes the name comes first.
-  The same file also has the whole-sentence form, `t("{name} (viewing)", { name })`, which is the one to use.
+- `ui/src/Edit.tsx` (the editor's list of people) adds `t(" (viewing)")` to a name: a fragment that assumes the name
+  comes first. The same file also has the whole-sentence form, `t("{name} (viewing)", { name })`, which is the one to
+  use.
 
 Other things not to build in code: a list joined with `", "` and `" and "` (write `t("{a} and {b}")`, or one item
 per line); a percent sign appended to a number (`formatValue` does that for `percent` fields, a known limit); an
@@ -114,8 +113,8 @@ ordinal ("1st"); a capitalised word made by changing the case of a translated on
 - `.btn` sets `unicode-bidi: plaintext`, so a Latin label reads correctly in an Arabic page (PATTERNS.md, *Labels and
   direction*).
 - Use logical CSS properties (`inline-start`, `inline-end`, `ms-*`, `me-*`, `ps-*`, `pe-*`, `start-*`, `end-*`), never
-  `left` and `right` for layout. Keys: `arrowStep(e)` turns Left and Right into "on" and "back" for the element's
-  direction.
+  `left` and `right` for layout. Left and Right mean "back" and "on" the other way round right to left: the kit's tabs
+  and toolbars do this, and a key handler of your own must.
 - Figures in a report are isolated so a minus stays in front right to left (PATTERNS.md, *Generic reports*).
 - Rich text: each paragraph takes its own direction (`unicode-bidi: plaintext`); `sanitizeRichText` keeps `dir`.
 
@@ -141,8 +140,7 @@ import { formatMoment, formatDate, relativeTime } from "@ferrum/client";
   browser's zone and locale, so two members of one workspace see different times for one moment.
 - A page that draws times itself (a calendar grid) passes `shownTimeZone()` as `timeZone` to `Intl` and labels the
   zone with `zoneLabel()`.
-- `setTimeZone` and `setDisplayZone` are set from the bootstrap by `@ferrum/client`; Drive calls
-  `setTimeZone(bootstrap()?.locale.timezone)` itself as well, harmless and not needed.
+- `setTimeZone` and `setDisplayZone` are set from the bootstrap by `@ferrum/client`; an app does not call them.
 - A due moment of a paused service target is never shown (`TargetCard`), and no countdown moves.
 - The server: API date-times are RFC 3339 UTC; a person's zone is the `timezone` preference
   (`PUT /api/prefs/timezone`, an IANA name; `docs/api.md`, *Preferences*). Mail and messages go out in the
@@ -152,15 +150,15 @@ import { formatMoment, formatDate, relativeTime } from "@ferrum/client";
 
 - Money and decimals are strings end to end, in the API and in the interface. Never parse them to a JavaScript
   number to add, round or compare. Totals come from the server (`POST /api/v1/{Entity}/_calc`) or an engine built
-  for WebAssembly (`@ferrum/calc`; Point of Sale's `ui/src/lib/pricing.ts` loads ERP's pricing crate); comparison
-  from `compareDecimal(a, b)` (Ferrum-Frontend: `README.md`, *Conventions*).
+  for WebAssembly (Point of Sale's `ui/src/lib/pricing.ts` loads ERP's pricing crate) (Ferrum-Frontend: `README.md`,
+  *Conventions*).
 - Show a decimal with `formatDecimal(value, precision)`: grouping and the decimal mark of the page's locale, rounded
   exactly (half away from zero) from the string. A currency field: `formatValue({ type: "currency" }, value,
   { currencyPrecision })` with the precision of the record's currency when known.
 - There is no currency formatter in the client: `formatDecimal` writes no symbol. Show the record's currency code (or
   its symbol, from the Currency record) beside the amount yourself, as data, not as a hard-coded `₹` or `$`.
-- `formatValue` writes a `check` field as "Yes" or "No" in English and a percent with a `%` appended; both are known
-  limits of the client. In your own pages pass `t("Yes")` and `t("No")`.
+- `formatValue` writes a `check` field as `t("Yes")` or `t("No")` and a percent with a `%` appended, which is a known
+  limit of the client.
 - Figures in tables are end-aligned and tabular (`.num`, `tabular-nums`).
 
 ## Units, names and addresses

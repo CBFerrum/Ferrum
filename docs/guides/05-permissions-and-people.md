@@ -140,7 +140,7 @@ Members are staff (`member`, `support`), outside people are `portal` and `guest`
 accounts ([docs/operations.md](../operations.md), *Zones*). `ctx.outside` is true for a portal person or a guest:
 a record's comments, files, assignments, tags and history are never theirs.
 
-**Portal roles** (`portal: true` on a role; [docs/builder/portal.md](../builder/portal.md), BD-02). Portal people
+**Portal roles** (`portal: true` on a role; [docs/builder/portal.md](../builder/portal.md)). Portal people
 hold only such roles. A portal role's rule reaches its holder's own records (by `if_owner`, `owner_fields` or `via`)
 to read, write, create and submit, and the actions it names; or it reads reference data whole (an entity with no
 personal data and no email or phone field). Never delete, cancel, export or import; never `*`; never an
@@ -162,22 +162,16 @@ Outside people hold the app's pages to the same accessibility and words as membe
 
 | What | How | Where |
 |---|---|---|
-| A comment or a file shared with outside people | `shared: true` on it; a portal rule's `shared: read` or `add` says what its holders see | [docs/api.md](../api.md), *Collaboration* (BD-22) |
-| One thing, one record, for whoever holds a link | a signed action link: `Kernel::issue_link(ctx, tx, entity, id, &LinkSpec { actions, show, params, expires_at, uses, recipient, .. })` in the app's transaction; `Kernel::revoke_action_links(tx, ctx, entity, record, Some(action) or None)` | [docs/api.md](../api.md), *Signed action links* (BD-23) |
+| A comment or a file shared with outside people | `shared: true` on it; a portal rule's `shared: read` or `add` says what its holders see | [docs/api.md](../api.md), *Collaboration* |
+| One thing, one record, for whoever holds a link | a signed action link: `Kernel::issue_link(ctx, tx, entity, id, &LinkSpec { actions, show, params, expires_at, uses, recipient, .. })` in the app's transaction; `Kernel::revoke_action_links(tx, ctx, entity, record, Some(action) or None)` | [docs/api.md](../api.md), *Signed action links* |
 | A page anyone with a link opens | `shell.public` below one of the app's routes; no bar, no person, no referrer, kept out of search engines | [docs/plugins.md](../plugins.md), *Public pages* |
-| A published list | a workspace's `publish_list` customization | BD-15 |
-
-An app that kept guest links of its own (a token table, a hash, a page that checks it) moves to signed action links
-by the five steps in [docs/api.md](../api.md), *Replacing an app's own guest link with a signed action link*: an
-action with its `params` and `condition`, `issue_link` where the token was minted, the page's words to the
-`core.link_*` templates, the old route kept until the longest link expires, and a line in the CHANGELOG. A link's
-token is shown once, and goes in a message's values marked secret.
+| A published list | a workspace's `publish_list` customization | [docs/api.md](../api.md), *Customization* |
 
 ## Approvals and second-person rules
 
 **The second person.** A workflow transition (`WorkflowTransition`) with `not_creator: true` may not be taken by
 whoever created the record; `not_creator_of: [field or table.field]` by whoever raised the linked records ("whoever
-raised an order does not approve paying it", FEO-013). An approval policy never lets the requester approve unless it
+raised an order does not approve paying it"). An approval policy never lets the requester approve unless it
 says `allow_requester: true`; a step may say `not_earlier_deciders` and `not_who_took: [transitions]`.
 
 **Approvals** (`ApprovalPolicy`; [docs/api.md](../api.md), *Approvals on a transition*): steps in order, each with
@@ -262,7 +256,7 @@ Drive keeps an activity log of its own for what people do with files ("Link Crea
   roles never grant `*` (bundle check).
 - `server/src/packages.rs`, `every_report_is_gated_on_its_own_apps_entity`: reports gated on their own app's entity.
 - The app's scenario test: each role allowed what it should and refused what it should not, with the refusal's kind
-  and words (GRC's `refused(…, "forbidden" | "not found" | "invalid", says)` in `tests/grc_it.rs`).
+  and words (the test kit's `refused(result, "forbidden" | "not found" | "invalid", says)`, [docs/testkit.md](../testkit.md)).
 - `scripts/support_check.py` (against a running server): a health-only support key on every way in.
 - Reviewed, not checked: an app's own endpoints filtering by reach and answering `404`; no role names in code;
   elevation only for the engine's part; reads of marked entities going through the kernel.

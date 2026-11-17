@@ -36,19 +36,19 @@ cargo build --release --target wasm32-unknown-unknown
 Unit tests run natively (`cargo test`): `ferrum_plugin_sdk::testing::host(|op, args| …)` answers
 the plugin's host calls (`Ok(value)` or `Err((code, message))`), so a test can feed an input to
 the handler and check every record, key-value and HTTP call it made. The Commerce app's payment
-gateways (`gateways/` in its repository: Razorpay and Stripe) are complete examples.
+gateways (`gateways/` in its repository: Razorpay, Stripe and PayPal) are complete examples.
 
 Any language that compiles to a core WebAssembly module works: the contract is below.
 
 ## Installing
 
 `POST /api/admin/plugins` (administrators) with the manifest fields plus `wasm_base64`. Installing
-again with the same `name` upgrades it in place. A module on its own is signed by no key, so it is
+again with the same `name` upgrades it in place. A module is at most 8 MB. A module on its own is signed by no key, so it is
 taken only where the server takes uploads that no trusted key signed (`apps.uploads` not `off`, and
 `apps.allow_unsigned_uploads`, development's default); elsewhere it ships in an app bundle
 (`runtime: wasm`) signed by a key the server trusts. `PUT /api/admin/plugins/{id}/enabled`
 `{"enabled": false}` switches it off at once; `PUT /api/admin/plugins/{id}/config` `{"config": {...}}`
-replaces its settings and secrets (listings only show the keys; each value is sealed at rest under the
+replaces its settings and secrets and `PATCH` merges them (`null` removes a key; listings only show the keys; each value is sealed at rest under the
 plugin's own key in the workspace's vault, bound to its workspace, plugin and key, and refused with the
 vault closed; the plugin reads them as given, and one that cannot be opened is left out with a warning in
 the log until it is set again); `DELETE /api/admin/plugins/{id}`
@@ -58,10 +58,10 @@ removes it with its private data (records it created stay).
 
 | Field | Meaning |
 |---|---|
-| `name`, `version`, `description` | `name`: 2–40 lower-case letters, digits or `-` |
+| `name`, `version`, `description` | `name`: 2–40 lower-case letters, digits or `-`, starting with a letter; `lists` and `links` are the platform's. A plugin needs at least one hook, route, subscription, schedule or socket, or to be a connector |
 | `config` | Settings, delivered in every input as `config`; values named in `credentials` stay out of it |
 | `entities` | Entity definitions it brings (masters, documents or their child entities, names start with `X`), stored without DDL |
-| `permissions` | `[{entity, read, write, create, delete, submit, cancel}]` — its service user's role, and the most it may do on a user's behalf |
+| `permissions` | `[{entity, read, write, create, delete, submit, cancel, export, import}]` — its service user's role, and the most it may do on a user's behalf |
 | `hooks` | `[{entity, stage}]` with stage `before_validate`, `validate`, `before_submit`, `on_submit`, `before_cancel`, `on_cancel`, `before_delete`; entity `*` for all |
 | `routes` | `[{path, public}]`; `/x` or `/x/*`. Signed-in: `/api/ext/{plugin}{path}`; public: `/api/public/{tenant}/{plugin}{path}` |
 | `sockets` | `[{path, public, subprotocols}]` at `/ws/ext/{tenant}/{plugin}{path}`; clients must offer one of the subprotocols |
@@ -69,7 +69,8 @@ removes it with its private data (records it created stay).
 | `schedules` | `[{name, every_seconds}]` (at least 60) |
 | `http_hosts` | Hosts it may call: `api.example.com`, `*.example.com` |
 | `credentials` | `[{name, hosts, scheme?, user?, token_path?}]`: configuration values the plugin uses without reading them. `scheme` is `bearer` (the default), `basic` with `user`, the configuration key of the user name, or `oauth2` with `user` and `token_path`: the host trades them for a short-lived token at that path on the host being called (client credentials), keeps it until a minute before it expires or the provider refuses it, and signs requests in with it. `hosts`, from `http_hosts`, say where the value may be sent; none means it only checks signatures |
-| `fuel_limit`, `memory_limit_mb` | Per-call CPU budget (default 50 M) and memory cap (default 32 MB) |
+| `connector` | Offers the plugin as a connector for a provider: `{label, family, api_version, streams, writes, webhooks, requirements, capabilities}`; its provider's name is the plugin's ([connectors.md](connectors.md)) |
+| `fuel_limit`, `memory_limit_mb` | Per-call CPU budget (10 000 to 1 000 000 000, default 50 M) and memory cap (1 to 256 MB, default 32) |
 
 ## Contract
 
@@ -84,6 +85,7 @@ fresh instance; input and output are UTF-8 JSON.
 | `event` | `topic`, `event` (the outbox payload), `operation_id`, `attempt` | `{}`; an error makes the event retry |
 | `schedule` | `name` | `{}` |
 | `socket` | `event` (`connect`/`message`/`close`), `connection`, `path`, `query`, `subprotocol`, `message`, `user` | `{"send": text or [texts], "close": bool}` |
+| `connector` | `op` (`check`, `discover`, `pull`, `push`, `webhook`), `args`, `connection` (`id`, `config`) | per operation, or `{"wait": seconds}` or `{"unavailable": why}` ([connectors.md](connectors.md)) |
 
 **Identity.** Hooks run inside the document's transaction as the user; signed-in routes and
 sockets run as the user. In both cases the plugin is also limited to its declared permissions.
@@ -98,15 +100,16 @@ role is exactly its declared permissions. Everything it changes lands in the aud
 | `op` | `args` → result |
 |---|---|
 | `data.get` | `{entity, id}` → record |
-| `data.query` | `{entity, filters, fields?, sort?, limit?, cursor?}` → `{rows, next_cursor?}` |
+| `data.query` | `{entity, filters, fields?, sort?, limit?, cursor?}` → `{rows, next_cursor?}`; `limit` at most 500 (default 100); `fields` and `cursor` outside hooks only |
 | `data.insert` / `data.update` / `data.delete` | `{entity, data}` / `{entity, id, data, expected_version?}` / `{entity, id}` |
 | `data.submit` / `data.cancel` / `data.action` | `{entity, id}` / `{entity, id}` / `{entity, id, action, params}` |
-| `kv.get` / `kv.set` / `kv.delete` / `kv.list` | private per-tenant storage: `{key}` / `{key, value}` / `{key, if_value?}` → `{deleted}`, with `if_value` only while the key still holds it / `{prefix}` |
-| `http.fetch` | `{method, url, headers?, body?, auth?}` → `{status, headers, body}`; declared hosts only, https only, never private addresses, no redirects, 15 s, 1 MB; refused in hooks. `auth` names a credential: the host signs the request in, and only for that credential's hosts |
+| `kv.get` / `kv.set` / `kv.delete` / `kv.list` | private per-tenant storage: `{key}` / `{key, value}` / `{key, if_value?}` → `{deleted}`, with `if_value` only while the key still holds it / `{prefix}` → `[{key, value}]`, at most 500 |
+| `http.fetch` | `{method, url, headers?, body?, auth?}` → `{status, headers, body}`; declared hosts only, https only, never private addresses, no redirects, 15 s, 1 MB; refused in hooks. `auth` names a credential: the host signs the request in, and only for that credential's hosts; `vault:<name>` names a secret in the workspace's vault, sent as a bearer token only to the hosts its rule names |
 | `crypto.verify_hmac_sha256` | `{credential, message, signature}` → `{valid}`; checks a provider's hex signature in constant time |
-| `events.emit` | `{topic, payload}` → publishes `plugin.{name}.{topic}` (inside the document's transaction for hooks) |
+| `events.emit` | `{topic, payload}` → `{topic}`: publishes `plugin.{name}.{topic}` (inside the document's transaction for hooks); a topic is letters, digits, `.`, `_` and `-`, at most 100 |
 | `sockets.send` / `sockets.close` | `{connection, message, overflow?}` → `{sent, queued}` / `{connection, reason}` — on whichever replica holds the socket; refused in hooks. Each socket queues at most 256 messages, and a replica holds at most 256 MB for all of them, past which a socket with anything still waiting counts as full. With `overflow: "fail"`, the default, a socket that is that far behind is closed and the call fails; with `"drop"`, for a snapshot the next one replaces, the message is dropped and `sent` is false. `queued` is false when the message went to another replica, where nobody can confirm it |
-| `log` | `{level?, message}`: `info` (default), `warn` or `error`, to the server log with the plugin and tenant |
+| `resource.query` / `resource.execute` | `{handle, sql, params?}` → rows / `{changed}`: against a resource the app declared in `resources`, through the server's broker; the host says which workspace and app are asking, and a field other than these three is refused and audited; refused in hooks, and unavailable where the server provides no resources |
+| `log` | `{level?, message}`: `info` (default), `warn` or `error`, to the server log with the plugin and tenant; a message is cut at 2000 characters |
 | `time.now` | → RFC 3339 UTC |
 
 **Nothing leaves the system from a hook.** A hook runs inside the document's transaction, which may
@@ -123,14 +126,14 @@ work, so a provider with no such key must be asked what it already did before it
 
 **A socket is not a command channel.** `sockets.send` succeeding means the message was queued or
 published, not that a device got it or did anything. Anything with a physical effect belongs on the
-command ledger and the site runtime ([plan/industrial.md](plan/industrial.md)).
+command ledger and the site runtime ([crates/ops](../crates/ops/README.md)).
 
 **A secret a plugin does not hold cannot leak from it.** Declare API keys and signing secrets under
-`credentials`. The administrator sets them through `config` as before, and they are sealed at rest
-as before, but they never reach the plugin's input: it asks for a request to be signed in
+`credentials`. The administrator sets them through `config` and they are sealed at rest like every
+setting, but they never reach the plugin's input: it asks for a request to be signed in
 (`fetch_with`) or a signature to be checked (`verify_hmac_sha256`) by name. A plugin that logs its
 whole input, or is talked into calling somewhere else, has nothing to give away. Values that are not
-declared keep working as plain configuration, so existing plugins are unaffected until they move.
+declared are plain configuration, which the plugin reads.
 
 **Limits of one call.** A hook has 15 seconds, host calls included, because it holds the document's
 transaction; any other call has 5 minutes. At the deadline the host call in progress is dropped
@@ -166,8 +169,9 @@ contributes:
   `additionalProperties: false`, `items`, `enum`, `maxLength`, `maxItems`. Other keywords are
   refused rather than ignored. A contribution that breaks the schema fails the installation plan,
   which names the field.
-* Contributions go to the screen slots below, to the app's own points, or to points of apps in its
-  `requires`. Ids are unique within a point.
+* Contributions go to the screen slots below, to the shell's points (*Interfaces of their own*), to the
+  app's own points, or to points of apps in its `requires`. Ids are unique within a point; an app
+  declares and contributes to at most 20 points, with at most 50 items to each.
 * The owner reads them with `GET /api/meta/contributions/{point}`. Only enabled apps count, and each
   item carries its `app` and `version`.
 * An incompatible change to a point is a new major version of its owner, so `requires` ranges keep
@@ -194,8 +198,10 @@ ones (a customer's receivable account, an item's stock settings). Depend on the 
   run only where it is installed.
 * A suite is a metadata app (`runtime: meta`, category `suite`) with only the apps it requires:
   installing it installs them. Connectors carry the category `connector`. The platform's suites
-  are Workspace (Comms, Drive, Docs), Business (ERP, CRM, Helpdesk, Projects and their connectors)
-  and Retail (ERP, Commerce, POS); a server lists those whose members it has.
+  are Workspace (Comms, Drive, Docs), Business (ERP, CRM, Helpdesk, Projects and their connectors),
+  Retail (ERP, Commerce, POS), Services (ERP, CRM, Projects, Helpdesk, Bookings, Forms, Sign and
+  their connectors) and Field Operations (ERP, Field Service, Assets, Helpdesk and its connector); a
+  server lists those whose members it has.
 * `ferrum task deps_report` lists what ties packages together: every entity a package names that
   another defines, and document hooks that run on another package's records or in every workspace.
 * A field a package takes over from another's entity keeps its name, column and place in the form:
@@ -239,11 +245,10 @@ and an extension point.
 An app may own a whole interface at addresses of its own, as `/deals/…`: a web app of any kind
 (React, Vue, plain HTML) that the platform serves and wraps in the shell. Screens (above) stay the
 way to add a page, card or panel to someone else's interface. The plan is
-[docs/plan/apps-ui.md](plan/apps-ui.md); two small working examples are in
-[docs/plan/spikes/u0](plan/spikes/u0).
+[docs/plan/apps-ui.md](plan/apps-ui.md); ferrum-sdk's `examples/customer-cards` is a small working one.
 
 ```yaml
-platform: ">=0.3.2, <0.4"
+platform: ">=0.3.9, <0.4"
 ui:
   dist: ui/dist                   # the built files, with an index.html
   shell: ">=1.0"                  # the shell API it needs
@@ -262,17 +267,28 @@ contributes:
   shell.sidepanel:                # panels beside any app's page; `contextual` ones open from apps only
     - {id: deals, title: Deals, path: deals/_panel}
     - {id: deal, title: Deal, path: deals/_panel/deal, contextual: true}
+  shell.search:                   # a search provider: its endpoint answers the bar's search
+    - {id: deals, title: Deals, endpoint: /api/app/deals/search}
+  shell.notification:             # a kind of notification, with the channels it uses by default
+    - {id: won, label: A deal is won, default: [inapp, digest]}
+  shell.work:                     # items for My work on Home
+    - {id: deals, title: Deals, endpoint: /api/app/deals/work}
+  shell.card:                     # the preview card the bar shows for a record of the entity
+    - {id: deal, entity: Deal, endpoint: /api/app/deals/cards/deal}
+  shell.assistant:                # what the assistant knows while the person is in the app, and questions it suggests
+    - {id: deals, title: Deals, instructions: Deals move through stages., suggestions: [Which deals are stuck?]}
   shell.public:                   # pages anyone with a link opens, without signing in
     - {id: quote, path: deals/q, title: Quote}
   shell.portal:                   # pages of the workspace's portal, at /portal/{id}/
     - {id: quotes, title: Your quotes, description: Quotes waiting for you, entity: Deal, open: "q/{id}"}
-  shell.menu:                     # rows of a module's left menu for the app's own pages (0.3.8)
+  shell.menu:                     # rows of a module's left menu for the app's own pages
     - {id: board, module: deals, path: deals/board, label: Board, icon: layout-dashboard, roles: [Sales User], after: Deal}
 ```
 
 * **Routes** are `[a-z][a-z0-9-]{1,30}`, unique on a cluster with their aliases, and never one of the
-  names the core keeps (`api ws files mcp metrics oauth open data admin store account portal
-  accounts login logout s app home`, and anything starting with `_` or `.`). A release that takes
+  names the core keeps (`api assistant ws files mcp metrics oauth open data admin store account
+  portal public accounts login logout s app home sw.js robots.txt favicon.ico manifest.webmanifest`,
+  and anything starting with `_` or `.`). A release that takes
   another app's route is refused when it is made available.
 * **`index.html`** has one `<head>` and one `<body>`; scripts are module files of the release
   (no inline scripts, nothing from elsewhere), built with a relative base (Vite: `base: './'`);
@@ -298,7 +314,7 @@ contributes:
   an app compiled into the server, a bundle signed by a key the server trusts, or an app an
   operator made available to the whole cluster. Anything else (an unsigned app uploaded to one
   workspace) brings its interface too, but it runs **isolated** (below).
-* **Isolated interfaces** ([plan](plan/apps-ui.md) U8): the app's pages are the bar and, below it,
+* **Isolated interfaces**: the app's pages are the bar and, below it,
   the app in a sandboxed frame (`/_isolated/{app}/{digest}/index.html`, an opaque origin: no session,
   no cookie or storage of the workspace's site, and a policy that lets it load its own files only).
   It reaches Ferrum through the bridge, screens' protocol with what a page needs besides
@@ -358,7 +374,7 @@ contributes:
   path: `/{path}/{workspace}/…` (`/drive/s/acme/{link}`). They have no bar and no person (the
   bootstrap's `person` is null, `host.kind` is `public`), send no referrer and are kept out of
   search engines; on a host that serves one workspace only that workspace's links work.
-* **Portal pages** (`shell.portal`, [plan](plan/apps-ui.md) §9.1) are drawn by the app's own
+* **Portal pages** (`shell.portal`) are drawn by the app's own
   interface at `/portal/{id}/` for portal people (customers, suppliers) and members alike: the page
   reads `app.entry` (`portal/{id}`) from the bootstrap to know it is there (its router's base is
   `routes["portal/{id}"]`), gets `<ferrum-portal-bar>` instead of the bar and `host.kind:
@@ -367,7 +383,7 @@ contributes:
   signed in with) and read or change it as the system after that check, rate limited. `entity` and
   `open` (plain segments with `{id}`) send portal people's `/open/{entity}/{id}` to `/portal/{id}/{open}`.
   The first app to give an id keeps it.
-* **Public sites**: on a host whose target is `site:{app}` (§7.3), every page is the app's: the
+* **Public sites**: on a host whose target is `site:{app}`, every page is the app's: the
   server calls its package's site handler with `GET /_site/{path}` and the headers
   `x-ferrum-site-api` (`/api/site/{workspace}/{package}`, for the page's scripts) and
   `x-ferrum-site-origin` (`https://shop.example.com`, for canonical links and sitemaps), which only

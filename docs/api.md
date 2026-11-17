@@ -12,8 +12,8 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | Dates | `YYYY-MM-DD`; date-times RFC 3339 UTC (`2026-10-28T10:15:00.000Z`). Business dates ("today", posting dates and times, defaults) are local to the workspace's time zone (`GET /api/auth/me` → `timezone`, `today`); pages show times in `display_timezone`, the person's own zone (the `timezone` preference) or else the workspace's |
 | Links | UUID strings. Add `titles=true` to list/get to receive `_titles: {field: "Display title"}` on records and child rows. As in ERPNext, a title shows even when the caller cannot open the linked record (only its title field or number, nothing else). A record headed by a link (an appointment by its patient) is named, and found by `search`, by the linked record's title, two steps on at most, when that entity is open; through a restricted one it shows its number |
 | Concurrency | Records carry `version`; responses send `ETag: "v<version>"`. Send `If-Match: "v<version>"` on update/delete/submit/cancel; a mismatch → `409` |
-| Idempotency | `POST /api/v1/{entity}` accepts `Idempotency-Key` (8–200 chars). A replay returns the original record with `200` and `Idempotent-Replayed: true` |
-| Errors | `{"error": code, "message": text, "fields"?: [{"field", "message", "row"?: [tableField, rowIndex], "path"?: [[tableField, rowIndex], [tableField, rowIndex]]}], "error_id"?}` (`path` only on an error in a line's own line, below, whose `row` is then its line); codes: `validation_failed` (422), `invalid` (422), `not_found` (404), `conflict` (409), `forbidden` (403), `zone` (403: a staff credential where the zone admits no staff, or, where it limits staff to some apps, a signed-in endpoint of another app or the administration API, with `staff_address`, the workspace's host where staff work, or `null`; [Zones](operations.md#zones)), `unauthorized` (401), `too_many_requests` (429), `retry`/`unavailable` (503, with `Retry-After`) |
+| Idempotency | `POST /api/v1/{entity}`, `PATCH /api/v1/{entity}/{id}` and `POST /api/v1/{entity}/{id}/actions/{action}` accept `Idempotency-Key` (8–200 chars). A replay returns the original answer with `200` and `Idempotent-Replayed: true`. A key belongs to the caller who first sent it and to that one request: another caller, or the same key with another body, is a `409`; the same key while the first request is still running is a `503` (`retry`). Receipts are kept 30 days. `Idempotency-Digest` stands in for the body when computing the request's identity, for a client that rebuilds its body on each try (an offline change made again) |
+| Errors | `{"error": code, "message": text, "fields"?: [{"field", "message", "row"?: [tableField, rowIndex], "path"?: [[tableField, rowIndex], [tableField, rowIndex]]}], "error_id"?}` (`path` only on an error in a line's own line, below, whose `row` is then its line); codes: `validation_failed` (422), `invalid` (422), `not_found` (404), `conflict` (409), `forbidden` (403), `zone` (403: a staff credential where the zone admits no staff, or, where it limits staff to some apps, a signed-in endpoint of another app or the administration API, with `staff_address`, the workspace's host where staff work, or `null`; [Zones](operations.md#zones)), `unauthorized` (401), `too_many_requests` (429), `retry`/`unavailable` (503), `internal_error`/`database_error` (500, with `error_id` to quote; the message never carries the cause); `Retry-After` comes with 429 and 503. Refusals with a code of their own: `schema_invalid`, `type_mismatch`, `unsupported_profile` (422), `capability_unavailable`, `stale_approval`, `input_changed`, `deadline_expired`, `outcome_unknown`, `recovery_required` (409), `definitely_not_sent` (retry as `retry`), and `step_up`, `network`, `managed_by_app` where they are described; a refusal may carry `pointer`. `operation` names the operation a person quotes to whoever helps them |
 | Document status | `docstatus`: 0 draft, 1 submitted, 2 cancelled. Submitted documents are immutable; cancel + amend to change |
 
 ## Auth — `/api/auth`
@@ -67,7 +67,7 @@ server is reached over https, `ferrum_session` on a plain-http development serve
 listed and signed out one by one. `session: "cookie"` in the body of `/login`,
 `/login/second-factor` or `/sso/finish` asks for the cookie alone (the page gets no token);
 otherwise the token returned is bound to the browser's session. API clients (no Fetch Metadata) get
-tokens only, as before. With the cookie:
+tokens only. With the cookie:
 * requests that change something must come from the site's own pages: `Sec-Fetch-Site:
   same-origin`, or, without that header, an `Origin` equal to the host; `same-site` and
   `cross-site` are refused (403);
@@ -127,6 +127,8 @@ On the accounts host (only there; `404` elsewhere):
 | `POST /api/accounts/sign-in/second-factor` | `{ticket, code}` → as `/sign-in` |
 | `POST /api/accounts/sign-in/verify` | `{ticket, code}` → the session cookie |
 | `POST /api/accounts/code` | `{email}` → `{sent: true}`: a six-digit code to set a password with (a forgotten one, or a first one for someone added without one). Sent only to an address a member of this cluster has, at most five an hour; the same answer after the same time (600 ms) for every address. 503 without a mailer |
+| `POST /api/accounts/signup/code` | `{email}` → `{sent: true}`: a code to an address that may make a workspace (`FERRUM_SIGNUP`, `FERRUM_SIGNUP_DOMAINS`; [operations](operations.md#settings-in-the-database)), at most a few an hour |
+| `POST /api/accounts/signup` | `{email, code, slug, name, password, full_name?}` → the session cookie and `{cookie: true, workspace: {slug, host}}`, or `{sign_in: true, workspace}` for someone who already had a Ferrum account: makes the workspace at `{slug}.{base}` |
 | `POST /api/accounts/password` | `{email, code, password}` → as `/sign-in`: sets the account's password (making the account when there is none, its address proven) and ends its other sessions. The authenticator code follows when the account has one |
 | `GET /api/accounts/me` | → `{account: {id, email, name, verified, two_factor, home_region, home}, workspaces: [{id, slug, name, host, url, joined, active, admin}], region}`: the account chooser; once the address is proven, also the workspaces with an account for it that has yet to join (`joined: false`). `home_region`, `home`: an account of another region, visiting, and its accounts host there |
 | `POST /api/accounts/continue` | `{host, state}` → `{redirect}` back to that host with a code, or `{need, join?}`: the step it needs |
@@ -170,7 +172,7 @@ several workspaces in turn and is left as it is. On an address in its leaving pe
 ([operations](operations.md#changing-or-removing-an-address)), a signed-in page's bootstrap also carries
 `host.leaving: {to, until}`: the origin of the workspace's main address of that kind now (`null` when it has
 none) and the moment this address stops serving (RFC 3339); the bar says so on every page. It is absent
-everywhere else. Such an address answers as before to a request with the session cookie; without one, pages
+everywhere else. Such an address keeps answering a request with the session cookie; without one, pages
 go on to `to` with `308`, its `/login` sends people there, and page sign-ins (`POST /api/auth/login`, a
 passkey, a code) answer `401` as a wrong password does, so no session starts on it. API clients' tokens work
 as on any host.
@@ -206,7 +208,7 @@ as on any host.
 
 | Method & path | Notes |
 |---|---|
-| `GET /api/v1/{E}` | Query: `filters` (JSON: `[["field","op",value],...]` or `{"field": value}`; ops `= != > >= < <= in "not in" like "not like" between is`; paths `child_table.field`, `link_field.target_field`; `["_tag","=","urgent"]` filters by tag), `fields` (comma list), `sort` (`field asc|desc`), `limit` (≤500), `offset`, `cursor` (from `next_cursor`, for `created_at`/`updated_at` sorts), `search`, `titles`, `count` → `{rows, next_cursor?, total?}`. Filters, sorts and search only use fields the caller can read (a `403` otherwise; a default sort the caller cannot read falls back to `created_at desc`), and a `link.field` filter only matches linked records the caller may read |
+| `GET /api/v1/{E}` | Query: `filters` (JSON, at most 50: `[["field","op",value],...]` or `{"field": value}`; ops `= != > >= < <= in "not in" like "not like" between is` (`in` and `not in` take at most 1,000 values; `is` takes `set` or `not set`); paths `child_table.field`, `link_field.target_field`; `["_tag","=","urgent"]` filters by tag), `fields` (comma list), `sort` (`field asc|desc`), `limit` (default 20, at most 500), `offset` (at most 100,000, `422` past it: page with `cursor`), `cursor` (from `next_cursor`, for `created_at`/`updated_at` sorts), `search`, `titles`, `count` → `{rows, next_cursor?, total?}`. Filters, sorts and search only use fields the caller can read (a `403` otherwise; a default sort the caller cannot read falls back to `created_at desc`), and a `link.field` filter only matches linked records the caller may read |
 | `POST /api/v1/{E}` | create (draft for submittable entities) → `201` record. `?submit=true` creates and submits in one transaction (with `Idempotency-Key`, a replay never submits twice) |
 | `GET /api/v1/{E}/{id}` | `titles` defaults to true |
 | `PATCH /api/v1/{E}/{id}` | partial update; child tables are replaced by the given rows (rows with a known `id` are patched, rows without `id` are added, missing rows are removed) |
@@ -219,7 +221,7 @@ as on any host.
 | `POST /api/v1/{E}/{id}/approval/recall` | the requester (or an administrator) takes a pending request back → the request |
 | `POST /api/v1/{E}/_calc` | preview: runs defaults, fetches and calculation hooks on an unsaved body (include `id` to start from a saved record) → computed document, nothing written. Use for live totals |
 | `GET /api/v1/{E}/{id}/print` | HTML print format; `?format=pdf` → the same as a PDF (`application/pdf`; `503` when the server has no PDF renderer, see `GET /api/version` → `pdf`) |
-| `POST /api/v1/{E}/{id}/email` | `{to, subject?, message?, message_html?, pdf?: true}` → `202 {queued, to, subject, attachments}`: emails the document through the server's mailer, its print format attached as a PDF (stored on the record), and notes it on the record's timeline. `message` is text, escaped and its line breaks kept; `message_html` (at most 512 KB) is rich text from the interface's editor, cleaned by the kernel's allow-list (`crates/kernel/src/richtext.rs`: paragraphs, headings, quote, code, the inline marks, lists, links to http, https and mailto, https images, tables, rules; `dir` and a validated `style` of colour, size, family, alignment and width; no classes, ids, data attributes, handlers, relative or `data:` addresses) and taken over `message` when anything is left. Every mail the server sends goes as `multipart/alternative`, its text part made from the HTML (`richtext::html_to_text`). A server that takes `message_html` says `mail_html: true` in `GET /api/version`. Queuing the mail raises `<Entity>.emailed` on the outbox in the same transaction (docs/events.md), so webhooks and apps' event sinks hear of each mail that goes: the event's `actor` is who sent it, its payload `{entity, id, event: "emailed", actor, request_id, to, subject, pdf, attachments}` (`pdf` whether the PDF went along; `attachments` the stored files). Automations do not take it. Needs export permission on the entity; 30 per user per minute. `503` without a mailer, or for a PDF when the server has no PDF renderer or its mailer cannot attach (`GET /api/version` → `mail`, `mail_attachments`, `pdf`) |
+| `POST /api/v1/{E}/{id}/email` | `{to, subject?, message?, message_html?, pdf?: true, template?, letterhead?, language?, copies?, print?}` (the attachment is printed with those choices, as `GET …/print` takes them; `print` is the same four in one object, a top-level one winning) → `202 {queued, to, subject, attachments}`: emails the document through the server's mailer, its print format attached as a PDF (stored on the record), and notes it on the record's timeline. `message` is text, escaped and its line breaks kept; `message_html` (at most 512 KB) is rich text from the interface's editor, cleaned by the kernel's allow-list (`crates/kernel/src/richtext.rs`: paragraphs, headings, quote, code, the inline marks, lists, links to http, https and mailto, https images, tables, rules; `dir` and a validated `style` of colour, size, family, alignment and width; no classes, ids, data attributes, handlers, relative or `data:` addresses) and taken over `message` when anything is left. Every mail the server sends goes as `multipart/alternative`, its text part made from the HTML (`richtext::html_to_text`). A server that takes `message_html` says `mail_html: true` in `GET /api/version`. Queuing the mail raises `<Entity>.emailed` on the outbox in the same transaction (docs/events.md), so webhooks and apps' event sinks hear of each mail that goes: the event's `actor` is who sent it, its payload `{entity, id, event: "emailed", actor, request_id, to, subject, pdf, attachments}` (`pdf` whether the PDF went along; `attachments` the stored files). Automations do not take it. Needs export permission on the entity; 30 per user per minute. `503` without a mailer, or for a PDF when the server has no PDF renderer or its mailer cannot attach (`GET /api/version` → `mail`, `mail_attachments`, `pdf`) |
 | `GET /api/v1/{E}/{id}/audit` | `{events: [{at, actor, actor_name, action, version, diff}], chain_valid}` |
 | `GET /api/v1/{E}/_export` | CSV (export permission), streamed a page at a time with every row however many; or Excel with `format=xlsx` (field labels as headers, numbers as numbers), at most 100,000 rows and refused (422) past them rather than cut short; same filters as list |
 | `POST /api/v1/{E}/_import` | JSON array (≤5000) → `{created, ids, errors: [{row, error, fields?}]}` (`207` if some failed) |
@@ -311,7 +313,7 @@ async fn approval_decided(&self, hc: &mut HookCtx<'_>, doc: &Doc, d: &ApprovalDe
 ### Approval before a document is submitted or cancelled
 
 A workspace attaches a policy of the same shape to a submittable entity's submit, and separately its cancel, where no
-workflow submits it (decisions.md BD-19, amended):
+workflow submits it (decisions.md BD-19):
 
 ```json
 {"entity": "PurchaseOrder", "op": {"op": "set_approval", "on": "submit", "approval": {
@@ -391,7 +393,7 @@ true`; `PUT /api/comments/{id}/shared` and `PUT /api/files/{id}/shared` `{shared
 record; `204`). A portal role's rule says per entity what its holders see: `{"entity": "Ticket", "read": true, "via":
 "email", "shared": "read" | "add"}`. With it, a portal person's `GET …/comments` and `…/attachments` list the shared ones
 (and, for files, their own), without the authors' addresses; with `add` they comment and attach (`POST …/comments`,
-`POST /api/files` with the record), always shared. Without it they are refused (`403`), as before. A download of a file
+`POST /api/files` with the record), always shared. Without it they are refused (`403`). A download of a file
 not shared with them answers `404`, as a file that is not there. Sharing a comment tells the portal people who may see it
 with the template `core.comment_shared` (`values.record`, `values.comment`); an outside person's comment notifies the
 record's followers.
@@ -452,22 +454,6 @@ asking what its route asks: `Kernel::tag_tx(ctx, tx, entity, id, add, remove)` �
 is); `Kernel::attach_files_tx(ctx, tx, ids, entity, record)` → each file's `{id, file_name, content_type, size}`, the
 caller's loose uploads attached, files already on the record passing, anything else refused.
 
-### Replacing an app's own guest link with a signed action link
-
-Eight apps keep guest links of their own (a token table, a hash, a page that checks it). To move one:
-
-1. Make what the guest does an action of the entity (`actions:` in the package's YAML) with its `params`, its
-   `condition` and, where needed, `refuse_if`. Keep its handler in the app's hook, or give it `effects`. It must not be
-   limited to `roles`.
-2. Where the app minted its token, call `kernel.issue_link(ctx, tx, entity, id, &LinkSpec { actions, show, params,
-   expires_at, uses, recipient, .. })` in the same transaction, and put the returned `url` in the message's values,
-   naming it secret.
-3. Move the page's wording to the templates `core.link_page`, `core.link_done`, `core.link_gone` (a workspace edits
-   them) and the fields it showed to `show`.
-4. Keep the old route answering the links already sent until the longest of them expires (Bookings: 30 days after a
-   booking), then delete it, its token table and its tests' token cases; the platform's are in `action_links_it`.
-5. Say it in the app's changelog: links sent before keep working until they expire; new ones are the platform's.
-
 ## Shared views — `/api/views/{Entity}`
 
 A list view a team shares: a question, not an answer, so what each person gets from it is still what
@@ -515,6 +501,14 @@ Cursor names and colours are the server's, whatever a client says; a cursor stat
 Limits: 8 MB per message and 1,200 messages per 10 seconds (closed with `1008`). A connection that
 falls 1,024 messages behind is closed with `1013` and resyncs. Other closes: `4400` for a message
 that is not the protocol. Exports: Drive's `GET /api/app/drive/files/{id}/content?format=html|pdf|txt`.
+
+## Calendars and contacts — `/api/dav`
+
+`/api/dav/{package}/…` (any method) signs a CalDAV or CardDAV app in with HTTP Basic (the person's email and an app
+password: an API key of scope `dav`, or one to the whole API) and hands the request to the package's endpoints under
+`dav/` as that person; the password never reaches the package. `/.well-known/caldav` and `/.well-known/carddav` answer
+`301` to `/api/dav/comms/`, where Mail, Chat and Calendar serves calendars and address books. Without good credentials the
+answer is a Basic challenge, and wrong ones count against the address as failed sign-ins do.
 
 ## App endpoints
 
@@ -591,8 +585,7 @@ Pages, for browsers, with the session cookie:
   person may use (`?via={app}` first, then `priority`, then install order), else the shell's
   records page if the person may read the entity: the records of the app it belongs to when that
   app has no interface of its own (`/data/{app}/e/…`), else the records of the first workspace menu (in order) that
-  lists it (`/data/{menu}/e/…`), else `/data/e/…` (today's web app for a
-  workspace not on the shell); else 403 (404 for an entity the workspace does not have). `GET /open/{entity}` → the same for the list (an app's `shell.open` `list`), except for a
+  lists it (`/data/{menu}/e/…`), else `/data/e/…`; else 403 (404 for an entity the workspace does not have). `GET /open/{entity}` → the same for the list (an app's `shell.open` `list`), except for a
   settings entity that is not per company: its one record once it exists. The rest of the
   query goes along.
 * `GET /{public path}/{workspace}/…` (an app's `shell.public`, such as `/drive/s/acme/{link}` and
@@ -602,18 +595,18 @@ Pages, for browsers, with the session cookie:
 * `GET /data/{app}/…` → the records of an app without an interface of its own (no `ui`, no
   `shell.app`; not a connector, a suite or an add-on): the shell's records frame with the modules of
   its packages and its add-ons'. 403 when the person may read none of them; for an app that has an
-  interface now, or is not installed, `e/{entity}[/{id}]` goes to `/open/…` and anything else to
-  `/data/`. `/data/e/…`, `/data/r/…` and `/data/customize/…` are the records of any entity, its
+  interface, the same path under its route; for one that is not installed, `e/{entity}[/{id}]` goes
+  to `/open/…` and anything else to `/data/`. `/data/e/…`, `/data/r/…` and `/data/customize/…` are the records of any entity, its
   reports and Customize.
 * `GET /data/{menu}/…` → the records of a workspace's own menu (`define_module`), the same frame with
   `scope: {app: "{menu}", title: <label>, packages: ["tenant"], modules: ["{menu}"]}` (pages show
-  the menu named in `modules`; `packages` is for an older interface). 403 when the person reads none
+  the menu named in `modules`). 403 when the person reads none
   of its entities; `/data/{menu}` redirects to `/data/{menu}/`.
-* `GET /app/…` → `303` to where an address of today's web app (gone since U4b) lives now, with its
-  query: `/app/e/{E}[/{id}]` → `/open/…`, `/app/login` → `/login` (the single sign-on return address
-  providers have registered), `/app/admin…`, `/app/apps…` → `/admin/…`, `/store/…`, `/app/mail…` and
-  the other moved apps → their pages, anything else → `/`. `/app/sw.js` is a worker that clears
-  today's web app's cache and removes itself.
+* `GET /app/…` → `303` to the page's address, with its query: `/app/e/{E}[/{id}]` → `/open/…`,
+  `/app/login` → `/login` (the single sign-on return address providers register; a provider's answer to
+  a step-up goes on to `/api/auth/step-up/provider/back`), `/app/admin…` → `/admin/…`, `/app/apps` →
+  `/store/`, `/app/mail…` and the other apps' pages → their routes, anything else → `/`. `/app/sw.js` is a
+  worker that clears the `ferrum-shell` cache and removes itself.
 * `GET /healthz` → `ok` (for load balancers).
 * `GET /go/{workspace}/{s|p}/{path}?{query}` on the link host (`FERRUM_LINK_HOST`) only, whatever
   else that host is: no session; `302` to `https://{host}/{path}?{query}`, where `host` is the
@@ -680,6 +673,9 @@ For the bar, with the cookie or a token:
   create. Reading decides; there is no list of roles. `ETag`.
 * `GET /api/shell/version?app=` → `{app, version, release}`: the interface release the workspace
   runs, so an open tab can tell it is outdated.
+* `GET /api/shell/words` (administrators) → `{apps: [{app, title, words}]}`: the words each app's interface release
+  gives to `t()`, for putting them in the workspace's language.
+* `GET /api/shell/offline` → the person's offline lease, as the bootstrap carries it ([offline](offline.md)).
 * `POST /api/shell/app-token` `{app}` (the session cookie, from the site's own pages) →
   `{token, token_type: "Bearer", expires_in: 300, app}`: an **app token** for an app whose interface
   runs isolated and that the person may use ([plan](plan/apps-ui.md) §12.3). It works only as a bearer
@@ -744,9 +740,15 @@ has when it runs, not when they asked. A bulk job's `result` is `{total, succeed
 
 ## Administration (administrators only)
 
-Workspace settings: `GET /api/admin/settings` → `{timezone, fiscal_year_start_month, require_two_factor}`;
-`PUT` with any of them (`timezone` is an IANA name such as `Asia/Kolkata`; `require_two_factor`
-applies from each person's next sign-in; `require_sso` refuses password sign-in to everyone but
+Workspace settings: `GET /api/admin/settings` → `{timezone, language, fiscal_year_start_month, require_two_factor,
+require_sso, assistant, assistant_model, assistant_monthly_tokens, assistant_egress, offline, messages,
+new_device_notice, break_glass, idle_minutes, staff_networks, step_up, record_reads}`;
+`PUT` with any of them (`timezone` is an IANA name such as `Asia/Kolkata`; `language` a language tag or `null` for
+English; `fiscal_year_start_month` 1 to 12; `require_two_factor`
+applies from each person's next sign-in; `offline` is `{allowed, hours}` ([offline](offline.md));
+`assistant` turns the assistant off for the workspace, with `assistant_model`, `assistant_monthly_tokens` and
+`assistant_egress` ([operations](operations.md#the-assistant)); `messages` is the workspace's calling code, quiet
+hours and limits for messages ([Messages](#messages)); `require_sso` refuses password sign-in to everyone but
 administrators and needs an enabled single sign-on provider). `staff_networks`
 (`{"networks": ["10.0.0.0/8", …], "mode": "enforce" | "report"}`, or `null` for none) is the networks staff
 may work from ([operations](operations.md#staff-networks)); a save in `enforce` is refused (422) unless the
@@ -783,7 +785,7 @@ zone.
   read_only, leaving_days}`.
   * `kind`: `subdomain` (the workspace's `{slug}.{base}`, or a name it gave itself under the base, which has
     `base_name`), `custom` (a domain of its own) or `operator` (the operator's, `ferrum task add_host`). `target`:
-    `shell`, `portal` or `site:{app}`. `primary` (and, as before, `is_primary`): the main address of its target.
+    `shell`, `portal` or `site:{app}`. `primary` (and `is_primary`, the same): the main address of its target.
     `status`: `verified`, `pending`, `failing`, `leaving` or `released`. `zone`: the zone's name, or `null`; read only.
     `redirecting`, for a removed address: `true` while it still sends visitors on (its leaving period, then 90 days),
     `false` once it no longer answers; `null` for a live one.
@@ -820,7 +822,7 @@ zone.
 * `DELETE /api/admin/domains/{host}` removes a custom domain or a name under the base → `{host, leaving_until}`: one in
   use keeps serving the people signed in there until `leaving_until`, then redirects (`null`: it stopped at once, being
   never verified or with `FERRUM_HOST_LEAVING_DAYS=0`); the main address hands its place to another of the workspace's
-  first. (Before, this answered `204`.) An operator's address: `403`; the workspace's own subdomain: `404`.
+  first. An operator's address: `403`; the workspace's own subdomain: `404`.
 * `PUT …/{host}/primary` makes a working one the main address of its kind (a forwarding one: `422`); `POST …/{host}/check` checks a custom
   domain now, that it points here and, where `proof` is `record`, its record → `{host, answers, points, waiting}`:
   `answers`, it works; `points`, it points here; `waiting` as in the list (`null` once it works).
@@ -1084,7 +1086,7 @@ and `q` when searched; a page past the last is a `404` there too). It is offered
 
 A low-priority ticket saved on Monday at 09:00 there reads `x_respond_by` 13:00 and `running`; put on `Waiting` at 11:00 it reads `paused` with no due moment; back on Wednesday at 09:00 (Tuesday is a holiday) it is due at 11:00, and the reminder fires at 10:00. Left alone, a minute after 11:00 it reads `breached` and the leads get one mail; closed after that, `met_late`.
 
-**Lines within lines** (docs/builder/decisions.md BD-06, amended 11 November 2026). A custom line entity may hold a table of another custom line entity: a control's tests, each with its evidence rows. Only a workspace's own entities do this; a package's child entity holds no table. A record is written and read with its lines' lines nested in each line, in order, each row with its `id` and `idx` (its place, 0-based, at its own level), rollups and computed fields worked out at each level:
+**Lines within lines** (docs/builder/decisions.md BD-06). A custom line entity may hold a table of another custom line entity: a control's tests, each with its evidence rows. Only a workspace's own entities do this; a package's child entity holds no table. A record is written and read with its lines' lines nested in each line, in order, each row with its `id` and `idx` (its place, 0-based, at its own level), rollups and computed fields worked out at each level:
 
 ```json
 {"code": "A-1", "total": "0.3", "tests": [
@@ -1093,9 +1095,9 @@ A low-priority ticket saved on Monday at 09:00 there reads `x_respond_by` 13:00 
     {"id": "…", "idx": 1, "title": "log", "amount": "0.2", "tag": "door/log"}]}]}
 ```
 
-A save replaces a table's rows as it does today, at either level: a row sent with its id keeps it, and what it held unless sent (a line sent as `{"id"}` alone keeps its own lines); a row without one is new; a row left out is deleted, a line's own lines with it. A line's line sent under another line than its own is refused (`this row is stored under another line: a row stays under its line (send it without its id to copy it)`); an id from another record makes a new row, as for lines. In a line's line, `parent` is its line (its rules, computed fields and defaults); a line's `rollup` totals its own lines and the record's rollup may total the lines' totals, both exact. An error in a line's line keeps `row` at its line and adds `path`: `{"field": "title", "message": "Title is required", "row": ["tests", 0], "path": [["tests", 0], ["evidence", 0]]}`. `GET /api/meta/{Entity}` nests `children` in a line that has tables of its own; `GET /api/customize/definition/{Entity}` lists the lines' lines' entities in `lines` too. A list filter reaches a record's lines, not their own lines (`cannot filter on 'tests.evidence.title': a filter reads a record's lines, not their own lines`); a line's line holds no unique key (no line does). A line entity whose rows exist cannot become another entity's lines (`Evidence: its rows are lines of XTest records; they cannot become the lines of XAudit.loose while there are any`). `append_line` and `set_line` write the record's own lines (the lines' own lines stay as they are), and `links.<field>` shows a linked record's lines with their own. The workspace's export, an import of it, a pack's reference records, merging and a link's delete guard carry or reach lines' lines too.
+A save replaces a table's rows at either level: a row sent with its id keeps it, and what it held unless sent (a line sent as `{"id"}` alone keeps its own lines); a row without one is new; a row left out is deleted, a line's own lines with it. A line's line sent under another line than its own is refused (`this row is stored under another line: a row stays under its line (send it without its id to copy it)`); an id from another record makes a new row, as for lines. In a line's line, `parent` is its line (its rules, computed fields and defaults); a line's `rollup` totals its own lines and the record's rollup may total the lines' totals, both exact. An error in a line's line keeps `row` at its line and adds `path`: `{"field": "title", "message": "Title is required", "row": ["tests", 0], "path": [["tests", 0], ["evidence", 0]]}`. `GET /api/meta/{Entity}` nests `children` in a line that has tables of its own; `GET /api/customize/definition/{Entity}` lists the lines' lines' entities in `lines` too. A list filter reaches a record's lines, not their own lines (`cannot filter on 'tests.evidence.title': a filter reads a record's lines, not their own lines`); a line's line holds no unique key (no line does). A line entity whose rows exist cannot become another entity's lines (`Evidence: its rows are lines of XTest records; they cannot become the lines of XAudit.loose while there are any`). `append_line` and `set_line` write the record's own lines (the lines' own lines stay as they are), and `links.<field>` shows a linked record's lines with their own. The workspace's export, an import of it, a pack's reference records, merging and a link's delete guard carry or reach lines' lines too.
 
-**Lines on a package's entity** (docs/builder/decisions.md BD-06, amended 10 November 2026). A customization adds a table of lines to a package's master, document or settings entity with `add_field`: the field is `x_…`, `type: table`, `of` a custom child entity (`define_entity` first) that is the lines of no other table and holds no table of its own. A total over them is another custom field (`rollup`). A checklist on a basket:
+**Lines on a package's entity** (docs/builder/decisions.md BD-06). A customization adds a table of lines to a package's master, document or settings entity with `add_field`: the field is `x_…`, `type: table`, `of` a custom child entity (`define_entity` first) that is the lines of no other table and holds no table of its own. A total over them is another custom field (`rollup`). A checklist on a basket:
 
 ```json
 {"entity": "Basket", "op": {"op": "add_field", "field": {"name": "x_checks", "type": "table", "of": "XCheck", "label": "Checks"}}}
@@ -1161,6 +1163,23 @@ Backfills (data a release moves in batches, [operations](operations.md#upgrades)
 failed at once from where it got (409 while it runs). A failed one is also queued again, once, when its package's
 installed version changes ([BD-39](builder/decisions.md#bd-39-faults-a-walk-of-a-live-server-found)).
 
+Handing over work: `POST /api/admin/users/{id}/hand-over` `{to, reason}` → `{user, to, assignments_moved}` moves
+what the installed packages' `handover` declarations name, and the person's open assignments, to a successor
+(also queued when `deprovision` names one).
+
+Support access ([support access](support-access.md)): `GET /api/admin/support` → `{grants}`; `POST
+/api/admin/support` `{level: health|diagnostics|assistance|incident, grantee, entities?, can_write?, reason, hours}`
+→ `201 {id, key}` (from a signed-in browser; `incident` needs a recent step-up; each level has its own longest
+duration: 30 days for `health`, 7 for `diagnostics`, 3 for `assistance`, 1 for `incident`); `DELETE /api/admin/support/{id}` → `204`; `GET /api/admin/support/{id}/requests` →
+`{requests}`, what a grant's key did. `GET /api/support/report` is what a support key reaches.
+
+Usage and closing: `GET /api/admin/usage` → `{now: {meter: quantity}, slug, state, note, quotas, plan, days}`
+(the last 35 days by meter). `POST /api/admin/close` `{confirm}` (the workspace's name) closes the workspace →
+`{state: "closed", retain_until}`. `GET /api/admin/evidence` → a JSON file (`evidence-{date}.json`) of facts a reviewer asks for: `access` (people,
+role conflicts, API keys, support grants, single sign-on), `outside_parties` (connections, plugins), `personal_data`
+(what is declared and not, retention rules, legal holds) and `history` (events, how far they are anchored); no secret
+and no record's content, and taking one is on the audit trail.
+
 Roles one person may not hold together (segregation of duties): `GET /api/admin/role-conflicts` →
 `{conflicts: [{role_a, role_b, reason, created_at, holders: [{id, email, full_name}]}]}`, where
 `holders` are those who held both before the pair was declared; `PUT` `{role_a, role_b, reason}`
@@ -1179,7 +1198,9 @@ Failed events ([events](events.md)): `GET /api/admin/events/dead?limit=` → `{e
 entity, record_id, attempts, last_error, created_at, correlation_id}]}`; `POST
 /api/admin/events/{id}/replay`; `GET /api/admin/webhook-deliveries/dead?limit=` → `{deliveries: [{id,
 webhook, webhook_name, topic, attempts, response_code, last_error, created_at, updated_at}]}`; `POST
-/api/admin/webhook-deliveries/{id}/replay`.
+/api/admin/webhook-deliveries/{id}/replay`; `GET /api/admin/operations/{id}` → `{operation, events, jobs, runs,
+effects, deliveries}`: everything the operation a person quotes set off in the workspace (each with how it stands
+and why, at most 200 of each, never what it carried).
 
 Business calendars ([processes](logic/processes.md)): `GET /api/admin/calendars` → `{calendars: [{name,
 zone, weekends, holidays, hours, revision, updated_by, updated_at}]}`; `GET /api/admin/calendars/{name}` →
@@ -1195,7 +1216,7 @@ windows. A date opened is a business day, one closed all day is not. At most 1,0
 calendar a release's waits name is not refused: deadlines already worked out stay, and a wait that starts
 later on it fails as one naming a calendar the workspace never had.
 
-Personal data, beside `/api/admin/privacy`: `GET`/`POST /api/admin/restrictions`, `POST
+Personal data, beside `/api/admin/personal-data`: `GET`/`POST /api/admin/restrictions`, `POST
 /api/admin/restrictions/lift` `{email}`; `GET`/`POST /api/admin/retention`, `PUT`/`DELETE
 /api/admin/retention/{id}`, `POST /api/admin/retention/{id}/preview` → `{reaches, more}`.
 
@@ -1263,6 +1284,10 @@ and the apps' `shell.search` providers together; a provider answers `GET {endpoi
 may open.
 
 ## Connections
+
+(An older framework, connectors written as code or as plugins, has its own routes under `/api/admin/connectors` and
+`/api/admin/connector-instances`, `POST /api/connect/{id}/webhook` and `POST /api/admin/connection-drift/{id}/resolve`:
+[connectors](connectors.md). Apps use the connections below.)
 
 Connections to outside services: one described HTTP service a workspace calls, is called by, pulls from and signs in
 to ([BD-29 to BD-33](builder/decisions.md#bd-29-one-described-call-for-everyone)). No provider is named in the
@@ -1377,7 +1402,7 @@ connect again) or their account is closed. `GET …/pulls` gives each row's `use
 `next_at` may be a pointer (a key not there reads as null) or `{"at": "/a"}`, `{"header": "Location"}`, `{"link":
 "next"}`, `{"expr": "answer.counts.likes + answer.counts.shares"}` (over `answer`, `headers`, `inputs`, `connection`;
 in a mapping over `payload`, `item`, `connection`), each with `"required": true` to fail the call or the item when it
-is null. In a mapping a plain string that is not a pointer is an expression, as before. From Rust, an object value in
+is null. In a mapping a plain string that is not a pointer is an expression. From Rust, an object value in
 `Operation.result`, `form` or `body` is `connections::spec(&json!({…}))`. A temporary answer's `Retry-After` sets when
 a queued call or a pull's retry comes back (capped at an hour), and reaches an app's own call as `RetryAfter`.
 
@@ -1529,7 +1554,7 @@ it has neither attributes nor children, else `@attribute`s, children by name as 
 child given twice is a list, and so is one named in `"lists": ["item", "entry"]`. An RSS pull: `"items_at":
 "/rss/channel/item"`, values `"/title"`, `"/link"`; an Atom one: `"/feed/entry"`, `"/title/#text"`,
 `"/link/0/@href"`. No document type is read. `"answer": "form"` reads `a=1&b=2` as `{"a": "1", "b": "2"}`, `"text"` as
-the text; `json` (the default) as before.
+the text; `json` (the default).
 
 **A pull that asks per item, and the account** ([BD-60](builder/decisions.md#bd-60-a-pull-that-asks-for-each-item-and-the-signed-in-account)):
 a pull's `"inputs": {"user": "account"}` gives its operation inputs as expressions over `account` (what the sign-in
@@ -1585,25 +1610,6 @@ The connection's log (`GET /api/admin/connections/{id}/log`) gives `addresses: [
 record_id, user_id, expires_at, ended_at}]`, never the address; the signature is hidden in captures, errors and results
 wherever it appears (as written or percent-encoded). A server without `PUBLIC_URL` refuses the call: a service cannot
 pull a file from localhost. Works with the local file store and S3 alike (the server streams the object).
-
-### Moving an app's own HTTP client onto a connection
-
-Social, ERP's carriers and the service apps each build requests themselves. To move one:
-
-1. Write what the app calls as a connection description: `base`, `auth`, one operation per call, `result` for what the
-   app reads back, `error_at`, `temporary` and `idempotency_header` where the app had its own. Ship it in the package
-   (`connections:`) so a workspace sees it offered; keep the app's settings for what is the app's.
-2. Move the app's stored API keys to the connection's secrets: an upgrade step reads the app's sealed value and saves
-   the connection with it (`save_connection_def`), then clears the app's copy. Names in templates stay `secret.<name>`.
-3. Replace the client code with `connections::call(k, ctx, Some("<app>"), &Call { … })`, the key the one the app sent as
-   its idempotency key, `entity`/`record` the record it is about. `Unavailable` is the app's "try later" (or queue it with
-   the `call` effect), `Invalid` its "the service said no".
-4. Move the app's webhook route to the connection's inbound address: a `map` when it only writes records, else
-   `handler` with the app's code as an `InboundHandler`. Keep the old route answering until every caller is pointed at
-   the new address, then delete it and its signature code.
-5. Where a person signs in (Social's networks, a mailbox), describe the provider under `auth: oauth` and drop the app's
-   token table after asking each person to connect again; the tokens are never moved by copying.
-6. Delete the app's fixtures in favour of a test connection's, and its SSRF checks: the platform's guard applies.
 
 ## Messages
 
@@ -1744,22 +1750,6 @@ number's choice for that channel, once: the same body sent again is refused as a
 cannot undo a later choice. Unknown, unsigned or wrongly signed calls are refused (404, 401) and counted (the channel's
 `refused`).
 
-### Moving an app's fixed wording to templates
-
-1. For each message the app sends, add a `messages:` entry to its `package.yaml`: key `{package}.{name}`, the entity
-   it is about, `category` (operational unless it markets), the bodies it sends today in `en` (its Rust subject and
-   HTML become `email.subject` and `email.body`, `{{ doc.<field> }}` where it formatted a field), and `values` for
-   whatever it computes that is not a field (a link, a code, a time in the guest's zone).
-2. Where it built the mail and called `queue_mail` / `queue_mail_with` / `notify::send_kind`, call
-   `ferrum_kernel::messages::send` with `Message { template, entity, record, to, values, attachments, ..Default::default() }`
-   in the same transaction, `to` as `Recipient`s (`Recipient::address(&email)`, `Recipient::user(id)`; a phone when the
-   record has one, so the workspace may add a text body). Leave `channels` empty: the template's order decides.
-3. A one-time code: `Kernel::send_code` and `Kernel::verify_code` in place of the app's own code table.
-4. Delete the Rust wording, and run the app's tests against the rendered message: a preview (`preview_message`) of
-   each template against a fixture record gives the same subject and text as before.
-5. Say in the app's README that its messages are templates a workspace edits under Settings, and which `values` each
-   reads.
-
 ## Documents
 
 Templates that render a record into a page, text, CSV or XML (`crates/kernel/src/documents.rs`, decision
@@ -1847,7 +1837,7 @@ language?, format?}` → one document for many records (items, batches, bins, pa
 page's each starting a page (write a label's body as a fragment with its own `@page` size), a file's one after another;
 1 to 200 records, 100 copies, 1000 in all a call, more refused (ask for the next ones). `GET /api/v1/{E}/{id}/print`
 takes `?template=key` (one of the choices) and `language`, and prints with the entity's default template when it has
-one; otherwise it is the print format as before. A page needs read permission; a text, CSV or XML file needs export
+one; otherwise it is the print format. A page needs read permission; a text, CSV or XML file needs export
 permission and each download is on the record's audit trail (`document:export`, with the file's digest).
 
 **Generating and keeping.** The `generate` effect (configured buttons, transitions, approvals, automations):
@@ -1899,7 +1889,7 @@ A page template is a **print format** (decision [BD-28](builder/decisions.md#bd-
 `tools/PRINT-FORMATS-SPEC.md` in the interface work): an administrator designs how an invoice or an order prints, a
 person printing picks a format, a letter head, a language and copies. A format is a `template` (MiniJinja bodies, as
 above) or a `layout` (sections, columns and blocks rendered by the platform's own renderer,
-`crates/kernel/src/layout.rs`; no tenant markup runs). Every field below is optional, today's behaviour the default:
+`crates/kernel/src/layout.rs`; no tenant markup runs). Every field below is optional, the default being what it does without one:
 
 ```yaml
 documents:
@@ -2005,23 +1995,6 @@ know). The app API is 0.3.9 now: what each version carries is in
 [BD-63](builder/decisions.md#bd-63-a-left-menu-row-for-an-apps-own-page-and-the-app-api-038) to BD-66 (0.3.8);
 0.3.9 adds an app's own vault and its `operator_settings` ([docs/app-contract.md](app-contract.md), *The vault* and *Operator
 settings*).
-
-### Moving an app's print layout or file to a document template
-
-1. Add a `documents:` entry to the app's `package.yaml`: key `{package}.{name}`, the `entity`, `output` (`page` for a
-   print layout; `text`, `csv` or `xml` for a file, with its `encoding` and `crlf`), `default: true` on the one its
-   entity prints with, `roles` if only some may pick it, and the body in `en` (its `print/<Entity>.html` moved in
-   unchanged: the variables a print format reads are all there).
-2. Replace what the template computed by hand: `money` stays as it was, but an amount with its currency is
-   `amount`, an amount in words `words`, a date in the reader's form `date`; a file's fixed-width fields `pad`, its
-   numbers `fixed`, its totals and counts `total` and `length`; escaping a CSV or XML value is the output's own.
-3. Where the app wrote a file in Rust (a bank file, a filing), render it from the template instead: `render_document`
-   for a person downloading it, `generate` to keep it on the record (and attach it to a mail). Keep the Rust builder
-   until a test renders the template against a fixture record and gets the same bytes.
-4. Remove the `print_formats` entry once the template is the entity's default (a print without `?template=` then
-   uses it); a workspace that customized the print template with `set_print_template` keeps it until it picks a
-   template.
-5. Say in the app's README which documents it ships, their `values`, and that a workspace edits them under Settings.
 
 ## Notifications — `/api/notifications` (the caller's own)
 
@@ -2135,6 +2108,9 @@ these). Off unless the server has `FERRUM_ASSISTANT_API_KEY`.
 * `GET /api/assistant/threads/{id}/live` follows a turn under way from this replica (first event
   `draft`: what it has said so far); 404 when it runs elsewhere.
 * `POST /api/assistant/threads/{id}/stop` → 204; `DELETE /api/assistant/threads/{id}` → 204.
+* Administrators: `GET /api/assistant/usage` → `{month: [{user, model, calls, input_tokens, output_tokens}]}`, this month's;
+  `GET /api/assistant/prompts/{digest}` → `{digest, model, system, tools, first_used, answers}`, what the model was told
+  under the version an answer records.
 * On the pages of a workspace's own menu (`/data/{menu}/…`) the menu's `assistant.instructions` are
   given with the page as an app's `shell.assistant` are, and `GET /api/assistant/suggestions?path=`
   offers its `suggestions` there.
@@ -2150,7 +2126,7 @@ these). Off unless the server has `FERRUM_ASSISTANT_API_KEY`.
 `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `resources/read`
 (`ferrum://overview`, `ferrum://entity/{name}`, `ferrum://record/{entity}/{id}`), `prompts/list`,
 `prompts/get`. Tool failures come back as results with `isError: true` and the same error JSON as
-the REST API; unknown tools or bad arguments are JSON-RPC errors (-32602). Administrators also get the App Manager's tools — `list_apps`, `plan_app`, `install_app` (consent = the plan's digest, as on the Apps page), `set_app_enabled`, `uninstall_app` — so an agent can extend the workspace the same way a person does.
+the REST API; unknown tools or bad arguments are JSON-RPC errors (-32602). Tools, for everyone: `ferrum_overview`, `describe_entity`, `search_records`, `get_record`, `preview_record`, `create_record` (`idempotency_key`, `submit`), `update_record`, `delete_record`, `submit_record`, `cancel_record`, `amend_record`, `run_action`, `list_capabilities`, `invoke_capability`, `workflow_transition`, `run_report`, `get_audit_trail`, `get_collaboration`, `add_comment`, `assign_record`, `my_assignments`, `set_tags`; each asks what its REST route asks. Administrators also get `customize_entity` and the App Manager's tools — `list_apps`, `plan_app`, `install_app` (consent = the plan's digest, as on the Apps page), `set_app_enabled`, `uninstall_app` — so an agent can extend the workspace the same way a person does. Where the operations package is installed, `ops_overview`, `ops_command` and `ops_propose` (a proposal for a person to approve) are there too.
 
 ### OAuth 2.1 (for hosted MCP clients)
 
@@ -2225,8 +2201,7 @@ client), `exp` (five minutes after `iat`), `iat`, `auth_time` (when the person l
 session, as above), `nonce` when one was sent, and `amr`, how they proved it, every proof they gave together: the
 steps of their sign-in (`password` or `code`, then `authenticator` or `recovery_code` when there was a second step;
 `passkey`, `sso`, `accounts`) or of the last time they confirmed it is them (`password`, with `authenticator` or
-`recovery_code` when that asked for a code too; `passkey`, `accounts_passkey`, `provider`); none for a session an older
-build opened. `sub` is the person's in that
+`recovery_code` when that asked for a code too; `passkey`, `accounts_passkey`, `provider`). `sub` is the person's in that
 workspace: random, kept, the same at every address of the workspace, and it says nothing else about them. Scope
 `profile` adds `name`, `email` adds `email` and `email_verified`. Then what the companion's app gives
 (`oidc::Companion::claims`; for the forge, `preferred_username`, the account's name there, and `email`, an address only that

@@ -2,7 +2,7 @@
 
 What every app repository holds besides its code, what its README says and in what order, how the banners and
 screenshots are made, and what a README must never claim. Some of it is checked on every pull request of the platform
-(`scripts/check_apps.py`); the rest is the house style the 13 Nov 2026 rewrite of every app's README followed.
+(`scripts/check_apps.py`); the rest is the house style every app's README follows.
 
 ## What every app repository has
 
@@ -15,7 +15,7 @@ screenshots are made, and what a README must never claim. Some of it is checked 
 | `tests/*_it.rs` | at least one scenario test against a real PostgreSQL (an add-on's may be its parent's) | `check_apps.py`: "no scenario test (tests/*_it.rs)" |
 | `ui/` and `ui/dist/` | the interface and its built files with `.source`, when the app has one | `check_apps.py`: "`ui/dist` is not built (index.html and .source)" |
 | `docs/` | `docs/assets/` (banners, `screens/`), and the app's own guides: API, operating notes, a user guide where it has one | not checked |
-| `SECURITY.md` | how to report a vulnerability privately, and the known weak points | not checked. Only Cloud has one (`ferrum-app-cloud/SECURITY.md`) of the 37 app repositories read on 16 Nov 2026; every app should |
+| `SECURITY.md` | how to report a vulnerability privately, and the known weak points | not checked. Only Cloud and Code have one (`ferrum-app-cloud/SECURITY.md`, `ferrum-app-code/SECURITY.md`); every app should |
 | `.github/workflows/ci.yml` | the CI the app would run on GitHub; `scripts/app_ci.sh` runs the same steps on the developer's machine and reads the test database variables and `RUST_MIN_STACK` from it, so keep it accurate | read by `app_ci.sh` |
 | `Cargo.toml`, `build.rs`, `rustfmt.toml` | the crate; `build.rs` embeds `packages/` and `ui/dist` | the build |
 
@@ -50,7 +50,7 @@ a migration, a setting), what was run to check it and what was not. Drive 0.18.0
 
 ## The README, in order
 
-The 13 Nov 2026 rewrite gave every app's README one shape (the pipeline's guide is `README-GUIDE.md` in the
+Every app's README has one shape (the pipeline's guide is `README-GUIDE.md` in the
 maintainers' `docs-work/readmes`, outside every repository). Drive's `README.md` is a complete example.
 
 1. **The head**, centred: the banner as a `<picture>` (`docs/assets/banner-dark.svg` for a dark theme,
@@ -97,7 +97,7 @@ machine they were written on. To use them, ask for the folder, and check the pat
 | `docs-work/_toolkit/docgen/mmcheck.mjs <README.md>` | parses every Mermaid block with Mermaid itself |
 | `docs-work/_toolkit/docgen/preview.mjs <repo dir> <owner/repo> <out.png>` | the README as GitHub renders it |
 | `docs-work/_toolkit/docgen/build.py <repo> [--no-shots]` | the older (31 Oct 2026) whole-README builder from `facts.py` and `content.py`; its icon folder (`ICONS`) points at a checkout that no longer exists |
-| `docs-work/readmes/_tools/assets.mjs [repo ...]` | the 13 Nov screenshots: from a captured set of the running suite, framed, saved as `docs/assets/screens/*-light.webp` and `*-dark.webp`, with a manifest per repository |
+| `docs-work/readmes/_tools/assets.mjs [repo ...]` | the screenshots: from a captured set of the running suite, framed, saved as `docs/assets/screens/*-light.webp` and `*-dark.webp`, with a manifest per repository |
 | `docs-work/readmes/_tools/check.py` | every image a README names exists, every `#anchor` resolves, HTML blocks balance, no blank line inside a table, and none of the words a public README must not hold |
 
 Playwright for the scripts is in `docs-work/_toolkit/pw` (`npm install` there). Screenshots show only fictional

@@ -23,7 +23,7 @@ places outside the installation it reaches. The code is `crates/kernel/src/priva
 ## Personal data in records: `personal_data`
 
 Each package says where it keeps people's data, in `package.yaml` (`ferrum_meta::PersonalDataDef`,
-`crates/meta/src/types.rs:565`):
+`crates/meta/src/types.rs`):
 
 | Key | What it is |
 |---|---|
@@ -40,7 +40,7 @@ Fields an erasure can blank are of the erasable types: Data, Text, Markdown, Ema
 
 ```yaml
 personal_data:
-  - {entity: Communication, match: sender, erase: [sender, sender_name, subject, content, text_content, attachments, headers, reply_to_address]}
+  - {entity: Communication, match: sender, erase: [sender, sender_name, subject, content, text_content, attachments]}
   - {entity: ChatMessage, match: sender, erase: [sender, body]}
   - {entity: EmailGroupMember, match: email, erase: [email, member_name]}
   - {entity: CalendarFeed, match: person, erase: [person]}
@@ -105,7 +105,7 @@ async fn erase(&self, tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, emails: 
 - **Restriction of processing** keeps someone's data and stops using it: no automated mail goes to them, under any address
   they have had. Before an app reaches a person on any path the platform does not send for it, it asks
   `Kernel::may_contact(tx, tenant, email)` (transactional) or `Kernel::may_contact_for(tx, tenant, email,
-  Purpose::Marketing)` (`crates/kernel/src/retention.rs:422`). Messages sent with `messages::send` are asked for you.
+  Purpose::Marketing)` (`crates/kernel/src/retention.rs`). Messages sent with `messages::send` are asked for you.
 - **Consent to marketing**: a promotional template (`category: promotional`) gets a signed opt-out link (`opt_out`) and
   is not sent to whoever withdrew. An erased person's opt-out is kept as a digest of the address, so they are not sent
   marketing again after an erasure.
@@ -144,7 +144,7 @@ transfer key the operator gives). So:
 
 - Every table of the app that holds a workspace's data has `tenant_id` ([04](04-data-and-records.md)).
 - No key is unique across workspaces: a unique key includes `tenant_id`. A copy refuses a table with a key unique across
-  workspaces (`sandbox.rs:620`), and a workspace named outside its own tables.
+  workspaces (`crates/kernel/src/sandbox.rs`), and a workspace named outside its own tables.
 - Files are under `tenants/{tenant}/…`, as the seam keeps them; a file under another key refuses the copy.
 - What the app sealed with its vault handle opens at the target (the vault travels; the id is the same).
 - What the app holds outside the installation (a database at a provider, a forge's repositories) does not move by
@@ -152,7 +152,7 @@ transfer key the operator gives). So:
 - After a move, sign-ins the target carried end for programs beside the server ([10](10-companions-and-sign-in.md)).
 
 **Restores.** When a restore is noticed, each app is asked to set aside work it had in hand that may or may not have
-happened since: `recovery::Restored` (`set_aside(tx, tenant)`), registered with `HookRegistry::add_restored`; its
+happened since: `recovery::Restored` (`set_aside(tx, tenant: Option<Uuid>)`, none for every workspace), registered with `HookRegistry::add_restored`; its
 `kept()` names tables that record what has happened and must not be unlearnt when one workspace goes back (a key revoked
 since stays revoked).
 

@@ -6,8 +6,7 @@ which guide explains it. An item marked **(reviewed)** has no script: a person l
 
 How the platform takes an app: the server depends on each official app's repository by git, on `branch = "main"`
 (`server/Cargo.toml`), behind a cargo feature, and `Cargo.lock` holds the exact commit. "The pin is the lock":
-`cargo update -p <crate> --precise <rev>` moves one app (`docs/plan/stateless.md`, *This week's app releases built
-in*). `docs/registry/release-manifest.yaml` says what the lock builds and `scripts/registry.py check` holds it to the
+`cargo update -p <crate> --precise <rev>` moves one app. `docs/registry/release-manifest.yaml` says what the lock builds and `scripts/registry.py check` holds it to the
 lock.
 
 ## Before asking for a pin (the app's developer)
@@ -31,8 +30,8 @@ lock.
 
 ### The code
 
-- [ ] Nothing from another app's tables; other apps' records through the kernel, with `requires` **(reviewed)**.
-  ([11](11-integrations.md))
+- [ ] Nothing from another app's tables; other apps' records through the kernel, with `requires`; another app's
+  operations only through `uses:` and `Kernel::call_tx` **(reviewed)**. ([11](11-integrations.md))
 - [ ] No country or sector rule in an engine: data or an add-on **(reviewed)**. ([01](01-what-an-app-is.md),
   [19](19-languages-and-formats.md))
 - [ ] Tables of your own: `tenant_id`, row-level security enabled and forced, the `tenant_isolation` policy, names
@@ -73,8 +72,7 @@ lock.
 
 - [ ] `ui/dist` built from the sources as committed and committed with them (`cli.mjs check`: "dist/ matches its
   sources"). ([17](17-the-interface.md))
-- [ ] `cli.mjs check` passes: base CSS, catalogs, size budgets, UI lint within `ui-lint-baseline.json` (and the
-  baseline did not go up).
+- [ ] `cli.mjs check` passes: base CSS, catalogs, size budgets, and the UI lint with no finding.
 - [ ] Kit components only; no forked primitive; tokens only; type roles only (the lint).
 - [ ] Every page's states walked on a running server: loading, empty (first use), no matches, denied, offline,
   failed; the home walked empty and full (`docs/app-contract.md`, *Reviewed*) **(reviewed)**.

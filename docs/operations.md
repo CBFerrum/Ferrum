@@ -11,7 +11,7 @@ through PostgreSQL `NOTIFY`. Any replica can be killed or added at any time.
 |---|---|---|
 | API replicas (`ferrum start`) | Stateless HTTP API; each also runs the outbox dispatcher, webhook sender, job runner, metadata listener and maintenance loops | Any replica may die at any time; work is claimed with `SKIP LOCKED` / advisory locks and retried by the others. Stopped (`SIGTERM`), a replica stops its background loops and live connections, answers the requests in flight (up to 20 s), then closes its database pools: within Kubernetes' 40 s grace period |
 | PostgreSQL 17 (CloudNativePG) | All state: documents, ledgers, audit, outbox, plugins | Synchronous replica + automatic failover; WAL archiving for point-in-time recovery |
-| Object storage (S3 or compatible) | Attachments (`FERRUM_S3_BUCKET`, `FERRUM_S3_ENDPOINT`) | Required in production; checked with a write/delete probe at boot (logged, not fatal) |
+| Object storage (S3 or compatible) | Attachments (`FERRUM_S3_BUCKET`, `FERRUM_S3_ENDPOINT`) | Required in production; a replica is not ready until a write-then-read probe has worked since it started, and a later failure is reported by the doctor and the metrics, not by taking it out of service |
 
 ## Configuration
 
@@ -19,7 +19,7 @@ Production reads `config/production.yaml`. Each setting comes from the environme
 variable, else from the database's `setting` table, else its default (*Settings in the database*, below). A server
 needs only `DATABASE_URL`: the platform's secrets are the vault's, in the database (*The vault*), and a new
 installation is given nothing else (*What a replica still reads from its environment*, below). The environment still
-wins in this release wherever it sets a variable.
+wins wherever it sets a variable.
 
 `DATABASE_URL` (required): `postgres://user:pass@host:5432/db`, the database's address; its `application_name`
 names the replica's pool (*Pools*, below). `/run/ferrum/db-ca.pem`, when the file is there (the Helm chart mounts
@@ -250,10 +250,8 @@ the text the variable would hold), and the server reads them as each replica sta
 1. It connects to `DATABASE_URL` with a pool of two connections of its own and reads the table (a database this build
    has not migrated yet has none: then nothing comes from it).
 2. Each setting is the environment's value when the environment sets the variable (even to nothing), else the
-   table's, else its default. The environment wins until the release after this one stops reading it, so that rolling
-   back behaves as before.
-3. The values land where the variables always did, so that everything works as before: a server whose table is
-   empty behaves exactly as one configured by the environment alone.
+   table's, else its default.
+3. A server whose table is empty behaves exactly as one configured by the environment alone.
 4. Only then does it check its host names and zones and open its real pools, sized by those settings.
 
 **Pools.** A replica's database address names its pool: `application_name=pool:<name>` (lower-case letters, digits
@@ -305,12 +303,11 @@ to every replica. The Operations screen does the same over HTTP with the operato
 
 **Copied once.** As a replica starts to serve, each setting its environment sets and the table does not hold yet is
 written to the table, once, as the environment's (`updated_by` is `environment`; replicas starting together write it
-once, under one lock). An installation configured by its environment so ends with its settings in the table, and
-behaves exactly as before. Once there, a setting stays when its variable is later removed from the environment: then
+once, under one lock). An installation configured by its environment so ends with its settings in the table. Once there, a setting stays when its variable is later removed from the environment: then
 the table's value applies, so unset it there (*Changing settings*). A variable set to nothing says the default and is
 not copied; a setting an operator unset in the table is not copied again. `ferrum task doctor` lists the settings the
-environment still decides, and says where the table holds another value or none: the release after this one stops
-reading the environment, and then the table's value applies.
+environment still decides, and says where the table holds another value or none: once a later release stops reading
+the environment, the table's value applies.
 
 A secret is never kept in the table: the platform's own are in the vault (*The platform's secrets*), the rest stay in
 the environment. Neither is a setting that someone else reads from the environment itself (an app compiled into the
@@ -327,7 +324,7 @@ vault gives it only to the host it was set for.
 other, and listed under its app in the table above. The server adds them before it reads any setting, and does not
 start when two owners declare one key or variable, naming both. Every app pinned in this release that reads a setting
 declares it (Drive, Comms, Metrics, and ERP's EU, United Kingdom, Malaysia, Romania, United States and Portugal
-add-ons), so each is read from the table like the platform's own, the environment still winning through this release;
+add-ons), so each is read from the table like the platform's own, the environment still winning;
 an address that is given a secret says so (`sends:`), as the platform's do. An app's secrets are never settings: each
 app keeps its own in its vault.
 
@@ -341,8 +338,7 @@ A replica needs `DATABASE_URL`, and reads these files at fixed paths when they a
 vault's key file), `/run/ferrum/db-ca.pem` (the database's certificate authority), `/run/ferrum/kms.token` and
 `/run/ferrum/kms-ca.pem` (the key-management service's token and certificate authority). The direct and read hosts may
 be the address's own parameters (`…?ferrum_direct_host=db-rw:5432&ferrum_read_host=db-ro`), taken out before it
-connects. In this release it still reads every variable of the table above, so that one set there wins and a rollback
-behaves; the release after stops. What stays in the environment after that, each for a reason
+connects. It still reads every variable of the table above, and one set there wins. What stays in the environment after that, each for a reason
 (`scripts/settings.py` keeps the list, which may only shrink):
 
 - `LOCO_ENV` (the image sets it): which configuration file the program reads, not a value an operator chooses.
@@ -406,9 +402,7 @@ its own, counted like a replica.
 | The role's limit | 380 |
 | Left of `max_connections` (400): an administrator, the standbys' replication, CloudNativePG's checks and monitoring | 20 |
 
-Until 14 November the manifests counted 4 beside the pool, no pod a rollout adds, and allowed 10 replicas:
-(10 + 1) × 36 + 20 = 416, above the role's limit of 370. The autoscaler's maximum is now 9 and the role's
-limit 380. CloudNativePG applies a managed role's `connectionLimit` with `ALTER ROLE … CONNECTION LIMIT` on
+CloudNativePG applies a managed role's `connectionLimit` with `ALTER ROLE … CONNECTION LIMIT` on
 the primary, so changing it restarts nothing; raising `max_connections` would restart PostgreSQL. Past 9, put
 the pooler in front.
 
@@ -460,7 +454,8 @@ Past the limit a request waits for its pool and answers 503; nothing queues with
 8. Sign in at `https://<host>/`, create the company (its chart of accounts, warehouses and,
    with `india`, GST templates are set up automatically) and a fiscal year.
 
-Single host: `cp deploy/.env.example deploy/.env`, fill it in, then
+Single host: `cp deploy/.env.example deploy/.env`, set the database's two passwords (`POSTGRES_PASSWORD`,
+`FERRUM_DB_PASSWORD`; nothing else is required), then
 `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
 
 **Installing with the Helm chart.** `deploy/helm/ferrum` renders what `deploy/k8s` renders, so one command
@@ -473,8 +468,10 @@ helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
   --set storage.bucket=<files bucket> --set database.backup.destinationPath=s3://<backup bucket>/ferrum
 ```
 
-* *The secret.* The chart creates none. It expects the Secret `ferrum-secrets` (another name: `secrets.existingSecret`)
-  with the keys of `deploy/k8s/secret.example.yaml`, and the backups' Secret `ferrum-backup-s3`.
+* *The secrets.* The chart makes one: the vault's key file, once, kept when the release is removed (`vault.keySecret`
+  names one of your own instead; *The vault*). It reads the Secret `ferrum-secrets` (another name:
+  `secrets.existingSecret`) where it is there, none of whose keys is required (`deploy/k8s/secret.example.yaml` lists
+  them), and needs the backups' Secret `ferrum-backup-s3` (`database.backup.credentialsSecret`).
 * *The image.* Set `image.digest` (a digest wins) or `image.tag` (a commit's full SHA). With neither, the chart refuses to
   render; there is no default and never `latest`. The same holds for the optional parts' images.
 * *Settings.* `values.yaml` lists them with the environment variable each becomes; `extraEnv` adds any other.
@@ -516,7 +513,7 @@ helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
   and the like); the Job then writes every other value the chart would have set as a variable, under its setting's
   key, each pool's three of its own too, with `settings` over them. It cannot be the first install with the chart's
   own database (the chart refuses): install with `full`, then switch on an upgrade. The settings Job counts in the
-  connection budget like the migrate Job. The default, `full`, renders exactly what it rendered before. Compose and
+  connection budget like the migrate Job. The default, `full`, renders every setting as a variable. Compose and
   `deploy/k8s` keep the full environment; `ferrum task apply_settings` moves a stack's settings into the table by hand.
 
 `bash deploy/helm/test.sh` (CI runs it) fails when the chart and `deploy/k8s` differ in resources, environment variables,
@@ -801,7 +798,7 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   and a dry run of its schema sync would add no table, column or package SQL. A build with an older date that the one
   that migrated was not made from (another branch with its own migration or fields) is refused, saying it is not an
   older build of that one. Otherwise it refuses, saying the date of the build to start. A database behind the build is
-  migrated as it starts, or, with `FERRUM_MIGRATE_AT_START=false`, refused as before. Several builds starting at once
+  migrated as it starts, or, with `FERRUM_MIGRATE_AT_START=false`, refused. Several builds starting at once
   each end right: deciding, migrating and syncing hold one advisory lock, and the start-up writes hold it shared.
   Session advisory locks need a direct database connection, not one through a transaction-pooling proxy such as
   PgBouncer, and take theirs from `FERRUM_DATABASE_DIRECT_URL` (`Db::direct`): this window lock
@@ -836,7 +833,7 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   CI passes it), and labels the image `io.ferrum.build-date`. A build without git or `BUILD_DATE` takes a fixed date
   that is never later than its own, and is never a guest: on a database a dated build synced it refuses, saying to
   build with `BUILD_DATE` or from git (otherwise a newer image built without it would run as a guest and quietly serve
-  old interfaces). Two such builds on one database are level, as before the window. A local build from git takes the
+  old interfaces). Two such builds on one database are level. A local build from git takes the
   date of the commit checked out when the kernel's build script last ran, so two local builds may look the same age:
   they are then level, which is safe.
   `deploy/smoke.sh` starts the previous image again on the database the new one migrated, when the previous image has
@@ -897,13 +894,13 @@ enforces them. A protection added after it brings its floor with it.
 Files (attachments, documents, apps' bundles and interfaces, the erasure and access journals, the restore marker) live
 in an S3-compatible object store: the bucket `s3_bucket` names (with `s3_endpoint` and `s3_region`, settings like any
 other), reached with the platform's keys (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, in the vault or the
-environment, *The platform's secrets*). The second store beside PostgreSQL (docs/plan/stateless.md, D6): no server
+environment, *The platform's secrets*). The second store beside PostgreSQL: no server
 keeps a file only on its own disk.
 
 **Keys or the machine's identity.** Without keys, the store's library finds them where the machine has an identity: a
 web identity token (`AWS_WEB_IDENTITY_TOKEN_FILE` with `AWS_ROLE_ARN`: IRSA on EKS, or any OpenID Connect provider the
 store trusts), a container's credentials (`AWS_CONTAINER_CREDENTIALS_FULL_URI`: EKS Pod Identity, ECS), AWS's own
-profile, or an instance's role. With AWS itself (no `s3_endpoint`) that is as before. With an S3-compatible store (an
+profile, or an instance's role. With AWS itself (no `s3_endpoint`) the server leaves the search to the library. With an S3-compatible store (an
 endpoint) and no keys, the server starts only when the machine names an identity; otherwise it refuses, saying which
 keys to set. `scripts/object_store_rehearsal.sh` proves the container's credentials against a store that checks every
 signature; that IRSA's token is accepted by AWS's STS, and that a role's policy reaches the bucket, only a cloud shows.
@@ -925,9 +922,8 @@ an installation that already keeps its files there: the newest file its database
 else the newest interface's) must be in that directory. A new database names none, an empty or wrong directory (a
 volume that was not mounted, another machine's) lacks it, and a database that has kept its files in a store says so: so
 no mistake in the settings makes a new installation keep files where a new container loses them. Refused, the server
-says what to set. An installation that keeps its files there works through this release, with a warning at each
-start and an error-level line in the doctor (`storage.directory`), until its files move. `require_object_storage`
-still refuses a directory outright, as before.
+says what to set. An installation that keeps its files there works, with a warning at each start and an error-level
+line in the doctor (`storage.directory`), until its files move. `require_object_storage` refuses a directory outright.
 
 ### Moving files from a directory
 
@@ -978,7 +974,7 @@ allowed to change the bucket's configuration.
 
 Downloads go through the server. With `files_direct_links` on, a download (`GET /files/{id}`) is answered with `307`
 and a link signed for the store, which works for `files_direct_link_seconds` (60 by default, at most 300), so that large
-files do not pass through a replica. The server still decides who may download, as before. Never for a file of an
+files do not pass through a replica. The server still decides who may download. Never for a file of an
 entity whose reads are recorded (*Recording who read what*: a link could be read again without the server knowing),
 for an outside person (a portal rule decides what they see at each download), for a type a browser would run (HTML,
 SVG, XML, scripts: they would run on the store's address), or while files move.
@@ -987,7 +983,7 @@ SVG, XML, scripts: they would run on the store's address), or while files move.
 
 Files are named once and never named again for other bytes (a workspace's file by a new id, an interface's or an app's
 by its content's digest), and only ever deleted. So a database restored to a moment T needs only that the objects it
-names at T still exist. Deletions therefore wait: `files_delete_after_days` (0 by default: at once, as before) keeps
+names at T still exist. Deletions therefore wait: `files_delete_after_days` (0 by default: at once) keeps
 a deleted file that many days before it goes, recorded in `object_release` and swept every ten minutes by the replicas
 that run background work. Set it to at least how far back the database's backups reach (`backup_reach_days`; 30 with
 the chart's `database.backup.retention`), and every moment the backups reach finds its files. A key written again
@@ -1045,9 +1041,8 @@ of the installation's own has keys given elsewhere), or where the keys there now
 the environment). `ferrum task services` says so. Without the refusal, keys made by a render would be what the server
 signs with at its next start, and its real store would never have heard of them.
 
-An installation from before this release keeps its `files` volume: with the new Compose file it starts with the store
-set and files moving, reads both, and moves its files with `docker compose exec ferrum ferrum task files_move`. With
-its old Compose file it keeps the directory, warned, as above. Back the store up beside the database with the commands
+An installation whose `files` volume holds files starts with the store set and files moving, reads both, and moves
+its files with `docker compose exec ferrum ferrum task files_move`. Back the store up beside the database with the commands
 in *Backups and restore* (the dump, then the store's volume while the store is paused); they were not run here, as
 there is no Docker on the machine this was built on.
 
@@ -1063,9 +1058,6 @@ there is no Docker on the machine this was built on.
   `recoveryTarget: {targetTime: "2026-10-28 10:00:00+00"}`; verify it, then point the
   `ferrum-db-app` secret / `DATABASE_URL` at it and restart the API pods. CI restores every image's
   backup this way.
-* Clusters set up with the earlier manifests (`spec.backup.barmanObjectStore`, removed in
-  CloudNativePG 1.31): install the plugin, then apply the new `database.yaml`. The `ObjectStore`
-  takes the same `destinationPath`, so earlier backups and WAL stay usable for recovery.
 * A whole database as the server's own role, on any PostgreSQL: `deploy/dump.sh dump <address> <file>` and
   `deploy/dump.sh restore <address> <file>`, with PostgreSQL's direct address (never a pooler in transaction mode)
   and the role the server runs as. That role is held to the workspaces' row-level security: a plain `pg_dump` as
@@ -1115,8 +1107,8 @@ there is no Docker on the machine this was built on.
   ```
 
   Then run `ferrum task reapply_erasures` (After restoring a backup, below) before anyone uses it.
-* Docker Compose with the store it bundles (from the release that adds it): files, journals and the restore marker are
-  in the `store` volume, not `files` (the commands above are for an installation that still keeps its files there). That
+* Docker Compose with the store it bundles: files, journals and the restore marker are
+  in the `store` volume, not `files` (the commands above are for an installation whose files are still there). That
   volume also holds the key that encrypts what the store keeps, and the store's own access key: keep its archive as
   carefully as the dump. Set `FERRUM_FILES_DELETE_AFTER_DAYS` to at least the time between the two, so nothing the dump
   names is deleted before the archive. Commands run in `deploy/`; **not run here: there is no Docker on the machine
@@ -1215,7 +1207,7 @@ as above. Otherwise one replica moves both on, at most every 30 seconds: the dat
 - *A first install* (born with the marker) takes the counter the store has for its identity, if any, and moves on.
   A database from before the marker, on a store that has one for its identity, is a backup older than the marker:
   held.
-- *Without object storage* (development) there is no marker; the identity alone notices restores, as before.
+- *Without object storage* (development) there is no marker; the identity alone notices restores.
 - *A planned move* fences the source, and a fenced database moves nothing, so its copy starts level with the store
   and carries on; a *sandbox* lives in the same database and changes nothing of it. A held database moves nothing
   either, so a stale copy started on the same storage cannot push the live one's marker past it.
@@ -1267,9 +1259,7 @@ remembered:
   database (or at least the `public` schema), and has a connection limit 20 below `max_connections`.
 - `btree_gist`, `citext` and `pg_trgm`: the role makes them itself (they are trusted extensions, which a database's
   owner may make), or an administrator has made them already, in `public` or a schema on the role's `search_path`.
-- No grant on `session_replication_role`: moves, sandboxes, taking a workspace back and deleting one run without it
-  since this release (a build before it asks for `GRANT SET ON PARAMETER session_replication_role`, which only the
-  service's administrator can give, for as long as each runs).
+- No grant on `session_replication_role`: moves, sandboxes, taking a workspace back and deleting one run without it.
 - With a pooler in transaction mode in front (RDS Proxy, PgBouncer, Supabase's or Neon's pooled address): that address
   as `DATABASE_URL`, and PostgreSQL itself as `FERRUM_DATABASE_DIRECT_HOST` (`host` or `host:port`) for the listeners,
   session locks and migrations (*Connection pooler*), or as the address's own parameter
@@ -1331,8 +1321,8 @@ start-up, the key then living only in the server's memory. Two ways:
   (`ferrum task vault_add_slot kind:kms`). When the service rotates its Transit key, what it wrapped before still opens.
   The token is never a setting: mount it at `/run/ferrum/kms.token` (a Secret, or a Vault Agent's file; the chart's
   `vault.kms.tokenSecret`), or sign in as the pod (the setting `kms_kubernetes_role`, the Kubernetes auth method; the
-  chart's `vault.kms.serviceAccount`). `BAO_TOKEN`, `VAULT_TOKEN` and `FERRUM_KMS_TOKEN_FILE` still work through this
-  release, and win.
+  chart's `vault.kms.serviceAccount`). `BAO_TOKEN`, `VAULT_TOKEN` and `FERRUM_KMS_TOKEN_FILE` in the environment still
+  work, and win.
 * **A command.** `FERRUM_SECRET_KEY_COMMAND` runs once at start and must print the slot's key (base64 of 32 bytes), as
   PostgreSQL's `ssl_passphrase_command` does. It is tried before the service. It stays in the environment, outside the
   boot contract: a command line is never read from the database, where whoever writes a row would run a program.
@@ -1491,8 +1481,7 @@ rotation; which of the platform's secrets the environment still decides; and a w
 ### The platform's secrets
 
 The server's own secrets are kept in the vault, each under the owner `platform` at the installation's scope, by its
-setting's key. Through this release the environment, when it sets one, still wins, so that rolling back behaves; with
-the vault closed nothing changes. `ferrum task settings` (and `GET /api/operator/settings`) says where each comes
+setting's key. The environment, when it sets one, still wins; with the vault closed nothing changes. `ferrum task settings` (and `GET /api/operator/settings`) says where each comes
 from: `environment`, `vault` or `default` (none).
 
 | Secret | Kept as | Used | A change applies |
@@ -1532,8 +1521,7 @@ for callers to change over; without, it stops at once. The operator's routes do 
 ### The key that signs sessions
 
 Every session, browser cookie, API token, app token and OAuth access token is a token the server signs and only the
-server checks. With `JWT_SECRET` set, it signs as before, and its tokens name no key, so that an older build reads
-them. Without it, the vault's keys sign (`session.1`, `session.2`, …), and each token names the key that signed it.
+server checks. With `JWT_SECRET` set, it signs with that, and its tokens name no key. Without it, the vault's keys sign (`session.1`, `session.2`, …), and each token names the key that signed it.
 Only this server verifies them, so a secret key with a name does all that a key pair would; there is nothing to
 publish. An installation with nothing in its environment gets its first key at its first start, one between replicas
 starting together.
@@ -1552,7 +1540,7 @@ it. The first rotation run where `JWT_SECRET` is no longer set gives the copy an
 
 ### Taking the secrets out of the environment
 
-1. Start every replica with this release, its environment as before. Each secret the environment sets is copied into
+1. Start every replica with its environment as it is. Each secret the environment sets is copied into
    the vault (`ferrum task vault_events` shows each `adopt`; `ferrum task settings` shows each from `environment`).
    Keep a recovery key (`ferrum task vault_recovery`): from now on the vault holds what the environment did.
 2. Take the variables out of the environment (the chart's or Compose's secret, the Deployment) and start the replicas
@@ -1563,23 +1551,7 @@ it. The first rotation run where `JWT_SECRET` is no longer set gives the copy an
    callers hold if they were ever seen elsewhere (`secret_set name:metrics_token overlap:…`, and so on).
 4. `ferrum task doctor` says which secrets the environment still decides, and warns while the vault is closed.
 
-The environment keeps working through this release; the release after it stops reading these variables. The chart,
-`deploy/k8s` and Compose no longer require `JWT_SECRET` or any other of these: a new installation gives them none, and
-one that has them keeps them while it may roll back, the vault holding its copies meanwhile.
-
-### Rolling back with the secrets in the vault
-
-A build before this one reads its secrets from the environment alone. On a database whose secrets are in the vault and
-with an environment emptied, it does not work: it refuses to start in production (*JWT_SECRET is not set*), its
-operator routes and `/api/tenants` answer nobody, `/metrics` asks no token, mail is sent without its password and
-object storage without its keys. Before rolling back, put the variables back into the environment, from where you keep
-them (the vault shows a value to nobody): the mail and storage passwords and the model provider's key as they were (the
-store Compose bundles never had its keys there: `docker compose exec store cat /data/ferrum/s3.json` shows them, its
-`accessKey` and `secretKey` for `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, as `scripts/window_rehearsal.sh` gives
-them to the older build); a
-new `JWT_SECRET` (the older build cannot read what the vault's keys signed, so people sign in again; the old secret, if
-you still have it, keeps the sessions it signed); the tokens your callers hold. The older build ignores the vault, and
-this build, started again later, takes the environment's values while they are set.
+The chart, `deploy/k8s` and Compose require none of these: a new installation gives them none.
 
 ### The kernel's stores in the vault
 
@@ -1636,8 +1608,8 @@ owners stops the server, naming both.
 | `ferrum task render service:<name> to:<dir>` | writes the service's files into `<dir>`, from the database and the vault; prints the files' names |
 | `ferrum task vault_rotate level:service service:<name>` | new values of the secrets the vault made for the service, never shown; the ones before stay for their overlap |
 
-**A render** opens the vault as a server does, reads the settings as a server does (the environment's value through this
-release, else the database's), asks the service for its files, then writes them. Run it with the servers'
+**A render** opens the vault as a server does, reads the settings as a server does (the environment's value where it sets one,
+else the database's), asks the service for its files, then writes them. Run it with the servers'
 `DATABASE_URL` and nothing else: that is its one input. With the vault closed, a setting the service needs and nobody
 set, or a secret it may not have, it refuses, says why, and writes nothing.
 
@@ -1677,15 +1649,15 @@ server's image, with the database's address as its one input (straight to Postgr
 `/run/companion`, and the program's network policy lets the pod reach the database, and DNS, for the render. It opens
 the vault with the key file or the database password, never with the pod's service account. In Compose, a one-shot
 service renders them before the program starts, into a volume the two share (on the host's disk, as the store's own
-keys always were: a volume in memory would be gone before the program starts). Through this release each program keeps
-its old way by default, and a value switches it:
+keys always were: a volume in memory would be gone before the program starts). What makes each program take its
+files this way:
 
 | Program | Its service (owner) | Switched by | What it is given |
 |---|---|---|---|
 | The store Compose bundles | `object-store` (the platform) | `-f deploy/store-files.yml`, once it has handed its keys over | `s3.json`: the access keys it handed over, both pairs while an overlap of a day lasts |
-| Metrics' engine | `metrics-engine` (Metrics 0.9.0 on) | `deploy/metrics-engine.yml`; the chart's `metricsEngine.files: rendered`, implied by `environment: minimal`; `deploy/k8s`: the component `metrics-engine-files` after `metrics-engine` | `token`: one token a line, the current first |
-| The meeting server (LiveKit) | `meet` (Comms 0.23.0 on) | `deploy/meet.yml` (LiveKit started with `--config /run/meet-files/livekit.yaml`) | `livekit.yaml`: its configuration, with a key for each version kept |
-| The mail server (Stalwart) | `mail` (Comms 0.23.0 on) | `deploy/mail.yml`, and in Stalwart's `config.toml` once: `authentication.fallback-admin.user = "admin"`, `authentication.fallback-admin.secret = "%{file:/run/mail-files/admin-secret}%"` | `admin-secret`: the fallback administrator's secret alone (the server's `FERRUM_MAIL_ADMIN` is `admin`) |
+| Metrics' engine | `metrics-engine` (Metrics) | `deploy/metrics-engine.yml`; the chart's `metricsEngine.files: rendered`, implied by `environment: minimal`; `deploy/k8s`: the component `metrics-engine-files` after `metrics-engine` | `token`: one token a line, the current first |
+| The meeting server (LiveKit) | `meet` (Comms) | `deploy/meet.yml` (LiveKit started with `--config /run/meet-files/livekit.yaml`) | `livekit.yaml`: its configuration, with a key for each version kept |
+| The mail server (Stalwart) | `mail` (Comms) | `deploy/mail.yml`, and in Stalwart's `config.toml` once: `authentication.fallback-admin.user = "admin"`, `authentication.fallback-admin.secret = "%{file:/run/mail-files/admin-secret}%"` | `admin-secret`: the fallback administrator's secret alone (the server's `FERRUM_MAIL_ADMIN` is `admin`) |
 
 **Before the first render**, store what a service binds its secrets to, with the servers' `DATABASE_URL`: the mail
 server's address, `ferrum task set key:comms.mail_url value:http://mail:8080`, and the engine's,
@@ -1719,7 +1691,7 @@ store's switch was rehearsed with its own binary (`scripts/companions_rehearsal.
   $C up -d --force-recreate ferrum
   $C up -d --force-recreate store-files store      # a day later: the new pair alone
   ```
-- *Metrics' engine* (`metrics-engine`, with a Metrics release that declares it): rotate, then restart the engine's pods
+- *Metrics' engine* (`metrics-engine`): rotate, then restart the engine's pods
   within the overlap (a day): each is given both tokens, and Metrics sends the one before until the overlap is over, so
   no pod refuses it meanwhile.
   ```bash
@@ -1741,7 +1713,7 @@ store's switch was rehearsed with its own binary (`scripts/companions_rehearsal.
 Customers' solutions may hold processes that wait for people, events and deadlines (the Full Process
 profile). They run on a [Temporal](https://temporal.io) server (MIT) beside Ferrum: set `TEMPORAL_ADDRESS`
 (and `TEMPORAL_NAMESPACE`, created beforehand) on the replicas that run background work. Without it, a
-solution with a process is refused and everything else runs as before. What Temporal stores is sealed with
+solution with a process is refused and everything else runs. What Temporal stores is sealed with
 the platform's key for processes in the vault, each payload naming the version that sealed it, so runs read
 their own history after the key rotates.
 Settings and behaviour: [logic/processes.md](logic/processes.md).
@@ -1843,7 +1815,7 @@ docker compose -f deploy/docker-compose.yml -f deploy/metrics-engine.yml --env-f
 ```
 
 - **Configuration.** The engine's token is made by Metrics' vault and rendered as the engine starts (*Files for the
-  programs beside the server*): store `metrics.engine_url` before the first start. `deploy/metrics-engine.json` lists the datasets: each has a name, its workspace by
+  programs beside the server*): store `metrics.engine_url` before the first start. `deploy/metrics-engine.json`, which you write (`FERRUM_METRICS_ENGINE_CONFIG_FILE` names another), lists the datasets: each has a name, its workspace by
   slug or id, a format, and a path under `/data`. It also sets the limits: rows, time, memory (nothing spills),
   and queries at once. The datasets directory (`FERRUM_METRICS_DATASETS`) is mounted read-only. Nothing is
   published to the host. Compose builds the image from a Metrics checkout (`FERRUM_METRICS_REPO`) unless
@@ -1867,10 +1839,10 @@ docker compose -f deploy/docker-compose.yml -f deploy/metrics-engine.yml --env-f
   carries the source under `stale`, and Intelligence says so in its answers.
 - **Datasets** are files. Refresh them in place, by writing a new file and renaming it over the old one; the
   newest file's time is the dataset's age. They are not backed up with the stack: they are the lake's.
-- **Its token from the vault**, typed by nobody (*Files for the programs beside the server*): with a Metrics release
-  that declares the service `metrics-engine`, the chart's `metricsEngine.files: rendered` (or the `deploy/k8s`
-  component `metrics-engine-files`) renders the token into each engine pod as it starts, and neither side reads the
-  Secret `ferrum-metrics-engine` any more. Until then keep `secret`, the default.
+- **Its token from the vault**, typed by nobody (*Files for the programs beside the server*): the chart's
+  `metricsEngine.files: rendered` (or the `deploy/k8s` component `metrics-engine-files`) renders the token into each
+  engine pod as it starts, and neither side reads the Secret `ferrum-metrics-engine`. With `secret`, the default
+  (`rendered` under `environment: minimal`), both read that Secret.
 
 ## Background jobs
 
@@ -1899,7 +1871,7 @@ sign-in factors, secret fields, sealed settings, API keys and sessions stay out.
 every workspace table it did not carry (`tables_left_out`) and every file the storage no longer had
 (`files_missing`), which it goes on without: read it before relying on an export as a way out. Files an
 app keeps for its own work (Cloud's built artifacts and databases' backups: docs/app-contract.md,
-*Files an app keeps for its own work*) stay out too, its records as before: `files_left_out` names each
+*Files an app keeps for its own work*) stay out too, while its records are carried: `files_left_out` names each
 kind with how many files and bytes it held, and its app hands them out its own way. They are the
 workspace's all the same: counted against its storage, moved and copied into a sandbox with it, deleted
 with it after the deletion lag, and read by the restore drill (`check_files`) as any file.
@@ -1924,8 +1896,8 @@ stay `unscanned`, and signatures added later do not reach files already stored.
 ## Checking a deployment
 
 **Before the first start**, `deploy/preflight.sh` looks at the host and `deploy/.env`: Docker, secrets
-left as placeholders, TLS, DNS, memory, disk and ports. `--generate` fills in missing secrets and
-changes nothing else. Blockers exit non-zero; warnings do not.
+left as placeholders, TLS, DNS, memory, disk and ports. `--generate` fills in missing secrets, makes the online
+editor's WOPI proof key (`deploy/office-proof-key`) when there is none, and changes nothing else. Blockers exit non-zero; warnings do not.
 
 **Once it runs**, `ferrum task doctor` reports on the deployment itself, blockers apart from warnings,
 each with what to do. It connects to everything: PostgreSQL's version and connection limits, what the database's role can
@@ -2012,13 +1984,13 @@ workspace is the limit instead, which a pool does not fix.
 Traces go to an OpenTelemetry collector when the settings name one: `otel_exporter_otlp_endpoint` (for example
 `http://otel-collector:4318`; the server adds `/v1/traces`) or `otel_exporter_otlp_traces_endpoint`, as `otel_service_name`
 (`ferrum` unless set); `otel_sdk_disabled` turns them off. These are settings like any other (their `OTEL_*` variables
-still win in this release), applied as the log is set up, once a replica has read its settings: until then nothing is
+still win), applied as the log is set up, once a replica has read its settings: until then nothing is
 sent. A collector that wants a token in a header has it as a secret, `otel_exporter_otlp_headers`
 (`ferrum task secret_set name:otel_exporter_otlp_headers`, `Authorization=Bearer%20…`), given only to the collector's
 host it was set for; moving the address takes it again or clears it. The SDK still reads its other variables itself
 (`OTEL_TRACES_SAMPLER`, `OTEL_BSP_SCHEDULE_DELAY`). They travel over OTLP/HTTP as protobuf. Each request is a span
 with its method and path (never its query), and a caller's W3C `traceparent` makes it part of the caller's trace.
-Without an endpoint nothing is sent and the log is as before.
+Without an endpoint nothing is sent.
 
 Logs are JSON. Clients may send an `x-request-id` header to correlate their calls with the logs;
 5xx bodies carry an `error_id` that appears in the log line with the full cause.
@@ -2050,8 +2022,8 @@ background work, which zone they are in, which requests reach them). Every pool 
 keeps anything of its own: the state is the database, the files and the keys. The decisions are in
 [docs/plan/topology.md](plan/topology.md).
 
-**Pools.** `pools:` in the chart's values. Empty (the default): one Deployment, rendered exactly as before.
-The first pool keeps today's names and selector (`ferrum`), so an existing release upgrades in place; every
+**Pools.** `pools:` in the chart's values. Empty (the default): one Deployment.
+The first pool keeps the names and selector of that one (`ferrum`), so a release changes shape in place; every
 other pool is `ferrum-<name>`, with its own Deployment, autoscaler (or fixed `replicas`), disruption budget,
 network policy and Service. A pool takes every setting it leaves out from the top-level values. Per pool:
 `background` (`both`; `off`, which sets `FERRUM_RUN_BACKGROUND=false`, API only; `only`, which has no Service
@@ -2068,7 +2040,7 @@ the metrics, and a `PodMonitor` (`ferrum-background`) scrapes the `only` pools.
 
 | Preset | Pools |
 |---|---|
-| `single.yaml` | One pool, as before |
+| `single.yaml` | One pool |
 | `split.yaml` | `web` (requests, no background work) and `worker` (background work only) |
 | `pools.yaml` | `general` (the rest), `public` (the portal host), `finance` (the API calls of the apps it names), `worker` |
 | `zones.yaml` | As `pools.yaml`, in two zones: the public gateway reaches only `public`, in a zone that admits no staff; staff work through a private gateway inside your network, where `general`, `finance` and `worker` are |
@@ -2093,7 +2065,7 @@ Deployment's own, a percentage rounded up against its most replicas), the migrat
 `scripts/check_manifests.py` does), and refuses to render when the sum is above `database.connectionLimit`.
 Each preset says its sum. Without pools the chart refuses nothing new: check it with
 `helm template ... | python3 scripts/check_manifests.py -`, which adds up every server Deployment and Job it
-is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With today's defaults and `migrate.enabled`, that is 416 of 380: lower `autoscaling.maxReplicas`
+is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With the default values and `migrate.enabled`, that is 416 of 380: lower `autoscaling.maxReplicas`
 to 8 when you turn the Job on.)
 
 **Connection pooler.** `database.pooler.enabled` puts PgBouncer (CloudNativePG's `Pooler`, `ferrum-db-pooler`,
@@ -2101,9 +2073,7 @@ to 8 when you turn the Job on.)
 with protocol-level prepared statements (`max_prepared_statements`, PgBouncer 1.21 or later; the operator
 supplies the image). The server's pods then get `DATABASE_URL` pointing at the pooler and
 `FERRUM_DATABASE_DIRECT_URL` at the primary (`ferrum-db-rw`), which the server uses for LISTEN, session locks
-and migrations; the migrate Job always connects directly. Turn it on only with a server that reads
-`FERRUM_DATABASE_DIRECT_URL`: an older one would send LISTEN and session locks through the pooler, where they
-do not hold. Only the server's pods may reach the pooler, and Prometheus its metrics (`ferrum-db-pooler`
+and migrations; the migrate Job always connects directly. Only the server's pods may reach the pooler, and Prometheus its metrics (`ferrum-db-pooler`
 PodMonitor). With the pooler, PostgreSQL sees `instances x poolSize` connections from it (plus
 `reserve_pool_size` if you set it in `database.pooler.parameters`) and `directConnectionsPerReplica`
 (default 8: 5 listeners, 1 session lock and 2 apps' upkeep; 6 + `FERRUM_UPKEEP_CONCURRENCY` if you change
@@ -2146,7 +2116,7 @@ environment. A host from the environment is used as given.
 *When a connection fails.* A direct address that does not answer at start stops the start, saying
 `FERRUM_DATABASE_DIRECT_URL` or `FERRUM_DATABASE_DIRECT_HOST`; Kubernetes starts the pod again. One that drops later: each listener notices
 (it is never quietly reconnected), connects again with a back-off (metadata from 250 ms doubling to 10 s,
-the others every 2 s) and recovers as before: metadata and users drop every cached copy, co-editing reads every
+the others every 2 s) and recovers: metadata and users drop every cached copy, co-editing reads every
 open document again, and live updates and plugin sockets are best effort (a page refreshes later). A session
 lock whose connection drops is let go by PostgreSQL; its work is tried again in the next round. A pooler that
 restarts in the middle of a transaction ends it: PostgreSQL rolls it back, the request fails (503, or retried
@@ -2187,11 +2157,7 @@ needed, `max_standby_streaming_delay` 1 s), and one cut by stopping the standby,
 their second try (`replica_conflict`, `replica_lost`). With the standby stopped, the first read waited 2 seconds for
 the pool to give up on it (`down`), the next ten took a few milliseconds each, until the next look; one read looks at a
 time, and reads that come meanwhile go by the last look. A promoted standby was never read from again (`not_replica`).
-The real standby showed four faults, fixed since: a standby promoted within 2 seconds of the last look was read from as
-a replica; a standby whose stream was cut made every read wait half a second; a standby started again was judged
-lagging (it streams again from the start of its last segment, below what it has replayed) until the primary next
-wrote; with the standby stopped, every read that came while a look waited for it waited too (8 reads together, 2
-seconds each). Not tried: standbys on other machines, CloudNativePG's `-ro` service, and a pooler in front of the
+Not tried: standbys on other machines, CloudNativePG's `-ro` service, and a pooler in front of the
 standbys.
 
 **Worker scaling on waiting work.** A pool with `background: only` can scale with KEDA (installed
@@ -2216,7 +2182,7 @@ trigger would need a gauge of events due now (`available_at <= now()`), which th
 |---|---|
 | `two pools are named …` | Each pool needs a name of its own: its objects are named after it |
 | `… is the name of another part of the chart` | `pdf`, `db`, `office`, `editors`, `metrics-engine`, `migrate`, `background` and `private` are taken |
-| `the first pool … cannot be background: only` | The first pool keeps today's Service, which the gateway and the online editor call |
+| `the first pool … cannot be background: only` | The first pool keeps the Service `ferrum`, which the gateway and the online editor call |
 | `zone … is not in zones` | A pool's `zone` must be one of `zones` |
 | `its zone … admits no staff, so it must not run background work` | A pool in a zone with `staff: none` needs `background: off`; the server refuses to start such a replica anyway |
 | `names the gateway …, which is not enabled` | A route names `public` or `private`, and that gateway must be on |
@@ -2232,7 +2198,7 @@ trigger would need a gauge of events due now (`available_at <= now()`), which th
 | `database.bootstrap.mode …: set …` | A way of starting the database lacks what it reads ("Moving from one shape to another") |
 | `… where this cluster would also write its own` | A recovery from this chart's own backups needs a new `database.backup.serverName` |
 
-**Two gateways.** The public Gateway is as before (`gateway`). `privateGateway.enabled` adds a second one,
+**Two gateways.** The public Gateway is `gateway`. `privateGateway.enabled` adds a second one,
 `ferrum-private`, with its own class, hosts, certificate and Envoy proxies; `privateGateway.envoyProxy.envoyService`
 holds the proxies' Service settings, where your cloud's annotation for an internal load balancer goes (examples
 in `values.yaml`). A pool's `routes` say which gateway reaches it and by what: whole `hostnames` (added to that
@@ -2441,14 +2407,14 @@ admitted with whatever their rights are. Background work runs with staff rights 
 A workspace's administrators can name the networks its staff may work from: an office's addresses, a
 company VPN's. Staff using a password, a session, a token or an app from anywhere else are refused. It is
 the workspace's own setting, in addition to zones (which are the operator's), and checked at the same place,
-on every request. With no networks it is off, as before.
+on every request. With no networks it is off.
 
 | Workspace setting (`GET`/`PUT /api/admin/settings`) | Meaning | Default |
 |---|---|---|
 | `staff_networks` | `{"networks": ["10.0.0.0/8", "2001:db8::/32"], "mode": "enforce"}`, at most 100 networks; `mode` `enforce` or `report` | none: off |
 | `idle_minutes` | A browser session unused this many minutes ends: 0 (never) or 5 to 10080 | 0 |
 | `new_device_notice` | Tell staff by e-mail when their account signs in from a device it had not been used on | `false` |
-| `break_glass` | The ids of the administrators who keep password and passkey sign-in when single sign-on is required, 1 to 20 | `null`: every administrator, as before |
+| `break_glass` | The ids of the administrators who keep password and passkey sign-in when single sign-on is required, 1 to 20 | `null`: every administrator |
 
 **What it holds.** People's credentials of staff accounts (members and administrators): the browser's
 session, session tokens, OAuth and MCP tokens that act for a person, app passwords of calendar and contacts
@@ -2460,7 +2426,7 @@ without a proxy in front there is no address, which is outside every list.
 
 **A key's own networks.** An API key (of any scope, an app password and a SCIM key included) may be pinned to
 networks of its own when it is made, or later (`networks` in the keys API); from anywhere else it is refused
-with `403` `network`. A key with none works from anywhere, as before. Pinning is on the audit trail.
+with `403` `network`. A key with none works from anywhere. Pinning is on the audit trail.
 
 **What a refusal looks like.** A signed-in credential gets `403` with error `network`, which says nothing of
 the networks allowed. Signing in from outside fails as a wrong password does, before the password, code,
@@ -2802,8 +2768,7 @@ cluster at all. Plan the move at the source first ("Moving an installation"); wi
 each mode lacks (`deploy/helm/test_pools.sh`); `deploy/kind/pools.sh` rehearses default values → `zones` →
 default values under traffic on kind and is written but has never run (CI runs it as a job that cannot fail
 the workflow until it has passed once). The two-step moves, the pooler, KEDA and the three ways of starting
-from an existing database have not been run at all; the pooler also waits for the server to read
-`FERRUM_DATABASE_DIRECT_URL`.
+from an existing database have not been run at all.
 
 ## Moving an installation
 
@@ -2857,9 +2822,7 @@ nothing inside one database can stop them:
 Writes that are not a transaction of the server (rate-limit counters, a region's epoch) are not fenced; they
 hold nothing a move carries.
 
-**One build only.** Plan a move only when every replica runs the same build. A build from before this
-release never asks for the fence, so one still running would keep writing to the source after it, and those
-changes would not reach the copy. `plan_move` refuses on a build that is a guest of a newer one, and while
+**One build only.** Plan a move only when every replica runs the same build. `plan_move` refuses on a build that is a guest of a newer one, and while
 events or jobs wait for a newer build (`window.waiting` in the doctor): finish or undo the upgrade first. It
 cannot see an older replica that is merely running; check that every pod runs one image before you start.
 The two-version window is not closed for this: it matters only while a move is being made.
@@ -2872,13 +2835,14 @@ restoring a backup"). People's changes made at the source after the copy was tak
 credential slot only where the role kept its password, so after the chart's `import` see *The vault*, After a restore,
 a copy or a move); the files, byte for byte under the same keys (`tenants/`, `uploads/`,
 `ui/`, `apps/`, `privacy-journal/`, `access-journal/`, the same in a directory and in a bucket, so a plain
-copy of the whole tree or bucket does it); and `JWT_SECRET` (sessions). On the copy, `ferrum task doctor` reports
+copy of the whole tree or bucket does it); and `JWT_SECRET` where the environment sets it (the vault's own session
+keys are in the database). On the copy, `ferrum task doctor` reports
 the newest 200 files and every app bundle the database names that storage lacks (`files.missing`).
 `ferrum task check_files [tenant:<slug>]` looks for every file, 500 at a time, and lists those missing.
 
 ### Compose to Kubernetes
 
-1. Prepare the cluster: the bucket, and the Secret with the Compose installation's `JWT_SECRET`. Set
+1. Prepare the cluster: the bucket, and, where the Compose installation sets `JWT_SECRET`, the Secret with it. Set
    `database.bootstrap.mode: import` with the Compose database as the source ("Moving from one shape to another").
    Do not install yet: `import` dumps the source when the cluster is created.
 2. On the Compose host (commands run in `deploy/`):
@@ -2908,8 +2872,9 @@ mark's time runs out would still carry on as moved, and send what the source the
    gives the address), and restore it into the Compose database as in "Backups and restore" (an empty database,
    then `deploy/dump.sh restore` or `pg_restore`).
 3. Copy the bucket into the files volume (`aws s3 sync s3://<bucket>/ files/`, then `tar` into the volume).
-4. Start Compose with the cluster's `JWT_SECRET`; run
-   the doctor and `check_files`; point the names; scale the cluster's Deployments to 0.
+4. Start Compose (with the cluster's `JWT_SECRET`, where it sets one). The Compose role's password is not the
+   cluster's: run `ferrum task vault_rewrap` once with the cluster's database password (*The vault*, After a restore,
+   a copy or a move). Run the doctor and `check_files`; point the names; scale the cluster's Deployments to 0.
 
 ### Cluster to cluster
 
@@ -3061,8 +3026,7 @@ records (state, since when, the other side), changing nothing. `ferrum task doct
 stood `leaving` or `arriving` for an hour with no run working on it (`workspace_move`), with the command to
 resume or abort.
 
-**One build.** Every replica on both sides runs one build for as long as the move runs: a build from before this
-one does not know the freeze and would write to a frozen workspace. The move refuses when the two databases were
+**One build.** Every replica on both sides runs one build for as long as the move runs. The move refuses when the two databases were
 last brought up to date by different builds, or work waits for a newer one; it cannot see an older replica that
 is merely running, so check that every pod on both sides runs one image first.
 
@@ -3096,13 +3060,7 @@ bytes, the API key, the audit chain of a record (`chain_valid`), the workspace's
 anew under the target's base (`sales--moving.b.localhost`); the webhook delivery left waiting at the source goes out once,
 from the target, signed with the webhook's secret (sealed again under the target's key), and so does a new one; a
 member's Ferrum account comes along (a visiting account at `b`, their own again at `a`: their workspace's password opens
-nothing there and names that region's accounts host); and the source's addresses redirect (308) to the target's. The
-real servers showed two faults, fixed since. A running server keeps its answer about an address for 20 seconds, and the
-move is a task of its own, so right after the move back `a` still sent the workspace's address on to `b`, which sent it
-back: the move now tells the running replicas on both sides as it leaves and as it arrives (the notification a change
-of a workspace's settings sends), and they answer anew at once. And `sales--moving.a.localhost`, let go of by `b` when
-the workspace arrived there, stayed let go of when it came back, leading to the main address: a workspace now takes its
-names under the target's base back. Not run: storage in a bucket (`_S3_BUCKET`), keys wrapped by a key-management
+nothing there and names that region's accounts host); and the source's addresses redirect (308) to the target's. Not run: storage in a bucket (`_S3_BUCKET`), keys wrapped by a key-management
 service, signing in with a visiting account (the browser's round trip through the home region), waiting work asked for
 in a zone, and a source busy with work in hand (the rehearsal moves with `wait:1`).
 
@@ -3199,12 +3157,8 @@ sandbox's turn. That includes services of this installation an app reaches throu
 meetings server, a metrics engine): in a sandbox those features do not work. An app that calls outside with an HTTP
 client of its own, not the kernel's, is not stopped by this.
 
-**One build that knows sandboxes.** Make a sandbox only when every replica runs a build that knows them (this one or
-newer), and keep it so for as long as any sandbox exists: an older build cannot see the mark, and would send mail,
-webhooks and calls for the sandbox as for a live workspace. `copy_workspace` refuses on a build that is a guest of a
-newer one, and while work waits for a newer build; it cannot see an older replica that is merely running, so check
-that every pod runs one image first. Do not roll back past this build while a sandbox exists: delete the sandboxes
-first.
+**One build.** `copy_workspace` refuses on a build that is a guest of a newer one, and while work waits for a newer
+build; it cannot see an older replica that is merely running, so check that every pod runs one image first.
 
 **Signing in.** With a password and, where the person had one, their second factor. Where single sign-on was required,
 it is not required in the sandbox (its secret is blank), and the command and the first audit event say so: people sign
@@ -3257,7 +3211,7 @@ sharing its CPU with the database and the client. No request failed in any run.
 Writes hold their throughput as concurrency grows; queueing shows up as latency. One replica's
 event dispatcher drains about 600 outbox events a second (webhooks, automations, live updates);
 dispatchers on every replica share the outbox. The test found that a NOTIFY sent by each writing
-transaction serialized their commits (creates fell to 330/s at 100 clients); dispatchers now poll
+transaction serialized their commits (creates fell to 330/s at 100 clients); dispatchers poll
 instead, which adds up to 250 ms before an event is handled.
 
 ### Reference workload and targets
@@ -3353,8 +3307,10 @@ there; otherwise post the correction in an open period.
 the password (`PUT /api/admin/users/{id}/password`) or deactivate the user.
 
 **Suspected token leak.** The user (or an administrator acting as them) calls
-`POST /api/auth/logout_all`; revoke API keys with `DELETE /api/auth/api_keys/{id}`. Rotating
-`JWT_SECRET` signs out everyone.
+`POST /api/auth/logout_all`; revoke API keys with `DELETE /api/auth/api_keys/{id}`. Changing
+`JWT_SECRET`, where the environment sets it, signs out everyone. A rotation of the vault's key (`ferrum task secret_set
+name:jwt_secret`) does not: the key before verifies what it signed until that runs out (*The key that signs
+sessions*).
 
 **Audit integrity.** Every record's history is hash-chained and anchored daily.
 `GET /api/v1/{Entity}/{id}/audit` returns the trail with `chain_valid` / `broken_at`; a broken chain
@@ -3401,8 +3357,6 @@ retention rules and an app's removal with its data; to keep the earlier versions
 as well, place a hold on that record. Removing an app with its data (`DELETE /api/admin/apps/{id}?delete_data=true`)
 and deleting a workspace (`ferrum task delete_tenant`) are refused while a hold covers what they
 would destroy: release the hold first, which is recorded, and say why.
-
-Restriction of processing, as an operation of its own, is not built.
 
 **Restricting processing** keeps someone's data and stops using it: `POST /api/admin/restrictions`
 `{email, reason}` covers every address they have had. No automated message goes to them, asked again
@@ -3667,9 +3621,10 @@ accounts so that they follow the people. The app's README ("Hosted mail") has th
 **Kubernetes.** Run Stalwart as a StatefulSet:
 * persistent volumes at `/etc/stalwart` and `/var/lib/stalwart`;
 * a LoadBalancer service for ports 25, 465, 587 and 993;
-* the three values above on the server, from a secret;
+* the three settings above (`comms.mail_url`, `comms.mail_admin`, `comms.mail_host`: *Settings in the database*), and
+  the administrator's secret rendered for Stalwart (*Files for the programs beside the server*);
 * an egress rule in the server's network policy for Stalwart's port 8080. The policy lets the
-  server's pods reach only the database, the PDF renderer, DNS and ports 443 and 587.
+  server's pods reach only the database, the PDF renderer, the online editor, DNS and ports 443 and 587.
 
 **Things to know**
 * **Outgoing mail:** many clouds block outgoing port 25, and a new address has no reputation.
@@ -3732,8 +3687,9 @@ it. CI runs it on every image.
 **Kubernetes.** Run LiveKit with its own Helm chart (`livekit/livekit-server`), as its
 documentation describes: host networking for the media ports, its load balancer or ingress for the
 WebSocket with TLS, and Redis when you run more than one LiveKit server. Then:
-* give it the key and secret, and put the three settings on Ferrum's Deployment from a secret
-  (Comms' pages may then connect to LiveKit).
+* give it the key and secret Comms keeps in its vault (`ferrum task render service:meet to:<dir>` writes them into
+  `livekit.yaml`: *Files for the programs beside the server*), and set Comms' settings
+  above (`comms.meet_url` and the others: *Settings in the database*), so Comms' pages may connect to LiveKit.
 
 The server's network policy needs no change unless recordings are on: then Ferrum calls LiveKit's
 API (`FERRUM_MEET_API_URL`, or LiveKit's address) to start, stop and list them, and the policy must
@@ -3916,7 +3872,7 @@ other's cursors, in Docs. Nothing extra runs.
   over LISTEN/NOTIFY (`ferrum_coedit`), as for live updates, so any replica serves anyone: no sticky
   sessions. Every 500 changes are folded into a snapshot.
 * **Proxies** must pass WebSockets on `/ws/` with read timeouts above 30 seconds (the server pings
-  every 30). The web container and the Gateway do.
+  every 30). The Gateway does.
 * **Saving to Drive.** A new version is written when the last editor on a replica leaves, and every
   ten minutes while people type, only when the content changed. A sweep on every replica saves, within
   about fifteen minutes, documents a stopped replica left unsaved.
@@ -3939,8 +3895,8 @@ with Mail, Chat and Calendar installed.
   under their menu → Calendar and contacts apps. Wrong passwords count against the address like
   failed sign-ins.
 * **Finding the server.** Apps look for `/.well-known/caldav` and `/.well-known/carddav` on the
-  host people enter; Ferrum redirects them to `/api/dav/comms/`. The web container and the
-  Kubernetes Gateway pass both to the server; a proxy of your own in front must too. With DNS SRV
+  host people enter; Ferrum redirects them to `/api/dav/comms/`. The Kubernetes Gateway passes
+  both to the server; a proxy of your own in front must too. With DNS SRV
   records (`_caldavs._tcp`, `_carddavs._tcp`) people can enter just the domain.
 * **What syncs.** Each person's calendar (events they organize or are invited to) both ways; the
   address books Colleagues and Contacts (CRM) read-only. Comms' README ("Calendar and contacts
@@ -4018,7 +3974,9 @@ credit note, which gets its own e-invoice (type CRN, referring to the original).
 ## Portugal: certified invoices
 
 Portuguese companies' invoices are signed as the AT requires of certified software, with the
-software producer's key. The server reads (keep them with the deploy secrets):
+software producer's key. The add-on's settings are `pt.certificate` and `pt.key_version` (*Settings in the database*),
+and the key is its secret `pt.signing_key`, kept in its own vault (`FERRUM_PT_SIGNING_KEY`, while the environment sets
+it, wins and is stored there once):
 
 | Variable | Meaning |
 |---|---|
@@ -4044,13 +4002,13 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
   content digests) and `/_shell/` briefly. `/healthz` answers `ok` for load balancers.
 * **The shell, for every workspace.** Home at `/`, ERP at `/erp/`, the store, administration and
   the account at `/store/`, `/admin/`, `/account/`, records at `/data/` (an app without an
-  interface of its own at `/data/{app}/`, Customize at `/data/customize/`). Today's web app has
-  left: its addresses (`/app/…`, in bookmarks and links in mail) lead to their new homes, and its
-  offline worker removes itself.
+  interface of its own at `/data/{app}/`, Customize at `/data/customize/`). Addresses under
+  `/app/…` (in bookmarks and links in mail) lead to the pages that replace them, and the offline
+  worker registered there removes itself.
 * **Comms, Drive and Docs** have interfaces of their own: Mail,
   Chat, Calendar and Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`; Drive at `/drive/` with
   Sheets, Slides and PDF; Docs at `/docs/`. Each app's crate carries its interface, registered at
-  start-up; nothing to configure. Their old addresses (`/app/drive…`, bookmarks and links in mail
+  start-up; nothing to configure. Their addresses under `/app/drive…` (bookmarks and links in mail
   included) lead there, and the pages people outside the workspace open by link are those apps'
   public pages (`/drive/s/…`, `/meet/guest/…`). Meetings need `FERRUM_MEET_URL` on the
   server (calls connect there); online editing `FERRUM_OFFICE_ORIGIN` (above).
@@ -4148,13 +4106,10 @@ site (`site:{app}`), within its limit of addresses (Addresses of a workspace, wh
   alias (CNAME) at `_ferrum.{domain}`, or two different `ferrum-domain=` values there mean not proven. Once proven (or
   working before `record` was asked for), a domain goes on working by pointing here alone, even after it stopped for a
   while: it never left its workspace, so nobody can have taken it. The record may then go. Domains that work without a
-  record are listed by `ferrum task doctor` (`domains.proof`), as information. `points` keeps the check as it was: use it
+  record are listed by `ferrum task doctor` (`domains.proof`), as information. `points` checks the pointing alone: use it
   only where every workspace is one company's. Set in so many words (`FERRUM_DOMAIN_PROOF=record`), it puts a floor in
   place (*Protections an older build would not enforce*), since a build from before it would verify by pointing alone.
-  Taken by default, it puts none, so the upgrade rolls back as any does; but a build from before this one, while it runs
-  (a rollback, or a replica not yet upgraded), checks domains the old way, by pointing here alone, and does not know the
-  quarantine of a deleted or moved workspace's addresses. Set it explicitly on a cluster of several companies once the
-  upgrade has settled.
+  Taken by default, it puts none: set it explicitly on a cluster of several companies.
 * **Certificates**: the edge in front of Ferrum gets one per domain. With Caddy's on-demand TLS:
 
   ```caddyfile
@@ -4182,8 +4137,8 @@ site (`site:{app}`), within its limit of addresses (Addresses of a workspace, wh
   one: links in mail and redirects use it, and the workspace's other addresses of that kind lead to it.
   The first working address of a kind becomes its main one when that kind has none: a subdomain when it
   is added, a custom domain when it is first verified, an operator's host (`ferrum task add_host`, see
-  "Zones") when it is added. An installation from before this rule whose addresses have no main one
-  (only operator hosts) gets one at its next start, or the next change of one of its addresses.
+  "Zones") when it is added. A workspace whose addresses have no main one gets one at the next start, or the next
+  change of one of its addresses.
 
 ### Changing or removing an address
 
@@ -4222,8 +4177,7 @@ removed address leaves in three steps:
   moved (`410`), and so is everyone after the leaving period. `release_host` says so before it releases
   ("nothing will take its place: visitors will see that the workspace has moved"), and otherwise says
   where visitors go.
-* **`FERRUM_HOST_LEAVING_DAYS=0`**: no leaving period; a removed address redirects at once, as before the
-  setting. At most 365.
+* **`FERRUM_HOST_LEAVING_DAYS=0`**: no leaving period; a removed address redirects at once. At most 365.
 * **API clients** (tokens, keys) are not tied to an address: they work on the leaving address, and after
   it, for as long as the address still reaches the server. Point them at the new address.
 * **Service workers and push subscriptions** live and die with the old address: a browser keeps them per
@@ -4231,9 +4185,6 @@ removed address leaves in three steps:
   person turns them on again (the bell's settings), which installs the worker there. A notification
   that the old subscription still shows after the move opens its page on the old address, which sends it
   on to the same page at the new one, where the person signs in.
-* An older build (one running during a rollback, or a replica not yet upgraded) does not know the leaving
-  period and treats such an address as already released: it redirects at once. That is the safe direction
-  (nothing is served that should not be, only the draining stops early), so no floor is needed for it.
 
 ## Addresses of a workspace
 
@@ -4285,15 +4236,13 @@ as on any address: it still needs its certificate and, for a domain of the works
   `404` to everything.
 * In a zone it names only the main address: `/` goes to the main address's Home, never to `home`.
 * While the workspace is closed or restricted it goes on forwarding, as every address goes on answering.
-* An older build ignores `forward` and serves the workspace there, as it did: nothing protective is lost.
 
 **Names under the base domain.** With `FERRUM_BASE_DOMAIN`, administrators add names as `{name}--{slug}.{base}`, one
 part of the address: `sales--acme.ferrum.cloud`. Such a name works at once (the cluster owns the base domain, so there is
 nothing to prove), the base's wildcard certificate covers it (`/_tls/ask` says yes for it too), and the accounts host hands
 sign-ins to it like any `shell` address. It is never another workspace's: it ends in the workspace's own slug, a slug is
-never used by another workspace (one renamed or deleted is retired for good), and no slug made since this form exists may
-hold two hyphens together. Workspaces whose slugs already hold `--` keep them; the server keeps one row per address, so
-whoever has an address first keeps it.
+never used by another workspace (one renamed or deleted is retired for good), and a new slug may not hold two hyphens
+together. The server keeps one row per address, so whoever has an address first keeps it.
 
 * A name is 1 to 30 lowercase letters, digits and single hyphens, not at either end, and `{name}--{slug}` at most 63
   characters. `accounts`, `hooks`, `www`, `api`, `admin`, `login`, `mail`, `xn` and the first part of the server's own
@@ -4304,7 +4253,7 @@ whoever has an address first keeps it.
   its sandboxed frame. Give apps a base of their own (Apps with interfaces of their own) and none of this arises.
 * Removing a name starts its leaving period, as for any address (above). The workspace may add it again at once: no other
   workspace can ever have it.
-* Without a base domain there are no such names; domains of the workspace's own work as before.
+* Without a base domain there are no such names; domains of the workspace's own still work.
 
 **Short paths.** `/{alias}` and `/{alias}/…` on every `shell` address of the workspace lead (`302`, the query kept, the
 rest of the path after the target) to a path of the workspace: `/sales` → `/crm/`.
@@ -4325,7 +4274,7 @@ rest of the path after the target) to a path of the workspace: `/sales` → `/cr
 address they use; with an accounts host that is one redirect and no prompt. For the browser each address is a place of
 its own: its own storage and offline work, its own service worker and notifications on a device, and its own live
 connection, so someone with two addresses open has two. Mail and notification links use the main address (or the link
-host), as before.
+host).
 
 **Limits.** At most 20 live addresses of every kind, or what the workspace's plan says (`addresses`, Plans and sign-up),
 and 50 short paths. While a workspace is closed or restricted its addresses keep answering and stay as they are: nobody
@@ -4417,7 +4366,7 @@ A workspace can be reached at more than one host (a staff host and a public one)
 change over the years. A few addresses are registered with others, saved by browsers or printed in
 mail, so they should be picked once and kept: the host people sign in at, the host other services
 call back, the host every mailed link goes through, and the passkeys' relying party. Each has a
-setting; each defaults to what the server did before the setting existed.
+setting, and none is required.
 
 * **`FERRUM_ACCOUNTS_HOST`**: where people sign in once, as their Ferrum account ([Many
   workspaces](#many-workspaces-subdomains-and-ferrum-accounts) describes the accounts host). It works
@@ -4455,7 +4404,7 @@ setting; each defaults to what the server did before the setting existed.
   services pull files from, and the address the workspace's pages show for its public endpoints
   (`/api/public/{workspace}/…`). A connector's return lands there and is passed on to the
   workspace host the person started from, where their session is. Not set: `hooks.{base}` for public
-  endpoints with a base domain, and `PUBLIC_URL` for everything else, as before.
+  endpoints with a base domain, and `PUBLIC_URL` for everything else.
   * *Changing it later* breaks every return address registered with an outside service (connectors
     stop connecting until it is registered again) and every webhook address given out.
   * It must be a host of its own, neither `PUBLIC_URL`'s nor the accounts host.
@@ -4483,17 +4432,16 @@ setting; each defaults to what the server did before the setting existed.
   portal's host (outside people; the main host when it has none, where portal pages live under
   `/portal`), with the rest of the address kept. A workspace that is unknown or suspended answers
   `404`. The link host answers `/go/` before anything else that host is, so it may be the accounts host or
-  the hooks host (their other addresses work as before; only `/go` and `/go/…` are taken). It may not
+  the hooks host (their other addresses are unchanged; only `/go` and `/go/…` are taken). It may not
   be `PUBLIC_URL`'s host, where `/go/` belongs to the workspace: the server refuses to start so. Not set:
-  links name the workspace's main host (or `PUBLIC_URL`), as before, and stop working when that host
+  links name the workspace's main host (or `PUBLIC_URL`), and stop working when that host
   is released.
   * *Why*: a mailed link outlives the host it names. With a link host, a workspace can move to a new
     host, or get a separate public host, and every link sent before still leads to it.
   * *Changing it later* breaks every link sent before; it should be the steadiest name you have.
-  * Apps that had an address setting of their own (Sign, Bookings, Comms, Learn) take these names when
-    that setting is empty, from Sign 0.3.2, Bookings 0.7.3, Comms 0.20.1 and Learn 0.9.2: links people
-    follow go through the link host, and what other services call uses the callbacks host. A filled
-    setting still wins.
+  * Apps with an address setting of their own (Sign, Bookings, Comms, Learn) take these names when
+    that setting is empty: links people follow go through the link host, and what other services call
+    uses the callbacks host. A filled setting still wins.
   * *Not covered yet*: links printed into exported documents still name a host directly.
 
 **A shared base domain.** In the cloud, where many organisations' workspaces are hosts under one base
@@ -4587,13 +4535,13 @@ algorithm by algorithm when first needed (1.2.27 or later with its OpenSSL backe
 `rsa-oaep`: providers must wrap the key with `rsa-oaep-mgf1p` there (most do by default; Keycloak needs its
 key transport set so). Allowed when the library has them: `rsa-oaep-mgf1p` and `xmlenc11#rsa-oaep`, digests
 SHA-1, SHA-256, SHA-384, SHA-512, mask functions MGF1 with those. Where the library lacks AES-GCM or RSA-OAEP,
-nothing changes from before: no key to encrypt to is published, an encrypted assertion is refused in so many
+no key to encrypt to is published, an encrypted assertion is refused in so many
 words, and the log (once) and `ferrum task doctor` (`identity.saml_encryption`) say which version is needed.
 It has been run on xmlsec1 1.3.13 (macOS, Homebrew) only; 1.2 was checked by reading its source, and runs
 first in CI (Ubuntu 24.04, 1.2.39).
 
-*Single logout.* With the provider's metadata offering a logout service, both directions are on for a
-provider saved from now on; its administrator can turn each off (`single_logout_out`, signing out here
+*Single logout.* With the provider's metadata offering a logout service, both directions are on when the
+provider is saved; its administrator can turn each off (`single_logout_out`, signing out here
 signs out there; `single_logout_in`, the provider may end sessions here). Signing out here ends the
 session at once, then sends the browser to the provider with a signed logout request, and back to the
 sign-in page: the bar's sign-out (and the portal's) follows the address `POST /api/auth/logout` gives
@@ -4653,7 +4601,7 @@ summed past a hundred an hour) and the client's secret as the app's (`adopt`, `m
 **Turning it off.** For the whole installation: the stored setting `openid` (`false`; it applies at once, on every
 replica). Off, the discovery document, the keys, the user-info and the programs' way through the authorization and token
 endpoints answer as if they were not there (`404`, or the endpoint's answer to a client it does not know), and API
-clients' OAuth goes on as before; the clients, keys and secrets are kept, and on again, everything answers as it did.
+clients' OAuth goes on; the clients, keys and secrets are kept, and on again, everything answers as it did.
 On (the default) changes nothing by itself: nobody signs in anywhere until an app declares a program there. `ferrum
 doctor` says which it is and how many programs' clients there are, in how many workspaces. For one program: remove its
 client, and switch the program off in its app (Cloud's own setting), or the app declares it again. The signing key is
@@ -4662,9 +4610,8 @@ rotated with the task above; rotate twice within a day only if the key before mu
 **Copies of a workspace.** A program's client is unique within its workspace, never across the installation (the
 address a request comes to says which workspace it is for), so a copy of a workspace in the same database never meets
 the original's. A sandbox has no program's client, codes or sign-ins, nor the signing key or the client's secret (the
-vault leaves both blank there), and its addresses answer nothing: a sandbox made by this build copies none of them (the
-build before makes no sandbox on a database this one migrated), and should a copy of every table of a workspace bring
-them, this build takes them away within 15 seconds, telling nobody (they are the live workspace's sign-ins, which go
+vault leaves both blank there), and its addresses answer nothing: a sandbox copies none of them, and should a copy of
+every table of a workspace bring them, the server takes them away within 15 seconds, telling nobody (they are the live workspace's sign-ins, which go
 on). The people's subjects are
 copied, and name nobody to any program there. A move (`move_workspace`) carries the client, the sign-ins, the subjects
 and, with the workspace's vault, the signing key and the client's secret, still its app's: the program goes on signing
@@ -4678,7 +4625,7 @@ program's successful sign-ins are not counted, so a busy forge is not held up by
 ID tokens and access tokens five minutes; a request waiting for its person to confirm it is them, ten.
 
 **When someone leaves.** Every replica that runs background work looks every 15 seconds for sign-ins whose browser
-session ended, however it ended (also by an older build, or an erasure), marks each ended, and tells its app once
+session ended, however it ended (an erasure too), marks each ended, and tells its app once
 (`ferrum.companion.signed_out`, in the outbox, in the same transaction), however many replicas look at once; a
 workspace that is moving waits until it has arrived. The program's own sessions are the app's to end on that event.
 
@@ -4717,16 +4664,14 @@ database (in recovery, streaming, on the same timeline), which the lock cannot s
 same check stands in front of `move_workspace` and `copy_workspace from:`.
 
 Tables here refer to each other in circles, so the rows go in with the server's own triggers standing aside and the
-foreign keys checked at commit, not as each row arrives. That takes no grant (D7): every foreign key may wait for
+foreign keys checked at commit, not as each row arrives. That takes no grant: every foreign key may wait for
 the commit (each is still checked at once unless a transaction asks otherwise), and every trigger has
 `current_setting('ferrum.copy', true) IS DISTINCT FROM 'on'` in its WHEN, which only a copy's own transaction sets. A
 migrating server makes them so as it starts, the kernel's, the schema sync's and packages' alike (`copy_ready`), and
 the schema sync makes new ones so. A copy refuses, naming them, while any is not. The deletions that go with a copy
 (an abort, `finish_move`, `delete_sandbox`, deleting a closed workspace) run in the same way, every table in one
 statement, so that references which refuse a deletion are checked when the rows on both sides are gone. Anything that
-would point at nothing still refuses the whole copy and changes nothing. A build before this one turned triggers off
-with `session_replication_role` instead, which needs `GRANT SET ON PARAMETER session_replication_role TO ferrum` from
-a superuser, or on a managed service from its administrator (*Any PostgreSQL*); give it only while such a build copies.
+would point at nothing still refuses the whole copy and changes nothing.
 
 *What a copy holds in memory.* Each check that waits for the commit is kept by the copying session on the database
 server until it commits: about 12 bytes for each foreign key of each row copied in, and for each foreign key that can
@@ -4784,7 +4729,7 @@ ferrum task set_plan slug:acme plan:team
 | `storage_bytes` | Storing a file |
 | `ai_tokens_month` | Each step of the assistant; a workspace may set itself less (`assistant_monthly_tokens`), not more |
 | `devices`, `measurements_per_day` | Operations: adding a device, and recording measurements |
-| `addresses` | Adding an address: live addresses of every kind (Addresses of a workspace). Left out, 20, as before plans could say it |
+| `addresses` | Adding an address: live addresses of every kind (Addresses of a workspace). Left out, 20 |
 
 A quota left out of a plan has no limit, except `addresses`. Moving a workspace to a smaller plan takes nothing away: past a quota, nothing
 more of it is added until there is room. Nothing here charges anyone: prices and invoices are the operator's.

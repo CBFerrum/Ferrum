@@ -67,10 +67,9 @@ await confirmDialog({
   least 8 seconds (PATTERNS.md, *Overlays*). An app does not build its own Undo bar.
 - For a bulk action, say the scope before and the outcome after: "Archive 240 conversations?"; then
   `announce(t("240 conversations archived"))` or a toast.
-- Never ask twice for the same thing. Know that the kit's `confirmDialog` puts focus on the confirming button, a
-  destructive one included (`data-autofocus` in `ConfirmHost`, Ferrum-Frontend `src/ui/kit.tsx`), so Enter confirms:
-  the question and the button's verb must be unmistakable. Whether a destructive question should start on Cancel is
-  for the kit to decide; it has not been reviewed.
+- Never ask twice for the same thing. Know that the kit's `confirmDialog` puts focus on Cancel when `danger` is set
+  and on the confirming button otherwise (`data-autofocus` in `ConfirmHost`, Ferrum-Frontend `src/ui/kit.tsx`), so Enter
+  confirms only a question that is not destructive: the question and the button's verb must still be unmistakable.
 
 ## Errors and refusals
 
@@ -109,8 +108,7 @@ a person reads, usually in English (the server does not translate refusals; `doc
 - `Error::Conflict("…")` for a clash with what exists, saying which: "this project already has a restriction of that
   kind". Database constraint errors are turned into words for you, but a unique index's default is "duplicate value
   (`<constraint name>`)": give each of yours a sentence with `ferrum_kernel::error::set_constraint_message(name,
-  message)` (`crates/kernel/src/error.rs`), or the person reads your index's name. None of the app repositories read
-  for this guide (16 Nov 2026) calls it yet.
+  message)` (`crates/kernel/src/error.rs`), or the person reads your index's name. No app repository calls it.
 - `Error::NotFound("project")` reads "project not found". Use it, with the same words, both when the thing does not
   exist and when the caller may not know it exists ([05-permissions-and-people.md](05-permissions-and-people.md)):
   Cloud's API answers 404 to someone with no standing on a project, "so that what exists elsewhere looks the same as

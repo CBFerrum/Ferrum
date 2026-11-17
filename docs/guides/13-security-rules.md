@@ -14,7 +14,7 @@ words, and log the cause. Never fall back to a weaker mode silently ([docs/plan/
 rule 8).
 
 - `Kernel::outward(tenant)` refuses for a sandbox *and* for a workspace it cannot find or cannot ask about
-  (`crates/kernel/src/sandbox.rs:215`).
+  (`crates/kernel/src/sandbox.rs:205`).
 - A closed vault refuses every verb; the app says "… right now: its keys are unavailable", never uses a plain value instead
   ([08](08-secrets-and-the-vault.md)).
 - An error deciding a zone refuses staff; an unknown package is hidden, never shown ([docs/security.md](../security.md),
@@ -38,7 +38,7 @@ bypass it (it refuses to start as a superuser or with `BYPASSRLS`).
   context to do what the caller may not (`Ctx::system` is for the app's own background work).
 - **A public request** (`/api/site/{tenant}/{package}/…`) has no user (`SiteRequest::user` is `None`): the app decides
   what an anonymous caller may do and acts with a system or service context itself ([docs/api.md](../api.md), *App
-  endpoints*; `crates/kernel/src/hooks.rs:118`).
+  endpoints*; `crates/kernel/src/hooks.rs:123`).
 
 Checked: row-level security in the database; the platform's isolation suites. An app's use of `system_tx`: reviewed, not
 checked.
@@ -83,14 +83,14 @@ public site routes (300 a minute per address) ([docs/security.md](../security.md
 sent, a code checked):
 
 ```rust
-// crates/kernel/src/lib.rs:378. Keys name the app: bookings|{tenant}|{ip}
+// crates/kernel/src/lib.rs:357. Keys name the app: bookings|{tenant}|{ip}
 k.rate_limit(&format!("bookings|{tenant}|{}", req.client_ip), Duration::from_secs(3600), 20, "too many bookings from here; try again later").await?;
 ```
 
 It counts across every replica in the database and answers `TooManyRequests` (`429`) with your message past the limit.
 When the database cannot be reached it returns the database's error: it fails closed, where the server's own
 limiters fall back to the replica's own count ([docs/security.md](../security.md), *Availability*; `Db::count_hit`,
-`crates/kernel/src/db.rs:429`).
+`crates/kernel/src/db.rs:426`).
 
 ## 6. Cryptography only through the vault
 
@@ -142,7 +142,7 @@ only ones left are listed (IoT Edge's gateway, which talks to hardware).
 - **HTML from outside** (a mail's body) is shown in a sandboxed frame by the interface; Comms cleans incoming mail with
   `ammonia` before it reaches a page.
 - **Print pages** run no script and load nothing but inline styles and images (their Content Security Policy).
-- **An app's own interface** declares only the origins it needs in `ui.csp` (`connect`, `frame`, `form`, `img`), never
+- **An app's own interface** declares only the origins it needs in `ui.csp` (`connect`, `frame`, `img`, `media`, `font`, `worker`, `form`), never
   a wildcard script source ([17](17-the-interface.md)).
 
 ## 9. Code from strangers runs in a sandbox

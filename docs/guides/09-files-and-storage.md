@@ -106,7 +106,7 @@ counted.
 
 Either way the store keeps the object for `files_delete_after_days` first (0 by default; an operator sets it at least
 `backup_reach_days`), so a database restored to any moment its backups reach finds every file it names
-(`Objects::remove`, `server/src/objects.rs:256`). A name is never used again for other bytes. Never delete an object
+(`Objects::remove` in `server/src/objects.rs`). A name is never used again for other bytes. Never delete an object
 another way: you would break the restore.
 
 ### Public files and short links
@@ -115,7 +115,7 @@ another way: you would break the restore.
   photos, brochures) are served without signing in at `/files/public/{id}`, cached for ever, with a sandboxing Content
   Security Policy. Use them only for what is meant for everyone.
 - **A file pulled by a service**: a connection's call can give a service a short-lived public address of a file,
-  `/files/pull/{id}?s=…` ([BD-64](../builder/decisions.md), [11](11-integrations.md)).
+  `/files/pull/{id}?s=…` ([11](11-integrations.md)).
 - **Direct links**: with `files_direct_links` on, a download answers `307` to a link the store signed, valid at most 300
   seconds; never for an entity whose reads are recorded, an outside person, a type a browser would run, or while files
   move. Off by default. Your code does nothing for it.
@@ -124,7 +124,7 @@ another way: you would break the restore.
 
 What an app keeps for its own work goes in the platform's store as a *kind* of file the app declares
 ([docs/app-contract.md](../app-contract.md), *Files an app keeps for its own work*). Cloud keeps build artifacts,
-resources' backups and managed objects so, and holds no store of its own since 0.1.21.
+resources' backups and managed objects so, and holds no store of its own.
 
 **Declaring.** Inside the app's registration, once per kind:
 
@@ -135,7 +135,7 @@ let kinds = [h.file_kind("artifact"), h.file_kind("backup"), h.file_kind("object
 
 A name is lowercase letters, digits and `_`, beginning with a letter, at most 40 characters. A kind declared outside an
 app's registration, declared twice, or with a bad name stops the server (`HookRegistry::file_kind`,
-`crates/kernel/src/hooks.rs:415`). Keep the handles as you keep the vault handle (Cloud keys them by its site's address,
+`crates/kernel/src/hooks.rs`). Keep the handles as you keep the vault handle (Cloud keys them by its site's address,
 `KINDS`).
 
 **Its handle** (`files::FileKind`):

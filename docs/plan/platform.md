@@ -27,7 +27,7 @@ own screens, sandboxed and checked in Chromium, Firefox and WebKit (spike S4).
 
 **Do we reuse existing projects and libraries?**
 Yes, at three levels:
-* Reference: ERPNext/Frappe (cloned in `upstream/`, analysed in `docs/analysis-erpnext.md`) defines the
+* Reference: ERPNext/Frappe defines the
   business behaviour we reproduce.
 * Libraries: Loco/Axum, sqlx, wasmtime, MiniJinja, CEL, OpenDAL, lettre, mail-parser, async-imap, argon2,
   jsonwebtoken, rust_xlsxwriter, qrcode; React, TanStack, Radix/shadcn, recharts, dnd-kit,
@@ -331,8 +331,7 @@ live documents have their own gallery in Docs.
 `deploy/editors`, and the web app's editor page. Checked end to end in Chrome: a workbook opened from
 Drive, edited and saved as a version. The editor server is tested in Chromium, Firefox and WebKit in
 CI. Fidelity on 25 public files: [browser-editors-fidelity.md](browser-editors-fidelity.md). Still
-to come: DeckCraft, once its host bridge exists (asked for in deckcraft#1563;
-[upstream-requests.md](upstream-requests.md)). Spike S3
+to come: DeckCraft, once its host bridge exists (asked for in deckcraft#1563). Spike S3
 ([spike-s3-artcraft.md](spike-s3-artcraft.md)) found go without a fork.
 * An editor server the operator runs, on an origin of its own, serves the official, unmodified web
   builds of GridCraft, WordCraft and PdfCraft, and a small Ferrum relay.

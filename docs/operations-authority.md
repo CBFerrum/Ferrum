@@ -1,7 +1,6 @@
 # Operational authority
 
-Who may command what, and how that is known. This is gate G0 of the assessment, and the rules the
-ledger enforces. Code: `crates/ops/src/authority.rs`, `crates/ops/src/commands.rs`.
+Who may command what, and how that is known: the rules the ledger enforces. Code: `crates/ops/src/authority.rs`, `crates/ops/src/commands.rs`.
 
 ## Who owns what
 
@@ -20,8 +19,8 @@ the epoch it was issued under.
 
 - A report from another epoch joins the history and changes nothing.
 - There is no last write wins for stock, execution, money or safety configuration.
-- There is no automatic failover. The assessment is explicit: failing over while authority is
-  ambiguous is the unsafe case. A person moves authority.
+- There is no automatic failover: failing over while authority is ambiguous is the unsafe case. A
+  person moves authority.
 
 ## Moving authority
 

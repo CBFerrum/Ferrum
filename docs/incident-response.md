@@ -31,7 +31,8 @@ One person holds each of these, and says so at the start. On a small team one pe
    - A dependency down: writes stop by themselves where they should. Say so, and do not route around it.
    - A site or project being misused: `ferrum task cloud_restrict`.
    - A restore: nothing goes out until a person releases it (`docs/operations.md`, After restoring a backup).
-3. Keep the evidence before changing it: the audit trail (it cannot be edited), `ferrum task doctor`, logs by correlation id.
+3. Keep the evidence before changing it: the audit trail (the database refuses changes to it; the audit sink, where one is
+   set, holds a copy outside), `ferrum task doctor`, logs by correlation id.
 4. Tell customers what affects them, in plain words, by the channel they have. A leak of personal data has legal deadlines, and
    whoever speaks for the company decides what they are.
 5. Fix it, and say when it is fixed and how that is known.

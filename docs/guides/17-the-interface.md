@@ -4,8 +4,7 @@ Each app owns its interface. It lives in `ui/` of the app's own repository, is b
 packages, and is served by the platform on the workspace's host with the platform's bar above it. This guide says how
 that works, which parts of the kit to use for what, and what is checked before an interface ships.
 
-Everything here was read at the platform's main `297ad969` and at Ferrum-Frontend `3bec041` (the `FRONTEND_REV` the
-platform's `Dockerfile` pins). Ferrum-Frontend is another repository; its paths are written as
+Ferrum-Frontend is another repository (the platform's `Dockerfile` pins the revision it builds as `FRONTEND_REV`); its paths are written as
 `Ferrum-Frontend: <path>`. Its design documents are the rules for the look: `docs/design/README.md`,
 `FOUNDATIONS.md`, `PATTERNS.md`, `MIGRATION.md`, `EVIDENCE.md` and `ACCEPTANCE.md`. This guide points into them and
 does not copy them.
@@ -34,8 +33,9 @@ the browser                   <ferrum-bar> on top, your app below, calling /api/
   Ferrum-Frontend's own modules".
 - **The manifest.** `ui.dist: ui/dist` and the `contributes.shell.app` entries that give it routes
   ([03-the-manifest.md](03-the-manifest.md); `docs/plugins.md`, *Interfaces of their own*; `docs/plan/apps-ui.md`
-  §10.1). Routes match `[a-z][a-z0-9-]{1,30}` and never a reserved name (`api ws files mcp metrics oauth open data
-  admin store account portal accounts login logout s app home`, anything starting with `_` or `.`).
+  §10.1). Routes match `[a-z][a-z0-9-]{1,30}` and never a reserved name (`api assistant ws files mcp metrics oauth open data
+  admin store account portal public accounts login logout s app home sw.js robots.txt favicon.ico manifest.webmanifest`,
+  anything starting with `_` or `.`).
 - **The page.** The server answers `/<route>/…` with your `index.html` and puts in, before your scripts: the
   bootstrap (`<script type="application/json" id="ferrum-bootstrap">`), the workspace's theme and the bar runtime
   (`/_shell/v1/runtime.js`), which draws `<ferrum-bar>` and installs `ferrum.shell` (`docs/plan/apps-ui.md` §10.2,
@@ -55,9 +55,7 @@ the browser                   <ferrum-bar> on top, your app below, calling /api/
 | `@ferrum/kit` | components and patterns: `Button`, `Badge`, `StatusBadge`, `Field`, `Dialog`, `confirmDialog`, `Menu`, `Tabs`, `Alert`, `Toaster`, `toast`, `announce`, `StatePanel`, `LoadFailed`, the skeletons, `SaveStatus`, `SelectionToolbar`, `PageHead`, the work-home pieces, `Toolbar`, `RichTextEditor`, `NavIcon`, `AppIcon`, `useLiveEntity`, `useLivePush`, `useUnsavedGuard` | `packages/kit/src/index.ts` |
 | `@ferrum/kit/primitives` | the shadcn building blocks (`Button`, `Dialog`, `Sheet`, `DropdownMenu`, `Select`, `Table`, …) for screens that compose their own | `packages/kit/primitives/src/index.ts` |
 | `@ferrum/records` | lists, forms and reports of any entity from its metadata (`ListView`, `FormView`, `ReportView`), people, comments, the record picker | `packages/records/src/index.ts` |
-| `@ferrum/records/frame` | the records frame: `setFrameMode`, `RequireAuth`, `recordsRoutes`, `createAppRouter` | `packages/records/frame/src/index.ts` |
-| `@ferrum/bridge` | frames, slots, intents and screens between apps and their hosts | `packages/bridge/src/index.ts` |
-| `@ferrum/calc` | the platform's pricing engine in WebAssembly: the same totals as the server | `packages/calc/src/index.ts` |
+| `@ferrum/records/frame` | the records frame and an app's start: `mountApp`, `setFrameMode`, `RequireAuth`, `recordsRoutes`, `createAppRouter` | `packages/records/frame/src/index.ts` |
 | `@ferrum/testing` | `fakeBootstrap()`, `installFakeShell()` for tests | `packages/testing/src/index.ts` |
 | `@ferrum/build` | `cli.mjs build`, `check`, `lint`, `dev`, `typecheck`, `test`; `vite.mjs` | `packages/build/` |
 
@@ -102,49 +100,42 @@ stylesheet"):
 @import "./drive.css";
 ```
 
-`ui/src/main.tsx` (Code's, shortened): the catalogs first, then draw once the words are in, then tell the shell the
-app has drawn.
+`ui/src/main.tsx` (Code's, shortened): `mountApp` adds the app's catalogs, builds the router at the app's address,
+draws once the words are in, and puts the toasts and confirmations beside the page. Call it once, last, after
+`setFrameMode` when the app has the frame.
 
 ```tsx
-import { addCatalogs, routeBase, shell, t, wordsReady } from "@ferrum/client";
-import { ConfirmHost, Toaster } from "@ferrum/kit";
-import { createAppRouter, RequireAuth, setFrameMode } from "@ferrum/records/frame";
+import { shell } from "@ferrum/client";
+import { mountApp, RequireAuth, setFrameMode } from "@ferrum/records/frame";
 import "./styles.css";
 
-void addCatalogs({ ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") });
 setFrameMode("app", ["code"]);
-const router = createAppRouter([...routes], { basename: routeBase("code") });
 
-void wordsReady().then(() =>
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
-        <Toaster />
-        <ConfirmHost />
-      </QueryClientProvider>
-    </StrictMode>,
-  ),
-);
+mountApp({
+  route: "code",
+  catalogs: { ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") },
+  routes: [{ path: "/", element: <><Started /><RequireAuth /></>, children: [...] }],   // Started calls shell().ready()
+});
 ```
 
 What each line is for:
 
-- `routeBase("code")` reads the app's address from the bootstrap. Never hard-code `/code/`: an operator may remap a
-  route (`docs/plan/apps-ui.md` §4 rule 2, §10.1).
-- `wordsReady()` waits for the page's language and the app's own catalogs; drawing before it shows English for a
-  moment ([19-languages-and-formats.md](19-languages-and-formats.md)).
-- `<Toaster />` holds the polite live region that `toast()` and `announce()` speak through; without it they say
-  nothing ([18-accessibility.md](18-accessibility.md)).
-- `<ConfirmHost />` draws `confirmDialog()` and the step-up dialog: the client asks the person to confirm it is them
+- `route: "code"` is read through `routeBase("code")`, the app's address from the bootstrap. Never hard-code `/code/`:
+  an operator may remap a route (`docs/plan/apps-ui.md` §4 rule 2, §10.1).
+- `catalogs` are the app's own words ([19-languages-and-formats.md](19-languages-and-formats.md)); `mountApp` waits for
+  the page's language and these (`wordsReady()`) before it draws, so English does not show for a moment.
+- `Toaster`, which `mountApp` draws, holds the polite live region that `toast()` and `announce()` speak through; without
+  it they say nothing ([18-accessibility.md](18-accessibility.md)).
+- `ConfirmHost`, which `mountApp` draws, draws `confirmDialog()` and the step-up dialog: the client asks the person to confirm it is them
   when the server answers `403 step_up`, and sends the request again once (Ferrum-Frontend:
   `packages/client/src/index.ts`, `send`). Without it, a step-up refusal is just an error.
 - `shell().ready()` once the first page has drawn. If an app never calls it within ten seconds the runtime reports
   that it did not start (`docs/plan/apps-ui.md` §10.2). Code calls it from a `Started` element in its root route;
   Drive from its `Frame`.
+- `mountApp` makes one query client: no retries, no refetch on window focus, data fresh for 30 seconds. An app that
+  needs other behaviour starts itself with `createAppRouter` and a client of its own.
 - Pages other than the home load when opened (`lazy` routes). The entry JavaScript budget is 200 KB compressed and
-  CSS 50 KB (Ferrum-Frontend: `packages/build/budgets.mjs`); Drive's entry was at 181.5 KB on 11 Nov 2026
-  (Ferrum-Frontend: `docs/design/EVIDENCE.md`, *Backlog*).
+  CSS 50 KB (Ferrum-Frontend: `packages/build/budgets.mjs`).
 - Give the content a `<main id="main">`: the bar's "Skip to content" link focuses `#main`, else the first `main`
   (`server/shell/runtime.js`, `skip`).
 
@@ -165,6 +156,11 @@ runs (a test, a page opened alone). The capabilities and their fallbacks are the
 | `uploads.start`, `uploads.track` | transfers that outlive the page, shown in the bar's tray; an app does not draw its own upload panel where `uploads.canTrack` is true |
 | `toast(message, {tone})` | a message in the host's layer; inside your page the kit's `toast()` is the one to use |
 | `assistant(context)` | open the assistant with what the person is looking at |
+| `badge(count)` | the app's unread count on the launcher |
+| `sidepanel.open`, `close`, `current`, `context`, `list` | the panels the bar opens in any app |
+| `companion({kind, url})` | a window that outlives page loads (a call) |
+| `session.signOut()`, `reauthenticate()`, `on(event, cb)` | the person's session |
+| `family()`, `apps()` | the family's entries (the kit's `FamilyNav` draws them) and the launcher's entries |
 | `supports(capability)` | ask before using anything newer; never compare version numbers (`docs/plan/apps-ui.md` §4 rule 3) |
 
 Hiding is not securing: a launcher entry, a route or a hidden button is convenience; the API checks every call
@@ -183,8 +179,7 @@ with").
   (`ferrum-app-crm/ui/src/main.tsx`, `routes.tsx`) mixes its own pages (the pipeline, a deal at `/d/{id}`) with the
   frame's lists and forms.
 - `createAppRouter(routes, { basename })` instead of `createBrowserRouter`: it adds the wait page React Router wants
-  on the first load (Ferrum-Frontend: `packages/records/frame/src/index.ts`). CRM still calls `createBrowserRouter`;
-  Code and newer apps use `createAppRouter`.
+  on the first load (Ferrum-Frontend: `packages/records/frame/src/index.ts`). `mountApp` uses it.
 - On a phone the records frame turns lists into cards with a Sort select, keeps a form's actions in a bar at the
   bottom, shows child tables as one card per row and opens dialogs as bottom sheets (Ferrum-Frontend: `README.md`,
   *Phones*).
@@ -270,8 +265,8 @@ Mistakes the lint and the reviews catch:
 
 - `fallback={null}` (or an empty `<span/>`, `<div/>`, `<></>`) on `Suspense` is the lint's `blank-fallback`.
 - An empty state where a filter hid the rows: that is `no-matches`.
-- A refused page drawn as an empty one: found in several apps in the 11 Nov release candidates (EVIDENCE.md, *Found
-  by looking, fixed*). A 403 is `denied`, not "No records yet".
+- A refused page drawn as an empty one (EVIDENCE.md, *Found by looking, fixed*). A 403 is `denied`, not "No records
+  yet".
 - "Saved" before the server confirmed it; a draft lost on failure or conflict. Never show save, send, payment or
   approval as done before the durable milestone (Ferrum-Frontend: `CLAUDE.md`, *Hard rules*).
 - A hand-made Undo bar: every destructive or filing action offers Undo for at least 8 seconds through
@@ -377,12 +372,12 @@ node ../../ferrum/web/packages/build/cli.mjs check
 - a catalog in `src/locales/*.json` or `src/locales/names/*.json` holds a word the sources no longer ask for, an empty
   translation, or other `{places}` than the English;
 - the entry JavaScript is over 200 KB compressed or the CSS over 50 KB ("over the size budget");
-- the UI lint has more findings of a rule in a file than `ui-lint-baseline.json` allows. Without a baseline file it
-  only reports; adopt it with `cli.mjs lint --update-baseline`, and the baseline may then only go down. Every app's
-  baseline was empty after the 11 Nov kit work (EVIDENCE.md, *The craft pass*).
+- the UI lint finds anything: there is no baseline to adopt, so every finding fails, and an exception is explained at
+  the line.
 
 The lint's rules (`packages/build/uilint.mjs`): `raw-color`, `small-text`, `arbitrary-text-size`, `blank-fallback`,
-`zoom-lock`, `forked-primitive` (apps only) and `allow-reason` (an allow comment without a reason). It reads lines,
+`zoom-lock`, `forked-primitive` (apps only), `allow-reason` (an allow comment without a reason) and `browser-zone` (Ferrum-Frontend's
+own sources only, not an app's). It reads lines,
 not a syntax tree: it finds what drifts silently, nothing more.
 
 `scripts/app_ci.sh <app checkout>` in the platform runs `check`, `typecheck` and `test` in a copy of the app beside the
@@ -411,7 +406,7 @@ print), and no human design review, no assistive-technology session, no user stu
 | `<Suspense fallback={null}>` | lint `blank-fallback`; the page jumps | a skeleton of the content's shape |
 | `import * as Dialog from "@radix-ui/react-dialog"` | lint `forked-primitive` | `Dialog` from the kit, or the primitive |
 | `import { x } from "@/lib/api"` | the build fails | `@ferrum/client` |
-| forgetting `@import` of the kit's `index.css` | `check` fails; it happened to Developer Hub | the four lines above |
+| forgetting `@import` of the kit's `index.css` | `check` fails | the four lines above |
 | building and not committing `dist/` | `check` and `scripts/check_apps.py` fail | build, then commit `ui/dist` with the sources |
 | tone from `label.includes("Overdue")` | wrong colour once translated | `StatusBadge value={status_id}` |
 | `"/crm/deals"` in a link | breaks when the route is remapped | `routeBase("crm")`, or the router's `basename` |

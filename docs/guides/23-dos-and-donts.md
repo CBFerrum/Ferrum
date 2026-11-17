@@ -2,8 +2,7 @@
 
 The whole handbook as one list, by area. Each line says what to do or not do, why, and what catches it: a script, a
 test, the server refusing to start, or "reviewed" where only a person does. The guides explain each rule; the
-contract (`docs/app-contract.md`) is the rule where they say the same. Everything here was read from the platform at
-`297ad969`, Ferrum-Frontend `3bec041` and the app repositories as they stood on 16 Nov 2026.
+contract (`docs/app-contract.md`) is the rule where they say the same.
 
 "Refused" means the server or the build will not accept it. "Reviewed" means nothing checks it: a person must.
 
@@ -17,9 +16,9 @@ contract (`docs/app-contract.md`) is the rule where they say the same. Everythin
 | Do look for a mature open-source project to run, depend on or adapt before building one, AGPL-compatible only | less code to own; licences Ferrum can ship | `scripts/licenses.py check` for what is compiled in; the choice is reviewed |
 | Do license the app under AGPL-3.0 or a licence Ferrum ships | the platform ships it | `scripts/check_apps.py` |
 | Do have `README.md`, `CHANGELOG.md`, `LICENSE`, `app.yaml`, `tests/*_it.rs`, and `ui/dist` built when there is an interface | the completeness contract | `scripts/check_apps.py` |
-| Do add a `SECURITY.md` | people need a private way to report | reviewed (only Cloud has one) |
+| Do add a `SECURITY.md` | people need a private way to report | reviewed (only Cloud and Code have one) |
 | Don't add attribution lines (`Co-Authored-By`, "Generated with") to commits | the owner's rule | reviewed |
-| Don't import another app's modules at run time; meet through the API, events, intents, slots, cards | apps upgrade and go missing independently (`docs/plan/apps-ui.md` §4 rule 1) | reviewed |
+| Don't import another app's modules at run time; meet through the API, events, intents, slots, cards, or an operation it offers and your package declares in `uses:` (called with `Kernel::call_tx`) | apps upgrade and go missing independently (`docs/plan/apps-ui.md` §4 rule 1; `docs/app-contract.md`, *Using another app's operations*) | the catalog refuses a use of a package you do not depend on; the rest reviewed |
 | Don't read or write another app's tables; read its records through the kernel, after `requires`-ing it | its tables are its own to change | `scripts/mutation_paths.py` for writes to `e_*` tables; reads reviewed |
 
 ## The manifest, versions and ranges
@@ -28,9 +27,9 @@ contract (`docs/app-contract.md`) is the rule where they say the same. Everythin
 |---|---|---|
 | Do fill `id`, `name`, `version`, `publisher`, `summary`, `categories`, `license`, `homepage`, `support`, `description` | the store and the install dialog show them | `scripts/check_apps.py` |
 | Do write a `CHANGELOG.md` entry for every version in the manifest | people and the store read what changed | `scripts/check_apps.py` |
-| Don't let a `requires` range stop below a sibling's new release | the platform cannot pin the two together (Campaigns 0.5.3 against Comms 0.22.0) | the server's `compiled_apps_fit_together` (`server/src/packages.rs`) |
+| Don't let a `requires` range stop below a sibling's new release | the platform cannot pin the two together | the server's `compiled_apps_fit_together` (`server/src/packages.rs`) |
 | Do give a launcher entry an icon the bar draws | otherwise the launcher has nothing to show | `scripts/check_apps.py` against `server/shell/runtime.js` |
-| Don't take a reserved route (`api ws files mcp metrics oauth open data admin store account portal accounts login logout s app home`, `_…`, `.…`) or another app's | the core and other apps own them | refused when a release is made available (`docs/plugins.md`) |
+| Don't take a reserved route (`api assistant ws files mcp metrics oauth open data admin store account portal public accounts login logout s app home sw.js robots.txt favicon.ico manifest.webmanifest`, `_…`, `.…`) or another app's | the core and other apps own them | refused when a release is made available (`docs/plugins.md`) |
 | Do raise `platform` to the version that has what you use (0.3.9 for operator settings) | an older platform would not read it | `scripts/check_apps.py` (operator settings) |
 
 ## Data, tables and migrations
@@ -158,7 +157,7 @@ contract (`docs/app-contract.md`) is the rule where they say the same. Everythin
 | Do / don't | Why | Caught by |
 |---|---|---|
 | Do test against a real PostgreSQL as a non-superuser role | superusers bypass row-level security | `scripts/app_ci.sh` |
-| Do register the app in tests by its id with the packages it owns, and open the vault, as the server does | otherwise the vault refuses or the test proves less | the suite |
+| Do boot the app's suite from `ferrum-testkit` (`Kit::boot`, each app an `app!` entry) | it registers each app by its id with the packages it owns and opens the vault as the server does; otherwise the vault refuses or the test proves less | the kit |
 | Do write the test that fails first, and keep a mutant for each invariant that matters | a test that stays green with the invariant gone proves nothing | `scripts/mutants.py` |
 | Do run checks on your own machine (`scripts/app_ci.sh <checkout>`), as the workflow would | checks run on the developer's machine, not on GitHub (the owner's standing rule) | reviewed |
 | Do use real software where it matters and say what was never run | a stand-in proves the stand-in | reviewed |

@@ -32,8 +32,8 @@ work/
 `scripts/app_ci.sh` builds its own copy of this layout in a temporary folder, so the checks pass wherever your
 checkouts are; the layout matters for running `npm` in `ui/` by hand.
 
-A database role that is **not a superuser**: superusers bypass row-level security, so a test run as one proves
-nothing about isolation (`scripts/app_ci.sh`, header; GRC's `.github/workflows/ci.yml`).
+A database role that is **not a superuser**: superusers bypass row-level security, so the kernel refuses to boot as one
+(`Kernel::boot`), and `scripts/app_ci.sh` and GRC's `.github/workflows/ci.yml` create the role that way.
 
 ```bash
 createuser ferrum --pwprompt                 # password: ferrum
@@ -193,7 +193,7 @@ uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
 
 [dev-dependencies]
 ferrum-apps = { git = "https://github.com/CBFerrum/Ferrum", branch = "main" }
-tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+ferrum-testkit = { git = "https://github.com/CBFerrum/Ferrum", branch = "main" }
 
 [profile.dev]
 debug = "line-tables-only"
@@ -306,90 +306,53 @@ a committed lock back as it was after a run.
 ## 5. The scenario test: `tests/visits_it.rs`
 
 `scripts/check_apps.py` fails an app with no `tests/*_it.rs` ("no scenario test"). The test runs the app's flows
-against a real PostgreSQL, as GRC's `tests/grc_it.rs` does: it resets the database, loads the platform's packages
-and the app's into one catalog, registers the hooks as the server does, boots a kernel, makes a workspace with the
-app's package, and works as people with the app's roles.
+against a real PostgreSQL through the platform's test kit, `ferrum-testkit` ([docs/testkit.md](../testkit.md)): it
+empties the database, opens the vault, loads the platform's packages and the app's into one catalog, registers the
+hooks as the server does, boots a kernel, makes a workspace with the app's package and signs people in with the
+app's roles. Take it under `[dev-dependencies]` only (step 4). (GRC's `tests/grc_it.rs` boots the kernel by hand; a new
+suite does not.)
 
 ```rust
 //! Site visits against a real PostgreSQL (`FERRUM_VISITS_TEST_DATABASE_URL`, default
-//! `postgres://ferrum:ferrum@localhost:5432/ferrum_visits_test`; reset first).
+//! `postgres://ferrum:ferrum@localhost:5432/ferrum_visits_test`; emptied first).
 
-use ferrum_kernel::secret::SecretKey;
-use ferrum_kernel::tenant::NewTenant;
-use ferrum_kernel::{Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings};
-use ferrum_meta::Catalog;
+use ferrum_testkit::{Kit, app, database, obj, refused, run, uid};
 use serde_json::{Value, json};
-
-fn obj(v: Value) -> Doc {
-    v.as_object().cloned().unwrap()
-}
 
 #[test]
 fn a_visit_is_planned_then_done() {
-    // A thread stack as GRC gives its scenario: the kernel's futures are deep.
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
-    rt.block_on(async { tokio::spawn(scenario()).await.unwrap() });
+    run(scenario());
 }
 
 async fn scenario() {
-    let url = std::env::var("FERRUM_VISITS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_visits_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 16, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let kit = Kit::boot(&database("FERRUM_VISITS_TEST_DATABASE_URL"), &[app!("visits", ferrum_app_visits)]).await;
+    let ws = kit.workspace("acme", &["visits"], json!({"timezone": "UTC"})).await;
+    let pat = ws.user("pat@acme.test", &["Visitor"]).await;
 
-    let mut packages = ferrum_domain::packages().expect("platform packages");
-    packages.extend(ferrum_app_visits::packages().expect("app packages"));
-    let catalog = Catalog::from_packages(packages).expect("catalog");
-    let mut hooks = HookRegistry::default();
-    ferrum_domain::register(&mut hooks);
-    // As the server registers it (server/src/packages.rs): as itself, owning its packages.
-    let own: Vec<String> = ferrum_app_visits::packages().unwrap().iter().map(|p| p.name().to_string()).collect();
-    hooks.app("visits", &own, ferrum_app_visits::register);
-    hooks.own("visits", &own);
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), ..Default::default() };
-    let k = Kernel::boot(db, catalog, hooks, settings, None).await.expect("boot");
-    ferrum_domain::maintenance(&k).await.expect("partitions");
-
-    let tenant = k
-        .create_tenant(NewTenant {
-            slug: "acme".into(),
-            name: "Acme Ltd".into(),
-            admin_email: "admin@acme.test".into(),
-            admin_password: "Correct-Horse-9".into(),
-            admin_name: None,
-            packages: vec!["core".into(), "parties".into(), "visits".into()],
-            settings: Some(json!({"timezone": "UTC"})),
-        })
-        .await
-        .expect("tenant");
-    let session = k.login("acme", "admin@acme.test", "Correct-Horse-9").await.expect("login");
-    let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
-    let id = k.create_user(&admin, "pat@acme.test", "pat@acme.test", Some("Correct-Horse-9"), &["Visitor".to_string()], false).await.expect("user");
-    let s = k.login("acme", "pat@acme.test", "Correct-Horse-9").await.expect("login");
-    let pat = k.load_ctx(tenant, id, Some(s.token_version), "it".into()).await.expect("ctx");
-
-    let customer = k.insert(&admin, "Customer", obj(json!({"customer_name": "Northwind"}))).await.expect("customer");
-    let visit = k
-        .insert(&admin, "SiteVisit", obj(json!({"subject": "Boiler check", "customer": customer["id"], "visitor": "pat@acme.test", "planned_on": "2026-11-20"})))
+    let customer = kit.k.insert(&ws.admin, "Customer", obj(json!({"customer_name": "Northwind"}))).await.expect("customer");
+    let visit = kit
+        .k
+        .insert(&ws.admin, "SiteVisit", obj(json!({"subject": "Boiler check", "customer": customer["id"], "visitor": "pat@acme.test", "planned_on": "2026-11-20"})))
         .await
         .expect("visit");
-    let vid = visit["id"].as_str().unwrap().parse().unwrap();
 
     // Done needs its findings: refused with the words a person reads.
-    let r = k.run_action(&pat, "SiteVisit", vid, "mark_done", Value::Null).await;
-    assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("say what was found")), "{r:?}");
+    refused(kit.k.run_action(&pat, "SiteVisit", uid(&visit), "mark_done", Value::Null).await, "invalid", "say what was found");
 
     // The visitor writes the findings on their own visit, and marks it done.
-    k.update(&pat, "SiteVisit", vid, obj(json!({"findings": "Pressure low; valve replaced"})), None).await.expect("findings");
-    k.run_action(&pat, "SiteVisit", vid, "mark_done", Value::Null).await.expect("done");
-    assert_eq!(k.get(&admin, "SiteVisit", vid, false).await.unwrap()["status"], "Done");
+    kit.k.update(&pat, "SiteVisit", uid(&visit), obj(json!({"findings": "Pressure low; valve replaced"})), None).await.expect("findings");
+    kit.k.run_action(&pat, "SiteVisit", uid(&visit), "mark_done", Value::Null).await.expect("done");
+    assert_eq!(kit.k.get(&ws.admin, "SiteVisit", uid(&visit), false).await.unwrap()["status"], "Done");
 
     // Another visitor's visit is not theirs: not found, not "forbidden" (05-permissions-and-people.md).
-    let other = k
-        .insert(&admin, "SiteVisit", obj(json!({"subject": "Roof", "customer": customer["id"], "visitor": "sam@acme.test", "planned_on": "2026-11-21"})))
+    let other = kit
+        .k
+        .insert(&ws.admin, "SiteVisit", obj(json!({"subject": "Roof", "customer": customer["id"], "visitor": "sam@acme.test", "planned_on": "2026-11-21"})))
         .await
         .expect("visit");
-    let r = k.get(&pat, "SiteVisit", other["id"].as_str().unwrap().parse().unwrap(), false).await;
-    assert!(matches!(r, Err(Error::NotFound(_))), "{r:?}");
+    refused(kit.k.get(&pat, "SiteVisit", uid(&other), false).await, "not found", "");
+
+    ws.drain().await; // this workspace's events delivered, or the test fails naming them
 }
 
 #[test]
@@ -404,10 +367,12 @@ fn the_interface_is_a_release_the_platform_takes() {
 The second test is GRC's `the_interface_is_a_release_the_platform_takes` (in GRC it sits in `src/lib.rs`): it
 parses the manifest with the very parser the server uses, and prepares `ui/dist` as the server will at start.
 
-The names (`customer_name` on `Customer`, the `Correct-Horse-9` password GRC's tests use) come from the
-platform's `packages/parties` and from GRC's test. What a good scenario covers (each role, every refusal with
-the words a person reads, upkeep run at a chosen day as GRC's `maintenance_on` is, the vault opened when the app
-uses it) is [15-testing-and-ci.md](15-testing-and-ci.md).
+What the kit gives and does not (`run`, `database`, `app!`, `Kit`, `workspace`, `user`, `drain`, `refused`, a
+second server on the same database, the app's vault handle, the mail sent) is [docs/testkit.md](../testkit.md). An
+app that builds on another lists it too (`app!("erp", ferrum_app_erp)`, ERP first). The names (`customer_name` on
+`Customer`, the kit's `PASSWORD`) come from the platform's `packages/parties` and the kit. What a good scenario
+covers (each role, every refusal with the words a person reads, upkeep run at a chosen day as GRC's `maintenance_on`
+is, the vault opened when the app uses it) is [15-testing-and-ci.md](15-testing-and-ci.md).
 
 ## 6. The interface: `ui/`
 
@@ -419,11 +384,11 @@ Copy GRC's `ui/` files and change the app's names in them:
 | `ui/vite.config.mjs` | `export default ferrumApp(import.meta.url);` from `../../ferrum/web/packages/build/vite.mjs` |
 | `ui/tsconfig.json` | extends `../../ferrum/web/packages/build/tsconfig.app.json` |
 | `ui/index.html` | `<html lang="en">`, a title, the viewport, one module script `./src/main.tsx` |
-| `ui/src/main.tsx` | the router: `/` the app's home, `e/:entity`, `e/:entity/:id`, `r/:name` from the records frame, `basename: routeBase("visits")`, `shell().ready()` once drawn, `setFrameMode("app", ["visits"])` |
-| `ui/src/records.ts` | re-exports `FormView`, `ListView`, `ReportView` from `@ferrum/records` and `AppSettingsPage`, `ScreenPage` from `@ferrum/records/frame` |
+| `ui/src/main.tsx` | `setFrameMode("app", ["visits"])`, then `mountApp({route: "visits", catalogs, routes})` from `@ferrum/records/frame` (the router at the app's address, the query client, the toasts, once the page's words are in); the routes: `/` the app's home, `e/:entity`, `e/:entity/:id`, `r/:name` from the records frame; `shell().ready()` once drawn |
+| `ui/src/records.ts` | re-exports `FormView`, `ListView`, `ReportView` from `@ferrum/records` |
 | `ui/src/Home.tsx` | the home: what needs attention, and the next step when there is nothing yet |
+| `ui/src/styles.css`, `ui/src/locales/` | the stylesheet; the app's own catalogs (`ar.json`, `hi.json`) and `names/` |
 | `ui/src/*.test.ts` | the interface's tests (vitest) |
-| `ui/ui-lint-baseline.json` | `{}`: the lint's ratchet, empty for a new app |
 
 Build it, and commit `ui/dist` (the crate embeds it at compile time):
 
@@ -437,8 +402,8 @@ npm test
 
 `check` fails when `dist/` was not built from the sources as they are now, when the built CSS lacks the kit's base,
 when a catalog holds words the sources do not ask for, when the first script is over 200 KB compressed or the CSS
-over 50 KB, and when the UI lint finds more of a rule than `ui-lint-baseline.json` allows
-(`packages/build/cli.mjs` of the Frontend, header). `check_apps.py` fails an app whose `ui.dist` has no
+over 50 KB, and when the UI lint finds anything (`packages/build/cli.mjs` of the Frontend, header; an exception is a
+comment, `ui-lint-allow <rule>: <reason>`). `check_apps.py` fails an app whose `ui.dist` has no
 `index.html` or no `.source` (`ui/dist is not built (index.html and .source)`).
 
 How to write the pages themselves is [17-the-interface.md](17-the-interface.md) and
@@ -467,8 +432,9 @@ First release: visits planned for a day and done with their findings; planners s
 ## 8. The workflow: `.github/workflows/ci.yml`
 
 Copy GRC's. `scripts/app_ci.sh` reads it to replay the same steps on your machine: it takes the test database's
-name from the line `FERRUM_<APP>_TEST_DATABASE_URL: postgres://…/<db>` and the thread stack from `RUST_MIN_STACK`.
-For Visits the line is:
+name from the line `FERRUM_<APP>_TEST_DATABASE_URL: postgres://…/<db>` and the thread stack from `RUST_MIN_STACK`
+(and finds each variable a suite gives the kit's `database("…")`, with `_localci` added to the name, so that a
+variable the workflow does not name still gets a database of its own). For Visits the line is:
 
 ```yaml
     env:
@@ -521,8 +487,9 @@ cd server && cargo run -- start         # http://127.0.0.1:5150: migrates and sy
 cd server && cargo run -- task create_tenant slug:demo name:"Demo Ltd" email:admin@demo.test password:'Correct-Horse-9' packages:core,parties,visits
 ```
 
-Sign in at `http://127.0.0.1:5150/` with tenant `demo`, `admin@demo.test`; the launcher shows Site Visits at
-`/visits/`. To work on the interface with hot reload, start the server with `FERRUM_DEV_UI=true` (development only;
+The shell's and Studio's interfaces come from a Frontend build (`FERRUM_UI_DIR`, the platform's `README.md`, *Quick
+start*, step 5). Sign in at `http://127.0.0.1:5150/` with tenant `demo`, `admin@demo.test`; the launcher shows Site
+Visits at `/visits/`. To work on the interface with hot reload, start the server with `FERRUM_DEV_UI=true` (development only;
 the server warns at start), run `npm run dev` in `ui/` (Vite on port 5173), and `ferrum-app dev --ui
 http://localhost:5173 --no-upload`: the app's pages then come from Vite behind the real session, bar and bootstrap,
 until `--ui off` or a restart ([docs/operations.md](../operations.md), *Apps with interfaces of their own*).
@@ -542,7 +509,8 @@ platform's repository, each as GRC is there:
 | `server/src/packages.rs`, `native_uis()` | its interface, when it has one | `#[cfg(feature = "grc")] out.push(("grc", ferrum_app_grc::UI));` |
 
 `Cargo.lock` then pins the commit of `main` the platform builds; moving it forward is pinning a new release
-([16-releasing.md](16-releasing.md)). The platform's test `compiled_apps_fit_together` (`server/src/packages.rs`)
+([16-releasing.md](16-releasing.md)). `docs/registry/release-manifest.yaml` is generated from the lock (`python3 scripts/registry.py
+generate`), and `scripts/registry.py check` fails when the two differ. The platform's test `compiled_apps_fit_together` (`server/src/packages.rs`)
 then holds the app to the others: its manifest parses, its icon exists, what it requires of another compiled app
 is met by the release compiled with it, no report name or route is shared, and its packages load into one catalog
 with everyone's. `every_report_is_gated_on_its_own_apps_entity` in the same file holds its reports to its own
@@ -561,7 +529,7 @@ An app the platform's repository may not name builds its own server instead
 | `the shell draws no … icon` | an icon `server/shell/runtime.js` does not have | pick one from its `ICONS` |
 | `ui/dist is not built (index.html and .source)` | `npm run build` not run, or `dist/` not committed | build and commit `ui/dist` |
 | `CHANGELOG.md says nothing of 0.1.1` | the version moved without a heading | add `## 0.1.1` |
-| the test passes against a superuser and fails in `app_ci.sh` | row-level security was bypassed | test as the `ferrum` role |
+| `the database role is a superuser or has BYPASSRLS …` at the test's boot | the test's database address names a superuser, which bypasses row-level security | test as the `ferrum` role |
 | `refusing to reset ferrum_dev_localci` | the workflow names a database like a development one | name the test database `ferrum_<app>_test` |
 | `package SQL visits/001_x.sql changed after it was applied; add a new file instead of editing it` | an applied SQL file edited | put the change in a new file ([04-data-and-records.md](04-data-and-records.md)) |
 
