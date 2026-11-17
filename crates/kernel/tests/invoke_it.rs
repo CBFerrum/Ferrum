@@ -301,7 +301,47 @@ async fn scenario() {
     // ───────────── a capability gone after save ─────────────
     let t = w.apply(1).await;
     w.press(t, "tag_it").await.expect("tagged");
+    // Automations that create a Tag or call its app are switched off with it, saying why; one on what stays stays on.
+    let admin = w.admin().await;
+    let saved = |name: &str, condition: &str, actions: Value| {
+        obj(json!({"name": name, "entity": "XApplication", "event": "created", "condition": condition, "actions": actions}))
+    };
+    let creates = automation::save(
+        &w.k,
+        &admin,
+        &saved("tag it", "doc.fee == 3", json!([{"type": "create_document", "entity": "Tag", "values": {"label": "doc.applicant"}}])),
+    )
+    .await
+    .unwrap();
+    let calls = automation::save(&w.k, &admin, &saved("tag it too", "doc.fee == 3", invoke("tags.tag.create", json!({"values": "{'label': doc.applicant}"}))))
+        .await
+        .unwrap();
+    let stays = automation::save(&w.k, &admin, &saved("note it", "doc.fee == 3", json!([{"type": "set_fields", "values": {"customer_seen": "'seen'"}}])))
+        .await
+        .unwrap();
     w.k.disable_packages(&w.admin().await, &["tags".to_string()]).await.unwrap();
+    let on = w.count(&format!("select count(*) from automation where tenant_id = $1 and is_active and id in ('{creates}', '{calls}')")).await;
+    assert_eq!(on, 0, "what named the removed app is off");
+    assert_eq!(w.count(&format!("select count(*) from automation where tenant_id = $1 and is_active and id = '{stays}'")).await, 1, "the rest on");
+    let mut tx = w.k.db.tenant_tx(w.tenant).await.unwrap();
+    let said: Value = sqlx::query_scalar("select diff from audit_event where tenant_id = $1 and entity = 'Package' order by id desc limit 1")
+        .bind(w.tenant)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let off = said["switched_off"].as_array().cloned().unwrap_or_default();
+    for (id, why) in [(creates, "Tag"), (calls, "tags.tag.create")] {
+        let one = off.iter().find(|o| o["id"] == json!(id.to_string())).unwrap_or_else(|| panic!("the removal names {id}: {said}"));
+        let reason = one["why"].as_str().unwrap_or_default();
+        assert!(reason.contains(why) && reason.contains("tags"), "{reason}");
+    }
+    assert_eq!(off.len(), 2, "{said}");
+    let three = w.apply(3).await;
+    while w.k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+    let failed = w.count(&format!("select count(*) from automation_run where tenant_id = $1 and automation_id in ('{creates}', '{calls}')")).await;
+    assert_eq!(failed, 0, "an event after the removal runs neither");
+    assert_eq!(w.get(three).await["customer_seen"], "seen", "and the one left on ran");
     let e = w.press(t, "tag_it").await.unwrap_err();
     assert!(message(&e).contains("tags.tag.create is not a capability here: is its app installed?"), "{e:?}");
     w.batch(vec![custom("XApplication", json!({"op": "add_field", "field": {"name": "x_note", "type": "data"}}))]).await.expect("the schema still saves");

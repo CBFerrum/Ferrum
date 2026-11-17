@@ -454,6 +454,28 @@ impl Kernel {
         // (FLC-CAP-008): never failed by their going.
         let waiting = if ctx.is_admin && !ctx.is_system { self.logic_dependents(ctx, names).await? } else { vec![] };
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // An automation that names what leaves would fail on every event: it is switched off, and the removal's audit
+        // entry says which and why. Switching it on again is an administrator's.
+        let gone: BTreeMap<String, String> =
+            names.iter().filter_map(|n| catalog.package(n)).flat_map(|p| p.entities.iter().map(|e| (e.name.clone(), p.name().to_string()))).collect();
+        let active: Vec<(Uuid, String, String, Value)> =
+            sqlx::query_as("select id, name, entity, actions from automation where tenant_id = $1 and is_active for update")
+                .bind(ctx.tenant)
+                .fetch_all(&mut *tx)
+                .await?;
+        let switched_off: Vec<(Uuid, Value)> = active
+            .into_iter()
+            .filter_map(|(id, name, entity, actions)| {
+                let why = crate::automation::names_removed(&ctx.schema, &entity, &actions, &gone, names)?;
+                Some((id, json!({"id": id, "name": name, "why": why})))
+            })
+            .collect();
+        let ids: Vec<Uuid> = switched_off.iter().map(|(id, _)| *id).collect();
+        sqlx::query("update automation set is_active = false, updated_at = now() where tenant_id = $1 and id = any($2)")
+            .bind(ctx.tenant)
+            .bind(&ids)
+            .execute(&mut *tx)
+            .await?;
         if delete_data {
             // Nothing a legal hold covers goes with an app: the hold is released first, which is recorded.
             let entities: Vec<String> = names.iter().filter_map(|n| catalog.package(n)).flat_map(|p| p.entities.iter().map(|e| e.name.clone())).collect();
@@ -505,7 +527,7 @@ impl Kernel {
             Uuid::now_v7(),
             if delete_data { "remove_with_data" } else { "remove" },
             None,
-            json!({"packages": names, "waiting": waiting}),
+            json!({"packages": names, "waiting": waiting, "switched_off": switched_off.into_iter().map(|(_, v)| v).collect::<Vec<_>>()}),
         )
         .await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
