@@ -209,13 +209,11 @@ and one each in Bookings, DAM, Field Service and Forms.
 | objectives | `src/okr.rs:423` | `update e_check_in` | `after_save` | consequence of an audited document operation (hook) |
 | pos | `src/closing.rs:423` | `update e_pos_invoice` | `on_cancel` | consequence of an audited document operation (hook) |
 | pos | `src/closing.rs:617` | `update e_pos_invoice` | `consolidate` | consequence of an audited document operation (hook) |
-| pos | `src/closing.rs:732` | `update e_sales_invoice__items` | `make` | consequence of an audited document operation (hook) |
 | pos | `src/closing.rs:839` | `update e_pos_invoice` | `invoice_now` | consequence of an audited document operation (hook) |
 | pos | `src/limits.rs:292` | `update e_pos_approval` | `use_approvals` | consequence of an audited document operation (hook) |
 | pos | `src/loyalty.rs:110` | `update e_loyalty_point_entry` | `consume` | consequence of an audited document operation (hook) |
 | pos | `src/loyalty.rs:231` | `update e_loyalty_point_entry` | `on_cancel` | consequence of an audited document operation (hook) |
 | pos | `src/loyalty.rs:268` | `update e_loyalty_point_entry` | `expire_points` | engine work: statuses, counts, queues, upkeep |
-| pos | `src/stored.rs:175` | `update e_payment_entry` | `settle` | consequence of an audited document operation (hook) |
 | pos | `src/stored.rs:193` | `update e_pos_invoice__payments` | `settle` | consequence of an audited document operation (hook) |
 | projects | `src/billing.rs:379` | `update e_timesheet__time_logs` | `mark_billed` | consequence of an audited document operation (hook) |
 | projects | `src/billing.rs:387` | `update e_task` | `mark_billed` | consequence of an audited document operation (hook) |
