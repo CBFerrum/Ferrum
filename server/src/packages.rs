@@ -71,12 +71,11 @@ use ferrum_countries::th as ferrum_th;
 #[cfg(feature = "vn")]
 use ferrum_countries::vn as ferrum_vn;
 
-/// Two kinds of compiled apps: `native` ones carry their packages and manifest (built in their
-/// own repositories, docs/plan/apps.md); `legacy` ones still keep their YAML in `packages/`.
+/// The compiled apps: each carries its packages and manifest (built in its own repository,
+/// docs/plan/apps.md).
 macro_rules! apps {
     (
         native { $($nfeature:literal => $nkrate:ident),* $(,)? }
-        legacy { $($lfeature:literal => $lkrate:ident [$($yaml:literal),+]),* $(,)? }
     ) => {
         /// Registers every compiled app's hooks, reports and endpoints: ERP's first, so the apps
         /// that build on its documents see their totals, postings and open items.
@@ -107,13 +106,6 @@ macro_rules! apps {
                     sources.extend($nkrate::reports().into_iter().map(|s| ($nfeature.to_string(), s)));
                 }
             )*
-            $(
-                #[cfg(feature = $lfeature)]
-                {
-                    hooks.app($lfeature, &[], |h| $lkrate::register(h));
-                    sources.extend($lkrate::reports().into_iter().map(|s| ($lfeature.to_string(), s)));
-                }
-            )*
             // Apps built in elsewhere, scoped to their packages as native ones are.
             for app in crate::extensions::all() {
                 let packages: Vec<String> = (app.packages)().map(|ps| ps.iter().map(|p| p.name().to_string()).collect()).unwrap_or_default();
@@ -142,13 +134,6 @@ macro_rules! apps {
                     jobs.push(($nfeature, Box::new(move || { let k = k1.clone(); Box::pin(async move { $nkrate::maintenance(&k).await.map_err(|e| e.to_string()) }) })));
                 }
             )*
-            $(
-                #[cfg(feature = $lfeature)]
-                {
-                    let k1 = k.clone();
-                    jobs.push(($lfeature, Box::new(move || { let k = k1.clone(); Box::pin(async move { $lkrate::maintenance(&k).await.map_err(|e| e.to_string()) }) })));
-                }
-            )*
             for app in crate::extensions::all() {
                 let k1 = k.clone();
                 jobs.push((app.id, Box::new(move || { let k = k1.clone(); Box::pin(async move { (app.maintenance)(&k).await.map_err(|e| e.to_string()) }) })));
@@ -167,10 +152,6 @@ macro_rules! apps {
             $(
                 #[cfg(feature = $nfeature)]
                 out.extend(names($nfeature, $nkrate::reports()));
-            )*
-            $(
-                #[cfg(feature = $lfeature)]
-                out.extend(names($lfeature, $lkrate::reports()));
             )*
             for app in crate::extensions::all() {
                 out.extend(names(app.id, (app.reports)()));
@@ -361,19 +342,6 @@ macro_rules! apps {
             out.extend(crate::extensions::all().iter().filter(|app| !app.ui.is_empty()).map(|app| (app.id, app.ui)));
             out
         }
-
-        /// YAML packages of legacy apps whose code is not compiled into this build.
-        pub fn missing_logic(catalog: &Catalog) -> Vec<String> {
-            #[allow(unused_mut)]
-            let mut out: Vec<String> = Vec::new();
-            $(
-                if !cfg!(feature = $lfeature) {
-                    out.extend([$($yaml),+].into_iter().filter(|p| catalog.package(p).is_some()).map(String::from));
-                }
-            )*
-            let _ = catalog;
-            out
-        }
     };
 }
 
@@ -462,8 +430,6 @@ apps! {
         "intranet" => ferrum_app_intranet,
         "website" => ferrum_app_website,
     }
-    legacy {
-    }
 }
 
 /// ERP's app manifest: its interface at /erp/, its packages and the records it shows (its
@@ -471,8 +437,7 @@ apps! {
 pub const ERP_MANIFEST: &str = ferrum_app_erp::MANIFEST;
 
 /// The catalog this build starts from: the shared embedded packages, the native apps' embedded
-/// packages (ERP's among them), and extra packages from `dir` (metadata-only packages an operator adds, and
-/// legacy apps' YAML). An embedded package wins over a directory copy of the same name.
+/// packages (ERP's among them), and extra packages from `dir` (metadata-only packages an operator adds). An embedded package wins over a directory copy of the same name.
 pub fn base_catalog(dir: &Path) -> Result<Catalog, String> {
     let mut pkgs = ferrum_domain::packages().map_err(|e| format!("shared packages: {e}"))?;
     pkgs.extend(native_packages()?);

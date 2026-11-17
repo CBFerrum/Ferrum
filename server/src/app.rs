@@ -257,14 +257,6 @@ impl Hooks for App {
         // elsewhere"), made as a change makes them: checked before anything is written.
         let kernel_live = crate::settings::kernel_live(&settings, &ferrum_kernel::env::var).map_err(Error::Message)?;
         let catalog = crate::packages::base_catalog(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
-        let missing = crate::packages::missing_logic(&catalog);
-        if !missing.is_empty() {
-            return Err(Error::Message(format!(
-                "packages {} are in {} but this build does not include their logic; build with those features or remove them",
-                missing.join(", "),
-                settings.packages_dir
-            )));
-        }
         ferrum_domain::register(&mut hooks);
         // The platform's own services: the programs beside the server whose files it renders (`ferrum task render`).
         crate::companions::register(&mut hooks);
