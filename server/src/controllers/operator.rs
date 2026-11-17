@@ -1,6 +1,7 @@
 //! The installation's settings for its operator, over HTTP (docs/api.md, "Settings"; the Operations screen calls these):
-//! read them, set one, unset one. Allowed with the operator's token (`X-Ferrum-Operator-Token`, the secret
-//! `FERRUM_OPERATOR_TOKEN`), compared in constant time as tenant creation compares the bootstrap token; without the
+//! read them, set one, unset one. There only in a zone whose rule says `operator: true` ([`only_in_their_zone`]), and
+//! allowed with the operator's token (`X-Ferrum-Operator-Token`, the secret `FERRUM_OPERATOR_TOKEN`), compared in
+//! constant time as tenant creation compares the bootstrap token, after each address's tries are counted; without the
 //! token set, they answer nobody. A change is checked and recorded as `ferrum task set` does (crate::settings::change).
 
 use crate::error::{ApiError, ApiResult};
@@ -14,15 +15,32 @@ use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::sync::Arc;
 
-/// The operator, or a refusal that says the same whether a token is set or not: the environment's token, else the
-/// vault's (crate::secrets).
+/// The operator, or a refusal that says the same whether a token is set or not: the vault's token once it holds one,
+/// else the environment's (crate::secrets). Each address's tries are counted first, as sign-ins are, so that a token
+/// cannot be guessed at speed.
 pub(crate) async fn operator(st: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    st.login_limiter.check(&format!("{}|operator|token", crate::extract::client_ip(headers))).await?;
     let given = headers.get("x-ferrum-operator-token").and_then(|v| v.to_str().ok()).unwrap_or_default();
     if crate::secrets::token(st, "operator_token", &st.settings.operator_token, given).await != crate::secrets::Token::Good {
         return Err(ApiError(Error::Forbidden("the settings need the operator's token".into())));
     }
     Ok(())
+}
+
+/// The operator's routes are there only for a request in a zone whose rule says `operator: true` (docs/operations.md,
+/// "Zones"): anywhere else, without zones too, they answer as a path the server does not have, before any body or token
+/// is read. A layer of every request (app.rs), as no route's extractor may run first.
+pub(crate) async fn only_in_their_zone(st: Arc<AppState>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let path = req.uri().path();
+    if path.strip_prefix("/api/operator").is_some_and(|rest| rest.is_empty() || rest.starts_with('/')) {
+        let entry = crate::zone::entry(&st, req.headers(), ferrum_kernel::zones::Credential::Token).await;
+        if !entry.name().and_then(|zone| st.zones.rule(zone)).is_some_and(|rule| rule.operator) {
+            return ApiError(Error::NotFound(format!("no such endpoint: {path}"))).into_response();
+        }
+    }
+    next.run(req).await
 }
 
 fn no_store(mut res: Response) -> Response {

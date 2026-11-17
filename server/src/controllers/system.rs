@@ -95,7 +95,7 @@ async fn zone(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Re
 
 async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    // The environment's token, else the vault's (crate::secrets); none at all: open, as before.
+    // The vault's token once it holds one, else the environment's (crate::secrets); none at all: open, as before.
     let given = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or_default();
     if crate::secrets::token(&st, "metrics_token", &st.settings.metrics_token, given).await == crate::secrets::Token::Bad {
         return Err(ApiError(Error::Unauthorized("metrics require the metrics token".into())));

@@ -372,8 +372,8 @@
   secret: true
   vault: compared
   doc: >-
-    Enables the settings routes (`/api/operator/settings`, docs/api.md) with header `X-Ferrum-Operator-Token`; empty
-    (the default) disables them.
+    Enables the operator's routes (`/api/operator/…`, docs/api.md) with header `X-Ferrum-Operator-Token`, in a zone
+    whose rule says `operator: true` (they are in no other); empty (the default) disables them.
 
 
 # Files.
@@ -683,7 +683,8 @@
   path: settings.zones
   doc: >-
     Zones, JSON: zone name → rule, `{"public": {"staff": "none"}, "office": {"staff": "all", "networks":
-    ["10.0.0.0/8"]}}`. Default none: everyone is admitted everywhere, as before. See [Zones](#zones).
+    ["10.0.0.0/8"]}}`. Default none: everyone is admitted everywhere, as before, and the operator's routes are nowhere
+    (a rule with `operator: true` has them). See [Zones](#zones).
 - key: zone
   env: FERRUM_ZONE
   scope: pool

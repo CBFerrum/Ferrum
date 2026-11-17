@@ -315,6 +315,9 @@ async fn routes() {
     use tower::ServiceExt;
     let mut with_token = config(None);
     with_token.settings.as_mut().unwrap()["operator_token"] = json!("an-operator-token-of-enough-length");
+    // A replica in a zone that has the operator's routes (they are in no other).
+    with_token.settings.as_mut().unwrap()["zones"] = json!(r#"{"operations": {"operator": true}}"#);
+    with_token.settings.as_mut().unwrap()["zone"] = json!("operations");
     let ctx = replica(with_token).await;
     let routes = <App as Hooks>::routes(&ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
     let app = <App as Hooks>::after_routes(routes, &ctx).await.expect("layers");

@@ -196,6 +196,9 @@ installation:
   s3_endpoint: http://127.0.0.1:$PS
   s3_region: us-east-1
   session_days: "14"
+  # The operator's routes are only in a zone that has them: here every request's.
+  zones: '{"operations": {"operator": true}}'
+  zone_default: operations
 YAML
 task apply_settings apply_settings file:"$work/settings.yaml" >"$work/apply.log" || fail "apply_settings"
 
@@ -338,6 +341,9 @@ sys.exit(1 if wrong else 0)
 PY
 
 step "the previous build ($SHORT) on the same database"
+# A build from before the zones' `operator` would refuse to start on a rule that says it: the operator's zone goes first.
+task unset unset key:zone_default >/dev/null || fail "unset zone_default"
+task unset unset key:zones >/dev/null || fail "unset zones"
 (cd "$OLD_DIR/src/server" && exec env -i DATABASE_URL="$URL" "$OLD_BIN" -e production start) >"$work/previous.log" 2>&1 &
 pids+=($!)
 for _ in $(seq 1 180); do curl -fsS "$B/api/ready" >/dev/null 2>&1 && break; kill -0 "$(last)" 2>/dev/null || fail "the previous build did not start"; sleep 1; done

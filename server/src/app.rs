@@ -709,6 +709,7 @@ impl Hooks for App {
         let st = Arc::new(state.clone());
         let origins = st.clone();
         let forwards = st.clone();
+        let operators = st.clone();
         Ok(router
             .layer(axum::middleware::from_fn(move |req, next| step_up_ways(st.clone(), req, next)))
             .layer(axum::middleware::from_fn(hold_place))
@@ -716,6 +717,7 @@ impl Hooks for App {
             .layer(axum::middleware::from_fn(move |req, next| per_address(limiter.clone(), req, next)))
             .layer(axum::middleware::from_fn(api_no_store))
             .layer(axum::middleware::from_fn(speculation_csp))
+            .layer(axum::middleware::from_fn(move |req, next| controllers::operator::only_in_their_zone(operators.clone(), req, next)))
             .layer(axum::middleware::from_fn(screen_paths))
             .layer(axum::middleware::from_fn(isolated_cors))
             .layer(axum::middleware::from_fn(traced))

@@ -3,6 +3,7 @@
 //! staff (accounts of kind `member` or `support`, administrators included) on any credential. Level
 //! 2: a zone whose rule names apps (`staff: ["crm"]`) or keeps administrators out (`admin: false`)
 //! admits staff with their rights narrowed there ([`Rule::limited`], applied in `Kernel::request_ctx`).
+//! A zone whose rule says `operator: true` is where the operator's routes are; nowhere else are they.
 //!
 //! The settings are read and checked once, at start ([`Zones::parse`]); a request's zone is decided
 //! by [`Zones::settled`] and [`Zones::place`], in this order: the replica's pin; else the zone of the
@@ -154,6 +155,8 @@ pub struct Rule {
     /// Staff here prove who they are again before changes, and before reading what the workspace marked
     /// (crates/kernel/src/controls.rs).
     pub step_up: bool,
+    /// The operator's routes (`/api/operator/…`) are here; in no other zone are they.
+    pub operator: bool,
 }
 
 impl Rule {
@@ -332,8 +335,8 @@ impl Zones {
                 return Err(named("is not a name: use lowercase letters, digits and dashes, up to 63"));
             }
             let serde_json::Value::Object(rule) = rule else { return Err(named("has a rule that is not an object")) };
-            if let Some(k) = rule.keys().find(|k| !["staff", "admin", "custom", "scim", "networks", "step_up"].contains(&k.as_str())) {
-                return Err(named(&format!("has {k:?}, which a rule does not have (staff, admin, custom, scim, networks, step_up)")));
+            if let Some(k) = rule.keys().find(|k| !["staff", "admin", "custom", "scim", "networks", "step_up", "operator"].contains(&k.as_str())) {
+                return Err(named(&format!("has {k:?}, which a rule does not have (staff, admin, custom, scim, networks, step_up, operator)")));
             }
             let (staff, apps) = match rule.get("staff") {
                 None => (true, None),
@@ -390,7 +393,8 @@ impl Zones {
                 }
                 Some(_) => return Err(named("has networks that are not a list")),
             };
-            rules.insert(name, Rule { staff, apps, packages: BTreeSet::new(), admin, custom, scim, networks, step_up });
+            let operator = flag("operator")?.unwrap_or(false);
+            rules.insert(name, Rule { staff, apps, packages: BTreeSet::new(), admin, custom, scim, networks, step_up, operator });
         }
         // Two zones holding one address would make the order of the JSON matter; it does not.
         for (a, ra) in &rules {
@@ -610,15 +614,35 @@ mod tests {
     fn settings_are_read_strictly() {
         assert!(Zones::parse("", "", "", "").unwrap().is_off(), "nothing set: no zones");
         assert!(Zones::parse("{}", "", "", "").unwrap().is_off());
-        let z = Zones::parse(r#"{"public": {"staff": "none", "scim": true}, "office": {"networks": ["10.0.0.0/8"]}}"#, "public", "office", "report").unwrap();
+        let z = Zones::parse(
+            r#"{"public": {"staff": "none", "scim": true}, "office": {"networks": ["10.0.0.0/8"], "operator": true}}"#,
+            "public",
+            "office",
+            "report",
+        )
+        .unwrap();
         assert_eq!(z.mode(), Mode::Report);
         z.set_mode(Mode::Enforce);
         assert_eq!(z.mode(), Mode::Enforce, "a change applies at once");
         assert_eq!(
             z.rule("public"),
-            Some(&Rule { staff: false, apps: None, packages: BTreeSet::new(), admin: false, custom: false, scim: true, networks: vec![], step_up: false })
+            Some(&Rule {
+                staff: false,
+                apps: None,
+                packages: BTreeSet::new(),
+                admin: false,
+                custom: false,
+                scim: true,
+                networks: vec![],
+                step_up: false,
+                operator: false
+            })
         );
-        assert_eq!(z.rule("office").map(|r| (r.staff, r.admin, r.scim)), Some((true, true, false)), "staff all, admin follows it, scim off");
+        assert_eq!(
+            z.rule("office").map(|r| (r.staff, r.admin, r.scim, r.operator)),
+            Some((true, true, false, true)),
+            "staff all, admin follows it, scim off, the operator's routes here"
+        );
         let refused = |zones: &str, pin: &str, default: &str, mode: &str, says: &str| {
             let e = Zones::parse(zones, pin, default, mode).expect_err(zones);
             assert!(e.contains(says), "{zones} {pin} {default} {mode}: {e}");
@@ -639,6 +663,7 @@ mod tests {
         refused(r#"{"p": {"scim": "yes"}}"#, "", "", "", "true or false");
         refused(r#"{"p": {"step_up": "yes"}}"#, "", "", "", "true or false");
         refused(r#"{"p": {"step_up": 1}}"#, "", "", "", "true or false");
+        refused(r#"{"p": {"operator": "yes"}}"#, "", "", "", "true or false");
         refused(r#"{"p": {"staff": "none", "step_up": true}}"#, "", "", "", "only a rule that admits staff");
         let asks = Zones::parse(r#"{"outside": {"step_up": true}, "office": {"step_up": false}}"#, "", "", "").unwrap();
         assert!(asks.rule("outside").unwrap().step_up && !asks.rule("office").unwrap().step_up);

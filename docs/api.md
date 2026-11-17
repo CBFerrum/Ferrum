@@ -2264,10 +2264,13 @@ Public files (`public=true`; images and PDFs only — logos, product photos, bro
 ## Settings — `/api/operator/settings` (the installation's operator)
 
 The installation's settings in the database ([operations](operations.md#settings-in-the-database)), for the
-Operations screen. Every call needs the operator's token in `X-Ferrum-Operator-Token` (`FERRUM_OPERATOR_TOKEN` where
-the environment sets it, else the vault's, [operations](operations.md#the-platforms-secrets); compared in constant
-time); without it, or while the server has none, `403` with the same answer either way. Answers are never cached
-(`Cache-Control: no-store`).
+Operations screen. These routes, and the vault's below, are there only for a request in a zone whose rule says
+`operator: true` ([Zones](operations.md#zones)); anywhere else, without zones too, they answer `404` as a path the
+server does not have, before any body or token is read. Every call needs the operator's token in
+`X-Ferrum-Operator-Token` (the vault's once it holds one, else `FERRUM_OPERATOR_TOKEN`,
+[operations](operations.md#the-platforms-secrets); compared in constant time); without it, or while the server has
+none, `403` with the same answer either way. Each client address has 20 calls a minute, counted before the token is
+compared as sign-ins are: then `429`. Answers are never cached (`Cache-Control: no-store`).
 
 * `GET /api/operator/settings` → `{version, pool, settings: [...], replicas: [...]}`. `version`: the table's highest
   version; `pool`: the pool of the replica that answered. Each setting: `key`, `env` (its variable), `type` (`text`,
