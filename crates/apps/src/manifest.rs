@@ -858,7 +858,7 @@ license: Apache-2.0
 homepage: https://voltworks.example
 support: help@voltworks.example
 runtime: wasm
-platform: ">=0.3, <0.4"
+platform: ">=0.4, <0.5"
 requires:
   selling: ">=0.3"
 packages: [ev_charging]
@@ -978,7 +978,7 @@ uninstall: keep
         assert_eq!(m.settings[0].kind, "secret");
         assert_eq!(m.uninstall, Uninstall::Keep);
         assert!(m.compatible_with(&Version::parse(crate::PLATFORM_VERSION).unwrap()));
-        assert!(!m.compatible_with(&Version::new(0, 4, 0)));
+        assert!(!m.compatible_with(&Version::new(0, 5, 0)));
         // Round trip through JSON (how the server stores it).
         let json = serde_json::to_value(&m).unwrap();
         assert_eq!(serde_json::from_value::<AppManifest>(json).unwrap(), m);
@@ -987,7 +987,7 @@ uninstall: keep
     #[test]
     fn minimal_manifest_and_defaults() {
         let m = AppManifest::parse(
-            "id: kit\nname: Kit\nversion: 0.1.0\npublisher: acme\nsummary: A kit\ncategories: [industry]\nruntime: meta\nplatform: '^0.3'\npackages: [kit]\n",
+            "id: kit\nname: Kit\nversion: 0.1.0\npublisher: acme\nsummary: A kit\ncategories: [industry]\nruntime: meta\nplatform: '^0.4'\npackages: [kit]\n",
         )
         .unwrap();
         assert_eq!(m.uninstall, Uninstall::Keep);
@@ -1032,14 +1032,14 @@ contributes:
 
     #[test]
     fn required_fields_and_unknown_fields() {
-        for field in ["id: ev-charging\n", "version: 1.4.0\n", "runtime: wasm\n", "platform: \">=0.3, <0.4\"\n", "publisher: voltworks\n"] {
+        for field in ["id: ev-charging\n", "version: 1.4.0\n", "runtime: wasm\n", "platform: \">=0.4, <0.5\"\n", "publisher: voltworks\n"] {
             assert!(with(field, "").is_err(), "{field} is required");
         }
         rejected("uninstall: keep", "uninstall: keep\nfavourite: yes", "unknown field");
         rejected("uninstall: keep", "uninstall: never", "unknown variant");
         rejected("runtime: wasm", "runtime: python", "unknown variant");
         rejected("version: 1.4.0", "version: 1.4", "");
-        rejected("platform: \">=0.3, <0.4\"", "platform: \"not a requirement\"", "");
+        rejected("platform: \">=0.4, <0.5\"", "platform: \"not a requirement\"", "");
     }
 
     #[test]

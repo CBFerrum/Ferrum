@@ -92,7 +92,7 @@ publisher: cbferrum
 summary: GST, e-invoices and e-way bills for ERP
 categories: [finance]
 runtime: native
-platform: ">=0.3.8, <0.4"
+platform: ">=0.4.0, <0.5"
 requires: {erp: ">=0.21"}
 parent: erp
 packages: [india]

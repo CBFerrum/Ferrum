@@ -39,7 +39,7 @@ async fn call(State(s): State<Service>, Path(path): Path<String>, headers: Heade
 
 fn app(id: &str, url: &str) -> Bytes {
     let yaml = format!(
-        "id: {id}\nname: {id}\nversion: 1.0.0\npublisher: acme\nsummary: Hears of customers\ncategories: [crm]\nruntime: service\nplatform: \"^0.3\"\n\
+        "id: {id}\nname: {id}\nversion: 1.0.0\npublisher: acme\nsummary: Hears of customers\ncategories: [crm]\nruntime: service\nplatform: \"^0.4\"\n\
          access:\n  - {{entity: Customer, read: true}}\nservice:\n  url: {url}/ferrum\n  events: [Customer.*]\n"
     );
     let files: BTreeMap<String, Vec<u8>> = [("app.yaml".to_string(), yaml.into_bytes())].into();

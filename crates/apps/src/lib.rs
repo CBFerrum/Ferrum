@@ -93,10 +93,11 @@ pub use signing::{Role, SignatureEntry, Signatures, Signer, TrustedKey, key_id};
 
 /// Bundle format identifier; the first line hashed into every digest.
 pub const FORMAT: &str = "ferrum-app-v1";
-/// The app API version this platform build provides; apps declare `platform` requirements against it. 0.3.9: the vault
-/// (an app's own handle, `HookRegistry::vault`) and `operator_settings` (docs/app-contract.md): an app that uses either
-/// says `platform: ">=0.3.9, <0.4"`.
-pub const PLATFORM_VERSION: &str = "0.3.9";
+/// The app API version this platform build provides; apps declare `platform` requirements against it. 0.4.0 changes
+/// the contract (docs/app-contract.md): `maintenance(k, tenant)` does one workspace's upkeep, a partition is made only
+/// through `ferrum_create_partition`, and files are written through `FileStore::writer`. Every app says
+/// `platform: ">=0.4.0, <0.5"`.
+pub const PLATFORM_VERSION: &str = "0.4.0";
 
 /// Most bytes a bundle may hold unpacked (50 MiB).
 pub const MAX_UNPACKED: u64 = 50 << 20;

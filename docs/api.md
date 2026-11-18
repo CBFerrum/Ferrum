@@ -2014,14 +2014,15 @@ CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/s
 workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`. A package that uses any of this
 (`layout_file`, `page`, `letterhead`, `copies`, `enabled`, a LetterHead or PrintSettings record in its seed) needs
 the app API version 0.3.3: its app says `platform: ">=0.3.3, <0.4"` (an older server refuses the fields it does not
-know). The app API is 0.3.9 now: what each version carries is in
+know). The app API is 0.4.0 now: what each version carries is in
 [BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034)
 (0.3.4), [BD-51](builder/decisions.md#bd-51-the-connector-hubs-instances-move-and-the-app-api-035) (0.3.5) and
 [BD-52](builder/decisions.md#bd-52-a-link-limited-by-another-field-of-the-record-and-the-app-api-036) (0.3.6) and
 [BD-62](builder/decisions.md#bd-62-connections-part-three-and-the-app-api-037) (0.3.7) and
 [BD-63](builder/decisions.md#bd-63-a-left-menu-row-for-an-apps-own-page-and-the-app-api-038) to BD-66 (0.3.8);
 0.3.9 adds an app's own vault and its `operator_settings` ([docs/app-contract.md](app-contract.md), *The vault* and *Operator
-settings*).
+settings*); 0.4.0 changes the contract (upkeep of one workspace, partitions through `ferrum_create_partition`,
+`FileStore::writer`), and every app says `platform: ">=0.4.0, <0.5"`.
 
 ## Notifications — `/api/notifications` (the caller's own)
 

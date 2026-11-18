@@ -21,7 +21,7 @@ license: AGPL-3.0-or-later
 homepage: https://elsewhere.example
 support: help@elsewhere.example
 runtime: native
-platform: \">=0.3.9, <0.4\"
+platform: \">=0.4.0, <0.5\"
 packages: [elsewhere]
 operator_settings:
   - {key: scratch, env: FERRUM_ELSEWHERE_SCRATCH, doc: Where it keeps what it makes for a while.}

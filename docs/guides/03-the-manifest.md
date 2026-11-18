@@ -48,7 +48,7 @@ license: AGPL-3.0-only
 homepage: https://github.com/CBFerrum/ferrum-app-visits
 support: https://github.com/CBFerrum/ferrum-app-visits/issues   # or an e-mail address
 runtime: native                    # native | wasm | meta | service
-platform: ">=0.3.9, <0.4"          # the app API versions it runs on
+platform: ">=0.4.0, <0.5"          # the app API versions it runs on
 requires:                          # other apps: id → semver range
   erp: ">=0.21, <0.22"
 packages: [visits]                 # directories under packages/
@@ -131,7 +131,7 @@ add-ons in step ([docs/plugins.md](../plugins.md)). How versions, the CHANGELOG 
 [16-releasing.md](16-releasing.md).
 
 **`platform`** is a semver range of the *app API* the app works with, checked against `PLATFORM_VERSION` in
-`crates/apps/src/lib.rs` (0.3.9). The app API's version moves when the platform adds something an app
+`crates/apps/src/lib.rs` (0.4.0). The app API's version moves when the platform adds something an app
 may depend on; the comments in the code and docs name what came when:
 
 | App API | What an app may use from it | Where it is said |
@@ -139,12 +139,13 @@ may depend on; the comments in the code and docs name what came when:
 | 0.3.2 | an interface of its own (`ui`, the shell's points) | [docs/plugins.md](../plugins.md), *Interfaces of their own* |
 | 0.3.8 | `shell.menu`: a row of a module's left menu leading to the app's own page | [docs/plugins.md](../plugins.md) |
 | 0.3.9 | its vault handle (`HookRegistry::vault`) and `operator_settings` | `PLATFORM_VERSION` in `crates/apps/src/lib.rs`; [docs/app-contract.md](../app-contract.md) |
+| 0.4.0 | a changed contract, which every app follows: `maintenance(k, tenant)` does one workspace's upkeep, partitions only through `ferrum_create_partition`, files written through `FileStore::writer` | [docs/app-contract.md](../app-contract.md), *Upkeep*; `PLATFORM_VERSION` |
 
-Write the range with an upper bound below the next minor: `">=0.3.9, <0.4"`. The lower bound is the oldest app API
-that has everything the app uses. `scripts/check_apps.py` fails an app that declares `operator_settings` with a
-`platform` whose lower bound is below 0.3.9 (`operator_settings need the platform that reads them: platform:
-">=0.3.9, <0.4"`). The App Manager refuses to install an app whose range the server does not meet: the plan lists it
-as `{"app": "platform", "need": …, "have": "0.3.9", "action": "upgrade"}` (`blocked` in `server/src/appmgr.rs`).
+Write the range with an upper bound below the next minor: `">=0.4.0, <0.5"`, which every app says since 0.4.0
+changed the contract. `scripts/check_apps.py` fails an app that declares `operator_settings` with a `platform` whose
+lower bound is below 0.3.9 (`operator_settings need the platform that reads them: platform: ">=0.4.0, <0.5"`). The
+App Manager refuses to install an app whose range the server does not meet: the plan lists it as
+`{"app": "platform", "need": …, "have": "0.4.0", "action": "upgrade"}` (`blocked` in `server/src/appmgr.rs`).
 
 **`requires`** maps other apps' ids to semver ranges. An app cannot require itself (`an app cannot require
 itself`), and each key is an app id. Installing resolves the ranges: missing apps are installed first, an

@@ -57,7 +57,7 @@ Each entry of `operator_settings` in `app.yaml` (the fields are `ferrum_apps::Op
 A real one, from Drive (`ferrum-app-drive/app.yaml`):
 
 ```yaml
-platform: ">=0.3.9, <0.4"        # the platform that reads operator settings
+platform: ">=0.4.0, <0.5"        # the app API of this contract
 operator_settings:
   - key: max_file_mb
     env: FERRUM_DRIVE_MAX_FILE_MB

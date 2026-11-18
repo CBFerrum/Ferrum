@@ -275,7 +275,7 @@ the operations guide under the app (docs/operations.md, *Configuration*). It is 
 each workspace's administrators fill.
 
 ```yaml
-platform: ">=0.3.9, <0.4"        # the platform that reads operator settings
+platform: ">=0.4.0, <0.5"        # the app API of this contract (0.4.0)
 operator_settings:
   - key: office_url              # kept as drive.office_url
     env: FERRUM_OFFICE_URL       # the variable that sets it: the environment's value wins over the table's

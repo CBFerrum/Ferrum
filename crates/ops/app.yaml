@@ -7,7 +7,7 @@ description: README.md
 categories: [manufacturing, inventory]
 license: AGPL-3.0-only
 runtime: native
-platform: ">=0.3, <0.4"
+platform: ">=0.4.0, <0.5"
 packages: [ops]
 uninstall: ask
 # Its own interface at /ops/ (built in Ferrum-Frontend, apps/ops, and carried by the server's image,

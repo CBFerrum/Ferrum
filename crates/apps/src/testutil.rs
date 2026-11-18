@@ -18,7 +18,7 @@ pub(crate) fn meta_app() -> BTreeMap<String, Vec<u8>> {
         (
             "app.yaml",
             b"id: kit\nname: Kit\nversion: 1.0.0\npublisher: acme\nsummary: A starter kit\ndescription: README.md\ncategories: [industry]\n\
-icon: assets/icon.svg\nruntime: meta\nplatform: \">=0.3, <0.4\"\npackages: [kit]\nprefix: Kt\n",
+icon: assets/icon.svg\nruntime: meta\nplatform: \">=0.4, <0.5\"\npackages: [kit]\nprefix: Kt\n",
         ),
         ("README.md", b"# Kit\n"),
         ("LICENSE", b"MIT\n"),
@@ -53,7 +53,7 @@ pub(crate) fn wasm_app() -> BTreeMap<String, Vec<u8>> {
         (
             "app.yaml",
             b"id: gw\nname: Gateway\nversion: 2.1.0\npublisher: acme\nsummary: Devices over WebSocket\ncategories: [iot]\nruntime: wasm\n\
-platform: \"^0.3\"\nrequires: {kit: \"^1\"}\npackages: [gw]\nplugin: plugin.json\nprefix: Gw\nsettings:\n  - {key: api_key, label: API key, type: secret}\n",
+platform: \"^0.4\"\nrequires: {kit: \"^1\"}\npackages: [gw]\nplugin: plugin.json\nprefix: Gw\nsettings:\n  - {key: api_key, label: API key, type: secret}\n",
         ),
         ("plugin.json", GW_PLUGIN.as_bytes()),
         ("plugin.wasm", b"\0asm\x01\0\0\0"),

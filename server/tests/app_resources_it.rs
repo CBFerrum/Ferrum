@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 const LEDGER_YAML: &str = "id: ledger\nname: Ledger\nversion: 0.2.0\npublisher: cbferrum\nsummary: A ledger\ndescription: README.md\ncategories: [finance]\n\
-runtime: native\nplatform: \">=0.3, <0.4\"\npackages: [ledgered]\nuninstall: ask\n\
+runtime: native\nplatform: \">=0.4, <0.5\"\npackages: [ledgered]\nuninstall: ask\n\
 resources:\n  - {name: books, class: relational, isolation: database, authority: primary, required: true, capacity: {storage_gb: 10}}\n  - {name: cache, class: cache, isolation: prefix, authority: disposable}\n";
 
 fn package() -> ferrum_meta::Package {
