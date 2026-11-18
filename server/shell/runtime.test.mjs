@@ -8,9 +8,9 @@ import { readFileSync } from "node:fs";
 const src = readFileSync(new URL("./runtime.js", import.meta.url), "utf8");
 const block = src.slice(src.indexOf("// ── Pure helpers"), src.indexOf("// ── end of the pure helpers"));
 assert.ok(block.length > 100, "the block is where the markers say");
-const { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, windowWay, providerProof, finderHint } =
+const { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, windowWay, providerProof, finderHint, embedPosts } =
   new Function(
-    `${block}; return { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, windowWay, providerProof, finderHint };`,
+    `${block}; return { originStep, stillToSend, movedUrl, titleMarked, addressEntries, afterSignOut, ownOrigin, isStepUp, replayPlan, stepUpGate, proveItsYou, sendProof, stepUpChoices, windowWay, providerProof, finderHint, embedPosts };`,
   )();
 
 test("the origin guard keeps a workspace's storage while its host is leaving, and wipes it for the next owner", () => {
@@ -279,4 +279,17 @@ test("a search the server cut short says so, and never says nothing was found", 
   assert.equal(finderHint("printer", false, true, false), "partial");
   assert.equal(finderHint("printer", false, true, true), "partial");
   assert.equal(finderHint("printer", true, true, true), "", "while others still load, the results stand alone");
+});
+
+test("posts_height_only_to_named_origins", () => {
+  const origins = ["https://partner.example", "https://www.acme.example"];
+  assert.deepEqual(embedPosts(origins, 512.2), [
+    [{ ferrum: "height", height: 513 }, "https://partner.example"],
+    [{ ferrum: "height", height: 513 }, "https://www.acme.example"],
+  ]);
+  assert.deepEqual(embedPosts(origins, 512.2, true)[0], [{ ferrum: "done" }, "https://partner.example"]);
+  // Never to every origin, nor to anything that is not an origin the server listed.
+  assert.deepEqual(embedPosts(["*", "", null, "javascript:x", "https://a.example/path"], 10), []);
+  assert.deepEqual(embedPosts(undefined, 10), []);
+  assert.deepEqual(embedPosts(origins, Number.NaN), []);
 });

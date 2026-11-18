@@ -43,6 +43,7 @@ pub fn platform_file(name: &str) -> Option<(&'static str, &'static [u8])> {
         "signup.js" => (js, include_bytes!("../shell/signup.js")),
         "portal.js" => (js, include_bytes!("../shell/portal.js")),
         "isolated.js" => (js, include_bytes!("../shell/isolated.js")),
+        "embed.js" => (js, include_bytes!("../shell/embed.js")),
         "pages.css" => ("text/css; charset=utf-8", include_bytes!("../shell/pages.css")),
         "assistant.js" => (js, include_bytes!("../shell/assistant.js")),
         "assistant.css" => ("text/css; charset=utf-8", include_bytes!("../shell/assistant.css")),

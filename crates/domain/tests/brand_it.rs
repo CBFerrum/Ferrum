@@ -243,16 +243,17 @@ fn a_person_without_the_right_cannot_create_or_change_a_brand() {
     });
 }
 
-/// Core as it was before brands (0.3.0): the files of `packages/core` but `brand.yaml`.
+/// Core as it was before brands (0.3.0): the files of `packages/core` but `brand.yaml` and `embedding.yaml`.
 fn core_0_3_0() -> ferrum_meta::Package {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core");
     let mut files = BTreeMap::new();
     let package = std::fs::read_to_string(dir.join("package.yaml")).unwrap();
-    files.insert("package.yaml".to_string(), package.replace("version: 0.4.0", "version: 0.3.0"));
+    let package: String = package.lines().map(|l| if l.starts_with("version: ") { "version: 0.3.0\n".to_string() } else { format!("{l}\n") }).collect();
+    files.insert("package.yaml".to_string(), package);
     for e in std::fs::read_dir(dir.join("entities")).unwrap() {
         let e = e.unwrap();
         let name = e.file_name().to_string_lossy().to_string();
-        if name != "brand.yaml" {
+        if !["brand.yaml", "embedding.yaml"].contains(&name.as_str()) {
             files.insert(format!("entities/{name}"), std::fs::read_to_string(e.path()).unwrap());
         }
     }

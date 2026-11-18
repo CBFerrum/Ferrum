@@ -766,15 +766,40 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
         boot["locale"]["words"] = Value::Object(words);
     }
     boot["brand"] = brand_boot(st, tenant, &ws.slug, shell::request_host(headers).unwrap_or_default()).await?;
-    // Framed by the workspace's own pages, and by the sites set for this page alone (BD-24).
+    // Framed by the workspace's own addresses, and by the sites its Embedding for this page names (BD-80). Opened to
+    // be framed (`?embed=1`), the page posts its height to those (runtime.js).
     let tail = rest.split_once('/').map(|(_, t)| t).unwrap_or_default();
-    let frames = st.kernel.public_frame(tenant, &app.id, &format!("{page}/{tail}")).await?;
+    let frames = public_frames(st, tenant, &format!("{page}/{tail}")).await?;
+    if uri.query().is_some_and(|q| q.split('&').any(|kv| kv == "embed=1")) {
+        boot["embed"] = json!({"origins": frames});
+    }
     let csp = framed_by(shell::csp(Some(app.manifest.as_ref()), &Value::Null), &frames);
     Ok(not_modified(headers, shell::public_entry_page(&entry, &boot, &csp)))
 }
 
+/// The origins that may frame public page `path` of `tenant` (its address after the workspace, `forms/f/contact`;
+/// docs/builder/decisions.md BD-80): each live address of the workspace that serves pages, then the origins of the
+/// workspace's Embedding whose page is `path` or its longest start. Never another workspace's.
+pub async fn public_frames(st: &AppState, tenant: Uuid, path: &str) -> ferrum_kernel::Result<Vec<String>> {
+    let scheme = if st.shell.secure { "https" } else { "http" };
+    let mut out: Vec<String> = st.kernel.page_hosts(tenant).await?.into_iter().map(|h| format!("{scheme}://{h}")).collect();
+    for o in st.kernel.embedders(tenant, path).await? {
+        if !out.contains(&o) {
+            out.push(o);
+        }
+    }
+    Ok(out)
+}
+
+/// A site page's policy: framed by nobody, and showing in frames only its own origin and the workspace's addresses
+/// `own` (its own forms and booking pages, BD-80).
+pub fn site_csp(own: &[String]) -> String {
+    let own: String = own.iter().map(|o| format!(" {o}")).collect();
+    SITE_CSP.replacen("connect-src 'self';", &format!("connect-src 'self'; frame-src 'self'{own};"), 1)
+}
+
 /// A page's policy with `origins` added to the sites that may frame it (none: as it was).
-fn framed_by(csp: String, origins: &[String]) -> String {
+pub fn framed_by(csp: String, origins: &[String]) -> String {
     if origins.is_empty() {
         return csp;
     }
@@ -950,22 +975,16 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
             return Ok(unavailable(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong", "Try again in a moment."));
         }
     };
-    // The sites an app's answer says may frame this page (a form embedded elsewhere), each checked (BD-24).
+    // What every public page gets unless the app says otherwise: framed by nobody (BD-80), showing the workspace's own
+    // pages in frames.
+    let own: Vec<String> = st.kernel.page_hosts(tenant).await?.into_iter().map(|h| format!("{scheme}://{h}")).collect();
     let h = res.headers_mut();
-    let frames: Vec<String> = h
-        .remove("x-ferrum-frame-ancestors")
-        .and_then(|v| v.to_str().ok().map(str::to_string))
-        .map(|v| v.split_whitespace().filter_map(ferrum_meta::published::frame_origin).take(10).collect())
-        .unwrap_or_default();
-    if !frames.is_empty() && !h.contains_key("content-security-policy") {
-        let csp = framed_by(SITE_CSP.to_string(), &frames);
-        if let Ok(v) = HeaderValue::from_str(&csp) {
-            h.insert("content-security-policy", v);
-        }
-    }
-    // What every public page gets unless the app says otherwise.
-    for (name, value) in [("x-content-type-options", "nosniff"), ("referrer-policy", "strict-origin-when-cross-origin"), ("content-security-policy", SITE_CSP)]
+    if !h.contains_key("content-security-policy")
+        && let Ok(v) = HeaderValue::from_str(&site_csp(&own))
     {
+        h.insert("content-security-policy", v);
+    }
+    for (name, value) in [("x-content-type-options", "nosniff"), ("referrer-policy", "strict-origin-when-cross-origin")] {
         if !h.contains_key(name) {
             h.insert(name, HeaderValue::from_static(value));
         }
@@ -1110,7 +1129,12 @@ fn platform_file(rest: &str, digest: Option<&str>) -> ApiResult<Response> {
         && let Some((ctype, bytes)) = shell::platform_file(name)
     {
         let current = digest.is_some() && digest == shell::file_digest(name);
-        return Ok(shell::file_response(Bytes::from_static(bytes), ctype, current));
+        let mut res = shell::file_response(Bytes::from_static(bytes), ctype, current);
+        // Loaded by the sites that frame a public page (BD-80): the one platform file another origin may load.
+        if name == "embed.js" {
+            res.headers_mut().insert("cross-origin-resource-policy", HeaderValue::from_static("cross-origin"));
+        }
+        return Ok(res);
     }
     if let Some(hash) = rest.strip_prefix("theme/").and_then(|f| f.strip_suffix(".css")) {
         let current = hash == shell::theme_hash();
@@ -1643,6 +1667,15 @@ mod tests {
         assert_eq!(framed_by(shell_csp, &shop), "default-src 'self'; frame-ancestors 'self' https://shop.example; base-uri 'none'");
         let site = framed_by(SITE_CSP.into(), &shop);
         assert!(site.contains("frame-ancestors https://shop.example;") && !site.contains("'none'; base"), "{site}");
+    }
+
+    #[test]
+    fn only_embed_js_may_be_loaded_by_another_origin() {
+        let corp = |name: &str| platform_file(&format!("v1/{name}"), None).unwrap().headers()["cross-origin-resource-policy"].to_str().unwrap().to_string();
+        assert_eq!(corp("embed.js"), "cross-origin");
+        for name in ["runtime.js", "portal.js", "login.js", "pages.css"] {
+            assert_eq!(corp(name), "same-origin", "{name}");
+        }
     }
 
     #[test]

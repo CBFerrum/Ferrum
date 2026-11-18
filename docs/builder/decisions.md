@@ -712,9 +712,9 @@ configured to move the record instead); a comment added by link (not built); a t
 
 Decided 12 November 2026. Forms could not offer embedding: every public page said `frame-ancestors 'none'`.
 
-* **Off by default, per page.** A published list (`frame_origins`), an action link (`frame_origins`) and an app's site
-  page (its answer's `x-ferrum-frame-ancestors` header, which Forms sets per form) may name the origins that may frame
-  them: `https://host[:port]` (or `http://localhost`), at most ten, no paths, no wildcards, checked when saved. Only that
+* **Off by default, per page.** A published list (`frame_origins`) and an action link (`frame_origins`) may name the
+  origins that may frame them (an app's public page: BD-80, which replaced the site page's `x-ferrum-frame-ancestors`
+  header): `https://host[:port]` (or `http://localhost`), at most ten, no paths, no wildcards, checked when saved. Only that
   page's answer gets `Content-Security-Policy: frame-ancestors <origins>`; every other answer keeps `'none'` (and
   `X-Frame-Options: DENY`, which cannot name origins and is left out when some are named).
 
@@ -2001,7 +2001,30 @@ Decided 18 November 2026.
   its stylesheet after the theme and its favicon; the signed-link page wears the default brand. Apps' site pages, the
   published lists and the portal host's own status pages follow with the public host (S4-P3).
 
-## BD-80. Inbound verification for payment providers
+## BD-80. Who may frame a public page
+
+Decided 18 November 2026.
+
+* **The gap**: `public_frame` and `Kernel::set_public_frame` existed with nothing calling them, a site page could widen
+  its own framing by a header no app sent, and no script sized a frame: no form or booking page could be embedded.
+* **The record**: `Embedding` in the `core` package (0.5.0, `packages/core/entities/embedding.yaml`): a `page` (its
+  address after the workspace, one to eight lower-case parts: `forms/f/contact`, `bookings/book`) and the `origins`
+  that may frame it, one per line, each `https://host[:port]` (or `http://localhost`), ten at most, kept as the platform
+  keeps an origin. Administrators keep them; apps write them as the system from their own actions, for their own pages.
+  `public_frame`, `set_public_frame` and the `x-ferrum-frame-ancestors` path are deleted.
+* **Who may frame**: an app's `shell.public` page: every live address of its own workspace that serves pages (proven,
+  not released, not forwarding, not `mail`), and the origins of the Embedding whose page is the page's path or its
+  longest start at a `/`, compared as text (no character is a wildcard). Never another workspace's addresses or
+  records. A site page: nobody (`frame-ancestors 'none'`); it may show the workspace's own pages in frames
+  (`frame-src`). Links and published lists keep their own `frame_origins` (BD-24).
+* **Sizing**: opened with `?embed=1`, a public page's bootstrap carries `embed: {origins}` and runtime.js posts
+  `{ferrum: "height"}` (at most every 100 ms) and, on `ferrum.embedDone()`, `{ferrum: "done"}` to each of those origins
+  by name, never `"*"`. `/_shell/v1/embed.js` (the one platform file served with `Cross-Origin-Resource-Policy:
+  cross-origin`) sizes each `<iframe data-ferrum-embed>` on the outside page from messages whose source is that frame's
+  window and whose origin is its page's, within 80 to 20 000 px, and fires `ferrum:done` on it. Nothing else leaves
+  the frame.
+
+## BD-81. Inbound verification for payment providers
 
 Decided 19 November 2026 (S1-P0a, `gapclose/design/S1-payments.md` 2.20).
 
@@ -2019,7 +2042,7 @@ Decided 19 November 2026 (S1-P0a, `gapclose/design/S1-payments.md` 2.20).
 * **The address in templates**: `connection.inbound_url`, with the query secret for a `query` connection, masked in
   the call log and captures as every secret value is. A payment app never sees the token.
 
-## BD-81. Connections only apps call, an answer to class, a hold
+## BD-82. Connections only apps call, an answer to class, a hold
 
 Decided 19 November 2026 (S1-P0a).
 
