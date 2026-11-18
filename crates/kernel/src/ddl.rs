@@ -117,6 +117,9 @@ struct Ddl<'a> {
     unvalidated: HashSet<String>,
     policies: HashSet<String>,
     columns: HashMap<String, HashMap<String, String>>,
+    /// The sync's own triggers as the catalog has them, by table and name: the definition as PostgreSQL prints it, and
+    /// whether the trigger is enabled.
+    triggers: HashMap<(String, String), (String, bool)>,
     /// The schema's indexes by name, whether each is valid (a build that failed leaves an invalid one).
     indexes: HashMap<String, bool>,
     /// Tables this run created: empty and unseen by anyone, so their indexes are built the plain way.
@@ -134,6 +137,7 @@ impl<'a> Ddl<'a> {
             policies: HashSet::new(),
             columns: HashMap::new(),
             indexes: HashMap::new(),
+            triggers: HashMap::new(),
             new_tables: HashSet::new(),
         }
     }
@@ -174,6 +178,16 @@ impl Ddl<'_> {
         .await?
         .into_iter()
         .collect();
+        self.triggers = sqlx::query_as::<_, (String, String, String, String)>(
+            "select c.relname::text, t.tgname::text, pg_get_triggerdef(t.oid), t.tgenabled::text from pg_trigger t join pg_class c on c.oid = t.tgrelid \
+             join pg_namespace n on n.oid = c.relnamespace where n.nspname = current_schema() and not t.tgisinternal and t.tgparentid = 0 \
+             and t.tgname in ('ferrum_held', 'ferrum_held_keep')",
+        )
+        .fetch_all(&mut *self.conn)
+        .await?
+        .into_iter()
+        .map(|(table, name, def, enabled)| ((table, name), (def, enabled == "O")))
+        .collect();
         self.policies =
             sqlx::query_scalar::<_, String>("select tablename::text || '.' || policyname::text from pg_policies where schemaname = current_schema()")
                 .fetch_all(&mut *self.conn)
@@ -188,6 +202,28 @@ impl Ddl<'_> {
             self.columns.entry(t).or_default().insert(c, ty);
         }
         Ok(())
+    }
+
+    /// Makes a `before {event}` trigger of the table that stands aside while a copy runs ([`STANDS_ASIDE`]), unless it has
+    /// it already as it would be made: `create or replace trigger` takes SHARE ROW EXCLUSIVE, queues behind any open
+    /// write transaction and holds the writers that come after it, so a sync that has nothing to change sends none.
+    /// "As it would be made" is read from the catalog, not taken from the name: the timing and event, a WHEN that
+    /// stands aside, the function and the entity's name it is given, and that it is enabled (PostgreSQL prints the WHEN
+    /// in a form of its own, so it is looked for by what it reads, as `copy_ready` does). Anything else is replaced.
+    async fn trigger(&mut self, table: &str, name: &str, event: &str, function: &str, entity: &str) -> Result<()> {
+        let named = entity.replace('\'', "''");
+        let (head, tail) = (format!("CREATE TRIGGER {name} BEFORE {} ON ", event.to_uppercase()), format!(" EXECUTE FUNCTION {function}('{named}')"));
+        let there = self.triggers.get(&(table.to_string(), name.to_string())).is_some_and(|(def, enabled)| {
+            *enabled && def.starts_with(&head) && def.ends_with(&tail) && def.contains(" FOR EACH ROW WHEN (") && def.contains("ferrum.copy")
+        });
+        if there {
+            return Ok(());
+        }
+        self.exec(format!(
+            "create or replace trigger {name} before {event} on {} for each row when ({STANDS_ASIDE}) execute function {function}('{named}')",
+            q(table)
+        ))
+        .await
     }
 
     async fn rls(&mut self, table: &str) -> Result<()> {
@@ -710,7 +746,7 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
                 ddl.index(&t, &["company"], true, None).await?;
             } else {
                 let name = obj_name("uq", &t, &["singleton"]);
-                ddl.exec(format!("create unique index if not exists {} on {} (tenant_id)", q(&name), q(&t))).await?;
+                ddl.make_index(&name, &t, true, &format!("on {} (tenant_id)", q(&t))).await?;
             }
         }
         for f in ent.value_fields().filter(|f| ent.storage_of(&f.name) == Some(Storage::Column)) {
@@ -765,17 +801,8 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
         ddl.rls(&t).await?;
         // A held record is not deleted, whoever's SQL asks (the kernel baseline migration), and the row as
         // it was before each change to it is kept while it is held.
-        let named = ent.def.name.replace('\'', "''");
-        ddl.exec(format!(
-            "create or replace trigger ferrum_held before delete on {} for each row when ({STANDS_ASIDE}) execute function ferrum_held_guard('{named}')",
-            q(&t)
-        ))
-        .await?;
-        ddl.exec(format!(
-            "create or replace trigger ferrum_held_keep before update on {} for each row when ({STANDS_ASIDE}) execute function ferrum_held_keep('{named}')",
-            q(&t)
-        ))
-        .await?;
+        ddl.trigger(&t, "ferrum_held", "delete", "ferrum_held_guard", &ent.def.name).await?;
+        ddl.trigger(&t, "ferrum_held_keep", "update", "ferrum_held_keep", &ent.def.name).await?;
         for child in ent.children.values() {
             if let Some(cent) = schema.entity(&child.entity) {
                 ddl.links(&child.table, cent, &schema).await?;

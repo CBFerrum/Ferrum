@@ -148,8 +148,13 @@ impl World {
     }
 
     fn sync(&self) -> tokio::task::JoinHandle<ferrum_kernel::Result<ddl::SyncReport>> {
+        self.sync_with(false)
+    }
+
+    /// A sync that does not skip because the catalog is as it last synced it: every statement it would send, it sends.
+    fn sync_with(&self, force: bool) -> tokio::task::JoinHandle<ferrum_kernel::Result<ddl::SyncReport>> {
         let (db, catalog) = (self.db().clone(), self.k.registry.catalog());
-        tokio::spawn(async move { ddl::sync(&db, &catalog, false).await })
+        tokio::spawn(async move { ddl::sync(&db, &catalog, force).await })
     }
 }
 
@@ -475,5 +480,69 @@ fn an_orphan_keeps_the_key_unvalidated_and_the_start_goes_on() {
         assert!(mended.skipped && mended.warnings.is_empty(), "{mended:?}");
         assert!(w.unvalidated().await.is_empty() && w.k.unvalidated_keys().await.unwrap().is_empty());
         assert!(insert_orphan().await.unwrap_err().to_string().contains("foreign key"), "and it refuses them once validated");
+    });
+}
+
+/// The triggers that keep a held record from being deleted or changed are made when the table lacks them or has them
+/// otherwise, not at every sync (`create or replace trigger` takes SHARE ROW EXCLUSIVE and queues behind any open write
+/// transaction, with the writers behind it): a sync of a schema that is as it was sends no statement at all, one trigger
+/// that is not as the sync makes it is the one statement, and an open write transaction on the table is not waited for.
+#[test]
+fn a_current_trigger_is_not_made_again() {
+    run(async {
+        let w = world().await;
+        let t = &w.table;
+        let triggers = async || -> Vec<(String, String)> {
+            sqlx::query_as(
+                "select tgname::text, pg_get_triggerdef(oid) from pg_trigger where tgrelid = $1::regclass and tgname like 'ferrum\\_held%' order by 1",
+            )
+            .bind(t)
+            .fetch_all(&w.db().pool)
+            .await
+            .unwrap()
+        };
+        let before = triggers().await;
+        assert_eq!(before.len(), 2);
+
+        let unchanged = w.sync_with(true).await.unwrap().expect("a sync of what is there");
+        println!("K7: a sync of an unchanged schema sent {} statements", unchanged.statements);
+        assert_eq!(unchanged.statements, 0, "{unchanged:?}");
+        assert_eq!(triggers().await, before);
+
+        // One of them as an older sync made it (no WHEN: a copy of a workspace could not stand it aside), one made for
+        // another entity's name: each is the one statement that puts it right.
+        sql(w.db(), format!("create or replace trigger ferrum_held before delete on {t} for each row execute function ferrum_held_guard('ExchangeRate')"))
+            .await;
+        let mended = w.sync_with(true).await.unwrap().expect("one trigger as an older sync made it");
+        assert_eq!(mended.statements, 1, "{mended:?}");
+        assert_eq!(triggers().await, before);
+        sql(
+            w.db(),
+            format!(
+                "create or replace trigger ferrum_held_keep before update on {t} for each row when ({}) execute function ferrum_held_keep('Another')",
+                ddl::STANDS_ASIDE
+            ),
+        )
+        .await;
+        let renamed = w.sync_with(true).await.unwrap().expect("one trigger made for another name");
+        assert_eq!(renamed.statements, 1, "{renamed:?}");
+        assert_eq!(triggers().await, before);
+        // Disabled by hand: replaced too.
+        sql(w.db(), format!("alter table {t} disable trigger ferrum_held")).await;
+        assert_eq!(w.sync_with(true).await.unwrap().expect("a disabled one").statements, 1);
+        assert_eq!(w.sync_with(true).await.unwrap().expect("and then none").statements, 0);
+
+        // An open write transaction on the table: a sync that has nothing to change in it does not wait for it.
+        let mut open = system_conn().await;
+        sqlx::raw_sql(AssertSqlSafe(format!(
+            "begin; insert into {t} (tenant_id, id, from_currency, to_currency, valid_from) values ('{}', gen_random_uuid(), '{}', '{}', date '1900-01-01')",
+            w.tenant, w.from, w.to
+        )))
+        .execute(&mut open)
+        .await
+        .unwrap();
+        let during = tokio::time::timeout(Duration::from_secs(5), w.sync_with(true)).await.expect("the sync waited for an open transaction");
+        assert_eq!(during.unwrap().expect("the sync").statements, 0);
+        sqlx::raw_sql("commit").execute(&mut open).await.unwrap();
     });
 }
