@@ -204,7 +204,28 @@ pub(crate) async fn copy_rows(
 ) -> Result<Map<String, Value>> {
     let (from, to) = ids;
     let mut copied = Map::new();
+    // Tables partitioned by month on a time (`ferrum_ensure_month_partitions`: the audit trail, an app's): the rows keep
+    // their times, which may be in months this database has never made.
+    let monthly: HashMap<String, String> = sqlx::query_as(
+        "select c.relname::text, a.attname::text from pg_partitioned_table p join pg_class c on c.oid = p.partrelid \
+         join pg_attribute a on a.attrelid = p.partrelid and a.attnum = p.partattrs[0] \
+         where c.relnamespace = 'public'::regnamespace and p.partstrat = 'r' and p.partnatts = 1 and a.atttypid = 'timestamptz'::regtype",
+    )
+    .fetch_all(&mut **tx)
+    .await?
+    .into_iter()
+    .collect();
     for (t, columns) in tables.iter().filter(|(t, _)| !left.contains(&t.as_str())) {
+        if let Some(c) = monthly.get(t) {
+            let (first, last): (Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>) =
+                sqlx::query_as(AssertSqlSafe(format!("select min(\"{c}\"), max(\"{c}\") from \"{t}\" where tenant_id = $1")))
+                    .bind(from)
+                    .fetch_one(&mut **src)
+                    .await?;
+            if let (Some(first), Some(last)) = (first, last) {
+                sqlx::query("select ferrum_ensure_month_partitions($1::regclass, $2, $3)").bind(t).bind(first).bind(last).execute(&mut **tx).await?;
+            }
+        }
         let names: Vec<String> = columns.iter().filter(|(_, _, generated)| !generated).map(|(c, _, _)| format!("\"{c}\"")).collect();
         let names = names.join(", ");
         let insert = format!("insert into \"{t}\" ({names}) overriding system value select {names} from jsonb_populate_recordset(null::\"{t}\", $1)");

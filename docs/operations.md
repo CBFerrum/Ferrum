@@ -4830,6 +4830,15 @@ and the next still runs, and the round ends saying which failed. Every purge del
 transaction of its own, until none is left, so a backlog however large is caught up in pieces, each within the statement
 timeout.
 
+The audit trail (`audit_event`) is kept by month, one partition a month (`audit_event_y2026m11`), so that its age is a
+matter of whole months: dropping one is a catalog change, where deleting its rows leaves each one dead for vacuum. None is
+ever dropped by the server (how long the trail is kept is the owner's decision). A save whose month has no partition
+fails, so a server makes this month and three ahead at every start, before it serves, and the hourly maintenance makes
+them again (its first step); a move or a sandbox makes the months of the rows it brings; and the doctor's `audit.months`
+is a blocker when fewer than two months ahead are there. Each month carries the trail's own policy, forced, so read by
+its own name it shows what `audit_event` would: a workspace's own rows, every row to the system (as `deploy/dump.sh`
+reads it).
+
 ```bash
 ferrum task sync_schema              # force the metadata → DDL sync (normally automatic at boot)
 ferrum task create_tenant slug:... name:... email:... password:... [packages:...]   # core only without packages:

@@ -347,6 +347,15 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let mut tx = a.db.system_tx().await.unwrap();
     sqlx::query("update user_session set last_seen_at = now() - interval '1 hour' where id = $1").bind(sid).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+    // An event from a month B never made (history older than the installation it moves to): the copy makes its month.
+    sqlx::query("select ferrum_ensure_month_partitions('audit_event', '2019-03-05 10:00+00', '2019-03-05 10:00+00')").execute(&a.db.pool).await.unwrap();
+    let mut tx = a.db.system_tx().await.unwrap();
+    sqlx::query("insert into audit_event (tenant_id, at, entity, record_id, action, hash, redacted) values ($1, '2019-03-05 10:00+00', 'Old', $1, 'kept', '\\x00', '[\"diff\"]')")
+        .bind(t)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
     // Today's anchor, over the history the move carries.
     audit::anchor_day(&a.db, chrono::Utc::now().date_naive()).await.unwrap();
     let (anchored,): (i64,) = sql(&a, "select max(id) from audit_event where tenant_id = $1", t).await.remove(0);
@@ -511,6 +520,8 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     let at_b: Vec<(i64,)> = sql(&b, "select id from audit_event where tenant_id = $1 order by id", t).await;
     assert!(at_b.starts_with(&at_a) && at_b.len() > at_a.len(), "audit events keep their numbers, and new ones come after them");
     assert_eq!(chains(&b, t).await, None);
+    let old: Vec<(String,)> = sql(&b, "select tableoid::regclass::text from audit_event where tenant_id = $1 and entity = 'Old'", t).await;
+    assert_eq!(old, vec![("audit_event_y2019m03".to_string(),)]);
     let resent: Vec<(i64,)> = sql(&b, &format!("select count(*) from audit_event where tenant_id = $1 and xid is not null and id <= {anchored}"), t).await;
     assert_eq!(resent, vec![(0,)], "B's audit sink does not send again what A wrote");
     assert!(anchor_holds(&b, t, anchored).await);
