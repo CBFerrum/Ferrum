@@ -16,7 +16,8 @@ use crate::db::{Tx, with_retry};
 use crate::error::{Error, Result};
 use crate::vault::Vault;
 use crate::{Doc, Kernel};
-use ferrum_logic::capability::{Capability, Effect, Idempotency, Limits, Operation, Profile, UnknownOutcome, object_schema, snake};
+pub use ferrum_logic::capability::snake;
+use ferrum_logic::capability::{Capability, Effect, Idempotency, Limits, Operation, Profile, UnknownOutcome, object_schema};
 use ferrum_logic::refusal::{Code, Refusal};
 use ferrum_meta::{EffEntity, EntityKind};
 use serde_json::{Map, Value, json};
@@ -27,6 +28,25 @@ pub const PRODUCTION: &str = "production";
 /// The most a `list` capability returns.
 pub const LIST_LIMIT: u32 = 100;
 const RETENTION_DAYS: u32 = 400;
+
+/// The most one page of the catalog holds.
+pub const CATALOG_PAGE: usize = 100;
+
+/// What [`Kernel::catalog_page`] looks for; every part given must hold.
+#[derive(Debug, Clone, Default)]
+pub struct CatalogQuery {
+    /// Words, each to occur in the id, label, description or entity label (any case).
+    pub q: Option<String>,
+    /// The package the id starts with (`crm`).
+    pub app: Option<String>,
+    pub entity: Option<String>,
+    pub effect: Option<Effect>,
+    /// Only those that change something (or only those that do not).
+    pub changes: Option<bool>,
+    pub limit: usize,
+    /// The previous page's next cursor.
+    pub cursor: Option<String>,
+}
 
 /// One use of a capability.
 #[derive(Debug, Clone)]
@@ -192,19 +212,9 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
     let owner = ent.package.as_str();
     let prefix = format!("{owner}.{}", snake(name));
     let record = crate::describe::entity_schema(ctx, ent, 0);
-    // What comes back is the record as stored: what was written, and its id and version, so that a process
-    // can name it and see whether it changed since.
-    let stored = {
-        let mut s = record.clone();
-        if let Some(props) = s.get_mut("properties").and_then(Value::as_object_mut) {
-            props.insert("id".into(), id_prop(name));
-            props.insert("version".into(), json!({"type": "integer", "description": "The record's version"}));
-            if ent.def.submittable {
-                props.insert("docstatus".into(), json!({"type": "integer", "description": "0 draft, 1 submitted, 2 cancelled"}));
-            }
-        }
-        s
-    };
+    // What comes back is the record as stored, as the caller may read it: what was written, its id and version, so that
+    // a process can name it and see whether it changed since; any field may be empty.
+    let stored = crate::describe::record_output_schema(ctx, ent, 0);
     let perm = |a: &str| format!("{name}:{a}");
     let by_id = |extra: &[(&str, Value)]| {
         let mut props = Map::from_iter([("id".to_string(), id_prop(name))]);
@@ -468,6 +478,41 @@ impl Kernel {
         let mut out: Vec<Capability> = out.into_iter().filter(|c| allowed(ctx, c)).filter_map(|c| c.sealed().ok()).collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
         out
+    }
+
+    /// One page of [`Kernel::catalog`] for a search (`list_capabilities`): sorted by id, the `limit` after `cursor`, and
+    /// the cursor of the next page when there is one.
+    // ponytail: the catalog is built per call in memory; cache by (tenant, schema version, rights) when measured.
+    pub fn catalog_page(&self, ctx: &Ctx, q: &CatalogQuery) -> Result<(Vec<Capability>, Option<String>)> {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let after = match &q.cursor {
+            Some(c) => Some(
+                b64.decode(c)
+                    .ok()
+                    .and_then(|b| String::from_utf8(b).ok())
+                    .ok_or_else(|| refused(Code::SchemaInvalid, "cursor is not one this server gave").into_pointer("/cursor"))?,
+            ),
+            None => None,
+        };
+        let words: Vec<String> = q.q.as_deref().unwrap_or_default().split_whitespace().map(str::to_lowercase).collect();
+        let limit = q.limit.clamp(1, CATALOG_PAGE);
+        let mut found = self.catalog(ctx).into_iter().filter(|c| {
+            let entity_label = c.entity.as_deref().and_then(|e| ctx.schema.entity(e)).map(|e| e.def.label.as_str()).unwrap_or_default();
+            let text = format!("{} {} {} {}", c.id, c.label, c.description.as_deref().unwrap_or_default(), entity_label).to_lowercase();
+            after.as_deref().is_none_or(|a| c.id.as_str() > a)
+                && words.iter().all(|w| text.contains(w))
+                && q.app.as_deref().is_none_or(|app| c.id.split('.').next() == Some(app))
+                && q.entity.as_deref().is_none_or(|e| c.entity.as_deref() == Some(e))
+                && q.effect.is_none_or(|e| c.effect == e)
+                && q.changes.is_none_or(|changes| c.effect.changes() == changes)
+        });
+        let page: Vec<Capability> = found.by_ref().take(limit).collect();
+        let next = match (found.next(), page.last()) {
+            (Some(_), Some(last)) => Some(b64.encode(&last.id)),
+            _ => None,
+        };
+        Ok((page, next))
     }
 
     /// One capability, if this caller may use it. Only its own entity's are worked out.

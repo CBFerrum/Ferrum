@@ -193,6 +193,52 @@ pub fn entity_schema(ctx: &Ctx, ent: &EffEntity, depth: usize) -> Value {
     json!({"type": "object", "title": ent.def.label, "properties": props, "required": required})
 }
 
+/// JSON Schema of a record of `ent` as reads and writes return it: every field may be empty (`null`, and `""` for a
+/// select), only `id` is sure to be there, the system's fields are named, and more fields may come (no
+/// `additionalProperties: false`), so a result always conforms.
+pub fn record_output_schema(ctx: &Ctx, ent: &EffEntity, depth: usize) -> Value {
+    let mut s = entity_schema(ctx, ent, depth);
+    relax(&mut s);
+    let props = s["properties"].as_object_mut().expect("entity_schema has properties");
+    props.insert("id".into(), json!({"type": "string", "format": "uuid", "x-ferrum-link": ent.def.name, "description": "The record's id"}));
+    props.insert("version".into(), json!({"type": "integer", "description": "The record's version"}));
+    if ent.def.submittable {
+        props.insert("docstatus".into(), json!({"type": "integer", "description": "0 draft, 1 submitted, 2 cancelled"}));
+    }
+    props.insert("owner".into(), json!({"type": ["string", "null"], "format": "uuid", "description": "Who made it"}));
+    for at in ["created_at", "modified_at"] {
+        props.insert(at.into(), json!({"type": ["string", "null"], "format": "date-time"}));
+    }
+    props.insert("_titles".into(), json!({"type": "object", "description": "Display titles of linked records, by field"}));
+    s["required"] = json!(["id"]);
+    s
+}
+
+/// An input schema made one that any stored value meets: each property may be null, selects may be empty, and nothing
+/// is required (child rows' schemas too).
+fn relax(s: &mut Value) {
+    if let Some(o) = s.as_object_mut() {
+        o.remove("required");
+    }
+    let Some(props) = s.get_mut("properties").and_then(Value::as_object_mut) else { return };
+    for p in props.values_mut() {
+        let types = match p.get("type") {
+            Some(Value::String(t)) => vec![json!(t)],
+            Some(Value::Array(ts)) => ts.clone(),
+            _ => vec![],
+        };
+        if !types.is_empty() && !types.contains(&json!("null")) {
+            p["type"] = Value::Array(types.into_iter().chain([json!("null")]).collect());
+        }
+        if let Some(options) = p.get_mut("enum").and_then(Value::as_array_mut) {
+            options.extend([json!(""), Value::Null]);
+        }
+        if let Some(items) = p.get_mut("items") {
+            relax(items);
+        }
+    }
+}
+
 fn field_schema(ctx: &Ctx, f: &FieldDef, depth: usize) -> Value {
     let mut v = match f.ftype {
         FieldType::Int => json!({"type": "integer"}),
