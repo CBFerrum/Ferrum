@@ -2037,7 +2037,8 @@ create index job_finished on job (finished_at) where finished_at is not null;
 -- Apps' upkeep (server/src/packages.rs): a row for each workspace and each app with one of its packages installed there,
 -- kept by a sync once a minute. A replica with a free slot claims the rows due, oldest first, by moving `due_at` to the
 -- end of its lease, and records the outcome only while `due_at` still holds that lease. `timeouts` counts the runs in a
--- row that hit the time limit: each doubles the wait before the next.
+-- row that hit the time limit: each doubles the wait before the next. `held`: a replica holds it for a run now;
+-- `woken`: something woke it while held (crate::upkeep::wake), so it is due again as the run is recorded.
 create table upkeep (
   tenant_id uuid not null references tenant(id) on delete cascade,
   app text not null,
@@ -2046,6 +2047,8 @@ create table upkeep (
   failed_at timestamptz,
   error text,
   timeouts int not null default 0,
+  held boolean not null default false,
+  woken boolean not null default false,
   primary key (tenant_id, app)
 );
 create index upkeep_due on upkeep (due_at);

@@ -271,6 +271,15 @@ What it promises the app, and what it asks of it:
   it is due again sooner when the workspace's metadata changes (a package installed) or the catalog does (an app's new
   release, a build whose packages changed). An app whose upkeep has nothing to do in a workspace should return before
   it opens a transaction, so that it costs nothing there.
+- **When it is next needed: `next_in` and `wake`.** Most upkeep is daily or hourly work that the minute only polls for.
+  From inside `maintenance`, `ferrum_kernel::upkeep::next_in(d)` says the workspace needs it again in `d`: kept between
+  the usual minute and an hour; of several calls the shortest wins; a run that fails or times out is due again as usual.
+  Its complement: `ferrum_kernel::upkeep::wake(&mut tx, tenant, "<your app id>")`, in the app's own transaction when it
+  writes something its upkeep must see soon, brings the row forward to now (it commits or rolls back with that write; a
+  run in flight is followed by another as soon as it is recorded). **Say `next_in` only for what you can also `wake`:**
+  whatever a person or another app can do that needs the upkeep sooner must wake it, or the hour is that thing's delay.
+  Operations does both: its next run is the earliest deadline of a command no site has received, or an hour, and
+  issuing a command wakes it. An app passes its own id; waking only ever makes a workspace's upkeep run sooner.
 - **Work of the whole installation has no hook of its own** (a partition of a table every workspace writes, a purge
   across workspaces): do it from the call for whichever workspace comes first, at most once a day on a replica (a
   `static` day) and under `pg_try_advisory_xact_lock`, so that replicas do not do it together. ERP's journal

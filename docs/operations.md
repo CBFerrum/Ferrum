@@ -1781,7 +1781,8 @@ with it after the deletion lag, and read by the restore drill (`check_files`) as
 a row per workspace and app, claimed by whichever replica has a slot free (`FERRUM_UPKEEP_CONCURRENCY`, 4 a replica).
 What it costs the database while nobody works: one transaction per run, which records the run and claims the next row
 for its slot in one statement. A run that opened no transaction (the app had nothing to do there) is next due a day
-away, not a minute, until the workspace's metadata or the catalog changes. A workspace's administrators read its rows
+away, not a minute, until the workspace's metadata or the catalog changes; an app may ask for up to an hour, and wakes
+its row when something it must see sooner is written (docs/app-contract.md, *Upkeep*). A workspace's administrators read its rows
 at `GET /api/admin/upkeep`; `/metrics` has `ferrum_upkeep_oldest_due_seconds` and `ferrum_upkeep_failing`.
 
 ## Malware scanning

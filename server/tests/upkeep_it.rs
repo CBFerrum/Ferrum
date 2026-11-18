@@ -352,6 +352,114 @@ fn a_run_that_did_nothing_waits_a_day() {
     });
 }
 
+/// An app that asks, from inside its upkeep, to be run again in `asked` (several calls: the shortest), opening a
+/// transaction as it works, and ending as `ends` says.
+fn asking(id: &'static str, asked: &'static [Duration], ends: Result<(), &'static str>, runs: &Arc<std::sync::atomic::AtomicUsize>) -> UpkeepApp {
+    let runs = runs.clone();
+    UpkeepApp {
+        id,
+        packages: vec!["fake_a".into()],
+        run: packages::run(move |k, tenant| {
+            let runs = runs.clone();
+            Box::pin(async move {
+                k.db.tenant_tx(tenant).await?.commit().await?;
+                for d in asked {
+                    ferrum_kernel::upkeep::next_in(*d);
+                }
+                runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ends.map_err(|e| ferrum_kernel::Error::Internal(e.into()))
+            })
+        }),
+    }
+}
+
+/// `next_in` lengthens a run's next wait within the clamp (the period to an hour; the shortest of several calls; a
+/// failing run ignores it), and `wake` brings a waiting row forward to now in the caller's transaction (rolled back:
+/// no effect), and a row woken while its run is in flight is due again as that run is recorded.
+#[test]
+fn next_in_and_wake() {
+    scenario(async {
+        let k = replica(true).await;
+        let ws = workspaces(&k, 1, &["fake_a"]).await;
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        const S: fn(u64) -> Duration = Duration::from_secs;
+        const TEN: &[Duration] = &[Duration::from_secs(20), Duration::from_secs(10)];
+        const BELOW: &[Duration] = &[Duration::from_millis(100)];
+        const ABOVE: &[Duration] = &[Duration::from_secs(7200)];
+        const FAILING: &[Duration] = &[Duration::from_secs(600)];
+        let apps = vec![
+            asking("ten", TEN, Ok(()), &n),
+            asking("below", BELOW, Ok(()), &n),
+            asking("above", ABOVE, Ok(()), &n),
+            asking("failing", FAILING, Err("broken"), &n),
+        ];
+        let (tx, rx) = watch::channel(false);
+        let h = packages::spawn_with(k.clone(), apps, Pace { every: S(5), ..pace(2) }, rx);
+        // Recorded and not held again: a held row's wait reads its lease (300 s on), and the rows due after 5 s or 10 s may
+        // be claimed again before they are read; the one due in an hour is not.
+        let short = |r: &Rows, app: &str| r.get(&(ws[0], app.to_string())).is_some_and(|v| (v.0 || v.1) && v.5 < 100.0);
+        let r =
+            until(&k, "every row recorded", |r| r.len() == 4 && ["ten", "below", "failing"].iter().all(|a| short(r, a)) && r[&(ws[0], "above".to_string())].0)
+                .await;
+        stop(tx, vec![h]).await;
+        let wait = |app: &str| r[&(ws[0], app.to_string())].5;
+        assert_eq!(wait("ten"), 10.0, "the shortest of the waits asked for");
+        assert_eq!(wait("below"), 5.0, "never less than the period");
+        assert_eq!(wait("above"), 3600.0, "never more than an hour");
+        assert_eq!(wait("failing"), 5.0, "a failing run is due again as usual");
+
+        // Woken in a transaction that rolls back: nothing. Committed: due now.
+        async fn due_of(k: &Kernel, t: Uuid) -> f64 {
+            rows(k).await[&(t, "above".to_string())].3
+        }
+        let w = ws[0];
+        let mut t = k.db.tenant_tx(ws[0]).await.unwrap();
+        ferrum_kernel::upkeep::wake(&mut t, ws[0], "above").await.unwrap();
+        t.rollback().await.unwrap();
+        assert!(due_of(&k, w).await > 3000.0, "a rolled-back wake changes nothing");
+        let mut t = k.db.tenant_tx(ws[0]).await.unwrap();
+        ferrum_kernel::upkeep::wake(&mut t, ws[0], "above").await.unwrap();
+        t.commit().await.unwrap();
+        assert!(due_of(&k, w).await <= 0.0, "a committed wake makes it due now");
+
+        // Woken while its run is in flight: the row keeps its lease, and is due again the moment the run is recorded.
+        let go = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (g, s) = (go.clone(), started.clone());
+        let slow = UpkeepApp {
+            id: "above",
+            packages: vec!["fake_a".into()],
+            run: packages::run(move |k, tenant| {
+                let (g, s) = (g.clone(), s.clone());
+                Box::pin(async move {
+                    k.db.tenant_tx(tenant).await?.commit().await?;
+                    s.store(true, std::sync::atomic::Ordering::SeqCst);
+                    g.notified().await;
+                    ferrum_kernel::upkeep::next_in(S(3600));
+                    Ok(())
+                })
+            }),
+        };
+        let (tx, rx) = watch::channel(false);
+        let h = packages::spawn_with(k.clone(), vec![slow], Pace { every: S(5), ..pace(1) }, rx);
+        let start = Instant::now();
+        while !started.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(start.elapsed() < HANG, "the run started: not within {HANG:?}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let lease = due_of(&k, w).await;
+        let mut t = k.db.tenant_tx(ws[0]).await.unwrap();
+        ferrum_kernel::upkeep::wake(&mut t, ws[0], "above").await.unwrap();
+        t.commit().await.unwrap();
+        assert!((due_of(&k, w).await - lease).abs() < 1.0 && lease > 200.0, "the lease is kept while the run is in flight");
+        go.notify_one();
+        stop(tx, vec![h]).await;
+        let r = rows(&k).await;
+        let (ran, _, _, due_in, _, _) = r[&(ws[0], "above".to_string())].clone();
+        assert!(ran && due_in <= 0.0, "woken while it ran: due again at once, not in the hour it asked for: {r:?}");
+    });
+}
+
 /// A workspace whose upkeep fails, or panics, stops no other: the others' runs are recorded, the failing rows hold
 /// why, a failure is due again after the usual wait (it is not a time limit), and the doctor and the workspace's
 /// administrator see it.

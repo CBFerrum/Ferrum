@@ -578,9 +578,14 @@ struct Claim {
     watch: Arc<ferrum_kernel::upkeep::Watch>,
 }
 
-/// The wait after a run that ended well: a day when it opened no transaction (it did nothing), else the usual.
+/// The wait after a run that ended well: what it asked for (`ferrum_kernel::upkeep::next_in`), kept between the usual
+/// wait and an hour; else a day when it opened no transaction (it did nothing); else the usual.
 fn wait_after(c: &Claim, pace: &Pace) -> Duration {
-    if c.watch.opened() == 0 { ferrum_kernel::upkeep::IDLE } else { pace.every }
+    match c.watch.next() {
+        Some(next) => next.clamp(pace.every, ferrum_kernel::upkeep::LONGEST.max(pace.every)),
+        None if c.watch.opened() == 0 => ferrum_kernel::upkeep::IDLE,
+        None => pace.every,
+    }
 }
 
 /// How a run ended, when it did not end well.
@@ -599,7 +604,7 @@ type Finished<'a> = (&'a Claim, Option<&'a Ended>);
 /// `lease` from now. The rows of `full` (apps holding their share of this replica's slots) come after every other
 /// app's, so that one app slow in many workspaces cannot hold every slot while others wait; with nothing else due they
 /// still run. The row just recorded is not taken again by the same statement (one statement may change a row once). A run
-/// that ended well waits [`wait_after`]: a day when it opened no transaction.
+/// that ended well waits [`wait_after`]; one woken while it ran (`ferrum_kernel::upkeep::wake`) is due again at once.
 async fn step(k: &Kernel, finished: Option<Finished<'_>>, apps: &[UpkeepApp], free: usize, full: &[&str], pace: &Pace) -> ferrum_kernel::Result<Vec<Claim>> {
     let ids: Vec<&str> = apps.iter().map(|a| a.id).collect();
     let (claim, error, timed_out) = match finished {
@@ -615,12 +620,12 @@ async fn step(k: &Kernel, finished: Option<Finished<'_>>, apps: &[UpkeepApp], fr
     let mut tx = k.db.system_tx().await?;
     let rows: Vec<(Uuid, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
         "with recorded as (update upkeep set timeouts = case when $5 then timeouts + 1 else 0 end, \
-           due_at = now() + make_interval(secs => case when $5 then least($12 * power(2::float8, least(timeouts + 1, 20)), $7) else $6 end), \
+           due_at = case when woken then now() else now() + make_interval(secs => case when $5 then least($12 * power(2::float8, least(timeouts + 1, 20)), $7) else $6 end) end, \
            ran_at = case when $4::text is null then now() else ran_at end, failed_at = case when $4::text is null then failed_at else now() end, \
-           error = left($4, 2000) where tenant_id = $1 and app = $2 and due_at = $3 and not ferrum_workspace_held(tenant_id) returning 1), \
+           error = left($4, 2000), held = false, woken = false where tenant_id = $1 and app = $2 and due_at = $3 and not ferrum_workspace_held(tenant_id) returning 1), \
          due as (select tenant_id, app from upkeep where due_at <= now() and app = any($9) and not ferrum_workspace_held(tenant_id) \
            and (tenant_id, app) is distinct from ($1, $2) order by app = any($11), due_at limit $8 for update skip locked) \
-         update upkeep u set due_at = now() + make_interval(secs => $10) from due where (u.tenant_id, u.app) = (due.tenant_id, due.app) \
+         update upkeep u set due_at = now() + make_interval(secs => $10), held = true, woken = false from due where (u.tenant_id, u.app) = (due.tenant_id, due.app) \
          returning u.tenant_id, u.app, u.due_at",
     )
     .bind(claim.map(|c| c.tenant))
@@ -654,7 +659,7 @@ async fn hand_back(k: &Kernel, claims: Vec<Claim>) -> ferrum_kernel::Result<()> 
     let leases: Vec<chrono::DateTime<chrono::Utc>> = claims.iter().map(|c| c.lease).collect();
     let mut tx = k.db.system_tx().await?;
     sqlx::query(
-        "update upkeep u set due_at = now() from unnest($1::uuid[], $2::text[], $3::timestamptz[]) c(tenant, app, lease) \
+        "update upkeep u set due_at = now(), held = false, woken = false from unnest($1::uuid[], $2::text[], $3::timestamptz[]) c(tenant, app, lease) \
          where (u.tenant_id, u.app, u.due_at) = (c.tenant, c.app, c.lease)",
     )
     .bind(&tenants)

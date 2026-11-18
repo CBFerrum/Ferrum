@@ -74,12 +74,15 @@ pub(crate) async fn emit_people(tx: &mut Tx, tenant: Uuid, role: &str, title: &s
 /// The day [`telemetry::purge`] last ran on this replica: it is the whole installation's, and once a day is enough.
 static PURGED: AtomicI32 = AtomicI32::new(0);
 
-/// One workspace's upkeep (docs/app-contract.md, Upkeep): its commands past their deadline that no site received. Then
-/// what is the installation's: the partitions up to tomorrow (one look at the catalog once they are there), and, the
-/// first time each day on this replica whichever workspace's turn it is, what retention lets go.
+/// One workspace's upkeep (docs/app-contract.md, Upkeep): its commands past their deadline that no site received, and it
+/// is next needed when the earliest pending deadline passes, or in an hour (issuing a command wakes it: commands.rs).
+/// Then what is the installation's: the partitions up to tomorrow (one look at the catalog once they are there), and,
+/// the first time each day on this replica whichever workspace's turn it is, what retention lets go.
 pub async fn maintenance(k: &Kernel, tenant: Uuid) -> Result<()> {
     let now = Utc::now();
     commands::expire_unsent(k, tenant).await?;
+    let next = commands::next_unsent_deadline(k, tenant).await?;
+    ferrum_kernel::upkeep::next_in(next.map(|at| (at - now).to_std().unwrap_or_default()).unwrap_or(ferrum_kernel::upkeep::LONGEST));
     telemetry::ensure_partitions(k, now).await?;
     let today = now.date_naive().num_days_from_ce();
     if PURGED.load(Ordering::Relaxed) != today {
