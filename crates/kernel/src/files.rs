@@ -41,12 +41,48 @@ pub trait FileStore: Send + Sync {
             Err(e) => Err(e),
         }
     }
+    /// An object written a piece at a time (a part of a workspace's export), stored at `key` when it is closed. By
+    /// default the pieces are collected and put whole (ponytail: a store that can write in parts should, as the
+    /// server's does, so a large object is never held whole).
+    async fn writer(&self, key: &str) -> Result<Box<dyn ObjectWriter + '_>> {
+        Ok(Box::new(Collected { store: self, key: key.to_string(), data: Vec::new() }))
+    }
+}
+
+/// What [`FileStore::writer`] gives. One dropped before it is closed stores nothing an object store shows; a disk
+/// keeps what was written so far, which its writer's owner deletes (crate::export).
+#[async_trait]
+pub trait ObjectWriter: Send {
+    async fn write(&mut self, piece: Vec<u8>) -> Result<()>;
+    async fn close(self: Box<Self>) -> Result<()>;
+}
+
+struct Collected<'a, S: ?Sized> {
+    store: &'a S,
+    key: String,
+    data: Vec<u8>,
+}
+
+#[async_trait]
+impl<S: FileStore + ?Sized> ObjectWriter for Collected<'_, S> {
+    async fn write(&mut self, piece: Vec<u8>) -> Result<()> {
+        self.data.extend_from_slice(&piece);
+        Ok(())
+    }
+    async fn close(self: Box<Self>) -> Result<()> {
+        self.store.put(&self.key, &self.data).await
+    }
 }
 
 /// The most an app reads of a file at once (FERRUM-OPS-006), the size of the largest an app works on
 /// whole (Learn's SCORM packages): larger ones are streamed to whoever downloads them
 /// ([`crate::SiteResponse::file`]) rather than read into a replica's memory.
 pub const MAX_READ_WHOLE: i64 = 256 << 20;
+
+/// Where stored file `id` of `tenant` is kept.
+pub(crate) fn object_key(tenant: Uuid, id: Uuid) -> String {
+    format!("tenants/{tenant}/{id}")
+}
 
 /// What [`Kernel::file_info`] says of a stored file.
 #[derive(Debug, Clone)]
@@ -236,14 +272,31 @@ impl Kernel {
         data: &[u8],
         scanned: &str,
     ) -> Result<Value> {
+        let id = Uuid::now_v7();
+        self.file_store()?.put(&object_key(ctx.tenant, id), data).await?;
+        let sha = hex::encode(Sha256::digest(data));
+        self.record_file(ctx, attach_to, id, file_name, content_type, data.len() as u64, &sha, scanned).await
+    }
+
+    /// Records object `id` already stored at [`object_key`] as a file: [`Kernel::keep_file`]'s second half, for an
+    /// object written in pieces (an export's part).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn record_file(
+        &self,
+        ctx: &Ctx,
+        attach_to: Option<(&str, Uuid)>,
+        id: Uuid,
+        file_name: &str,
+        content_type: &str,
+        size: u64,
+        sha: &str,
+        scanned: &str,
+    ) -> Result<Value> {
         let name: String = file_name.chars().filter(|c| !c.is_control() && *c != '/' && *c != '\\').take(200).collect();
         let name = if name.trim().is_empty() { "file.bin".to_string() } else { name };
         let ctype = content_type.to_lowercase();
         let ctype = if ACTIVE_TYPES.contains(&ctype.as_str()) { "application/octet-stream".to_string() } else { ctype };
-        let id = Uuid::now_v7();
-        let key = format!("tenants/{}/{}", ctx.tenant, id);
-        self.file_store()?.put(&key, data).await?;
-        let sha = hex::encode(Sha256::digest(data));
+        let key = object_key(ctx.tenant, id);
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query(
             "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by, scan_status, shared) \
@@ -255,9 +308,9 @@ impl Kernel {
         .bind(attach_to.map(|a| a.1))
         .bind(&name)
         .bind(&ctype)
-        .bind(data.len() as i64)
+        .bind(size as i64)
         .bind(&key)
-        .bind(&sha)
+        .bind(sha)
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
         .bind(scanned)
         // What an outside person uploads is shared by nature (BD-22).
@@ -265,7 +318,7 @@ impl Kernel {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(json!({"id": id, "url": format!("/files/{id}"), "file_name": name, "size": data.len(), "sha256": sha}))
+        Ok(json!({"id": id, "url": format!("/files/{id}"), "file_name": name, "size": size, "sha256": sha}))
     }
 
     /// A stored file's name, content type and size, if the caller may read the record it is

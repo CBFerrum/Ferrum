@@ -103,4 +103,23 @@ impl ferrum_kernel::files::FileStore for StorageFiles {
     async fn delete(&self, key: &str) -> Result<()> {
         self.0.delete(std::path::Path::new(key)).await.map_err(|e| Error::Unavailable(format!("storage: {e}")))
     }
+    async fn writer(&self, key: &str) -> Result<Box<dyn ferrum_kernel::files::ObjectWriter + '_>> {
+        // In parts of the store's own size, as uploads in parts are joined (crate::objects).
+        let w = self.1.op.writer_with(key).chunk(crate::objects::PART_BYTES as usize).await.map_err(|e| Error::Unavailable(format!("storage: {e}")))?;
+        Ok(Box::new(Written(w)))
+    }
+}
+
+/// An object written in parts: S3 shows it once closed (an upload left unfinished is dropped by the bucket's rule,
+/// crate::store), a disk as it is written.
+struct Written(opendal::Writer);
+
+#[async_trait]
+impl ferrum_kernel::files::ObjectWriter for Written {
+    async fn write(&mut self, piece: Vec<u8>) -> Result<()> {
+        self.0.write(piece).await.map_err(|e| Error::Unavailable(format!("storage: {e}")))
+    }
+    async fn close(mut self: Box<Self>) -> Result<()> {
+        self.0.close().await.map(drop).map_err(|e| Error::Unavailable(format!("storage: {e}")))
+    }
 }
