@@ -316,8 +316,10 @@ candidates were looked at 390 and 320 wide. What you get and what you owe:
 
 Every colour is defined once with `light-dark()`; the bootstrap's `theme.appearance` (`light`, `dark`, `system`) and
 `lib/theme.ts` set `data-theme`, `data-contrast` and `data-density` on `<html>`. An app that uses tokens follows all
-three without code. A brand accent set by the workspace is adjusted until it passes 4.5:1 with its text
-(FOUNDATIONS.md, *Theming*). What breaks it: a literal colour, an image with text on a white background, a chart
+three without code. On public and portal pages a workspace's Brand sets the accent and typeface: its colour is
+darkened in light mode and lightened in dark mode, step by step, until it reads at 4.5:1 on the page and surface
+colours, and the colours shown are on the Brand record (`docs/builder/decisions.md` BD-79). The workspace's own pages
+keep the suite's accent. What breaks it: a literal colour, an image with text on a white background, a chart
 with colours of its own. The contract's review says "the colours hold in dark mode": look at every page in both
 (`docs/app-contract.md`, *Reviewed*).
 

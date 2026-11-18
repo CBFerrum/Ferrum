@@ -1972,3 +1972,31 @@ Decided 13 November 2026.
   connection) gets the same `401` as a refused delivery and counts as refused. Rate-limited with the deliveries.
 * The deliveries themselves are verified as before (`verify`); the handshake proves nothing about them.
 * Part of the App API 0.3.8 (BD-63).
+
+## BD-79. One brand every public page reads
+
+Decided 18 November 2026.
+
+* **The gap**: link pages read a `brand_color` setting that no route could ever save; the handbook promised a brand
+  accent adjusted for contrast that nothing set; Forms, Helpdesk and print each kept a look of their own, and the
+  platform's own public pages had none.
+* **The record**: `Brand` in the `core` package (0.4.0, `packages/core/entities/brand.yaml`): a name, a colour (and one
+  for dark mode), a logo (and one for dark mode), a favicon, a typeface (`Sans`, `Serif`, `Rounded`, `Mono`, or `Own`
+  with a WOFF2 file), a footer text and up to eight links. Administrators keep brands; no core role grants them.
+* **Which one a page wears**: the brand an app's record names (a form's, a store's, a support brand's), else the
+  address's (`tenant_host.brand`, set with `PATCH /api/admin/domains/{host}` `{brand}`, any target but `mail`), else
+  the workspace's default (`is_default`, one at most: each save of a default takes a lock per workspace and clears the
+  others), else the platform's own look. `Kernel::public_brand(tenant, named, host)`.
+* **Contrast is enforced, never refused**: every save computes `shown_color` and `shown_color_dark`: the colour as given
+  where it reads at 4.5:1 on the platform's page and surface colours, else darkened (light mode) or lightened (dark
+  mode) in 25 steps until it does (`ferrum_kernel::brand::tokens`, the same values as the kit's `accentTokens`). A brand
+  sets no background or text colour, so no combination can fail.
+* **What is served**: `GET /_brand/{workspace}/{brand}.css` sets the accent and typeface as both token families
+  (`--ferrum-*` and the kit's), written only from `#rrggbb` values and fixed font stacks: no record text reaches it.
+  Its files are uploaded to the brand itself (not public files) and strangers read them only at
+  `/_brand/{workspace}/{brand}/{logo|logo_dark|favicon|font_file}`, typed by what their bytes are (PNG, JPEG, WebP,
+  WOFF2), never by what the uploader said; SVG is never served. Both answer only on the workspace's own hosts (and hosts
+  of no workspace), not found alike otherwise. Cached for good at the record's version (`?v=`).
+* **Who reads it**: public pages (`shell.public`) and portal pages carry `brand` in their bootstrap, and the shell links
+  its stylesheet after the theme and its favicon; the signed-link page wears the default brand. Apps' site pages, the
+  published lists and the portal host's own status pages follow with the public host (S4-P3).

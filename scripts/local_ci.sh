@@ -257,6 +257,7 @@ job_audit() {
   run "audit app contract" python3 scripts/check_apps.py
   run "audit direct writes reviewed" python3 scripts/mutation_paths.py
   run "audit secret paths" sh -c 'python3 scripts/test_secret_paths.py && python3 scripts/secret_paths.py'
+  run "audit agent parity" sh -c 'python3 scripts/test_agent_parity.py && python3 scripts/agent_parity.py'
 }
 
 job_move() {

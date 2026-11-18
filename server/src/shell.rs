@@ -1363,10 +1363,18 @@ pub fn json_in_html(v: &Value) -> String {
     v.to_string().replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026")
 }
 
-/// What goes first in `<head>` on every page: the bootstrap, the theme and the bar runtime.
+/// What goes first in `<head>` on every page: the bootstrap, the theme and the bar runtime; on a page that wears a
+/// brand (its bootstrap's `brand`, docs/builder/decisions.md BD-79), the brand's stylesheet after the theme, and its
+/// favicon instead of the platform's.
 pub fn shell_head(bootstrap: &Value) -> String {
+    let brand = &bootstrap["brand"];
+    let icon = match brand["favicon"].as_str() {
+        Some(href) => format!(r#"<link rel="icon" href="{}" type="image/png">"#, esc(href)),
+        None => r#"<link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml">"#.to_string(),
+    };
+    let brand_css = brand["css"].as_str().map(|href| format!(r#"<link rel="stylesheet" href="{}">"#, esc(href))).unwrap_or_default();
     format!(
-        r#"<script type="application/json" id="ferrum-bootstrap">{}</script><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml">{}<link rel="stylesheet" href="/_shell/theme/{}.css"><script type="module" src="{}"></script>"#,
+        r#"<script type="application/json" id="ferrum-bootstrap">{}</script>{icon}{}<link rel="stylesheet" href="/_shell/theme/{}.css">{brand_css}<script type="module" src="{}"></script>"#,
         json_in_html(bootstrap),
         install_links(bootstrap),
         theme_hash(),
@@ -2852,6 +2860,18 @@ mod tests {
         let res = public_entry_page(&entry, &b, "default-src 'self'");
         assert_eq!(res.headers()["referrer-policy"], "no-referrer");
         assert_eq!(res.headers()["x-robots-tag"], "noindex, nofollow");
+    }
+
+    #[test]
+    fn a_branded_page_links_its_stylesheet_after_the_theme_and_its_favicon() {
+        let plain = shell_head(&json!({"app": null, "host": {"kind": "public"}}));
+        assert!(plain.contains(r#"href="/_shell/v1/icon.svg""#) && !plain.contains("/_brand/"), "{plain}");
+        let v = json!({"app": null, "host": {"kind": "public"}, "brand": {"css": "/_brand/acme/b.css?v=1\"><x", "favicon": "/_brand/acme/b/favicon?v=1"}});
+        let head = shell_head(&v);
+        let theme = head.find("/_shell/theme/").unwrap();
+        let brand = head.find(r#"<link rel="stylesheet" href="/_brand/acme/b.css?v=1&quot;&gt;&lt;x">"#).expect(&head);
+        assert!(brand > theme, "after the theme, so it wins: {head}");
+        assert!(head.contains(r#"<link rel="icon" href="/_brand/acme/b/favicon?v=1" type="image/png">"#) && !head.contains("icon.svg"), "{head}");
     }
 
     #[test]

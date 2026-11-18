@@ -555,7 +555,7 @@ async fn names_and_what_addresses_show(k: &Kernel) {
     assert!(k.host_may_have_certificate("sales--nova.names.test").await.unwrap());
     assert_eq!(
         k.host_shown("SALES--nova.names.test:443").await.unwrap(),
-        Some(HostShown { shape: shape(Some("crm"), Some(&["crm"]), Some("Sales")), primary: false })
+        Some(HostShown { shape: shape(Some("crm"), Some(&["crm"]), Some("Sales")), primary: false, brand: None })
     );
     assert_eq!(k.host_shown("nova.names.test").await.unwrap().map(|s| s.primary), Some(true));
     assert!(matches!(k.add_name(&admin, BASE, "sales", "shell", &HostShape::default()).await, Err(Error::Conflict(_))), "once");
