@@ -1,0 +1,33 @@
+# What the workspace looks like to people outside it (docs/builder/decisions.md BD-79): every public page the platform
+# or an app draws reads one brand. A host may name one (Addresses); an app's record may name one (a form, a store, a
+# support brand); otherwise the default one; with none, the platform's own look. Its files are uploaded to the brand
+# and read by strangers only through /_brand/{workspace}/{brand}/{field} (crates/kernel/src/brand.rs).
+- name: Brand
+  label: Brand
+  label_plural: Brands
+  kind: master
+  module: setup
+  title_field: brand_name
+  description: "A name, a logo, a colour and a typeface for public pages. The colour is shown as given where text on it and around it reads well, and nudged until it does where it would not (see Shown Colour)."
+  fields:
+    - {name: brand_name, type: data, required: true, unique: true, in_list: true, max_length: 80}
+    - {name: is_default, type: check, in_list: true, label: Default, description: "The workspace's own: shown wherever nothing names another. One brand at most is the default"}
+    - {name: primary_color, type: color, required: true, default: "#3157d5", label: Colour}
+    - {name: primary_color_dark, type: color, label: Colour in Dark Mode, description: "Empty: made from the colour above"}
+    - {name: shown_color, type: data, read_only: true, no_copy: true, max_length: 7, label: Shown Colour, description: "What pages show in light mode, after the contrast check"}
+    - {name: shown_color_dark, type: data, read_only: true, no_copy: true, max_length: 7, label: Shown Colour in Dark Mode}
+    - {name: logo, type: attach, max_length: 300, description: "A PNG, JPEG or WebP image uploaded here, at most 2 MB"}
+    - {name: logo_dark, type: attach, max_length: 300, label: Logo in Dark Mode, description: "Empty: the logo"}
+    - {name: favicon, type: attach, max_length: 300, description: "A square PNG uploaded here"}
+    - {name: font, type: select, options: [Sans, Serif, Rounded, Mono, Own], default: Sans, required: true}
+    - {name: font_file, type: attach, max_length: 300, label: Own Typeface, description: "A WOFF2 file uploaded here, when Font is Own"}
+    - {name: footer_text, type: text, max_length: 1000, description: "Plain text under every public page"}
+    - {name: links, type: table, of: BrandLink, description: "Links under every public page: privacy, terms, contact (at most 8)"}
+  list: {columns: [brand_name, is_default, primary_color], sort: brand_name asc}
+
+- name: BrandLink
+  label: Brand Link
+  kind: child
+  fields:
+    - {name: label, type: data, required: true, max_length: 40, in_list: true}
+    - {name: url, type: data, required: true, max_length: 300, in_list: true, description: "https://…, mailto:… or a path of the page's own host (/privacy)"}

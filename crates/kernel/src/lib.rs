@@ -16,6 +16,7 @@ pub mod auth;
 pub mod authoring;
 pub mod automation;
 pub mod backfill;
+pub mod brand;
 pub mod bulk;
 pub mod capability;
 pub mod coedit;

@@ -213,6 +213,10 @@ pub(crate) async fn page_bootstrap(
     if let Some((to, until)) = st.shell.leaving(headers).await.map_err(err)? {
         boot["host"]["leaving"] = json!({"to": to, "until": until});
     }
+    // The portal wears the workspace's brand: the address's, else the default (docs/builder/decisions.md BD-79).
+    if kind_of_page == "portal" {
+        boot["brand"] = brand_boot(st, ctx.tenant, &ws.slug, host).await.map_err(err)?;
+    }
     // Web Push (§12.5): the key a device subscribes with, and whether this one has. None for
     // callers without a browser session, or a server whose vault is closed.
     boot["offline"] = offline(st, ctx, &kind).await.map_err(err)?;
@@ -446,6 +450,10 @@ async fn page(
     let mut parts = path.splitn(2, '/');
     let first = parts.next().unwrap_or_default();
     let rest = parts.next();
+    // A brand's stylesheet and files, on every host of its workspace (docs/builder/decisions.md BD-79).
+    if first == "_brand" {
+        return brand_asset(&st, &headers, rest.unwrap_or_default(), &q).await;
+    }
     let place = st.shell.place(&headers).await?;
     if let Some(res) = walled(&st, &headers, &place, first, shell::public_page(&path).is_some(), &q).await? {
         return Ok(res);
@@ -757,6 +765,7 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
     if !words.is_empty() {
         boot["locale"]["words"] = Value::Object(words);
     }
+    boot["brand"] = brand_boot(st, tenant, &ws.slug, shell::request_host(headers).unwrap_or_default()).await?;
     // Framed by the workspace's own pages, and by the sites set for this page alone (BD-24).
     let tail = rest.split_once('/').map(|(_, t)| t).unwrap_or_default();
     let frames = st.kernel.public_frame(tenant, &app.id, &format!("{page}/{tail}")).await?;
@@ -774,6 +783,47 @@ fn framed_by(csp: String, origins: &[String]) -> String {
         true => csp.replacen("frame-ancestors 'self'", &others, 1),
         false => csp.replace("frame-ancestors 'none'", &format!("frame-ancestors {}", origins.join(" "))),
     }
+}
+
+/// What a public or portal page of `tenant` served on `host` carries as `brand`: the address's brand, else the
+/// workspace's default; `null`: the platform's own look.
+async fn brand_boot(st: &AppState, tenant: Uuid, slug: &str, host: &str) -> ferrum_kernel::Result<Value> {
+    let host_brand = st.kernel.host_brand(host).await?;
+    Ok(st.kernel.public_brand(tenant, None, host_brand).await?.map_or(Value::Null, |b| b.boot(slug)))
+}
+
+/// `GET /_brand/{workspace}/{brand}.css` and `/_brand/{workspace}/{brand}/{file}` (`logo`, `logo_dark`, `favicon`,
+/// `font_file`): a brand's stylesheet and files, for anyone, on the workspace's own hosts (and hosts of no workspace) only.
+/// Not found alike for another workspace's host, an unknown brand or file, and a file whose bytes are not of a type its
+/// field takes; a file is served as the type its bytes show, never the one it was uploaded as. Cached for good at the
+/// record's version (`?v=`, which changes with the record), briefly otherwise.
+async fn brand_asset(st: &AppState, headers: &HeaderMap, rest: &str, q: &[(String, String)]) -> ApiResult<Response> {
+    let gone = || (StatusCode::NOT_FOUND, "not found").into_response();
+    let (slug, what) = rest.split_once('/').unwrap_or((rest, ""));
+    let (brand, part) = match what.split_once('/') {
+        Some((brand, part)) => (brand, Some(part)),
+        None => (what.strip_suffix(".css").unwrap_or(""), None),
+    };
+    let (Some(tenant), Ok(brand)) = (st.shell.workspace_by_slug(slug).await?, brand.parse::<Uuid>()) else { return Ok(gone()) };
+    if !st.shell.answers_for(headers, tenant).await? || st.shell.workspace(tenant).await?.status != "active" {
+        return Ok(gone());
+    }
+    let Some(b) = st.kernel.brand_by_id(tenant, brand).await? else { return Ok(gone()) };
+    let (ctype, body) = match part {
+        None => ("text/css; charset=utf-8", b.css(slug).into_bytes()),
+        Some(part) => match st.kernel.brand_file(tenant, brand, part).await? {
+            Some(found) => found,
+            None => return Ok(gone()),
+        },
+    };
+    let mut res = (StatusCode::OK, body).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ctype));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert("cross-origin-resource-policy", HeaderValue::from_static("same-site"));
+    let cache = if query(q, "v") == Some(b.version.as_str()) { "public, max-age=31536000, immutable" } else { "public, max-age=300" };
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
+    Ok(res)
 }
 
 /// `/portal/…`: the workspace's portal (docs/plan/apps-ui.md §9.1). Its home lists the pages the

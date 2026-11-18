@@ -21,6 +21,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use ferrum_kernel::action_link::{LinkFile, LinkPage, LinkSpec};
+use ferrum_kernel::brand::PublicBrand;
 use ferrum_kernel::{Error, Kernel};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
@@ -44,32 +45,40 @@ pub fn frame_headers(h: &mut HeaderMap, origins: &[String]) {
     }
 }
 
-fn style(color: Option<&str>) -> String {
-    let accent = color.unwrap_or("#1f5fbf");
+/// The page's own style. The accent and typeface are the platform's tokens, which a brand's stylesheet sets
+/// (docs/builder/decisions.md BD-79), with the platform's look as their fallback.
+fn style(branded: bool) -> String {
+    let accent = "var(--ferrum-primary,#1f5fbf)";
+    let scheme = if branded { ":root{color-scheme:light dark}" } else { "" };
     format!(
-        "body{{font:16px/1.5 system-ui,sans-serif;margin:0 auto;max-width:40rem;padding:1.5rem 1rem;color:#1d1d1f;background:#fff}}\
-         header{{border-top:4px solid {accent};padding-top:.75rem}}header p{{margin:0;color:#555}}h1{{font-size:1.4rem;margin:.25rem 0}}\
+        "{scheme}body{{font:16px/1.5 var(--ferrum-font,system-ui,sans-serif);margin:0 auto;max-width:40rem;padding:1.5rem 1rem;color:#1d1d1f;background:#fff}}\
+         header{{border-top:4px solid {accent};padding-top:.75rem}}header p{{margin:0;color:#555}}header img{{display:block;max-height:2.5rem;max-width:12rem;margin-bottom:.5rem}}h1{{font-size:1.4rem;margin:.25rem 0}}\
          dl{{display:grid;grid-template-columns:max-content 1fr;gap:.25rem 1rem}}dt{{font-weight:600}}dd{{margin:0}}\
          form{{border:1px solid #ddd;border-radius:6px;padding:1rem;margin:1rem 0}}label{{display:block;font-weight:600;margin:.5rem 0 .25rem}}\
          input,select,textarea{{font:inherit;width:100%;box-sizing:border-box;padding:.4rem;border:1px solid #888;border-radius:4px}}\
-         button{{font:inherit;margin-top:.75rem;padding:.5rem 1rem;border:0;border-radius:4px;background:{accent};color:#fff;cursor:pointer}}\
+         button{{font:inherit;margin-top:.75rem;padding:.5rem 1rem;border:0;border-radius:4px;background:{accent};color:var(--ferrum-primary-text,#fff);cursor:pointer}}\
          button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{{outline:3px solid {accent};outline-offset:2px}}\
          .error{{color:#a00;font-weight:600}}table{{border-collapse:collapse;width:100%;margin:1rem 0}}caption{{text-align:left;font-weight:600}}\
-         th,td{{border-bottom:1px solid #ddd;padding:.25rem .5rem;text-align:left}}\
-         @media (prefers-color-scheme:dark){{body{{color:#eee;background:#161618}}header p{{color:#aaa}}form{{border-color:#333}}}}"
+         th,td{{border-bottom:1px solid #ddd;padding:.25rem .5rem;text-align:left}}footer{{margin-top:2rem;color:#555;font-size:.9rem}}footer a{{color:inherit;margin-inline-end:1rem}}\
+         @media (prefers-color-scheme:dark){{body{{color:#eee;background:#161618}}header p,footer{{color:#aaa}}form{{border-color:#333}}}}"
     )
 }
 
 /// The page, with its own headers: no script, only its own style, posting only to itself, framed only by `frames`.
-fn html(status: StatusCode, language: &str, title: &str, color: Option<&str>, body: &str, frames: &[String]) -> Response {
-    let css = style(color);
+/// `brand`: the brand the page wears and its workspace's address name: its stylesheet and favicon in the head, its
+/// files, typeface and stylesheet allowed from the page's own origin.
+fn html(status: StatusCode, language: &str, title: &str, brand: Option<(&PublicBrand, &str)>, body: &str, frames: &[String]) -> Response {
+    let css = style(brand.is_some());
     let page = format!(
-        r#"<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><meta name="referrer" content="no-referrer"><title>{title}</title><style>{css}</style></head><body>{body}</body></html>"#,
+        r#"<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><meta name="referrer" content="no-referrer"><title>{title}</title><style>{css}</style>{head}</head><body>{body}</body></html>"#,
         lang = esc(language),
         title = esc(title),
+        head = brand.map(|(b, slug)| b.head(slug)).unwrap_or_default(),
     );
     let hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(css.as_bytes()));
-    let csp = format!("default-src 'none'; style-src 'sha256-{hash}'; base-uri 'none'; form-action 'self'; {}", frame_policy(frames));
+    let own = if brand.is_some() { "'self' " } else { "" };
+    let more = if brand.is_some() { " img-src 'self'; font-src 'self';" } else { "" };
+    let csp = format!("default-src 'none'; style-src {own}'sha256-{hash}';{more} base-uri 'none'; form-action 'self'; {}", frame_policy(frames));
     let mut r = (status, page).into_response();
     let h = r.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
@@ -155,8 +164,21 @@ fn page_of(p: &LinkPage, error: Option<&str>, refused: bool) -> Response {
             esc(label)
         ));
     }
-    let body = format!("<header><p>{}</p><h1>{}</h1></header><main>{error}{intro}{fields}{tables}{forms}</main>", esc(&p.workspace), esc(&p.heading));
-    html(if refused { StatusCode::UNPROCESSABLE_ENTITY } else { StatusCode::OK }, &p.language, &p.heading, p.color.as_deref(), &body, &p.frame_origins)
+    let brand = p.brand.as_ref().map(|b| (b, p.slug.as_str()));
+    // The brand's logo, else the workspace's name, over the heading; its footer text and links under the page.
+    let logo = brand.and_then(|(b, slug)| b.file_href(slug, "logo").map(|href| format!(r#"<img src="{}" alt="{}">"#, esc(&href), esc(&b.name))));
+    let masthead = logo.unwrap_or_else(|| format!("<p>{}</p>", esc(&p.workspace)));
+    let footer = brand.map(|(b, _)| footer_of(b)).unwrap_or_default();
+    let body = format!("<header>{masthead}<h1>{}</h1></header><main>{error}{intro}{fields}{tables}{forms}</main>{footer}", esc(&p.heading));
+    html(if refused { StatusCode::UNPROCESSABLE_ENTITY } else { StatusCode::OK }, &p.language, &p.heading, brand, &body, &p.frame_origins)
+}
+
+/// A brand's footer text and links, escaped (each link already [`ferrum_kernel::brand::safe_link`]); nothing when it has none.
+fn footer_of(b: &PublicBrand) -> String {
+    let links: String = b.links.iter().map(|(label, url)| format!(r#"<a href="{}">{}</a>"#, esc(url), esc(label))).collect();
+    let text = if b.footer_text.is_empty() { String::new() } else { format!("<p>{}</p>", esc(&b.footer_text)) };
+    let links = if links.is_empty() { links } else { format!("<nav>{links}</nav>") };
+    if text.is_empty() && links.is_empty() { String::new() } else { format!("<footer>{text}{links}</footer>") }
 }
 
 async fn limited(st: &crate::state::AppState, headers: &HeaderMap, workspace: &str) -> Result<(), Response> {
@@ -317,11 +339,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn page_uses_the_brand_css() {
+        let brand = PublicBrand {
+            id: Uuid::nil(),
+            name: "Acme \"Ltd\"".into(),
+            version: "00000000002a".into(),
+            files: vec!["logo"],
+            footer_text: "<b>Acme</b> Ltd".into(),
+            links: vec![("Privacy & terms".into(), "/privacy".into())],
+            tokens: ferrum_kernel::brand::tokens("#ffff00", None),
+            font: "Serif".into(),
+        };
+        let mut p = LinkPage {
+            tenant: Uuid::nil(),
+            workspace: "Acme".into(),
+            slug: "acme".into(),
+            brand: Some(brand),
+            language: "en".into(),
+            kind: "Quote".into(),
+            title: "Q-1".into(),
+            heading: "Quote Q-1".into(),
+            intro: None,
+            fields: vec![],
+            tables: vec![],
+            actions: vec![],
+            code: None,
+            frame_origins: vec![],
+        };
+        let r = page_of(&p, None, false);
+        let csp = r.headers().get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap().to_string();
+        assert!(csp.contains("style-src 'self' 'sha256-") && csp.contains("img-src 'self'") && !csp.contains("unsafe") && !csp.contains("script"), "{csp}");
+        let html = String::from_utf8(axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+        let id = Uuid::nil();
+        assert!(html.contains(&format!(r#"<link rel="stylesheet" href="/_brand/acme/{id}.css?v=00000000002a">"#)), "{html}");
+        assert!(html.contains(&format!(r#"<img src="/_brand/acme/{id}/logo?v=00000000002a" alt="Acme &quot;Ltd&quot;">"#)), "{html}");
+        assert!(html.contains(r#"<footer><p>&lt;b&gt;Acme&lt;/b&gt; Ltd</p><nav><a href="/privacy">Privacy &amp; terms</a></nav></footer>"#), "{html}");
+        assert!(!html.contains("#ffff00") && !html.contains("<b>"), "no colour or text of the record in the page itself: {html}");
+
+        // No brand: the platform's look, nothing linked, nothing loaded from anywhere.
+        p.brand = None;
+        let r = page_of(&p, None, false);
+        let csp = r.headers().get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap().to_string();
+        assert!(csp.starts_with("default-src 'none'; style-src 'sha256-") && !csp.contains("img-src"), "{csp}");
+        let html = String::from_utf8(axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+        assert!(!html.contains("/_brand/") && !html.contains("<footer") && html.contains("<header><p>Acme</p>"), "{html}");
+    }
+
+    #[tokio::test]
     async fn the_page_runs_nothing_escapes_everything_and_labels_every_box() {
         let p = LinkPage {
             tenant: Uuid::nil(),
             workspace: "A & B".into(),
-            color: Some("#123456".into()),
+            slug: "ab".into(),
+            brand: None,
             language: "en".into(),
             kind: "Quote".into(),
             title: "<script>".into(),

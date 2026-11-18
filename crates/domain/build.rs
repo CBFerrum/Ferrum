@@ -26,6 +26,9 @@ fn main() {
     // this script's binary from one that may since be gone.
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
     let root = Path::new(&manifest).join("../../packages");
+    // Checkouts that share a target directory share this script's output: each has its own BUILD_DATE (the lane
+    // files), so going from one to another embeds this one's packages again.
+    println!("cargo:rerun-if-env-changed=BUILD_DATE");
     let mut code = String::from("// (package, path inside the package, content)\npub static EMBEDDED: &[(&str, &str, &str)] = &[\n");
     for pkg in PACKAGES {
         let dir = root.join(pkg);

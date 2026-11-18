@@ -293,7 +293,8 @@ fn text_or_null(key: &str, v: &Value) -> Result<Option<String>, Error> {
 
 /// `PATCH /api/admin/domains/{host}`: changes what a `shell` address shows, any of `home`, `apps` and `label` (`null`
 /// clears one; one left out stays), and whether it forwards (`forward`, true or false). Never its zone, and never an
-/// operator's address.
+/// operator's address. `brand` (a Brand's id, or `null` for the workspace's default) is the brand its pages wear, for
+/// an address of any target but `mail` (docs/builder/decisions.md BD-79).
 async fn reshape(
     Auth(ctx): Auth,
     State(app): State<AppContext>,
@@ -303,9 +304,14 @@ async fn reshape(
     admin(&ctx)?;
     let st = app_state(&app)?;
     let mut patch = HostPatch::default();
+    let mut brand = None;
     for (k, v) in &body {
         match k.as_str() {
             "zone" => return Err(Error::field("zone", ZONES_ARE_THE_OPERATORS).into()),
+            "brand" => {
+                let id = text_or_null(k, v)?.map(|s| s.parse::<uuid::Uuid>()).transpose();
+                brand = Some(id.map_err(|_| Error::field("brand", "must be a brand's id, or null for the workspace's default"))?);
+            }
             "home" => patch.home = Some(text_or_null(k, v)?),
             "label" => patch.label = Some(text_or_null(k, v)?),
             "forward" => patch.forward = Some(v.as_bool().ok_or_else(|| Error::field("forward", "must be true or false"))?),
@@ -317,11 +323,18 @@ async fn reshape(
                     ),
                 })
             }
-            other => return Err(Error::field(other, "is not something an address shows here (home, apps, label, forward)").into()),
+            other => return Err(Error::field(other, "is not something an address shows here (home, apps, label, forward, brand)").into()),
         }
     }
     check_choices(&st, &ctx, patch.home.clone().flatten().as_deref(), patch.apps.clone().flatten().as_deref()).await?;
-    let changed = st.kernel.shape_host(&ctx, &host, &patch).await?;
+    if let Some(brand) = brand {
+        st.kernel.set_host_brand(&ctx, &host, brand).await?;
+    }
+    let changed = match patch == HostPatch::default() && brand.is_some() {
+        true => st.kernel.list_hosts(&ctx).await?.into_iter().find(|h| Some(h.host.as_str()) == ferrum_kernel::shell::normalize_host(&host).as_deref()),
+        false => Some(st.kernel.shape_host(&ctx, &host, &patch).await?),
+    }
+    .ok_or_else(|| Error::NotFound("no such domain".into()))?;
     let apps = st.apps.shell_apps_for(&ctx).await?;
     Ok(Json(listed(&changed, &apps, st.kernel.settings.domain_proof)).into_response())
 }

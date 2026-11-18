@@ -655,6 +655,12 @@ Pages, for browsers, with the session cookie:
   v1, kept by browsers for five minutes. Pages name `runtime.js`, `portal.js`, `login.js` and `pages.css`
   with their digest (`?v={digest}`): that address is kept for a year (`immutable`), and a server with
   other files names another. `GET /_shell/theme/{hash}.css` → the theme.
+* `GET /_brand/{workspace}/{brand}.css` → a Brand's stylesheet (its accent as shown and its typeface, as the `--ferrum-*`
+  and the kit's tokens), and `GET /_brand/{workspace}/{brand}/{logo|logo_dark|favicon|font_file}` → one of its files,
+  typed by its bytes (PNG, JPEG, WebP, WOFF2): no session, `nosniff`, kept a year at the record's version (`?v=`). `404`
+  alike on another workspace's host, for a brand or file that is not there, or a file that is not of its field's type.
+  Public and portal pages carry `brand` (`{id, name, css, logo, logo_dark, favicon, footer_text, links}`, or `null`) in
+  their bootstrap and link the stylesheet after the theme ([BD-79](builder/decisions.md#bd-79-one-brand-every-public-page-reads)).
 
 **Keys the bar keeps.** The bar takes Ctrl/Cmd+K (its search) before a page's own handlers see it,
 except inside an element that claims it: `data-ferrum-keys="mod+k"` on the editable region or any
@@ -834,6 +840,8 @@ zone.
   out stays, `null` clears it (`apps: null` lists every app); `forward` is `true` or `false`, never on the main address
   (`422`), and one that served starts forwarding after its leaving period (`leaving_until`). → the address as the list shows it. `zone` or any other key:
   `422`. An operator's address: `403`, "this address is the operator's: only the operator changes or removes it".
+  `brand` (a Brand's id, or `null` for the workspace's default) is the brand the address's pages wear, on an address of
+  any target but `mail`; a brand that is not the workspace's: `422` ([BD-79](builder/decisions.md#bd-79-one-brand-every-public-page-reads)).
 * `DELETE /api/admin/domains/{host}` removes a custom domain or a name under the base → `{host, leaving_until}`: one in
   use keeps serving the people signed in there until `leaving_until`, then redirects (`null`: it stopped at once, being
   never verified, a domain for mail or with `FERRUM_HOST_LEAVING_DAYS=0`); the main address hands its place to another of the workspace's
