@@ -39,6 +39,13 @@ pub const LISTENERS: u32 = 5;
 /// window's, a bucket's set-up, the old files directory's rescue and move, a workspace's move) are outside that count.
 pub const DIRECT_LOCKS: u32 = 1;
 
+/// The session locks a server replica takes on a connection detached from [`Db::direct`], so outside every pool's
+/// maximum, at most at once: at start the two-version window's (crate::window, then its start hold, one after the
+/// other); while it runs the bucket's set-up (until it has worked once) and the old files directory's rescue (hourly,
+/// while that directory is read) (server/src/store.rs). A task that moves a workspace or the files holds one more, in a
+/// process of its own.
+pub const DETACHED_LOCKS: u32 = 2;
+
 /// How many workspaces' app upkeep a replica runs at once unless `FERRUM_UPKEEP_CONCURRENCY` says otherwise
 /// ([`DbConfig::upkeep`]).
 pub const UPKEEP_AT_ONCE: u32 = 4;

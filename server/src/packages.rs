@@ -555,6 +555,20 @@ pub async fn sync(k: &Kernel, apps: &[UpkeepApp]) -> ferrum_kernel::Result<bool>
     Ok(true)
 }
 
+/// The custom domains due a check (docs/plan/apps-ui.md §7), checked once whichever replicas ask: under a transaction
+/// lock held while they are checked, so a replica that comes after finds them checked (each check records it on the
+/// domain) and one that comes meanwhile leaves them. The checks call outside, at most six domains of ten seconds each:
+/// this transaction may wait that long between its statements.
+async fn domain_checks(k: &Kernel) -> ferrum_kernel::Result<()> {
+    let mut tx = k.db.system_tx().await?;
+    sqlx::query("set local idle_in_transaction_session_timeout = '120s'").execute(&mut *tx).await?;
+    if sqlx::query_scalar::<_, bool>("select pg_try_advisory_xact_lock(hashtext('ferrum:domain_checks'))").fetch_one(&mut *tx).await? {
+        k.check_hosts().await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// A row this replica holds, until its lease (the row's `due_at` while held) ends.
 struct Claim {
     tenant: Uuid,
@@ -648,7 +662,7 @@ pub fn spawn(k: Arc<Kernel>, shutdown: watch::Receiver<bool>) -> tokio::task::Jo
 }
 
 /// The upkeep runner. Once a [`Pace::sync`] it brings the rows in line with what is installed ([`sync`], one replica at
-/// a time, which then checks the custom domains due). Whenever a slot is free it claims the rows due, the longest
+/// a time) and checks the custom domains due ([`domain_checks`], each once). Whenever a slot is free it claims the rows due, the longest
 /// waiting first (an app already holding half its slots after the others), and runs each app's upkeep for its workspace in a task of its own, as that workspace's work
 /// (`sandbox::in_hand`), within [`Pace::limit`]; then records the outcome on the row ([`record`]). Stopping, it lets
 /// its runs finish for [`Pace::grace`], stops the rest and gives their rows back.
@@ -666,18 +680,16 @@ pub fn spawn_with(k: Arc<Kernel>, apps: Vec<UpkeepApp>, pace: Pace, mut shutdown
             if synced.is_none_or(|t| t.elapsed() >= pace.sync) {
                 synced = Some(Instant::now());
                 drained = false;
-                match sync(&k, &apps).await {
-                    // Custom domains due a check (docs/plan/apps-ui.md §7), by the replica that took this minute's sync.
-                    Ok(true) if checks.as_ref().is_none_or(|c| c.is_finished()) => {
-                        let k = k.clone();
-                        checks = Some(tokio::spawn(async move {
-                            if let Err(e) = k.check_hosts().await {
-                                tracing::warn!("checking custom domains failed: {e}");
-                            }
-                        }));
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!("upkeep: bringing the rows in line with what is installed failed: {e}"),
+                if let Err(e) = sync(&k, &apps).await {
+                    tracing::warn!("upkeep: bringing the rows in line with what is installed failed: {e}");
+                }
+                if checks.as_ref().is_none_or(|c| c.is_finished()) {
+                    let k = k.clone();
+                    checks = Some(tokio::spawn(async move {
+                        if let Err(e) = domain_checks(&k).await {
+                            tracing::warn!("checking custom domains failed: {e}");
+                        }
+                    }));
                 }
             }
             let free = pace.slots.saturating_sub(running.len());

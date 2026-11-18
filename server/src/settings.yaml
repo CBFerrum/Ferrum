@@ -245,8 +245,8 @@
   path: settings.db_max_connections
   doc: >-
     Pool size per replica (default 30). The replica's own job workers and event loops hold at most a quarter of it
-    and 10 more at once (17 of 30): the event dispatcher and the webhook sender take a quarter together, however much is
-    queued. Below 14 they can hold it all and requests wait behind them; the server warns as it starts, and `ferrum
+    and 14 more at once (21 of 30, with four workspaces' upkeep at once): the event dispatcher and the webhook sender
+    take a quarter together, however much is queued. Below 19 they can hold it all and requests wait behind them; the server warns as it starts, and `ferrum
     task doctor` says so.
 - key: database_direct_url
   env: FERRUM_DATABASE_DIRECT_URL
