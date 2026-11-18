@@ -20,6 +20,7 @@ use sha2::Sha256;
 use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -40,6 +41,8 @@ const TENANT_SHARE: i64 = 10;
 const BATCH: i64 = 50;
 /// The longest one event's handlers may take before it counts as failed and is retried.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long an event waits when a sink of it was at its share of the turns ([`Sinks`]).
+const DEFER_SECS: u64 = 5;
 
 /// Outbox topic of mail queued with [`Kernel::queue_mail`]; never fanned out to webhooks.
 pub const MAIL_TOPIC: &str = "ferrum.mail";
@@ -305,6 +308,75 @@ pub async fn first_time(tx: &mut Tx, tenant: Uuid, consumer: &str, event: i64) -
     .await?)
 }
 
+/// A replica's event sinks at work (`Kernel::sinks`): while other workspaces' events wait for a turn, one sink may be
+/// running in at most half of the dispatcher's turns, so one app's slow provider, called from many workspaces at once,
+/// cannot hold them all. With nothing else waiting it may use them all. A call over the share waits a moment for one of
+/// the sink's calls to end, so a fast sink that is merely busy goes on; only one whose calls are held is put off.
+#[derive(Default)]
+pub(crate) struct Sinks {
+    /// Calls in progress, by sink.
+    running: std::sync::Mutex<HashMap<String, usize>>,
+    /// Calls put off because the sink was at its share, by sink, since the process started.
+    deferred: std::sync::Mutex<BTreeMap<String, u64>>,
+    /// Workspaces' shares on this replica ready to begin their next event and waiting for a turn: the work a sink past
+    /// its share would keep waiting.
+    waiting: AtomicUsize,
+    /// Told when a call ends.
+    ended: tokio::sync::Notify,
+}
+
+/// How long a call over its sink's share waits for one of the sink's calls to end before it is put off.
+const SHARE_GRACE: Duration = Duration::from_millis(100);
+
+/// A sink's call in progress, counted until it is dropped.
+struct Slot<'a>(&'a Sinks, String);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        if let Some(n) = self.0.running.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&self.1) {
+            *n -= 1;
+        }
+        self.0.ended.notify_waiters();
+    }
+}
+
+/// A share waiting for a turn, counted in [`Sinks::waiting`] until dropped.
+struct Waiting<'a>(&'a Sinks);
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.waiting.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Sinks {
+    fn waiting(&self) -> Waiting<'_> {
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        Waiting(self)
+    }
+
+    /// A call of `sink` may begin, out of `share`: below it, or with no share waiting for a turn. Over it, it waits
+    /// [`SHARE_GRACE`] for one of the sink's calls to end; if none does, it is counted as put off.
+    async fn slot(&self, sink: &str, share: usize) -> Option<Slot<'_>> {
+        let until = tokio::time::Instant::now() + SHARE_GRACE;
+        loop {
+            let ended = self.ended.notified();
+            {
+                let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+                let n = running.entry(sink.to_string()).or_default();
+                if *n < share || self.waiting.load(Ordering::SeqCst) == 0 {
+                    *n += 1;
+                    return Some(Slot(self, sink.to_string()));
+                }
+            }
+            if tokio::time::timeout_at(until, ended).await.is_err() {
+                *self.deferred.lock().unwrap_or_else(|e| e.into_inner()).entry(sink.to_string()).or_default() += 1;
+                return None;
+            }
+        }
+    }
+}
+
 /// How long a claimed batch is reserved for the worker that claimed it: what it has not begun by then may pass to
 /// another replica, so a replica that dies holding a batch delays it this long at most.
 const CLAIM_SECS: f64 = 30.0;
@@ -331,6 +403,12 @@ impl Kernel {
     /// or webhook's secret holds a connection: together they never hold more than their share.
     async fn turn(&self) -> Result<tokio::sync::SemaphorePermit<'_>> {
         self.background.acquire().await.map_err(Error::internal)
+    }
+
+    /// How many times each event sink was put off at its share of this replica's turns since the process started ([`Sinks`]),
+    /// for `/metrics` beside the outbox's figures: one that keeps growing is a sink whose provider is slow.
+    pub fn sink_deferrals(&self) -> Vec<(String, u64)> {
+        self.sinks.deferred.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, v)| (k.clone(), *v)).collect()
     }
 
     /// Claims and handles one batch. Returns how many events were processed.
@@ -399,9 +477,14 @@ impl Kernel {
 
     /// One workspace's share of a batch, one event at a time, in the order the claim gave it: most urgent first, then oldest.
     async fn handle_events(&self, events: Vec<Event>, stopping: &watch::Receiver<bool>) -> Result<()> {
+        // The sinks put off for an event of this share are put off for the rest of it, so each sees them in order.
+        let put_off = std::sync::Mutex::new(Vec::new());
         for (begun, ev) in events.iter().enumerate() {
             // Workspaces are handled side by side, as many at once as there are turns.
-            let _turn = self.turn().await?;
+            let _turn = {
+                let _waiting = self.sinks.waiting();
+                self.turn().await?
+            };
             // The replica is stopping: what it has not begun goes back now, not when the claim runs out.
             if *stopping.borrow() {
                 let rest: Vec<i64> = events[begun..].iter().map(|e| e.id).collect();
@@ -418,10 +501,11 @@ impl Kernel {
             // afresh. If it has passed to another worker meanwhile, it is theirs, and running it
             // here too would do the work twice. Once a move is planned, the rest of the batch waits for its copy.
             let mut tx = self.db.system_tx().await?;
-            let lease: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+            let lease: Option<(chrono::DateTime<chrono::Utc>, bool)> = sqlx::query_as(
                 "update outbox set available_at = now() + make_interval(secs => $3) \
                  where id = $1 and available_at = $2 and processed_at is null and not dead \
-                   and not exists (select 1 from platform_move) and not ferrum_workspace_held(tenant_id) returning available_at",
+                   and not exists (select 1 from platform_move) and not ferrum_workspace_held(tenant_id) \
+                 returning available_at, attempts = 0 and last_error is null",
             )
             .bind(ev.id)
             .bind(ev.lease)
@@ -429,13 +513,14 @@ impl Kernel {
             .fetch_optional(&mut *tx)
             .await?;
             tx.commit().await?;
-            let Some(lease) = lease else { continue };
+            // `first`: never tried before, nor put off.
+            let Some((lease, first)) = lease else { continue };
             // A sandbox sends nothing outside: what it queued for outside is set aside, saying so (sandbox.rs).
             if let Some(why) = self.sandbox_holds(ev).await? {
                 self.set_event_aside(ev.id, lease, &why).await?;
                 continue;
             }
-            if let Some(why) = self.chain_stops(ev).await? {
+            if let Some(why) = self.chain_stops(ev, first).await? {
                 // Stopped before any handler runs, and kept where administrators look, saying why.
                 tracing::warn!(event = ev.id, topic = %ev.topic, "event chain stopped: {why}");
                 let mut tx = self.db.system_tx().await?;
@@ -459,7 +544,8 @@ impl Kernel {
             };
             // The sinks that handle it, kept here so that they are known however the attempt ends.
             let handled = std::sync::Mutex::new(Vec::new());
-            let outcome = trace.scope(tokio::time::timeout(EVENT_TIMEOUT, crate::sandbox::in_hand(ev.tenant_id, self.handle_event(ev, &handled)))).await;
+            let outcome =
+                trace.scope(tokio::time::timeout(EVENT_TIMEOUT, crate::sandbox::in_hand(ev.tenant_id, self.handle_event(ev, first, &handled, &put_off)))).await;
             let outcome = outcome.unwrap_or_else(|_| Err(Error::Unavailable(format!("handlers took longer than {} s", EVENT_TIMEOUT.as_secs()))));
             let mut tx = self.db.system_tx().await?;
             match outcome {
@@ -471,8 +557,14 @@ impl Kernel {
                         .await?;
                 }
                 Err(e) => {
-                    let attempts = ev.attempts + 1;
-                    tracing::warn!(event = ev.id, topic = %ev.topic, attempts, "outbox handler failed: {e}");
+                    // Put off for a sink's share of the turns: not an attempt, and back soon.
+                    let (attempts, delay) = match &e {
+                        Error::Wait(_, secs) => (ev.attempts, *secs as f64),
+                        _ => (ev.attempts + 1, backoff(ev.attempts + 1)),
+                    };
+                    if attempts > ev.attempts {
+                        tracing::warn!(event = ev.id, topic = %ev.topic, attempts, "outbox handler failed: {e}");
+                    }
                     sqlx::query(
                         "update outbox set attempts = $2, last_error = $3, dead = $4, \
                          available_at = now() + make_interval(secs => $5) where id = $1 and available_at = $6",
@@ -481,7 +573,7 @@ impl Kernel {
                     .bind(attempts)
                     .bind(e.to_string())
                     .bind(attempts >= MAX_ATTEMPTS)
-                    .bind(backoff(attempts))
+                    .bind(delay)
                     .bind(lease)
                     .execute(&mut *tx)
                     .await?;
@@ -504,14 +596,14 @@ impl Kernel {
     /// or that change has been followed by too many events. Checked here, before any handler, so it holds
     /// whichever apps, automations, plugins or processes answer one another (FLC-HOOK-008). A request's or
     /// job's own events never count: an import of ten thousand rows is one step, not a loop.
-    async fn chain_stops(&self, ev: &Event) -> Result<Option<String>> {
+    async fn chain_stops(&self, ev: &Event, first: bool) -> Result<Option<String>> {
         if ev.depth == 0 {
             return Ok(None);
         }
         let correlation = ev.correlation_id.clone().unwrap_or_else(|| format!("event-{}", ev.id));
         let mut tx = self.db.system_tx().await?;
         // Counted once per event, not once per attempt.
-        let events: i32 = if ev.attempts == 0 {
+        let events: i32 = if first {
             sqlx::query_scalar(
                 "insert into event_chain (tenant_id, correlation_id, events) values ($1, $2, 1) \
                  on conflict (tenant_id, correlation_id) do update set events = event_chain.events + 1 returning events",
@@ -692,7 +784,9 @@ impl Kernel {
     /// Hands an event to everything that consumes it: webhooks, followers, automations and the event sinks. Each
     /// automation and each sink stands alone: one that fails makes the event fail for itself, the rest still run. The
     /// names of the sinks that handled it go into `handled`, which the caller records if the event is to be tried again.
-    async fn handle_event(&self, ev: &Event, handled: &std::sync::Mutex<Vec<String>>) -> Result<()> {
+    /// A sink at its share of the turns ([`Sinks`]) is put off: the event comes back for it after a few seconds, which is
+    /// not an attempt (`Error::Wait`), and later events of the share put it off too (`put_off`).
+    async fn handle_event(&self, ev: &Event, first: bool, handled: &std::sync::Mutex<Vec<String>>, put_off: &std::sync::Mutex<Vec<String>>) -> Result<()> {
         if ev.topic == RELEASE_TOPIC {
             let store = self.files.get().ok_or_else(|| Error::Unavailable("no file storage is configured".into()))?;
             let own = format!("tenants/{}/", ev.tenant_id);
@@ -758,9 +852,7 @@ impl Kernel {
             let event = ev.payload.get("event").and_then(Value::as_str).unwrap_or("updated");
             let actor = ev.payload.get("actor").and_then(Value::as_str).and_then(|s| s.parse().ok());
             let doc = ev.payload.get("doc").and_then(Value::as_object);
-            if ev.attempts == 0
-                && let Err(e) = self.notify_followers(ev.tenant_id, entity, id, event, actor, doc).await
-            {
+            if first && let Err(e) = self.notify_followers(ev.tenant_id, entity, id, event, actor, doc).await {
                 tracing::warn!(topic = %ev.topic, "follower notifications failed: {e}");
             }
         }
@@ -802,13 +894,30 @@ impl Kernel {
         if let Err(e) = crate::automation::run_for_event(self, ev).await {
             failed.push(format!("automations: {e}"));
         }
+        let share = (crate::db::background_connections(self.db.config.max_connections) as usize / 2).max(1);
+        let mut waiting = Vec::new();
         for (name, sink) in sinks.into_iter().filter(|(name, _)| !before.iter().any(|b| b == name)) {
+            let off = put_off.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|o| o == name);
+            let slot = if off { None } else { self.sinks.slot(name, share).await };
+            if slot.is_none() && !off {
+                put_off.lock().unwrap_or_else(|e| e.into_inner()).push(name.to_string());
+            }
+            let Some(_slot) = slot else {
+                waiting.push(name);
+                continue;
+            };
             match sink.on_event(self, ev).await {
                 Ok(()) => handled.lock().unwrap_or_else(|e| e.into_inner()).push(name.to_string()),
                 Err(e) => failed.push(format!("{name}: {e}")),
             }
         }
-        if failed.is_empty() { Ok(()) } else { Err(Error::Unavailable(failed.join("; "))) }
+        if !failed.is_empty() {
+            Err(Error::Unavailable(failed.join("; ")))
+        } else if !waiting.is_empty() {
+            Err(Error::Wait(format!("waiting for a turn: {} at its share of this replica's", waiting.join(", ")), DEFER_SECS))
+        } else {
+            Ok(())
+        }
     }
 
     /// Drains the outbox until shutdown. Each workspace's share of a claim is handled in a task of its own, and the next

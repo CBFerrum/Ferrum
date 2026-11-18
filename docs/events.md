@@ -52,7 +52,9 @@ the sinks that handled it are recorded in `event_receipt` under their names (`{a
 (what an attempt handled is recorded when it ends), so a sink whose work must happen once asks
 `outbox::first_time` in the transaction that does it. A call outside cannot be in that transaction: a sink
 that makes one sends a key the other side knows a repeat by (`{app}.{what}:{event id}` as an
-`Idempotency-Key`, or the provider's own reference for the document), or asks the other side first. An event
+`Idempotency-Key`, or the provider's own reference for the document), or asks the other side first. A call that can
+take long belongs in a job, which has its own timeout and retries: in a sink it holds a turn of the dispatcher, and
+past its share (*Fairness*) the sink is slowed, its events waiting, rather than failed. An event
 whose record was erased while it waited carries nothing of the record any more (it says `erased`): it reaches
 no webhook, follower, automation or sink, and counts as handled.
 
@@ -67,9 +69,16 @@ Anything that depends on order compares `source_version`.
 share on its own, side by side. The next batch does not wait for the slowest share: it is claimed while shares are
 still at work, leaving out their workspaces. So one workspace's backlog, or its slow provider, delays its own events
 and no one else's. Side by side means as many events at once as a quarter of the replica's database pool (7 of the
-default 30), shared with the webhook sender's reads, so that a backlog never takes the connections requests need;
-slow providers holding all of those at once (one app's portal that is down, called from seven workspaces) delay the
-rest by up to their handlers' 120 seconds. A replica's whole budget
+default 30), shared with the webhook sender's reads, so that a backlog never takes the connections requests need.
+One event sink, by its name, may be at work in at most half of those (3 of 7) while other workspaces' events wait for
+one, so one app's portal that is down, called from many workspaces at once, cannot hold them all; with nothing else
+waiting it may use them all, and what arrives after it did waits for the first of its calls to end. A call over the
+share waits a tenth of a second for one of the sink's calls to end, so a fast sink that is merely busy goes on; if none
+ends, the event is put off for that sink alone: the consumers with room handle it and keep their receipts, and it
+comes back for that sink 5 seconds later, which is not an attempt (an outage does not walk events to dead) and leaves
+`last_error` saying so. The sink still sees each workspace's events in order, for once a sink is put off, the rest of
+its workspace's share is put off for it too; it may see them after other sinks have seen later ones.
+`Kernel::sink_deferrals` counts the put-offs per sink since the replica started. A replica's whole budget
 is its main pool, the side pool, the direct pool (the listening connection and session locks, which never take a request's connection),
 and the read pool when a read address is set (docs/operations.md, "Database role").
 Within a workspace, mail and push go first and bulk work last: bulk operations, imports, jobs at
