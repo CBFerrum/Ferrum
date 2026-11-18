@@ -1108,7 +1108,10 @@ impl Kernel {
                 tokio::select! {
                     changed = shutdown.changed() => if changed.is_err() { break },
                     // A share is done: there is room again, and its workspace may be claimed at the next look.
-                    Some(done) = running.join_next_with_id(), if !running.is_empty() => ended(done, &mut in_hand),
+                    Some(done) = running.join_next_with_id(), if !running.is_empty() => {
+                        ended(done, &mut in_hand);
+                        next = tokio::time::Instant::now();
+                    }
                     _ = woken.changed() => next = next.min(tokio::time::Instant::now() + pace.woken()),
                     _ = tokio::time::sleep_until(next), if running.len() < room => {}
                 }
