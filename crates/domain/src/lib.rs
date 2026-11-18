@@ -30,7 +30,9 @@ pub fn packages() -> std::result::Result<Vec<ferrum_meta::Package>, ferrum_meta:
 pub fn register(h: &mut HookRegistry) {
     let only = |p: &str| vec![p.to_string()];
     h.scoped(&only("core"), |h| {
-        h.register("Company", Arc::new(countries::CountryHook)).register("Brand", Arc::new(brand::BrandHook));
+        h.register("Company", Arc::new(countries::CountryHook))
+            .register("Brand", Arc::new(brand::BrandHook))
+            .register("Embedding", Arc::new(brand::EmbeddingHook));
     });
     h.scoped(&only("contacts"), |h| {
         h.register("Contact", Arc::new(contacts::ContactHook)).register("Address", Arc::new(contacts::AddressHook));

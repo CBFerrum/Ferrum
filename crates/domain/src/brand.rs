@@ -2,6 +2,7 @@
 //! computes the colours pages show (`shown_color`, `shown_color_dark`: the accent nudged to 4.5:1 in light and dark,
 //! [`ferrum_kernel::brand::tokens`]), so what is served is what the record shows; checks its files are images (or a
 //! typeface) uploaded for this brand and its links are safe to put on a page; and keeps one default brand at most.
+//! Beside it, the Embedding record: which outside sites may frame which public pages (BD-80).
 
 use crate::util::{b, id, rows, s, set};
 use async_trait::async_trait;
@@ -99,5 +100,58 @@ impl DocHook for BrandHook {
             .execute(&mut **hc.tx)
             .await?;
         Ok(())
+    }
+}
+
+/// The Embedding record (docs/builder/decisions.md BD-80): a page is a plain path of lower-case words (no wildcard:
+/// it is compared as text), its origins are outside origins, one per line, ten at most.
+pub struct EmbeddingHook;
+
+/// `forms/f/contact`: one to eight parts of lower-case letters, digits and dashes.
+pub fn embed_page(page: &str) -> bool {
+    let parts: Vec<&str> = page.split('/').collect();
+    parts.len() <= 8 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
+}
+
+fn origin_lines(doc: &Doc) -> Vec<String> {
+    s(doc, "origins").unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+}
+
+#[async_trait]
+impl DocHook for EmbeddingHook {
+    fn name(&self) -> &'static str {
+        "core.embedding"
+    }
+
+    fn fills(&self) -> &'static [&'static str] {
+        &["origins"]
+    }
+
+    async fn before_validate(&self, _hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        if doc.contains_key("origins") {
+            // Each as the platform keeps an origin (lower case, no trailing slash) when they are all good.
+            let lines = origin_lines(doc);
+            set(doc, "origins", ferrum_kernel::action_link::frame_origins(&lines).unwrap_or(lines).join("\n"));
+        }
+        Ok(())
+    }
+
+    async fn validate(&self, _hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let mut errors = Vec::new();
+        if !s(doc, "page").is_some_and(embed_page) {
+            errors.push(FieldError::new("page", "must be a page's address after the workspace, such as forms/f/contact: lower-case words joined by /"));
+        }
+        let origins = origin_lines(doc);
+        if origins.is_empty() {
+            errors.push(FieldError::new("origins", "name at least one site, as https://www.example.com"));
+        }
+        if let Err(e) = ferrum_kernel::action_link::frame_origins(&origins) {
+            let said = match e {
+                Error::Validation(v) => v.into_iter().map(|f| f.message).collect::<Vec<_>>().join("; "),
+                other => other.to_string(),
+            };
+            errors.push(FieldError::new("origins", said));
+        }
+        if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
     }
 }

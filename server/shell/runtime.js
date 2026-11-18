@@ -212,6 +212,16 @@ function finderHint(q, busy, partial, found) {
   return found ? "" : "nothing";
 }
 
+/** What a framed public page posts to the site framing it (docs/builder/decisions.md BD-80): its height (or, once,
+ * `done`) to each origin the server allowed, by name, so the browser delivers it only to the one that is the parent.
+ * Never to `"*"`, and nothing else leaves the frame. `[message, origin]` pairs. */
+function embedPosts(origins, height, done = false) {
+  const named = (Array.isArray(origins) ? origins : []).filter((o) => typeof o === "string" && /^https?:\/\/[^/\s*]+$/.test(o));
+  if (!done && !Number.isFinite(height)) return [];
+  const message = done ? { ferrum: "done" } : { ferrum: "height", height: Math.ceil(height) };
+  return named.map((o) => [message, o]);
+}
+
 // ── end of the pure helpers ──
 
 // This origin's workspace (§7.2): a host of one workspace's that ever answers for another than
@@ -3379,6 +3389,27 @@ if (boot?.person && hostKind !== "public" && !["portal", "guest"].includes(boot.
   };
 }
 
+// ───────────────────────── framed on another site (BD-80) ─────────────────────────
+
+// A public page opened with `?embed=1` from a site the server lets frame it: its height goes to that site (embed.js
+// there sizes the frame), at most every 100 ms.
+const embedOrigins = hostKind === "public" && window.parent !== window ? boot?.embed?.origins ?? [] : [];
+function postEmbed(height, done) {
+  for (const [message, origin] of embedPosts(embedOrigins, height, done)) window.parent.postMessage(message, origin);
+}
+if (embedOrigins.length && typeof ResizeObserver === "function") {
+  let last = 0;
+  let timer = null;
+  const send = () => {
+    timer = null;
+    last = Date.now();
+    postEmbed(document.documentElement.scrollHeight);
+  };
+  new ResizeObserver(() => {
+    if (!timer) timer = setTimeout(send, Math.max(0, 100 - (Date.now() - last)));
+  }).observe(document.documentElement);
+}
+
 // ───────────────────────── the API ─────────────────────────
 
 // A public page (§7.3) has no person: no intents, panels, uploads or live channel.
@@ -3458,7 +3489,9 @@ const shell = Object.freeze({
 });
 
 const ns = globalThis.ferrum && typeof globalThis.ferrum === "object" ? globalThis.ferrum : {};
-Object.defineProperty(globalThis, "ferrum", { value: Object.freeze({ ...ns, shell }), configurable: false, writable: false });
+// `ferrum.embedDone()`: a framed public page tells the site framing it that it is done (a form sent); nothing elsewhere.
+const embedDone = () => postEmbed(0, true);
+Object.defineProperty(globalThis, "ferrum", { value: Object.freeze({ ...ns, shell, embedDone }), configurable: false, writable: false });
 document.documentElement.dataset.ferrumHost = hostKind;
 
 // Last: defining the element draws the bar at once (it is in the page already), and drawing uses
