@@ -216,20 +216,29 @@ async fn scenario() {
     let listeners = r.spawn_listeners(loops);
     let draining = {
         let r = r.clone();
-        tokio::spawn(async move { while r.dispatch_outbox_once().await.unwrap() > 0 {} })
+        let busy = busy.clone();
+        // What the sink was put off for at its share comes back a few seconds later.
+        tokio::spawn(async move {
+            while busy.done.load(Ordering::SeqCst) < 60 {
+                if r.dispatch_outbox_once().await.unwrap() == 0 {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        })
     };
-    // A request comes once the burst holds what it can: at least the events' share of the pool at work, and no more joining.
+    // A request comes once the burst holds what it can: one sink at work in at least its share of the events' turns (half
+    // of a quarter of the pool, while other workspaces' events wait), and no more joining.
     let share = ferrum_kernel::db::background_connections(30) as usize;
     let mut seen = 0;
     for _ in 0..200 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let now = busy.now.load(Ordering::SeqCst);
-        if now >= share && now == seen {
+        if now >= share / 2 && now == seen {
             break;
         }
         seen = now;
     }
-    assert!(busy.now.load(Ordering::SeqCst) >= share, "the burst is being handled");
+    assert!(busy.now.load(Ordering::SeqCst) >= share / 2, "the burst is being handled");
     let asked = Instant::now();
     let request = r.db.tenant_tx(burst[0]).await.expect("a request's transaction");
     let waited = asked.elapsed();

@@ -377,6 +377,8 @@ async fn scenario() {
     assert!(metrics.contains("ferrum_staff_network_refusals_total{mode=\"enforce\",credential=\"token\"}"), "{metrics}");
     // The time of those requests is acme's, named by its slug among this replica's busiest workspaces.
     assert!(metrics.contains("ferrum_busiest_workspace_seconds{workspace=\"acme\"}"), "{metrics}");
+    // Event sinks put off at their share of the dispatcher's turns, by sink (none here): the family is there.
+    assert!(metrics.contains("# TYPE ferrum_event_sink_deferrals_total counter"), "{metrics}");
     // Apps' upkeep across workspaces, and this replica's schema cache and live updates: numbers, no workspace.
     for name in ["ferrum_upkeep_oldest_due_seconds", "ferrum_upkeep_failing", "ferrum_schema_cache_misses_total", "ferrum_live_dropped_total"] {
         let line = metrics.lines().find(|l| l.starts_with(&format!("{name} "))).unwrap_or_else(|| panic!("{name} missing: {metrics}"));

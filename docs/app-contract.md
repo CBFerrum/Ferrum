@@ -37,6 +37,11 @@ How to follow it, step by step and with examples, is in the app developer's hand
 - **Upgrades that keep what was made before them working**: a release that adds a standard account,
   a field or a default reaches records made before it (or says how to), and nothing that was
   installed is redone.
+- **Event sinks that may run twice**: events arrive at least once, and a replica that dies during an event
+  calls its finished sinks again. A sink whose effect must happen once asks `outbox::first_time` in the
+  transaction of that effect; one that calls outside sends a key the other side knows a repeat by, or claims with
+  `first_time` before the call and gives the claim back (`outbox::give_back`) only when the call provably did nothing,
+  never after a timeout ([events](events.md#delivery)).
 - **Phone width and accessibility basics**: a form's labels name their fields, the pages fit 375 px,
   and the colours hold in dark mode.
 - **A walk on a running server** before a release that changes flows people use, with what it found

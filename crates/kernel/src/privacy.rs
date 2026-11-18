@@ -412,8 +412,8 @@ async fn redact(tx: &mut Tx, ctx: &Ctx, entity: &str, record: Uuid, fields: &[St
 /// What the platform keeps of a record elsewhere goes. Its events' (`doc`, `was`), from the outbox and from every webhook
 /// delivery of them, handled, waiting or dead: each says it was erased instead, and is not replayed (crate::outbox). The
 /// receipts of operations on it (crate::capability): the id and version stay, which is all a repeat of the key answers
-/// with besides the record as it now is.
-async fn forget_copies(tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid) -> Result<()> {
+/// with besides the record as it now is. A retention rule's deletion goes through here too (crate::retention).
+pub(crate) async fn forget_copies(tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid) -> Result<()> {
     sqlx::query(
         "update outbox set payload = payload - 'doc' - 'was' || '{\"erased\": true}' \
          where tenant_id = $1 and record_id = $2 and entity = $3 and payload ?| array['doc', 'was']",

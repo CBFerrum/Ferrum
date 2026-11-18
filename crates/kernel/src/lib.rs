@@ -331,6 +331,8 @@ pub struct Kernel {
     /// The event dispatcher's and the webhook sender's turns at the pool ([`db::background_connections`]): a claim, an
     /// event or a webhook's secret holds one while it holds a connection, so that their fan-out never takes the pool.
     pub(crate) background: tokio::sync::Semaphore,
+    /// The event sinks at work on this replica, and their share of those turns (outbox.rs).
+    pub(crate) sinks: outbox::Sinks,
 }
 
 impl Kernel {
@@ -512,6 +514,7 @@ impl Kernel {
             keyed: vault::Ring::default(),
             marker: Default::default(),
             background,
+            sinks: Default::default(),
         });
         kernel.notice_restore().await?;
         Ok(kernel)

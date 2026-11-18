@@ -2084,6 +2084,9 @@ create table event_receipt (
   event_id bigint not null,
   duplicates int not null default 0,
   received_at timestamptz not null default now(),
+  -- A consumer's own claim (outbox::first_time), which it may give back (outbox::give_back); false for the dispatcher's
+  -- record that a consumer finished, which nothing gives back.
+  claimed boolean not null default false,
   primary key (tenant_id, consumer, event_id)
 );
 create index event_receipt_age on event_receipt (received_at);
