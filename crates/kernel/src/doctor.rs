@@ -320,6 +320,7 @@ impl Kernel {
             out.push(f);
         }
         out.push(self.floors_finding().await?);
+        out.push(self.audit_months_finding().await?);
         Ok(out)
     }
 
@@ -354,6 +355,25 @@ impl Kernel {
                 "Check that FERRUM_AUDIT_SINK_URL answers, and the servers' logs for 'sending the audit log' (docs/operations.md, Sending the audit log elsewhere).",
             ),
             Err(e) => Finding::warning("audit.sink", format!("how far behind it is cannot be read: {e}"), "See the database's state."),
+        })
+    }
+
+    /// The audit trail's months ahead (crate::audit::ensure_months makes three): a save whose month has no partition fails.
+    async fn audit_months_finding(&self) -> Result<Finding> {
+        let missing: i64 = sqlx::query_scalar(
+            "select count(*) from generate_series(1, 2) g where to_regclass(to_char(date_trunc('month', now() at time zone 'UTC') \
+             + make_interval(months => g), '\"audit_event_y\"YYYY\"m\"MM')) is null",
+        )
+        .fetch_one(&self.db.pool)
+        .await?;
+        Ok(if missing == 0 {
+            Finding::ok("audit.months", "the audit trail has its partitions for the next two months")
+        } else {
+            Finding::blocker(
+                "audit.months",
+                format!("{missing} of the audit trail's next two months have no partition: saves in them will fail"),
+                "Run `ferrum task run_maintenance`, or start a server, which make them; then see why the hourly maintenance did not (its log names the step).",
+            )
         })
     }
 }

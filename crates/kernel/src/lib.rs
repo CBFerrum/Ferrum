@@ -465,6 +465,19 @@ impl Kernel {
         }
         // The vault, when it could not be opened before its tables were there (crate::vault::open).
         vault::finish(&db).await?;
+        // The audit trail's months, before anything is served: a server stopped for months, or a database restored from
+        // long ago, would otherwise refuse every save until the hourly maintenance made them.
+        audit::ensure_months(&db).await?;
+        // A partition without its table's policies (made some other way than ferrum_create_partition, by any app) reads as
+        // empty to the system, and a dump would leave its rows out without a word: no start while one exists.
+        let unguarded: Vec<String> = sqlx::query_scalar("select ferrum_partitions_without_policies()").fetch_all(&db.pool).await?;
+        if !unguarded.is_empty() {
+            return Err(Error::Invalid(format!(
+                "these partitions do not carry their table's row-level security policies, so a dump would leave out their rows: {}. \
+                 The app that made them must make its partitions with ferrum_create_partition; give each its table's policies to start",
+                unguarded.join(", ")
+            )));
+        }
         if booted.guest.is_some() || !settings.migrate_at_start {
             ddl::words(&full)?;
         }
@@ -539,7 +552,8 @@ impl Kernel {
         ]
     }
 
-    /// Hourly, on one replica at a time (one that finds another running it leaves it): anchor yesterday's audit trail,
+    /// Hourly, on one replica at a time (one that finds another running it leaves it): make the audit trail's next months
+    /// ([`audit::ensure_months`]), anchor yesterday's audit trail,
     /// queue retention, close what has expired, purge what is past its time (each purge in batches, [`Db::in_batches`]).
     /// Each step stands alone: one that fails is logged by its name and the next still runs, every hour; the error at
     /// the end names those that failed.
@@ -570,6 +584,7 @@ impl Kernel {
             .unwrap_or(0)
         };
         let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+        step("making the audit trail's next months", audit::ensure_months(&self.db).await);
         step("anchoring yesterday's audit trail", audit::anchor_day(&self.db, yesterday).await.map(|n| n as u64));
         step("queueing retention", self.queue_retention().await.map(|_| 0));
         step("recording usage", self.record_usage().await.map(|_| 0));

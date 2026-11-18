@@ -1693,8 +1693,10 @@ create table audit_event (
   -- (`sign_in`, `administration` by the kernel's own changes, `records` by a record's). Empty for events written
   -- before this, and by a build from before it: those are told apart by name, as before.
   category text,
-  primary key (tenant_id, id)
-);
+  -- `at` is in the key because the table is partitioned by it. `id` is generated, so (tenant_id, id) stays unique
+  -- without a constraint: a move keeps a workspace's numbers, into a workspace that has none here yet.
+  primary key (tenant_id, id, at)
+) partition by range (at);
 create index audit_event_at on audit_event (tenant_id, at);
 create index audit_event_record on audit_event (tenant_id, entity, record_id, id desc);
 create index audit_event_xid on audit_event (xid, id) where xid is not null;
@@ -1723,6 +1725,76 @@ create trigger audit_event_no_truncate before truncate on audit_event
 create trigger audit_event_redact_only before update on audit_event
   for each row
   execute function ferrum_audit_redact_only();
+
+-- The one way to make a partition of a table, an app's included: `name`, in the parent's schema, for the range [lower,
+-- upper) (literals of the partition key's type). Made only if missing (true when made). Read by its own name a partition
+-- is a table of its own, which the parent's policies do not reach: it is given the parent's, with row-level security
+-- forced, so such a read sees what the same read of the parent would. A partition without them reads as empty to the
+-- system too, and a dump (deploy/dump.sh reads each partition by its name) would hold none of its rows without a word;
+-- the kernel refuses to start while one exists (ferrum_partitions_without_policies). It is made apart and attached,
+-- which locks the parent against other changes of its partitions only, never against reads or writes (a partition made
+-- in place would wait for every reader, and every writer would wait behind it).
+create function ferrum_create_partition(parent regclass, name text, lower text, upper text) returns boolean
+language plpgsql as $$
+declare
+  schema_oid oid := (select relnamespace from pg_class where oid = parent);
+  p record;
+begin
+  -- Read as rows, not from the catalog's cache: a partition another session made while this one waited is seen.
+  if exists (select 1 from pg_class where relnamespace = schema_oid and relname = name) then
+    return false;
+  end if;
+  perform pg_advisory_xact_lock(hashtext('ferrum_create_partition'), parent::oid::int);
+  if exists (select 1 from pg_class where relnamespace = schema_oid and relname = name) then
+    return false;
+  end if;
+  execute format('create table %s.%I (like %s including constraints)', schema_oid::regnamespace, name, parent);
+  execute format('alter table %s.%I enable row level security, force row level security', schema_oid::regnamespace, name);
+  for p in select * from pg_policy where polrelid = parent loop
+    execute format('create policy %I on %s.%I as %s for %s to %s%s%s', p.polname, schema_oid::regnamespace, name,
+      case when p.polpermissive then 'permissive' else 'restrictive' end,
+      case p.polcmd when 'r' then 'select' when 'a' then 'insert' when 'w' then 'update' when 'd' then 'delete' else 'all' end,
+      (select coalesce(string_agg(case when r = 0 then 'public' else quote_ident(pg_get_userbyid(r)) end, ', '), 'public') from unnest(p.polroles) r),
+      coalesce(' using (' || pg_get_expr(p.polqual, parent) || ')', ''), coalesce(' with check (' || pg_get_expr(p.polwithcheck, parent) || ')', ''));
+  end loop;
+  execute format('alter table %s attach partition %s.%I for values from (%L) to (%L)', parent, schema_oid::regnamespace, name, lower, upper);
+  return true;
+end $$;
+
+-- Partitions of a table with row-level security policies that have none of their own: made some other way than
+-- ferrum_create_partition, they read as empty to the system and a dump leaves their rows out.
+create function ferrum_partitions_without_policies() returns setof text language sql stable as $$
+  select c.oid::regclass::text from pg_class c join pg_inherits i on i.inhrelid = c.oid
+  where c.relispartition and exists (select 1 from pg_policy where polrelid = i.inhparent)
+    and not exists (select 1 from pg_policy where polrelid = c.oid)
+  order by 1
+$$;
+
+-- The months of a table partitioned by month on a time, `<parent>_yYYYYmMM` (UTC months), from that of `since` to that of
+-- `until`: those it lacks are made (ferrum_create_partition), and how many is returned. A row whose month has no partition
+-- fails its statement, so the kernel makes the audit trail's at every start and every hour, three months ahead, and a copy
+-- makes those of the rows it brings. There is no default partition: one holding rows of a month would refuse that month's
+-- partition later. More than 600 months at once is refused: a clock or a row dated decades off, not history.
+create function ferrum_ensure_month_partitions(parent regclass, since timestamptz, until timestamptz) returns int
+language plpgsql as $$
+declare
+  month timestamp := date_trunc('month', since at time zone 'UTC');
+  base text := (select relname from pg_class where oid = parent);
+  made int := 0;
+begin
+  if month + interval '600 months' <= until at time zone 'UTC' then
+    raise exception 'ferrum: % would need a partition for every month from % to %, more than 600: a date that far off is not history',
+      base, since, until using errcode = 'P0001';
+  end if;
+  while month <= until at time zone 'UTC' loop
+    if ferrum_create_partition(parent, base || to_char(month, '"_y"YYYY"m"MM'), (month at time zone 'UTC')::text,
+                               ((month + interval '1 month') at time zone 'UTC')::text) then
+      made := made + 1;
+    end if;
+    month := month + interval '1 month';
+  end loop;
+  return made;
+end $$;
 
 create table audit_anchor (
   tenant_id uuid not null references tenant(id) on delete cascade,
@@ -3256,6 +3328,9 @@ begin
     execute format('create policy tenant_isolation on %s using (tenant_id = (select ferrum_tenant()) or (select ferrum_is_system())) with check (tenant_id = (select ferrum_tenant()) or (select ferrum_is_system()))', t);
   end loop;
 end $$;
+
+-- The audit trail's first months, with its policy (ferrum_ensure_month_partitions).
+select ferrum_ensure_month_partitions('audit_event', now(), now() + interval '3 months');
 
 -- Tables no workspace reaches, only the system: the installation's own (settings, replicas, the object store), and what
 -- runs before anyone is signed in or any workspace is known (token endpoints, sign-in flows, keys).

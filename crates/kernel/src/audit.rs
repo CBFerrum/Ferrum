@@ -266,21 +266,29 @@ pub async fn verify_record(tx: &mut Tx, tenant: Uuid, entity: &str, record_id: U
     Ok(None)
 }
 
-/// Writes (idempotently) the anchor for `day` for every tenant with events that day.
+/// The audit trail's months (`audit_event` is partitioned by month): this one and three ahead, made where missing. At
+/// every start, before the server serves, and every hour, so that no save meets a month without its partition.
+pub async fn ensure_months(db: &Db) -> Result<u64> {
+    let made: i32 = sqlx::query_scalar("select ferrum_ensure_month_partitions('audit_event', now(), now() + interval '3 months')").fetch_one(&db.pool).await?;
+    Ok(made as u64)
+}
+
+/// The workspaces [`anchor_day`] anchors (`$1`, `$2`: the day's bounds; `$3`: the day). Asked of each workspace, one probe
+/// of its `(tenant_id, at)` index in the day's month: never a scan of the trail.
+pub const DAY_TENANTS: &str = "select t.id from tenant t where (select true from audit_event e where e.tenant_id = t.id and e.at >= $1 and e.at < $2 limit 1) \
+     and not exists (select 1 from audit_anchor x where x.tenant_id = t.id and x.day = $3) and not ferrum_workspace_held(t.id)";
+
+/// Writes (idempotently) the anchor for `day` (UTC) for every tenant with events that day.
 pub async fn anchor_day(db: &Db, day: NaiveDate) -> Result<usize> {
+    let from = day.and_time(chrono::NaiveTime::MIN).and_utc();
+    let to = from + chrono::Duration::days(1);
     let mut tx = db.system_tx().await?;
-    let tenants: Vec<Uuid> = sqlx::query_scalar(
-        "select distinct tenant_id from audit_event where at >= $1::date and at < $1::date + 1 \
-         and not exists (select 1 from audit_anchor x where x.tenant_id = audit_event.tenant_id and x.day = $1::date) \
-         and not ferrum_workspace_held(tenant_id)",
-    )
-    .bind(day)
-    .fetch_all(&mut *tx)
-    .await?;
+    let tenants: Vec<Uuid> = sqlx::query_scalar(DAY_TENANTS).bind(from).bind(to).bind(day).fetch_all(&mut *tx).await?;
     for t in &tenants {
-        let hashes: Vec<Vec<u8>> = sqlx::query_scalar("select hash from audit_event where tenant_id = $1 and at >= $2::date and at < $2::date + 1 order by id")
+        let hashes: Vec<Vec<u8>> = sqlx::query_scalar("select hash from audit_event where tenant_id = $1 and at >= $2 and at < $3 order by id")
             .bind(t)
-            .bind(day)
+            .bind(from)
+            .bind(to)
             .fetch_all(&mut *tx)
             .await?;
         let prev: Option<Vec<u8>> = sqlx::query_scalar("select root_hash from audit_anchor where tenant_id = $1 and day < $2 order by day desc limit 1")

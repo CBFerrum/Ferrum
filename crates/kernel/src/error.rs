@@ -178,6 +178,11 @@ impl From<sqlx::Error> for Error {
                         Error::Conflict("cannot delete or change this record: other records link to it".into())
                     }
                     "23503" => Error::Invalid(format!("a linked record does not exist ({constraint})")),
+                    // No partition holds the row's key (its date): the server's own fault, never the person's input.
+                    "23514" if msg.starts_with("no partition of relation") => Error::Internal(format!(
+                        "{msg}: no partition holds this row's date ({}); partitions are made ahead by the server (see the doctor)",
+                        db.try_downcast_ref::<sqlx::postgres::PgDatabaseError>().and_then(|e| e.detail()).unwrap_or("its key")
+                    )),
                     "23514" => Error::Invalid(format!("value violates rule {constraint}")),
                     "23502" => Error::Invalid(format!("missing required value: {msg}")),
                     "23P01" => Error::Conflict(constraint_message_for(&constraint).unwrap_or_else(|| "this overlaps an existing record".into())),

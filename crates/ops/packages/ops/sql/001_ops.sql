@@ -175,7 +175,9 @@ create table op_measurement (
 ) partition by range (day);
 create index op_measurement_metric on op_measurement (tenant_id, device_id, metric, source_time desc);
 
--- What dashboards read, kept longer than the samples. Only values that are not bad count.
+-- What dashboards read, kept longer than the samples. Only values that are not bad count. By month, so that retention
+-- drops a month rather than deleting rows. The months of the 400 days kept (telemetry::ROLLUP_DAYS) and three ahead are
+-- made here and by `telemetry::ensure_partitions`; a sample outside those days is stored and not rolled up.
 create table op_rollup_minute (
   tenant_id uuid not null,
   device_id uuid not null,
@@ -189,8 +191,7 @@ create table op_rollup_minute (
   last_value double precision,
   last_time timestamptz,
   primary key (tenant_id, device_id, metric, minute)
-);
-create index op_rollup_minute_age on op_rollup_minute (minute);
+) partition by range (minute);
 
 do $$
 declare t text;
@@ -204,3 +205,5 @@ begin
       'with check (tenant_id = (select ferrum_tenant()) or (select ferrum_is_system()))', t);
   end loop;
 end $$;
+-- The rollups' months, with their policy.
+select ferrum_ensure_month_partitions('op_rollup_minute', now() - interval '400 days', now() + interval '3 months');

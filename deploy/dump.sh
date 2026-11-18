@@ -31,6 +31,10 @@ case "$cmd" in
     # The setting must reach the session, or the dump would be empty without a word.
     said=$(PGOPTIONS="${as_system[*]}" "$psql" "$url" -X -v ON_ERROR_STOP=1 -Atqc "select current_setting('ferrum.system', true)")
     [ "$said" = on ] || { echo "refused: the session did not take ferrum.system (a pooler in between?): give PostgreSQL's own address" >&2; exit 1; }
+    # pg_dump reads each partition by its own name: one without its table's policies reads as empty, and its rows would be
+    # left out without a word.
+    bare=$("$psql" "$url" -X -v ON_ERROR_STOP=1 -Atqc "select string_agg(p, ', ') from ferrum_partitions_without_policies() p")
+    [ -z "$bare" ] || { echo "refused: these partitions lack their table's policies, and their rows would be left out: $bare" >&2; exit 1; }
     PGOPTIONS="${as_system[*]}" "$(bin pg_dump)" --enable-row-security --format=custom --file="$file" "$url"
     echo "dumped to $file"
     ;;
