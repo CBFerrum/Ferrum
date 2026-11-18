@@ -146,14 +146,14 @@ async fn scenario() {
     }
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut config = Environment::Test.load_from_folder(&dir.join("config")).expect("config/test.yaml");
-    config.database.uri = url.clone();
+    ferrum_server::settings::set_database_url(&mut config, url.clone());
     if let Some(s) = config.settings.as_mut() {
         s["packages_dir"] = json!(dir.join("../packages").to_string_lossy());
         assert_eq!(s["domain_proof"], json!(""), "FERRUM_DOMAIN_PROOF unset");
         s["base_domain"] = json!("proof.test");
         s["dns_resolvers"] = json!(resolver.to_string());
     }
-    let base = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config).build()).await.expect("boot");
+    let base = <App as Hooks>::after_context(AppContext::builder(Environment::Test, config).build()).await.expect("boot");
     let st = base.shared_store.get::<AppState>().expect("state");
     let router = App::routes(&base).to_router::<App>(base.clone(), axum::Router::new()).expect("router");
     let router = App::after_routes(router, &base).await.expect("layers");

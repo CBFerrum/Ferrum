@@ -442,7 +442,7 @@ impl Task for ImportErpnext {
 }
 
 /// `migrate` — everything a server start does to the database, whatever `FERRUM_MIGRATE_AT_START` says: the kernel's
-/// SQL migrations, Loco's and the schema sync for the packages of this build. It prints what it did and fails when any
+/// SQL migrations and the schema sync for the packages of this build. It prints what it did and fails when any
 /// step fails. Several at once are safe: each step holds its advisory lock.
 pub struct Migrate;
 
@@ -467,8 +467,6 @@ impl Task for Migrate {
             [] => println!("migrations: none to apply"),
             applied => println!("migrations: applied {}", applied.iter().map(i64::to_string).collect::<Vec<_>>().join(", ")),
         }
-        let loco = <migration::Migrator as migration::MigratorTrait>::up(&ctx.db, None).await;
-        loco.map_err(|e| Error::Message(format!("Loco migrations: {e}")))?;
         let schema = &k.booted.schema;
         if schema.skipped {
             println!("schema: already current");

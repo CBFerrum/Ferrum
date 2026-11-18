@@ -51,23 +51,13 @@ mailer:
     auth:
       user: "<%= get_env(name="MAILER_USER", default="") %>"
       password: "<%= get_env(name="MAILER_PASSWORD", default="") %>"
-database:
-  uri: <%= get_env(name="DATABASE_URL") %>
-  enable_logging: false
-  connect_timeout: 5000
-  idle_timeout: 600000
-  min_connections: 1
-  max_connections: 2
-  auto_migrate: <%= get_env(name="FERRUM_MIGRATE_AT_START", default="true") %>
-  dangerously_truncate: false
-  dangerously_recreate: false
-
 auth:
   jwt:
     secret: "<%= get_env(name="JWT_SECRET", default="") %>"
     expiration: <%= get_env(name="JWT_EXPIRATION_SECONDS", default="28800") %>
 
 settings:
+  database_url: "<%= get_env(name="DATABASE_URL") %>"
   default_workspace: "<%= get_env(name="FERRUM_DEFAULT_WORKSPACE", default="") %>"
   ui_dir: "<%= get_env(name="FERRUM_UI_DIR", default="") %>"
   session_days: <%= get_env(name="FERRUM_SESSION_DAYS", default="14") %>

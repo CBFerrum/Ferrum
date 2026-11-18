@@ -373,9 +373,9 @@ isolation, so the server refuses to start with them. CloudNativePG's `ferrum` ap
 the Compose setup (`deploy/postgres-init`) are already set up this way. The role needs to create the
 trusted extensions `btree_gist`, `citext` and `pg_trgm`, which a database owner can do.
 
-Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 14: 4 for short side writes and the vault
+Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 12: 4 for short side writes and the vault
 (document numbering; an eighth of the pool when that is more), 8 on the direct pool (the LISTEN loops, a session lock and
-apps' upkeep: 5 + 1 + 2) and 2 of Loco's own; 10 more where a read address is set. Each pool names itself to PostgreSQL (`pg_stat_activity.application_name`: `ferrum`, `ferrum-side`,
+apps' upkeep: 5 + 1 + 2); 10 more where a read address is set. Each pool names itself to PostgreSQL (`pg_stat_activity.application_name`: `ferrum`, `ferrum-side`,
 `ferrum-direct`, `ferrum-read`), so `select application_name, state, count(*) from pg_stat_activity group by 1, 2`
 tells them apart, and `ferrum task doctor` (`database.connections`) states the sum. Give the role a connection limit at least 20 below the database's
 `max_connections`, so that however far things scale there are connections left for an administrator,
@@ -388,7 +388,6 @@ What one replica holds, with the defaults (counted from the code on 14 November 
 |---|---|---|---|
 | The pool | `DATABASE_URL` | `FERRUM_DB_MAX_CONNECTIONS` (30) | Requests, background work (`application_name` `ferrum`). Background work holds at most a quarter of it and 10 more (17): 4 job workers, the event dispatcher and the webhook sender a quarter together (7), the schedule scanner, the OpenID sweep and hourly maintenance 4, apps' upkeep at once 2 (its working transactions; its lock is below). The listeners and session locks below are never in it, whatever the address |
 | The side pool (`ferrum-side`) | `DATABASE_URL` | 4 (an eighth of the pool when that is more: 8 with a pool of 64) | Short writes while a request's own transaction is open (numbering), and the vault's verbs; idle ones close after a minute |
-| Loco's own pool | `DATABASE_URL` | 2 | Opened at start to check Loco's migrations (there are none); nothing else uses it. Safe through a pooler: it keeps no session |
 | The settings' first read | `DATABASE_URL` | 2 | At start, before the server's own pools open: reads the `setting` table (*Settings in the database*), then closes. Safe through a pooler |
 | Listeners: metadata, users, plugin sockets, live updates, co-editing (`ferrum-direct`) | the direct address, which is `DATABASE_URL` itself when no other is set: a pool of its own either way, opened when first used | 5 | One each, for as long as the replica runs |
 | Session locks: apps' upkeep, app stores' revocations (`ferrum-direct`) | the direct address | 3 | One per app whose upkeep runs (`FERRUM_UPKEEP_CONCURRENCY`, 2), one for revocations, while each runs |
@@ -726,7 +725,9 @@ the operators' install from one has not run on a cluster without internet.
 
 ## Upgrades
 
-* Before a release is tagged, two checks must pass. `scripts/release_evidence.py qualified` says whether each
+* Before a release is tagged, three checks must pass. `scripts/local_ci.sh release` builds the server with
+  `cargo build --release --locked` and checks it with no apps and with two: a debug build does not prove the release
+  one compiles (`v0.3.9` did not), so a tag is made only after that job passes. `scripts/release_evidence.py qualified` says whether each
   qualification (docs/logic/evidence/qualification.yaml) ran at this very build; when Ferrum's code or any pin has
   changed since, it names what changed and fails until the qualification's scripts are run again and
   `--stamp <id>` records the build they ran at. `scripts/licenses.py check` fails on any image a deploy file names
@@ -2090,7 +2091,7 @@ startup settings are refused. So, when `FERRUM_DATABASE_DIRECT_URL` names anothe
 | Through the pooler (`DATABASE_URL`) | Direct (`FERRUM_DATABASE_DIRECT_URL`) |
 |---|---|
 | Every transaction: requests, background work, reports. Each sets its own workspace, statement timeout, `lock_timeout` (10 s) and `idle_in_transaction_session_timeout` (60 s) in its first statement, and none counts on the server connection of the one before | The 5 listeners (metadata, users, plugin sockets, live updates, co-editing) |
-| The side pool and Loco's own pool (neither keeps a session) | Session advisory locks: the two-version window's, the migrations', the schema sync's (whose `create index concurrently` runs outside a transaction), apps' upkeep, app revocations |
+| The side pool (it keeps no session) | Session advisory locks: the two-version window's, the migrations', the schema sync's (whose `create index concurrently` runs outside a transaction), apps' upkeep, app revocations |
 | Statements outside a transaction (`pg_notify`, rate-limit counters): they get the database's own `lock_timeout`, not 10 s | |
 
 The server sends no startup `options` and no `extra_float_digits` through the pooler (PgBouncer refuses

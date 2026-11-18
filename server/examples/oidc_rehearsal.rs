@@ -55,7 +55,7 @@ fn stand_in(h: &mut HookRegistry) {
 async fn kernel() -> Result<Arc<Kernel>, String> {
     let env = Environment::from(loco_rs::environment::resolve_from_env());
     let config = env.load_from_folder(std::path::Path::new("config")).map_err(|e| e.to_string())?;
-    let ctx = <App as Hooks>::after_context(AppContext::builder(env, Default::default(), config).build()).await.map_err(|e| e.to_string())?;
+    let ctx = <App as Hooks>::after_context(AppContext::builder(env, config).build()).await.map_err(|e| e.to_string())?;
     Ok(ctx.shared_store.get::<AppState>().ok_or("no state")?.kernel.clone())
 }
 

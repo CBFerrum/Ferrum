@@ -155,17 +155,17 @@ async fn scenario() {
     }
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut config = Environment::Test.load_from_folder(&dir.join("config")).expect("config/test.yaml");
-    config.database.uri = url;
+    ferrum_server::settings::set_database_url(&mut config, url);
     config.server.host = format!("http://{PUBLIC}");
     if let Some(s) = config.settings.as_mut() {
         s["packages_dir"] = json!(dir.join("../packages").to_string_lossy());
         // Files of 64 KB at most, so that one past it is small to send.
         s["upload_max_bytes"] = json!(64 << 10);
     }
-    let base = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config).build()).await.expect("boot");
+    let base = <App as Hooks>::after_context(AppContext::builder(Environment::Test, config).build()).await.expect("boot");
     let st = base.shared_store.get::<AppState>().expect("state");
     let k = st.kernel.clone();
-    let ctx = AppContext::builder(Environment::Test, Default::default(), base.config.clone()).build();
+    let ctx = AppContext::builder(Environment::Test, base.config.clone()).build();
     ctx.shared_store.insert(st.clone());
     let router = App::routes(&ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
     let r = App::after_routes(router, &ctx).await.expect("layers");

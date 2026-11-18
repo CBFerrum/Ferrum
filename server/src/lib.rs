@@ -51,7 +51,7 @@ pub fn run() -> loco_rs::Result<()> {
             match app::start_command(std::env::args()) {
                 Some(Ok(command)) => app::start(command).await,
                 Some(Err(why)) => Err(loco_rs::Error::Message(why)),
-                None => loco_rs::cli::main::<app::App, migration::Migrator>().await,
+                None => loco_rs::cli::main::<app::App>().await,
             }
         })
 }

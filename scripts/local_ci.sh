@@ -16,13 +16,19 @@
 #           XMLSEC_PREFIX: an xmlsec1 install to build against instead of the one on PATH (e.g. 1.2.37, the image's,
 #           built from source); its OpenSSL is taken from it unless OPENSSL_DIR is set. When the xmlsec1 differs from
 #           the last run's, samael is built again: its bindings come from the headers, and nothing else tells cargo.
-#   audit   cargo audit (cargo install cargo-audit --locked) and the job's scripts (pyyaml, helm, node).
+#   audit   cargo audit (cargo install cargo-audit --locked), cargo deny check (cargo install cargo-deny --locked; deny.toml:
+#           licences, sources, duplicate versions) and the job's scripts (pyyaml, helm, node).
 #   move    the server without apps, and scripts/move_rehearsal.sh on databases of its own: an installation moved, one
 #           workspace moved between two running servers and back, a sandbox, all as the servers' own role with no grant
 #           on session_replication_role (D7).
 #   replica not in the workflow, and only when named: a private primary and standby (scripts/replica_pair.sh, PostgreSQL
 #           17's programs) and the kernel's replica_pair_it on them: real lag, a stopped standby, a cancelled query, a
 #           promotion.
+#   release not in the workflow, and only when named, and the check before a tag (docs/operations.md, "Upgrades"): the
+#           server built with `cargo build --release --locked` (about 30 minutes; a debug build does not catch
+#           everything the release build does, e.g. a query type overflowing the depth limit), then
+#           `cargo check --locked` of the server with no apps and with two (crm, helpdesk): installing only what is
+#           needed must keep compiling.
 #   managed not in the workflow, and only when named: a private PostgreSQL that behaves like a managed service
 #           (scripts/managed_pg.sh: an ordinary role owning only its databases, no grant on session_replication_role,
 #           the extensions made by an administrator, PgBouncer in transaction mode with PostgreSQL beside it, TLS with
@@ -239,6 +245,7 @@ job_saml() {
 
 job_audit() {
   if cargo audit --version >/dev/null 2>&1; then run "audit cargo audit" cargo audit; else report "audit cargo audit" 1 0 /dev/null "cargo-audit is not installed (cargo install cargo-audit --locked)"; fi
+  if cargo deny --version >/dev/null 2>&1; then run "audit cargo deny (licences, sources, duplicate versions; deny.toml)" cargo deny check; else skip "audit cargo deny" "cargo-deny (cargo install cargo-deny --locked)"; fi
   local base
   base=$(git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD)
   run "audit registry, accepted advisories and generated documents" sh -c 'python3 scripts/registry.py check && python3 scripts/test_registry.py && python3 scripts/test_manifests.py && python3 scripts/mutants.py --check && python3 scripts/test_baseline.py && python3 scripts/test_mutation_paths.py && python3 scripts/test_builder_inventory.py'
@@ -270,6 +277,12 @@ job_replica() {
   code=$?
   run "replica pair down" scripts/replica_pair.sh down "$dir"
   [ "$code" = 0 ] || failed=1
+}
+
+job_release() {
+  run "release build" cargo build --release --locked -p ferrum-server --bin ferrum || return
+  run "release: the server without apps" cargo check --locked -p ferrum-server --no-default-features
+  run "release: the server with crm and helpdesk" cargo check --locked -p ferrum-server --no-default-features --features crm,helpdesk
 }
 
 job_managed() {
@@ -368,8 +381,8 @@ jobs=("$@")
 for j in "${jobs[@]}"; do
   case "$j" in
     # Each job in a shell of its own, so what one sets (saml's xmlsec1 and OpenSSL) never reaches the next.
-    rust | saml | audit | move | editors | replica | window | managed | objects | oneinput | oidc | companions) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
-    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, managed, objects, oneinput, oidc, companions)"; exit 2 ;;
+    rust | saml | audit | move | editors | replica | window | release | managed | objects | oneinput | oidc | companions) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
+    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, release, managed, objects, oneinput, oidc, companions)"; exit 2 ;;
   esac
 done
 skipped=$(sort -u "$LOGS/skipped" | paste -sd, - | sed 's/,/, /g')

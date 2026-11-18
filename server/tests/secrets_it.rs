@@ -38,7 +38,7 @@ fn url() -> String {
 fn config(address: &str, jwt: &str) -> Config {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut config = Environment::Test.load_from_folder(&dir.join("config")).expect("config/test.yaml");
-    config.database.uri = address.to_string();
+    ferrum_server::settings::set_database_url(&mut config, address.to_string());
     if let Some(s) = config.settings.as_mut() {
         s["packages_dir"] = json!(dir.join("../packages").to_string_lossy());
     }
@@ -53,7 +53,7 @@ fn config(address: &str, jwt: &str) -> Config {
 }
 
 async fn replica(config: Config) -> AppContext {
-    <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config).build()).await.expect("set-up")
+    <App as Hooks>::after_context(AppContext::builder(Environment::Test, config).build()).await.expect("set-up")
 }
 
 fn state(ctx: &AppContext) -> AppState {
@@ -108,7 +108,7 @@ impl Answer {
 /// `zones` (`FERRUM_ZONES`) in place of the configured.
 async fn serve_in(ctx: &AppContext, environment: Environment, zones: &str) -> Served {
     let st = AppState { zones: Arc::new(ferrum_kernel::zones::Zones::parse(zones, "", "", "").expect("zones")), ..state(ctx) };
-    let ctx = AppContext::builder(environment, Default::default(), ctx.config.clone()).build();
+    let ctx = AppContext::builder(environment, ctx.config.clone()).build();
     ctx.shared_store.insert(st);
     let routes = <App as Hooks>::routes(&ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
     Served { router: <App as Hooks>::after_routes(routes, &ctx).await.expect("layers") }
@@ -155,8 +155,7 @@ async fn scenario() {
 
     // ── The vault closed (no password, no key file, no key service): everything as before ──
     let closed = url().replacen("ferrum:ferrum@", "ferrum@", 1);
-    let said =
-        <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config(&closed, "")).build()).await.err().unwrap().to_string();
+    let said = <App as Hooks>::after_context(AppContext::builder(Environment::Test, config(&closed, "")).build()).await.err().unwrap().to_string();
     assert!(said.contains("JWT_SECRET is not set, and the vault is closed"), "{said}");
     let c = state(&replica(config(&closed, LEGACY)).await);
     assert!(!c.vault_open);
