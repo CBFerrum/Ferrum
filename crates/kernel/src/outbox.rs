@@ -296,9 +296,14 @@ pub struct Event {
 /// Whether this consumer should act on this event, asked in the transaction that does it. A repeat, even
 /// one arriving at the same moment, waits for the first to commit and is told no, and that it came stays
 /// on record. If the first rolls back, nothing happened, and the repeat is told yes.
+///
+/// Before a call outside, which no transaction holds: claim (`first_time`), commit, then call. A repeat is told no,
+/// for the earlier delivery may have reached the other side. Only when the call provably did nothing (refused before a
+/// byte was sent, or answered with a definite "not accepted" such as 429) does the consumer [`give_back`] its claim, so
+/// the retry is told yes again; never after a timeout or a connection dropped once the request was sent.
 pub async fn first_time(tx: &mut Tx, tenant: Uuid, consumer: &str, event: i64) -> Result<bool> {
     Ok(sqlx::query_scalar(
-        "insert into event_receipt (tenant_id, consumer, event_id) values ($1, $2, $3) \
+        "insert into event_receipt (tenant_id, consumer, event_id, claimed) values ($1, $2, $3, true) \
          on conflict (tenant_id, consumer, event_id) do update set duplicates = event_receipt.duplicates + 1 returning duplicates = 0",
     )
     .bind(tenant)
@@ -306,6 +311,22 @@ pub async fn first_time(tx: &mut Tx, tenant: Uuid, consumer: &str, event: i64) -
     .bind(event)
     .fetch_one(&mut **tx)
     .await?)
+}
+
+/// Gives back this consumer's [`first_time`] claim on this event, so that the next `first_time` for it is told yes: for a
+/// call outside that provably did nothing (refused before a byte was sent, or answered with a definite "not accepted"),
+/// never for a timeout or a connection dropped after the request was sent, when the other side may have acted. Only a
+/// claim goes, of exactly this workspace, consumer and event: never the dispatcher's record that the consumer finished.
+/// Whether there was one to give back.
+pub async fn give_back(tx: &mut Tx, tenant: Uuid, consumer: &str, event: i64) -> Result<bool> {
+    Ok(sqlx::query("delete from event_receipt where tenant_id = $1 and consumer = $2 and event_id = $3 and claimed")
+        .bind(tenant)
+        .bind(consumer)
+        .bind(event)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected()
+        > 0)
 }
 
 /// A replica's event sinks at work (`Kernel::sinks`): while other workspaces' events wait for a turn, one sink may be
@@ -579,12 +600,16 @@ impl Kernel {
                     .await?;
                     // Those that handled it are not called again when it is tried again or replayed (handle_event).
                     let handled = handled.into_inner().unwrap_or_else(|e| e.into_inner());
-                    sqlx::query("insert into event_receipt (tenant_id, consumer, event_id) select $1, unnest($2::text[]), $3 on conflict do nothing")
-                        .bind(ev.tenant_id)
-                        .bind(handled)
-                        .bind(ev.id)
-                        .execute(&mut *tx)
-                        .await?;
+                    // A sink that claimed it through first_time under its own name has finished: the claim is no longer given back.
+                    sqlx::query(
+                        "insert into event_receipt (tenant_id, consumer, event_id) select $1, unnest($2::text[]), $3 \
+                         on conflict (tenant_id, consumer, event_id) do update set claimed = false",
+                    )
+                    .bind(ev.tenant_id)
+                    .bind(handled)
+                    .bind(ev.id)
+                    .execute(&mut *tx)
+                    .await?;
                 }
             }
             tx.commit().await?;

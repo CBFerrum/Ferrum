@@ -52,7 +52,12 @@ the sinks that handled it are recorded in `event_receipt` under their names (`{a
 (what an attempt handled is recorded when it ends), so a sink whose work must happen once asks
 `outbox::first_time` in the transaction that does it. A call outside cannot be in that transaction: a sink
 that makes one sends a key the other side knows a repeat by (`{app}.{what}:{event id}` as an
-`Idempotency-Key`, or the provider's own reference for the document), or asks the other side first. A call that can
+`Idempotency-Key`, or the provider's own reference for the document), or asks the other side first. One that
+claims first (`first_time` in a short transaction, committed, then the call) gives the claim back with
+`outbox::give_back` only when the call provably did nothing: refused before a byte was sent, or answered with a
+definite "not accepted" such as 429. Then the retry is told it is the first again. Never after a timeout or a
+connection dropped once the request was sent: the other side may have acted. `give_back` removes only such a claim,
+never the dispatcher's record that a consumer finished. A call that can
 take long belongs in a job, which has its own timeout and retries: in a sink it holds a turn of the dispatcher, and
 past its share (*Fairness*) the sink is slowed, its events waiting, rather than failed. An event
 whose record was erased while it waited carries nothing of the record any more (it says `erased`): it reaches
