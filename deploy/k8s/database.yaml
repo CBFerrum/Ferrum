@@ -34,10 +34,10 @@ spec:
       - name: ferrum
         ensure: present
         login: true
-        connectionLimit: 380
+        connectionLimit: 390
   postgresql:
     parameters:
-      max_connections: "400"
+      max_connections: "410"
       shared_buffers: "2GB"
       effective_cache_size: "6GB"
       work_mem: "16MB"

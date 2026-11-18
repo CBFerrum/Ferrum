@@ -2,7 +2,7 @@
 # `public` answers the portal host; `finance` answers the API calls of the apps named (matched on the
 # X-Ferrum-UI header; use your apps' ids); `worker` runs the background work. Every pool holds every app.
 # Connections: every pool 18 + 6 each, one more pod each in a
-# rollout: (4 + 1 + 3 + 1 + 2 + 1 + 2 + 1) x 24 + 20 = 380 of 380.
+# rollout, which holds 2 more while it starts: (4 + 1 + 3 + 1 + 2 + 1 + 2 + 1) x 24 + 4 x 2 + 20 = 388 of 390.
 # Four pools need smaller ones than the default 30 to fit the role without a pooler.
 dbMaxConnections: 18
 pools:

@@ -375,7 +375,7 @@ trusted extensions `btree_gist`, `citext` and `pg_trgm`, which a database owner 
 
 Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 8: 4 for short side writes and the vault
 (document numbering; an eighth of the pool when that is more), 2 on the direct pool (the one connection that LISTENs and
-a session lock: 1 + 1) and up to 2 more during a version check or a store move (locks outside every pool); 10 more where a read address is set. Each pool names itself to PostgreSQL (`pg_stat_activity.application_name`: `ferrum`, `ferrum-side`,
+a session lock: 1 + 1) and up to 2 more while it starts (locks outside every pool); 10 more where a read address is set. Each pool names itself to PostgreSQL (`pg_stat_activity.application_name`: `ferrum`, `ferrum-side`,
 `ferrum-direct`, `ferrum-read`), so `select application_name, state, count(*) from pg_stat_activity group by 1, 2`
 tells them apart, and `ferrum task doctor` (`database.connections`) states the sum. Give the role a connection limit at least 20 below the database's
 `max_connections`, so that however far things scale there are connections left for an administrator,
@@ -408,18 +408,19 @@ its own, counted like a replica.
 
 | Who | Connections at the most, in the manifests |
 |---|---|
-| API, 9 replicas and 1 more during a rollout (`maxSurge`) × (30 + 6) | 360 |
+| API, 9 replicas and 1 more during a rollout (`maxSurge`) × (30 + 6), and 2 more for the one starting (a full restart's 9 × (36 + 2) = 342 is less) | 362 |
 | Cloud's controller, 2 replicas × (6 + 4), if deployed | 20 |
-| The role's limit | 380 |
-| Left of `max_connections` (400): an administrator, the standbys' replication, CloudNativePG's checks and monitoring | 20 |
+| The role's limit | 390 |
+| Left of `max_connections` (410): an administrator, the standbys' replication, CloudNativePG's checks and monitoring | 20 |
 
 CloudNativePG applies a managed role's `connectionLimit` with `ALTER ROLE … CONNECTION LIMIT` on
 the primary, so changing it restarts nothing; raising `max_connections` would restart PostgreSQL. Past 9, put
 the pooler in front.
 
 The manifests' figures here and in *Deployment shapes* (the chart's refusal and `check_manifests.py`) add 6 beside
-the pool: the side pool's 4 and the direct pool's 2, read from `crates/kernel/src/db.rs` by `check_manifests.py`, which
-fails when the chart says otherwise.
+the pool: the side pool's 4 and the direct pool's 2, and 2 for each pod that may be starting (the locks outside every
+pool): in a rollout the surge pods, at a first install or a full restart every replica with no surge pod, whichever
+is more. `check_manifests.py` reads these from `crates/kernel/src/db.rs` and fails when the chart says otherwise.
 
 `python3 scripts/check_manifests.py` fails when those stop adding up, and when a workload sets `replicas`
 under an autoscaler: every apply would put the count back. The Helm chart's migrate Job is a process of its own
@@ -2064,15 +2065,15 @@ worker pool is deleted at once and background work waits until the first new `we
 The exact commands, what each move replaces and what to watch are in "Moving from one shape to another".
 
 **Connection budget.** Every replica may open `dbMaxConnections + 6` connections (4 side and 2 direct; an eighth of the
-pool on the side past 32: "Database role" above), and the
+pool on the side past 32: "Database role" above) and 2 more while it starts, and the
 migrate Job (when it runs) as many again. With pools, the chart adds up every pool at its most replicas (`maxReplicas`, or
 `replicas` without an autoscaler) plus the pod a rollout adds (`maxSurge`, 1; `check_manifests.py` reads each
 Deployment's own, a percentage rounded up against its most replicas), the migrate Job and 20 for other users of the role (as
 `scripts/check_manifests.py` does), and refuses to render when the sum is above `database.connectionLimit`.
 Each preset says its sum. Without pools the chart refuses nothing new: check it with
 `helm template ... | python3 scripts/check_manifests.py -`, which adds up every server Deployment and Job it
-is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With the default values and `migrate.enabled`, that is 416 of 380: lower `autoscaling.maxReplicas`
-to 8 when you turn the Job on.)
+is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With the default values and `migrate.enabled`, that is 420 of 390 (382 and the Job's 30 + 6 + 2): lower
+`autoscaling.maxReplicas` to 8 when you turn the Job on.)
 
 **Connection pooler.** `database.pooler.enabled` puts PgBouncer (CloudNativePG's `Pooler`, `ferrum-db-pooler`,
 `database.pooler.instances` of them, at most one down at a time) in front of the primary, in transaction mode

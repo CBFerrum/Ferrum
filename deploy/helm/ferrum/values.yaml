@@ -107,8 +107,8 @@ replicas: 3     # used only when autoscaling.enabled is false
 autoscaling:
   enabled: true
   minReplicas: 3
-  # Each replica may open dbMaxConnections + 6 connections; (9 + 1 in a rollout) x 36 and 20 for others fit
-  # connectionLimit 380.
+  # Each replica may open dbMaxConnections + 6 connections, and 2 more while it starts: (9 + 1 in a rollout) x 36,
+  # 1 starting x 2 and 20 for others = 382 fit connectionLimit 390 (a full restart's 9 x 38 = 342 is less).
   # Add a PgBouncer pooler before raising this.
   maxReplicas: 9
   cpuUtilization: 70
@@ -274,9 +274,9 @@ database:
   walStorageSize: 20Gi
   # What the application role may hold: max_connections minus 20 for an administrator, the standbys'
   # replication and CloudNativePG's checks and monitoring. Changed with ALTER ROLE: no restart.
-  connectionLimit: 380
+  connectionLimit: 390
   parameters:
-    max_connections: "400"
+    max_connections: "410"
     shared_buffers: 2GB
     effective_cache_size: 6GB
     work_mem: 16MB

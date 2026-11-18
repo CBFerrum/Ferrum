@@ -22,6 +22,8 @@ def constant(name):
 
 # The direct pool's most: the one connection that LISTENs on every channel and a session lock at a time.
 DIRECT = constant("LISTENERS") + constant("DIRECT_LOCKS")
+# What a pod holds on connections outside every pool while it starts.
+DETACHED = constant("DETACHED_LOCKS")
 
 
 # What each replica opens besides its pool (side_connections and DbConfig's direct_connections in
@@ -37,8 +39,12 @@ def chart_drift():
     chart = ROOT / "deploy/helm/ferrum"
     wrong = []
     line = f"{{{{ add (max {constant('SIDE_CONNECTIONS')} (div (add (int .) 7) 8)) {DIRECT} }}}}"
-    if line not in (chart / "templates/_pools.tpl").read_text():
+    pools = (chart / "templates/_pools.tpl").read_text()
+    if line not in pools:
         wrong.append(f"deploy/helm/ferrum/templates/_pools.tpl: ferrum.beside must be {line}, what crates/kernel/src/db.rs opens")
+    detached = f'{{{{- define "ferrum.detached" -}}}}{DETACHED}{{{{- end -}}}}'
+    if detached not in pools:
+        wrong.append(f"deploy/helm/ferrum/templates/_pools.tpl: ferrum.detached must be {detached}, what crates/kernel/src/db.rs holds")
     per = yaml.safe_load((chart / "values.yaml").read_text())["database"]["pooler"]["directConnectionsPerReplica"]
     if per != DIRECT:
         wrong.append(f"deploy/helm/ferrum/values.yaml: database.pooler.directConnectionsPerReplica is {per}, and a replica opens {DIRECT} direct")
@@ -99,6 +105,13 @@ def surge(workload, most):
     return int(value)
 
 
+def at_most(n, extra, each):
+    """What `n` pods of `each` connections and the `extra` a rollout adds hold at most, with the locks a starting pod
+    holds outside its pools: in a rollout the `extra` start beside the others; at a first install or a full restart all
+    `n` start at once, with none extra. The larger of the two."""
+    return max((n + extra) * each + extra * DETACHED, n * (each + DETACHED))
+
+
 def pooler_connections(pooler):
     """A PgBouncer pooler's connections to PostgreSQL: each instance's pool and reserve (PgBouncer's defaults
     20 and 0)."""
@@ -145,7 +158,7 @@ def problems(docs):
             continue
         through = pooler is not None and through_pooler(entry[1]["spec"])
         most = hpa["spec"]["maxReplicas"]
-        needed = (most + surge(entry[1], most)) * each + OTHERS + (pooler_connections(pooler) if through else 0)
+        needed = at_most(most, surge(entry[1], most), each) + OTHERS + (pooler_connections(pooler) if through else 0)
         spec = clusters[0]["spec"]
         allowed = int(spec["postgresql"]["parameters"]["max_connections"])
         roles = spec.get("managed", {}).get("roles", [])
@@ -171,7 +184,7 @@ def problems(docs):
             if each is not None:
                 key = (d["kind"], d["metadata"]["name"])
                 n = most.get(key, d["spec"].get("parallelism" if d["kind"] == "Job" else "replicas", 1))
-                parts.append((key, (n + surge(d, n)) * each))
+                parts.append((key, at_most(n, surge(d, n), each)))
     if pooler:
         parts.append((("Pooler", pooler["metadata"]["name"]), pooler_connections(pooler)))
     needed = sum(n for _, n in parts) + OTHERS
