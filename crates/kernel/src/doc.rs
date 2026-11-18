@@ -19,7 +19,7 @@ use crate::{Doc, Kernel};
 use ferrum_meta::{DocumentAction, EffEntity, EntityKind, FieldDef, FieldType, NumberingOn, Reference, RuleOn, Scope, Storage};
 use serde_json::{Map, Value, json};
 use sqlx::{AssertSqlSafe, Postgres, QueryBuilder};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -1517,53 +1517,36 @@ impl Kernel {
         fill_row_defaults(ent, doc, &ctx.user_value(), &ctx.schema, &stored.into_keys().collect())
     }
 
+    /// `fetch_from` on the record, its lines and their lines. The records the links name are read once per entity for
+    /// the whole document, not once per line. A fetch whose link is itself fetched (a second `fetch_from` reading the
+    /// first's value) names its record only when the first has run, so the walk is repeated, on a copy, until it asks
+    /// for nothing it does not hold: the last one is the walk the lines get, as if each had read its own records.
     async fn fetch_links(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mut Doc, old: Option<&Doc>) -> Result<()> {
         crate::merge::resolve_links(ctx, tx, ent, doc).await?;
         let empty = Map::new();
-        fetch_for(ctx, tx, ent, doc, old.unwrap_or(&empty), old.is_none()).await?;
         // Rows as stored, by id, at either level (ids are unique across them).
         let mut old_rows: HashMap<String, Map<String, Value>> = HashMap::new();
         if let Some(o) = old {
             collect_rows(ent, o, &ctx.schema, &mut old_rows);
         }
-        self.fetch_rows(ctx, tx, ent, doc, &old_rows).await
-    }
-
-    /// `fetch_from` on the rows of `ent`'s tables in `doc`, and on a line's own lines.
-    async fn fetch_rows(
-        &self,
-        ctx: &Ctx,
-        tx: &mut Tx,
-        ent: &EffEntity,
-        doc: &mut Map<String, Value>,
-        old_rows: &HashMap<String, Map<String, Value>>,
-    ) -> Result<()> {
-        for (field, info) in &ent.children {
-            let Some(cent) = ctx.schema.entity(&info.entity).cloned() else { continue };
-            let fetches = cent.def.fields.iter().any(|f| f.fetch_from.is_some());
-            if !fetches && cent.children.is_empty() {
-                continue;
+        let mut linked = Linked::default();
+        loop {
+            let mut wanted = Wanted::new();
+            let mut next = doc.clone();
+            fetch_for(ctx, ent, &mut next, old.unwrap_or(&empty), old.is_none(), &linked, &mut wanted);
+            fetch_rows(ctx, ent, &mut next, &old_rows, &linked, &mut wanted);
+            if wanted.is_empty() {
+                *doc = next;
+                return Ok(());
             }
-            let mut rows = match doc.get(field) {
-                Some(Value::Array(r)) => r.clone(),
-                _ => continue,
-            };
-            for m in rows.iter_mut().filter_map(Value::as_object_mut) {
-                if fetches {
-                    let rid = m.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
-                    let (base, is_new) = match old_rows.get(&rid) {
-                        Some(o) => (o.clone(), false),
-                        None => (Map::new(), true),
-                    };
-                    fetch_for(ctx, tx, &cent, m, &base, is_new).await?;
-                }
-                if !cent.children.is_empty() {
-                    Box::pin(self.fetch_rows(ctx, tx, &cent, m, old_rows)).await?;
-                }
+            // Each pass must hold something it did not: ids come to be held whether or not they are found, so this
+            // cannot spin; if it ever did, a save fails rather than hangs.
+            let held = linked.0.len();
+            linked.load(ctx, tx, wanted).await?;
+            if linked.0.len() == held {
+                return Err(Error::internal("fetch_from asked again for records it already holds"));
             }
-            doc.insert(field.clone(), Value::Array(rows));
         }
-        Ok(())
     }
 
     fn compute(&self, ctx: &Ctx, ent: &EffEntity, doc: &mut Doc) -> Result<()> {
@@ -1578,8 +1561,13 @@ impl Kernel {
         let old_view = old.map(|o| ent.cel_view(&Value::Object(o.clone()), &ctx.schema));
         let mut errors = Vec::new();
         check_required(ent, doc, &view, None, old_view.as_ref(), &user, &mut errors, &[]);
-        self.validate_rows(ctx, tx, ent, doc, &view, on, &mut errors, &[]).await?;
-        self.check_links(ctx, tx, ent, doc, old, None, &mut errors, &[]).await?;
+        // The records the links to be looked up name, read once each for the record and all its lines.
+        let mut wanted = Wanted::new();
+        link_lookups(ctx, ent, doc, old, &mut wanted);
+        let mut linked = Linked::default();
+        linked.load(ctx, tx, wanted).await?;
+        self.validate_rows(ctx, tx, ent, doc, &view, on, &mut errors, &[], &linked).await?;
+        self.check_links(ctx, tx, ent, doc, old, None, &mut errors, &[], &linked).await?;
         // A letter head's header and footer are layouts (BD-28): checked as a format's are.
         if ent.def.name == "LetterHead" && ent.package == "core" {
             errors.extend(crate::documents::letter_head_problems(&ctx.schema, doc));
@@ -1612,6 +1600,7 @@ impl Kernel {
         on: RuleOn,
         errors: &mut Vec<FieldError>,
         at: &[(&str, usize)],
+        linked: &Linked,
     ) -> Result<()> {
         let user = ctx.user_value();
         for f in ent.table_fields() {
@@ -1643,9 +1632,9 @@ impl Kernel {
                         Err(e) => errors.push(FieldError::new(&rule.name, format!("rule could not be evaluated: {e}")).at(&path)),
                     }
                 }
-                self.check_links(ctx, tx, &cent, rm, None, Some(doc), errors, &path).await?;
+                self.check_links(ctx, tx, &cent, rm, None, Some(doc), errors, &path, linked).await?;
                 if !cent.children.is_empty() {
-                    Box::pin(self.validate_rows(ctx, tx, &cent, rm, &rview, on, errors, &path)).await?;
+                    Box::pin(self.validate_rows(ctx, tx, &cent, rm, &rview, on, errors, &path, linked)).await?;
                 }
             }
         }
@@ -1665,22 +1654,18 @@ impl Kernel {
         parent: Option<&Doc>,
         errors: &mut Vec<FieldError>,
         at: &[(&str, usize)],
+        linked: &Linked,
     ) -> Result<()> {
         let push = |errors: &mut Vec<FieldError>, f: &str, m: String| errors.push(FieldError::new(f, m).at(at));
         for f in ent.value_fields().filter(|f| f.ftype == FieldType::Link) {
-            let Some(id) = uuid_of(doc.get(&f.name)) else { continue };
-            // A link set to a record of an entity the caller's zone leaves out (crate::zones, level 2): they cannot
-            // have read it, so it is refused as a link to nothing installed is. One already there and left as it was
-            // stays.
-            let kept = old.is_some_and(|o| o.get(&f.name) == doc.get(&f.name));
-            let Some(target) = f.to.as_deref().and_then(|t| ctx.schema.entity(t)).filter(|t| kept || ctx.sees(&t.def.name)).cloned() else {
+            let Some((id, target)) = link_target(ctx, f, doc, old) else { continue };
+            let Some(target) = target else {
                 push(errors, &f.name, "links to an entity that is not installed".into());
                 continue;
             };
-            let needs_lookup = f.link_filters.is_some() || ent.storage_of(&f.name) == Some(Storage::Ext) || target.custom || ent.custom;
-            if needs_lookup {
-                let found = store::load_many(tx, &ctx.schema, &target, ctx.tenant, &[id]).await?;
-                match found.first() {
+            if needs_lookup(ent, f, &target) {
+                let found = linked.get(&target.def.name, id).ok_or_else(|| Error::internal("a link checked without being read"))?;
+                match found.as_ref() {
                     None => push(errors, &f.name, format!("{} does not exist", target.def.label)),
                     Some(t) => {
                         if let Some(filters) = &f.link_filters {
@@ -2083,13 +2068,71 @@ fn check_required(
     }
 }
 
-async fn fetch_for(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mut Map<String, Value>, old: &Map<String, Value>, is_new: bool) -> Result<()> {
-    let fields: Vec<&FieldDef> = ent.value_fields().filter(|f| f.fetch_from.is_some()).collect();
-    if fields.is_empty() {
-        return Ok(());
+/// The records a save's links name, by entity and id, read once each: `None` for an id the database does not hold.
+#[derive(Default)]
+struct Linked(HashMap<(String, Uuid), Option<Doc>>);
+
+/// What a walk over a document still needs read, by entity.
+type Wanted = BTreeMap<String, BTreeSet<Uuid>>;
+
+impl Linked {
+    /// Reads, one statement per entity, the ids of `wanted` not held yet.
+    async fn load(&mut self, ctx: &Ctx, tx: &mut Tx, wanted: Wanted) -> Result<()> {
+        for (entity, ids) in wanted {
+            let ids: Vec<Uuid> = ids.into_iter().filter(|id| !self.0.contains_key(&(entity.clone(), *id))).collect();
+            // An entity the schema does not hold (the names come from it, so none is) holds nothing: every id is held
+            // as not found, so a second walk cannot ask for it again.
+            let Some(target) = ctx.schema.entity(&entity) else {
+                self.0.extend(ids.into_iter().map(|id| ((entity.clone(), id), None)));
+                continue;
+            };
+            let mut found: HashMap<Uuid, Doc> =
+                store::load_many(tx, &ctx.schema, target, ctx.tenant, &ids).await?.into_iter().filter_map(|d| Some((uuid_of(d.get("id"))?, d))).collect();
+            for id in ids {
+                self.0.insert((entity.clone(), id), found.remove(&id));
+            }
+        }
+        Ok(())
     }
-    let mut cache: HashMap<(String, Uuid), Option<Doc>> = HashMap::new();
-    for f in fields {
+
+    fn get(&self, entity: &str, id: Uuid) -> Option<&Option<Doc>> {
+        self.0.get(&(entity.to_string(), id))
+    }
+}
+
+/// `fetch_from` on the rows of `ent`'s tables in `doc`, and on a line's own lines.
+fn fetch_rows(ctx: &Ctx, ent: &EffEntity, doc: &mut Map<String, Value>, old_rows: &HashMap<String, Map<String, Value>>, linked: &Linked, wanted: &mut Wanted) {
+    for (field, info) in &ent.children {
+        let Some(cent) = ctx.schema.entity(&info.entity).cloned() else { continue };
+        let fetches = cent.def.fields.iter().any(|f| f.fetch_from.is_some());
+        if !fetches && cent.children.is_empty() {
+            continue;
+        }
+        let mut rows = match doc.get(field) {
+            Some(Value::Array(r)) => r.clone(),
+            _ => continue,
+        };
+        for m in rows.iter_mut().filter_map(Value::as_object_mut) {
+            if fetches {
+                let rid = m.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                let (base, is_new) = match old_rows.get(&rid) {
+                    Some(o) => (o.clone(), false),
+                    None => (Map::new(), true),
+                };
+                fetch_for(ctx, &cent, m, &base, is_new, linked, wanted);
+            }
+            if !cent.children.is_empty() {
+                fetch_rows(ctx, &cent, m, old_rows, linked, wanted);
+            }
+        }
+        doc.insert(field.clone(), Value::Array(rows));
+    }
+}
+
+/// `fetch_from` on one record or line, from the records in `linked`. A record it does not hold yet is added to `wanted`
+/// and the field left as it is.
+fn fetch_for(ctx: &Ctx, ent: &EffEntity, doc: &mut Map<String, Value>, old: &Map<String, Value>, is_new: bool, linked: &Linked, wanted: &mut Wanted) {
+    for f in ent.value_fields().filter(|f| f.fetch_from.is_some()) {
         let (link, target_field) = f.fetch_from.as_deref().and_then(|s| s.split_once('.')).unwrap_or_default();
         let current = doc.get(link).cloned().unwrap_or(Value::Null);
         let changed = is_new || old.get(link) != Some(&current);
@@ -2103,17 +2146,46 @@ async fn fetch_for(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mut Map<String
             }
             continue;
         };
-        let Some(target) = ent.field(link).and_then(|lf| lf.to.as_deref()).and_then(|t| ctx.schema.entity(t)).cloned() else { continue };
-        let key = (target.def.name.clone(), id);
-        if !cache.contains_key(&key) {
-            let found = store::load_many(tx, &ctx.schema, &target, ctx.tenant, &[id]).await?.into_iter().next();
-            cache.insert(key.clone(), found);
-        }
-        let value = cache[&key].as_ref().and_then(|d| d.get(target_field)).cloned().unwrap_or(Value::Null);
+        let Some(target) = ent.field(link).and_then(|lf| lf.to.as_deref()).and_then(|t| ctx.schema.entity(t)) else { continue };
+        let Some(found) = linked.get(&target.def.name, id) else {
+            wanted.entry(target.def.name.clone()).or_default().insert(id);
+            continue;
+        };
+        let value = found.as_ref().and_then(|d| d.get(target_field)).cloned().unwrap_or(Value::Null);
         let value = normalize(f, &value).unwrap_or(Value::Null);
         doc.insert(f.name.clone(), value);
     }
-    Ok(())
+}
+
+/// A link's value and the entity it names, as `check_links` reads them: none when the link is empty; the entity none when
+/// it is not installed, or (crate::zones, level 2) the caller's zone leaves it out, so they cannot have read the record
+/// and it is refused as a link to nothing installed is. A link already there and left as it was stays.
+fn link_target(ctx: &Ctx, f: &FieldDef, doc: &Doc, old: Option<&Doc>) -> Option<(Uuid, Option<Arc<EffEntity>>)> {
+    let id = uuid_of(doc.get(&f.name))?;
+    let kept = old.is_some_and(|o| o.get(&f.name) == doc.get(&f.name));
+    Some((id, f.to.as_deref().and_then(|t| ctx.schema.entity(t)).filter(|t| kept || ctx.sees(&t.def.name)).cloned()))
+}
+
+/// Whether `check_links` reads the record a link names: it has a filter, is kept in `ext`, or is custom.
+fn needs_lookup(ent: &EffEntity, f: &FieldDef, target: &EffEntity) -> bool {
+    f.link_filters.is_some() || ent.storage_of(&f.name) == Some(Storage::Ext) || target.custom || ent.custom
+}
+
+/// Every record `check_links` will read for `doc` and, as `validate_rows` walks them, its lines and their lines.
+fn link_lookups(ctx: &Ctx, ent: &EffEntity, doc: &Doc, old: Option<&Doc>, wanted: &mut Wanted) {
+    for f in ent.value_fields().filter(|f| f.ftype == FieldType::Link) {
+        if let Some((id, Some(target))) = link_target(ctx, f, doc, old)
+            && needs_lookup(ent, f, &target)
+        {
+            wanted.entry(target.def.name.clone()).or_default().insert(id);
+        }
+    }
+    for f in ent.table_fields() {
+        let Some(cent) = f.of.as_deref().and_then(|c| ctx.schema.entity(c)) else { continue };
+        for rm in doc.get(&f.name).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_object) {
+            link_lookups(ctx, cent, rm, None, wanted);
+        }
+    }
 }
 
 /// The workflow state a document is in.
